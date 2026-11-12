@@ -1,28 +1,14 @@
 use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => {
-            let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID"
-                    );
-                    return 1;
-                }
-            };
-            match pane_id_str.parse::<u64>() {
-                Ok(n) => n,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                    return 1;
-                }
-            }
-        }
+    let resolved_pane_id = match current_pane_id(pane_id, "pane name") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
-    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name={name:?}");
+    log::info!(
+        "pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}",
+        name.chars().count()
+    );
     send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,
@@ -30,26 +16,41 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     }))
 }
 
-fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
-    match pane_id {
-        Some(id) => Ok(id),
-        None => {
-            let raw = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                    );
-                    return Err(1);
-                }
-            };
-            match raw.parse::<u64>() {
-                Ok(id) => Ok(id),
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {raw}");
-                    Err(1)
-                }
+const PANE_ID_FIX_HINT: &str =
+    "Run this inside a Plexi pane or pass a pane id (see 'plexi pane list').";
+
+/// The one current-pane rule: an explicit id wins, else `PLEXI_PANE_ID`, else an
+/// error naming the variable and the fix. Never falls back to the focused pane.
+/// `env` is the raw value of `PLEXI_PANE_ID` (`None` when unset).
+pub(crate) fn pick_current_pane(explicit: Option<u64>, env: Option<&str>) -> Result<u64, String> {
+    if let Some(id) = explicit {
+        return Ok(id);
+    }
+    match env {
+        None => Err(format!(
+            "no pane id given and PLEXI_PANE_ID is not set. {PANE_ID_FIX_HINT}"
+        )),
+        Some(raw) => raw.trim().parse::<u64>().map_err(|_| {
+            format!("PLEXI_PANE_ID is not a valid pane id: {raw:?}. {PANE_ID_FIX_HINT}")
+        }),
+    }
+}
+
+/// Resolve the pane a self-targeting command acts on (see [`pick_current_pane`]).
+/// `command` is only used for the info log when the id came from the environment.
+pub fn current_pane_id(explicit: Option<u64>, command: &str) -> Result<u64, i32> {
+    let env = std::env::var_os("PLEXI_PANE_ID").map(|v| v.to_string_lossy().into_owned());
+    match pick_current_pane(explicit, env.as_deref()) {
+        Ok(id) => {
+            if explicit.is_none() {
+                log::info!("{command}:cli: pane id defaulted from PLEXI_PANE_ID pane_id={id}");
             }
+            Ok(id)
+        }
+        Err(message) => {
+            log::warn!("{command}:cli: {message}");
+            eprintln!("error: {message}");
+            Err(1)
         }
     }
 }
@@ -103,7 +104,7 @@ fn response_error(content: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Terse success ack for `pane slot write`, printed to stderr so stdout stays byte-clean.
+/// Terse success ack for `pane slot write`, printed to stdout with other CLI payloads.
 fn slot_write_ack(name: &str, bytes: usize, append: bool) -> String {
     let verb = if append { "+<-" } else { "<-" };
     format!("slot {name:?} {verb} {bytes} bytes")
@@ -121,7 +122,7 @@ pub fn pane_slot_write_cli(
         eprintln!("error: slot name empty");
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot write") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -162,13 +163,13 @@ pub fn pane_slot_write_cli(
         eprintln!("error: {err}");
         return 1;
     }
-    eprintln!("{}", slot_write_ack(name, bytes.len(), append));
+    println!("{}", slot_write_ack(name, bytes.len(), append));
     0
 }
 
 /// `plexi pane slot read <name> [pane_id]`
 pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot read") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -270,7 +271,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot wait") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -310,7 +311,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
 
 /// `plexi pane slot list [pane_id]`
 pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot list") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -339,7 +340,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
 
 /// `plexi pane slot delete <name> [pane_id]`
 pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot delete") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -367,11 +368,235 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
     0
 }
 
+/// `plexi pane message send <pane_id> <payload> [--submit]`
+pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
+    log::info!(
+        "pane_message_send:cli: pane_id={pane_id} bytes={} submit={submit}",
+        payload.len()
+    );
+    match super::request(
+        serde_json::json!({
+            "type": "pane_message_send",
+            "pane_id": pane_id,
+            "payload": payload,
+            "submit": submit,
+        }),
+        "pane-message-send-response",
+        "pane message send",
+    ) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
+/// `plexi pane message recv [pane_id] [--wait] [--timeout <SECS>]`
+pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i32 {
+    if !timeout.is_finite()
+        || !(0.0..=crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS).contains(&timeout)
+    {
+        eprintln!(
+            "error: --timeout must be a non-negative number of seconds at most {}, got {timeout}",
+            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+        );
+        return 1;
+    }
+    let resolved_pane_id = match current_pane_id(pane_id, "pane message recv") {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    log::info!("pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "pane_message_recv",
+            "pane_id": resolved_pane_id,
+            "wait": wait,
+            "timeout_secs": timeout,
+        }),
+        "pane-message-recv-response",
+        "pane message recv",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
+    let deadline = if wait {
+        std::time::Duration::from_secs_f64(timeout) + SLOT_WAIT_REPLY_MARGIN
+    } else {
+        crate::rpc::DEFAULT_TIMEOUT
+    };
+    let outcome = slot_wait_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
+    match &outcome {
+        SlotWaitOutcome::Matched(content) => {
+            return print_json_output(&String::from_utf8_lossy(content));
+        }
+        SlotWaitOutcome::TimedOut(message) | SlotWaitOutcome::Failed(message) => {
+            eprintln!("error: {message}");
+        }
+    }
+    outcome.exit_code()
+}
+
+/// Format an error message with its typed `error_code` prefix (if not already present).
+fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
+    match error_code {
+        Some(code) if !code.is_empty() && !message.starts_with(code) => {
+            format!("{code}: {message}")
+        }
+        _ => message.to_string(),
+    }
+}
+
+/// Outcome of `plexi pane result <id>` / `plexi pane result read <id>`.
+///
+/// Distinguishes:
+/// - `Validated`: committed JSON object (exit 0, printed to stdout)
+/// - `NoResultYet`: no result written yet or `--wait` timed out (exit 2, empty stdout)
+/// - `InvalidResult`: last write was rejected as malformed/schema-violating and not yet corrected (exit 1, empty stdout)
+/// - `Failed`: plumbing or usage error (exit 1, empty stdout)
+#[derive(Debug, PartialEq)]
+pub enum PaneResultReadOutcome {
+    Validated(Vec<u8>),
+    NoResultYet { error_code: String, message: String },
+    InvalidResult { error_code: String, message: String },
+    Failed(String),
+}
+
+impl PaneResultReadOutcome {
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            PaneResultReadOutcome::Validated(_) => 0,
+            PaneResultReadOutcome::NoResultYet { .. } => 2,
+            PaneResultReadOutcome::InvalidResult { .. } | PaneResultReadOutcome::Failed(_) => 1,
+        }
+    }
+}
+
+/// Pure mapper for `pane_result_read` replies.
+pub fn pane_result_read_outcome(
+    reply: Result<crate::rpc::SlotReply, crate::rpc::PollError>,
+) -> PaneResultReadOutcome {
+    match reply {
+        Ok(crate::rpc::SlotReply::Data(content)) => PaneResultReadOutcome::Validated(content),
+        Ok(crate::rpc::SlotReply::Err(content)) => {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) else {
+                return PaneResultReadOutcome::Failed(
+                    "invalid pane result error response".to_string(),
+                );
+            };
+            let error_code = value
+                .get("error_code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let raw_msg = value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("pane result read failed");
+            let timed_out = value
+                .get("timeout")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let formatted = format_coded_error(
+                (!error_code.is_empty()).then_some(error_code),
+                raw_msg,
+            );
+            if error_code == "no_result_yet" || error_code == "timeout" || timed_out {
+                let code = if !error_code.is_empty() {
+                    error_code.to_string()
+                } else {
+                    "timeout".to_string()
+                };
+                PaneResultReadOutcome::NoResultYet {
+                    error_code: code,
+                    message: formatted,
+                }
+            } else if error_code == "invalid_result" {
+                PaneResultReadOutcome::InvalidResult {
+                    error_code: "invalid_result".to_string(),
+                    message: formatted,
+                }
+            } else {
+                PaneResultReadOutcome::Failed(formatted)
+            }
+        }
+        Err(crate::rpc::PollError::TimedOut) => PaneResultReadOutcome::Failed(
+            "no response from host within the pane result wait window — the host may not be running"
+                .to_string(),
+        ),
+        Err(e) => PaneResultReadOutcome::Failed(e.to_string()),
+    }
+}
+
+/// `plexi pane result [pane_id] [--wait] [--timeout <SECS>]`
+pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i32 {
+    if !timeout.is_finite()
+        || !(0.0..=crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS).contains(&timeout)
+    {
+        eprintln!(
+            "error: --timeout must be a non-negative number of seconds at most {}, got {timeout}",
+            crate::app::pane_wait::MAX_WAIT_TIMEOUT_SECS
+        );
+        return 1;
+    }
+    let resolved_pane_id = match current_pane_id(pane_id, "pane result") {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    log::info!("pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
+    let response_file = match super::send_request(
+        serde_json::json!({
+            "type": "pane_result_read",
+            "pane_id": resolved_pane_id,
+            "wait": wait,
+            "timeout_secs": timeout,
+        }),
+        "pane-result-read-response",
+        "pane result",
+    ) {
+        Ok(response_file) => response_file,
+        Err(code) => return code,
+    };
+    let deadline = if wait {
+        std::time::Duration::from_secs_f64(timeout) + SLOT_WAIT_REPLY_MARGIN
+    } else {
+        crate::rpc::DEFAULT_TIMEOUT
+    };
+    let outcome =
+        pane_result_read_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
+    match &outcome {
+        PaneResultReadOutcome::Validated(content) => {
+            return print_json_output(&String::from_utf8_lossy(content));
+        }
+        PaneResultReadOutcome::NoResultYet { message, .. }
+        | PaneResultReadOutcome::InvalidResult { message, .. }
+        | PaneResultReadOutcome::Failed(message) => {
+            eprintln!("error: {message}");
+        }
+    }
+    outcome.exit_code()
+}
+
 /// `plexi pane list`
 ///
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
+pub fn pane_layout_cli() -> i32 {
+    log::info!("pane_layout:cli: requesting workspace snapshot");
+    match super::request(
+        serde_json::json!({"type":"workspace_snapshot"}),
+        "pane-layout-response",
+        "pane layout",
+    ) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
 pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
     let context_id: Option<u64> = if current {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {
@@ -409,6 +634,179 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
     }
 }
 
+/// Format a flat `list_panes` JSON array as a `pstree` / `ps --forest` parent-child session
+/// provenance tree (or nested JSON forest when `json == true`).
+pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
+    let known_ids: std::collections::HashSet<u64> = panes
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_u64()))
+        .collect();
+    let mut children_by_parent: std::collections::BTreeMap<u64, Vec<&serde_json::Value>> =
+        std::collections::BTreeMap::new();
+    let mut roots: Vec<&serde_json::Value> = Vec::new();
+    for p in panes {
+        let parent_id = p
+            .get("parent_pane_id")
+            .and_then(|v| v.as_u64())
+            .filter(|pid| known_ids.contains(pid));
+        if let Some(pid) = parent_id {
+            children_by_parent.entry(pid).or_default().push(p);
+        } else {
+            roots.push(p);
+        }
+    }
+
+    if json {
+        fn build_node(
+            pane: &serde_json::Value,
+            children_by_parent: &std::collections::BTreeMap<u64, Vec<&serde_json::Value>>,
+        ) -> serde_json::Value {
+            let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let kids = children_by_parent
+                .get(&id)
+                .map(|list| {
+                    list.iter()
+                        .map(|c| build_node(c, children_by_parent))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut obj = pane.clone();
+            if let Some(map) = obj.as_object_mut() {
+                map.insert("children".to_string(), serde_json::Value::Array(kids));
+            }
+            obj
+        }
+        let forest: Vec<serde_json::Value> = roots
+            .iter()
+            .map(|r| build_node(r, &children_by_parent))
+            .collect();
+        return serde_json::to_string_pretty(&forest).unwrap_or_else(|_| "[]".to_string());
+    }
+
+    fn format_node_line(pane: &serde_json::Value) -> String {
+        let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let name = pane
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                pane.get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or("pane");
+        let role = pane
+            .get("agent_role")
+            .and_then(|v| v.as_str())
+            .or_else(|| pane.get("agent").and_then(|v| v.as_str()));
+        let state = pane.get("agent_state").and_then(|v| v.as_str());
+        let spawned_by = pane
+            .get("spawned_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("human");
+        let waiting = pane
+            .get("pending_child_results_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let role_part = match (role, state) {
+            (Some(r), Some(s)) => format!("agent:{r} [{s}] "),
+            (Some(r), None) => format!("agent:{r} "),
+            (None, Some(s)) => format!("[{s}] "),
+            (None, None) => String::new(),
+        };
+        let waiting_part = if waiting == 1 {
+            " · 1 result waiting".to_string()
+        } else if waiting > 1 {
+            format!(" · {waiting} results waiting")
+        } else {
+            String::new()
+        };
+        format!("#{id} {role_part}\"{name}\" (spawned by {spawned_by}){waiting_part}")
+    }
+
+    fn walk(
+        pane: &serde_json::Value,
+        prefix: &str,
+        branch: &str,
+        children_by_parent: &std::collections::BTreeMap<u64, Vec<&serde_json::Value>>,
+        lines: &mut Vec<String>,
+    ) {
+        let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{prefix}{branch}{}", format_node_line(pane)));
+        if let Some(kids) = children_by_parent.get(&id) {
+            let child_prefix = if branch.is_empty() {
+                String::new()
+            } else if branch == "├── " {
+                format!("{prefix}│   ")
+            } else {
+                format!("{prefix}    ")
+            };
+            for (idx, child) in kids.iter().enumerate() {
+                let is_last = idx + 1 == kids.len();
+                let child_branch = if is_last { "└── " } else { "├── " };
+                walk(
+                    child,
+                    &child_prefix,
+                    child_branch,
+                    children_by_parent,
+                    lines,
+                );
+            }
+        }
+    }
+
+    let mut lines = Vec::new();
+    for root in roots {
+        walk(root, "", "", &children_by_parent, &mut lines);
+    }
+    lines.join("\n")
+}
+
+/// `plexi pane tree [--context [ID]] [--json]`
+pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
+    let context_id: Option<u64> = if current {
+        let raw = match std::env::var("PLEXI_CONTEXT_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane"
+                );
+                return 1;
+            }
+        };
+        match raw.parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {raw}");
+                return 1;
+            }
+        }
+    } else {
+        context
+    };
+
+    let mut payload = serde_json::json!({
+        "type": "list_panes",
+    });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::json!(cid);
+    }
+
+    let content = match super::request(payload, "pane-tree-response", "pane tree") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let panes: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: invalid pane list response: {e}");
+            return 1;
+        }
+    };
+    println!("{}", format_pane_tree(&panes, json));
+    0
+}
+
 /// `plexi pane self`
 ///
 /// Prints the current pane ID (just the number) to stdout. Reads PLEXI_PANE_ID.
@@ -440,7 +838,7 @@ pub fn pane_self_cli() -> i32 {
 /// When `steps` is `Some(n)`, walks back N steps in focus history.
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli(previous: Option<u64>) -> i32 {
+pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -456,21 +854,9 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
             "steps": steps,
         })
     } else {
-        let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane"
-                );
-                return 1;
-            }
-        };
-        let pane_id: u64 = match pane_id_str.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                return 1;
-            }
+        let pane_id = match current_pane_id(pane_id, "pane info") {
+            Ok(id) => id,
+            Err(code) => return code,
         };
         log::info!("pane_info:cli: pane_id={pane_id}");
         serde_json::json!({
@@ -516,26 +902,97 @@ pub fn pane_focus_cli(pane_id: u64) -> i32 {
     }))
 }
 
+/// Map a host `close_pane` JSON reply onto `(stdout_line, stderr_line, exit_code)`.
+///
+/// When the closed pane owned a `--worktree` checkout that was dirty or ahead,
+/// the host retains the worktree and includes `"worktree": {"action": "retained", "path": "...", "reason": "..."}`
+/// in the reply; the CLI surfaces the retained path on stdout.
+pub fn close_pane_outcome(response: &str) -> (Option<String>, Option<String>, i32) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(response) else {
+        return (
+            None,
+            Some(format!("error: invalid JSON from host: {response}")),
+            1,
+        );
+    };
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return (None, Some(format!("error: {err}")), 1);
+    }
+    if let Some(wt) = v.get("worktree") {
+        if wt.get("action").and_then(|a| a.as_str()) == Some("retained") {
+            let path = wt.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let reason = wt
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("dirty_or_ahead");
+            return (
+                Some(format!("retained worktree: {path} ({reason})")),
+                None,
+                0,
+            );
+        }
+    }
+    (None, None, 0)
+}
+
 /// `plexi pane close <pane_id>`
 ///
-/// Sends a `close_pane` command to PLEXI_SOCKET. Fire-and-forget.
-/// Returns 0 on success, 1 on error.
+/// Sends a `close_pane` command to PLEXI_SOCKET. When closing another pane,
+/// waits for the host's response so any retained `--worktree` path is reported
+/// on stdout. When a pane closes itself (`PLEXI_PANE_ID == pane_id`), sends
+/// fire-and-forget so the CLI exits cleanly before the PTY receives SIGHUP
+/// (the host still reclaims or retains the worktree on close).
 pub fn pane_close_cli(pane_id: u64) -> i32 {
-    send_to_socket(serde_json::json!({
+    let self_pane = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
+    if self_pane == Some(pane_id) {
+        return send_to_socket(serde_json::json!({
+            "type": "close_pane",
+            "pane_id": pane_id,
+        }));
+    }
+    let payload = serde_json::json!({
         "type": "close_pane",
         "pane_id": pane_id,
-    }))
+    });
+    let content = match super::request(payload, "close-pane-response", "pane close") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    let (stdout, stderr, code) = close_pane_outcome(&content);
+    if let Some(err) = stderr {
+        eprintln!("{err}");
+    }
+    if let Some(out) = stdout {
+        println!("{out}");
+    }
+    code
 }
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to a terminal pane's PTY stdin, or focuses an app pane and
+/// Writes text to a terminal pane's PTY stdin, or focuses a view pane and
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
-pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
+pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32 {
+    pane_send_with_operation_cli(pane_id, text, submit, paste, None)
+}
+
+pub fn pane_send_with_operation_cli(
+    pane_id: u64,
+    text: &str,
+    submit: bool,
+    paste: bool,
+    operation_id: Option<&str>,
+) -> i32 {
+    let generated_operation_id = operation_id.is_none();
+    let operation_id = operation_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));
     log::info!(
-        "pane_send:cli: pane_id={pane_id} len={} submit={submit}",
+        "pane_send:cli: pane_id={pane_id} len={} submit={submit} paste={paste}",
         text.len()
     );
     let payload = serde_json::json!({
@@ -543,6 +1000,10 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
         "pane_id": pane_id,
         "text": text,
         "submit": submit,
+        "paste": paste,
+        "operation_id": operation_id,
+        "generated_operation_id": generated_operation_id,
+        "peer_ancestry": [],
     });
     if submit {
         // The host settles, presses Enter and confirms before answering, all
@@ -555,20 +1016,47 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool) -> i32 {
             SUBMIT_REPLY_WINDOW,
         ) {
             Ok(content) => content,
-            Err(code) => return code,
+            Err(code) => {
+                eprintln!(
+                    "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+                );
+                return code;
+            }
         };
+        report_duplicate_pane_send(&content);
         let outcome = submit_outcome(&content);
         outcome.report();
         return outcome.exit_code();
     }
-    let content = match super::request(payload, "send-to-pane-response", "pane send") {
+    let content = match super::request_with(
+        payload,
+        "send-to-pane-response",
+        "pane send",
+        SUBMIT_REPLY_WINDOW,
+    ) {
         Ok(content) => content,
-        Err(code) => return code,
+        Err(code) => {
+            eprintln!(
+                "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+            );
+            return code;
+        }
     };
     if let Err(code) = super::check_reply_error(&content) {
         return code;
     }
+    report_duplicate_pane_send(&content);
     0
+}
+
+fn report_duplicate_pane_send(content: &str) {
+    if serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| value.get("duplicate").and_then(serde_json::Value::as_bool))
+        == Some(true)
+    {
+        eprintln!("pane send: this operation was already completed; no text was sent");
+    }
 }
 
 pub fn pane_heartbeat_cli(
@@ -622,7 +1110,9 @@ fn parse_heartbeat_duration(value: &str) -> Result<std::time::Duration, String> 
 
 /// Client-side poll window for `pane send --submit`. Strictly above the host's
 /// own settle + confirm + retry-confirm ceiling.
-const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(25);
+// The host can spend 20 seconds on approval and then up to 15 seconds on
+// submit confirmation. Leave room for the typed host result to arrive.
+const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// What the host said about a `--submit`, in the two shapes a caller branches on.
 #[derive(Debug, PartialEq, Eq)]
@@ -731,7 +1221,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            // Native app panes report whether the app's key handler consumed
+            // Native view panes report whether the plugin's key handler consumed
             // the key — surface a miss so driving agents don't assume the
             // key acted.
             if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
@@ -746,14 +1236,14 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                          surface (applied next frame)"
                     ),
                     _ => eprintln!(
-                        "note: key delivered but not consumed by the app \
+                        "note: key delivered but not consumed by the plugin \
                          (disposition: {d})"
                     ),
                 }
             }
             return 0;
         }
-        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+        if let Some(msg) = host_error_text(&content) {
             eprintln!("error: {msg}");
             return 1;
         }
@@ -788,12 +1278,22 @@ fn click_request(payload: serde_json::Value, prefix: &str, log_prefix: &str) -> 
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Some(msg) = super::reply_error(&content) {
+    if let Some(msg) = host_error_text(&content) {
         log::warn!("{log_prefix}: host reported error: {msg}");
         eprintln!("error: {msg}");
         return 1;
     }
     0
+}
+
+/// Host `error` text, with `error_code` prefixed when the reply carries one.
+fn host_error_text(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let msg = value.get("error")?.as_str()?;
+    match value.get("error_code").and_then(|code| code.as_str()) {
+        Some(code) if !code.is_empty() && !msg.contains(code) => Some(format!("{code}: {msg}")),
+        _ => Some(msg.to_string()),
+    }
 }
 
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
@@ -910,23 +1410,9 @@ pub fn pane_capture_cli(
     from_cursor: Option<u64>,
     plain: bool,
 ) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => match std::env::var("PLEXI_PANE_ID") {
-            Ok(v) => match v.parse::<u64>() {
-                Ok(id) => id,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {v}");
-                    return 1;
-                }
-            },
-            Err(_) => {
-                eprintln!(
-                    "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                );
-                return 1;
-            }
-        },
+    let resolved_pane_id = match current_pane_id(pane_id, "pane capture") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
 
     log::info!(
@@ -1032,13 +1518,13 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 
 /// `plexi pane state <id> [--stale-after <secs>]`
 ///
-/// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
+/// Sends a `get_pane_state` command to PLEXI_SOCKET. For view panes, the host
 /// writes a JSON object containing a versioned normalized `semantic` tree.
-/// Process apps also retain the compatible `frame` RenderCommand array.
+/// Process plugins also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Every response also
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
-/// `AppRequest::GetPaneState`. Returns 0 on success, 1 on error.
+/// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
@@ -1080,7 +1566,7 @@ pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&st
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
-/// passing the user's workspace root so app state is scoped correctly.
+/// passing the user's workspace root so plugin state is scoped correctly.
 pub(super) fn open_github_ephemeral(
     source: &str,
     layout: Option<&str>,
@@ -1204,7 +1690,7 @@ pub(super) fn open_github_ephemeral(
         "open github",
         &format!("open github:{owner}/{repo}"),
     ) {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(code) => code,
     }
 }
@@ -1337,11 +1823,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 
@@ -1451,12 +1935,12 @@ mod submit_tests {
         assert_eq!(outcome.exit_code(), 1);
     }
 
-    /// A refusal (app pane, submit already in flight, pane gone) carries no
+    /// A refusal (view pane, submit already in flight, pane gone) carries no
     /// input line and is still a non-zero exit: nothing was submitted.
     #[test]
     fn refusal_reply_exits_one() {
         let outcome = submit_outcome(
-            r#"{"error":"pane 7 is an app pane; --submit only applies to terminal panes"}"#,
+            r#"{"error":"pane 7 is a view pane; --submit only applies to terminal panes"}"#,
         );
         assert_eq!(outcome.exit_code(), 1);
         assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));
@@ -1475,7 +1959,12 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for submit in [true, false] {
+        for (submit, paste, operation_id) in [
+            (true, false, None),
+            (false, false, None),
+            (false, true, None),
+            (false, false, Some("explicit-id")),
+        ] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -1499,7 +1988,7 @@ mod submit_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_send_cli(42, "hello", submit);
+            let code = pane_send_with_operation_cli(42, "hello", submit, paste, operation_id);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the send payload");
@@ -1508,6 +1997,393 @@ mod submit_tests {
             assert_eq!(code, 0, "submit={submit}");
             assert_eq!(payload["type"], "send_to_pane");
             assert_eq!(payload["submit"], submit, "payload was {payload}");
+            assert_eq!(payload["paste"], paste, "payload was {payload}");
+            assert_eq!(payload["generated_operation_id"], operation_id.is_none());
+            if let Some(id) = operation_id {
+                assert_eq!(payload["operation_id"], id);
+            } else {
+                assert!(
+                    payload["operation_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("pane-send-")),
+                    "payload was {payload}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pane_message_tests {
+    use super::*;
+    use crate::cli::test_env::socket_env_guard;
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn send_payload_omits_self_reported_sender_and_forwards_submit() {
+        for submit in [false, true] {
+            let env = socket_env_guard();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = dir.path().join("notify.sock");
+            let listener = UnixListener::bind(&socket_path).expect("bind socket");
+            env.set(&socket_path);
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                BufReader::new(stream)
+                    .read_line(&mut line)
+                    .expect("read payload");
+                let payload: serde_json::Value = serde_json::from_str(&line).expect("payload json");
+                crate::rpc::write_json_response(
+                    payload["response_file"].as_str().expect("response_file"),
+                    serde_json::json!({
+                        "ok": true,
+                        "status": if submit { "delivered" } else { "queued" },
+                        "state": if submit { "delivered" } else { "queued" },
+                        "pane_id": 42,
+                        "from_pane_id": 7,
+                        "sender_pane_id": 7,
+                        "message_id": 1,
+                        "queue_len": 1,
+                        "woke": submit,
+                    }),
+                );
+                tx.send(payload).ok();
+            });
+
+            let code = pane_message_send_cli(42, "hello mailbox", submit);
+            let payload = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("host listener never received the message send payload");
+            handle.join().expect("listener thread");
+
+            assert_eq!(code, 0, "submit={submit}");
+            assert_eq!(payload["type"], "pane_message_send");
+            assert_eq!(payload["pane_id"], 42);
+            assert_eq!(payload["payload"], "hello mailbox");
+            assert_eq!(payload["submit"], submit);
+            assert!(
+                payload.get("from_pane_id").is_none()
+                    && payload.get("sender_pane_id").is_none()
+                    && payload.get("peer_ancestry").is_none(),
+                "sender identity must never be self-reported by the CLI: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn recv_invalid_timeout_exits_one_before_socket_contact() {
+        assert_eq!(pane_message_recv_cli(Some(7), true, -1.0), 1);
+        assert_eq!(pane_message_recv_cli(Some(7), true, f64::NAN), 1);
+        assert_eq!(pane_message_recv_cli(Some(7), true, 1e308), 1);
+    }
+
+    #[test]
+    fn recv_timeout_sidecar_exits_two() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read payload");
+            let payload: serde_json::Value = serde_json::from_str(&line).expect("payload json");
+            let rf = payload["response_file"].as_str().expect("response_file");
+            crate::rpc::write_json_response(
+                &format!("{rf}.err"),
+                serde_json::json!({
+                    "ok": false,
+                    "timeout": true,
+                    "error": "timed out waiting for message on pane 7",
+                }),
+            );
+        });
+
+        let code = pane_message_recv_cli(Some(7), true, 0.1);
+        handle.join().expect("listener thread");
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn close_pane_outcome_formats_retained_and_reclaimed_worktrees() {
+        let (out, err, code) = close_pane_outcome(
+            r#"{"ok":true,"pane_id":9,"worktree":{"branch":"feature/x","path":"/tmp/wt/feature/x","action":"retained","reason":"dirty"}}"#,
+        );
+        assert_eq!(code, 0);
+        assert!(err.is_none());
+        assert_eq!(
+            out.as_deref(),
+            Some("retained worktree: /tmp/wt/feature/x (dirty)")
+        );
+
+        let (out2, err2, code2) = close_pane_outcome(
+            r#"{"ok":true,"pane_id":9,"worktree":{"branch":"feature/x","path":"/tmp/wt/feature/x","action":"reclaimed","reason":"clean_and_unmoved"}}"#,
+        );
+        assert_eq!(code2, 0);
+        assert!(err2.is_none());
+        assert!(out2.is_none());
+
+        let (out3, err3, code3) = close_pane_outcome(r#"{"error":"pane 9 not found"}"#);
+        assert_eq!(code3, 1);
+        assert!(out3.is_none());
+        assert_eq!(err3.as_deref(), Some("error: pane 9 not found"));
+    }
+}
+
+#[cfg(test)]
+mod pane_result_tests {
+    use super::*;
+    use crate::cli::test_env::socket_env_guard;
+    use crate::rpc::{PollError, SlotReply};
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn read_outcome_distinguishes_validated_no_result_yet_and_invalid_result() {
+        let valid = pane_result_read_outcome(Ok(SlotReply::Data(
+            br#"{"status":"pass","pr":42}"#.to_vec(),
+        )));
+        assert_eq!(valid.exit_code(), 0);
+        assert_eq!(
+            valid,
+            PaneResultReadOutcome::Validated(br#"{"status":"pass","pr":42}"#.to_vec())
+        );
+
+        let no_result = pane_result_read_outcome(Ok(SlotReply::Err(
+            br#"{"ok":false,"pane_id":7,"error_code":"no_result_yet","error":"pane 7 has not written a result yet"}"#
+                .to_vec(),
+        )));
+        assert_eq!(
+            no_result.exit_code(),
+            2,
+            "no_result_yet must exit 2 so callers can distinguish it from invalid_result"
+        );
+        assert_eq!(
+            no_result,
+            PaneResultReadOutcome::NoResultYet {
+                error_code: "no_result_yet".to_string(),
+                message: "no_result_yet: pane 7 has not written a result yet".to_string(),
+            }
+        );
+
+        let invalid = pane_result_read_outcome(Ok(SlotReply::Err(
+            br#"{"ok":false,"pane_id":7,"error_code":"invalid_result","error":"$: missing required property \"status\""}"#
+                .to_vec(),
+        )));
+        assert_eq!(
+            invalid.exit_code(),
+            1,
+            "invalid_result must exit 1 so callers can distinguish it from no_result_yet"
+        );
+        assert_eq!(
+            invalid,
+            PaneResultReadOutcome::InvalidResult {
+                error_code: "invalid_result".to_string(),
+                message: "invalid_result: $: missing required property \"status\"".to_string(),
+            }
+        );
+
+        let timeout = pane_result_read_outcome(Ok(SlotReply::Err(
+            br#"{"ok":false,"timeout":true,"pane_id":7,"error_code":"timeout","error":"timed out waiting for valid result on pane 7"}"#
+                .to_vec(),
+        )));
+        assert_eq!(timeout.exit_code(), 2);
+
+        let plumbing = pane_result_read_outcome(Err(PollError::TimedOut));
+        assert_eq!(plumbing.exit_code(), 1);
+    }
+
+    #[test]
+    fn read_cli_roundtrip_over_socket() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+
+        let handle = std::thread::spawn(move || {
+            // 2. Read while last write is invalid -> sidecar .err with invalid_result (exit 1)
+            let (stream, _) = listener.accept().expect("accept 2");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).expect("read 2");
+            let p2: serde_json::Value = serde_json::from_str(&line).expect("json 2");
+            assert_eq!(p2["type"], "pane_result_read");
+            let rf2 = p2["response_file"].as_str().unwrap();
+            crate::rpc::write_json_response(
+                &format!("{rf2}.err"),
+                serde_json::json!({
+                    "ok": false,
+                    "pane_id": 7,
+                    "error_code": "invalid_result",
+                    "error": "$: missing required property \"status\"",
+                }),
+            );
+
+            // 3. Read when no result yet -> sidecar .err with no_result_yet (exit 2)
+            let (stream, _) = listener.accept().expect("accept 3");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).expect("read 3");
+            let p3: serde_json::Value = serde_json::from_str(&line).expect("json 3");
+            let rf3 = p3["response_file"].as_str().unwrap();
+            crate::rpc::write_json_response(
+                &format!("{rf3}.err"),
+                serde_json::json!({
+                    "ok": false,
+                    "pane_id": 8,
+                    "error_code": "no_result_yet",
+                    "error": "pane 8 has not written a result yet",
+                }),
+            );
+
+            // 5. Read committed result (exit 0)
+            let (stream, _) = listener.accept().expect("accept 5");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).expect("read 5");
+            let p5: serde_json::Value = serde_json::from_str(&line).expect("json 5");
+            let rf5 = p5["response_file"].as_str().unwrap();
+            crate::rpc::write_json_response(rf5, serde_json::json!({ "status": "pass" }));
+        });
+
+        assert_eq!(pane_result_read_cli(Some(7), false, 300.0), 1);
+        assert_eq!(pane_result_read_cli(Some(8), false, 300.0), 2);
+        assert_eq!(pane_result_read_cli(Some(7), false, 300.0), 0);
+
+        handle.join().expect("listener thread");
+    }
+
+    #[test]
+    fn context_and_pane_target_resolve_and_commands_over_socket() {
+        use crate::cli::{
+            host_action_cli, pane_focus_cli, resolve_opt_context_target, ContextTarget, PaneTarget,
+        };
+
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind socket");
+        env.set(&socket_path);
+
+        // Numeric targets resolve without any socket connection.
+        assert_eq!(ContextTarget::from("42").resolve(), Ok(42));
+        assert_eq!(PaneTarget::from("99").resolve(), Ok(99));
+
+        let handle = std::thread::spawn(move || {
+            for step in 0..10 {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).expect("read");
+                let payload: serde_json::Value = serde_json::from_str(&line).expect("json");
+                let ty = payload["type"].as_str().unwrap_or("");
+                match ty {
+                    "list_contexts" => {
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!([
+                                { "context_id": 1, "name": { "auto": "main" }, "parked": false },
+                                { "context_id": 2, "name": { "custom": "sprint-alpha" }, "parked": true },
+                                { "context_id": 3, "name": "sprint-beta", "parked": false },
+                            ]),
+                        );
+                    }
+                    "list_panes" => {
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!([
+                                { "id": 10, "title": "worker-0890" },
+                                { "id": 11, "title": "worker-0891" },
+                                { "id": 12, "title": "tester-lane" },
+                            ]),
+                        );
+                    }
+                    "context_park" => {
+                        assert_eq!(payload["context_id"], 2, "step={step}");
+                        assert_eq!(payload["parked"], false, "step={step}");
+                        let rf = payload["response_file"].as_str().unwrap();
+                        crate::rpc::write_json_response(rf, serde_json::json!({ "ok": true }));
+                    }
+                    "focus_pane" => {
+                        assert_eq!(payload["pane_id"], 12, "step={step}");
+                        if let Some(rf) = payload["response_file"].as_str() {
+                            crate::rpc::write_json_response(rf, serde_json::json!({ "ok": true }));
+                        }
+                    }
+                    other => panic!("unexpected request type at step {step}: {other}"),
+                }
+            }
+        });
+
+        // ContextTarget over socket: exact, unique prefix, ambiguous prefix, unknown name
+        assert_eq!(ContextTarget::from("sprint-alpha").resolve(), Ok(2));
+        assert_eq!(ContextTarget::from("ma").resolve(), Ok(1));
+        assert_eq!(ContextTarget::from("sprint-").resolve(), Err(1));
+        assert_eq!(ContextTarget::from("no-such-ctx").resolve(), Err(1));
+
+        // PaneTarget over socket: exact, unique prefix, ambiguous prefix
+        assert_eq!(PaneTarget::from("worker-0890").resolve(), Ok(10));
+        assert_eq!(PaneTarget::from("worker-").resolve(), Err(1));
+
+        // End-to-end `plexi context unpark <name>` (via unique prefix "sprint-a" -> context 2)
+        let unpark_ctx = resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")))
+            .expect("resolve sprint-a");
+        assert_eq!(unpark_ctx, Some(2));
+        assert_eq!(
+            host_action_cli(
+                serde_json::json!({ "type": "context_park", "parked": false }),
+                Some(("context_id", unpark_ctx, "PLEXI_CONTEXT_ID")),
+            ),
+            0
+        );
+
+        // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
+        let focus_pane = PaneTarget::from("tester")
+            .resolve()
+            .expect("resolve tester");
+        assert_eq!(focus_pane, 12);
+        assert_eq!(pane_focus_cli(focus_pane), 0);
+
+        handle.join().expect("listener thread");
+    }
+}
+
+#[cfg(test)]
+mod current_pane_tests {
+    use super::pick_current_pane;
+
+    #[test]
+    fn explicit_id_wins_over_env() {
+        assert_eq!(pick_current_pane(Some(3), Some("9")), Ok(3));
+        assert_eq!(pick_current_pane(Some(3), None), Ok(3));
+    }
+
+    #[test]
+    fn env_is_the_default() {
+        assert_eq!(pick_current_pane(None, Some("42")), Ok(42));
+    }
+
+    #[test]
+    fn unset_names_variable_and_fix() {
+        let err = pick_current_pane(None, None).unwrap_err();
+        assert!(err.contains("PLEXI_PANE_ID is not set"), "{err}");
+        assert!(err.contains("plexi pane list"), "{err}");
+    }
+
+    #[test]
+    fn empty_or_non_numeric_names_variable_and_value() {
+        for raw in ["", "abc", "-1", "4x"] {
+            let err = pick_current_pane(None, Some(raw)).unwrap_err();
+            assert!(err.contains("PLEXI_PANE_ID"), "{err}");
+            assert!(err.contains(&format!("{raw:?}")), "{err}");
+            assert!(err.contains("plexi pane list"), "{err}");
         }
     }
 }

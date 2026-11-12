@@ -4,7 +4,28 @@
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use plexi::cli_args::Cli;
 
+mod parity;
+mod skill;
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--parity") {
+        match parity::generate(
+            &Cli::command(),
+            include_str!("../../../src/host/keys.rs"),
+            include_str!("../../../docs/cli/parity.json"),
+        ) {
+            Ok(output) => print!("{output}"),
+            Err(error) => {
+                eprintln!("parity: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--skill") {
+        print!("{}", skill::generate());
+        return;
+    }
     let cmd = Cli::command();
 
     print!(
@@ -14,22 +35,25 @@ description: Complete reference for all plexi subcommands and flags.
 order: 7
 ---
 
-The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and apps from outside the UI.
+The `plexi` CLI is the primary way to interact with a running Plexi instance from the terminal, and to manage workspaces and local apps from outside the UI. This reference is generated from the complete public command inventory; hidden implementation commands are omitted, and beta-only entries are labelled where they appear.
 
-All commands work identically across build channels (`plexi`, `plexi-alpha`, `plexi-beta`). When run inside a Plexi pane, `PLEXI_SOCKET` routes host commands to the correct running instance automatically.
+Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, local app runtime, and CLI/MCP app wrappers. Assistant, marketplace, MCP client, and routine surfaces are beta-gated and do not appear in stable help. Use `plexi-beta` or an explicit worktree channel only when testing those gated surfaces.
+
+Each channel has its own binary, profile (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-beta`), and workspace directory (`<repo>/.plexi`, `<repo>/.plexi-alpha`, `<repo>/.plexi-beta`). A channel-named binary always targets its own profile and workspace directory; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` / `PLEXI_CHANNEL` when run inside a Plexi pane.
 
 "#
     );
 
-    for sub in cmd.get_subcommands() {
-        if sub.is_hide_set() {
-            continue;
-        }
-        emit_subcommand(sub, "plexi", 2);
+    let subcommands = cmd
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .collect::<Vec<_>>();
+    for (index, sub) in subcommands.iter().enumerate() {
+        emit_subcommand(sub, "plexi", 2, index + 1 == subcommands.len());
     }
 }
 
-fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
+fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize, is_last: bool) {
     let name = cmd.get_name();
     let full_path = format!("{parent_path} {name}");
     let heading = "#".repeat(depth);
@@ -54,6 +78,11 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
             .trim()
             .to_string();
         println!("{normalized}");
+        println!();
+    }
+
+    if let Some(feature) = beta_gated_feature(&full_path) {
+        println!("> **Beta-gated:** {feature} This reference is included for beta and worktree testing; it is not available from the stable v1 channel.");
         println!();
     }
 
@@ -135,20 +164,47 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         }
         println!();
 
-        for sub in subs {
-            emit_subcommand(sub, &full_path, depth + 1);
+        let subcommand_count = subs.len();
+        for (index, sub) in subs.into_iter().enumerate() {
+            emit_subcommand(
+                sub,
+                &full_path,
+                depth + 1,
+                is_last && index + 1 == subcommand_count,
+            );
         }
     } else if !args.is_empty() {
         println!("| Flag / Arg | Type | Required | Description |");
         println!("|---|---|---|---|");
         for arg in args {
-            emit_arg_row(arg);
+            emit_arg_row(arg, &full_path);
         }
-        println!();
+        if !is_last {
+            println!();
+        }
     }
 }
 
-fn emit_arg_row(arg: &Arg) {
+fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
+    match full_path {
+        "plexi account"
+        | "plexi account status"
+        | "plexi account login"
+        | "plexi account logout" => Some("Marketplace account management is a beta surface."),
+        "plexi plugin publish" | "plexi plugin browse" | "plexi plugin search" => {
+            Some("Marketplace publishing and catalog browsing are beta surfaces.")
+        }
+        "plexi events mcp-config" => Some("MCP client configuration is a beta surface."),
+        "plexi routine" => Some("Routines are a post-v1 beta surface."),
+        _ => None,
+    }
+}
+
+fn beta_gated_arg(_full_path: &str, _id: &str) -> Option<&'static str> {
+    None
+}
+
+fn emit_arg_row(arg: &Arg, full_path: &str) {
     let id = arg.get_id().as_str();
     let is_positional = arg.get_long().is_none() && arg.get_short().is_none();
 
@@ -197,7 +253,10 @@ fn emit_arg_row(arg: &Arg) {
         })
         .unwrap_or_default();
 
-    let desc = format!("{help}{default}").trim().to_string();
+    let gate = beta_gated_arg(full_path, id)
+        .map(|text| format!(" {text}"))
+        .unwrap_or_default();
+    let desc = format!("{help}{default}{gate}").trim().to_string();
 
     println!("| {flag} | {ty} | {required} | {desc} |");
 }

@@ -77,7 +77,7 @@ pub struct AiMessage {
 }
 
 /// Tool definition for the tool-use turn loop (#398).
-/// Apps declare callable tools via `DrawCommand::ExposeTools`.
+/// Plugins declare callable tools via `DrawCommand::ExposeTools`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct AiTool {
     pub name: String,
@@ -88,14 +88,13 @@ pub struct AiTool {
     /// when absent. The broker uses this to bound `ToolCall` round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// When true, this tool only reads state and never mutates it. The
-    /// assistant grants read-only tools automatically without a permission
-    /// prompt; the broker still records every call in the audit trail.
+    /// App-declared hint that the tool only reads state. This is not authority:
+    /// the host permission monitor still admits and audits every call.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
 }
 
-/// Coarse model tier requested by the app. The host maps each tier to a
+/// Coarse model tier requested by the plugin. The host maps each tier to a
 /// concrete model identifier per backend (spec §ai.query):
 ///   - `Low`    → Haiku
 ///   - `Medium` → Sonnet

@@ -82,6 +82,28 @@ def write_bytes(path: str, content: bytes | bytearray) -> FileWrite:
 
 
 @dataclass
+class ReadPermissionDecisions:
+    """Ask the host for the live permission-monitor inventory.
+
+    The host replies with :class:`events.PermissionInventory`. The app does
+    not keep its own grant store.
+    """
+
+
+@dataclass
+class PermissionDecision:
+    """Change one live permission row.
+
+    ``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
+    Permissions app is a human decision. The host replies with a fresh
+    :class:`events.PermissionInventory`.
+    """
+
+    id: str
+    action: str
+
+
+@dataclass
 class ReadHostLog:
     """Request the tail of the Plexi host channel log (`logs.read` capability).
 
@@ -119,6 +141,25 @@ class HttpFetch:
     method: str = "GET"
     headers: dict = field(default_factory=dict)
     body: Optional[bytes] = None
+    params: Optional[dict[str, Any]] = None
+    tag: Optional[str] = None
+    request_id: Optional[str] = None
+
+    def resolved_url(self) -> str:
+        """Return ``url`` with ``params`` encoded into its query string."""
+        if not self.params:
+            return self.url
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        parts = urlsplit(self.url)
+        existing = parse_qsl(parts.query, keep_blank_values=True)
+        extra = [
+            (str(k), str(v))
+            for k, v in self.params.items()
+            if v is not None
+        ]
+        query = urlencode(existing + extra)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 @dataclass
@@ -156,6 +197,36 @@ class McpDisconnect:
 
 
 @dataclass
+class CliOperation:
+    """Request one typed command-line operation the app package declares in
+    ``[[cli_operation]]`` (requires the ``cli.operations`` capability and the
+    ``cli_operations`` experiment).
+
+    The app names an ``operation_id`` and supplies typed ``values`` for the
+    slots that operation declares. It never supplies an executable, argument
+    list, environment, working directory or shell text: the host rejects a
+    request that carries anything else. The person approves each operation in
+    the host's approval surface, which states that the program runs with their
+    account's full authority and is not confined.
+
+    Answered by :class:`events.CliOperationResult` carrying the same
+    ``request_id``. The request may wait for a decision, so it can be
+    outstanding for a while; use :class:`CliOperationCancel` to withdraw it.
+    """
+    request_id: str
+    operation_id: str
+    values: dict = field(default_factory=dict)
+
+
+@dataclass
+class CliOperationCancel:
+    """Withdraw an outstanding :class:`CliOperation`. A request still waiting
+    for approval fails with ``cancelled`` and never runs; a running program is
+    killed and answered with ``cancelled``. Unknown ids are ignored."""
+    request_id: str
+
+
+@dataclass
 class AiMessage:
     role: str
     content: str
@@ -189,6 +260,7 @@ class ToolResult:
     call_id: str
     output_json: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 @dataclass
@@ -261,7 +333,7 @@ class EmitEvent:
 @dataclass
 class SubscribeEventStreams:
     request_id: str
-    app_id: str
+    plugin_id: str
     event_names: list[str]
     payload_mode: str = "full"
     trigger_mode: str = "conversation"
@@ -272,3 +344,27 @@ class SubscribeEventStreams:
 class UnsubscribeEventStreams:
     request_id: str
     subscription_id: str
+
+
+@dataclass
+class PipeOpenDirected:
+    """Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
+
+    Requires the ``pipe.open`` capability. Once subscribed, either endpoint may
+    send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
+    peer as :class:`events.PipeMessage`.
+    """
+    pipe_id: str
+    target_pane_id: int
+
+
+@dataclass
+class PipeSend:
+    """Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
+
+    Requires the ``pipe.open`` capability. Delivered to the paired endpoint as
+    :class:`events.PipeMessage`.
+    """
+    pipe_id: str
+    payload: Any = None
+

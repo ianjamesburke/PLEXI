@@ -1,0 +1,20 @@
+size = [1168.0, 720.0]
+themes = ["plexi-dawn", "plexi-night"]
+
+[[steps]]
+seed_workspace = true
+
+[[steps]]
+key = { target = "host", value = "cmd+," }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Open config: everywhere" }
+
+[[steps]]
+assert_label = { target = "host", label = "Open config: this repo (not created yet)" }
+
+[[steps]]
+shot = "config-scope-chooser.png"

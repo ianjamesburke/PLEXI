@@ -32,8 +32,32 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain
+    - name: Install pinned Rust toolchain (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        rustup show
+        rustc --version
+    - name: Install Rust toolchain (other platforms)
+      if: runner.os != 'macOS'
       uses: dtolnay/rust-toolchain@stable
+
+    # A cold Cargo cache recompiles the full plexi crate graph, including
+    # rodio -> alsa-sys, whose build script shells out to pkg-config. Without
+    # these system packages the build fails before any job logic runs.
+    # release.yml installs the same list for its own Linux build leg.
+    - name: Install Linux system libraries
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential pkg-config cmake libssl-dev \
+          libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+          libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-3-dev \
+          libudev-dev libegl1-mesa-dev libgles2-mesa-dev \
+          mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools python3-dev
 
     - name: Install just
       if: inputs.just == 'true'
@@ -59,7 +83,7 @@ runs:
       if: inputs.cpython-bundle == 'true'
       uses: actions/cache@v4
       with:
-        path: /Users/runner/.plexi-ci/wasm-bundles
+        path: ${{ env.PLEXI_CPYTHON_BUNDLE_DIR }}
         # Pins the exact verified release. Bump when
         # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
         key: cpython-wasi-3.12.12-wasi_sdk-20

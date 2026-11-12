@@ -16,14 +16,14 @@ from . import events as event_types
 _module = None
 
 
-def load_app(module_name: str) -> None:
+def load_plugin(module_name: str) -> None:
     global _module
     _module = importlib.import_module(module_name)
 
 
 def call_lifecycle(fn_name: str, json_arg: str) -> str:
     if _module is None:
-        raise RuntimeError("no Plexi app module loaded")
+        raise RuntimeError("no Plexi plugin module loaded")
     fn = getattr(_module, fn_name)
     arg = json.loads(json_arg) if json_arg else {}
 
@@ -74,6 +74,14 @@ def _encode_effect(effect: Any) -> dict[str, Any]:
     if getattr(effect_types, type(effect).__name__, None) is not type(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     payload = _jsonable(asdict(cast(Any, effect)))
+    if isinstance(effect, effect_types.HttpFetch):
+        payload["url"] = effect.resolved_url()
+        if payload.get("params") is None:
+            payload.pop("params", None)
+        if payload.get("tag") is None:
+            payload.pop("tag", None)
+        if payload.get("request_id") is None:
+            payload.pop("request_id", None)
     payload["type"] = type(effect).__name__
     return payload
 
@@ -106,8 +114,20 @@ def _decode_event(payload: dict[str, Any]) -> Any:
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
     if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
         kwargs["stats"] = event_types.SystemStats(**kwargs["stats"])
-    if cls is event_types.HttpResponse and isinstance(kwargs.get("body"), list):
-        kwargs["body"] = bytes(kwargs["body"])
+    if cls is event_types.HttpResponse:
+        if isinstance(kwargs.get("body"), list):
+            kwargs["body"] = bytes(kwargs["body"])
+        elif isinstance(kwargs.get("body"), str):
+            kwargs["body"] = kwargs["body"].encode("utf-8")
+        raw_headers = kwargs.get("headers")
+        if isinstance(raw_headers, dict):
+            kwargs["headers"] = [(str(k), str(v)) for k, v in raw_headers.items()]
+        elif isinstance(raw_headers, list):
+            kwargs["headers"] = [
+                (str(item[0]), str(item[1]))
+                for item in raw_headers
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            ]
     if cls is event_types.PipeMessage and isinstance(kwargs.get("payload"), dict):
         kwargs["payload"] = event_types.PipePayload(**kwargs["payload"])
     return cast(Any, cls)(**kwargs)
@@ -140,9 +160,19 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
     def flatten(node: Any, key: str) -> int:
         node_id = len(arena)
         arena.append({"id": node_id, "key": key, "data": {"type": "Pending"}})
-        explicit_key = getattr(node, "key", "") or key
+        # An explicit Keyed key is a path segment, not a replacement for the
+        # path accumulated above it.  That makes the key unique in the tree
+        # and keeps every descendant on that keyed identity when siblings move.
+        own_key = getattr(node, "key", "") or (
+            node.get("_plexi_key", "") if isinstance(node, dict) else ""
+        )
+        # `flatten` receives a positional child address. Replace that final
+        # address segment for Keyed rather than appending to it: the keyed node
+        # is the direct child of its container, regardless of its list index.
+        key_parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        explicit_key = f"{key_parent}/@{own_key}" if own_key else key
         if isinstance(node, dict):
-            data = node
+            data = {k: v for k, v in node.items() if k != "_plexi_key"}
         elif hasattr(node, "to_node"):
             data = node.to_node()
         elif is_dataclass(node):
@@ -175,9 +205,9 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "entries": data.get("entries", []),
             "divider": data.get("divider", True),
         }
-    if node_type == "app_bar":
+    if node_type == "surface_header":
         return {
-            "type": "AppBar",
+            "type": "SurfaceHeader",
             "title": data.get("title", ""),
             "subtitle": data.get("subtitle", ""),
         }
@@ -199,6 +229,50 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         }
         # Carry gap only when the app set one: absence lets the host apply its
         # default inter-child spacing, an explicit value (including 0) wins.
+        if data.get("gap") is not None:
+            out["gap"] = data["gap"]
+        return out
+    if node_type in ("card", "Card"):
+        if "child" in data and isinstance(data["child"], int):
+            child_id = data["child"]
+        elif "child" in data and data["child"] is not None:
+            child_id = flatten(data["child"], f"{key}/child")
+        else:
+            inner_col: dict[str, Any] = {
+                "type": "column",
+                "children": data.get("children", []),
+            }
+            if data.get("gap") is not None:
+                inner_col["gap"] = data["gap"]
+            child_id = flatten(inner_col, f"{key}/body")
+        pad = float(data.get("padding", data.get("top", 12.0)))
+        return {
+            "type": "Card",
+            "card": True,
+            "child": child_id,
+            "top": pad,
+            "right": pad,
+            "bottom": pad,
+            "left": pad,
+        }
+    if node_type in ("DataTable", "data_table", "table", "Table"):
+        children = data.get("children", [])
+        child_ids = [
+            flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
+        ]
+        selected = data.get("selected", data.get("selected_idx"))
+        if selected is not None:
+            selected = int(selected)
+        out = {
+            "type": "DataTable",
+            "columns": [str(c) for c in data.get("columns", [])],
+            "rows": [[str(cell) for cell in r] for r in data.get("rows", [])],
+            "selected": selected,
+            "on_select": data.get("on_select"),
+            "children": child_ids,
+            "align": data.get("align", "start"),
+            "grow": data.get("grow", False),
+        }
         if data.get("gap") is not None:
             out["gap"] = data["gap"]
         return out
@@ -238,37 +312,58 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         items = data.get("items", [])
         child_ids = []
         for idx, item in enumerate(items):
-            text = str(item.get("name", "")) if isinstance(item, dict) else str(item)
-            description = ""
-            leading = ""
-            trailing = ""
-            if isinstance(item, dict):
-                description = str(item.get("description", "") or "")
-                leading = str(item.get("leading", "") or "")
-                trailing = str(item.get("trailing", "") or "")
-            if description:
-                main = {
-                    "type": "column",
-                    "children": [
-                        {"type": "text", "text": text, "bold": True},
-                        {"type": "text", "text": description, "size": 11.0},
-                    ],
-                    "gap": 2.0,
-                }
+            if hasattr(item, "to_node"):
+                item_node: Any = item
+            elif isinstance(item, dict) and ("type" in item or "kind" in item):
+                item_node = item
             else:
-                main = {"type": "text", "text": text}
-            if leading or trailing:
-                row_children: list[dict[str, Any]] = []
-                if leading:
-                    row_children.append({"type": "text", "text": leading})
-                row_children.append(main)
-                if trailing:
-                    row_children.append({"type": "text", "text": trailing})
-                child = {"type": "row", "children": row_children, "gap": 8.0}
-            else:
-                child = main
-            child_ids.append(flatten(child, f"{key}/{idx}"))
-        selected = data.get("selected_idx")
+                text = (
+                    str(item.get("name", item.get("label", "")))
+                    if isinstance(item, dict)
+                    else str(item)
+                )
+                description = ""
+                leading = ""
+                trailing = ""
+                if isinstance(item, dict):
+                    description = str(item.get("description", "") or "")
+                    leading = str(item.get("leading", "") or "")
+                    trailing = str(item.get("trailing", "") or "")
+                if description:
+                    main: Any = {
+                        "type": "column",
+                        "children": [
+                            {"type": "text", "text": text, "bold": True},
+                            {
+                                "type": "text",
+                                "text": description,
+                                "size": 12.0,
+                                "color": "muted",
+                            },
+                        ],
+                        "gap": 2.0,
+                    }
+                else:
+                    main = {"type": "text", "text": text}
+                if leading or trailing:
+                    row_children: list[dict[str, Any]] = []
+                    if leading:
+                        row_children.append({"type": "text", "text": leading})
+                    row_children.append(main)
+                    if trailing:
+                        row_children.append(
+                            {
+                                "type": "text",
+                                "text": trailing,
+                                "size": 12.0,
+                                "color": "muted",
+                            }
+                        )
+                    item_node = {"type": "row", "children": row_children, "gap": 8.0}
+                else:
+                    item_node = main
+            child_ids.append(flatten(item_node, f"{key}/{idx}"))
+        selected = data.get("selected_idx", data.get("selected"))
         if selected is not None:
             selected = int(selected)
         return {

@@ -1,4 +1,4 @@
-//! Pane lifecycle facts carried on the existing app event timeline.
+//! Pane lifecycle facts carried on the existing plugin event timeline.
 //!
 //! Publisher `plexi.host.panes` is reserved to the host. The `pane.lifecycle`
 //! stream uses schema_version=1, pane/context IDs, and the tagged payload below.
@@ -6,10 +6,10 @@
 //! temporary handles; provider labels are display attributes, not agent IDs.
 //! Hook/legacy reports are claims, while detector and PTY events are host
 //! observations. A normal turn stop is not a task-completion verdict, and a
-//! provider failure is not an OS crash. PTY status is explicitly unknown until
-//! the adapter carries it. Slot values are lossless byte arrays after the write.
+//! provider failure is not an OS crash. PTY exit status carries the observed
+//! kernel exit code or signal, or is explicitly unknown when unavailable. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
-//! or restart contract. CLI wait/follow consumers use `app::event_stream`.
+//! or restart contract. CLI wait/follow consumers use `plugin::event_stream`.
 use crate::protocol::{AgentBlockedReason, AgentState};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -34,11 +34,39 @@ pub(crate) struct Provenance {
     pub raw_event: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExitStatus {
-    /// The PTY adapter does not currently carry a kernel exit status.
+    Code(i32),
+    Signal(i32),
+    /// The PTY adapter did not observe a kernel exit status.
     Unknown,
+}
+
+impl ExitStatus {
+    /// True when the PTY exited with a non-zero exit code or a signal.
+    pub(crate) fn is_failure(self) -> bool {
+        matches!(self, Self::Code(c) if c != 0) || matches!(self, Self::Signal(_))
+    }
+
+    /// Human-facing detail for a terminal process exit.
+    pub(crate) fn summary(self) -> String {
+        match self {
+            Self::Code(code) => format!("exited ({code})"),
+            Self::Signal(signal) => format!("killed by signal {signal}"),
+            Self::Unknown => "exited (unknown status)".into(),
+        }
+    }
+}
+
+impl From<egui_term::PtyExitStatus> for ExitStatus {
+    fn from(status: egui_term::PtyExitStatus) -> Self {
+        match status {
+            egui_term::PtyExitStatus::Code(code) => Self::Code(code),
+            egui_term::PtyExitStatus::Signal(signal) => Self::Signal(signal),
+            egui_term::PtyExitStatus::Unknown => Self::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -85,6 +113,7 @@ pub(crate) enum PaneLifecycleEvent {
 #[derive(Debug, Default)]
 pub(crate) struct PaneLifecycleState {
     pub context_id: u64,
+    pub parent_pane_id: Option<u64>,
     pub booted: bool,
 }
 
@@ -96,7 +125,7 @@ impl PaneLifecycleEvent {
     ) -> Self {
         match provenance.raw_event.as_deref() {
             Some("Stop" | "agent_end") => Self::TurnFinished { provenance },
-            Some("StopFailure") => Self::TurnFailed { provenance },
+            Some("HarnessExit" | "StopFailure") => Self::TurnFailed { provenance },
             Some("SessionEnd" | "session_shutdown") => Self::SessionEnded { provenance },
             Some("SessionStart" | "session_start") => Self::SessionStarted { provenance },
             Some("PermissionRequest") => Self::AgentBlocked {
@@ -111,15 +140,23 @@ impl PaneLifecycleEvent {
                 reason: AgentBlockedReason::BootFailure,
                 provenance,
             },
+            Some("AgentAsk") => Self::AgentBlocked {
+                reason: reason.unwrap_or(AgentBlockedReason::Unknown),
+                provenance,
+            },
             Some(
                 "UserPromptSubmit" | "agent_start" | "before_agent_start" | "PreToolUse"
                 | "tool_call" | "PostToolUse" | "PostToolBatch" | "tool_result",
             ) => Self::AgentWorking { provenance },
             Some(_) => Self::AgentReported { provenance },
             None => match state {
-                AgentState::Idle => Self::AgentIdle { provenance },
+                AgentState::Idle | AgentState::Interrupted | AgentState::Completed => {
+                    Self::AgentIdle { provenance }
+                }
+                AgentState::Failed => Self::TurnFailed { provenance },
+                AgentState::ExitedUnreported => Self::AgentReported { provenance },
                 AgentState::Working => Self::AgentWorking { provenance },
-                AgentState::Blocked => Self::AgentBlocked {
+                AgentState::Blocked | AgentState::NeedsYou => Self::AgentBlocked {
                     reason: reason.unwrap_or(AgentBlockedReason::Unknown),
                     provenance,
                 },
@@ -132,12 +169,12 @@ impl PaneLifecycleEvent {
 mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
-    use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
-    use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+    use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
+    use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 
     #[test]
     fn pane_lifecycle_uses_scoped_resource_filtered_bus_and_reserves_publisher() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         timeline
             .record_pane_lifecycle(41, 7, &PaneLifecycleEvent::Spawned)
             .unwrap();
@@ -150,7 +187,7 @@ mod tests {
                 subscription_id: name.into(),
                 subscriber_id: name.into(),
                 subscriber_type: ActorType::Agent,
-                app_id: PUBLISHER.into(),
+                plugin_id: PUBLISHER.into(),
                 event_names: vec![STREAM.into()],
                 resource_id: Some(resource.into()),
                 subscriber_context_id: context,
@@ -176,7 +213,7 @@ mod tests {
         assert_eq!(payload["kind"], "exited");
         assert_eq!(payload["status"], "unknown");
         assert_eq!(payload["schema_version"], 1);
-        assert_eq!(deliveries[0].actor, AppEventActor::System);
+        assert_eq!(deliveries[0].actor, PluginEventActor::System);
         assert!(timeline
             .take_deliveries_for(ActorType::Agent, "other-pane")
             .is_empty());
@@ -202,7 +239,7 @@ mod tests {
                 7,
                 EmittedEvent {
                     event: STREAM.into(),
-                    actor: AppEventActor::System,
+                    actor: PluginEventActor::System,
                     actor_id: Some(PUBLISHER.into()),
                     caused_by: None,
                     summary: "forged clean exit".into(),
@@ -224,5 +261,36 @@ mod tests {
             2,
             "rejected publications cannot enter the bus"
         );
+    }
+
+    #[test]
+    fn exit_status_serializes_code_signal_and_unknown_without_defaulting_to_zero() {
+        let mut timeline = PluginTimeline::default();
+        for (pty_status, expected_status) in [
+            (
+                egui_term::PtyExitStatus::Code(0),
+                serde_json::json!({"code": 0}),
+            ),
+            (
+                egui_term::PtyExitStatus::Code(23),
+                serde_json::json!({"code": 23}),
+            ),
+            (
+                egui_term::PtyExitStatus::Signal(9),
+                serde_json::json!({"signal": 9}),
+            ),
+            (
+                egui_term::PtyExitStatus::Unknown,
+                serde_json::json!("unknown"),
+            ),
+        ] {
+            let event = PaneLifecycleEvent::Exited {
+                status: ExitStatus::from(pty_status),
+            };
+            timeline.record_pane_lifecycle(41, 7, &event).unwrap();
+            let payload = timeline.events().back().unwrap().payload.as_ref().unwrap();
+            assert_eq!(payload["kind"], "exited");
+            assert_eq!(payload["status"], expected_status);
+        }
     }
 }

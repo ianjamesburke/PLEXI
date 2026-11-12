@@ -112,6 +112,7 @@ enum SubmitPhase {
 /// heals.
 pub(crate) struct PendingSubmit {
     pub pane_id: u64,
+    pub operation_id: Option<String>,
     /// Plain JSON response file, like the agent-boot path. `None` when the
     /// caller wanted the sequence run but no answer — the host still settles,
     /// submits and confirms, and logs the outcome.
@@ -134,6 +135,41 @@ pub(crate) struct PendingSlotWait {
     pub expires_at: Instant,
 }
 
+/// One structured message in a pane's host-managed FIFO inbox.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PaneMessage {
+    pub id: u64,
+    pub pane_id: u64,
+    pub to_pane_id: u64,
+    pub from_pane_id: Option<u64>,
+    pub sender_pane_id: Option<u64>,
+    pub payload: String,
+    pub timestamp_ms: u64,
+}
+
+/// A parked `plexi pane message recv --wait` request.
+pub(crate) struct PendingMessageRecv {
+    pub pane_id: u64,
+    pub response_file: String,
+    /// Reply with a typed timeout once this instant passes.
+    pub expires_at: Instant,
+}
+
+/// A parked `plexi pane result --wait` request (stint 0666).
+pub(crate) struct PendingResultWait {
+    pub pane_id: u64,
+    pub response_file: String,
+    /// Reply with a typed timeout once this instant passes.
+    pub expires_at: Instant,
+}
+
+/// A parked `plexi agent wait <pane-id...>` request (stint 0961).
+pub(crate) struct PendingAgentWait {
+    pub pane_ids: Vec<u64>,
+    pub response_file: String,
+    pub expires_at: Instant,
+}
+
 /// A `plexi pane new --agent` spawn whose response is held until the agent
 /// boots.
 pub(crate) struct PendingAgentBoot {
@@ -145,6 +181,25 @@ pub(crate) struct PendingAgentBoot {
     /// channel has no `.err` sidecar: success and failure both land here.
     pub response_file: String,
     pub requested_at: Instant,
+    pub expires_at: Instant,
+}
+
+/// How long a gated `plexi pane send` waits for a human approval decision
+/// before replying with `permission_denied` (leaving the approval banner open
+/// so a subsequent retry after approval still consumes the grant).
+pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A parked `HostRequest::SendToPane` waiting on a permission broker approval.
+pub(crate) struct PendingSendApproval {
+    pub pending_request_id: String,
+    pub operation_id: String,
+    pub caller_pane_id: u64,
+    pub pane_id: u64,
+    pub text: String,
+    pub submit: bool,
+    pub paste: bool,
+    pub response_file: Option<String>,
+    pub peer_ancestry: Option<Vec<u32>>,
     pub expires_at: Instant,
 }
 
@@ -225,6 +280,11 @@ impl PlexiApp {
             .find_map(|win| win.panes.get(&pane_id))
             .and_then(|pane| pane.slots())
             .and_then(|slots| slots.get(slot_name).cloned())
+            .or_else(|| {
+                self.closed_pane_slots
+                    .get(&pane_id)
+                    .and_then(|slots| slots.get(slot_name).cloned())
+            })
     }
 
     /// Expire overdue slot waits and keep frames coming until the next one.
@@ -248,10 +308,10 @@ impl PlexiApp {
             self.pending_slot_waits = live;
             for wait in expired {
                 log::info!(
-                    "pane_slot_wait: pane_id={} slot={:?} pattern={:?} timed out",
+                    "pane_slot_wait: pane_id={} slot={:?} pattern_chars={} timed out",
                     wait.pane_id,
                     wait.slot_name,
-                    wait.pattern.as_str()
+                    wait.pattern.as_str().chars().count()
                 );
                 crate::rpc::write_json_response(
                     &format!("{}.err", wait.response_file),
@@ -300,6 +360,7 @@ impl PlexiApp {
             Ok(()) => None,
             Err(msg) => {
                 log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
+                self.reclaim_pane_worktree(pane_id);
                 Some(msg.clone())
             }
         };
@@ -318,6 +379,7 @@ impl PlexiApp {
             if typed.is_none() {
                 let msg = format!("pane {pane_id} is not a terminal, cannot launch an agent in it");
                 log::warn!("pane_agent_boot: {msg}");
+                self.reclaim_pane_worktree(pane_id);
                 if let Some(rf) = &spec.response_file {
                     crate::rpc::write_json_response(rf, serde_json::json!({ "error": msg }));
                 }
@@ -327,15 +389,15 @@ impl PlexiApp {
                 // Nothing to park a reply on: the alias is launched, and a
                 // caller that asked for no response cannot be told about boot.
                 log::info!(
-                    "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched with no response file; not waiting for boot",
-                    agent.command
+                    "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched with no response file; not waiting for boot",
+                    agent.command.chars().count()
                 );
                 return;
             };
             let requested_at = Instant::now();
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched, waiting up to {:.1}s for an idle report",
-                agent.command,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched, waiting up to {:.1}s for an idle report",
+                agent.command.chars().count(),
                 agent.timeout.as_secs_f64()
             );
             self.pending_agent_boots.push(PendingAgentBoot {
@@ -354,10 +416,21 @@ impl PlexiApp {
             return;
         };
         let json = match error {
-            None => serde_json::json!({ "pane_id": pane_id }),
+            None => self.spawn_pane_success_json(pane_id),
             Some(msg) => serde_json::json!({ "error": msg }),
         };
         crate::rpc::write_json_response(rf, json);
+    }
+
+    pub(crate) fn spawn_pane_success_json(&self, pane_id: u64) -> serde_json::Value {
+        match self.pane_worktrees.get(&pane_id) {
+            Some(wt) => serde_json::json!({
+                "pane_id": pane_id,
+                "worktree": wt.path,
+                "branch": wt.branch,
+            }),
+            None => serde_json::json!({ "pane_id": pane_id }),
+        }
     }
 
     /// True once the pane's agent reports idle — the boot predicate.
@@ -371,7 +444,7 @@ impl PlexiApp {
     /// defers `session_start` to the first prompt submission. There is
     /// deliberately no prompt-signature parsing anywhere in this predicate:
     /// both sources live in the one detector that also feeds `pane list`.
-    fn agent_reports_idle(&self, pane_id: u64) -> bool {
+    pub(crate) fn agent_reports_idle(&self, pane_id: u64) -> bool {
         self.windows
             .iter()
             .find_map(|win| win.panes.get(&pane_id))
@@ -468,9 +541,9 @@ impl PlexiApp {
                     boot.agent_cmd
                 );
                 log::warn!(
-                    "pane_agent_boot: pane_id={} agent_cmd={:?} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
+                    "pane_agent_boot: pane_id={} agent_cmd_chars={} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
                     boot.pane_id,
-                    boot.agent_cmd
+                    boot.agent_cmd.chars().count()
                 );
                 crate::rpc::write_json_response(
                     &boot.response_file,
@@ -509,9 +582,9 @@ impl PlexiApp {
                 let timed_out = self.pane_exists(boot.pane_id);
                 let error = if timed_out {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} timed out after {elapsed:.2}s",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} timed out after {elapsed:.2}s",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "timed out after {elapsed:.1}s waiting for `{}` to report ready in pane {}",
@@ -519,9 +592,9 @@ impl PlexiApp {
                     )
                 } else {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} pane closed after {elapsed:.2}s before reporting ready",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} pane closed after {elapsed:.2}s before reporting ready",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "pane {} closed after {elapsed:.1}s before `{}` reported ready",
@@ -576,16 +649,14 @@ impl PlexiApp {
             .partition(|boot| boot.pane_id == pane_id);
         self.pending_agent_boots = live;
         self.emit_agent_booted(pane_id, self.pane_observation_provenance(pane_id));
+        let payload = self.spawn_pane_success_json(pane_id);
         for boot in booted {
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} reported ready after {:.2}s",
-                boot.agent_cmd,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} reported ready after {:.2}s",
+                boot.agent_cmd.chars().count(),
                 boot.requested_at.elapsed().as_secs_f64()
             );
-            crate::rpc::write_json_response(
-                &boot.response_file,
-                serde_json::json!({ "pane_id": pane_id }),
-            );
+            crate::rpc::write_json_response(&boot.response_file, payload.clone());
         }
     }
 
@@ -637,6 +708,7 @@ impl PlexiApp {
         );
         self.pending_submits.push(PendingSubmit {
             pane_id,
+            operation_id: None,
             response_file,
             phase: SubmitPhase::Settle {
                 until: requested_at + SUBMIT_SETTLE_MAX,
@@ -662,7 +734,25 @@ impl PlexiApp {
         let mut still_pending = Vec::with_capacity(self.pending_submits.len());
         for mut submit in std::mem::take(&mut self.pending_submits) {
             match self.advance_submit(&mut submit, now) {
-                Some(reply) => {
+                Some(mut reply) => {
+                    if let Some(operation_id) = &submit.operation_id {
+                        let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        );
+                        let state = if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+                            crate::broker::gate::ContinuationState::Completed
+                        } else {
+                            // Text or Enter may already have been delivered.
+                            crate::broker::gate::ContinuationState::OutcomeUnknown
+                        };
+                        if let Err(error) = monitor.complete_continuation(operation_id, state, None)
+                        {
+                            log::error!(
+                                "pane_submit: could not record operation={operation_id}: {error}"
+                            );
+                            reply = serde_json::json!({"error":"submission outcome could not be recorded", "error_code":"outcome_unknown", "operation_id":operation_id});
+                        }
+                    }
                     log::info!(
                         "pane_submit: pane_id={} resolved after {:.2}s reply={reply}",
                         submit.pane_id,
@@ -839,12 +929,262 @@ impl PlexiApp {
         self.pending_slot_waits = live;
         for wait in matched {
             log::info!(
-                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={:?} matched {} bytes",
-                wait.pattern.as_str(),
+                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern_chars={} matched {} bytes",
+                wait.pattern.as_str().chars().count(),
                 bytes.len()
             );
             crate::rpc::write_response(&wait.response_file, &bytes);
         }
+    }
+
+    /// Drain all queued messages from `pane_id`'s FIFO inbox in arrival order.
+    pub(crate) fn drain_pane_messages(&mut self, pane_id: u64) -> Vec<PaneMessage> {
+        self.pane_mailboxes
+            .get_mut(&pane_id)
+            .map(|queue| queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// Answer the oldest parked `pane message recv --wait` waiter on `pane_id`
+    /// if its inbox now holds at least one message. Returns `true` when a
+    /// waiter consumed the inbox.
+    pub(crate) fn complete_message_recvs(&mut self, pane_id: u64) -> bool {
+        let Some(pos) = self
+            .pending_message_recvs
+            .iter()
+            .position(|wait| wait.pane_id == pane_id)
+        else {
+            return false;
+        };
+        if !self
+            .pane_mailboxes
+            .get(&pane_id)
+            .is_some_and(|queue| !queue.is_empty())
+        {
+            return false;
+        }
+        let wait = self.pending_message_recvs.remove(pos);
+        let messages = self.drain_pane_messages(pane_id);
+        log::info!(
+            "pane_message_recv: pane_id={pane_id} delivered {} message(s) to parked waiter",
+            messages.len()
+        );
+        crate::rpc::write_json_response(&wait.response_file, serde_json::json!(messages));
+        true
+    }
+
+    /// Expire overdue `pane message recv --wait` requests, fail waiters whose
+    /// pane closed, and schedule the next deadline wakeup from `App::logic`.
+    pub(crate) fn service_pending_message_recvs(&mut self, ctx: &egui::Context) {
+        if self.pending_message_recvs.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_message_recvs
+            .iter()
+            .any(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id))
+        {
+            let (done, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_message_recvs)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id));
+            self.pending_message_recvs = live;
+            for wait in done {
+                let pane_alive = self.pane_exists(wait.pane_id);
+                let (timeout, error) = if pane_alive {
+                    log::info!("pane_message_recv: pane_id={} timed out", wait.pane_id);
+                    (
+                        true,
+                        format!("timed out waiting for message on pane {}", wait.pane_id),
+                    )
+                } else {
+                    log::info!(
+                        "pane_message_recv: pane_id={} closed while waiting for message",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        format!("pane {} closed while waiting for a message", wait.pane_id),
+                    )
+                };
+                crate::rpc::write_json_response(
+                    &format!("{}.err", wait.response_file),
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": timeout,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self
+            .pending_message_recvs
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
+    }
+
+    /// Answer every parked `plexi pane result --wait` waiter on `pane_id` once a
+    /// validated result has been committed (stint 0666).
+    pub(crate) fn complete_result_waits(&mut self, pane_id: u64) {
+        if !self
+            .pending_result_waits
+            .iter()
+            .any(|wait| wait.pane_id == pane_id)
+        {
+            return;
+        }
+        let Some(committed) = self
+            .pane_results
+            .get(&pane_id)
+            .and_then(|state| state.committed.as_ref())
+            .cloned()
+        else {
+            return;
+        };
+        let mut bytes = serde_json::to_vec(&committed).unwrap_or_else(|_| b"{}".to_vec());
+        bytes.push(b'\n');
+        let (matched, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_result_waits)
+            .into_iter()
+            .partition(|wait| wait.pane_id == pane_id);
+        self.pending_result_waits = live;
+        self.mark_child_result_delivered(pane_id);
+        for wait in matched {
+            log::info!(
+                "pane_result_wait: pane_id={pane_id} delivered validated result ({} bytes) to parked waiter",
+                bytes.len()
+            );
+            crate::rpc::write_response(&wait.response_file, &bytes);
+        }
+    }
+
+    /// Mark a child agent result as delivered/viewed so it does not remain
+    /// queued in any parent pane's `pending_child_results`.
+    pub(crate) fn mark_child_result_delivered(&mut self, child_id: u64) {
+        self.pulled_child_results.insert(child_id);
+        self.mark_agent_seen(child_id);
+        let mut changed = false;
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(term) = pane.as_terminal_mut() {
+                    let before = term.pending_child_results.len();
+                    if !term.is_agent_pane() {
+                        term.pending_child_results.clear();
+                    } else {
+                        term.pending_child_results
+                            .retain(|r| r.child_pane_id != child_id);
+                    }
+                    if term.pending_child_results.len() != before {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.mark_workspace_dirty();
+        }
+    }
+
+    /// Expire overdue `plexi pane result --wait` requests, fail waiters whose
+    /// pane closed without committing a valid result, and schedule the next
+    /// deadline wakeup from `App::logic` (stint 0666).
+    pub(crate) fn service_pending_result_waits(&mut self, ctx: &egui::Context) {
+        if self.pending_result_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_result_waits
+            .iter()
+            .any(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id))
+        {
+            let (done, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_result_waits)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at || !self.pane_exists(wait.pane_id));
+            self.pending_result_waits = live;
+            for wait in done {
+                if let Some(committed) = self
+                    .pane_results
+                    .get(&wait.pane_id)
+                    .and_then(|state| state.committed.as_ref())
+                {
+                    let mut bytes =
+                        serde_json::to_vec(committed).unwrap_or_else(|_| b"{}".to_vec());
+                    bytes.push(b'\n');
+                    log::info!(
+                        "pane_result_wait: pane_id={} delivered committed result on close/expiry check",
+                        wait.pane_id
+                    );
+                    crate::rpc::write_response(&wait.response_file, &bytes);
+                    continue;
+                }
+                let pane_alive = self.pane_exists(wait.pane_id);
+                let (timeout, error_code, error) = if pane_alive {
+                    log::info!("pane_result_wait: pane_id={} timed out", wait.pane_id);
+                    (
+                        true,
+                        "timeout",
+                        format!("timed out waiting for result on pane {}", wait.pane_id),
+                    )
+                } else if let Some(reason) = self
+                    .pane_results
+                    .get(&wait.pane_id)
+                    .and_then(|s| s.last_invalid_error.as_deref())
+                {
+                    log::info!(
+                        "pane_result_wait: pane_id={} closed after invalid result write: {reason}",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        "invalid_result",
+                        format!(
+                            "pane {} closed without a valid result (last write rejected: {reason})",
+                            wait.pane_id
+                        ),
+                    )
+                } else {
+                    log::info!(
+                        "pane_result_wait: pane_id={} closed before writing a result",
+                        wait.pane_id
+                    );
+                    (
+                        false,
+                        "no_result_yet",
+                        format!("pane {} closed before writing a result", wait.pane_id),
+                    )
+                };
+                crate::rpc::write_json_response(
+                    &format!("{}.err", wait.response_file),
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": timeout,
+                        "error_code": error_code,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self.pending_result_waits.iter().map(|w| w.expires_at).min() else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
     }
 }
 
@@ -867,4 +1207,512 @@ fn unconfirmed_reply(pane_id: u64, tail: &[String], retried: bool) -> Value {
         "input_line": observed,
         "retried": retried,
     })
+}
+
+impl PlexiApp {
+    /// Common mailbox delivery for CLI send and the Agents pane reply composer.
+    pub(crate) fn enqueue_pane_message(
+        &mut self,
+        pane_id: u64,
+        from_pane_id: Option<u64>,
+        payload: String,
+    ) -> (u64, bool) {
+        let id = self.next_pane_message_id;
+        self.next_pane_message_id = id.saturating_add(1);
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.pane_mailboxes
+            .entry(pane_id)
+            .or_default()
+            .push_back(PaneMessage {
+                id,
+                pane_id,
+                to_pane_id: pane_id,
+                from_pane_id,
+                sender_pane_id: from_pane_id,
+                payload,
+                timestamp_ms,
+            });
+        let delivered = self.complete_message_recvs(pane_id);
+        (id, delivered)
+    }
+
+    /// Format queued child results into a single batched turn for an idle parent agent.
+    pub(crate) fn format_batched_child_results(
+        results: &[crate::workspace::QueuedChildResult],
+    ) -> String {
+        let mut lines = Vec::with_capacity(results.len() + 1);
+        if results.len() == 1 {
+            lines.push("[Plexi child result]".to_string());
+        } else {
+            lines.push(format!("[Plexi child results ({})]", results.len()));
+        }
+        for r in results {
+            let mut entry = format!("- {} (#{}) [{}]", r.child_agent, r.child_pane_id, r.status);
+            if let Some(ref s) = r.summary {
+                if !s.trim().is_empty() {
+                    entry.push_str(&format!(": {}", s.trim()));
+                }
+            }
+            if !r.result_json.trim().is_empty() && r.result_json.trim() != "{}" {
+                entry.push_str(&format!(" -> {}", r.result_json.trim()));
+            }
+            lines.push(entry);
+        }
+        lines.join("\n")
+    }
+
+    /// Record a child agent's completion/exit result (`plexi agent done` or exit without report),
+    /// wake any blocking `plexi agent wait` callers, or queue the result on the parent pane for
+    /// orderly batched delivery when the parent next reports `Idle`.
+    pub(crate) fn record_child_agent_result(
+        &mut self,
+        parent_pane_id: Option<u64>,
+        item: crate::workspace::QueuedChildResult,
+    ) {
+        let child_id = item.child_pane_id;
+        crate::host::flight_recorder::record(
+            "agent_done_event",
+            None,
+            Some(child_id),
+            None,
+            serde_json::json!({
+                "pane_id": child_id,
+                "parent_pane_id": parent_pane_id,
+                "agent": item.child_agent,
+                "status": item.status,
+                "summary": item.summary,
+                "result_json": item.result_json,
+                "finished_at_epoch_secs": item.finished_at_epoch_secs,
+            }),
+        );
+        self.child_result_events.insert(child_id, item.clone());
+        if let Some(parent_id) = parent_pane_id {
+            self.child_parent_panes.insert(child_id, parent_id);
+        }
+
+        let has_blocking_waiter = self
+            .pending_agent_waits
+            .iter()
+            .any(|w| w.pane_ids.contains(&child_id));
+        if has_blocking_waiter {
+            self.pulled_child_results.insert(child_id);
+            self.complete_agent_waits();
+            return;
+        }
+        if self.pulled_child_results.contains(&child_id)
+            || self.agent_tool_children.contains_key(&child_id)
+        {
+            return;
+        }
+        if let Some(parent_id) = parent_pane_id {
+            let queued = self
+                .windows
+                .iter_mut()
+                .find_map(|w| w.panes.get_mut(&parent_id))
+                .and_then(|p| p.as_terminal_mut())
+                .filter(|term| term.is_agent_pane())
+                .map(|term| {
+                    term.pending_child_results
+                        .retain(|r| r.child_pane_id != child_id);
+                    term.pending_child_results.push(item);
+                })
+                .is_some();
+            if queued {
+                self.mark_workspace_dirty();
+                let _ = self.flush_pending_child_results_if_idle(parent_id);
+            } else {
+                self.mark_child_result_delivered(child_id);
+            }
+        } else {
+            self.mark_child_result_delivered(child_id);
+        }
+    }
+
+    /// If `parent_pane_id` has queued child results and its agent now reports `Idle` (with no
+    /// submit in flight), drain all queued results and deliver them as ONE batched turn.
+    pub(crate) fn flush_pending_child_results_if_idle(&mut self, parent_pane_id: u64) -> bool {
+        if !self.agent_reports_idle(parent_pane_id) || self.submit_in_flight(parent_pane_id) {
+            return false;
+        }
+        let waited_ids: std::collections::HashSet<u64> = self
+            .pending_agent_waits
+            .iter()
+            .flat_map(|w| w.pane_ids.iter().copied())
+            .chain(self.pulled_child_results.iter().copied())
+            .collect();
+        let drained: Vec<crate::workspace::QueuedChildResult> = {
+            let Some(term) = self
+                .windows
+                .iter_mut()
+                .find_map(|w| w.panes.get_mut(&parent_pane_id))
+                .and_then(|p| p.as_terminal_mut())
+            else {
+                return false;
+            };
+            if term.pending_child_results.is_empty() {
+                return false;
+            }
+            let mut keep = Vec::new();
+            let mut deliver = Vec::new();
+            for item in std::mem::take(&mut term.pending_child_results) {
+                if waited_ids.contains(&item.child_pane_id) {
+                    keep.push(item);
+                } else {
+                    deliver.push(item);
+                }
+            }
+            term.pending_child_results = keep;
+            deliver
+        };
+        if drained.is_empty() {
+            return false;
+        }
+        for item in &drained {
+            self.mark_agent_seen(item.child_pane_id);
+        }
+        let batch_text = Self::format_batched_child_results(&drained);
+        if let Some(term) = self
+            .windows
+            .iter_mut()
+            .find_map(|w| w.panes.get_mut(&parent_pane_id))
+            .and_then(|p| p.as_terminal_mut())
+        {
+            term.backend
+                .process_command(egui_term::BackendCommand::Write(
+                    batch_text.clone().into_bytes(),
+                ));
+        }
+        self.delivered_child_batches
+            .entry(parent_pane_id)
+            .or_default()
+            .push(batch_text.clone());
+        self.register_pending_submit(parent_pane_id, None, batch_text.chars().count());
+        crate::host::flight_recorder::record(
+            "child_results_delivered",
+            None,
+            Some(parent_pane_id),
+            None,
+            serde_json::json!({
+                "parent_pane_id": parent_pane_id,
+                "count": drained.len(),
+                "children": drained.iter().map(|r| r.child_pane_id).collect::<Vec<_>>(),
+                "batch_text": batch_text,
+            }),
+        );
+        self.mark_workspace_dirty();
+        true
+    }
+
+    fn format_child_result_json(r: &crate::workspace::QueuedChildResult) -> serde_json::Value {
+        let parsed_result = serde_json::from_str::<serde_json::Value>(&r.result_json)
+            .unwrap_or_else(|_| serde_json::Value::String(r.result_json.clone()));
+        serde_json::json!({
+            "pane_id": r.child_pane_id,
+            "agent": r.child_agent,
+            "status": r.status,
+            "summary": r.summary,
+            "result": parsed_result,
+            "finished_at_epoch_secs": r.finished_at_epoch_secs,
+        })
+    }
+
+    /// Handle `HostRequest::AgentWait`: consume any matching queued results from the parent pane
+    /// so they are never re-delivered via idle batching, and either reply immediately if all
+    /// children have finished or park until they finish or `timeout_secs` expires.
+    pub(crate) fn handle_agent_wait(
+        &mut self,
+        pane_ids: Vec<u64>,
+        timeout_secs: f64,
+        response_file: String,
+    ) {
+        if pane_ids.is_empty() {
+            crate::rpc::write_json_response(
+                &response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error": "agent wait requires at least one pane_id",
+                }),
+            );
+            return;
+        }
+        if !timeout_secs.is_finite() || timeout_secs <= 0.0 || timeout_secs > MAX_WAIT_TIMEOUT_SECS
+        {
+            crate::rpc::write_json_response(
+                &response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("timeout must be a finite number in (0, {MAX_WAIT_TIMEOUT_SECS}]"),
+                }),
+            );
+            return;
+        }
+        // Mark all requested child pane_ids as pulled so they are removed from any parent's
+        // pending_child_results queue and never delivered as a duplicate idle-batch turn.
+        for &cid in &pane_ids {
+            self.pulled_child_results.insert(cid);
+        }
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(term) = pane.as_terminal_mut() {
+                    term.pending_child_results
+                        .retain(|r| !pane_ids.contains(&r.child_pane_id));
+                }
+            }
+        }
+        let expires_at = Instant::now() + Duration::from_secs_f64(timeout_secs);
+        self.pending_agent_waits.push(PendingAgentWait {
+            pane_ids,
+            response_file,
+            expires_at,
+        });
+        self.complete_agent_waits();
+    }
+
+    /// Answer any `PendingAgentWait` whose watched child panes have all recorded a completion/exit event.
+    pub(crate) fn complete_agent_waits(&mut self) {
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        let (ready, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_waits)
+            .into_iter()
+            .partition(|w| {
+                w.pane_ids
+                    .iter()
+                    .all(|cid| self.child_result_events.contains_key(cid))
+            });
+        self.pending_agent_waits = pending;
+        for wait in ready {
+            for &cid in &wait.pane_ids {
+                self.pulled_child_results.insert(cid);
+                for win in &mut self.windows {
+                    for pane in win.panes.values_mut() {
+                        if let Some(term) = pane.as_terminal_mut() {
+                            term.pending_child_results
+                                .retain(|r| r.child_pane_id != cid);
+                        }
+                    }
+                }
+                self.mark_agent_seen(cid);
+            }
+            let results: Vec<serde_json::Value> = wait
+                .pane_ids
+                .iter()
+                .filter_map(|cid| self.child_result_events.get(cid))
+                .map(Self::format_child_result_json)
+                .collect();
+            crate::rpc::write_json_response(
+                &wait.response_file,
+                serde_json::json!({
+                    "ok": true,
+                    "results": results,
+                }),
+            );
+        }
+    }
+
+    /// Service `PendingAgentWait` deadlines and closed panes from `App::logic`.
+    pub(crate) fn service_pending_agent_waits(&mut self, ctx: &egui::Context) {
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        // If any watched child pane closed without recording an event, synthesize an exited_unreported result.
+        let watched: Vec<u64> = self
+            .pending_agent_waits
+            .iter()
+            .flat_map(|w| w.pane_ids.iter().copied())
+            .collect();
+        for cid in watched {
+            if !self.child_result_events.contains_key(&cid) && !self.pane_exists(cid) {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.child_result_events.insert(
+                    cid,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: cid,
+                        child_agent: "agent".to_string(),
+                        status: "exited_unreported".to_string(),
+                        summary: Some("pane closed without agent done".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: now_secs,
+                    },
+                );
+            }
+        }
+        self.complete_agent_waits();
+        if self.pending_agent_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .pending_agent_waits
+            .iter()
+            .any(|wait| now >= wait.expires_at)
+        {
+            let (expired, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_waits)
+                .into_iter()
+                .partition(|wait| now >= wait.expires_at);
+            self.pending_agent_waits = live;
+            for wait in expired {
+                let results: Vec<serde_json::Value> = wait
+                    .pane_ids
+                    .iter()
+                    .filter_map(|cid| self.child_result_events.get(cid))
+                    .map(Self::format_child_result_json)
+                    .collect();
+                crate::rpc::write_json_response(
+                    &wait.response_file,
+                    serde_json::json!({
+                        "ok": false,
+                        "timeout": true,
+                        "error": format!("timed out waiting for agent panes {:?}", wait.pane_ids),
+                        "results": results,
+                    }),
+                );
+            }
+        }
+        let Some(next_expiry) = self.pending_agent_waits.iter().map(|w| w.expires_at).min() else {
+            return;
+        };
+        let predicted_frame =
+            std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+        ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            next_expiry,
+            Instant::now(),
+            predicted_frame,
+        ));
+    }
+
+    /// Service parked `SendToPane` requests waiting on a permission broker decision.
+    pub(crate) fn service_pending_send_approvals(&mut self, ctx: &egui::Context) {
+        if self.pending_send_approvals.is_empty() {
+            return;
+        }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let now = Instant::now();
+        let items = std::mem::take(&mut self.pending_send_approvals);
+        let mut remaining_items = Vec::new();
+        let mut approved_to_dispatch = Vec::new();
+        for item in items {
+            let caller_exited = item
+                .peer_ancestry
+                .as_ref()
+                .and_then(|ancestry| ancestry.first())
+                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid))
+                || item
+                    .response_file
+                    .as_deref()
+                    .and_then(crate::rpc::ReplyRegistry::connected)
+                    == Some(false);
+            if caller_exited || now >= item.expires_at {
+                let detached = monitor.detach_pane_send_waiter(&item.pending_request_id);
+                if let Err(error) = &detached {
+                    log::error!(
+                        "pane_send_approval: could not persist detached waiter pending={}: {error}",
+                        item.pending_request_id
+                    );
+                }
+                let reason = if caller_exited {
+                    "caller_disconnected"
+                } else {
+                    "approval_wait_timeout"
+                };
+                log::info!(
+                    "pane_send_approval: operation={} pending={} reason={reason}",
+                    item.operation_id,
+                    item.pending_request_id
+                );
+                if let Some(ref rf) = item.response_file {
+                    crate::rpc::write_json_response(
+                        rf,
+                        serde_json::json!({
+                                "error": format!("{reason}: pane send was not executed; run `plexi needs-you reconcile --id {}` before retrying with `--operation-id {}`", item.operation_id, item.operation_id),
+                            "error_code": reason,
+                            "operation_state": if detached.is_ok() { "retry_required" } else { "outcome_unknown" },
+                            "operation_id": item.operation_id,
+                                "pending_request_id": item.pending_request_id,
+                        }),
+                    );
+                }
+                continue;
+            }
+            match monitor.approval_resolution(&item.pending_request_id) {
+                Some(
+                    crate::broker::gate::ApprovalChoice::Once
+                    | crate::broker::gate::ApprovalChoice::Session
+                    | crate::broker::gate::ApprovalChoice::Always
+                    | crate::broker::gate::ApprovalChoice::AllowTool,
+                ) => {
+                    log::info!(
+                        "pane_send_approval: pending={} approved; dispatching send from pane {} to pane {}",
+                        item.pending_request_id,
+                        item.caller_pane_id,
+                        item.pane_id
+                    );
+                    approved_to_dispatch.push(item);
+                }
+                Some(
+                    crate::broker::gate::ApprovalChoice::Deny
+                    | crate::broker::gate::ApprovalChoice::DenyAlways,
+                ) => {
+                    log::info!(
+                        "pane_send_approval: pending={} denied for pane {} -> pane {}",
+                        item.pending_request_id,
+                        item.caller_pane_id,
+                        item.pane_id
+                    );
+                    if let Some(ref rf) = item.response_file {
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": "permission_denied: pane send denied",
+                                "error_code": "permission_denied",
+                                "operation_id": item.operation_id,
+                                "pending_request_id": item.pending_request_id,
+                                "operation_state": "cancelled",
+                            }),
+                        );
+                    }
+                }
+                None => {
+                    remaining_items.push(item);
+                }
+            }
+        }
+        self.pending_send_approvals = remaining_items;
+        for item in approved_to_dispatch {
+            self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                generated_operation_id: false,
+                pane_id: item.pane_id,
+                text: item.text,
+                operation_id: Some(item.operation_id),
+                submit: item.submit,
+                paste: item.paste,
+                response_file: item.response_file,
+                peer_ancestry: item.peer_ancestry,
+            });
+        }
+        if let Some(next_expiry) = self
+            .pending_send_approvals
+            .iter()
+            .map(|w| w.expires_at)
+            .min()
+        {
+            let predicted_frame =
+                std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
+            let until_expiry = crate::host::wasm_frame::repaint_delay_until(
+                next_expiry,
+                Instant::now(),
+                predicted_frame,
+            );
+            ctx.request_repaint_after(
+                until_expiry.min(Duration::from_millis(500) + predicted_frame),
+            );
+        }
+    }
 }

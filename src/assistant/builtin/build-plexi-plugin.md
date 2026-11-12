@@ -1,0 +1,20 @@
+---
+name: build-plexi-plugin
+description: Build a small Plexi plugin (game, timer, counter, tool) when the user asks to build, create, make, or write an app, plugin or game
+tier: high
+---
+Build the plugin as a real Plexi plugin, never as a loose script run from a terminal. The whole flow runs on your embedded authoring tools — host.build.run for lifecycle commands and host.files.* for code. Never open a terminal pane for your own build work; terminals are only for commands the user asked to watch.
+
+The complete SDK API reference is appended to this prompt, with the exact constructor signature of every component, event, and effect. It is authoritative and current. Never read, list, or grep `plexi_sdk` sources, SDK files, or other installed plugins to "learn the API" — working examples are not a reference; the signatures below are. Spending tool calls on API discovery is a bug.
+
+1. Scaffold: host.build.run {"args": ["plugin", "init", "<kebab-name>"]}. A "Plugin placement" line appended below this skill says whether this session has a Plexi workspace: with one, init with no flag (workspace plugins hot-reload); without one, pass "--global" on the first call — never spend a failed call discovering this. Its stdout names the plugin directory it created; use that path exactly, never guess it. If exit_code is nonzero (e.g. a name collision), never edit whatever already exists at that path — it was not scaffolded by you and may have no build tooling available. Retry `plugin init` with a different kebab-name, or if collisions persist, show the user the exact error text and stop.
+2. Write the plugin with a single host.files.write of `main.py`, composed straight from the SDK reference — no exploratory list/read/grep first. Keep the first version small and working: `view()` returns a tree of `plexi_sdk.ui` widgets, `update(event)` handles `UiAction` by `handler_id`, state changes go through the `SetState` effect. Effect contract: every effect (SetState, SetTimer, ...) is returned from `update()` or `init()`; `view()` is pure and returns exactly one component — never a tuple, never an effect. To schedule follow-up work (e.g. a delayed CPU move), return SetTimer from the `update()` branch that starts the wait, then handle `TimerFired`. Make every interaction keyboard-reachable. Use host.files.edit for follow-up fixes instead of rewriting the file — each edit returns a diff the user sees.
+3. Validate: host.build.run {"args": ["plugin", "check", "<plugin-dir>"]}. Read its stdout/stderr from the result. It must pass; fix every error it reports before opening its view. Fix from the check output plus the SDK reference alone — a signature error means re-read the symbol's entry below, not grep for plugins that use it; re-read `main.py` only when an edit needs context the check output doesn't show.
+4. Open the view with the host tool host.views.open (plugin = the kebab name) as soon as the first check passes. A workspace plugin hot-reloads in its open pane on every save, so keep iterating with host.files.edit and the user watches it converge. Re-run plugin check after meaningful changes.
+5. Tell the user the view is open and how to use it.
+
+Before you open the plugin, re-read your own `main.py` (or run `plugin check` again) and confirm every interactive widget is wired to a handler that `update()` actually handles. A rendered button with no matching `handler_id` branch is a dead button — the user clicks it and nothing happens. Check the full set, not the one you wrote last.
+
+If a step fails, show the user the exact error and fix it. Do not fall back to a plain terminal script unless the user explicitly asks for one.
+
+A scope refusal is a final answer. `path_out_of_scope` and `command_not_allowed` mean that path or command is outside what you may touch; retrying changes nothing. Never route around one via host.terminals.run, host.terminals.open, or any other tool — the same limit applies there, and the attempt only costs the user a permission prompt they have to deny. State the limitation plainly and offer what you can do inside scope.

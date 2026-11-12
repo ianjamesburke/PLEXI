@@ -1,12 +1,12 @@
 ---
-import Layout from '../../layouts/Layout.astro';
+import DocsLayout from '../../layouts/DocsLayout.astro';
 import { docsNav } from '../../lib/docsNav';
 ---
-<Layout title="Docs — Plexi" description="Plexi documentation.">
+<DocsLayout title="Documentation" description="Documentation for the Plexi tiling terminal host, scriptable CLI, and local plugin runtime.">
   <section class="docs-index">
-    <div class="wrap">
+    <div>
       <header class="index-header">
-        <h1>Documentation</h1>
+        <p>Start with the tiling terminal host, its scriptable CLI, and local plugin authoring. Assistant, marketplace, and MCP surfaces are gated outside stable v1.</p>
       </header>
       <div class="sections">
         {docsNav.map(group => (
@@ -24,11 +24,11 @@ import { docsNav } from '../../lib/docsNav';
       </div>
     </div>
   </section>
-</Layout>
+</DocsLayout>
 
 <style>
   .docs-index {
-    padding: 80px 0 120px;
+    padding: 0;
     min-height: 70vh;
   }
   .index-header {
@@ -40,9 +40,15 @@ import { docsNav } from '../../lib/docsNav';
     letter-spacing: 0;
     margin-bottom: 10px;
   }
+  .index-header p {
+    color: var(--fg-2);
+    font-size: 15px;
+    line-height: 1.7;
+    max-width: 680px;
+  }
 .sections {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
     gap: 40px;
   }
   .section-block {
@@ -77,7 +83,7 @@ import { docsNav } from '../../lib/docsNav';
     color: var(--accent-light);
   }
   @media (max-width: 980px) {
-    .docs-index { padding: 60px 0 80px; }
+    .docs-index { padding: 0; }
     .index-header h1 { font-size: 30px; }
   }
 </style>

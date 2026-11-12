@@ -190,42 +190,6 @@ fn read_and_parse(
 
 // ── MCP registry ─────────────────────────────────────────────────────────────
 
-/// A parsed MCP server entry from the registry (`registry/mcp/<name>.json`).
-#[derive(Debug, serde::Deserialize)]
-pub struct McpEntry {
-    pub name: String,
-    pub description: String,
-    pub command: Vec<String>,
-}
-
-/// Look up a named MCP server from the embedded registry or user override.
-///
-/// Resolution order: user-override dir (`~/.plexi-<channel>/registry/mcp/`)
-/// then embedded (`registry/mcp/`). First match wins.
-pub fn lookup_mcp(name: &str) -> Option<McpEntry> {
-    // 1. User override
-    if let Some(override_root) = user_override_dir() {
-        let path = override_root.join("mcp").join(format!("{name}.json"));
-        if let Ok(json) = std::fs::read_to_string(&path) {
-            if let Ok(entry) = serde_json::from_str::<McpEntry>(&json) {
-                return Some(entry);
-            }
-        }
-    }
-
-    // 2. Embedded
-    let embedded_path = format!("mcp/{name}.json");
-    if let Some(file) = EMBEDDED_REGISTRY.get_file(&embedded_path) {
-        if let Some(json) = file.contents_utf8() {
-            if let Ok(entry) = serde_json::from_str::<McpEntry>(json) {
-                return Some(entry);
-            }
-        }
-    }
-
-    None
-}
-
 /// List all MCP server names available in embedded + user override registries.
 pub fn list_mcp_names() -> Vec<String> {
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -456,19 +420,6 @@ mod tests {
                 "expected {cli} in {names:?}"
             );
         }
-    }
-
-    #[test]
-    fn lookup_mcp_returns_embedded_entry() {
-        let entry =
-            lookup_mcp("filesystem").expect("filesystem should exist in embedded MCP registry");
-        assert_eq!(entry.name, "filesystem");
-        assert!(!entry.command.is_empty());
-    }
-
-    #[test]
-    fn lookup_mcp_returns_none_for_unknown() {
-        assert!(lookup_mcp("nonexistent-mcp-zzz").is_none());
     }
 
     #[test]

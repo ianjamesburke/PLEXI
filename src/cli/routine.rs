@@ -1,4 +1,4 @@
-use super::open::pane_new_cli;
+use super::open::{pane_new_cli, PaneNewCliArgs};
 use crate::host::scheduler::{parse_schedule, routines_file, RoutinesConfig};
 use std::path::{Path, PathBuf};
 
@@ -176,23 +176,17 @@ pub fn routine_run(name: &str, force: bool) -> i32 {
     // the host errors back when the context does not exist.
     let context = Some(routine.context.as_str()).filter(|c| !c.is_empty());
     log::info!(
-        "cli: routine run '{name}' — dispatching command: {} context={context:?}",
-        routine.command
+        "cli: routine run '{name}' command_chars={} context={context:?}",
+        routine.command.chars().count()
     );
-    pane_new_cli(
-        Some(&routine.command),
-        Some(name),
-        Some("split_h"),
-        None,
-        None,
-        routine.ephemeral,
-        false,
-        None,
-        &[],
-        &[],
-        context,
-        None,
-    )
+    pane_new_cli(PaneNewCliArgs {
+        cmd: Some(&routine.command),
+        name: Some(name),
+        layout: Some("split_h"),
+        ephemeral: routine.ephemeral,
+        context_name: context,
+        ..Default::default()
+    })
 }
 
 /// `plexi routine add` — append a `[[routine]]` table to routines.toml.

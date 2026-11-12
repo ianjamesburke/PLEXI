@@ -1,0 +1,10 @@
+# Built-in `default` agent template — seeded into
+# <workspace>/.plexi/agents/default/ on first use so the workspace owns the file.
+[agent]
+id = "default"
+display_name = "Default agent"
+default_tier = "medium"
+description = "The workspace's default agent, launched on the Pi harness"
+
+[harness]
+cli = "pi"

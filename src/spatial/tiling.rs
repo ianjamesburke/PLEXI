@@ -1,5 +1,5 @@
+use crate::host::pane::{Pane, TerminalPane, ViewRuntime};
 use crate::protocol::AgentState;
-use crate::host::pane::{AppRuntime, Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -7,12 +7,12 @@ use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{
     Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub type PaneId = u64;
 
-pub(crate) const TAB_BAR_HEIGHT: f32 = 20.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = crate::ui::style::PANE_HEADER_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabBarAction {
@@ -50,6 +50,96 @@ mod tests {
     use super::*;
 
     #[test]
+    fn minimap_attention_entry_time_survives_geometry_changes() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let windows = [MiniWindow {
+            grid_x: 0,
+            grid_y: 0,
+            panes: vec![MiniPane {
+                pane_id: Some(7),
+                norm_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                kind: PaneKind::Terminal,
+                focused: false,
+                has_content: false,
+                title: None,
+                active: true,
+                activity: Some(AgentState::NeedsYou),
+                static_health_pip: false,
+            }],
+        }];
+        let key = egui::Id::new(("minimap_attention", Some(7_u64))).with("attention_entered");
+        for n in 0..2 {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(n as f64),
+                    ..Default::default()
+                },
+                |ui| {
+                    let area = egui::Rect::from_min_size(
+                        egui::pos2(20.0 * n as f32, 0.0),
+                        egui::vec2(300.0, 160.0),
+                    );
+                    paint_portal_minimap(ui, area, &windows, &colors, n as f64);
+                },
+            );
+            assert_eq!(
+                ctx.data(|d| d.get_temp::<f64>(key)),
+                Some(0.0),
+                "moving a portal must not re-enter NeedsYou"
+            );
+        }
+    }
+
+    #[test]
+    fn minimap_narrow_title_paint_stays_within_tile() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let windows = [MiniWindow {
+            grid_x: 0,
+            grid_y: 0,
+            panes: vec![MiniPane {
+                pane_id: Some(1),
+                norm_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(0.5, 1.0)),
+                kind: PaneKind::Terminal,
+                focused: true,
+                has_content: true,
+                title: Some("Investigate Plexi approval routing | PLEXI".into()),
+                active: true,
+                activity: Some(AgentState::Working),
+                static_health_pip: false,
+            }],
+        }];
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_portal_minimap(
+                ui,
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0)),
+                &windows,
+                &colors,
+                0.0,
+            );
+        });
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().contains("Investigate") => Some(t),
+                _ => None,
+            })
+            .expect("title paint");
+        assert!(
+            text.galley.text().ends_with('…'),
+            "long title must show an ellipsis"
+        );
+        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+        let tile = egui::Rect::from_min_max(egui::pos2(3.0, 3.0), egui::pos2(97.0, 97.0));
+        assert!(
+            tile.contains_rect(rect),
+            "title {rect:?} exceeds tile {tile:?}"
+        );
+    }
+
+    #[test]
     fn tab_drop_marker_tracks_insert_edge() {
         let bar = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(300.0, 20.0));
         let tab_width = 100.0;
@@ -60,22 +150,33 @@ mod tests {
     }
 }
 
+pub(crate) struct TabBarPaintParams<'a> {
+    pub bar_rect: egui::Rect,
+    pub group: &'a TabGroupInfo,
+    pub tab_labels: &'a HashMap<PaneId, String>,
+    pub tab_activities: &'a HashMap<PaneId, (AgentState, bool)>,
+    pub colors: &'a Colors,
+    pub font_size: f32,
+    pub overtake_hint: bool,
+}
+
 /// Render a full-width tab bar and return a switch/reorder action, if any.
 /// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
 /// and advance the cursor past it.
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_tab_bar(
     ctx: &egui::Context,
     painter: &egui::Painter,
-    bar_rect: egui::Rect,
-    group: &TabGroupInfo,
-    tab_labels: &HashMap<PaneId, String>,
-    tab_activities: &HashMap<PaneId, AgentState>,
-    colors: &Colors,
-    font_size: f32,
-    overtake_hint: bool,
+    params: TabBarPaintParams<'_>,
 ) -> Option<TabBarAction> {
+    let TabBarPaintParams {
+        bar_rect,
+        group,
+        tab_labels,
+        tab_activities,
+        colors,
+        font_size,
+        overtake_hint,
+    } = params;
     painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
     let tab_count = group.members.len();
@@ -195,14 +296,18 @@ pub(crate) fn paint_tab_bar(
             0.0
         };
 
-        if let Some(state) = tab_activities.get(&pane_id) {
+        if let Some((state, static_health_pip)) = tab_activities.get(&pane_id) {
             let t = ctx.input(|i| i.time);
             let color = crate::ui::activity::dot_color_from_time(state, colors, t, i);
             let cx = tab_rect.left() + TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS;
-            painter.circle_filled(egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, color);
-            if matches!(state, AgentState::Working) {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            crate::ui::activity::paint_pip(
+                painter,
+                egui::pos2(cx, tab_rect.center().y),
+                TAB_PIP_RADIUS,
+                (!static_health_pip).then_some(state),
+                color,
+                false,
+            );
         }
 
         let label = tab_labels
@@ -259,38 +364,32 @@ pub(crate) fn paint_tab_bar(
                 egui::pos2(x, bar_rect.center().y),
                 egui::vec2(3.0, TAB_BAR_HEIGHT - 3.0),
             );
-            painter.rect_filled(marker_rect, 1.5, colors.accent);
+            painter.rect_filled(
+                marker_rect,
+                crate::ui::style::radius_fit(marker_rect),
+                colors.accent,
+            );
         }
     }
 
     if overtake_hint {
-        let hint_font = egui::FontId::monospace(font_size - 1.0);
-        let hint_text = "Esc";
-        let hint_galley = painter.layout_no_wrap(hint_text.to_string(), hint_font, colors.text_dim);
-        let chip_pad = 4.0;
-        let chip_w = hint_galley.size().x + chip_pad * 2.0;
-        let chip_h = (TAB_BAR_HEIGHT - 6.0).max(10.0);
-        let chip_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                bar_rect.right() - chip_w - 4.0,
-                bar_rect.center().y - chip_h / 2.0,
-            ),
-            egui::vec2(chip_w, chip_h),
-        );
-        painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
-        painter.rect_stroke(
-            chip_rect,
-            egui::CornerRadius::same(3),
-            egui::Stroke::new(1.0_f32, colors.border),
-            egui::StrokeKind::Inside,
-        );
-        crate::ui::snap::text_snapped(
+        let label = crate::ui::shortcuts::display_tokens(&["Esc"]).join("");
+        let chip_w = crate::ui::shortcuts::chip_size(
+            painter
+                .layout_no_wrap(
+                    label.clone(),
+                    egui::FontId::monospace(style::TEXT_CAPTION),
+                    colors.text_dim,
+                )
+                .size(),
+        )
+        .x;
+        crate::ui::shortcuts::paint_key_chip(
             painter,
-            chip_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            hint_text,
-            egui::FontId::monospace(font_size - 1.0),
-            colors.text_dim,
+            bar_rect.right() - chip_w - style::SPACE_XS,
+            bar_rect.center().y,
+            &label,
+            colors,
         );
     }
 
@@ -301,9 +400,9 @@ pub(crate) fn paint_tab_bar(
 #[derive(Clone, Copy, PartialEq)]
 pub enum PaneKind {
     Terminal,
-    App,
-    /// Text/editor app pane (manifest `text-editor`). Renders a document glyph
-    /// in the minimap instead of the generic app mark.
+    View,
+    /// Text/editor view pane (manifest `text-editor`). Renders a document glyph
+    /// in the minimap instead of the generic plugin mark.
     TextEditor,
     Portal,
 }
@@ -311,18 +410,21 @@ pub enum PaneKind {
 /// A single pane slot within one window's minimap.
 #[derive(Clone)]
 pub struct MiniPane {
+    /// Stable pane identity keeps entry effects independent of minimap geometry.
+    pub pane_id: Option<PaneId>,
     /// Normalized [0,1]×[0,1] rect within its window body.
     pub norm_rect: egui::Rect,
     pub kind: PaneKind,
     pub focused: bool,
     /// True when the pane has meaningful content (always true for running panes).
     pub has_content: bool,
-    /// OSC title or app name, if available.
+    /// OSC title or plugin name, if available.
     pub title: Option<String>,
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
     /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
     pub activity: Option<crate::protocol::AgentState>,
+    pub static_health_pip: bool,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -342,6 +444,8 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
+    pub status: crate::host::context_state::ContextStatus,
+    pub status_summary: Option<String>,
 }
 
 impl Default for PortalPreview {
@@ -353,19 +457,24 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
+            status: crate::host::context_state::ContextStatus::Idle,
+            status_summary: None,
         }
     }
 }
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
+    pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
+    pub pane_lineage: HashMap<PaneId, String>,
+    pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
-    /// Pre-computed display label for each pane: user-set name, then app name, then type string.
+    /// Pre-computed display label for each pane: user-set name, then plugin name, then type string.
     pub tab_labels: HashMap<PaneId, String>,
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
@@ -378,7 +487,7 @@ pub struct PlexiBehavior<'a> {
     /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
     /// drifted outside the workspace tree. See issue #308 Phase 1.
     pub workspace_root: Option<PathBuf>,
-    /// The rendered window's context root, pushed into app panes every frame
+    /// The rendered window's context root, pushed into view panes every frame
     /// so state-scope resolution follows `plexi context set-root` at call
     /// time (stint 0652).
     pub context_root: PathBuf,
@@ -397,6 +506,7 @@ pub struct PlexiBehavior<'a> {
     pub portal_zoom_request: Option<u64>,
     /// Resolved inter-pane gap width (from config, default 4.0).
     pub pane_gap: f32,
+    pub pane_corner_radius: Option<u8>,
     /// Resolved pane title bar font size (from config, default 11.0).
     pub pane_title_font_size: f32,
     /// Keyboard input the host took from `ctx` before the render pass, destined
@@ -409,13 +519,27 @@ pub struct PlexiBehavior<'a> {
     /// for unfocused terminals (which still need current modifiers for pointer
     /// link-hover and mouse reporting).
     pub frame_modifiers: egui::Modifiers,
-    /// Pending `AppRequest::ClickPane` injections, keyed by target pane.
+    /// Pending `HostRequest::ClickPane` injections, keyed by target pane.
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
     /// see `crate::host::pane::PendingPaneClick`.
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
+    /// Panes in columns clipped off the strip (`!is_on_screen`).
+    pub off_strip_panes: HashSet<PaneId>,
+    /// True on a frame the strip layout jumped: terminals commit their new grid
+    /// at once instead of debouncing it like a drag.
+    pub strip_layout_jump: bool,
+    /// Presentation snapshot for the active strip (`StripLayout`).
+    pub strip_layout: Option<crate::strip::StripLayout>,
+    pub resized: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
+    fn on_edit(&mut self, action: egui_tiles::EditAction) {
+        if matches!(action, egui_tiles::EditAction::TileResized) {
+            self.resized = true;
+        }
+    }
+
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
         // While any pane is zoomed, paint background panes as dark placeholders
         // and skip all input detection — the zoom overlay owns focus and drop
@@ -428,12 +552,36 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             return UiResponse::None;
         }
 
-        // Detect clicks or file drags for focus.
-        let is_click =
-            ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
+        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
+        if self.off_strip_panes.contains(pane_id) || snapshot_pane.is_some_and(|p| !p.is_visible) {
+            let pane_rect = ui.available_rect_before_wrap();
+            let fill = match self.panes.get(pane_id) {
+                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
+                _ => self.colors.bg_darkest,
+            };
+            ui.painter().rect_filled(pane_rect, 0.0, fill);
+            return UiResponse::None;
+        }
+
+        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
+        let hit_rect = snapshot_pane
+            .map(|p| p.hit_rect.intersect(visible_rect))
+            .unwrap_or(visible_rect);
+        let pointer_in_hit_rect = hit_rect.width() > 0.5
+            && hit_rect.height() > 0.5
+            && ui.input(|i| {
+                i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| hit_rect.contains(pos))
+            });
+
+        // Detect clicks or file drags for focus inside the visible hit_rect only.
+        let is_click = ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect;
         let is_drag_hovering = match self.drag_cursor_pos {
-            Some(pos) => ui.max_rect().contains(pos),
-            None => self.hovered_files && ui.rect_contains_pointer(ui.max_rect()),
+            Some(pos) => {
+                hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos)
+            }
+            None => self.hovered_files && pointer_in_hit_rect,
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
@@ -458,14 +606,56 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
-            } else if let Some(app) = self.panes.get_mut(pane_id).and_then(Pane::as_app_mut) {
-                deliver_dropped_files_to_app(ui, *pane_id, app);
+            } else if let Some(app) = self.panes.get_mut(pane_id).and_then(Pane::as_view_mut) {
+                deliver_dropped_files_to_plugin(ui, *pane_id, app);
             }
         }
 
+        if let Some(children) = self.child_agent_strips.get(pane_id) {
+            ui.horizontal(|ui| {
+                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                for child in children {
+                    let text = format!("{} · {}", child.role, child.display_state.label());
+                    let color = match child.display_state {
+                        crate::agent::fleet::DisplayState::Blocked
+                        | crate::agent::fleet::DisplayState::Stalled => self.colors.danger,
+                        crate::agent::fleet::DisplayState::DoneUnseen => self.colors.accent,
+                        _ => self.colors.pane_header_bg(),
+                    };
+                    let label = crate::ui::text::elide(
+                        ui,
+                        &text,
+                        crate::ui::badge::badge_font(),
+                        (ui.available_width() - style::SPACE_SM).max(0.0),
+                        crate::ui::text::Side::Trailing,
+                    );
+                    if label.is_empty() {
+                        break;
+                    }
+                    let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
+                    let button = ui.interact(
+                        response.rect,
+                        ui.id().with(("child-agent", child.pane_id)),
+                        egui::Sense::click(),
+                    );
+                    button.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text)
+                    });
+                    if button
+                        .on_hover_text(format!(
+                            "Open child agents ({})",
+                            crate::ui::shortcuts::key_text(&["cmd", "down"])
+                        ))
+                        .clicked()
+                    {
+                        self.child_agent_dive = Some(*pane_id);
+                    }
+                }
+            });
+        }
         let pane_rect = ui.available_rect_before_wrap();
 
-        let tab_activities: HashMap<PaneId, AgentState> = self
+        let tab_activities: HashMap<PaneId, (AgentState, bool)> = self
             .tab_info
             .get(&tile_id)
             .map(|group| {
@@ -475,7 +665,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     .filter_map(|id| {
                         self.panes
                             .get(id)
-                            .and_then(|p| p.effective_activity().cloned())
+                            .and_then(|p| {
+                                p.effective_activity()
+                                    .cloned()
+                                    .map(|state| (state, p.static_health_pip()))
+                            })
                             .map(|a| (*id, a))
                     })
                     .collect()
@@ -486,45 +680,54 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             return UiResponse::None;
         };
 
-        if let Some(app_pane) = pane.as_app_mut() {
+        let clip_rect = snapshot_pane
+            .map(|p| p.clip_rect.intersect(visible_rect))
+            .unwrap_or(visible_rect);
+
+        let pane_state = pane.effective_activity().cloned();
+        if let Some(view_pane) = pane.as_view_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            app_ui.set_clip_rect(clip_rect);
 
             let tab_group = self.tab_info.get(&tile_id);
             let has_tabs = tab_group.is_some();
-            if let Some(group) = tab_group {
-                let bar_rect = egui::Rect::from_min_size(
-                    app_ui.cursor().min,
-                    egui::vec2(app_ui.available_width(), TAB_BAR_HEIGHT),
-                );
-                app_ui.advance_cursor_after_rect(bar_rect);
-                let is_overtaken = app_pane.overlay_replaced.is_some();
-                if let Some(action) = paint_tab_bar(
-                    app_ui.ctx(),
-                    app_ui.painter(),
-                    bar_rect,
-                    group,
-                    &self.tab_labels,
-                    &tab_activities,
-                    &self.colors,
-                    self.pane_title_font_size,
-                    is_overtaken,
+            if tab_group.is_some() {
+                let is_overtaken = view_pane.overlay_replaced.is_some();
+                if let Some(action) = render::terminal_pane::render_name_bar_and_tabs(
+                    &mut app_ui,
+                    render::terminal_pane::NameBarParams {
+                        tile_id,
+                        pane_id,
+                        tab_info: &self.tab_info,
+                        tab_labels: &self.tab_labels,
+                        tab_activities: &tab_activities,
+                        pane_names: &self.pane_names,
+                        pane_agent_state: pane_state.as_ref(),
+                        is_error: false,
+                        colors: &self.colors,
+                        outside_workspace: false,
+                        name_font_size: self.pane_title_font_size,
+                        spawned_by_badge: None,
+                        waiting_results_badge: None,
+                        overtake_hint: is_overtaken,
+                    },
                 ) {
-                    self.tab_action = Some((group.container_tile, action));
+                    self.tab_action = Some(action);
                 }
             }
 
             let pending_click = self.pending_pane_clicks.remove(pane_id);
-            let ui_profile_label = match &app_pane.runtime {
-                AppRuntime::Python(_) => format!("python:{}", app_pane.manifest_id),
-                AppRuntime::Wasm(_) => format!("wasm:{}", app_pane.manifest_id),
-                AppRuntime::Builtin(_) => format!("builtin:{}", app_pane.manifest_id),
+            let ui_profile_label = match &view_pane.runtime {
+                ViewRuntime::Python(_) => format!("python:{}", view_pane.manifest_id),
+                ViewRuntime::Wasm(_) => format!("wasm:{}", view_pane.manifest_id),
+                ViewRuntime::Builtin(_) => format!("builtin:{}", view_pane.manifest_id),
             };
             crate::platform::ui_profile::time(&ui_profile_label, || {
-                render::app_pane::render(
+                render::view_pane::render(
                     &mut app_ui,
-                    app_pane,
+                    view_pane,
                     &self.colors,
                     has_tabs,
                     pending_click,
@@ -535,6 +738,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            terminal_ui.set_clip_rect(clip_rect);
             // The focused terminal consumes the host-supplied keyboard buffer;
             // every other terminal gets an empty one (pointer/wheel only).
             let terminal_input = if is_focused {
@@ -566,6 +770,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     self.workspace_root.as_deref(),
                     self.pane_title_font_size,
                     terminal_input,
+                    self.strip_layout_jump,
                 )
             });
             if close_exited {
@@ -580,17 +785,93 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 ui.painter()
                     .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
                 let preview = self.portal_info.get(pane_id).cloned().unwrap_or_default();
-                let padding = style::SPACE_MD;
-                let inner = pane_rect.shrink(padding);
-                let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 let colors_for_portal = self.colors;
-                portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        egui::RichText::new(&preview.context_name)
-                            .size(style::TEXT_BODY)
-                            .strong()
-                            .color(colors_for_portal.text_primary),
+                let status_col =
+                    crate::ui::activity::context_status_color(&preview.status, &colors_for_portal);
+                let has_active_status = matches!(
+                    preview.status,
+                    crate::host::context_state::ContextStatus::NeedsYou
+                        | crate::host::context_state::ContextStatus::Blocked
+                        | crate::host::context_state::ContextStatus::Error
+                        | crate::host::context_state::ContextStatus::Working
+                );
+                let active_status_col = if has_active_status { status_col } else { None };
+                if let Some(sc) = active_status_col.filter(|_| {
+                    preview.status != crate::host::context_state::ContextStatus::NeedsYou
+                        || crate::ui::activity::attention(ui.ctx()).alpha > 0.0
+                }) {
+                    let wash_rect = egui::Rect::from_min_size(
+                        pane_rect.min,
+                        egui::vec2(pane_rect.width(), 44.0_f32.min(pane_rect.height())),
                     );
+                    let wash_col =
+                        egui::Color32::from_rgba_unmultiplied(sc.r(), sc.g(), sc.b(), 24);
+                    ui.painter().rect_filled(wash_rect, 0.0, wash_col);
+                }
+                let padding = style::SPACE_MD;
+                // A column narrower than twice the padding would shrink to a
+                // negative rect, which egui's placer rejects.
+                let inner = egui::Rect::from_min_size(
+                    pane_rect.min + egui::vec2(padding, padding),
+                    egui::vec2(
+                        (pane_rect.width() - 2.0 * padding).max(0.0),
+                        (pane_rect.height() - 2.0 * padding).max(0.0),
+                    ),
+                );
+                let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(sc) = active_status_col {
+                            let (dot_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(8.0, style::TEXT_BODY),
+                                egui::Sense::hover(),
+                            );
+                            let state = match preview.status {
+                                crate::host::context_state::ContextStatus::NeedsYou => {
+                                    AgentState::NeedsYou
+                                }
+                                crate::host::context_state::ContextStatus::Blocked => {
+                                    AgentState::Blocked
+                                }
+                                crate::host::context_state::ContextStatus::Error => {
+                                    AgentState::Failed
+                                }
+                                crate::host::context_state::ContextStatus::Working => {
+                                    AgentState::Working
+                                }
+                                _ => AgentState::Idle,
+                            };
+                            crate::ui::activity::paint_pip(
+                                ui.painter(),
+                                dot_rect.center(),
+                                3.5,
+                                Some(&state),
+                                sc,
+                                false,
+                            );
+                        }
+                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
+                            format!("↳ {} · child of {parent}", preview.context_name)
+                        } else {
+                            preview.context_name.clone()
+                        };
+                        ui.label(
+                            egui::RichText::new(title)
+                                .size(style::TEXT_BODY)
+                                .strong()
+                                .color(colors_for_portal.text_primary),
+                        );
+                    });
+                    if let Some(ref summary) = preview.status_summary {
+                        let summary_col = status_col.unwrap_or(colors_for_portal.text_dim);
+                        ui.label(
+                            egui::RichText::new(summary)
+                                .monospace()
+                                .size(style::TEXT_HINT)
+                                .strong()
+                                .color(summary_col),
+                        );
+                    }
                     if !preview.context_description.is_empty() {
                         ui.scope(|ui| {
                             ui.set_max_width(inner.width());
@@ -638,22 +919,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             egui::Sense::hover(),
                         );
                         let t = ui.input(|i| i.time);
-                        if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
-                            matches!(p.activity, Some(crate::protocol::AgentState::Working))
-                        }) {
-                            // Pulse only needs ~10fps; an unconditional
-                            // request_repaint pins the window at display refresh.
-                            ui.ctx()
-                                .request_repaint_after(std::time::Duration::from_millis(100));
-                        }
-                        let painter = ui.painter();
-                        paint_portal_minimap(
-                            painter,
-                            map_area,
-                            &preview.windows,
-                            &colors_for_portal,
-                            t,
-                        );
+                        paint_portal_minimap(ui, map_area, &preview.windows, &colors_for_portal, t);
                     }
                 });
             });
@@ -687,6 +953,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             );
         }
 
+        let outer = ui.max_rect();
+        style::mask_pane_corners(
+            ui.painter(),
+            outer,
+            style::pane_radius(self.pane_corner_radius, outer),
+            self.colors.bg_darkest,
+        );
         UiResponse::None
     }
 
@@ -755,7 +1028,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         tile_id: TileId,
         rect: egui::Rect,
     ) {
-        // Focus outline is painted after tree.ui() in app/mod.rs using the parent
+        // Focus outline is painted after tree.ui() in plugin/mod.rs using the parent
         // painter (full window clip rect), so StrokeKind::Outside fills the inter-pane gap.
         let _ = (painter, tile_id, rect);
     }
@@ -781,24 +1054,24 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
     }
 }
 
-pub(crate) fn deliver_dropped_files_to_app(
+pub(crate) fn deliver_dropped_files_to_plugin(
     ui: &egui::Ui,
     pane_id: PaneId,
-    app: &mut crate::host::pane::AppPane,
+    app: &mut crate::host::pane::ViewPane,
 ) {
     for file in ui.input(|i| i.raw.dropped_files.clone()) {
         let Some(path) = file.path else { continue };
         let source = path.to_string_lossy();
-        match dispatch_drop_to_app(pane_id, app, &source, true) {
+        match dispatch_drop_to_plugin(pane_id, app, &source, true) {
             Ok(_) => log::info!("drop: delivery accepted pane_id={pane_id} source_kind=file"),
             Err(error) => log::info!("drop: delivery rejected pane_id={pane_id} reason={error}"),
         }
     }
 }
 
-pub(crate) fn dispatch_drop_to_app(
+pub(crate) fn dispatch_drop_to_plugin(
     pane_id: PaneId,
-    app: &mut crate::host::pane::AppPane,
+    app: &mut crate::host::pane::ViewPane,
     source: &str,
     pane_hovered: bool,
 ) -> Result<serde_json::Value, String> {
@@ -936,7 +1209,7 @@ fn collect_pane_ids_recursive(
 /// Each window gets a "monitor bezel" frame with a thin chrome bar, then
 /// its pane layout fills the body below.
 pub(crate) fn paint_portal_minimap(
-    painter: &egui::Painter,
+    ui: &egui::Ui,
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
@@ -945,6 +1218,7 @@ pub(crate) fn paint_portal_minimap(
     if windows.is_empty() {
         return;
     }
+    let painter = ui.painter();
 
     // Determine grid extents so we know how many columns/rows to allocate.
     let max_gx = windows.iter().map(|w| w.grid_x).max().unwrap_or(0);
@@ -1010,39 +1284,62 @@ pub(crate) fn paint_portal_minimap(
             }
 
             // Pane background — solid screen color
-            painter.rect_filled(cell, 2.0, colors.bg_darkest);
+            painter.rect_filled(cell, crate::ui::style::radius_fit(cell), colors.bg_darkest);
 
             // Inactive (exited) panes get a dim overlay
             if !pane.active {
                 let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
-                painter.rect_filled(cell, 2.0, dim_overlay);
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), dim_overlay);
             }
 
-            // Focused pane: accent tint + glow edge
-            if pane.focused {
+            let is_error_cell = !pane.active
+                && matches!(
+                    pane.activity,
+                    Some(crate::protocol::AgentState::Interrupted)
+                );
+            let cell_escalation_col = crate::ui::activity::escalation_color(
+                pane.activity.as_ref(),
+                is_error_cell,
+                colors,
+            );
+
+            // Focused pane or escalated pane: semantic tint + border
+            let needs_you = matches!(pane.activity, Some(AgentState::NeedsYou));
+            crate::ui::activity::paint_attention_chrome(
+                painter,
+                cell,
+                colors.state_needs_you,
+                egui::Id::new(("minimap_attention", pane.pane_id)),
+                needs_you,
+            );
+            if let Some(esc_col) = cell_escalation_col.filter(|_| !needs_you) {
+                let tint = egui::Color32::from_rgba_unmultiplied(
+                    esc_col.r(),
+                    esc_col.g(),
+                    esc_col.b(),
+                    24,
+                );
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
+                let border_col = egui::Color32::from_rgba_unmultiplied(
+                    esc_col.r(),
+                    esc_col.g(),
+                    esc_col.b(),
+                    160,
+                );
+                painter.rect_stroke(
+                    cell,
+                    crate::ui::style::radius_fit(cell),
+                    egui::Stroke::new(1.25_f32, border_col),
+                    egui::StrokeKind::Middle,
+                );
+            } else if pane.focused {
                 let tint = egui::Color32::from_rgba_unmultiplied(
                     colors.accent.r(),
                     colors.accent.g(),
                     colors.accent.b(),
                     20,
                 );
-                painter.rect_filled(cell, 2.0, tint);
-
-                // Bottom-edge glow line
-                let glow_y = cell.max.y - 1.0;
-                let glow_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(),
-                    colors.accent.g(),
-                    colors.accent.b(),
-                    50,
-                );
-                painter.line_segment(
-                    [
-                        egui::pos2(cell.min.x, glow_y),
-                        egui::pos2(cell.max.x, glow_y),
-                    ],
-                    egui::Stroke::new(1.5_f32, glow_color),
-                );
+                painter.rect_filled(cell, crate::ui::style::radius_fit(cell), tint);
 
                 // Focused border
                 let accent_border = egui::Color32::from_rgba_unmultiplied(
@@ -1053,7 +1350,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, accent_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1066,7 +1363,7 @@ pub(crate) fn paint_portal_minimap(
                 );
                 painter.rect_stroke(
                     cell,
-                    2.0,
+                    crate::ui::style::radius_fit(cell),
                     egui::Stroke::new(1.0_f32, dim_border),
                     egui::StrokeKind::Middle,
                 );
@@ -1080,14 +1377,30 @@ pub(crate) fn paint_portal_minimap(
             let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
-                let color = crate::ui::activity::dot_color_from_time(state, colors, time, 0);
-                painter.circle_filled(
+                let color = if is_error_cell {
+                    colors.state_error
+                } else {
+                    crate::ui::activity::dot_color_from_time(state, colors, time, 0)
+                };
+                let glyph = if pane.static_health_pip && !is_error_cell {
+                    None
+                } else {
+                    Some(if is_error_cell {
+                        &AgentState::Failed
+                    } else {
+                        state
+                    })
+                };
+                crate::ui::activity::paint_pip(
+                    painter,
                     egui::pos2(
                         cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,
                         cell.min.y + 2.0 + title_font_size * 0.5,
                     ),
                     ACTIVITY_DOT_R,
+                    glyph,
                     color,
+                    false,
                 );
             }
 
@@ -1107,7 +1420,7 @@ pub(crate) fn paint_portal_minimap(
                 icon_alpha
             };
 
-            // Title label (OSC title or app name) at top of pane
+            // Title label (OSC title or plugin name) at top of pane
             let mut content_top = content_area.min.y;
             if let Some(ref title) = pane.title {
                 if cell.width() > 25.0 && cell.height() > 14.0 {
@@ -1122,18 +1435,23 @@ pub(crate) fn paint_portal_minimap(
                     // Title clears the dot (pad + diameter + gap), measured
                     // from the cell edge like the dot itself.
                     let title_x_offset = if activity_dot.is_some() {
-                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 4.0 - 2.0
+                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 10.0 - 2.0
                     } else {
                         1.0
                     };
-                    crate::ui::snap::text_snapped(
-                        painter,
-                        egui::pos2(content_area.min.x + title_x_offset, content_area.min.y),
-                        egui::Align2::LEFT_TOP,
+                    use egui::emath::GuiRounding;
+                    let origin =
+                        egui::pos2(content_area.min.x + title_x_offset, content_area.min.y)
+                            .round_to_pixels(painter.pixels_per_point());
+                    let galley = crate::ui::text::elided_galley(
+                        ui,
                         title,
                         egui::FontId::proportional(font_size),
-                        title_color,
+                        (content_area.max.x - origin.x).max(0.0),
+                        crate::ui::text::Side::Trailing,
                     );
+                    let clipped = painter.with_clip_rect(cell);
+                    crate::ui::snap::galley_snapped(&clipped, origin, galley, title_color);
                     content_top += font_size + 2.0;
                 }
             }
@@ -1146,7 +1464,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             match pane.kind {
-                PaneKind::App => {
+                PaneKind::View => {
                     let block_color = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
@@ -1183,7 +1501,10 @@ pub(crate) fn paint_portal_minimap(
                             };
                             painter.rect_filled(
                                 egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq)),
-                                1.0,
+                                crate::ui::style::radius_fit(egui::Rect::from_min_size(
+                                    egui::pos2(x, y),
+                                    egui::vec2(sq, sq),
+                                )),
                                 fill,
                             );
                         }
@@ -1300,11 +1621,15 @@ pub(crate) fn paint_portal_minimap(
                                 egui::vec2(mini_w, mini_h),
                             );
                             if r == 1 && c == 1 {
-                                painter.rect_filled(rect, 2.0, accent_fill);
+                                painter.rect_filled(
+                                    rect,
+                                    crate::ui::style::radius_fit(rect),
+                                    accent_fill,
+                                );
                             } else {
                                 painter.rect_stroke(
                                     rect,
-                                    2.0,
+                                    crate::ui::style::radius_fit(rect),
                                     egui::Stroke::new(1.0_f32, outline_color),
                                     egui::StrokeKind::Inside,
                                 );

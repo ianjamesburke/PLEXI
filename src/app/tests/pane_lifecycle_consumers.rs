@@ -1,10 +1,10 @@
 use crate::app::ui_mailbox::{EguiWake, UiMailbox};
 use crate::host::event_subscriptions::ConsentChoice;
 use crate::testing::HostHarness;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 struct Connection {
@@ -22,8 +22,16 @@ impl Connection {
         h.app.event_publish_rx = rx;
         let ipc = h.ipc_tx.clone();
         let (mut socket, server) = UnixStream::pair().unwrap();
+        let trace_profile = crate::config::config_dir();
         let thread = std::thread::spawn(move || {
-            crate::app::handle_socket_connection(server, ipc, subscribe, publish, None);
+            crate::app::handle_socket_connection(
+                &trace_profile,
+                server,
+                ipc,
+                subscribe,
+                publish,
+                None,
+            );
         });
         writeln!(socket, "{request}").unwrap();
         let input = socket.try_clone().unwrap();
@@ -145,7 +153,7 @@ fn close(h: &mut HostHarness, pane: u64) {
 }
 
 fn subscriptions(pane: u64) -> usize {
-    crate::host::app_timeline::global()
+    crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
         .subscriptions()
@@ -204,6 +212,41 @@ fn pane_consumer_retains_unknown_exit_after_close() {
     let reply = connection.next(&mut h);
     assert_eq!(reply["payload"]["kind"], "exited", "{reply}");
     assert_eq!(reply["payload"]["status"], "unknown");
+}
+
+#[test]
+fn pane_consumer_retains_exit_code_signal_and_keeps_provider_stop_separate() {
+    use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent};
+    let mut h = HostHarness::new();
+    let caller = h.add_test_pane();
+
+    for (status, expected) in [
+        (ExitStatus::Code(0), json!({"code": 0})),
+        (ExitStatus::Code(23), json!({"code": 23})),
+        (ExitStatus::Signal(9), json!({"signal": 9})),
+        (ExitStatus::Unknown, json!("unknown")),
+    ] {
+        let target = h.add_test_pane();
+        for provider_event in ["Stop", "StopFailure", "SessionEnd"] {
+            report(&mut h, target, "idle", provider_event);
+        }
+        let no_exit_yet = Connection::open(&mut h, wait_request(target, caller, "exited", 0.05));
+        let pre_exit_reply = no_exit_yet.next(&mut h);
+        assert_eq!(
+            pre_exit_reply["type"], "timeout",
+            "provider Stop/StopFailure/SessionEnd must never satisfy exited: {pre_exit_reply}"
+        );
+        drop(no_exit_yet);
+
+        h.app
+            .emit_pane_lifecycle(target, PaneLifecycleEvent::Exited { status });
+        close(&mut h, target);
+
+        let connection = Connection::open(&mut h, wait_request(target, caller, "exited", 1.0));
+        let reply = connection.next(&mut h);
+        assert_eq!(reply["payload"]["kind"], "exited", "{reply}");
+        assert_eq!(reply["payload"]["status"], expected);
+    }
 }
 
 #[test]

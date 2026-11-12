@@ -73,6 +73,9 @@ impl Default for ColorPalette {
 pub struct TerminalTheme {
     palette: Box<ColorPalette>,
     ansi256_colors: HashMap<u8, Color32>,
+    /// Minimum WCAG contrast between a glyph and its cell background; `1.0`
+    /// disables the adjustment. See `crate::contrast`.
+    minimum_contrast: f32,
 }
 
 impl Default for TerminalTheme {
@@ -80,6 +83,7 @@ impl Default for TerminalTheme {
         Self {
             palette: Box::<ColorPalette>::default(),
             ansi256_colors: TerminalTheme::get_ansi256_colors(),
+            minimum_contrast: crate::contrast::MIN_CONTRAST_OFF,
         }
     }
 }
@@ -89,7 +93,18 @@ impl TerminalTheme {
         Self {
             palette,
             ansi256_colors: TerminalTheme::get_ansi256_colors(),
+            minimum_contrast: crate::contrast::MIN_CONTRAST_OFF,
         }
+    }
+
+    /// Set the minimum glyph/background contrast ratio (`1.0` = off).
+    pub fn with_minimum_contrast(mut self, minimum: f32) -> Self {
+        self.minimum_contrast = minimum;
+        self
+    }
+
+    pub fn minimum_contrast(&self) -> f32 {
+        self.minimum_contrast
     }
 
     fn get_ansi256_colors() -> HashMap<u8, Color32> {

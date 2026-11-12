@@ -1,0 +1,5 @@
+error: unknown command 'pnae'. Did you mean `pane`?
+
+Usage: plexi [OPTIONS] [COMMAND]
+
+For more information, try 'plexi --help'.

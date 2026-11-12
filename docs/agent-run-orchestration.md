@@ -1,6 +1,6 @@
 # Agent Run Orchestration
 
-Status: active
+Status: superseded — Superseded by the locked Pre-1.0 agent direction in `TRUTH.md` (§1 Locked Release Schedule, §9 Cuts): CLI coding agents (`pi`, `claude`, `codex`, `agy`) driven through `@plexi/pi` (`packages/pi-plexi`, stint 0796), self-closing sub-context squads, and all-over session restoration. The built-in Assistant is not the primary orchestrator. Kept as historical design context only; do not build from it.
 
 Stint: 0628, 0664–0673
 
@@ -56,11 +56,12 @@ None of these have a right answer derivable from state. They are the reason a mo
 A pane is a terminal attached to a running host. These need that and nothing else does:
 
 - `just pr-install <N>` and booting `plexi-pr-<N>` — long-running, produces a real installed channel profile.
-- **Driving the installed app end to end**, including falsifiability probes (break the invariant, watch the guard fire, revert).
+- Try-it team steps must run from a workspace with `.plexi/teams/`, or use a built-in team.
+- **Driving the installed plugin end to end**, including falsifiability probes (break the invariant, watch the guard fire, revert).
 - **Scene capture** and framebuffer shots via `drive-host`.
 - Anything that must observe `~/.plexi-pr-<N>/plexi.log` from the running build.
 
-**The load-bearing correction:** *worker implementation is not on this list.* A worker needs a worktree, a long-running subprocess, and a model — it never needs a terminal a human is watching. It runs in a pane today only because a pane is the sole agent-spawn primitive Plexi has. That is a misuse of a human-trust affordance as a process supervisor, and it is the same category error `AGENTS.md` already names when it forbids app-to-app data over PTY injection. Testers need a host. Workers need a supervisor. Conflating them is why a worker's result has to be scraped off a screen.
+**The load-bearing correction:** *worker implementation is not on this list.* A worker needs a worktree, a long-running subprocess, and a model — it never needs a terminal a human is watching. It runs in a pane today only because a pane is the sole agent-spawn primitive Plexi has. That is a misuse of a human-trust affordance as a process supervisor, and it is the same category error `AGENTS.md` already names when it forbids plugin-to-plugin data over PTY injection. Testers need a host. Workers need a supervisor. Conflating them is why a worker's result has to be scraped off a screen.
 
 ---
 
@@ -70,7 +71,7 @@ Each of these is a stint. They are ordered by how much workaround they delete.
 
 ### 1. Pane lifecycle events — the single biggest gap
 
-Everything polls because nothing pushes. Panes must publish lifecycle events on the **existing event bus** (`DeclareEventStreams` / `EmitEvent` / `SubscribeAppEvents`) rather than through a new transport — `AGENTS.md` already lists pane slots as a consolidation candidate for exactly this bus, and a second event mechanism would violate the one-comms-model rule.
+Everything polls because nothing pushes. Panes must publish lifecycle events on the **existing event bus** (`DeclareEventStreams` / `EmitEvent` / `SubscribePluginEvents`) rather than through a new transport — `AGENTS.md` already lists pane slots as a consolidation candidate for exactly this bus, and a second event mechanism would violate the one-comms-model rule.
 
 Event kinds, at minimum: pane spawned; agent booted to an idle prompt; agent went idle; agent blocked, carrying a typed reason (`permission-prompt`, `usage-limit`, `boot-failure`); slot changed, carrying name and value; pane exited with its status.
 
@@ -180,7 +181,7 @@ The babysitter is load-bearing and runs nightly. Every step below is independent
 
 - **A general-purpose workflow DSL for users.** One consumer does not justify an engine. It becomes in scope when a second pipeline (release, marketplace review) wants the same supervisor and the babysitter's own shape has been stable for a full sprint.
 - **Distributed or multi-machine fleets.** That is Plexi Server, a separate product on the other side of the local/server split. In scope once the single-machine supervisor is proven and the server identity model exists.
-- **Automatic merge-conflict resolution.** Routed to judgment, permanently, until there is evidence a model resolves them without silently destroying state — and the app-state migration conflicts in this repo are precisely the case where a wrong resolution is invisible.
+- **Automatic merge-conflict resolution.** Routed to judgment, permanently, until there is evidence a model resolves them without silently destroying state — and the plugin-state migration conflicts in this repo are precisely the case where a wrong resolution is invisible.
 - **Removing the human from `HUMAN_CHECKS.md`.** In scope per item, only when a host primitive makes that specific check drivable (audio output capture, a fullscreen CLI verb, a working framebuffer gate).
 - **Replacing the tester round with static analysis or CI.** CI green means nothing red, not reviewed. In scope when a review layer actually reads the diff.
 - **Porting the reference harness's workflow layer verbatim.** Its agents have no host to attach to; Plexi's testers do. The three contracts worth adopting are pushed completion, structured returns, and isolation-as-a-flag — all specified above as host primitives.

@@ -3,17 +3,20 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    ("core_only", "bool", "Disable all plugins; global profile only, restart required (default false)"),
     (
         "config_version",
         "integer",
         "Config schema version (managed automatically)",
     ),
     ("font_size", "float", "UI font size in points"),
+    ("ui_scale", "float", "App-wide UI scale, 0.6-2.0 (default 1.0)"),
     (
         "pane_gap",
         "float",
         "Inter-pane gap width in pixels (clamped 0–20, default 4)",
     ),
+    ("pane_corner_radius", "integer", "Pane corner radius in points (0–255, default 6)"),
     (
         "pane_title_font_size",
         "float",
@@ -32,7 +35,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     (
         "confirm_quit",
         "bool",
-        "Triple-press Cmd+Q confirmation before quitting (default true)",
+        "Triple-press quit confirmation before quitting (default true)",
     ),
     (
         "confirm_close",
@@ -49,6 +52,16 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "integer",
         "Number of focus history entries to retain",
     ),
+    ("attention.style", "string", "Attention style: off, subtle, normal (default), loud"),
+    ("attention.intensity", "float", "Attention halo and border intensity, 0 to 1 (default 1)"),
+    ("attention.dock", "string", "Dock mode: none, badge (default), bounce-once, bounce-until-focused"),
+    ("theme.state_preset", "string", "Agent states: default, okabe-ito, high-contrast, mono (default: okabe-ito)"),
+    ("theme.state_working", "string", "Agent working color (#rrggbb)"),
+    ("theme.state_waiting", "string", "Agent waiting color (#rrggbb)"),
+    ("theme.state_blocked", "string", "Agent blocked color (#rrggbb)"),
+    ("theme.state_needs_you", "string", "Agent needs you color (#rrggbb)"),
+    ("theme.state_interrupted", "string", "Agent interrupted color (#rrggbb)"),
+    ("theme.state_error", "string", "Agent error color (#rrggbb)"),
     // theme.*
     (
         "theme.preset",
@@ -138,12 +151,23 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "float",
         "Opacity for unfocused panes when ghost enabled (0–1, default 0.75)",
     ),
+    // terminal.*
+    (
+        "terminal.minimum_contrast",
+        "float",
+        "Minimum text contrast ratio 1.0–21.0; lifts low-contrast plugin colors, 1.0 = off (default 3.0)",
+    ),
     // log.*
     ("log.level", "string", "Log level: error, warn, info, debug"),
     (
         "log.retention_days",
         "integer",
         "How many days to retain log files",
+    ),
+    (
+        "cloud.retain_local_history",
+        "bool",
+        "Also delete local ledger rows and assistant conversations older than 30 days (default false)",
     ),
     // notifications.*
     (
@@ -166,52 +190,15 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("agents.high", "string", "Command for high-tier agent tasks"),
     // ai.*
     (
-        "ai.backend",
-        "string",
-        "AI backend: openrouter (default) or ollama",
-    ),
-    (
         "ai.per_app_daily_usd",
         "float",
-        "Per-app daily spend cap in USD (default 1.00)",
+        "Per-plugin daily spend cap in USD (default 1.00)",
     ),
     (
         "ai.global_daily_usd",
         "float",
         "Global daily spend cap in USD (default 10.00)",
     ),
-    (
-        "ai.openrouter.api_key_env",
-        "string",
-        "Env var for OpenRouter API key (default OPENROUTER_API_KEY)",
-    ),
-    (
-        "ai.openrouter.model_low",
-        "string",
-        "OpenRouter low-tier model",
-    ),
-    (
-        "ai.openrouter.model_medium",
-        "string",
-        "OpenRouter medium-tier model",
-    ),
-    (
-        "ai.openrouter.model_high",
-        "string",
-        "OpenRouter high-tier model",
-    ),
-    (
-        "ai.ollama.host",
-        "string",
-        "Ollama host URL (default http://localhost:11434)",
-    ),
-    ("ai.ollama.model_low", "string", "Ollama low-tier model"),
-    (
-        "ai.ollama.model_medium",
-        "string",
-        "Ollama medium-tier model",
-    ),
-    ("ai.ollama.model_high", "string", "Ollama high-tier model"),
     // cli.*
     (
         "cli.tips",
@@ -251,47 +238,179 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn config_check(scope: ConfigScope) -> i32 {
-    log::info!("config_check: validating config files scope={scope:?}");
-    let paths = match config_paths_for_scope(scope, false) {
-        Ok(paths) => paths,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return 1;
+fn count_config_keybindings(path: &std::path::Path) -> usize {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&data) else {
+        return 0;
+    };
+    let Some(table) = value.as_table() else {
+        return 0;
+    };
+    let keys_count = table
+        .get("keys")
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len());
+    let kb_count = table
+        .get("keybindings")
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len());
+    keys_count + kb_count
+}
+
+fn count_commands_entries(path: &std::path::Path) -> usize {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&data) else {
+        return 0;
+    };
+    value
+        .as_table()
+        .and_then(|t| t.get("commands"))
+        .and_then(|v| v.as_table())
+        .map_or(0, |t| t.len())
+}
+
+pub fn config_check_report(
+    scope: ConfigScope,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<(String, i32), String> {
+    let global_cfg = crate::config::config_path();
+    let global_cmds = crate::cli::global_commands_path();
+
+    let mut targets: Vec<(PathBuf, PathBuf, &'static str)> = Vec::new();
+    match scope {
+        ConfigScope::Global => {
+            targets.push((global_cfg, global_cmds, "global"));
         }
-    };
-    let mut diags = if scope == ConfigScope::Effective {
-        crate::config::validate_all()
-    } else {
-        Vec::new()
-    };
-    if scope != ConfigScope::Effective {
-        for path in &paths {
-            diags.extend(crate::config::validate_from_path(path));
+        ConfigScope::Workspace => {
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            let ws_cfg = crate::config::workspace_config_path(root);
+            let ws_cmds = root.join(crate::cli::commands_file());
+            targets.push((ws_cfg, ws_cmds, "workspace"));
+        }
+        ConfigScope::Effective => {
+            if let Some(root) = workspace_root {
+                let ws_cfg = crate::config::workspace_config_path(root);
+                let ws_cmds = root.join(crate::cli::commands_file());
+                if ws_cfg != global_cfg {
+                    targets.push((ws_cfg, ws_cmds, "workspace"));
+                }
+            }
+            targets.push((global_cfg, global_cmds, "global"));
         }
     }
-    if diags.is_empty() {
-        for path in paths {
-            if path.exists() {
-                eprintln!("✓ {} is valid", path.display());
+
+    let mut diags = Vec::new();
+    if !matches!(scope, ConfigScope::Workspace) {
+        let legacy = crate::config::config_dir().join("relay.toml");
+        if legacy.exists() {
+            diags.push(crate::config::ConfigDiagnostic::InvalidValue {
+                path: legacy.display().to_string(),
+                key: "relay".into(),
+                error: "was removed; delete this file".into(),
+            });
+        }
+    }
+    let mut file_lines = Vec::new();
+    let mut total_files = 0usize;
+    let mut total_commands = 0usize;
+    let mut total_keybindings = 0usize;
+
+    for (cfg_path, cmds_path, scope_label) in &targets {
+        total_files += 2;
+        diags.extend(crate::config::validate_from_path(cfg_path));
+        if *scope_label == "workspace" {
+            if let Ok(data) = std::fs::read_to_string(cfg_path) {
+                if let Ok(table) = toml::from_str::<toml::Table>(&data) {
+                    for key in [
+                        "focus_history_depth",
+                        "cli",
+                        "file_handlers",
+                        "config_version",
+                    ] {
+                        if table.contains_key(key) {
+                            diags.push(crate::config::ConfigDiagnostic::WorkspaceGlobalOnly {
+                                path: cfg_path.display().to_string(),
+                                key: key.to_owned(),
+                            });
+                        }
+                    }
+                }
             }
         }
-        return 0;
+        diags.extend(crate::config::validate_commands_from_path(cmds_path));
+
+        let kb_count = count_config_keybindings(cfg_path);
+        let cmd_count = count_commands_entries(cmds_path);
+        total_keybindings += kb_count;
+        total_commands += cmd_count;
+
+        let cfg_status = if cfg_path.exists() {
+            "valid"
+        } else {
+            "not present (defaults)"
+        };
+        let cmds_status = if cmds_path.exists() {
+            "valid"
+        } else {
+            "not present"
+        };
+        file_lines.push(format!(
+            "✓ {} ({scope_label}): {cfg_status} ({kb_count} keybindings)",
+            cfg_path.display()
+        ));
+        file_lines.push(format!(
+            "✓ {} ({scope_label}): {cmds_status} ({cmd_count} commands)",
+            cmds_path.display()
+        ));
+    }
+
+    if diags.is_empty() {
+        let mut out = file_lines.join("\n");
+        out.push('\n');
+        out.push_str(&format!(
+            "OK: {total_files} files checked, {total_commands} commands, {total_keybindings} keybindings\n"
+        ));
+        return Ok((out, 0));
     }
 
     let has_errors = diags.iter().any(|d| d.is_error());
+    let mut out = String::new();
     for d in &diags {
         if d.is_error() {
-            eprintln!("✗ {d}");
+            out.push_str(&format!("✗ {d}\n"));
         } else {
-            eprintln!("⚠ {d}");
+            out.push_str(&format!("⚠ {d}\n"));
         }
     }
+    if !has_errors {
+        out.push_str(&format!(
+            "OK (with warnings): {total_files} files checked, {total_commands} commands, {total_keybindings} keybindings\n"
+        ));
+    }
 
-    if has_errors {
-        1
-    } else {
-        0
+    Ok((out, if has_errors { 1 } else { 0 }))
+}
+
+pub fn config_check(scope: ConfigScope) -> i32 {
+    log::info!("config_check: validating config files scope={scope:?}");
+    let ws_root = crate::config::active_workspace_root();
+    match config_check_report(scope, ws_root.as_deref()) {
+        Ok((report, code)) => {
+            if code == 0 {
+                print!("{report}");
+            } else {
+                eprint!("{report}");
+            }
+            code
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            1
+        }
     }
 }
 
@@ -346,38 +465,10 @@ pub fn config_edit(scope: ConfigScope) -> i32 {
     }
 }
 
-pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
-    log::info!("config_get: resolving key={key} scope={scope:?}");
+pub fn config_get(key: &str, scope: ConfigScope, json: bool) -> i32 {
+    log::info!("config_get: resolving key={key} scope={scope:?} json={json}");
 
-    // agents.* are special-cased because they have programmatic defaults
-    // not stored in config.toml — always return via effective_*() for those.
-    if scope == ConfigScope::Effective {
-        match key {
-            "agents.low" | "agents.medium" | "agents.high" => {
-                let config = crate::config::PlexiConfig::load_with_workspace(
-                    crate::config::active_workspace_root().as_deref(),
-                );
-                let agents = config.agents.as_ref();
-                let value = match key {
-                    "agents.low" => agents
-                        .map(|a| a.effective_low())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_LOW),
-                    "agents.medium" => agents
-                        .map(|a| a.effective_medium())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
-                    _ => agents
-                        .map(|a| a.effective_high())
-                        .unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
-                };
-                println!("{value}");
-                return 0;
-            }
-            _ => {}
-        };
-    }
-
-    // Generic path: load config as a raw TOML value and walk the dot-separated key.
-    // Effective scope overlays workspace config on top of the global config.
+    // Load the selected config as a raw TOML value and walk the dot-separated key.
     let paths = match config_paths_for_scope(scope, false) {
         Ok(paths) => paths,
         Err(msg) => {
@@ -385,9 +476,30 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
             return 1;
         }
     };
+    config_get_from_paths_with_json(key, &paths, json)
+}
+
+#[cfg(test)]
+fn config_get_from_paths(key: &str, paths: &[PathBuf]) -> i32 {
+    config_get_from_paths_with_json(key, paths, false)
+}
+
+fn config_get_from_paths_with_json(key: &str, paths: &[PathBuf], json: bool) -> i32 {
+    if json && (key == "models" || key == "models.fast" || key == "models.slow") {
+        match resolved_models_json(key, paths) {
+            Ok(value) => {
+                println!("{value}");
+                return 0;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 1;
+            }
+        }
+    }
     let mut root = toml::Value::Table(toml::map::Map::new());
     for path in paths {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(data) => match toml::from_str::<toml::Value>(&data) {
                 Ok(val) => toml_merge(&mut root, val),
                 Err(e) => {
@@ -395,15 +507,7 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
                     return 1;
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if scope == ConfigScope::Workspace {
-                    eprintln!(
-                        "error: workspace config does not exist at {}",
-                        path.display()
-                    );
-                    return 1;
-                }
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 eprintln!("error: could not read {}: {e}", path.display());
                 return 1;
@@ -427,6 +531,26 @@ pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
 
     println!("{}", toml_value_to_string(current));
     0
+}
+
+fn resolved_models_json(key: &str, paths: &[PathBuf]) -> Result<String, String> {
+    let mut config = crate::config::PlexiConfig::default();
+    for path in paths {
+        match crate::config::PlexiConfig::load_from_path_for_cli(path) {
+            Ok(Some(next)) => config.overlay_for_cli(next),
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not parse {}: {error}", path.display())),
+        }
+    }
+    let modes = config.resolved_model_modes();
+    let value = match key {
+        "models.fast" => serde_json::to_value(modes.fast),
+        "models.slow" => serde_json::to_value(modes.slow),
+        _ => serde_json::to_value(modes),
+    }
+    .map_err(|error| format!("could not serialize resolved {key}: {error}"))?;
+    serde_json::to_string(&value)
+        .map_err(|error| format!("could not serialize resolved {key}: {error}"))
 }
 
 /// Recursively merge `src` on top of `dst` — table keys in `src` override `dst`;
@@ -465,11 +589,15 @@ pub fn config_reset(scope: ConfigScope) -> i32 {
             return 1;
         }
     };
+    config_reset_at_path(&path, scope)
+}
+
+fn config_reset_at_path(path: &std::path::Path, scope: ConfigScope) -> i32 {
     log::info!(
         "config_reset: writing default config to {} scope={scope:?}",
         path.display()
     );
-    match write_default_config(&path) {
+    match write_default_config(path) {
         Ok(()) => 0,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -479,45 +607,46 @@ pub fn config_reset(scope: ConfigScope) -> i32 {
 }
 
 fn writable_config_path(scope: ConfigScope) -> Result<PathBuf, String> {
-    match scope {
-        ConfigScope::Effective | ConfigScope::Global => {
-            let path = crate::config::ensure_config_exists();
-            Ok(path)
-        }
-        ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            let path = crate::config::workspace_config_path(&root);
-            if !path.exists() {
-                write_default_config(&path)?;
-            }
-            Ok(path)
-        }
-    }
+    config_path_for_scope(scope, crate::config::active_workspace_root().as_deref())
 }
 
 fn config_paths_for_scope(
     scope: ConfigScope,
-    include_missing_workspace: bool,
+    _include_missing_workspace: bool,
 ) -> Result<Vec<PathBuf>, String> {
-    let global = crate::config::config_path();
+    let workspace = crate::config::active_workspace_root();
     match scope {
-        ConfigScope::Global => Ok(vec![global]),
+        ConfigScope::Global => Ok(vec![crate::config::config_path()]),
+        ConfigScope::Workspace => Ok(vec![config_path_for_scope(scope, workspace.as_deref())?]),
+        // Machine-readable reads match the host's field-level global + workspace
+        // merge, so `config get --json models` is safe for pi-plexi in a workspace.
+        ConfigScope::Effective => Ok(match workspace {
+            Some(root) => vec![
+                crate::config::config_path(),
+                crate::config::workspace_config_path(&root),
+            ],
+            None => vec![crate::config::config_path()],
+        }),
+    }
+}
+
+/// Resolve the one config file selected by a config command. With no explicit
+/// scope flag, every config verb targets the active workspace when there is
+/// one and the channel-global config otherwise.
+fn config_path_for_scope(
+    scope: ConfigScope,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<PathBuf, String> {
+    match scope {
+        ConfigScope::Global => Ok(crate::config::config_path()),
         ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            Ok(vec![crate::config::workspace_config_path(&root)])
+            let root = workspace_root.ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            Ok(crate::config::workspace_config_path(root))
         }
-        ConfigScope::Effective => {
-            let mut paths = vec![global];
-            if let Some(root) = crate::config::active_workspace_root() {
-                let workspace = crate::config::workspace_config_path(&root);
-                if include_missing_workspace || workspace.exists() {
-                    paths.push(workspace);
-                }
-            }
-            Ok(paths)
-        }
+        ConfigScope::Effective => Ok(workspace_root.map_or_else(
+            crate::config::config_path,
+            crate::config::workspace_config_path,
+        )),
     }
 }
 
@@ -612,8 +741,7 @@ pub fn config_list(scope: ConfigScope, json: bool) -> i32 {
 pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
     log::info!("config_set: {} pair(s) scope={scope:?}", pairs.len());
 
-    // Resolve the target write path, defaulting to workspace if inside one.
-    let path = match writable_config_path_defaulting_to_workspace(scope) {
+    let path = match writable_config_path(scope) {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -621,9 +749,16 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
         }
     };
 
-    let raw = match std::fs::read_to_string(&path) {
+    config_set_at_path(pairs, &path)
+}
+
+fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
+    let creating = !path.exists();
+    let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::config::CONFIG_TEMPLATE.to_string()
+        }
         Err(e) => {
             eprintln!("error: could not read {}: {e}", path.display());
             return 1;
@@ -662,11 +797,27 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
         };
 
         let segments: Vec<&str> = key.split('.').collect();
-        if let Err(msg) = toml_edit_set(&mut doc, &segments, toml_val) {
+        if let Err(msg) = crate::config::edit::set_value(&mut doc, &segments, toml_val) {
             eprintln!("error: {key}: {msg}");
             return 1;
         }
-        log::info!("config_set: set {key}={raw_value}");
+        log::info!(
+            "config_set: key={key} value_chars={}",
+            raw_value.chars().count()
+        );
+    }
+
+    let edited = doc.to_string();
+    for diag in crate::config::validate_text(&edited, path) {
+        if let crate::config::ConfigDiagnostic::InvalidValue { key, error, .. } = &diag {
+            if pairs
+                .iter()
+                .any(|p| p.split_once('=').is_some_and(|(k, _)| k == key))
+            {
+                eprintln!("error: {key}: {error}");
+                return 1;
+            }
+        }
     }
 
     if let Some(parent) = path.parent() {
@@ -678,11 +829,18 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
             return 1;
         }
     }
-    if let Err(e) = std::fs::write(&path, doc.to_string()) {
+    if let Err(e) = std::fs::write(path, edited) {
         eprintln!("error: could not write {}: {e}", path.display());
         return 1;
     }
-    eprintln!("✓ wrote {}", path.display());
+    if creating {
+        eprintln!(
+            "warning: created default config at {} and wrote the requested setting(s)",
+            path.display()
+        );
+    } else {
+        eprintln!("✓ wrote {}", path.display());
+    }
     0
 }
 
@@ -732,67 +890,41 @@ fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit:
     }
 }
 
-/// Navigate/create nested tables in a toml_edit document and set the leaf value.
-fn toml_edit_set(
-    doc: &mut toml_edit::DocumentMut,
-    segments: &[&str],
-    value: toml_edit::Value,
-) -> Result<(), String> {
-    let (leaf, parents) = segments
-        .split_last()
-        .ok_or_else(|| "empty key".to_string())?;
-
-    // Walk/create nested [section] tables.
-    let mut table: &mut toml_edit::Table = doc.as_table_mut();
-    for seg in parents {
-        if !table.contains_key(seg) {
-            table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
-        }
-        table = table
-            .get_mut(seg)
-            .and_then(|i| i.as_table_mut())
-            .ok_or_else(|| format!("{seg} is not a table"))?;
-    }
-    table.insert(leaf, toml_edit::Item::Value(value));
-    Ok(())
-}
-
-/// Like `writable_config_path` but defaults to workspace when inside one
-/// (scope=Effective resolves to workspace if available, global otherwise).
-fn writable_config_path_defaulting_to_workspace(scope: ConfigScope) -> Result<PathBuf, String> {
-    match scope {
-        ConfigScope::Workspace => {
-            let root = crate::config::active_workspace_root()
-                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
-            let path = crate::config::workspace_config_path(&root);
-            if !path.exists() {
-                write_default_config(&path)?;
-            }
-            Ok(path)
-        }
-        ConfigScope::Global => {
-            let path = crate::config::ensure_config_exists();
-            Ok(path)
-        }
-        ConfigScope::Effective => {
-            // Default: workspace if available, global otherwise.
-            if let Some(root) = crate::config::active_workspace_root() {
-                let path = crate::config::workspace_config_path(&root);
-                if !path.exists() {
-                    write_default_config(&path)?;
-                }
-                Ok(path)
-            } else {
-                let path = crate::config::ensure_config_exists();
-                Ok(path)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_only_config_cli_writes_boolean_and_rejects_invalid_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(config_set_at_path(&["core_only=true".into()], &path), 0);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::PlexiConfig = toml::from_str(&raw).unwrap();
+        assert_eq!(config.core_only, Some(true));
+        assert_eq!(config_set_at_path(&["core_only=typo".into()], &path), 1);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+    }
+
+    #[test]
+    fn config_set_rejects_out_of_range_terminal_minimum_contrast() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for bad in ["0.5", "22", "-3"] {
+            assert_eq!(
+                config_set_at_path(&[format!("terminal.minimum_contrast={bad}")], &path),
+                1,
+                "{bad} must be rejected"
+            );
+            assert!(!path.exists(), "nothing may be written for {bad}");
+        }
+        assert_eq!(
+            config_set_at_path(&["terminal.minimum_contrast=1.0".to_string()], &path),
+            0
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("minimum_contrast = 1"), "{text}");
+    }
 
     #[test]
     fn config_set_marketplace_urls_keeps_default_config_parseable() {
@@ -813,5 +945,250 @@ mod tests {
         assert!(text.contains("[marketplace]"));
         assert!(text.contains("registry_url = \"http://127.0.0.1:8765/registry/v1/index.json\""));
         assert!(text.contains("cdn_url = \"http://127.0.0.1:8765/registry/v1/packages\""));
+    }
+
+    #[test]
+    fn config_default_scope_keeps_set_get_and_reset_in_workspace() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_path = crate::config::workspace_config_path(workspace.path());
+        let global_path = crate::config::config_path();
+
+        assert_eq!(
+            config_path_for_scope(ConfigScope::Effective, Some(workspace.path())).unwrap(),
+            workspace_path,
+            "default set/get/reset scope must select the workspace config"
+        );
+        assert_eq!(
+            config_path_for_scope(ConfigScope::Global, Some(workspace.path())).unwrap(),
+            global_path,
+            "--global must select the global config"
+        );
+
+        assert_eq!(
+            config_set_at_path(&["theme.preset=dracula".to_string()], &workspace_path),
+            0
+        );
+        assert_eq!(
+            config_get_from_paths("theme.preset", &[workspace_path.clone()]),
+            0
+        );
+        assert_eq!(
+            config_reset_at_path(&workspace_path, ConfigScope::Effective),
+            0
+        );
+        assert!(workspace_path.exists());
+        assert!(
+            !global_path.exists(),
+            "default workspace operations must not touch global config"
+        );
+    }
+
+    #[test]
+    fn config_get_json_models_returns_resolved_global_and_workspace_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("config.toml");
+        let workspace = dir.path().join("workspace/.plexi/config.toml");
+        std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+        std::fs::write(&global, "[models.fast]\nprovider = \"global\"\nmodel = \"global/fast\"\n[models.slow]\nthinking = \"minimal\"\n").unwrap();
+        std::fs::write(
+            &workspace,
+            "[models.fast]\nthinking = \"high\"\n[models.slow]\nmodel = \"workspace/slow\"\n",
+        )
+        .unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&resolved_models_json("models", &[global, workspace]).unwrap())
+                .unwrap();
+        assert_eq!(
+            value["fast"],
+            serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"})
+        );
+        assert_eq!(
+            value["slow"],
+            serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"})
+        );
+    }
+
+    #[test]
+    fn config_set_refuses_an_unknown_theme_preset_and_accepts_every_known_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "config_version = 1\n[theme]\npreset = \"dracula\"\n").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            config_set_at_path(&["theme.preset=plexi-bogus".to_string()], &path),
+            1,
+            "an unknown preset must be refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "refused set must not write"
+        );
+        for name in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            assert_eq!(
+                config_set_at_path(&[format!("theme.preset={name}")], &path),
+                0,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_check_reports_removed_relay_without_disabling_other_experiments() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(
+            crate::config::config_path(),
+            "[experiments]\nrelay = true\nledger = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            profile.path().join("relay.toml"),
+            "enabled = true\nurl = 'wss://example.com'\n",
+        )
+        .unwrap();
+        let (report, code) = config_check_report(ConfigScope::Global, None).unwrap();
+        assert_eq!(code, 1);
+        assert!(report.contains("experiments.relay was removed"), "{report}");
+        assert!(
+            report.contains("relay.toml") && report.contains("was removed"),
+            "{report}"
+        );
+        let enabled = crate::config::load_global_experiments().unwrap();
+        assert!(enabled.contains(&crate::release::ReleaseFeature::Ledger));
+    }
+
+    #[test]
+    fn config_check_flags_an_unknown_theme_preset() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let cfg = crate::config::config_path();
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "config_version = 1\n[theme]\npreset = \"plexi-bogus\"\n",
+        )
+        .unwrap();
+        let (report, code) = config_check_report(ConfigScope::Global, None).unwrap();
+        assert_eq!(code, 1, "{report}");
+        assert!(
+            report.contains("theme.preset") && report.contains("plexi-dusk"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn config_check_warns_for_workspace_global_only_keys() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let path = crate::config::workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            "config_version = 1\nfocus_history_depth = 10\n[cli]\n[file_handlers]\n",
+        )
+        .unwrap();
+        let (report, code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(code, 0, "{report}");
+        for key in [
+            "config_version",
+            "focus_history_depth",
+            "cli",
+            "file_handlers",
+        ] {
+            assert!(
+                report.contains(&format!("`{key}` is global-only")),
+                "{report}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_check_reports_ok_summary_and_flags_misplaced_commands_and_config_tables() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_cfg = crate::config::workspace_config_path(workspace.path());
+        let ws_cmds = workspace.path().join(crate::cli::commands_file());
+        std::fs::create_dir_all(ws_cfg.parent().unwrap()).unwrap();
+
+        std::fs::write(&ws_cfg, "[keys]\n\"cmd+shift+p\" = \"run:gs\"\n").unwrap();
+        std::fs::write(
+            &ws_cmds,
+            "[commands]\ngs = \"git status -sb\"\nbuild = \"cargo build\"\n",
+        )
+        .unwrap();
+
+        let (report, code) =
+            config_check_report(ConfigScope::Effective, Some(workspace.path())).unwrap();
+        assert_eq!(code, 0, "clean config + commands must exit 0:\n{report}");
+        assert!(
+            report.contains("OK: 4 files checked, 2 commands, 1 keybindings"),
+            "clean config check must include OK summary with file, command, and keybinding counts:\n{report}"
+        );
+        assert!(
+            report.contains("(workspace)") && report.contains("(global)"),
+            "summary must list scopes:\n{report}"
+        );
+
+        // Misplaced `[commands]` in config.toml must warn naming commands.toml (exit 0 for warnings).
+        std::fs::write(
+            &ws_cfg,
+            "config_version = 1\n\n[commands]\ngs = \"git status\"\n",
+        )
+        .unwrap();
+        let (bad_cfg_report, bad_cfg_code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(bad_cfg_code, 0, "warnings exit 0:\n{bad_cfg_report}");
+        assert!(
+            bad_cfg_report.contains("[commands] is ignored in config.toml; put it in")
+                && bad_cfg_report.contains("commands.toml"),
+            "misplaced [commands] in config.toml must point to commands.toml:\n{bad_cfg_report}"
+        );
+
+        // Restore clean config.toml and put misplaced `[theme]` + `[keys]` in workspace commands.toml.
+        std::fs::write(&ws_cfg, "config_version = 1\n").unwrap();
+        std::fs::write(
+            &ws_cmds,
+            "[commands]\ngs = \"git status\"\n\n[theme]\npreset = \"dracula\"\n\n[keys]\n\"cmd+shift+p\" = \"run:gs\"\n",
+        )
+        .unwrap();
+        let (bad_cmds_report, bad_cmds_code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(bad_cmds_code, 0, "warnings exit 0:\n{bad_cmds_report}");
+        assert!(
+            bad_cmds_report.contains(&format!(
+                "[theme] is ignored in commands.toml; put it in {}",
+                ws_cfg.display()
+            )) && bad_cmds_report.contains(&format!(
+                "[keys] is ignored in commands.toml; put it in {}",
+                ws_cfg.display()
+            )),
+            "misplaced config tables in workspace commands.toml must point to workspace config.toml:\n{bad_cmds_report}"
+        );
+
+        // Global commands.toml with misplaced `[keys]` points to `~/.plexi-<channel>/config.toml`.
+        let global_cmds = crate::cli::global_commands_path();
+        std::fs::write(
+            &global_cmds,
+            "[commands]\nhi = \"echo hi\"\n\n[keys]\n\"cmd+shift+y\" = \"run:hi\"\n",
+        )
+        .unwrap();
+        let (global_report, global_code) =
+            config_check_report(ConfigScope::Global, Some(workspace.path())).unwrap();
+        assert_eq!(global_code, 0);
+        let expected_global_cfg =
+            format!("~/{}/config.toml", crate::config::workspace_channel_dir());
+        assert!(
+            global_report.contains(&format!(
+                "[keys] is ignored in commands.toml; put it in {expected_global_cfg}"
+            )),
+            "misplaced [keys] in global commands.toml must point to {expected_global_cfg}:\n{global_report}"
+        );
     }
 }

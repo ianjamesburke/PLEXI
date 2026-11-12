@@ -1,0 +1,57 @@
+# The native File Explorer must be reachable through the command palette the
+# same way every other host action is: Cmd+P, a query a user would actually
+# type, and Enter dispatching through the existing OpenFileBrowser host path
+# into a live Explorer pane. The configured shortcut label is asserted in Rust
+# (`palette_registers_file_explorer_with_search_aliases_and_configured_shortcut`)
+# and reviewed in the PNG; ListRow only publishes its primary title to the
+# accessibility tree, so the painted secondary line (description · chord)
+# cannot be asserted with `assert_label`.
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "file explorer" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "File Explorer" }
+
+[[steps]]
+shot = "command-palette-file-explorer.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "file browser" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "File Explorer" }
+
+[[steps]]
+shot = "command-palette-file-browser-alias.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert_label = { target = "host", label = "Search files and contents…" }
+
+[[steps]]
+shot = "command-palette-file-explorer-open.png"

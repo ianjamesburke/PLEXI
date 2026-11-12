@@ -1,40 +1,59 @@
 ---
 title: Installation & Setup
-description: Get Plexi running on your Mac.
+description: Get Plexi running on macOS, Linux, or Windows.
 order: 1
 ---
 
-Plexi runs on macOS (Apple Silicon or Intel, macOS 12 Monterey or later).
+Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
+Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
+Quick Note, and the local plugin runtime.
 
 ## Install
 
-Plexi needs Git and a Rust toolchain. If Rust is missing, the installer first
-asks whether to install it with rustup. A cold build takes several minutes.
+Use the [Download page](/download) for the supported platform and channel combinations,
+install commands, prerequisites, and links to the published release assets. That page
+owns current download availability; source-build support does not imply a published archive.
 
-Open Terminal and run:
+### Linux limitations
 
-```sh
-curl -fsSL https://plexiapp.com/install | sh
-```
+Plexi supports X11 sessions. Wayland is not supported. The download is a tar archive,
+not an apt, AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
+On Linux, secrets are kept in a mode-`0600` file rather than an encrypted OS
+keyring. Hardware video decoding is not implemented on Linux.
 
-The installer clones Plexi into `~/.plexi-src`, builds it on your Mac, copies
-Plexi.app to `/Applications`, installs the `plexi` CLI in `/usr/local/bin`, and
-adds shell completions. It may ask for your password to write the CLI. Launch
-Plexi from Applications or Spotlight.
+### Windows setup
 
-Plexi does not request Accessibility permission on first launch. Its app bundle
+The Windows installer adds its user-owned command directory to the user `PATH`
+and records the installed tag; Windows shell completions are TBD. Use the PowerShell
+command on the Download page; the Unix `curl | bash` command is not a Windows installer.
+
+### Source builds and unsigned releases
+
+From a macOS or Linux checkout, use `scripts/install.sh --from-source alpha` to
+build and install from source; it requires Rust, just, uv and Python 3.11. Windows has no
+equivalent source-install script. All alpha builds are unsigned and not
+notarized. Follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
+before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
+archive manually may need `chmod +x plexi`.
+
+Plexi does not request Accessibility permission on first launch. Its plugin bundle
 declares camera and microphone permissions for video rooms, which macOS requests
 only when a feature uses them.
 
-## Teach Your Agent
+## Script the Host
 
-Plexi is built to be driven by coding agents. If you use Claude Code, Cursor, Codex, or any agent that supports [skills](https://skills.sh/), install the Plexi skill so your agent knows the CLI:
+The CLI is designed for scripts and tools that need to control a running host.
+It covers panes, contexts, status reporting, notes, and local plugins. The v1
+surface exposes agent status hooks; it does not ship a full Assistant product.
+
+If you use a tool that supports [skills](https://skills.sh/), you can install
+the Plexi skill to document that CLI surface:
 
 ```sh
 npx -y skills@latest add ianjamesburke/plexi-skills
 ```
 
-Run it in a project to install for that project, or add `-g` for a global install. The skill documents the `plexi` CLI surface — panes, apps, contexts, notifications — so your agent can drive Plexi without trial and error. To update it later, run `npx skills update`.
+Run it in a project to install for that project, or add `-g` for a global install. To update it later, run `npx skills update`.
 
 To pin the skill to a Plexi release, use the same current CLI:
 
@@ -60,16 +79,20 @@ Plexi opens with a single terminal pane. From there:
 
 ## Build Channels
 
-Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and app bundle — you can run all three simultaneously.
+Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and plugin bundle — you can run all three simultaneously.
 
-| Channel | Binary | Profile |
-|---------|--------|---------|
-| Stable | `plexi` | `~/.plexi/` |
-| Beta | `plexi-beta` | `~/.plexi-beta/` |
-| Alpha | `plexi-alpha` | `~/.plexi-alpha/` |
+| Channel | Binary | Profile | Workspace Dir |
+|---------|--------|---------|---------------|
+| Stable | `plexi` | `~/.plexi/` | `<repo>/.plexi/` |
+| Beta | `plexi-beta` | `~/.plexi-beta/` | `<repo>/.plexi-beta/` |
+| Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `<repo>/.plexi-alpha/` |
+
+Stable v1 keeps Assistant, marketplace, and MCP client surfaces gated. Use a
+beta or worktree channel only when you are explicitly testing those features.
 
 ## Next Steps
 
 - [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
 - [Panes & Pages](/docs/panes) — understand the layout model
-- [Apps](/docs/apps) — build and run Plexi apps
+- [Plugins](/docs/plugins) — build and run Plexi plugins
+- [Python SDK](/docs/sdk) — author plugins for the local runtime

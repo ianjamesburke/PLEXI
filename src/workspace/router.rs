@@ -73,6 +73,31 @@ impl WorkspaceRouter {
         self.contexts.iter().position(f)
     }
 
+    /// Active ancestry in root-to-leaf order, independent of navigation history.
+    /// An orphan is treated as a root; a cycle has no valid projection.
+    pub(crate) fn active_ancestry(&self) -> Vec<usize> {
+        let mut path = Vec::new();
+        if self.contexts.is_empty() {
+            return path;
+        }
+        let mut current = self.active;
+        loop {
+            if path.contains(&current) {
+                return Vec::new();
+            }
+            path.push(current);
+            let Some(parent) = self.contexts[current]
+                .parent_id
+                .and_then(|id| self.position(|context| context.context_id == id))
+            else {
+                break;
+            };
+            current = parent;
+        }
+        path.reverse();
+        path
+    }
+
     /// Indices of the contexts the sidebar is allowed to enumerate, in router
     /// order. The sidebar is top-level navigation only: every slot is a
     /// numbered, keyboard-addressable destination, so a context with a live
@@ -337,6 +362,27 @@ mod tests {
             depth,
             parked: false,
         }
+    }
+
+    #[test]
+    fn active_ancestry_uses_ids_without_navigation_history() {
+        let router = WorkspaceRouter::new(
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(11, Some(10), 1),
+                make_ctx(12, Some(11), 2),
+                make_ctx(13, Some(10), 1),
+            ],
+            2,
+        );
+        assert_eq!(router.active_ancestry(), vec![0, 1, 2]);
+        let orphan = WorkspaceRouter::new(vec![make_ctx(11, Some(99), 1)], 0);
+        assert_eq!(orphan.active_ancestry(), vec![0]);
+        let cycle = WorkspaceRouter::new(
+            vec![make_ctx(10, Some(11), 0), make_ctx(11, Some(10), 1)],
+            0,
+        );
+        assert!(cycle.active_ancestry().is_empty());
     }
 
     /// Stint 0241: the sidebar lists master contexts only. A context with a

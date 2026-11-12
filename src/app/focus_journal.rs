@@ -15,9 +15,11 @@ pub(crate) struct FocusJournalEntry {
     pub context_description: String,
     pub context_root: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing)]
     pub pty_title: Option<String>,
+    #[serde(default, skip_serializing)]
     pub pane_name: Option<String>,
-    pub app_type_id: Option<String>,
+    pub plugin_type_id: Option<String>,
     /// ISO-8601 timestamp when this focus segment started.
     pub started_at: String,
     /// ISO-8601 timestamp of the last checkpoint write.
@@ -107,7 +109,7 @@ pub(crate) fn recover_from_focus_journal(path: &Path) {
             cwd: entry.cwd,
             pty_title: entry.pty_title,
             pane_name: entry.pane_name,
-            app_type_id: entry.app_type_id,
+            plugin_type_id: entry.plugin_type_id,
             reason: Some("crash_recovery".to_string()),
             duration_secs,
             timestamp: crate::host::event_log::now_timestamp(),
@@ -200,7 +202,7 @@ mod tests {
             cwd: Some("/Users/test/project".to_string()),
             pty_title: Some("nvim".to_string()),
             pane_name: None,
-            app_type_id: None,
+            plugin_type_id: None,
             started_at: started_at.to_string(),
             last_checkpoint_at: started_at.to_string(),
         }
@@ -211,14 +213,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("focus-journal.jsonl");
 
-        let entry = make_entry("2024-06-15T10:00:00Z");
+        let mut entry = make_entry("2024-06-15T10:00:00Z");
+        entry.pane_name = Some("SENTINEL_0948_OSC_SECRET".to_string());
         write_checkpoint(&path, &entry);
 
         assert!(path.exists());
         let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("nvim"));
+        assert!(!content.contains("SENTINEL_0948_OSC_SECRET"));
         let parsed: FocusJournalEntry = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(parsed.pane_id, 42);
         assert_eq!(parsed.context_name, "my-project");
+        assert!(parsed.pty_title.is_none());
+        assert!(parsed.pane_name.is_none());
     }
 
     #[test]

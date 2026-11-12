@@ -1,0 +1,96 @@
+# babysitter-v3 run configuration — the single source for run-invariant settings.
+# Values only; mechanics live in SKILL.md. Re-read at every spawn.
+
+# Each role is an ordered fallback list of shell aliases. Alias/vendor/model
+# mapping is explicit so fallback never silently permits self-validation.
+[roles]
+head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
+worker_small  = ["com"]
+worker_small_explicit = ["pi"]  # reserved child queue; explicit selection only
+worker_medium = ["com"]
+worker_large  = ["com"]
+tester        = ["agy", "pi", "cs", "agym", "cos"]
+
+[engines.alias_vendor]
+cos = "codex"
+com = "codex"
+col = "codex"
+cs = "claude"
+cm = "claude"
+cl = "claude"
+agy = "gemini"
+agym = "claude"
+agyl = "claude"
+agyf = "gemini"
+agyg = "gemini"
+pi = "deepseek"
+
+[engines.alias_model]
+cos = "Luna"
+com = "gpt-6.1-terra"
+col = "Astra"
+cs = "Sonnet"
+cm = "Opus"
+cl = "Opus"
+agy = "Gemini"
+agym = "Sonnet"
+agyl = "Opus"
+agyf = "Gemini 3.8 Flash"
+agyg = "Gemini 4 Argon High"
+pi = "DeepSeek V4.1 Flash"
+
+[topology]
+sprint = ".stint/sprints/s04.md"
+preflight_task = "0991"
+mode = "aggregate"
+branch = "feature/alpha-cleanup"
+final_base = "alpha"
+require_final_install = true
+
+# How each engine takes an initial prompt on its command line. {alias} and
+# {prompt} are substituted; {prompt} is always single-quoted by the head.
+[engines.launch]
+claude = "{alias} {prompt}"
+codex  = "{alias} {prompt}"
+agy    = "{alias} -i {prompt}"
+pi     = "{alias} --model openrouter/deepseek/deepseek-v4.1-flash {prompt}"
+
+# Map alias prefix -> engine. Longest prefix wins.
+[engines.alias_engine]
+c   = "claude"
+co  = "codex"
+agy = "agy"
+pi  = "pi"
+
+# Footer text that means the agent is mid-turn. Absence on the last buffer lines
+# (with a prompt visible) means idle. `plexi pane status` does not recognise agy,
+# so the head uses these for every engine.
+[engines.working_footer]
+claude = "esc to interrupt"
+codex  = "esc to interrupt"
+agy    = "esc to cancel"
+pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; absent when idle
+
+# Case-insensitive patterns in a pane capture that mean a usage/quota wall.
+[engines.usage_limit_patterns]
+all = ["usage limit", "limit reached", "rate limit", "quota", "resets at", "try again later"]
+
+[ci]
+rust_host = "after_alpha"          # nightly verification; phase-aware local gates in TESTING.md
+
+[authorization]
+auto_merge = true                 # tester PASS + configured checks -> merge without asking
+
+[reservations]
+attended_only = ["0601", "0439"]  # never queued unattended
+
+[limits]
+max_concurrent_lanes = 2          # cargo builds are serialized by cargo-with-lease.sh; Ian capped the Gemini trial at 2 lanes
+max_fix_rounds = 2                # after this many tester FAILs on one batch, park it
+stall_minutes = 25                # idle footer with no terminal slot, or one foreground command past this long (busy footer) -> inspect
+
+[cadence]
+heartbeat_seconds = 1800          # failsafe only; the head wakes on terminal slot transitions, never on progress slots
+
+[paths]
+run_root = ".stint/runs"          # git-ignored; each run gets <run_root>/<YYYYMMDD-HHMM>/

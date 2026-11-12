@@ -7,6 +7,7 @@
 //! beta→main, so a release cannot ship a skill documenting commands its binary
 //! does not have.
 
+use crate::release::ReleaseFeature;
 use clap::CommandFactory;
 use std::path::PathBuf;
 
@@ -16,12 +17,19 @@ fn skill_path() -> PathBuf {
 
 fn skill_text() -> String {
     let path = skill_path();
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
-fn built_cli() -> clap::Command {
-    let mut cmd = super::args::Cli::command();
+/// The skill as installed with the experiments that `enabled` reports on.
+fn rendered_skill(enabled: impl Fn(ReleaseFeature) -> bool) -> String {
+    super::skill_install::render_skill(&skill_text(), enabled)
+        .unwrap_or_else(|e| panic!("skill experiment markers are invalid: {e}"))
+}
+
+/// The gated clap tree for the same `enabled` set, so the skill is checked
+/// against exactly what help shows. Hidden commands do not count as present.
+fn built_cli(enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
+    let mut cmd = super::help::gate_command(super::args::Cli::command(), enabled);
     cmd.build(); // propagate global args into subcommands
     cmd
 }
@@ -37,15 +45,16 @@ fn is_command_word(tok: &str) -> bool {
 
 fn find_subcommand<'a>(cmd: &'a clap::Command, tok: &str) -> Option<&'a clap::Command> {
     cmd.get_subcommands()
+        .filter(|s| !s.is_hide_set())
         .find(|s| s.get_name() == tok || s.get_all_aliases().any(|a| a == tok))
 }
 
 fn has_long_flag(cmd: &clap::Command, flag: &str) -> bool {
     flag == "help"
         || flag == "version"
-        || cmd
-            .get_arguments()
-            .any(|a| a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag))
+        || cmd.get_arguments().filter(|a| !a.is_hide_set()).any(|a| {
+            a.get_long() == Some(flag) || a.get_all_aliases().iter().flatten().any(|al| *al == flag)
+        })
 }
 
 /// Extract every `--long-flag` name mentioned in a token, stripping the
@@ -126,20 +135,13 @@ fn descend<'a>(
 /// the natural relabel target for the reference blocks.
 const INERT_FENCE_LANGS: &[&str] = &["json", "toml", "rust"];
 
-/// Coverage floors: canaries against silent extraction collapse. The public
-/// skill is a feature map with worked examples, not a complete CLI reference:
-/// the checked map resolves 18 paths and its executable examples resolve 19,
-/// for 37 total. A floor of 30 means dropping either checked section (at most
-/// 19 paths remain) always fails, while allowing deliberate small edits to a
-/// map or example without an unrelated test edit.
-///
-/// All 13 long flags live in the executable examples. Allow one flag to change
-/// with a legitimate recipe edit, but fail if two disappear: that catches a
-/// skipped multi-flag command line or a skipped example block. This is a
-/// canary for extraction coverage, not proof that the examples execute; live
-/// host verification of every published recipe is the separate guarantee.
+/// Coverage floors catch extraction collapse in the generated map and workflows.
+/// Exact command coverage is asserted separately against the gated clap tree.
 const MIN_COMMANDS_RESOLVED: usize = 30;
 const MIN_FLAGS_CHECKED: usize = 12;
+/// Floor for the default (all experiments off) skill: well under the full
+/// skill's count, above an extraction collapse.
+const MIN_DEFAULT_COMMANDS_RESOLVED: usize = 10;
 
 #[derive(Default)]
 struct Report {
@@ -264,15 +266,24 @@ fn check_bash_block(root: &clap::Command, block: &Block, report: &mut Report) {
     }
 }
 
-#[test]
-fn skill_surface_matches_cli() {
-    let text = skill_text();
-    let root = built_cli();
+/// Check `text` against `root`, returning the report.
+fn surface_report(text: &str, root: &clap::Command) -> Report {
     let mut report = Report::default();
-    for block in fenced_blocks(&text) {
+    // Generated map entries are inline code, separate from workflow fences.
+    // Feed them through the strict reference parser so every path token is checked.
+    let map = map_entries(text);
+    check_reference_block(
+        root,
+        &Block {
+            lang: String::new(),
+            lines: map,
+        },
+        &mut report,
+    );
+    for block in fenced_blocks(text) {
         match block.lang.as_str() {
-            "" => check_reference_block(&root, &block, &mut report),
-            "bash" | "sh" => check_bash_block(&root, &block, &mut report),
+            "" => check_reference_block(root, &block, &mut report),
+            "bash" | "sh" => check_bash_block(root, &block, &mut report),
             lang if INERT_FENCE_LANGS.contains(&lang) => {}
             lang => report.errors.push(format!(
                 "fence language `{lang}` is not checkable by this gate — CLI-bearing blocks \
@@ -281,6 +292,14 @@ fn skill_surface_matches_cli() {
             )),
         }
     }
+    report
+}
+
+#[test]
+fn skill_surface_matches_cli() {
+    // The full skill documents every experiment, so it is checked against the
+    // tree with every experiment on and carries the coverage floors.
+    let report = surface_report(&rendered_skill(|_| true), &built_cli(|_| true));
     println!(
         "skill_surface: commands_resolved={} flags_checked={} errors={}",
         report.commands_resolved,
@@ -307,6 +326,40 @@ fn skill_surface_matches_cli() {
     );
 }
 
+/// What a default install ships: every experiment off. Every command it
+/// documents must exist in the help a default install shows.
+#[test]
+fn default_skill_matches_the_default_help() {
+    let report = surface_report(&rendered_skill(|_| false), &built_cli(|_| false));
+    assert!(
+        report.errors.is_empty(),
+        "the default skill documents commands the default help hides.\n\
+         Tag the section with <!-- experiment: key --> in skills/plexi-cli/SKILL.md.\n\n{}",
+        report.errors.join("\n"),
+    );
+    assert!(
+        report.commands_resolved >= MIN_DEFAULT_COMMANDS_RESOLVED,
+        "extraction collapse in the default skill: only {} command paths resolved",
+        report.commands_resolved,
+    );
+}
+
+/// Turning on any one experiment must still leave a skill that matches that
+/// tree, so a partly-enabled install never documents a hidden command.
+#[test]
+fn every_single_experiment_skill_matches_its_help() {
+    for feature in ReleaseFeature::ALL.iter().copied() {
+        let on = move |f: ReleaseFeature| f == feature;
+        let report = surface_report(&rendered_skill(on), &built_cli(on));
+        assert!(
+            report.errors.is_empty(),
+            "with only `{}` on, the skill documents commands help hides.\n\n{}",
+            feature.key(),
+            report.errors.join("\n"),
+        );
+    }
+}
+
 #[test]
 fn skill_version_matches_binary() {
     let text = skill_text();
@@ -318,7 +371,154 @@ fn skill_version_matches_binary() {
     assert_eq!(
         declared,
         env!("CARGO_PKG_VERSION"),
-        "SKILL.md plexi_version must match Cargo.toml — `just bump` stamps both; \
+        "SKILL.md plexi_version must match Cargo.toml — the generator and `just bump` stamp both; \
          never hand-edit one without the other",
     );
+}
+
+/// Parse the actual YAML, including multiline and quoted scalars, in every shipped skill.
+#[test]
+fn shipped_skill_frontmatter_is_valid_yaml() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for directory in ["skills", "packages/pi-plexi/skills"] {
+        let mut found = false;
+        for entry in std::fs::read_dir(root.join(directory)).unwrap() {
+            let path = entry.unwrap().path().join("SKILL.md");
+            if !path.is_file() {
+                continue;
+            }
+            found = true;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut lines = text.lines();
+            assert_eq!(
+                lines.next(),
+                Some("---"),
+                "{}: missing frontmatter",
+                path.display()
+            );
+            let mut yaml = String::new();
+            let mut closed = false;
+            for line in lines {
+                if line == "---" {
+                    closed = true;
+                    break;
+                }
+                yaml.push_str(line);
+                yaml.push('\n');
+            }
+            assert!(closed, "{}: unterminated frontmatter", path.display());
+            let value: serde_yaml::Value = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(value.is_mapping(), "{}: expected mapping", path.display());
+            for field in ["name", "description"] {
+                assert!(
+                    value[field].as_str().is_some_and(|s| !s.is_empty()),
+                    "{}: missing {field}",
+                    path.display()
+                );
+            }
+        }
+        assert!(found, "no skills found in {directory}");
+    }
+}
+
+/// The user-facing CLI skill has exactly one home. `skills/plexi-cli/` is canonical
+/// and `plexi skill install` is the only discovery path; a second copy under
+/// `.agents/skills/` (a symlink or a copied file) is discovered alongside the
+/// installed one, collides by name, and can go stale independently (stint 1050).
+#[test]
+fn plexi_cli_skill_has_exactly_one_canonical_root() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        root.join("skills/plexi-cli/SKILL.md").is_file(),
+        "the canonical CLI skill is missing"
+    );
+
+    let agents_skills = root.join(".agents/skills");
+    let Ok(entries) = std::fs::read_dir(&agents_skills) else {
+        return;
+    };
+    let mut duplicates = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let skill = entry.path().join("SKILL.md");
+        if !skill.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&skill).unwrap_or_default();
+        let name = text
+            .lines()
+            .skip(1)
+            .take_while(|line| *line != "---")
+            .find_map(|line| line.strip_prefix("name:"))
+            .map(|name| name.trim().trim_matches('"').to_string());
+        if name.as_deref() == Some("plexi-cli") {
+            duplicates.push(skill);
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "the user-facing plexi-cli skill must have exactly one root (skills/plexi-cli/); \
+         these second roots collide with the installed skill and must be removed: {duplicates:?}",
+    );
+}
+
+/// Only the generated feature map uses this line format.
+fn map_entries(text: &str) -> Vec<String> {
+    text.split_once("## Feature map\n")
+        .map(|(_, map)| {
+            map.lines()
+                .filter_map(|line| {
+                    line.trim_start()
+                        .strip_prefix("- `plexi ")
+                        .and_then(|entry| entry.split_once('`').map(|(path, _)| path.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn public_paths(
+    command: &clap::Command,
+    parent: &str,
+    paths: &mut std::collections::BTreeSet<String>,
+) {
+    for sub in command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+    {
+        let path = format!("{parent} {}", sub.get_name()).trim().to_string();
+        paths.insert(path.clone());
+        public_paths(sub, &path, paths);
+    }
+}
+
+#[test]
+fn generated_feature_map_covers_every_visible_command() {
+    // Default, all-on and each experiment alone must match help in both directions.
+    let sets: Vec<Vec<ReleaseFeature>> = std::iter::once(vec![])
+        .chain(std::iter::once(ReleaseFeature::ALL.to_vec()))
+        .chain(ReleaseFeature::ALL.iter().map(|feature| vec![*feature]))
+        .collect();
+    for enabled in sets {
+        let on = |feature| enabled.contains(&feature);
+        let mut expected = std::collections::BTreeSet::new();
+        public_paths(&built_cli(on), "", &mut expected);
+        let actual: std::collections::BTreeSet<_> = map_entries(&rendered_skill(on))
+            .into_iter()
+            .filter(|entry| {
+                !entry.contains(" --") && !entry.contains(" -") && !entry.contains(" <")
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "generated map differs from help for {enabled:?}"
+        );
+    }
+}
+
+#[test]
+fn generated_map_extractor_rejects_unknown_commands_and_flags() {
+    let root = built_cli(|_| true);
+    let report = surface_report("## Feature map\n- `plexi invented-command`: bad\n- `plexi pane list --invented-flag`: bad\n", &root);
+    assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
 }

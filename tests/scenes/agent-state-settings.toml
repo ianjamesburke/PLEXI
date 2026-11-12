@@ -1,0 +1,43 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+text = { target = "host", value = "settings agent states mono" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Settings: agent states — mono" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+shot = "agent-state-settings.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+text = { target = "host", value = "settings agent states okabe-ito" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Settings: agent states — okabe-ito" }

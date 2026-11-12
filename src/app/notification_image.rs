@@ -9,9 +9,9 @@
 //!     the host can drain to fetch the latest RGBA frame. Frame layout:
 //!     `width: u32 LE`, `height: u32 LE`, then `width * height * 4` bytes of
 //!     RGBA8. **v3.5 status:** the wire shape and host-side resolve path
-//!     are in place, but the ring producer is host-internal — apps cannot
+//!     are in place, but the ring producer is host-internal — plugins cannot
 //!     publish image frames through this surface yet (binary pipes today
-//!     flow host → app, not app → host). The path is reserved for the
+//!     flow host → plugin, not plugin → host). The path is reserved for the
 //!     headless-renderer use case in #74's "agent renders two UI options
 //!     as PNGs" flow once the host gains a render-to-pipe primitive.
 //!     Pipe-referenced notifications are accepted but render the
@@ -19,14 +19,13 @@
 //!
 //! Both paths fail loudly into a `Placeholder { reason }` state — never
 //! panic. The caller renders a small badge ("image too large", "image
-//! decode failed") in the notification card. Apps must therefore never
+//! decode failed") in the notification card. Plugins must therefore never
 //! depend on the image arriving for correctness — it's purely informational.
 //!
 //! Decoded textures live in `PlexiApp::notification_images`, keyed by
-//! `notify_id`. The map is populated lazily on the first render of each
-//! notification; entries are not explicitly evicted on dismiss because
-//! egui's `TextureHandle` drop already releases the GPU resource and the
-//! steady-state count of concurrent visible notifications is small.
+//! `notify_id`. The map is populated lazily on the first render and pruned by
+//! `PlexiApp::save_notifications` whenever an entry leaves the live queue.
+#![allow(dead_code)]
 
 use crate::app::{PendingNotification, PlexiApp};
 use crate::protocol::NotificationImage;
@@ -56,7 +55,7 @@ pub(crate) const MAX_INLINE_IMAGE_BYTES: usize = 50 * 1024;
 const PIPE_HEADER_LEN: usize = 8;
 
 /// Resolve the `image_state` for a notification, populating
-/// `app.notification_images` if not already cached. Idempotent — re-calls
+/// `plugin.notification_images` if not already cached. Idempotent — re-calls
 /// on the same `notify_id` return the cached state without redecoding.
 ///
 /// Returns the resolved state by reference. `None` when the notification

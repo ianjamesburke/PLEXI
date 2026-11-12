@@ -1,19 +1,9 @@
-schema_version = 1
-
-[app]
-id = "permissions"
-type = "app"
-name = "Permissions"
-entry = "main.py"
-version = "0.1.0"
-description = "View and manage capability permissions for every app"
-watch = true
+schema_version = 2
 
 [runtime]
 python_compat = true
-
-[app.capabilities]
-capabilities = ["permissions.manage"]
+kind = "python"
+entry = "main.py"
 
 [launch]
 
@@ -21,3 +11,17 @@ capabilities = ["permissions.manage"]
 visibility = "public"
 price = "free"
 publisher = "plexi"
+
+[plugin]
+id = "permissions"
+name = "Permissions"
+version = "0.1.0"
+description = "Review and change live tool permission decisions"
+watch = true
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "permissions.main"
+default = true

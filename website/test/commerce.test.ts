@@ -16,11 +16,11 @@ import { resetCheckoutClient, setCheckoutClient } from '../src/server/polar';
 import { resetArtifactStore, setArtifactStore } from '../src/server/storage';
 import { POST as checkoutPOST } from '../src/pages/api/commerce/checkout';
 import { POST as webhookPOST } from '../src/pages/api/commerce/webhook/polar';
-import { GET as artifactGET } from '../src/pages/api/registry/artifact/[appId]';
+import { GET as artifactGET } from '../src/pages/api/registry/artifact/[pluginId]';
 import { GET as purchaseGET } from '../src/pages/api/commerce/purchase/[id]';
 
 const WEBHOOK_SECRET = 'whsec_test_secret_0339';
-const APP_ID = 'reviewed-notes';
+const PLUGIN_ID = 'reviewed-notes';
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'polar');
 
 let pg: PgHandle;
@@ -72,10 +72,10 @@ beforeAll(async () => {
   }));
   // Seed the paid product mapping.
   await query(
-    `INSERT INTO app_products (app_id, polar_product_id, price_cents, currency, publisher, artifact_key)
+    `INSERT INTO plugin_products (plugin_id, polar_product_id, price_cents, currency, publisher, artifact_key)
      VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (app_id) DO NOTHING`,
-    [APP_ID, 'p1111111-1111-4111-8111-111111111111', 1200, 'usd', 'plexi', 'paid/reviewed-notes/0.1.0.plexipkg'],
+     ON CONFLICT (plugin_id) DO NOTHING`,
+    [PLUGIN_ID, 'p1111111-1111-4111-8111-111111111111', 1200, 'usd', 'plexi', 'paid/reviewed-notes/0.1.0.plexipkg'],
   );
 });
 
@@ -97,10 +97,10 @@ describe('402 envelope + checkout', () => {
   it('gated download returns a 402 envelope with a checkout option when unowned', async () => {
     const account = await getOrCreateAccount('gate@example.com');
     const { token } = await issueBearerToken(account.id);
-    const req = new Request(`https://plexiapp.com/api/registry/artifact/${APP_ID}`, {
+    const req = new Request(`https://plexiapp.com/api/registry/artifact/${PLUGIN_ID}`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    const res = await artifactGET({ request: req, cookies: noCookies, params: { appId: APP_ID } } as any);
+    const res = await artifactGET({ request: req, cookies: noCookies, params: { pluginId: PLUGIN_ID } } as any);
     expect(res.status).toBe(402);
     const env = await res.json();
     expect(env.reason).toBe('purchase_required');
@@ -110,18 +110,18 @@ describe('402 envelope + checkout', () => {
   });
 
   it('gated download requires a bearer token', async () => {
-    const req = new Request(`https://plexiapp.com/api/registry/artifact/${APP_ID}`);
-    const res = await artifactGET({ request: req, cookies: noCookies, params: { appId: APP_ID } } as any);
+    const req = new Request(`https://plexiapp.com/api/registry/artifact/${PLUGIN_ID}`);
+    const res = await artifactGET({ request: req, cookies: noCookies, params: { pluginId: PLUGIN_ID } } as any);
     expect(res.status).toBe(401);
   });
 
-  it('gated download 404s for a non-paid app', async () => {
+  it('gated download 404s for a non-paid plugin', async () => {
     const account = await getOrCreateAccount('free@example.com');
     const { token } = await issueBearerToken(account.id);
     const req = new Request('https://plexiapp.com/api/registry/artifact/calc', {
       headers: { authorization: `Bearer ${token}` },
     });
-    const res = await artifactGET({ request: req, cookies: noCookies, params: { appId: 'calc' } } as any);
+    const res = await artifactGET({ request: req, cookies: noCookies, params: { pluginId: 'calc' } } as any);
     expect(res.status).toBe(404);
   });
 
@@ -131,7 +131,7 @@ describe('402 envelope + checkout', () => {
     const req = new Request('https://plexiapp.com/api/commerce/checkout', {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ app_id: APP_ID }),
+      body: JSON.stringify({ plugin_id: PLUGIN_ID }),
     });
     const res = await checkoutPOST({ request: req, cookies: noCookies } as any);
     expect(res.status).toBe(200);
@@ -151,12 +151,12 @@ describe('order webhooks (real signature + real Polar schema)', () => {
     const checkoutReq = new Request('https://plexiapp.com/api/commerce/checkout', {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ app_id: APP_ID }),
+      body: JSON.stringify({ plugin_id: PLUGIN_ID }),
     });
     const checkoutRes = await checkoutPOST({ request: checkoutReq, cookies: noCookies } as any);
     const { purchase_id } = await checkoutRes.json();
     expect(await getPurchaseState(purchase_id, account.id)).toBe('pending');
-    expect(await hasEntitlement(account.id, APP_ID)).toBe(false);
+    expect(await hasEntitlement(account.id, PLUGIN_ID)).toBe(false);
 
     // Deliver order.paid carrying that purchase_id + account_id in metadata.
     const paid = fixture('order.paid.json', { purchase_id, account_id: account.id });
@@ -165,7 +165,7 @@ describe('order webhooks (real signature + real Polar schema)', () => {
     const res = await deliverWebhook(paid);
     expect(res.status).toBe(200);
 
-    expect(await hasEntitlement(account.id, APP_ID)).toBe(true);
+    expect(await hasEntitlement(account.id, PLUGIN_ID)).toBe(true);
     expect(await getPurchaseState(purchase_id, account.id)).toBe('complete');
 
     // net_cents = net_amount(1200) - platform_fee_amount(110), from the real
@@ -186,7 +186,7 @@ describe('order webhooks (real signature + real Polar schema)', () => {
     refunded.data.id = `order_${purchase_id}`;
     const refundRes = await deliverWebhook(refunded);
     expect(refundRes.status).toBe(200);
-    expect(await hasEntitlement(account.id, APP_ID)).toBe(false);
+    expect(await hasEntitlement(account.id, PLUGIN_ID)).toBe(false);
     expect(await getPurchaseState(purchase_id, account.id)).toBeNull();
   });
 
@@ -204,7 +204,7 @@ describe('order webhooks (real signature + real Polar schema)', () => {
     expect(res.status).toBe(401);
   });
 
-  it('skips an order.paid that carries no app purchase metadata', async () => {
+  it('skips an order.paid that carries no plugin purchase metadata', async () => {
     const paid = fixture('order.paid.json');
     paid.data.id = 'order_no_meta';
     paid.data.metadata = {}; // subscription-cycle order shape: no app metadata
@@ -219,6 +219,7 @@ describe('subscription webhooks', () => {
   it('subscription.created activates AI Pro; canceled deactivates it', async () => {
     const account = await getOrCreateAccount('subscriber@example.com');
     const sub = fixture('subscription.created.json', { account_id: account.id });
+    sub.data.current_period_end = new Date(Date.now() + 86_400_000).toISOString();
     const res = await deliverWebhook(sub);
     expect(res.status).toBe(200);
     expect(await hasActiveSubscription(account.id)).toBe(true);
@@ -237,9 +238,9 @@ describe('gated artifact streaming', () => {
     const { token } = await issueBearerToken(account.id);
     // Grant entitlement directly (a completed purchase).
     await query(
-      `INSERT INTO purchases (account_id, app_id, publisher, polar_order_id, amount_cents, net_cents, currency, status)
+      `INSERT INTO purchases (account_id, plugin_id, publisher, polar_order_id, amount_cents, net_cents, currency, status)
        VALUES ($1, $2, 'plexi', 'order_owner', 1200, 1140, 'usd', 'complete')`,
-      [account.id, APP_ID],
+      [account.id, PLUGIN_ID],
     );
     const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]); // "PK.." — a plausible pkg header
     setArtifactStore({
@@ -257,10 +258,10 @@ describe('gated artifact streaming', () => {
       },
       async put() {},
     });
-    const req = new Request(`https://plexiapp.com/api/registry/artifact/${APP_ID}`, {
+    const req = new Request(`https://plexiapp.com/api/registry/artifact/${PLUGIN_ID}`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    const res = await artifactGET({ request: req, cookies: noCookies, params: { appId: APP_ID } } as any);
+    const res = await artifactGET({ request: req, cookies: noCookies, params: { pluginId: PLUGIN_ID } } as any);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/octet-stream');
     const got = new Uint8Array(await res.arrayBuffer());
@@ -277,7 +278,7 @@ describe('purchase-state endpoint', () => {
     const checkoutReq = new Request('https://plexiapp.com/api/commerce/checkout', {
       method: 'POST',
       headers: { authorization: `Bearer ${ownerToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ app_id: APP_ID }),
+      body: JSON.stringify({ plugin_id: PLUGIN_ID }),
     });
     const { purchase_id } = await (await checkoutPOST({ request: checkoutReq, cookies: noCookies } as any)).json();
 

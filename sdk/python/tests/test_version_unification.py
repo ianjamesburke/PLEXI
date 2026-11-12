@@ -65,6 +65,24 @@ def test_version_resolves_from_host_sdk_layout(tmp_path: Path):
     assert result.stdout.strip() == f"plexi-sdk-py/{_pyproject_version()}"
 
 
+def test_version_resolves_without_tomllib(tmp_path: Path):
+    """Pre-3.11 ambient python3 without stdlib tomllib still reads pyproject.toml."""
+    sdk_dir = _host_sdk_layout(tmp_path)
+    code = (
+        f"import sys; sys.modules['tomllib'] = None; sys.path.insert(0, {str(sdk_dir)!r}); "
+        "import plexi_sdk; print(plexi_sdk.SDK_ID)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", code],
+        capture_output=True,
+        cwd=sdk_dir.parent,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"plexi-sdk-py/{_pyproject_version()}"
+
+
 def test_missing_host_sdk_metadata_fails_loudly(tmp_path: Path):
     """No pyproject.toml and no installed distribution: refuse to guess a version."""
     sdk_dir = _host_sdk_layout(tmp_path)

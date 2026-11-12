@@ -4,6 +4,6 @@ suite = true
 [[steps]]
 open = { kind = "process", path = "apps/tetris", as = "tetris" }
 [[steps]]
-wait_app_frame = { target = "tetris", timeout_s = 15.0 }
+wait_view_frame = { target = "tetris", timeout_s = 15.0 }
 [[steps]]
 assert = { target = "tetris", fit = "contain", aspect = [10, 20] }

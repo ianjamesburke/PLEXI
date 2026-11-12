@@ -16,6 +16,7 @@ use super::resolver::{WorkspaceConfig, WorkspaceSecrets};
 ///
 /// Returns the resolved `WorkspaceConfig` so the caller can echo the UUID.
 pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<WorkspaceConfig, String> {
+    crate::app::plugin_migration::migrate(&workspace_root.join(channel_dir))?;
     // Write workspace.toml under the channel dir
     let ws_path = workspace_root.join(channel_dir).join("workspace.toml");
     let cfg = if ws_path.exists() {
@@ -41,7 +42,7 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
                         # secret, true allows reading plexi:user:<name>; false errors loudly.\n\
                         fallback = true\n\
                         \n\
-                        # [apps.<app-id>]\n\
+                        # [apps.<plugin-id>]\n\
                         # OPENAI_API_KEY = \"openai_personal\"\n\
                         \n\
                         # [default]\n\
@@ -53,28 +54,28 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
             .map_err(|e| format!("write {}: {e}", secrets_path.display()))?;
     }
 
-    // stub apps.toml under the channel dir
-    let apps_toml = workspace_root.join(channel_dir).join("apps.toml");
-    if !apps_toml.exists() {
+    // stub plugins.toml under the channel dir
+    let plugins_toml = workspace_root.join(channel_dir).join("plugins.toml");
+    if !plugins_toml.exists() {
         let stub = concat!(
-            "schema_version = 1\n\n",
+            "schema_version = 2\n\n",
             "# Declare workspace app dependencies here.\n",
-            "# Run `plexi app install` in this directory to install them.\n",
+            "# Run `plexi plugin install` in this directory to install them.\n",
             "#\n",
             "# Example:\n",
             "#\n",
-            "# [[app]]\n",
+            "# [[plugin]]\n",
             "# id      = \"gh-issues\"\n",
             "# source  = \"local:gh-issues\"\n",
             "# version = \"bundled\"\n",
             "#\n",
-            "# [[app]]\n",
+            "# [[plugin]]\n",
             "# id      = \"my-tool\"\n",
             "# source  = \"github:org/my-tool\"\n",
             "# version = \"v1.0.0\"\n",
         );
-        std::fs::write(&apps_toml, stub)
-            .map_err(|e| format!("write {}: {e}", apps_toml.display()))?;
+        std::fs::write(&plugins_toml, stub)
+            .map_err(|e| format!("write {}: {e}", plugins_toml.display()))?;
     }
 
     // stub commands.toml under the channel dir
@@ -98,12 +99,12 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
     Ok(cfg)
 }
 
-/// Ensure channel-neutral app state cannot be committed with a context root.
+/// Ensure channel-neutral plugin state cannot be committed with a context root.
 ///
 /// App state is personal, single-user, local data — never committed, never
 /// shared. Existing user rules are preserved byte-for-byte and the required
 /// entry is appended only when absent.
-pub(crate) fn ensure_app_state_gitignore(workspace_root: &Path) -> Result<(), String> {
+pub(crate) fn ensure_plugin_state_gitignore(workspace_root: &Path) -> Result<(), String> {
     use std::io::Write;
 
     let dir = workspace_root.join(".plexi");
@@ -200,9 +201,9 @@ pub fn write_default_route(
 
 /// Update `[terminal.env] inject = [...]` in workspace `secrets.toml`.
 ///
-/// Workspace-scoped secrets default to terminal injection on when created by
-/// the native Secrets app or CLI. This helper is also used by the native app
-/// toggle so the TOML file remains the durable source of policy.
+/// Injection is off for a new secret. The Secrets manager toggle is the only
+/// caller that turns it on, so the TOML file stays the durable source of
+/// policy. Agent panes never receive these names (`withhold_terminal_secrets`).
 pub fn write_terminal_env_inject(
     workspace_root: &Path,
     canonical: &str,
@@ -428,15 +429,15 @@ mod tests {
     }
 
     #[test]
-    fn app_state_gitignore_preserves_rules_and_is_idempotent() {
+    fn plugin_state_gitignore_preserves_rules_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let neutral_dir = tmp.path().join(".plexi");
         std::fs::create_dir_all(&neutral_dir).unwrap();
         let gitignore = neutral_dir.join(".gitignore");
         std::fs::write(&gitignore, "# personal\ncustom/\n").unwrap();
 
-        ensure_app_state_gitignore(tmp.path()).expect("first ensure");
-        ensure_app_state_gitignore(tmp.path()).expect("second ensure");
+        ensure_plugin_state_gitignore(tmp.path()).expect("first ensure");
+        ensure_plugin_state_gitignore(tmp.path()).expect("second ensure");
 
         assert_eq!(
             std::fs::read_to_string(gitignore).unwrap(),
@@ -446,9 +447,9 @@ mod tests {
 
     /// The standing ruling made effective: in a real git repository, a state
     /// file under `<root>/.plexi/app_states/` must be invisible to git after
-    /// the ensure runs — a user cannot accidentally commit their app state.
+    /// the ensure runs — a user cannot accidentally commit their plugin state.
     #[test]
-    fn app_state_gitignore_is_effective_in_a_real_repo() {
+    fn plugin_state_gitignore_is_effective_in_a_real_repo() {
         let repo = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -461,7 +462,7 @@ mod tests {
         };
         assert!(git(&["init", "-q"]).status.success(), "git init");
 
-        ensure_app_state_gitignore(repo.path()).expect("ensure gitignore");
+        ensure_plugin_state_gitignore(repo.path()).expect("ensure gitignore");
         let state_dir = repo.path().join(".plexi").join("app_states");
         std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(state_dir.join("todo.json"), b"{\"k\":1}").unwrap();
@@ -476,7 +477,7 @@ mod tests {
         let listing = String::from_utf8_lossy(&status.stdout).to_string();
         assert!(
             !listing.contains("app_states"),
-            "git status must not surface app state: {listing:?}"
+            "git status must not surface plugin state: {listing:?}"
         );
     }
 
@@ -655,7 +656,7 @@ mod tests {
     fn upsert_default_route_line_inserts_before_next_section() {
         let raw = "fallback = true\n\n[default]\nA = \"a\"\n\n[apps.foo]\nB = \"b\"\n";
         let out = upsert_default_route_line(raw, "C", "c");
-        // C must appear inside [default], before [apps.foo]
+        // C must appear inside [default], before [plugins.foo]
         let default_pos = out.find("[default]").unwrap();
         let apps_pos = out.find("[apps.foo]").unwrap();
         let c_pos = out.find("C = \"c\"").unwrap();

@@ -1,9 +1,9 @@
 //! Rust authoring API for Plexi WASM component apps.
 //!
-//! Implement [`App`], then call [`export_app!`] once with an app constructor.
+//! Implement [`View`], then call [`export_plugin!`] once with an app constructor.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit",
 });
 
@@ -14,7 +14,7 @@ pub mod bindings {
 
 pub use bindings::plexi::platform::types::*;
 
-/// Values passed to [`App::init`].
+/// Values passed to [`View::init`].
 pub struct InitContext {
     /// State persisted by an earlier app instance.
     pub state: StateSnapshot,
@@ -42,7 +42,7 @@ impl InitContext {
 }
 
 /// Lifecycle implemented by a standard Plexi WASM app.
-pub trait App {
+pub trait View {
     /// Initializes app state and returns startup effects.
     fn init(&mut self, _context: InitContext) -> Vec<Effect> {
         Vec::new()
@@ -56,24 +56,24 @@ pub trait App {
 }
 
 struct PlexiComponent;
-static mut PLEXI_APP: Option<Box<dyn App>> = None;
+static mut PLEXI_VIEW: Option<Box<dyn View>> = None;
 
-fn app() -> &'static mut dyn App {
+fn app() -> &'static mut dyn View {
     unsafe {
-        (*core::ptr::addr_of_mut!(PLEXI_APP))
+        (*core::ptr::addr_of_mut!(PLEXI_VIEW))
             .as_deref_mut()
             .expect("Plexi calls init before update or view")
     }
 }
 
 unsafe extern "Rust" {
-    fn __plexi_create_app() -> Box<dyn App>;
+    fn __plexi_create_view() -> Box<dyn View>;
 }
 
 impl bindings::exports::plexi::platform::lifecycle::Guest for PlexiComponent {
     fn init(state: StateSnapshot, size: (f32, f32), args: Vec<String>) -> Vec<Effect> {
         unsafe {
-            PLEXI_APP = Some(__plexi_create_app());
+            PLEXI_VIEW = Some(__plexi_create_view());
         }
         app().init(InitContext::new(state, size, args))
     }
@@ -89,13 +89,13 @@ impl bindings::exports::plexi::platform::lifecycle::Guest for PlexiComponent {
 
 export!(PlexiComponent);
 
-/// Exports an [`App`] as the `plexi-app` WIT world.
+/// Exports an [`View`] as the `plexi-plugin` WIT world.
 #[macro_export]
-macro_rules! export_app {
+macro_rules! export_plugin {
     ($constructor:expr) => {
         /// Creates the app instance used by the generated WIT lifecycle export.
         #[no_mangle]
-        pub fn __plexi_create_app() -> Box<dyn $crate::App> {
+        pub fn __plexi_create_view() -> Box<dyn $crate::View> {
             Box::new($constructor)
         }
     };
@@ -233,6 +233,9 @@ pub mod effects {
         Effect::ClipboardWrite(text.into())
     }
     #[must_use]
+    /// Post an informational host notification. Native WASM supports only the
+    /// `title` and `body` message subset and requires the `notify` capability;
+    /// rich PGAP notification fields are intentionally unavailable here.
     pub fn notify(title: impl Into<String>, body: impl Into<String>) -> Effect {
         Effect::Notify(NotificationEffect {
             title: title.into(),
@@ -241,9 +244,9 @@ pub mod effects {
         })
     }
     #[must_use]
-    pub fn spawn(app_id: impl Into<String>) -> Effect {
+    pub fn spawn(plugin_id: impl Into<String>) -> Effect {
         Effect::Spawn(SpawnEffect {
-            app_id: app_id.into(),
+            plugin_id: plugin_id.into(),
             layout: None,
             args: vec![],
         })

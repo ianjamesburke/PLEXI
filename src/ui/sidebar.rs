@@ -3,7 +3,7 @@ use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{PaneDots, SidebarAction, SidebarRow};
 use crate::workspace::router::ContextMove;
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, Layout, Rect, RichText, Stroke};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -73,6 +73,19 @@ fn reorder_line_y(rects: &[Rect], slot: usize) -> f32 {
 }
 
 impl PlexiApp {
+    fn sidebar_ancestry_levels(&self, root: usize) -> Vec<crate::ui::sidebar_row::AncestryLevel> {
+        let path = self.router.active_ancestry();
+        if path.first() != Some(&root) || path.len() < 2 { return Vec::new(); }
+        path.iter().map(|&index| {
+            let context = self.router.get(index);
+            crate::ui::sidebar_row::AncestryLevel {
+                context_id: context.context_id,
+                name: context.name.to_string(),
+                dots: self.sidebar_pane_dots(context.context_id, index == self.router.active_idx()),
+            }
+        }).collect()
+    }
+
     /// Sidebar pane dots retain the window and pane that context activation
     /// will restore, even while another context is active.
     fn sidebar_pane_dots(&self, ctx_id: u64, is_active_context: bool) -> Option<PaneDots> {
@@ -140,6 +153,7 @@ impl PlexiApp {
                 _ => None,
             });
         let mut hidden_set = std::collections::HashSet::new();
+        let mut static_health_pips = std::collections::HashSet::new();
         let mut activities = Vec::with_capacity(pane_ids.len());
         for (dot_idx, &pane_id) in pane_ids.iter().enumerate() {
             let pane = self
@@ -150,21 +164,222 @@ impl PlexiApp {
             if pane.is_some_and(|pane| pane.is_hidden()) {
                 hidden_set.insert(dot_idx);
             }
-            activities.push(pane.and_then(|pane| pane.effective_activity()).cloned());
+            if pane.is_some_and(|pane| pane.static_health_pip()) {
+                static_health_pips.insert(dot_idx);
+            }
+            let activity = pane.and_then(|pane| {
+                if let Some(act) = pane.effective_activity() {
+                    return Some(act.clone());
+                }
+                if let Some(t) = pane.as_terminal() {
+                    if t.standby_session.is_some() {
+                        return Some(crate::protocol::AgentState::NeedsYou);
+                    }
+                }
+                if let Some(portal) = pane.as_portal() {
+                    let status = crate::host::context_state::ContextState::compute(
+                        portal.target_context_id,
+                        self.router.as_slice(),
+                        &self.windows,
+                    )
+                    .status;
+                    let effective_status = if matches!(
+                        status,
+                        crate::host::context_state::ContextStatus::Idle
+                    ) {
+                        portal
+                            .context_state
+                            .as_ref()
+                            .map(|s| s.status.clone())
+                            .unwrap_or(status)
+                    } else {
+                        status
+                    };
+                    return match effective_status {
+                        crate::host::context_state::ContextStatus::NeedsYou => {
+                            Some(crate::protocol::AgentState::NeedsYou)
+                        }
+                        crate::host::context_state::ContextStatus::Blocked => {
+                            Some(crate::protocol::AgentState::Blocked)
+                        }
+                        crate::host::context_state::ContextStatus::Working => {
+                            Some(crate::protocol::AgentState::Working)
+                        }
+                        crate::host::context_state::ContextStatus::Done => {
+                            Some(crate::protocol::AgentState::Idle)
+                        }
+                        crate::host::context_state::ContextStatus::Error
+                        | crate::host::context_state::ContextStatus::Idle => None,
+                    };
+                }
+                None
+            });
+            activities.push(activity);
         }
+        let ancestry = self.router.active_ancestry();
+        let child = ancestry
+            .windows(2)
+            .find(|pair| self.router.get(pair[0]).context_id == ctx_id)
+            .map(|pair| self.router.get(pair[1]).context_id);
+        let route_idx = child.and_then(|child| {
+            pane_ids.iter().position(|id| {
+                self.windows
+                    .iter()
+                    .filter(|w| w.context_id == ctx_id)
+                    .find_map(|w| w.panes.get(id))
+                    .and_then(|p| p.as_portal())
+                    .is_some_and(|portal| portal.target_context_id == child)
+            })
+        });
+        let route_idx = route_idx.or_else(|| {
+            (is_active_context && ancestry.len() > 1).then_some(focused_idx).flatten()
+        });
+        let focused_idx = if child.is_some() { None } else { focused_idx };
         Some(PaneDots {
+            route_idx,
             count: pane_ids.len(),
             focused_idx,
             hidden_set,
             activities,
+            static_health_pips,
             windows,
         })
     }
+
+    /// Rolled-up semantic indicator color for a sidebar context row when the
+    /// context (or one of its sub-contexts) is in `NeedsYou` (coral),
+    /// `Blocked` (amber), or `Error` (danger).
+    #[cfg(test)]
+    pub(crate) fn sidebar_context_indicator_color(&self, ctx_id: u64) -> Option<egui::Color32> {
+        let state = crate::host::context_state::ContextState::compute(
+            ctx_id,
+            self.router.as_slice(),
+            &self.windows,
+        );
+        match state.status {
+            crate::host::context_state::ContextStatus::NeedsYou => {
+                Some(crate::ui::activity::needs_you_color(&self.colors))
+            }
+            crate::host::context_state::ContextStatus::Blocked => {
+                Some(crate::ui::activity::blocked_color(&self.colors))
+            }
+            crate::host::context_state::ContextStatus::Error => Some(self.colors.danger),
+            crate::host::context_state::ContextStatus::Working
+            | crate::host::context_state::ContextStatus::Done
+            | crate::host::context_state::ContextStatus::Idle => None,
+        }
+    }
+}
+
+const SIDEBAR_PANEL_ID: &str = "sidebar";
+const SIDEBAR_DESIRED_WIDTH_ID: &str = "sidebar_desired_width";
+const SIDEBAR_WAS_CLAMPED_ID: &str = "sidebar_was_clamped";
+static LAST_LOGGED_SIDEBAR_MAX_BITS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+const _: () = assert!(
+    crate::ui::style::SIDEBAR_MIN_W + crate::ui::style::SIDEBAR_CONTENT_MIN_W <= 400.0,
+    "sidebar minimum width plus content-area floor must fit inside the 400pt minimum window width"
+);
+
+/// Compute the responsive `(default_width, min_width..=max_width)` for the
+/// sidebar at `window_width`.
+///
+/// Expressed as a floor on the central content area
+/// (`style::SIDEBAR_CONTENT_MIN_W`, 260 pt) rather than an arbitrary sidebar
+/// fraction: `window_width - SIDEBAR_CONTENT_MIN_W` caps the sidebar's upper
+/// bound (clamped to `SIDEBAR_MIN_W..=SIDEBAR_MAX_W`), and the default width
+/// clamps into that range so even a 400-point window preserves 260 points for
+/// panes.
+pub(crate) fn sidebar_width_bounds(window_width: f32) -> (f32, std::ops::RangeInclusive<f32>) {
+    let min_w = crate::ui::style::SIDEBAR_MIN_W;
+    let max_for_content =
+        (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
+    let max_w = max_for_content.min(crate::ui::style::SIDEBAR_MAX_W);
+    let default_w = crate::ui::style::SIDEBAR_DEFAULT_W.clamp(min_w, max_w);
+    (default_w, min_w..=max_w)
 }
 
 impl PlexiApp {
+    /// Render the left sidebar panel with a responsive width clamp that
+    /// preserves at least [`crate::ui::style::SIDEBAR_CONTENT_MIN_W`] for the
+    /// central content area, restoring the unclamped width when the window
+    /// widens again.
+    pub(crate) fn show_sidebar_panel(&mut self, ui: &mut egui::Ui) {
+        let window_width = ui.available_width();
+        let (default_w, size_range) = sidebar_width_bounds(window_width);
+        let min_w = *size_range.start();
+        let max_w = *size_range.end();
+        let max_bits = max_w.to_bits();
+        if LAST_LOGGED_SIDEBAR_MAX_BITS.swap(max_bits, std::sync::atomic::Ordering::Relaxed)
+            != max_bits
+        {
+            log::info!(
+                "sidebar: width_bounds default={default_w:.1} range={min_w:.1}..={max_w:.1} window_width={window_width:.1} content_min={:.1}",
+                crate::ui::style::SIDEBAR_CONTENT_MIN_W,
+            );
+        }
+
+        let panel_id = egui::Id::new(SIDEBAR_PANEL_ID);
+        let desired_id = egui::Id::new(SIDEBAR_DESIRED_WIDTH_ID);
+        let clamped_id = egui::Id::new(SIDEBAR_WAS_CLAMPED_ID);
+        let ctx = ui.ctx().clone();
+        let desired_w = ctx
+            .data(|d| d.get_temp::<f32>(desired_id))
+            .unwrap_or(crate::ui::style::SIDEBAR_DEFAULT_W)
+            .clamp(
+                crate::ui::style::SIDEBAR_MIN_W,
+                crate::ui::style::SIDEBAR_MAX_W,
+            );
+        let was_clamped = ctx
+            .data(|d| d.get_temp::<bool>(clamped_id))
+            .unwrap_or(false);
+
+        if let Some(mut state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
+            let current_w = state.rect.width();
+            let target_w = if was_clamped {
+                desired_w.clamp(min_w, max_w)
+            } else {
+                current_w.clamp(min_w, max_w)
+            };
+            if (current_w - target_w).abs() > f32::EPSILON {
+                state.rect.max.x = state.rect.min.x + target_w;
+                ctx.data_mut(|d| d.insert_persisted(panel_id, state));
+            }
+        }
+
+        egui::Panel::left(SIDEBAR_PANEL_ID)
+            .default_size(default_w)
+            .size_range(size_range)
+            .resizable(true)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .inner_margin(egui::Margin::same(0)),
+            )
+            .show_inside(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(max_w));
+                crate::platform::ui_profile::time("sidebar", || self.draw_sidebar(ui));
+            });
+
+        if let Some(state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
+            let actual_w = state.rect.width();
+            let is_clamped =
+                max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
+            ctx.data_mut(|d| {
+                d.insert_temp(clamped_id, is_clamped);
+                if !is_clamped {
+                    d.insert_temp(desired_id, actual_w);
+                }
+            });
+        }
+    }
+
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
-        let sidebar_width = ui.available_width();
+        let (_, clamp_range) = sidebar_width_bounds(ui.ctx().content_rect().width());
+        let sidebar_width = ui.available_width().min(*clamp_range.end());
+        ui.set_max_width(sidebar_width);
         // Header
         ui.add_space(8.0);
         let mut add_clicked = false;
@@ -177,7 +392,14 @@ impl PlexiApp {
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
-                if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
+                let add = button::toolbar_button(
+                    ui,
+                    button::KitButton::new("+", &self.colors)
+                        .text_color(self.colors.text_dim)
+                        .surface(self.colors.bg_sidebar),
+                    "New context",
+                );
+                if add.clicked() {
                     add_clicked = true;
                 }
             });
@@ -186,6 +408,7 @@ impl PlexiApp {
 
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
+        let mut ancestor_navigation = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut active_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -200,10 +423,14 @@ impl PlexiApp {
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
+        self.sync_attention_queue();
+
         // Build display order: top-level contexts only. Subcontexts never appear
-        // in the sidebar — they are reached from inside their parent via its
-        // Portal tile — so they are never enumerated, numbered, or rendered.
+        // as independent entries. Only the active ancestry is disclosed inside
+        // its root card, without changing numbering or drag order.
         let display_order: Vec<usize> = self.router.top_level_order();
+        let ancestry = self.router.active_ancestry();
+        let active_root = ancestry.first().copied();
 
         // Partition: active contexts render in the main list, parked ones below.
         let active_order: Vec<usize> = display_order
@@ -225,85 +452,20 @@ impl PlexiApp {
                 let active_count = active_order.len();
                 for (display_idx, &i) in active_order.iter().enumerate() {
                     let is_active = i == self.router.active_idx();
-                    let is_renaming = self.renaming_window == Some(i);
                     let is_dragging = self.drag_context == Some(i);
                     let any_dragging = self.drag_context.is_some();
 
                     let ctx_id = self.router.get(i).context_id;
                     let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
 
-                    // --- Renaming: special-cased before the SidebarRow path ---
-                    if is_renaming {
-                        let fill = if is_active {
-                            self.colors.bg_active
-                        } else {
-                            self.colors.bg_sidebar_hover
-                        };
-                        let bg_idx = ui.painter().add(egui::Shape::Noop);
-                        let te_id = egui::Id::new(("rename_ctx", i));
-                        let sidebar_w = sidebar_width;
-                        let scope = ui.scope(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                let te = ui
-                                    .scope(|ui| {
-                                        ui.set_max_width(sidebar_w - 56.0);
-                                        crate::ui::text_field::TextField::singleline(te_id, "")
-                                    .surface(crate::ui::focus::SurfaceKey::Overlay(
-                                        crate::app::input_owner::OverlaySurface::SidebarRename,
-                                    ))
-                                    .select_all_on_focus(true)
-                                    .log_name("sidebar_rename")
-                                    .show(ui, &mut self.rename_buffer, &self.colors)
-                                    })
-                                    .inner;
-                                if te.lost_focus() {
-                                    if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
-                                        self.renaming_window = None;
-                                    } else {
-                                        self.rename_context(i, &self.rename_buffer.clone());
-                                        self.renaming_window = None;
-                                    }
-                                    ui.input_mut(|inp| {
-                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                                    });
-                                }
-                            });
-                            ui.add_space(4.0);
-                        });
-                        let row_rect = scope.response.rect;
-                        active_rects.push(row_rect);
-                        ui.painter().set(
-                            bg_idx,
-                            egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
-                        );
-                        if is_active {
-                            ui.painter().rect_filled(
-                                Rect::from_min_size(
-                                    row_rect.min,
-                                    Vec2::new(3.0, row_rect.height()),
-                                ),
-                                CornerRadius::ZERO,
-                                self.colors.accent,
-                            );
-                        }
-                        continue;
-                    }
-
                     // --- Normal row via SidebarRow ---
                     let ctx_name = self.router.get(i).name.to_string();
-                    let badge_count = if is_active {
-                        self.visible_notification_count()
-                    } else {
-                        self.context_notification_count(i)
-                    };
+                    let badge_count = self.sidebar_context_badge_count(ctx_id);
                     let subtitle = Some(self.router.get(i).root.display().to_string());
 
                     let (action, response) = SidebarRow {
-                        is_active,
+                        ancestry: self.sidebar_ancestry_levels(i),
+                        is_active: active_root == Some(i),
                         is_dragging,
                         any_dragging,
                         action_enabled: num_contexts > 1 && !any_dragging,
@@ -332,53 +494,74 @@ impl PlexiApp {
                         let num_ctxs = num_contexts;
                         let cwd_for_menu = focused_cwd.clone();
                         response.context_menu(|ui| {
-                            if ui.button("Rename").clicked() {
+                            if crate::ui::button::menu_item(ui, "Rename", &self.colors).clicked() {
                                 menu_action = Some((i, WindowMenuAction::Rename));
                                 ui.close();
                             }
-                            if ui.button("Edit Description").clicked() {
+                            if crate::ui::button::menu_item(ui, "Edit Description", &self.colors)
+                                .clicked()
+                            {
                                 menu_action = Some((i, WindowMenuAction::EditDescription));
                                 ui.close();
                             }
                             ui.separator();
                             if display_idx > 0 {
-                                if ui.button("Move to Top").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move to Top", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveToTop));
                                     ui.close();
                                 }
-                                if ui.button("Move Up").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move Up", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveUp));
                                     ui.close();
                                 }
                             }
                             if display_idx + 1 < active_count {
-                                if ui.button("Move Down").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move Down", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveDown));
                                     ui.close();
                                 }
-                                if ui.button("Move to Bottom").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move to Bottom", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveToBottom));
                                     ui.close();
                                 }
                             }
                             ui.separator();
                             if let Some(cwd) = &cwd_for_menu {
-                                if ui.button("Set root to current path").clicked() {
+                                if crate::ui::button::menu_item(
+                                    ui,
+                                    "Set root to current path",
+                                    &self.colors,
+                                )
+                                .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
                                     ui.close();
                                 }
                             }
-                            if ui.button("Edit root\u{2026}").clicked() {
+                            if crate::ui::button::menu_item(ui, "Edit root\u{2026}", &self.colors)
+                                .clicked()
+                            {
                                 menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
                                 ui.close();
                             }
                             if num_ctxs > 1 {
                                 ui.separator();
-                                if ui.button("Park").clicked() {
+                                if crate::ui::button::menu_item(ui, "Park", &self.colors).clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::Park));
                                     ui.close();
                                 }
-                                if ui.button("Delete").clicked() {
+                                if crate::ui::button::menu_item(ui, "Delete", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::Delete));
                                     ui.close();
                                 }
@@ -386,6 +569,9 @@ impl PlexiApp {
                         });
 
                         match action {
+                            SidebarAction::Ancestor { source, target } => {
+                                ancestor_navigation = Some((source, target));
+                            }
                             SidebarAction::Delete => {
                                 delete_context = Some(i);
                             }
@@ -412,7 +598,7 @@ impl PlexiApp {
                     ui.add_space(8.0);
 
                     let divider_id = egui::Id::new("parked_divider");
-                    let expanded = self.parked_section_expanded;
+                    let expanded = self.parked_section_expanded || active_root.is_some_and(|i| self.router.get(i).parked);
                     let label = if parked_count > 0 {
                         format!("Parked ({parked_count})")
                     } else {
@@ -430,17 +616,18 @@ impl PlexiApp {
                     }
                     ui.add_space(4.0);
 
-                    if self.parked_section_expanded {
+                    if expanded {
                         for &i in &parked_order {
                             let ctx = self.router.get(i);
                             let ctx_name = ctx.name.to_string();
                             let ctx_id = ctx.context_id;
                             let subtitle = Some(ctx.root.display().to_string());
 
-                            let pane_dots = self.sidebar_pane_dots(ctx_id, false);
+                            let pane_dots = self.sidebar_pane_dots(ctx_id, i == self.router.active_idx());
 
                             let (action, response) = SidebarRow {
-                                is_active: false,
+                                ancestry: self.sidebar_ancestry_levels(i),
+                                is_active: active_root == Some(i),
                                 is_dragging: self.drag_context == Some(i),
                                 any_dragging: self.drag_context.is_some(),
                                 action_enabled: false,
@@ -460,13 +647,16 @@ impl PlexiApp {
                             parked_rects.push(response.rect);
 
                             response.context_menu(|ui| {
-                                if ui.button("Unpark").clicked() {
+                                if crate::ui::button::menu_item(ui, "Unpark", &self.colors)
+                                    .clicked()
+                                {
                                     unpark_context = Some(i);
                                     ui.close();
                                 }
                             });
 
                             match action {
+                                SidebarAction::Ancestor { source, target } => { ancestor_navigation = Some((source, target)); }
                                 SidebarAction::DragStart => {
                                     self.drag_context = Some(i);
                                 }
@@ -578,7 +768,7 @@ impl PlexiApp {
                 // and the subcontexts travel with their parent.
                 let new_order = self.router.expand_subtrees(&new_order);
                 self.router.apply_order(&new_order);
-                self.renaming_window = None;
+                self.cancel_context_rename("sidebar reorder");
 
                 let new_src_idx = self
                     .router
@@ -629,19 +819,19 @@ impl PlexiApp {
                     self.push_focus_layer(crate::app::FocusKind::ContextDescription);
                 }
                 WindowMenuAction::MoveToTop => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Top);
                 }
                 WindowMenuAction::MoveUp => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Up);
                 }
                 WindowMenuAction::MoveDown => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Down);
                 }
                 WindowMenuAction::MoveToBottom => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Bottom);
                 }
                 WindowMenuAction::SetRoot(path) => {
@@ -675,6 +865,8 @@ impl PlexiApp {
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
+        } else if let Some((source, target)) = ancestor_navigation {
+            self.navigate_context_ancestor(source, target);
         } else if let Some(i) = clicked_workspace {
             // Only top-level rows are rendered, so a click here is always a
             // lateral move between master contexts — never a descent into a
@@ -686,10 +878,40 @@ impl PlexiApp {
             self.new_context();
         }
     }
+
+    pub(crate) fn sidebar_context_badge_count(&self, ctx_id: u64) -> usize {
+        self.attention_queue.ask_count_for_context(ctx_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_ancestry_projection_tracks_ids_empty_state_and_background_rename() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.add_test_pane();
+        let root = h.app.router.active().context_id;
+        h.app.router.get_mut(0).name = "duplicate".to_string().into();
+        h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+        let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+        let child = h.app.router.get(child_index).context_id;
+        h.app.switch_workspace(child_index);
+        let levels = h.app.sidebar_ancestry_levels(0);
+        assert_eq!(levels.iter().map(|l| l.context_id).collect::<Vec<_>>(), vec![root, child]);
+        assert_eq!(levels[0].name, levels[1].name);
+        let focus = h.app.active_window;
+        h.app.router.get_mut(0).parked = true;
+        h.app.router.get_mut(0).name = "renamed in background".to_string().into();
+        assert_eq!(h.app.sidebar_ancestry_levels(0)[0].name, "renamed in background");
+        assert_eq!(h.app.active_window, focus);
+        h.app.windows[focus].panes.clear();
+        h.app.windows[focus].tree = egui_tiles::Tree::empty("empty restored child");
+        assert!(h.app.sidebar_ancestry_levels(0)[1].dots.is_none());
+        h.app.switch_workspace(0);
+        assert!(h.app.sidebar_ancestry_levels(0).is_empty());
+    }
+
     use super::*;
     use egui::{pos2, vec2, Rect};
 
@@ -872,5 +1094,44 @@ mod tests {
         assert_eq!(reorder_line_y(&rects, 1), 20.0); // between rows
         assert_eq!(reorder_line_y(&rects, 2), 40.0); // bottom edge
         assert_eq!(reorder_line_y(&rects, 99), 40.0); // past end clamps
+    }
+
+    #[test]
+    fn sidebar_width_bounds_preserves_content_floor_at_400pt_and_standard_widths() {
+        use crate::ui::style::{
+            SIDEBAR_CONTENT_MIN_W, SIDEBAR_DEFAULT_W, SIDEBAR_MAX_W, SIDEBAR_MIN_W,
+        };
+
+        // At the host's 400-point minimum window width, the sidebar clamps to
+        // SIDEBAR_MIN_W (140 pt) so at least SIDEBAR_CONTENT_MIN_W (260 pt)
+        // remains for the central content area.
+        let (default_400, range_400) = sidebar_width_bounds(400.0);
+        assert_eq!(default_400, SIDEBAR_MIN_W);
+        assert_eq!(*range_400.start(), SIDEBAR_MIN_W);
+        assert_eq!(*range_400.end(), 400.0 - SIDEBAR_CONTENT_MIN_W);
+        assert!(400.0 - *range_400.end() >= SIDEBAR_CONTENT_MIN_W);
+
+        // At an intermediate narrow width (460 pt), the sidebar cap is 200 pt
+        // and the default clamps to 200 pt, keeping the 260 pt content floor.
+        let (default_460, range_460) = sidebar_width_bounds(460.0);
+        assert_eq!(default_460, 200.0);
+        assert_eq!(*range_460.end(), 200.0);
+        assert!(460.0 - *range_460.end() >= SIDEBAR_CONTENT_MIN_W);
+
+        // At 520 pt (responsive narrow breakpoint), the default 220 pt fits
+        // while the user resize cap is 260 pt (520 - 260).
+        let (default_520, range_520) = sidebar_width_bounds(520.0);
+        assert_eq!(default_520, SIDEBAR_DEFAULT_W);
+        assert_eq!(*range_520.end(), 520.0 - SIDEBAR_CONTENT_MIN_W);
+
+        // At standard widths (800 pt, 1280 pt), the full SIDEBAR_MIN_W..=SIDEBAR_MAX_W
+        // range and SIDEBAR_DEFAULT_W are available.
+        for &w in &[800.0_f32, 1280.0, 1400.0] {
+            let (default_w, range) = sidebar_width_bounds(w);
+            assert_eq!(default_w, SIDEBAR_DEFAULT_W);
+            assert_eq!(*range.start(), SIDEBAR_MIN_W);
+            assert_eq!(*range.end(), SIDEBAR_MAX_W);
+            assert!(w - *range.end() >= SIDEBAR_CONTENT_MIN_W);
+        }
     }
 }

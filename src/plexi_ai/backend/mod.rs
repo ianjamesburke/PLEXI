@@ -1,16 +1,12 @@
 //! AI backend abstraction for the Plexi AI broker.
 //!
-//! Concrete backends: `OpenRouterBackend` (SSE streaming via OpenRouter),
-//! `OllamaBackend` (NDJSON streaming via local Ollama), and
-//! `LocalOpenAiBackend` (OpenAI-compatible SSE streaming against a
-//! configurable base URL). The host reads API keys from the environment at
-//! dispatch time; apps never see keys.
+//! Concrete backend: `OpenRouterBackend` (SSE streaming via OpenRouter). The
+//! host reads API keys from the environment at dispatch time; plugins never see
+//! keys.
 //!
 //! Backends deliver events through an `mpsc::Sender<StreamEvent>` so the
 //! caller can drain a receiver each frame without blocking the UI.
 
-pub mod local;
-pub mod ollama;
 pub mod openrouter;
 
 use std::sync::{mpsc, Arc};
@@ -28,17 +24,23 @@ pub struct ConcreteModelRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
+    Off,
+    Minimal,
     Low,
     Medium,
     High,
+    Xhigh,
 }
 
 impl ReasoningEffort {
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw {
+            "off" => Ok(Self::Off),
+            "minimal" => Ok(Self::Minimal),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
             other => Err(format!(
                 "invalid effort '{other}' (expected low | medium | high)"
             )),
@@ -47,9 +49,12 @@ impl ReasoningEffort {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Xhigh => "xhigh",
         }
     }
 }
@@ -84,15 +89,19 @@ pub enum StreamEvent {
         arg_chars: usize,
     },
     /// Turn complete. Token counts are `Some` only for metered backends.
-    /// `generation_id` carries the `X-Generation-Id` response header value
-    /// (OpenRouter-specific); the broker uses it to fetch the real cost after
-    /// the turn completes.
+    /// `cost_usd` is the provider's `usage.cost` when the response included
+    /// it. `generation_id` is the `X-Generation-Id` header; the broker looks
+    /// the generation up only when `cost_usd` is missing.
     Done {
         input_tokens: Option<u32>,
         output_tokens: Option<u32>,
+        /// USD cost from `usage.cost` on the final chunk or non-streaming
+        /// body. `None` when the provider omitted it — including a real
+        /// zero, which is `Some(0.0)`.
+        cost_usd: Option<f64>,
         /// OpenRouter generation ID captured from the `X-Generation-Id`
-        /// response header before reading the SSE body. Used to fetch
-        /// real per-call cost via the generation endpoint.
+        /// response header before reading the body. Fallback for cost when
+        /// `usage.cost` was not on the response.
         generation_id: Option<String>,
     },
     /// The model requested one or more tool calls. The turn loop stores these

@@ -1,18 +1,9 @@
-schema_version = 1
-
-[app]
-id = "stats"
-type = "app"
-name = "Stats"
-version = "0.2.0"
-description = "Activity dashboard: focus level, time, streak, top projects, and a 24h heatmap from Plexi focus events."
-entry = "stats.py"
+schema_version = 2
 
 [runtime]
 python_compat = true
-
-[app.capabilities]
-capabilities = ["timer"]
+kind = "python"
+entry = "stats.py"
 
 [launch]
 
@@ -24,3 +15,16 @@ capabilities = ["timer"]
 # visibility = "public"   # public | unlisted | private
 # price = "free"          # "free", or a price like "4.99"
 # publisher = "plexi"     # first-party Plexi app
+
+[plugin]
+id = "stats"
+name = "Stats"
+version = "0.2.0"
+description = "Activity dashboard: focus level, time, streak, top projects, and a 24h heatmap from Plexi focus events."
+
+[plugin.capabilities]
+capabilities = ["timer"]
+
+[[contributes.views]]
+id = "stats.main"
+default = true

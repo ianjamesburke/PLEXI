@@ -4,10 +4,12 @@
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 const DEBOUNCE_MS: u64 = 200;
 
@@ -74,7 +76,15 @@ pub fn start(
     let cancel_thread = Arc::clone(&cancel);
 
     let thread = thread::spawn(move || {
-        debounce_loop(raw_rx, reload_tx, cancel_thread);
+        crate::app::debounce::run(
+            raw_rx,
+            cancel_thread,
+            Duration::from_millis(DEBOUNCE_MS),
+            |_| {
+                log::info!("config_watcher: config.toml changed, reloading");
+                reload_tx.send(()).is_ok()
+            },
+        );
     });
 
     Some((
@@ -85,37 +95,6 @@ pub fn start(
         },
         reload_rx,
     ))
-}
-
-fn debounce_loop(rx: Receiver<()>, sender: UiMailbox<()>, cancel: Arc<Mutex<bool>>) {
-    let mut last_event: Option<Instant> = None;
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
-    let poll = Duration::from_millis(50);
-
-    loop {
-        if cancel.lock().map(|g| *g).unwrap_or(true) {
-            return;
-        }
-
-        match rx.try_recv() {
-            Ok(()) => {
-                last_event = Some(Instant::now());
-            }
-            Err(TryRecvError::Disconnected) => return,
-            Err(TryRecvError::Empty) => {
-                if let Some(t) = last_event {
-                    if t.elapsed() >= debounce {
-                        log::info!("config_watcher: config.toml changed, reloading");
-                        if sender.send(()).is_err() {
-                            return;
-                        }
-                        last_event = None;
-                    }
-                }
-                thread::sleep(poll);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -134,6 +113,27 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    /// Absorb the `config.toml` create that `start` may deliver late, then
+    /// wait out one debounce of silence.
+    ///
+    /// A fixed sleep plus a single drain loses to FSEvents latency on a loaded
+    /// macOS runner. The create's debounced signal then lands in the next
+    /// assertion and looks like an unrelated file woke the watcher.
+    fn settle_initial_events(rx: &MailboxReceiver<()>) {
+        let _ = poll_for_signal(rx, Duration::from_secs(2));
+        let quiet = crate::testing::load_aware_timeout(Duration::from_millis(DEBOUNCE_MS + 200));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline {
+            if rx.try_recv().is_ok() {
+                quiet_since = Instant::now();
+            } else if quiet_since.elapsed() >= quiet {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
@@ -168,11 +168,7 @@ mod tests {
 
         let (watcher, rx) =
             start(config, Arc::new(RecordingWake::new())).expect("watcher should start");
-        // Drain any initial FSEvents from the config.toml creation above.
-        thread::sleep(crate::testing::load_aware_timeout(Duration::from_millis(
-            500,
-        )));
-        while rx.try_recv().is_ok() {}
+        settle_initial_events(&rx);
 
         fs::write(dir.path().join("other.txt"), "noise\n").unwrap();
         assert!(

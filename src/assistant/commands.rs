@@ -1,7 +1,7 @@
 //! Slash command parsing for the host Assistant.
 //!
 //! Commands are recognized only when `/` is the first non-whitespace
-//! character in the composer (spec: docs/assistant-host-app.md). The
+//! character in the composer (spec: docs/assistant-host-plugin.md). The
 //! parser is a pure function — no model or store access — so it is unit
 //! tested in isolation.
 
@@ -15,7 +15,7 @@ pub struct ParsedCommand {
 
 /// The built-in command table: `(name, purpose)`. Every entry maps to a real
 /// handler in `AssistantModel::execute_command`; unimplemented ideas live in
-/// stint tasks and `docs/assistant-host-app.md`, never in this surface.
+/// stint tasks and `docs/assistant-host-plugin.md`, never in this surface.
 pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
     ("help", "List the built-in commands."),
     ("clear", "Start a new conversation in the same workspace."),
@@ -25,9 +25,12 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "tools",
-        "Show app connector tools and event streams with their broker decisions.",
+        "Show plugin connector tools and event streams with their broker decisions.",
     ),
-    ("apps", "Show app connectors available in the workspace."),
+    (
+        "plugins",
+        "Show plugin connectors available in the workspace.",
+    ),
     ("skills", "Show installed user and workspace skills."),
     (
         "context",
@@ -41,7 +44,7 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
     ("revoke", "Revoke a persisted grant by target id."),
     (
         "audit",
-        "Show recent Assistant tool calls, grants, app writes, and denied attempts.",
+        "Show recent Assistant tool calls, grants, plugin writes, and denied attempts.",
     ),
     (
         "thoughts",

@@ -1,196 +1,221 @@
-//! Release-channel gates for features that are not part of the stable v1 scope.
+//! Experiment flags for everything that is not part of the stable v1 surface.
 //!
-//! Stable v1 is intentionally narrow. Release-gated features stay available in
-//! alpha, beta, and PR builds according to the minimum tier declared here, so
-//! they can keep moving without leaking into the public stable product. Local
-//! `rc-*` channels are explicit stable-tier release candidates.
+//! Every [`ReleaseFeature`] is an experiment: off by default on every channel,
+//! including alpha, and turned on one at a time through the `[experiments]`
+//! table of the global `config.toml` (`plexi experiments enable <name>`).
+//! Channels decide update cadence and profile directory, never features.
+//!
+//! One table drives everything. [`ReleaseFeature::owned_paths`] lists the clap
+//! paths an experiment owns, and `cli::help::gate_command` hides them from help
+//! and completions, `exit_if_feature_disabled` refuses them at execution time,
+//! and the channel skill strips the sections tagged with the experiment.
+//!
+//! Experiment data rule: an experiment owns its storage in its own versioned
+//! location and never writes core state (config, layout, grants). There is no
+//! migration code for experiments: on a format change, move the old data aside
+//! and start fresh with a notice. Graduation to stable freezes the format.
+//!
+//! Experiment gate rule: a gate guards only the experiment's own surface,
+//! never a shared servicing path that also does core work. An off experiment
+//! preserves the established contract of every core command; it must not turn
+//! that command into a different fallback behavior. Core plugin I/O must run with
+//! every experiment off, including during hidden-window logic passes.
+//!
+//! The enabled set is read from the *global* config only. A workspace config
+//! must not be able to turn an experiment on, or a cloned repository could
+//! enable an experiment by shipping a `.plexi/config.toml`.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReleaseFeature {
-    Assistant,
-    AppWrappers,
-    Marketplace,
-    Daw,
-    MediaIo,
-    Accessibility,
-    McpClient,
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+mod catalog;
+pub use catalog::{GatePath, ReleaseFeature};
+
+/// Parse the `[experiments]` table into the enabled set. An unknown name is an
+/// error naming every valid key.
+pub fn parse_experiments(
+    table: &std::collections::BTreeMap<String, bool>,
+) -> Result<BTreeSet<ReleaseFeature>, String> {
+    let mut enabled = BTreeSet::new();
+    for (name, on) in table {
+        let Some(feature) = ReleaseFeature::from_key(name) else {
+            let valid: Vec<&str> = ReleaseFeature::ALL.iter().map(|f| f.key()).collect();
+            return Err(format!(
+                "unknown experiment `{name}` in [experiments]. Valid names: {}. Fix it in config.toml or run `plexi experiments disable {name}`.",
+                valid.join(", ")
+            ));
+        };
+        if *on {
+            enabled.insert(feature);
+        }
+    }
+    Ok(enabled)
 }
 
-impl ReleaseFeature {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Assistant => "assistant",
-            Self::AppWrappers => "app wrappers",
-            Self::Marketplace => "marketplace",
-            Self::Daw => "DAW",
-            Self::MediaIo => "media I/O",
-            Self::Accessibility => "experimental accessibility",
-            Self::McpClient => "MCP client",
-        }
-    }
+static EXPERIMENTS: OnceLock<Result<BTreeSet<ReleaseFeature>, String>> = OnceLock::new();
 
-    pub fn minimum_tier(self) -> ReleaseTier {
-        match self {
-            Self::Assistant
-            | Self::AppWrappers
-            | Self::Marketplace
-            | Self::Daw
-            | Self::MediaIo
-            | Self::Accessibility
-            | Self::McpClient => ReleaseTier::Beta,
-        }
+#[cfg(test)]
+thread_local! {
+    static TEST_EXPERIMENTS: std::cell::RefCell<Option<BTreeSet<ReleaseFeature>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that clears the per-thread experiment override on drop.
+#[cfg(test)]
+pub struct TestExperimentsGuard;
+
+#[cfg(test)]
+impl Drop for TestExperimentsGuard {
+    fn drop(&mut self) {
+        TEST_EXPERIMENTS.with(|c| *c.borrow_mut() = None);
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ReleaseTier {
-    Stable,
-    Beta,
-    Alpha,
+/// Override the enabled experiments for the current test thread. The override
+/// is thread-local, so a gate checked on a worker thread will not see it.
+#[cfg(test)]
+pub fn set_test_experiments(enabled: &[ReleaseFeature]) -> TestExperimentsGuard {
+    TEST_EXPERIMENTS.with(|c| *c.borrow_mut() = Some(enabled.iter().copied().collect()));
+    TestExperimentsGuard
 }
 
-impl ReleaseTier {
-    pub fn for_channel(channel: Option<&str>) -> Option<Self> {
-        match channel {
-            None => Some(Self::Stable),
-            Some("main") => Some(Self::Stable),
-            Some(name) if name.starts_with("rc-") => Some(Self::Stable),
-            Some("beta") => Some(Self::Beta),
-            Some("alpha") => Some(Self::Alpha),
-            Some(name) if name.starts_with("pr-") => Some(Self::Alpha),
-            Some(_) => None,
-        }
-    }
+/// The enabled set from the global config, cached for the life of the process.
+/// A missing config means nothing is enabled.
+pub fn load_experiments() -> &'static Result<BTreeSet<ReleaseFeature>, String> {
+    EXPERIMENTS.get_or_init(crate::config::load_global_experiments)
+}
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Stable => "stable",
-            Self::Beta => "beta",
-            Self::Alpha => "alpha",
-        }
-    }
-
-    fn binary_hint(self) -> &'static str {
-        match self {
-            Self::Stable => "plexi",
-            Self::Beta => "plexi-beta or plexi-alpha",
-            Self::Alpha => "plexi-alpha",
-        }
-    }
+/// An experiment-config error to surface before running a command, if any.
+pub fn experiments_error() -> Option<&'static str> {
+    load_experiments().as_ref().err().map(String::as_str)
 }
 
 pub fn feature_enabled(feature: ReleaseFeature) -> bool {
-    feature_enabled_for_channel(feature, crate::config::build_channel().as_deref())
+    #[cfg(test)]
+    if let Some(set) = TEST_EXPERIMENTS.with(|c| c.borrow().clone()) {
+        return set.contains(&feature);
+    }
+    // Tests never touch the process-wide cache or a real profile: an isolated
+    // profile dir is read fresh, anything else means everything is off.
+    #[cfg(test)]
+    {
+        return crate::config::test_profile_dir_override().is_some()
+            && crate::config::load_global_experiments().is_ok_and(|s| s.contains(&feature));
+    }
+    #[cfg(not(test))]
+    load_experiments()
+        .as_ref()
+        .is_ok_and(|set| set.contains(&feature))
 }
 
 pub fn log_feature_blocked(feature: ReleaseFeature) {
     log::info!(
-        "release_gate: blocked access to {} feature; requires {:?}",
-        feature.name(),
-        feature.minimum_tier()
+        "release_gate: blocked access to experiment {}; it is off",
+        feature.key()
     );
 }
 
 pub fn feature_unavailable_message(feature: ReleaseFeature) -> String {
     log_feature_blocked(feature);
-    format!(
-        "{} requires the {} channel and is not part of the stable v1 surface. Use {} to try it.",
-        feature.name(),
-        feature.minimum_tier().label(),
-        feature.minimum_tier().binary_hint()
-    )
+    feature_unavailable_text(feature)
 }
 
-fn feature_enabled_for_channel(feature: ReleaseFeature, channel: Option<&str>) -> bool {
-    ReleaseTier::for_channel(channel).is_some_and(|tier| tier >= feature.minimum_tier())
+/// The user-facing unavailable text without the block-log side effect, for
+/// static surfaces such as generated help.
+pub fn feature_unavailable_text(feature: ReleaseFeature) -> String {
+    format!(
+        "{key} is an experiment. Turn it on with: plexi experiments enable {key}",
+        key = feature.key()
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{feature_enabled_for_channel, ReleaseFeature, ReleaseTier};
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const CHANNELS: [Option<&str>; 6] = [
+        None,
+        Some("main"),
+        Some("rc-010"),
+        Some("beta"),
+        Some("alpha"),
+        Some("pr-2259"),
+    ];
 
     #[test]
-    fn stable_and_rc_channels_disable_beta_features() {
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            None
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("main")
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("rc-010")
-        ));
-    }
-
-    #[test]
-    fn alpha_beta_and_pr_channels_enable_beta_features() {
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("alpha")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("beta")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::Assistant,
-            Some("pr-2259")
-        ));
-    }
-
-    #[test]
-    fn stable_and_rc_channels_disable_v1_stubbed_surfaces() {
-        for feature in [
-            ReleaseFeature::Daw,
-            ReleaseFeature::MediaIo,
-            ReleaseFeature::Accessibility,
-        ] {
-            assert!(!feature_enabled_for_channel(feature, None));
-            assert!(!feature_enabled_for_channel(feature, Some("main")));
-            assert!(!feature_enabled_for_channel(feature, Some("rc-010")));
-            assert!(feature_enabled_for_channel(feature, Some("alpha")));
-            assert!(feature_enabled_for_channel(feature, Some("beta")));
+    fn every_experiment_is_off_by_default_on_every_channel() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        for channel in CHANNELS {
+            let _channel = channel.map(crate::config::set_test_channel);
+            for feature in ReleaseFeature::ALL {
+                assert!(
+                    !feature_enabled(*feature),
+                    "{} must be off on {channel:?}",
+                    feature.key()
+                );
+            }
         }
     }
 
     #[test]
-    fn unknown_named_channels_disable_release_gated_features() {
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::Marketplace,
-            Some("client")
-        ));
+    fn config_enable_turns_a_feature_on_for_any_channel() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(
+            profile.path().join("config.toml"),
+            "[experiments]\nassistant = true\n",
+        )
+        .unwrap();
+        for channel in CHANNELS {
+            let _channel = channel.map(crate::config::set_test_channel);
+            assert!(feature_enabled(ReleaseFeature::Assistant), "{channel:?}");
+            assert!(!feature_enabled(ReleaseFeature::Ledger), "{channel:?}");
+        }
     }
 
     #[test]
-    fn stable_and_rc_channels_disable_mcp_client_capability() {
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            None
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("main")
-        ));
-        assert!(!feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("rc-010")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("beta")
-        ));
-        assert!(feature_enabled_for_channel(
-            ReleaseFeature::McpClient,
-            Some("alpha")
-        ));
+    fn unknown_experiment_name_errors_with_the_valid_list() {
+        let table = BTreeMap::from([("assistent".to_string(), true)]);
+        let err = parse_experiments(&table).unwrap_err();
+        assert!(err.contains("unknown experiment `assistent`"), "{err}");
+        for feature in ReleaseFeature::ALL {
+            assert!(err.contains(feature.key()), "{err}");
+        }
     }
 
     #[test]
-    fn alpha_tier_is_higher_than_beta_for_future_alpha_only_features() {
-        assert!(ReleaseTier::Alpha > ReleaseTier::Beta);
-        assert!(ReleaseTier::Beta > ReleaseTier::Stable);
+    fn keys_are_unique_and_round_trip() {
+        let mut seen = BTreeSet::new();
+        for feature in ReleaseFeature::ALL {
+            assert!(
+                seen.insert(feature.key()),
+                "duplicate key {}",
+                feature.key()
+            );
+            assert_eq!(ReleaseFeature::from_key(feature.key()), Some(*feature));
+            assert!(!feature.description().is_empty());
+        }
+    }
+
+    #[test]
+    fn unavailable_text_names_the_enable_command() {
+        assert_eq!(
+            feature_unavailable_text(ReleaseFeature::AgentsDashboard),
+            "command_view is an experiment. Turn it on with: plexi experiments enable command_view"
+        );
+    }
+
+    #[test]
+    fn workspace_config_cannot_enable_experiments() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_cfg = crate::config::workspace_config_path(workspace.path());
+        std::fs::create_dir_all(ws_cfg.parent().unwrap()).unwrap();
+        std::fs::write(&ws_cfg, "[experiments]\nledger = true\n").unwrap();
+        let _cfg = crate::config::PlexiConfig::load_with_workspace(Some(workspace.path()));
+        assert!(!feature_enabled(ReleaseFeature::Ledger));
     }
 }

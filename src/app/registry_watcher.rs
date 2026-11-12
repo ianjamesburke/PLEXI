@@ -1,5 +1,5 @@
-//! Watches the global and workspace-local app directories for filesystem changes
-//! and emits debounced reload signals so the host can rescan the `AppRegistry`
+//! Watches the global and workspace-local plugin directories for filesystem changes
+//! and emits debounced reload signals so the host can rescan the `PluginRegistry`
 //! without a restart. (#1712)
 //!
 //! Mirrors `config_watcher.rs` but watches a list of directories (not a single
@@ -9,27 +9,27 @@
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEBOUNCE_MS: u64 = 500;
 
-pub struct AppRegistryWatcher {
+pub struct PluginRegistryWatcher {
     _watcher: RecommendedWatcher,
     cancel: Arc<Mutex<bool>>,
     thread: Option<JoinHandle<()>>,
 }
 
-impl Drop for AppRegistryWatcher {
+impl Drop for PluginRegistryWatcher {
     fn drop(&mut self) {
         if let Ok(mut c) = self.cancel.lock() {
             *c = true;
         }
         if let Some(h) = self.thread.take() {
             if let Err(e) = h.join() {
-                log::warn!("app_registry_watcher: debounce thread panicked: {e:?}");
+                log::warn!("plugin_registry_watcher: debounce thread panicked: {e:?}");
             }
         }
     }
@@ -37,21 +37,21 @@ impl Drop for AppRegistryWatcher {
 
 /// Start watching `dirs`, filtering to those that currently exist.
 ///
-/// Returns `None` if no directories could be watched (e.g. the global apps dir
+/// Returns `None` if no directories could be watched (e.g. the global plugins dir
 /// has never been created). Any `Create`, `Modify`, or `Remove` event in any
 /// watched directory fires a signal on the returned receiver, waking the UI
 /// thread via `wake` so the rescan is not stranded on an idle host.
 pub fn start(
     dirs: Vec<PathBuf>,
     wake: Arc<dyn UiWake>,
-) -> Option<(AppRegistryWatcher, MailboxReceiver<()>)> {
+) -> Option<(PluginRegistryWatcher, MailboxReceiver<()>)> {
     let existing: Vec<PathBuf> = dirs.into_iter().filter(|d| d.is_dir()).collect();
     if existing.is_empty() {
-        log::info!("app_registry_watcher: no existing dirs to watch; watcher not started");
+        log::info!("plugin_registry_watcher: no existing dirs to watch; watcher not started");
         return None;
     }
 
-    let (reload_tx, reload_rx) = UiMailbox::channel(wake, "app_registry_watcher");
+    let (reload_tx, reload_rx) = UiMailbox::channel(wake, "plugin_registry_watcher");
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
     let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| match res
@@ -64,64 +64,43 @@ pub fn start(
                 let _ = raw_tx.send(());
             }
         }
-        Err(e) => log::warn!("app_registry_watcher: watcher error: {e}"),
+        Err(e) => log::warn!("plugin_registry_watcher: watcher error: {e}"),
     }) {
         Ok(w) => w,
         Err(e) => {
-            log::warn!("app_registry_watcher: failed to create watcher: {e}");
+            log::warn!("plugin_registry_watcher: failed to create watcher: {e}");
             return None;
         }
     };
 
     for dir in &existing {
         if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
-            log::warn!("app_registry_watcher: failed to watch {dir:?}: {e}");
+            log::warn!("plugin_registry_watcher: failed to watch {dir:?}: {e}");
         } else {
-            log::info!("app_registry_watcher: watching {dir:?}");
+            log::info!("plugin_registry_watcher: watching {dir:?}");
         }
     }
 
     let cancel = Arc::new(Mutex::new(false));
     let cancel_thread = Arc::clone(&cancel);
     let thread = thread::spawn(move || {
-        debounce_loop(raw_rx, reload_tx, cancel_thread);
+        crate::app::debounce::run(
+            raw_rx,
+            cancel_thread,
+            Duration::from_millis(DEBOUNCE_MS),
+            |_| {
+                log::info!("plugin_registry_watcher: plugins dir changed, rescanning registry");
+                reload_tx.send(()).is_ok()
+            },
+        );
     });
 
     Some((
-        AppRegistryWatcher {
+        PluginRegistryWatcher {
             _watcher: watcher,
             cancel,
             thread: Some(thread),
         },
         reload_rx,
     ))
-}
-
-fn debounce_loop(rx: Receiver<()>, sender: UiMailbox<()>, cancel: Arc<Mutex<bool>>) {
-    let mut last_event: Option<Instant> = None;
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
-    let poll = Duration::from_millis(50);
-    loop {
-        if cancel.lock().map(|g| *g).unwrap_or(true) {
-            return;
-        }
-        match rx.try_recv() {
-            Ok(()) => {
-                last_event = Some(Instant::now());
-            }
-            Err(TryRecvError::Disconnected) => return,
-            Err(TryRecvError::Empty) => {
-                if let Some(t) = last_event {
-                    if t.elapsed() >= debounce {
-                        log::info!("app_registry_watcher: apps dir changed, rescanning registry");
-                        if sender.send(()).is_err() {
-                            return;
-                        }
-                        last_event = None;
-                    }
-                }
-                thread::sleep(poll);
-            }
-        }
-    }
 }

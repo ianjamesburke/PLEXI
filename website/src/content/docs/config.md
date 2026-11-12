@@ -10,9 +10,9 @@ Changes take effect on the next launch unless a command says otherwise.
 
 ## Channel discipline
 
-Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
+Existing configuration is preserved on every channel when Plexi is installed or upgraded. A fresh channel starts with the built-in template.
 
-Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
+Beta is the staging channel for testing migrations and settings before promoting a release.
 
 PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
 
@@ -26,32 +26,46 @@ plexi config reset
 
 `config edit` opens the active channel config. `config check` validates known keys and TOML syntax. `config reset` backs up the current file to `config.toml.bak`, then writes the built-in default template.
 
+A key with a wrong value type, a retired key, or an unknown key never discards the rest of the file: Plexi logs an error naming the file and key to `plexi.log`, skips that key, and loads every other setting. `config check`, and the Config Error notification shown when a saved config reloads, list the same keys. Only a TOML syntax error ignores the whole file.
+
 ## Reference
 
 ### Top-level (`config.toml`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `core_only` | bool | — | Disable all plugins for this host session. Profile-only; restart required. |
 | `config_version` | integer | — | — |
 | `font_size` | float | — | — |
+| `ui_scale` | float | 1.0 | App-wide UI scale (browser-style zoom). Default 1.0; clamped on use. |
 | `pane_gap` | float | 4.0 | Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0]. |
+| `pane_corner_radius` | u8 | 6 | Pane corner radius in points. Default: 6 (the shared pane style token). |
 | `pane_title_font_size` | float | 11.0 | Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0]. |
 | `osc_pane_title` | bool | true | Apply OSC 0/1/2 title sequences from terminal processes as pane names. Defaults to true; set false to keep terminal pane names manual-only. |
 | `theme_preset` | string | — | — |
+| `attention` | AttentionConfig | — | — |
 | `confirm_quit` | bool | true | Set to false to quit immediately on Cmd+Q without triple-press confirmation (default: true). |
 | `confirm_close` | bool | true | Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true). |
 | `confirm_context_close` | bool | true | Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true). |
 | `focus_history_depth` | integer | — | — |
+| `cloud` | CloudConfig | — | Optional cloud link (`[cloud]`). Local use never reads this. See [`CloudConfig`]. |
 
 ### Theme (`[theme]`)
 
 Pick a preset and optionally override individual colors. Individual color fields override preset values when both are set.
 
-Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-day`.
+Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-dusk`, `plexi-dawn`, `plexi-day`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `preset` | string | — | Theme preset name. Applied first; individual color fields override the preset. |
+| `state_preset` | string | okabe-ito | Agent states: default, okabe-ito, high-contrast, mono. Default: okabe-ito. |
+| `state_working` | string | — | — |
+| `state_waiting` | string | — | — |
+| `state_blocked` | string | — | — |
+| `state_needs_you` | string | — | — |
+| `state_interrupted` | string | — | — |
+| `state_error` | string | — | — |
 | `bg_darkest` | string | — | — |
 | `bg_sidebar` | string | — | — |
 | `bg_toolbar` | string | — | — |
@@ -96,6 +110,14 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
 | `ghost` | bool | — | — |
 | `ghost_opacity` | float | 0.75 | Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.75. Setting this implies ghost = true unless `ghost = false` is explicit. |
 
+### Terminal (`[terminal]`)
+
+`minimum_contrast` keeps text readable on every theme. Each text cell's foreground is checked against its background and, when the WCAG contrast ratio is below the minimum, moved toward black or white by the smallest amount that reaches it. Hidden text stays hidden, and emoji and images are untouched. Applies live on config reload.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `minimum_contrast` | float | 3.0 | Minimum WCAG contrast ratio between each text cell's foreground and its background, 1.0 to 21.0. Colors programs choose for themselves are moved toward black or white until they reach it. 1.0 turns the adjustment off. Default 3.0. Applies live on config reload. |
+
 ### Log (`[log]`)
 
 `level` accepts `error`, `warn`, `info`, or `debug`. Applies live on config save — no restart required.
@@ -111,7 +133,7 @@ Visible notifications open the modal unless `focus_mode` is enabled. There is on
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | true | Master switch. If false, incoming notifications are silently dropped — apps still send them, but the modal never appears and the queue stays empty. Defaults to true. |
+| `enabled` | bool | true | Master switch. If false, incoming notifications are silently dropped — plugins still send them, but the modal never appears and the queue stays empty. Defaults to true. |
 | `focus_mode` | bool | false | Focus mode. When true, no notification auto-surfaces. Everything queues silently; the user reviews via Cmd+Shift+A. Defaults to false. |
 | `sound` | string | — | Path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull a human back while Plexi is in the background. Unset (the default) means no sound; an explicitly empty string also means no sound, so a workspace overlay can set `sound = ""` to silence a globally configured cue. The cue only fires for a notification that may interrupt: `enabled = false` drops it before the cue, `focus_mode = true` suppresses it, and an invisible notification arrives silently. |
 
@@ -125,37 +147,19 @@ plexi secret set openrouter-api-key --global
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `backend` | string | — | Backend selection: `"openrouter"` (default), `"ollama"`, or `"local"`. |
-| `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
-| `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
+| `per_plugin_daily_usd` | float | $1.00 | Per-plugin daily spend cap in USD. Default $1.00. |
+| `global_daily_usd` | float | $10.00 | Global daily spend cap across all plugins in USD. Default $10.00. |
+| `client` | string | — | Default ledger client tag for Assistant and agent runs that do not set one. Free-form (`narrative`, `du`, `personal`). A blank or missing value leaves the row's client null. |
 
-#### OpenRouter (`[ai.openrouter]`)
+### Model modes (`[models.fast]`, `[models.slow]`)
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `api_key_env` | string | `OPENROUTER_API_KEY` | Environment variable name for the API key. Default: `OPENROUTER_API_KEY`. |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
-
-#### Ollama (`[ai.ollama]`)
+pi-plexi and the host AI broker read resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently. OpenRouter keys use the existing `OPENROUTER_API_KEY` secret lookup.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `host` | string | `http://localhost:11434` | Ollama host URL. Default: `http://localhost:11434`. |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
-
-#### Local OpenAI-compatible (`[ai.local]`)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `base_url` | string | — | Server base URL. Required — no default. e.g. "http://127.0.0.1:3456" |
-| `api_key_env` | string | — | Environment variable name for the API key. Unset = no auth header (for local proxies that accept unauthenticated requests). |
-| `model_low` | string | — | Low-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_medium` | string | — | Medium-tier model. Concrete identifiers are backend-specific; see the example config below. |
-| `model_high` | string | — | High-tier model. Concrete identifiers are backend-specific; see the example config below. |
+| `provider` | string | — | Model registry provider. Must be non-empty and contain no whitespace. |
+| `model` | string | — | Provider model identifier. Must be non-empty and contain no whitespace. |
+| `thinking` | string | — | Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. |
 
 ### Agents (`[agents]`)
 
@@ -163,9 +167,15 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `os_notifications` | bool | — | Raise silent macOS attention notifications while Plexi is unfocused (default true). Uses provisional authorization without a permission dialog; enable banners in macOS notification settings if desired. Disabled in tests; other platforms log only. |
+| `stalled_after_secs` | integer | — | Idle ephemeral worker stall threshold in seconds (default 120). |
+| `stale_failure_hours` | integer | — | Age threshold in hours after which failed runs collapse into the older fleet group (default 12). |
+| `palette_agent_results` | bool | — | Show agent jump rows in the command palette (default false). |
 | `low` | string | claude haiku with --dangerously-skip-permissions | Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
 | `medium` | string | claude sonnet with --dangerously-skip-permissions | Standard work. Default: claude sonnet with --dangerously-skip-permissions. |
 | `high` | string | claude with --dangerously-skip-permissions | Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions. |
+| `restore_mode` | AgentRestoreMode | — | Startup restoration mode for saved agent sessions: `"lazy"` (default), `"eager"`, or `"off"`. |
+| `standby_scrollback_lines` | integer | — | Number of scrollback lines saved for a lazy-restored Standby pane (default 20). |
 
 ### Keybindings (`[keybindings]`)
 
@@ -198,15 +208,19 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `navigate_down` | navigate down |
 | `navigate_up` | navigate up |
 | `navigate_right` | navigate right |
+| `select_pane_left` | Extend pane selection left (default Cmd+Shift+H). |
+| `select_pane_down` | Extend pane selection down (default Cmd+Shift+J). |
+| `select_pane_up` | Extend pane selection up (default Cmd+Shift+K). |
+| `select_pane_right` | Extend pane selection right (default Cmd+Shift+L). |
 | `new_tab` | new tab |
-| `next_tab` | next tab |
-| `prev_tab` | prev tab |
-| `next_context` | next context |
-| `prev_context` | prev context |
+| `next_tab` | Next tab (default Cmd+]). |
+| `prev_tab` | Previous tab (default Cmd+[). |
+| `next_context` | Next context (unbound by default). |
+| `prev_context` | Previous context (unbound by default). |
 | `move_context_up` | move context up |
 | `move_context_down` | move context down |
-| `nav_back` | nav back |
-| `focus_history_forward` | focus history forward |
+| `nav_back` | Pane navigation or focus history back (unbound by default). |
+| `focus_history_forward` | Focus history forward (unbound by default). |
 | `toggle_sidebar` | toggle sidebar |
 | `toggle_zoom` | toggle zoom |
 | `toggle_shortcuts` | toggle shortcuts |
@@ -217,16 +231,24 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `toggle_minimap` | toggle minimap |
 | `scroll_up` | scroll up |
 | `scroll_down` | scroll down |
-| `increase_font_size` | increase font size |
-| `decrease_font_size` | decrease font size |
+| `increase_font_size` | Increase the focused pane's text size (default Cmd+=). |
+| `decrease_font_size` | Decrease the focused pane's text size (default Cmd+-). |
+| `reset_font_size` | Reset the focused pane's text size (default Cmd+Alt+0). |
+| `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+Shift+=). |
+| `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+Shift+-). |
+| `ui_scale_reset` | Reset host-wide UI scale (default Cmd+Shift+0). |
+| `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
+| `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
+| `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
 | `open_file_browser` | open file browser |
 | `open_quick_note` | open quick note |
 | `open_config` | open config |
 | `reload_config` | reload config |
 | `open_secrets_manager` | open secrets manager |
-| `open_assistant` | open assistant |
-| `force_reload_app` | force reload app |
-| `toggle_notification_modal` | toggle notification modal |
+| `open_assistant` | open assistant (beta-gated; not part of stable v1) |
+| `force_reload_view` | force reload view |
+| `toggle_attention_queue` | toggle attention queue |
+| `zoom_in` | zoom in |
 | `open_scratchpad` | open scratchpad |
 | `push_to_subcontext` | push to subcontext |
 | `new_child_context` | new child context |
@@ -236,27 +258,37 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `open_notes_picker` | open notes picker |
 | `close_context` | close context |
 
+### User command shortcuts (`[keys]`)
+
+Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<repo>/.plexi-<channel>/commands.toml` (`~/.plexi/commands.toml` and `<repo>/.plexi/commands.toml` on stable) using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Keybindings resolve the workspace from the adopted/host workspace root, falling back to the active context root (`run_user_command_by_name`), with precedence workspace `commands.toml` > global `commands.toml` > global `scripts/`, and re-read `commands.toml` on every invocation without a restart. Reserved Plexi shortcuts are rejected by `plexi config check`.
+
 ### CLI (`[cli]`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `tips` | bool | `true` | Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress. |
 
+### Permissions (`[permissions]`)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `soft_grant_days` | integer | 30 | Expiry window in days for soft grants (`--grant tool=allow:soft`). After this window, a soft grant reverts to `ask`. Default: 30. |
+
 ### File handlers (`[file_handlers]`)
 
-Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
+Choose which view opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
 
 | Value | Behavior |
 |---|---|
-| `app:<id>` | Open in a Plexi app by its registry id (e.g. `app:text-editor`) |
+| `app:<id>` | Stored config spelling: open a plugin default view by its registry id (e.g. `app:text-editor`) |
 | `os` | Hand to the OS default opener (`open` / `xdg-open`) |
 | `cmd:<command>` | Reserved; falls back to `os` until wired |
 
-A handler here overrides an app's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
+A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
 
 ### Marketplace (`[marketplace]`)
 
-All fields are optional. Omitting the section uses the official `plexiapp.com` registry and CDN. Override only to point at a private registry or to test publishing flows.
+Marketplace configuration is beta-gated and is not part of stable v1. Use it only in a beta or explicit worktree channel while testing publishing flows. All fields are optional.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -277,8 +309,13 @@ This is the built-in template Plexi writes when it creates or resets the active 
 
 config_version = 1
 
+# Start with no plugins. Profile-only; restart the host after changing.
+core_only = false
+
 font_size = 14.0
+# ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
+# pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
 
 confirm_quit  = true
@@ -289,8 +326,16 @@ confirm_context_close = true
 osc_pane_title = true
 
 [theme]
-preset = "catppuccin-mocha"
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-day
+# Agent state colors retain distinct shapes in every preset.
+state_preset = "okabe-ito" # default | okabe-ito | high-contrast | mono
+# state_working = "#0072b2"
+# state_waiting = "#e69f00"
+# state_blocked = "#cc79a7"
+# state_needs_you = "#d55e00"
+# state_interrupted = "#009e73"
+# state_error = "#f0e442"
+preset = "plexi-dusk"
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"
 # bg_darkest   = "#11111b"
@@ -303,56 +348,93 @@ crt           = false
 ghost         = true
 ghost_opacity = 0.75
 
+[terminal]
+# Lowest allowed contrast ratio (1.0-21.0) between text and its cell background.
+# Colors a program picks for itself are moved toward black or white until they
+# reach it. 1.0 turns it off. 3.0 is the WCAG floor for readable text.
+minimum_contrast = 3.0
+
 [notifications]
 # enabled = true
 # focus_mode = false
 # sound = "/System/Library/Sounds/Ping.aiff"   # cue played on arrival; unset = silent
 
 [ai]
-backend = "openrouter"         # "openrouter" (cloud), "ollama", or "local" (OpenAI-compatible server)
+# client = "personal"          # default AI ledger tag; a run can override it
 
-[ai.openrouter]
-api_key_env  = "OPENROUTER_API_KEY"
-model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5"
-model_high   = "anthropic/claude-fable-5"
-
-# [ai.ollama]
-# host         = "http://localhost:11434"
-# model_low    = "llama3.2:3b"
-# model_medium = "llama3.3:70b"
-# model_high   = "qwq:32b"
-
-# [ai.local]                   # any OpenAI-compatible server; api_key_env optional
-# base_url     = "http://127.0.0.1:3456"
-# model_low    = "claude-haiku-4-5"
-# model_medium = "claude-opus-5"
-# model_high   = "claude-fable-5"
+# FAST/SLOW targets for pi-plexi and the host AI broker. Each field may be
+# overridden independently; omitted fields use these defaults. OpenRouter API
+# keys are resolved as OPENROUTER_API_KEY through Plexi secrets or the process.
+# [models.fast]
+# provider = "openrouter"
+# model = "deepseek/deepseek-v4.1-flash"
+# thinking = "low"             # off | minimal | low | medium | high | xhigh
+# [models.slow]
+# provider = "openrouter"
+# model = "openai/gpt-6-astra"
+# thinking = "high"
 
 # [log]
 # level = "info"               # error | warn | info | debug — applies live on save, no restart
-# retention_days = 30
+# retention_days = 30          # dated plexi-YYYY-MM-DD.log archives. The live plexi.log stays.
 
+# [cloud]
+# Local use never needs an account. Signing in only links this desktop to
+# cloud features. Unset, local ledger rows and assistant
+# conversations are kept.
+# retain_local_history = false
+
+# [experiments]
+# Features outside the stable v1 surface. All off by default on every channel.
+# Manage with `plexi experiments list|enable|disable`. Global config only.
+# assistant = true
+# tree_atlas = true # Context tree overview from the root with Cmd+Escape
+
+# Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
+# Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.
 # [keybindings]
+# select_pane_left = "cmd+shift+h"
+# select_pane_down = "cmd+shift+j"
+# select_pane_up = "cmd+shift+k"
+# select_pane_right = "cmd+shift+l"
+# open_agents = "cmd+alt+a"
+# next_blocked_agent = "cmd+alt+b"
+# focus_approval = "cmd+alt+p"
 # toggle_command_palette = "cmd+p"
 # open_config            = "cmd+comma"
 # close_context          = "cmd+shift+w"
 
+# [keys]
+# Bind a chord to a user command from ~/.plexi-<channel>/commands.toml or
+# <repo>/.plexi-<channel>/commands.toml (stable: ~/.plexi/commands.toml,
+# <repo>/.plexi/commands.toml) using "<chord>" = "run:<name>":
+# "cmd+shift+p" = "run:play"
+
 [agents]
+# Silent desktop attention alerts while Plexi is not focused.
+os_notifications = true
+stalled_after_secs = 120
+stale_failure_hours = 12
+palette_agent_results = false
 low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
+# restore_mode = "lazy"        # "lazy" (active context resumes, background enters Standby), "eager", or "off"
+# standby_scrollback_lines = 20 # scrollback rows saved and shown in a Standby pane
 
 [cli]
 tips = true
 
+# [permissions]
+# soft_grant_days = 30         # expiry window in days for `--grant tool=allow:soft` grants; after expiry they revert to `ask`
+
 # [file_handlers]
-# Choose which app opens each file type from the File Explorer (Enter / double-
+# Choose which plugin opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:
-#   "app:<id>"      open in a Plexi app by its registry id (e.g. text-editor)
+#   "app:<id>"      stored config spelling: open a plugin default view by its registry id (e.g. text-editor)
 #   "os"            hand to the OS default opener (open / xdg-open)
 #   "cmd:<command>" reserved for a future release; falls back to "os" for now
-# A handler here overrides an app's own file_types association. Unmapped types
+# A handler here overrides a plugin's own file_types association. Unmapped types
 # fall through to manifest associations, then builtin media players, then the OS.
 # md   = "app:text-editor"
 # txt  = "app:text-editor"
@@ -360,18 +442,24 @@ tips = true
 # py   = "os"
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
-# Account/auth backend. Unset / "none" = login/signup fail closed. Accounts are
-# only ever needed to publish or buy paid apps — free apps install without one.
+# Account/auth backend. Unset / "none" = login/signup fail closed. An account is
+# optional: local use never needs one. A session only links this desktop to
+# cloud features.
 # account_backend = "none"
 # Accounts service host the device-flow login talks to. Defaults to plexiapp.com.
 # account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
+
+[attention]
+style = "normal" # off | subtle | normal | loud
+intensity = 1.0 # 0.0..1.0, scales halo and border opacity
+dock = "badge" # none | badge | bounce-once | bounce-until-focused
 ```

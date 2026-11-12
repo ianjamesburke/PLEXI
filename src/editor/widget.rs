@@ -18,9 +18,10 @@ use super::layout::{DisplayLayout, LineLayout};
 use super::mode::EditorMode;
 use super::movement::line_text;
 use super::preview::{is_bare_http_url, LinkTarget, MarkdownLayoutCache, MdStyle};
-use super::view::ViewState;
+use super::view::{Reveal, ViewState};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -89,7 +90,7 @@ struct GeometryCache {
     pixels_per_point_bits: u32,
     soft_wrap: bool,
     font_id: egui::FontId,
-    galleys: Vec<DisplayGalley>,
+    galleys: Arc<[DisplayGalley]>,
 }
 
 fn prepared_display_text(
@@ -351,7 +352,86 @@ impl ImageCache {
             color,
             egui::TextureOptions::LINEAR,
         );
+        log::info!(
+            "notes_editor: inline image decoded dest={dest:?} size={}x{}",
+            size[0],
+            size[1]
+        );
         Ok(ImageState::Ready { texture, size })
+    }
+}
+
+/// On-screen height of one inline image strip scaled into `max_width`,
+/// matching [`paint_inline_image_strip`]'s sizing. Failed and remote
+/// destinations use the placeholder height. Shared by the Live Preview
+/// editor strip and the QuickNote composer preview (stint 1047) so both
+/// reserve the same space for the same image.
+pub fn inline_image_strip_height(
+    cache: &mut ImageCache,
+    ctx: &egui::Context,
+    base: &Path,
+    dest: &str,
+    max_width: f32,
+) -> f32 {
+    match cache.get(ctx, base, dest) {
+        ImageState::Ready { size, .. } => {
+            let scale = (max_width / size[0] as f32).min(1.0);
+            (size[1] as f32 * scale).min(IMAGE_MAX_HEIGHT)
+        }
+        ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
+    }
+}
+
+/// Paint one inline image strip with its top-left at `top_left`, `height`
+/// tall and at most `max_width` wide, preserving aspect ratio. A failed or
+/// remote destination paints the shared placeholder in `weak`. Returns
+/// `true` when a decoded image was painted, `false` for the placeholder.
+/// Shared by the Live Preview editor strip and the QuickNote composer
+/// preview (stint 1047) — one renderer, one placeholder contract.
+pub fn paint_inline_image_strip(
+    cache: &mut ImageCache,
+    painter: &egui::Painter,
+    base: &Path,
+    dest: &str,
+    font_id: &egui::FontId,
+    strip_rect: Rect,
+    weak: Color32,
+) -> bool {
+    match cache.get(painter.ctx(), base, dest) {
+        ImageState::Ready { texture, size } => {
+            let height = strip_rect.height();
+            let scale = (height / size[1] as f32).min(1.0);
+            let width = size[0] as f32 * scale;
+            painter.image(
+                texture.id(),
+                Rect::from_min_size(strip_rect.min, Vec2::new(width, height)),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            true
+        }
+        state @ (ImageState::Failed(_) | ImageState::Remote) => {
+            let label = match state {
+                ImageState::Failed(reason) => format!("image unavailable: {reason}"),
+                _ => format!("remote image (not downloaded): {dest}"),
+            };
+            painter.rect_stroke(
+                strip_rect,
+                egui::CornerRadius::same(
+                    (strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8,
+                ),
+                egui::Stroke::new(1.0_f32, weak),
+                egui::StrokeKind::Inside,
+            );
+            let label_galley = painter.layout_no_wrap(label, font_id.clone(), weak);
+            let label_pos = egui::pos2(
+                strip_rect.left() + 8.0,
+                strip_rect.center().y - label_galley.size().y / 2.0,
+            )
+            .round_to_pixels(painter.ctx().pixels_per_point());
+            painter.galley(label_pos, label_galley, weak);
+            false
+        }
     }
 }
 
@@ -362,6 +442,29 @@ pub struct EditorOutput {
     /// The widget only detects the gesture — acting on it is the caller's
     /// job; ordinary clicks placed the caret as usual.
     pub link_activation: Option<LinkTarget>,
+}
+
+struct LineGalleyParams<'a> {
+    font_id: &'a egui::FontId,
+    line: usize,
+    text: &'a str,
+    text_color: Color32,
+    theme: &'a CodeTheme,
+    md_active: Option<&'a std::ops::Range<usize>>,
+    wrap_width: f32,
+    display: &'a DisplayGalley,
+}
+
+struct PaintParams<'a> {
+    widget_id: egui::Id,
+    font_id: &'a egui::FontId,
+    rect: Rect,
+    gutter_width: f32,
+    md_active: Option<std::ops::Range<usize>>,
+    image_rows: &'a [(usize, String)],
+    geometry_galleys: &'a [DisplayGalley],
+    caret_visual_row: Option<usize>,
+    caret_visible: bool,
 }
 
 /// Renders a [`Document`] and translates egui input into [`EditorCommand`]s.
@@ -523,6 +626,12 @@ impl<'a> EditorWidget<'a> {
         let response = ui.interact(rect, id, Sense::click_and_drag());
 
         let gutter_width = self.gutter_width(ui, &font_id, self.doc.buffer().line_count());
+        let caret_was_visible = self
+            .view
+            .cursor_visible(self.doc.cursor(), self.doc.buffer().line_count());
+        let rewrapped = self.view.viewport_width != rect.width() - gutter_width
+            || self.view.line_height != line_height;
+        let resized = rewrapped || self.view.viewport_height != rect.height();
         self.view.line_height = line_height;
         self.view.viewport_height = rect.height();
         self.view.viewport_width = rect.width() - gutter_width;
@@ -544,7 +653,7 @@ impl<'a> EditorWidget<'a> {
         let geometry_cache_id = id.with("display_geometry");
         let mut line_galleys =
             self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
-        self.update_display_layout(&line_galleys);
+        self.view.resolve_scroll(self.doc.buffer().line_count());
         let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
@@ -677,6 +786,14 @@ impl<'a> EditorWidget<'a> {
         let edited = !commands.is_empty();
         let visual_goal_id = id.with("visual_goal_x");
         let visual_row_id = id.with("visual_row");
+        // Visual row affinity belongs to one layout. Source cursors survive a
+        // rewrap, but a remembered display-row index does not.
+        if rewrapped {
+            ui.memory_mut(|memory| {
+                memory.data.remove::<usize>(visual_row_id);
+                memory.data.remove::<f32>(visual_goal_id);
+            });
+        }
         let mut visual_goal_x = ui.memory(|memory| memory.data.get_temp::<f32>(visual_goal_id));
         let mut visual_row = ui.memory(|memory| memory.data.get_temp::<usize>(visual_row_id));
         for command in commands {
@@ -764,15 +881,7 @@ impl<'a> EditorWidget<'a> {
         // Edits can change row breaks. Rebuild before viewport/caret geometry
         // and painting; source remains authoritative throughout.
         if self.doc.revision() != revision_before_commands {
-            line_galleys = self.geometry_galleys(ui, &font_id, soft_wrap);
-            self.store_geometry_cache(
-                ui,
-                &font_id,
-                soft_wrap,
-                geometry_cache_id,
-                line_galleys.clone(),
-            );
-            self.update_display_layout(&line_galleys);
+            line_galleys = self.cached_geometry_galleys(ui, &font_id, soft_wrap, geometry_cache_id);
         }
 
         // Live Preview: the blocks intersecting the selection reveal raw
@@ -791,24 +900,52 @@ impl<'a> EditorWidget<'a> {
         let image_rows = self.update_image_extras(ui.ctx(), md_active.as_ref());
 
         // Scrolling: wheel when hovered, then keep the caret visible after
-        // any command.
+        // any command. Re-resolve first: geometry may have changed since the
+        // widget's first resolve this frame (edits, rewrap, image extras).
         let line_count = self.doc.buffer().line_count();
+        self.view.resolve_scroll(line_count);
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta);
             if scroll != egui::Vec2::ZERO {
-                self.view.scroll_y -= scroll.y;
+                self.view
+                    .set_scroll_y(self.view.scroll_y - scroll.y, line_count);
                 if !soft_wrap {
                     self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
                 }
             }
         }
-        self.view.clamp_scroll(line_count);
-        if edited {
-            let caret = self.doc.cursor();
-            self.view.scroll_to_cursor(caret, line_count);
-            if !soft_wrap {
-                self.view
-                    .scroll_to_x(self.cursor_display_x(caret, &line_galleys, None));
+        let reveal_after_resize = resized
+            && self.active
+            && self.view.follow_caret
+            && caret_was_visible
+            && !self.view.cursor_visible(self.doc.cursor(), line_count);
+        if reveal_after_resize {
+            log::info!("editor: restoring visible caret after viewport resize");
+        }
+        let pending_reveal = self.view.pending_reveal.take();
+        if edited || reveal_after_resize || pending_reveal.is_some() {
+            let reveal = if edited {
+                Reveal::caret(self.doc.cursor())
+            } else {
+                pending_reveal.unwrap_or_else(|| Reveal::caret(self.doc.cursor()))
+            };
+            // End first, start last: when the target is wider or taller than
+            // the viewport, the start wins and stays visible.
+            for target in [reveal.end, reveal.start] {
+                self.view.scroll_to_cursor(target, line_count);
+                if !soft_wrap {
+                    self.view
+                        .scroll_to_x(self.cursor_display_x(target, &line_galleys, None));
+                }
+            }
+            if reveal.start != reveal.end {
+                log::info!(
+                    "editor: revealed range {:?}..{:?} scroll=({:.1}, {:.1})",
+                    reveal.start,
+                    reveal.end,
+                    self.view.scroll_x,
+                    self.view.scroll_y
+                );
             }
         }
 
@@ -844,15 +981,17 @@ impl<'a> EditorWidget<'a> {
 
         self.paint(
             ui,
-            id,
-            &font_id,
-            rect,
-            gutter_width,
-            md_active,
-            &image_rows,
-            &line_galleys,
-            visual_row,
-            caret_visible,
+            PaintParams {
+                widget_id: id,
+                font_id: &font_id,
+                rect,
+                gutter_width,
+                md_active,
+                image_rows: &image_rows,
+                geometry_galleys: &line_galleys,
+                caret_visual_row: visual_row,
+                caret_visible,
+            },
         );
         EditorOutput {
             response,
@@ -892,12 +1031,12 @@ impl<'a> EditorWidget<'a> {
     }
 
     fn cached_geometry_galleys(
-        &self,
+        &mut self,
         ui: &Ui,
         font_id: &egui::FontId,
         soft_wrap: bool,
         cache_id: egui::Id,
-    ) -> Vec<DisplayGalley> {
+    ) -> Arc<[DisplayGalley]> {
         let revision = self.doc.revision();
         let width_bits = self.view.viewport_width.to_bits();
         let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
@@ -907,12 +1046,14 @@ impl<'a> EditorWidget<'a> {
                 && cache.pixels_per_point_bits == pixels_per_point_bits
                 && cache.soft_wrap == soft_wrap
                 && cache.font_id == *font_id
+                && self.view.layout.source_line_count() == self.doc.buffer().line_count()
             {
                 return cache.galleys;
             }
         }
-        let galleys = self.geometry_galleys(ui, font_id, soft_wrap);
-        self.store_geometry_cache(ui, font_id, soft_wrap, cache_id, galleys.clone());
+        let galleys: Arc<[DisplayGalley]> = self.geometry_galleys(ui, font_id, soft_wrap).into();
+        self.update_display_layout(&galleys);
+        self.store_geometry_cache(ui, font_id, soft_wrap, cache_id, Arc::clone(&galleys));
         galleys
     }
 
@@ -922,7 +1063,7 @@ impl<'a> EditorWidget<'a> {
         font_id: &egui::FontId,
         soft_wrap: bool,
         cache_id: egui::Id,
-        galleys: Vec<DisplayGalley>,
+        galleys: Arc<[DisplayGalley]>,
     ) {
         let pixels_per_point_bits = ui.ctx().pixels_per_point().to_bits();
         ui.memory_mut(|memory| {
@@ -1088,13 +1229,7 @@ impl<'a> EditorWidget<'a> {
             if rows.iter().any(|(l, _)| *l == line) {
                 continue; // one strip per line
             }
-            let height = match image_cache.get(ctx, base, &span.dest) {
-                ImageState::Ready { size, .. } => {
-                    let scale = (max_width / size[0] as f32).min(1.0);
-                    (size[1] as f32 * scale).min(IMAGE_MAX_HEIGHT)
-                }
-                ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
-            };
+            let height = inline_image_strip_height(image_cache, ctx, base, &span.dest, max_width);
             // Quantized like `line_height` so `line_top` stays on the physical
             // pixel grid for every line below an attachment strip.
             extras.push((
@@ -1175,21 +1310,21 @@ impl<'a> EditorWidget<'a> {
     /// Lays out one line's galley: syntax-colored via the span provider in
     /// code mode, single-color otherwise (and as the unknown-language
     /// fallback).
-    // Argument-struct refactor is a design change tracked in stint 0661;
-    // this is the narrow exception, not a pattern to copy.
-    #[allow(clippy::too_many_arguments)]
     fn line_galley(
         &mut self,
         ui: &Ui,
-        font_id: &egui::FontId,
-        line: usize,
-        text: &str,
-        text_color: Color32,
-        theme: &CodeTheme,
-        md_active: Option<&std::ops::Range<usize>>,
-        wrap_width: f32,
-        display: &DisplayGalley,
+        params: LineGalleyParams<'_>,
     ) -> std::sync::Arc<egui::Galley> {
+        let LineGalleyParams {
+            font_id,
+            line,
+            text,
+            text_color,
+            theme,
+            md_active,
+            wrap_width,
+            display,
+        } = params;
         // Markdown Live Preview: inactive blocks render styled per-line
         // LayoutJobs; the active block (and everything in source mode) shows
         // raw source. Same font everywhere, so galley metrics — and with them
@@ -1268,22 +1403,18 @@ impl<'a> EditorWidget<'a> {
         })
     }
 
-    // Argument-struct refactor is a design change tracked in stint 0661;
-    // this is the narrow exception, not a pattern to copy.
-    #[allow(clippy::too_many_arguments)]
-    fn paint(
-        &mut self,
-        ui: &Ui,
-        widget_id: egui::Id,
-        font_id: &egui::FontId,
-        rect: Rect,
-        gutter_width: f32,
-        md_active: Option<std::ops::Range<usize>>,
-        image_rows: &[(usize, String)],
-        geometry_galleys: &[DisplayGalley],
-        caret_visual_row: Option<usize>,
-        caret_visible: bool,
-    ) {
+    fn paint(&mut self, ui: &Ui, params: PaintParams<'_>) {
+        let PaintParams {
+            widget_id,
+            font_id,
+            rect,
+            gutter_width,
+            md_active,
+            image_rows,
+            geometry_galleys,
+            caret_visual_row,
+            caret_visible,
+        } = params;
         let visuals = ui.visuals();
         let text_color = visuals.text_color();
         let code_theme = self
@@ -1322,14 +1453,16 @@ impl<'a> EditorWidget<'a> {
             };
             let galley = self.line_galley(
                 ui,
-                font_id,
-                line,
-                &text,
-                text_color,
-                &code_theme,
-                md_active.as_ref(),
-                wrap_width,
-                display,
+                LineGalleyParams {
+                    font_id,
+                    line,
+                    text: &text,
+                    text_color,
+                    theme: &code_theme,
+                    md_active: md_active.as_ref(),
+                    wrap_width,
+                    display,
+                },
             );
             let origin = egui::pos2(content_left - scroll_x, top);
 
@@ -1535,6 +1668,7 @@ impl<'a> EditorWidget<'a> {
         if !image_rows.is_empty() {
             let visible = self.view.visible_lines(line_count);
             let weak = visuals.weak_text_color();
+            let placeholder_width = (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0);
             if let Some((cache, base)) = self.images.as_mut() {
                 for (line, dest) in image_rows {
                     if !visible.contains(line) {
@@ -1549,50 +1683,18 @@ impl<'a> EditorWidget<'a> {
                         + IMAGE_PAD;
                     let height = extra - 2.0 * IMAGE_PAD;
                     let left = content_left + IMAGE_PAD - scroll_x;
-                    match cache.get(ui.ctx(), base, dest) {
-                        ImageState::Ready { texture, size } => {
-                            let scale = (height / size[1] as f32).min(1.0);
-                            let width = size[0] as f32 * scale;
-                            let image_rect = Rect::from_min_size(
-                                egui::pos2(left, strip_top),
-                                Vec2::new(width, height),
-                            );
-                            painter.image(
-                                texture.id(),
-                                image_rect,
-                                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                        }
-                        state @ (ImageState::Failed(_) | ImageState::Remote) => {
-                            let label = match state {
-                                ImageState::Failed(reason) => {
-                                    format!("image unavailable: {reason}")
-                                }
-                                _ => format!("remote image (not downloaded): {dest}"),
-                            };
-                            let strip_rect = Rect::from_min_size(
-                                egui::pos2(left, strip_top),
-                                Vec2::new(
-                                    (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0),
-                                    height,
-                                ),
-                            );
-                            painter.rect_stroke(
-                                strip_rect,
-                                2.0,
-                                egui::Stroke::new(1.0_f32, weak),
-                                egui::StrokeKind::Inside,
-                            );
-                            let label_galley = painter.layout_no_wrap(label, font_id.clone(), weak);
-                            let label_pos = egui::pos2(
-                                strip_rect.left() + 8.0,
-                                strip_rect.center().y - label_galley.size().y / 2.0,
-                            )
-                            .round_to_pixels(ppp);
-                            painter.galley(label_pos, label_galley, weak);
-                        }
-                    }
+                    paint_inline_image_strip(
+                        cache,
+                        &painter,
+                        base,
+                        dest,
+                        font_id,
+                        Rect::from_min_size(
+                            egui::pos2(left, strip_top),
+                            Vec2::new(placeholder_width, height),
+                        ),
+                        weak,
+                    );
                 }
             }
         }
@@ -1674,6 +1776,9 @@ fn translate_key(
         Key::Z if modifiers.command && modifiers.shift => Some(EditorCommand::Redo),
         Key::Z if modifiers.command => Some(EditorCommand::Undo),
         Key::Y if modifiers.command => Some(EditorCommand::Redo),
+        Key::Slash if modifiers.command && !modifiers.shift && !modifiers.alt => mode
+            .line_comment_token()
+            .map(|token| EditorCommand::ToggleComment(token.to_string())),
         _ => None,
     }
 }
@@ -1708,6 +1813,144 @@ mod tests {
 
     fn semantic(h: &egui_kittest::Harness<'static, TestState>) -> EditorSemanticState {
         h.state().doc.semantic_state(h.state().view.scroll_y)
+    }
+
+    #[test]
+    fn scroll_regression_repaint_reuses_source_row_mapping() {
+        let mut h = harness(&"A paragraph with enough words to wrap. ".repeat(200));
+        h.run();
+        let mapping = h
+            .state()
+            .view
+            .layout
+            .line(0)
+            .unwrap()
+            .display_to_source
+            .as_ptr();
+        h.step();
+        assert_eq!(
+            mapping,
+            h.state()
+                .view
+                .layout
+                .line(0)
+                .unwrap()
+                .display_to_source
+                .as_ptr(),
+            "scroll-only frames must reuse the document layout"
+        );
+    }
+
+    #[test]
+    fn scroll_regression_fresh_view_rebuilds_cached_mapping() {
+        let mut h = harness(&"a wrapped paragraph ".repeat(100));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let rows = h.state().view.layout.display_row_count();
+        assert!(rows > 10);
+        h.state_mut().view = ViewState::default();
+        h.step();
+        assert_eq!(h.state().view.layout.display_row_count(), rows);
+    }
+
+    #[test]
+    fn scroll_regression_resize_keeps_visible_caret_accessible() {
+        let mut h = harness(&"one line\n".repeat(200));
+        h.set_size(Vec2::new(400.0, 400.0));
+        h.run();
+        h.key_press(Key::End);
+        h.key_press(Key::PageDown);
+        h.run();
+        let caret = h.state().doc.cursor();
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        let view = &h.state().view;
+        let bottom = view.line_top(caret.line) + view.line_height;
+        assert!(
+            bottom <= view.scroll_y + view.viewport_height,
+            "caret bottom {bottom} below viewport {:?}",
+            view.scroll_y..view.scroll_y + view.viewport_height
+        );
+    }
+
+    #[test]
+    fn scroll_regression_browsing_survives_grow_shrink_round_trip() {
+        let mut h = harness(&"one line\n".repeat(30));
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        let count = h.state().doc.buffer().line_count();
+        h.state_mut().view.set_scroll_y(140.5, count);
+        h.step();
+        let before = h.state().view.scroll_y;
+        h.set_size(Vec2::new(400.0, 1000.0));
+        h.run();
+        h.set_size(Vec2::new(400.0, 100.0));
+        h.run();
+        assert_eq!(h.state().view.scroll_y, before);
+    }
+
+    #[test]
+    fn scroll_regression_document_end_has_breathing_room() {
+        let mut h = harness(&"one line\n".repeat(100));
+        h.set_size(Vec2::new(400.0, 200.0));
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+        h.run();
+        let view = &h.state().view;
+        let caret = h.state().doc.cursor();
+        assert_eq!(caret.line, 100);
+        let gap =
+            view.scroll_y + view.viewport_height - view.line_top(caret.line) - view.line_height;
+        assert!(
+            gap >= view.line_height,
+            "last line needs bottom space, got {gap}"
+        );
+    }
+
+    #[test]
+    fn scroll_regression_anchor_round_trips_inside_wrapped_tokens() {
+        let mut h = harness(&"abcdefghij".repeat(200));
+        h.set_size(Vec2::new(120.0, 100.0));
+        h.run();
+        let view = &mut h.state_mut().view;
+        for row in 1..30 {
+            let y = row as f32 * view.line_height + 0.5;
+            view.set_scroll_y(y, 1);
+            view.resolve_scroll(1);
+            assert!(
+                (view.scroll_y - y).abs() < 0.01,
+                "anchor moved scroll from {y} to {} at wrapped row {row}",
+                view.scroll_y
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_regression_wrapped_galley_matches_view_row_metrics() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut doc = Document::new(&"wrapped paragraph words ".repeat(150));
+            let mut view = ViewState {
+                viewport_width: 180.0,
+                ..Default::default()
+            };
+            let font = egui::FontId::monospace(13.0);
+            view.line_height = ui
+                .fonts_mut(|f| f.row_height(&font))
+                .round_to_pixels(ui.ctx().pixels_per_point());
+            let height = view.line_height;
+            let widget = EditorWidget::new(&mut doc, &mut view);
+            let galleys = widget.geometry_galleys(ui, &font, true);
+            assert!(galleys[0].galley.rows.len() > 20);
+            for (index, row) in galleys[0].galley.rows.iter().enumerate() {
+                assert!(
+                    (row.rect().top() - index as f32 * height).abs() < 0.1,
+                    "painted row {index} top {} disagrees with scroll geometry {}",
+                    row.rect().top(),
+                    index as f32 * height
+                );
+            }
+        });
     }
 
     #[test]

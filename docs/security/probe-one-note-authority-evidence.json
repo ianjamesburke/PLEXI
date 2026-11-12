@@ -1,0 +1,72 @@
+{
+  "harness": {
+    "binary": "/Users/ianburke/.local/bin/pi",
+    "help_exit_code": 0,
+    "isolated_dir_present": false,
+    "required_flags_present": {
+      "--no-tools": true,
+      "--tools": true,
+      "bash": true,
+      "read": true,
+      "write": true
+    },
+    "version": "1.4.0"
+  },
+  "input_byte_size": 25,
+  "input_hash_sha256": "012ece489f78290b448818a63f29ed53cd17c7288e4b998a7d0dedbc1d19f8d8",
+  "live_acceptance": "NO_TOOLS_STDIN_ONLY",
+  "native_tool_negative_control": {
+    "can_read_unrelated_paths": true,
+    "can_write_source_note": true,
+    "launch_flags": [
+      "/Users/ianburke/.local/bin/pi",
+      "--print",
+      "--tools",
+      "read,write,bash"
+    ],
+    "live_acceptance": "WITHHELD_SYNTHETIC_FIXTURE_ONLY",
+    "verdict": "FAIL_UNRESTRICTED"
+  },
+  "no_tools_stdin_mode": {
+    "argv": [
+      "/Users/ianburke/.local/bin/pi",
+      "--print",
+      "--no-tools",
+      "--no-session",
+      "--no-context-files",
+      "--no-approve",
+      "--offline"
+    ],
+    "environment_secret_names_withheld": [
+      "AI_VIDEO_FAL_KEY",
+      "AI_VIDEO_GEMINI_KEY",
+      "ANTHROPIC_API_KEY",
+      "BITBUCKET_API_TOKEN",
+      "CF_API_TOKEN",
+      "CLAWMART_API_KEY",
+      "CODING_SHOWDOWN_GEMINI_API_KEY",
+      "CONTEXT7_API_KEY",
+      "DU_OWUI_KEY",
+      "ELEVENLABS_API_KEY",
+      "FAL_KEY",
+      "FRAMEIO_CLIENT_SECRET",
+      "FRAMEIO_TOKEN",
+      "GOOGLE_API_KEY",
+      "KALSHI_API_KEY_ID",
+      "KALSHI_PRIVATE_KEY_PATH",
+      "NVIDIA_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "PLEXI_HOST_MCP_TOKEN"
+    ],
+    "exit_code": 0,
+    "forbidden_bytes_absent": true,
+    "payload_contains_selected_hash": true,
+    "provider_payload_verdict": "ONLY_SELECTED_NOTE",
+    "stdin_byte_size": 148,
+    "stdin_sha256": "1dd3ecff309e54359122420ca96eca27b1d00bdc5e62b74bf0a9d612dfa5daae"
+  },
+  "overall_verdict": "VERIFIED_RESTRICTED",
+  "schema_version": "2.0",
+  "stint": "1009"
+}

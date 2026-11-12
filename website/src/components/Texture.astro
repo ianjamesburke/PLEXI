@@ -1,0 +1,22 @@
+<div class="print-texture" aria-hidden="true"></div>
+<style>
+  .print-texture { position: fixed; inset: 0; pointer-events: none; opacity: .045; z-index: 2; }
+</style>
+<script>
+  const tile = document.createElement('canvas');
+  tile.width = tile.height = 128;
+  const ctx = tile.getContext('2d');
+  if (ctx) {
+    let seed = 23;
+    ctx.fillStyle = '#fff';
+    for (let dot = 0; dot < 900; dot++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      const x = (seed >>> 16) % 128;
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      ctx.fillRect(x, (seed >>> 16) % 128, 1, 1);
+    }
+    document.querySelectorAll<HTMLElement>('.print-texture').forEach(el => {
+      el.style.backgroundImage = `url(${tile.toDataURL()})`;
+    });
+  }
+</script>

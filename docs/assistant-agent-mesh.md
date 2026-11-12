@@ -1,6 +1,6 @@
 # Assistant Agent Mesh
 
-Status: active.
+Status: superseded. Superseded by the locked Pre-1.0 agent direction in `TRUTH.md` (§1 Locked Release Schedule, §9 Cuts): CLI coding agents (`pi`, `claude`, `codex`, `agy`) driven through `@plexi/pi` (`packages/pi-plexi`, stint 0796), self-closing sub-context squads, and all-over session restoration. The built-in Assistant is not the primary orchestrator. Kept as historical design context only; do not build from it.
 Stint: none yet — filed after the stable v1 cut lands.
 Parent: [`assistant-host-app.md`](assistant-host-app.md).
 Authority plane: [`assistant-authority-model.md`](assistant-authority-model.md).
@@ -8,13 +8,13 @@ Last updated: 2026-08-01.
 
 This document defines the destination shape of the Plexi Assistant as a **mesh of head agents** rather than a single chat surface: one head per context root plus one global head, a shared central record they all write to and hold pointers into, a typed question channel between them, and an addressing scheme that makes every head individually testable.
 
-It owns exactly one plane: **how multiple Assistant instances coexist, remember, and talk** — and, in §7, the one third-party surface that plane must terminate cleanly: MCP Apps, where an outside server hands a head a UI. It does not restate the Assistant's product surface (agents, skills, slash commands, settings, UI — [`assistant-host-app.md`](assistant-host-app.md)), the authority plane (threat model, reference monitor, grant binding — [`assistant-authority-model.md`](assistant-authority-model.md)), or host-owned workflow execution ([`agent-run-orchestration.md`](agent-run-orchestration.md)). Where this design needs a fact from those documents it cites them.
+It owns exactly one plane: **how multiple Assistant instances coexist, remember, and talk** — and, in §7, the one third-party surface that plane must terminate cleanly: MCP Plugins, where an outside server hands a head a UI. It does not restate the Assistant's product surface (agents, skills, slash commands, settings, UI — [`assistant-host-app.md`](assistant-host-app.md)), the authority plane (threat model, reference monitor, grant binding — [`assistant-authority-model.md`](assistant-authority-model.md)), or host-owned workflow execution ([`agent-run-orchestration.md`](agent-run-orchestration.md)). Where this design needs a fact from those documents it cites them.
 
 Its sibling is [`decision-trust-plane.md`](decision-trust-plane.md), which owns who resolves a judgment call when several answers are defensible: typed decision records that rise from worker to head to human, and per-category trust folded from their outcomes. It depends on §3's drain for storage and shares §6's escalation schema as its human-facing end. It changes nothing about authority, and neither does this document.
 
 ## Mandate
 
-**This PRM may specify foundational changes to existing surfaces** — CLI namespaces, the Assistant app, the chat interface — and is not confined to additions that sit politely beside what is there.
+**This PRM may specify foundational changes to existing surfaces** — CLI namespaces, the Assistant plugin, the chat interface — and is not confined to additions that sit politely beside what is there.
 
 The condition on that grant is the repo's existing standard, restated here because it is what makes the grant safe: every such change **lands complete and supersedes the old implementation outright.** No backwards-compatibility shims, no legacy re-exports, no dual paths kept alive "until callers migrate." Migrating every consumer is part of the change, not follow-up work, and a surface is not superseded until nothing reads the old one. Where this document rules that something is replaced, the appendix names what has to move.
 
@@ -24,41 +24,41 @@ This is post-v1 work. [`2026-08-01-v1-cut.md`](2026-08-01-v1-cut.md) rules the A
 
 Two hard prerequisites are not matters of scheduling, and both block work rather than merely preceding it. One is a sandboxed webview pane, without which §7 cannot begin at all; it is stated in full there. The other is root uniqueness.
 
-A head agent addressed by its context root only exists if roots are unique. [`context-root-uniqueness-and-rollup.md`](context-root-uniqueness-and-rollup.md) records that duplicate roots are not merely possible today but guaranteed by two creation paths, and that two contexts sharing a root already collide on context-scoped app state. Per-context heads inherit that collision exactly — two heads at one root are two agents that believe they own the same working memory. The uniqueness ruling in that brief is a blocking dependency for this one.
+A head agent addressed by its context root only exists if roots are unique. [`context-root-uniqueness-and-rollup.md`](context-root-uniqueness-and-rollup.md) records that duplicate roots are not merely possible today but guaranteed by two creation paths, and that two contexts sharing a root already collide on context-scoped plugin state. Per-context heads inherit that collision exactly — two heads at one root are two agents that believe they own the same working memory. The uniqueness ruling in that brief is a blocking dependency for this one.
 
 ## 1. What exists today
 
-The Assistant is a builtin host app instantiated per pane. `AssistantApp::new` takes a `workspace_root`, a broker, a config dir, and a `context_id`, and `src/assistant/store.rs` already keys conversation state per host context: `state.toml` carries `[contexts.<context_id>]` tables holding each context's active conversation, session name, agent, and effort, while transcripts under `conversations/<id>.jsonl` are shared workspace-wide and claimed by the first context to activate them.
+The Assistant is a builtin host plugin instantiated per pane. `AssistantApp::new` takes a `workspace_root`, a broker, a config dir, and a `context_id`, and `src/assistant/store.rs` already keys conversation state per host context: `state.toml` carries `[contexts.<context_id>]` tables holding each context's active conversation, session name, agent, and effort, while transcripts under `conversations/<id>.jsonl` are shared workspace-wide and claimed by the first context to activate them.
 
 So per-context *conversation state* exists. Per-context *agents* do not. The agent is a property of the pane: two Assistant panes in one context are two independent agents with no relationship, and a context with no Assistant pane has no agent at all. No host-level Assistant outlives its pane.
 
-**No CLI surface addresses an Assistant at all, and building one is a mandate of this document rather than a gap it notes.** `plexi ai` is configuration and diagnostics, `plexi agent` manages three unrelated things none of which is an Assistant, `plexi routine` schedules shell commands, and `plexi notify` raises notifications. Nothing sends a message to an Assistant and nothing names one. Under the fourth commandment that is not a missing convenience — an Assistant that the CLI cannot address does not exist for an agent, which makes it untestable in isolation (§5) and unreachable from a routine (§5). The namespace ruling, and what it supersedes, is in the appendix.
+**A limited CLI addresses one Assistant pane.** `plexi assistant send` submits one turn to a pane, and `plexi assistant permission list|show|resolve` is the observation seam for pending permission requests. `plexi ai` remains configuration and diagnostics, `plexi agent` manages agent definitions, `plexi routine` schedules shell commands, and `plexi notify` raises notifications. A head that no pane is showing is still outside this seam. The namespace ruling, and what it supersedes, is in the appendix.
 
 The pieces this design builds on are already load-bearing:
 
-- **Tool scoping.** `ToolDispatcher::from_registry` snapshots the global registry through `snapshot_for_caller`, which compares the caller's workspace root against each registered pane's `workspace_root` component-by-component and excludes everything outside it. Cross-workspace tools are not merely unauthorized, they are absent from the model's tool list. `ToolDispatcher::add_host_tools` with a `HostToolHandler` is the existing seam for caller-local tools that resolve in-process and never reach a pane; `ToolCallHooks::before_call` is the existing per-call gate.
+- **Tool scoping.** `ToolDispatcher::from_registry` snapshots the global registry through `snapshot_for_caller`, which keeps tools `evaluate_reach` says the caller's context can see. Cross-context tools are absent from the model's tool list. `ToolDispatcher::add_host_tools` with a `HostToolHandler` is the seam for caller-local tools that resolve in-process. Authorization is the permission monitor inside `dispatch_call`; `ToolCallHooks::before_call` only observes a call that was already admitted.
 - **A conflict rule worth reusing.** When two panes in one workspace expose the same tool name, `snapshot_for_caller` withholds *both* and logs the conflicting pane ids rather than picking a winner, so callers get `tool_not_found` — the correct fail-visible signal. That principle governs ambiguous question routing in §4.
-- **An append-only record.** `EventLog` and the `HostEvent` enum in `src/host/event_log.rs` write newline-delimited JSON to a global `events.jsonl` and, inside a workspace, a workspace-local one. The host stamps `source` before enqueueing; apps cannot forge provenance.
-- **A cost record.** `src/plexi_ai/ledger.rs` appends one row per brokered call with app and model attribution, and `check_budget` gates every call against per-app and global daily caps.
+- **An append-only record.** `EventLog` and the `HostEvent` enum in `src/host/event_log.rs` write newline-delimited JSON to a global `events.jsonl` and, inside a workspace, a workspace-local one. The host stamps `source` before enqueueing; plugins cannot forge provenance.
+- **A cost record.** `src/plexi_ai/ledger.rs` appends one row per brokered call with plugin and model attribution, and `check_budget` gates every call against per-plugin and global daily caps.
 - **Root-scoped schedules.** `RoutinesConfig::load_from_root` in `src/host/scheduler.rs` loads routines per context root, and `plexi routine` schedules them; today a routine's effect is a pane spawn.
-- **Scoped user-facing messages.** `NotifyScope` in `src/protocol/commands.rs` is `Window | Context | Global`, defaulting to `Context`, resolved host-side from app policy.
+- **Scoped user-facing messages.** `NotifyScope` in `src/protocol/commands.rs` is `Window | Context | Global`, defaulting to `Context`, resolved host-side from plugin policy.
 - **Two backends worth distinguishing.** `LiveAiBroker` drives real models; `HostHarness::add_assistant_pane` in `src/testing/mod.rs` builds an Assistant over an inert broker whose `dispatch` returns an error and logs, which is what makes plumbing testable with no model in the loop. `LocalOpenAiBackend` (backend name `"local"`) speaks OpenAI-compatible SSE against a configurable `base_url` with optional auth, which is what makes a live local model reachable from a test.
 
 ## 2. Head agents
 
 **A head agent belongs to a context, not to a pane.** Every context root has exactly one head. The host has exactly one global head that belongs to no context. A head exists whether or not anything is displaying it; an Assistant pane is a *view* onto its context's head, and closing the view does not end the agent.
 
-This mirrors the scoping distinction the product already draws in two places: apps are scaffolded and installed either into the global registry or into a workspace (`plexi app init --global` versus the nearest workspace), and notifications are `Window | Context | Global`. A head is the same distinction applied to agency.
+This mirrors the scoping distinction the product already draws in two places: plugins are scaffolded and installed either into the global registry or into a workspace (`plexi plugin init --global` versus the nearest workspace), and notifications are `Window | Context | Global`. A head is the same distinction applied to agency.
 
 **Addressing.** A head's durable address is its context root path; its runtime handle is the `context_id`. The global head's address is the literal `global`. Volatile ids never appear in a written artifact — a routine, an agent definition, or a drain record names the root, and the host resolves it. This is why root uniqueness is a prerequisite rather than a nicety: the address must identify one agent.
 
 Two facts from the appendix bound this section and are worth carrying here: a head's identity has to be one thing threaded through broker attribution, bus subscription, and the audit actor at once (H4, S8, A8 — three surfaces that each collapse every head into the same constant string), and the host can currently hold only one headless Assistant machine-wide (A5). Neither is a detail of §2; each one alone makes it unbuildable.
 
-**What a head is for.** The global head answers about the machine and routes across contexts. A context head answers about its own root — its panes, its apps, its files, its work — and is the escalation target for anything scoped there. The division is relevance, not power.
+**What a head is for.** The global head answers about the machine and routes across contexts. A context head answers about its own root — its panes, its plugins, its files, its work — and is the escalation target for anything scoped there. The division is relevance, not power.
 
 **Authority is unchanged by this design.** [`assistant-authority-model.md`](assistant-authority-model.md) rules that a context root is a relevance boundary and not a security boundary, and that the host reference monitor is the only trusted authorizer. The mesh adds heads; it does not add an isolation claim, and no part of it may be cited as one. Two facts follow and must be stated in the product surface rather than assumed away:
 
-- Tool visibility is scoped by **workspace** root, not context root (`snapshot_for_caller`). Contexts sharing a workspace see each other's tools. That is the existing contract, and per-context heads do not narrow it.
+- Tool visibility is scoped by the caller's **context** through `evaluate_reach` (`snapshot_for_caller`). A grant is still bound to a workspace. Per-context heads do not add an isolation claim.
 - A head holds no standing grant. Every action it proposes is authorized per-call at the reference monitor exactly as a single Assistant's is today.
 
 **Configuration is explicit.** Which contexts get a head, each head's model and effort, the information domains it declares in its capability card (§4), its working-memory budget (§3), and its unprompted-message budget (§5) are declared fields. Required fields have no default and a missing one is an error naming the field and the file — never a silent fallback to a global setting.
@@ -87,7 +87,7 @@ Three changes are required before it can carry memory, and each closes a real de
 
 Three further conditions come out of the substrate audit and are stated with the rest in the appendix (S1–S6), because each one independently makes a pointer unresolvable: a drain write issued from outside the host process currently succeeds while writing nothing, shutdown discards what is still queued, and the record format has no version or forward-compatible read. **Ids are necessary and not sufficient — the drain is memory only once a write that reports success has actually landed and a newer build's records are still readable by an older one.**
 
-**Reads go through a typed surface.** A head recalls by tool call, never by opening a `~/.plexi*` path — the standing rule in `AGENTS.md` that app and host state is reached through SDK tools or the CLI. A recall is itself a drain record, so the audit trail records what an agent looked at and not only what it did.
+**Reads go through a typed surface.** A head recalls by tool call, never by opening a `~/.plexi*` path — the standing rule in `AGENTS.md` that plugin and host state is reached through SDK tools or the CLI. A recall is itself a drain record, so the audit trail records what an agent looked at and not only what it did.
 
 **Read scope.** A context head recalls its own records and the records its context owns. The global head recalls across contexts. Nothing else widens: recall is subject to the reference monitor like any other tool call.
 
@@ -116,11 +116,11 @@ A hand-maintained list is not a merely inelegant option, it is a known failure c
 **A card has a declared half and an enumerated half, and an agent cannot forge the second.**
 
 - *Declared:* the information domains this head owns. Only a person can assert that a head is the authority on a project, so this is authored configuration on the head itself, carried in the card at publish time.
-- *Enumerated:* the tools the head can actually reach, filled in by the host from the live registry — `ToolDispatcher::all_tools` for the head's own snapshot and `apps_for_workspace`, which already groups registered tools by the app that exposed them for `/apps`. A head does not get to claim a tool list. The list is what the host observes, the same way `EventLog` stamps `source` before enqueueing so apps cannot forge provenance.
+- *Enumerated:* the tools the head can actually reach, filled in by the host from the live registry — `ToolDispatcher::all_tools` for the head's own snapshot and `apps_for_workspace`, which already groups registered tools by the plugin that exposed them for `/plugins`. A head does not get to claim a tool list. The list is what the host observes, the same way `EventLog` stamps `source` before enqueueing so plugins cannot forge provenance.
 
 **Card schema borrows the A2A Agent Card's shape; the mesh does not adopt the A2A wire protocol.** The useful part of Google's Agent Card is the shape: one JSON capability manifest per agent covering identity, provider, capabilities, discrete named skills, interface, and security schemes, resolved by lookup rather than by convention ([spec](https://a2a-protocol.org/latest/specification/)). Taking that shape means Plexi's cards are already legible to an external bridge if one is ever wanted, at zero cost today.
 
-Two things are deliberately not taken. A2A's own discovery guidance offers a well-known HTTP URI, curated registries, and direct configuration ([agent discovery](https://a2a-protocol.org/latest/topics/agent-discovery/)); the mesh takes the aggregated-registry model and explicitly rejects the direct-configuration model, which is the hand-maintained file this section exists to eliminate. And the transport stays Plexi's. Cards publish through the existing registration path — the same shape `ExposeTools` already uses to reach `tool_dispatch::register` — and structured cross-agent data that is not a host tool call rides the event bus (`DeclareEventStreams` / `EmitEvent` / `SubscribeAppEvents`), per the one-comms-model rule in the root `AGENTS.md`. A2A or ACP compatibility, if it ever lands, is an external bridge at the edge and is out of scope here. Nothing internal speaks a foreign protocol to reach the agent next to it.
+Two things are deliberately not taken. A2A's own discovery guidance offers a well-known HTTP URI, curated registries, and direct configuration ([agent discovery](https://a2a-protocol.org/latest/topics/agent-discovery/)); the mesh takes the aggregated-registry model and explicitly rejects the direct-configuration model, which is the hand-maintained file this section exists to eliminate. And the transport stays Plexi's. Cards publish through the existing registration path — the same shape `ExposeTools` already uses to reach `tool_dispatch::register` — and structured cross-agent data that is not a host tool call rides the event bus (`DeclareEventStreams` / `EmitEvent` / `SubscribePluginEvents`), per the one-comms-model rule in the root `AGENTS.md`. A2A or ACP compatibility, if it ever lands, is an external bridge at the edge and is out of scope here. Nothing internal speaks a foreign protocol to reach the agent next to it.
 
 **MCP stays the tool surface and is enumerated too.** MCP remains how external tools and UIs reach the mesh (§7); it does not become the inter-head channel. A head's MCP servers and their tools appear in its card by enumeration from what is actually registered, never from a maintained list — the same rule as every other entry, for the same reason.
 
@@ -174,31 +174,31 @@ Ian's `me` system prompt is a working prototype of what a head agent eventually 
 
 **What does not migrate.** The prototype's voice rules, ADHD-calibrated output mechanics, energy-curve scheduling, and personal file layout are one person's persona. They ship to nobody by default. They belong in the per-head authored configuration that §4's capability card already carries — and they are exactly what "grown, not universal" means in `NORTH_STAR.md`. A head with no user-authored persona is still a complete head.
 
-## 7. MCP Apps as the third-party UI surface
+## 7. MCP Plugins as the third-party UI surface
 
 ### Why this plane belongs here
 
-The MCP 2026-07-28 release restructured the protocol into a **stateless request/response core plus formally versioned extensions** — session handshakes and the `Mcp-Session-Id` header are gone, method and tool names travel in `Mcp-Method` and `Mcp-Name` headers, server-initiated streams are replaced by multi-round-trip requests, and list results became cacheable ([release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/)). Two of the formal extensions are exactly the shapes this design would otherwise have had to invent: **MCP Apps**, a UI surface a server can hand a host, and **`io.modelcontextprotocol/tasks`**, a contract for long-running work.
+The MCP 2026-07-28 release restructured the protocol into a **stateless request/response core plus formally versioned extensions** — session handshakes and the `Mcp-Session-Id` header are gone, method and tool names travel in `Mcp-Method` and `Mcp-Name` headers, server-initiated streams are replaced by multi-round-trip requests, and list results became cacheable ([release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/)). Two of the formal extensions are exactly the shapes this design would otherwise have had to invent: **MCP Plugins**, a UI surface a server can hand a host, and **`io.modelcontextprotocol/tasks`**, a contract for long-running work.
 
 Adopting both means the mesh invents neither a third-party UI protocol nor a job protocol. That is the whole argument for this section: everything below is a decision *not* to build something.
 
-### One centralized MCP-app pane type, host-owned
+### One centralized MCP-plugin pane type, host-owned
 
-**A single Plexi pane type renders MCP Apps and implements the host side of the spec. Servers never get custom pane types.**
+**A single Plexi pane type renders MCP Plugins and implements the host side of the spec. Servers never get custom pane types.**
 
-The pane renders `ui://` HTML resources — the spec reserves that scheme and pins the MIME type to `text/html;profile=mcp-app` — and speaks the postMessage JSON-RPC 2.0 bridge the spec defines, which deliberately needs no SDK on the guest side ([apps extension](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)). The boundary is the spec's own wire protocol and nothing else.
+The pane renders `ui://` HTML resources — the spec reserves that scheme and pins the MIME type to `text/html;profile=mcp-plugin` — and speaks the postMessage JSON-RPC 2.0 bridge the spec defines, which deliberately needs no SDK on the guest side ([plugins extension](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/plugins.mdx)). The boundary is the spec's own wire protocol and nothing else.
 
-The alternative — a pane type per server, or per app — is N boundaries to audit, N places for authority to leak, and N implementations of a protocol that already has one definition. This repo has already made the same call once: `tool_dispatch` is a single global registry with one `dispatch_call` path rather than per-app plumbing, and that is why workspace scoping could be added in one place and be true everywhere.
+The alternative — a pane type per server, or per plugin — is N boundaries to audit, N places for authority to leak, and N implementations of a protocol that already has one definition. This repo has already made the same call once: `tool_dispatch` is a single global registry with one `dispatch_call` path rather than per-plugin plumbing, and that is why workspace scoping could be added in one place and be true everywhere.
 
-**Visibility is enforced where visibility is already enforced.** Tools carry `_meta.ui.visibility`, whose values are `"model"` and `"app"`, defaulting to both; the spec requires that a host **must not** include a tool in the agent's tool list when its visibility omits `"model"`. In Plexi that is the dispatcher snapshot: an `"app"`-only tool is callable by the iframe across the bridge and absent from the head's `all_tools()`. The precedent is `retain_allowed`, which removes a tool from *both* model visibility and invocation — gating one without the other is precisely the defect this repo already closed, and the MCP rule is the same rule.
+**Visibility is enforced where visibility is already enforced.** Tools carry `_meta.ui.visibility`, whose values are `"model"` and `"plugin"`, defaulting to both; the spec requires that a host **must not** include a tool in the agent's tool list when its visibility omits `"model"`. In Plexi that is the dispatcher snapshot: an `"plugin"`-only tool is callable by the iframe across the bridge and absent from the head's `all_tools()`. The precedent is `retain_allowed`, which removes a tool from *both* model visibility and invocation — gating one without the other is precisely the defect this repo already closed, and the MCP rule is the same rule.
 
-**Forwarded messages are addressed, never ambient.** `ui/message` and `ui/update-model-context` go to the head that owns the pane's context (§2) — not to "the Assistant." This is the concrete payoff of per-context heads on this surface: an MCP app running in one context cannot write model context into another context's head.
+**Forwarded messages are addressed, never ambient.** `ui/message` and `ui/update-model-context` go to the head that owns the pane's context (§2) — not to "the Assistant." This is the concrete payoff of per-context heads on this surface: an MCP plugin running in one context cannot write model context into another context's head.
 
 ### Mapping the spec's chat-iframe flow onto panes
 
 The spec assumes a chat host with an embedded iframe. Plexi is a tiling environment, and every flow maps onto a pane operation the host already performs:
 
-| MCP Apps message | Plexi host behavior |
+| MCP Plugins message | Plexi host behavior |
 |---|---|
 | `ui/initialize` | Handshake. Host returns `hostContext` — `theme` plus the `styles` variable set — and the display modes this pane can honor. |
 | `ui/notifications/initialized` | Pane marked live. |
@@ -214,31 +214,31 @@ The spec assumes a chat host with an embedded iframe. Plexi is a tiling environm
 
 **A request is a request.** `ui/request-display-mode` and `ui/notifications/size-changed` are proposals the host arbitrates against the current layout. A guest never commands the tiling. That is the authority model's position applied to geometry, and it is why these map to pane *operations* rather than to direct writes.
 
-### Keyboard support for MCP-app panes
+### Keyboard support for MCP-plugin panes
 
-**A focused iframe already receives keyboard input.** Basic keyboard interaction inside an MCP app needs no protocol change and no Plexi work: an app that binds keys in its own HTML works the day the pane exists. What the spec cannot express is *declaration* — a server has no way to tell a host which shortcuts it offers, so the host can neither render them nor arbitrate a collision. Everything below closes the declaration gap and nothing below touches the input path.
+**A focused iframe already receives keyboard input.** Basic keyboard interaction inside an MCP plugin needs no protocol change and no Plexi work: a plugin that binds keys in its own HTML works the day the pane exists. What the spec cannot express is *declaration* — a server has no way to tell a host which shortcuts it offers, so the host can neither render them nor arbitrate a collision. Everything below closes the declaration gap and nothing below touches the input path.
 
-**Decision: a Plexi vendor extension in the spec's own extensibility seam.** Shortcuts are declared in `_meta.ui` on the UI resource — the same namespace the spec already uses for `visibility` and `resourceUri` — each entry carrying a key combination, a short label, and a one-line description, with a runtime notification for shortcuts that change as the app changes mode. The extension is named under `io.plexi/*`, matching the reverse-DNS shape of the release's formalized identifiers (`io.modelcontextprotocol/tasks`), so it can be proposed upstream as a SEP later without a rename.
+**Decision: a Plexi vendor extension in the spec's own extensibility seam.** Shortcuts are declared in `_meta.ui` on the UI resource — the same namespace the spec already uses for `visibility` and `resourceUri` — each entry carrying a key combination, a short label, and a one-line description, with a runtime notification for shortcuts that change as the plugin changes mode. The extension is named under `io.plexi/*`, matching the reverse-DNS shape of the release's formalized identifiers (`io.modelcontextprotocol/tasks`), so it can be proposed upstream as a SEP later without a rename.
 
 Degradation runs both ways, and that is the design rather than a caveat: a non-Plexi host ignores an unknown `_meta` key and loses nothing, and a server that declares no shortcuts still works mouse-only exactly as it does today. Plexi-compliant MCP UIs with *optional* keyboard support.
 
 **Declared shortcuts render in the pane footer through the primitive that already exists.** `HintBar` and `HintGroup` in `src/ui/hints.rs` are the host's key→label footer — the Assistant's own composer renders its bindings through them. A declared MCP shortcut becomes a `HintGroup` entry and nothing else is built. That primitive's visual redesign is stint `0699`'s scope, filed on Ian's read that the current key→label footer is an ugly primitive, with a design deliverable rather than an implementation. This section consumes whatever `0699` produces: no second footer, no MCP-specific chrome.
 
-**Key arbitration is fail-visible.** Host-reserved chords — pane navigation, fullscreen, the rest of the host keymap — are never forwarded to the iframe. The host consumes them first, so an MCP app can never capture the keys a user needs in order to leave it. Everything else forwards while the pane is focused. A declared shortcut colliding with a reserved chord is **refused at declaration, with the collision named**, never shadowed silently at runtime — silent shadowing produces a footer advertising a key that does nothing, which is worse than an absent shortcut. This is §4's routing principle on a third surface: when two claimants want one name, fail where a person can see it rather than picking a winner quietly.
+**Key arbitration is fail-visible.** Host-reserved chords — pane navigation, fullscreen, the rest of the host keymap — are never forwarded to the iframe. The host consumes them first, so an MCP plugin can never capture the keys a user needs in order to leave it. Everything else forwards while the pane is focused. A declared shortcut colliding with a reserved chord is **refused at declaration, with the collision named**, never shadowed silently at runtime — silent shadowing produces a footer advertising a key that does nothing, which is worse than an absent shortcut. This is §4's routing principle on a third surface: when two claimants want one name, fail where a person can see it rather than picking a winner quietly.
 
 ### Observability is centralized by construction
 
-Every iframe↔host message crosses one bridge. Instrumenting that bridge instruments every MCP app that will ever be installed — no per-server work, and more importantly no per-server *gap*. The records land in the same drain as everything else in §3, carrying the attribution `tool_dispatch` already logs on every invocation: caller app id and pane on one side, provider pane and tool name on the other.
+Every iframe↔host message crosses one bridge. Instrumenting that bridge instruments every MCP plugin that will ever be installed — no per-server work, and more importantly no per-server *gap*. The records land in the same drain as everything else in §3, carrying the attribution `tool_dispatch` already logs on every invocation: caller plugin id and pane on one side, provider pane and tool name on the other.
 
 This is what makes the centralized pane type an audit property rather than a tidiness preference. The root `AGENTS.md` rule that no capability ships without at least one `info`-level trace is satisfied once, at the bridge, instead of being re-litigated for each server someone installs.
 
 ### Theming: one story, one pipeline
 
-MCP Apps delivers theming through `hostContext` at `ui/initialize`: a `theme` of `"light"` or `"dark"`, plus `styles.variables` — a standardized set of CSS custom properties spanning color (`--color-background-primary`, `--color-text-primary`, `--color-border-primary`), typography (`--font-sans`, `--font-weight-bold`), spacing (`--border-radius-md`), and shadow (`--shadow-lg`).
+MCP Plugins delivers theming through `hostContext` at `ui/initialize`: a `theme` of `"light"` or `"dark"`, plus `styles.variables` — a standardized set of CSS custom properties spanning color (`--color-background-primary`, `--color-text-primary`, `--color-border-primary`), typography (`--font-sans`, `--font-weight-bold`), spacing (`--border-radius-md`), and shadow (`--shadow-lg`).
 
-**Plexi's app theme tokens align to that variable set, and one resolver serves both Python apps and MCP apps.** The host's tokens already live in `src/ui/theme.rs` behind `preset_names`, `preset_colors`, and `text_on`, with a WCAG contrast gate over every preset. What is missing is delivery, not tokens: stint `0696` is fixing exactly this pipeline, and the defect it names is that the Python app launch payload in `src/host/wasm_python.rs` carries a literal `"theme": {}`, so apps ignore the active host theme entirely and fall back to SDK dark defaults.
+**Plexi's plugin theme tokens align to that variable set, and one resolver serves both Python plugins and MCP plugins.** The host's tokens already live in `src/ui/theme.rs` behind `preset_names`, `preset_colors`, and `text_on`, with a WCAG contrast gate over every preset. What is missing is delivery, not tokens: stint `0696` is fixing exactly this pipeline, and the defect it names is that the Python plugin launch payload in `src/host/wasm_python.rs` carries a literal `"theme": {}`, so plugins ignore the active host theme entirely and fall back to SDK dark defaults.
 
-That is the same defect MCP apps would hit, so it gets the same fix and not a second one. `0696` is v1 work; MCP-app theming attaches to whatever pipeline it lands and adds no parallel path. The WCAG gate extends to the emitted variable set — a theme that ships an illegible `--color-text-primary` to an MCP app is the same class of bug the host already refuses to ship to its own widgets.
+That is the same defect MCP plugins would hit, so it gets the same fix and not a second one. `0696` is v1 work; MCP-plugin theming attaches to whatever pipeline it lands and adds no parallel path. The WCAG gate extends to the emitted variable set — a theme that ships an illegible `--color-text-primary` to an MCP plugin is the same class of bug the host already refuses to ship to its own widgets.
 
 ### The enabling primitive this section depends on
 
@@ -247,7 +247,7 @@ That is the same defect MCP apps would hit, so it gets the same fix and not a se
 Two consequences, both stated rather than assumed:
 
 - **Ownership of the webview primitive is an open decision.** [`browser-surface.md`](browser-surface.md) covers a native browser pane and plausibly owns the same primitive. It is owned by one document and consumed by the other; which way round is a ruling to take before either is stinted, not a thing to discover during implementation by building it twice.
-- **This section does not partially land.** There is no degraded mode where an MCP app renders as text or as a summary. A half-rendered third-party UI misrepresents what the user is looking at, and a UI surface that lies is worse than an absent one.
+- **This section does not partially land.** There is no degraded mode where an MCP view renders as text or as a summary. A half-rendered third-party UI misrepresents what the user is looking at, and a UI surface that lies is worse than an absent one.
 
 ### Long-running work uses the Tasks extension
 
@@ -265,7 +265,7 @@ A head is one agent with more than one way to reach it. These three surfaces are
 
 That is a supersession, not a description. Today a workspace holds many conversations with a per-context active pointer: `state.toml` carries `active_conversation` and `session_name` per context, transcripts accumulate as separate `conversations/<id>.jsonl` files, `ConversationHistory::context_id` claims an untagged conversation for the first context that activates it, and `/new` and `/resume` move the pointer between them. Under this ruling the head *is* the thread's identity. The pointer, the claiming rule, and the surfaces that switch threads all collapse into it, and the appendix carries what that costs.
 
-**A message sent to a head from the CLI appends to that head's conversation.** The command sends, prints the reply, and returns; opening the Assistant app on that head afterwards shows the exchange as ordinary user and assistant rows, in order, indistinguishable from one typed into the pane. Not a mirror and not a second session — the same thread, seen from another place.
+**A message sent to a head from the CLI appends to that head's conversation.** The command sends, prints the reply, and returns; opening the Assistant plugin on that head afterwards shows the exchange as ordinary user and assistant rows, in order, indistinguishable from one typed into the pane. Not a mirror and not a second session — the same thread, seen from another place.
 
 The store already supports this: `AssistantStore` writes one `Turn` per line to `conversations/<id>.jsonl`, and the pane reads that file. What blocks it is ownership, not format — `AssistantStore` is a field of `AssistantApp`, so the transcript is only reachable while a pane holds it. This surface is therefore a consequence of §2 rather than an independent feature, and it does not work until the head owns the store.
 
@@ -273,7 +273,7 @@ The store already supports this: `AssistantStore` writes one `Turn` per line to 
 
 ### The picker
 
-**Opening the Assistant app lands directly in this context's head conversation.** No chooser, no intermediate screen, no decision asked before the user has expressed one. The common case is that a person in a context wants that context's head, and the app opens on it.
+**Opening the Assistant plugin lands directly in this context's head conversation.** No chooser, no intermediate screen, no decision asked before the user has expressed one. The common case is that a person in a context wants that context's head, and the view opens on it.
 
 **A keybind opens the picker** — a palette of every head reachable from where you are standing, this context's and the global one, each row chipped to mark which kind it is. Enter turns the pane into a chat with that head. The picker is one keypress away and is never what greets you.
 
@@ -292,7 +292,7 @@ A head keeps working while nobody is looking at it — most importantly, it answ
 
 Same visual class as the tool-call receipts already in the transcript, for the same reason: it is something the agent did that the user did not ask for and needs to be able to see.
 
-What changes in the chat interface, concretely: `TurnRole` gains a variant for peer traffic. The precedent is `TurnRole::Event`, which already exists for an app event delivered through a granted subscription — a row that is neither the user nor the model and still belongs in the transcript. Receipts reuse the tool row's existing affordances rather than inventing chrome: `Turn::status` distinguishes answered from failed or refused, and the caret dropdown that already shows a tool call's compact input summary and `detail` payload shows the full exchange.
+What changes in the chat interface, concretely: `TurnRole` gains a variant for peer traffic. The precedent is `TurnRole::Event`, which already exists for a plugin event delivered through a granted subscription — a row that is neither the user nor the model and still belongs in the transcript. Receipts reuse the tool row's existing affordances rather than inventing chrome: `Turn::status` distinguishes answered from failed or refused, and the caret dropdown that already shows a tool call's compact input summary and `detail` payload shows the full exchange.
 
 One precondition, because it is structural rather than incidental: a transcript row carries no identity and no author today, and rows are addressed by position (appendix, A2). A receipt has to name its counterpart and join back to a drain record, so **`Turn` gains a stable id and an author before any of this is implementable.**
 
@@ -311,7 +311,7 @@ Per subcommand: what it does, whether it is load-bearing, and who calls it. **No
 | Verb | Does | Status | Callers |
 |---|---|---|---|
 | `doctor` | Read-only AI integration health check | Load-bearing | Documented; the diagnostic path `onboard` reuses |
-| `onboard` | Guides first-run setup, then names the next app to install | **Orphaned** | One reference, in `README.md`. Nothing else invokes it |
+| `onboard` | Guides first-run setup, then names the next plugin to install | **Orphaned** | One reference, in `README.md`. Nothing else invokes it |
 | `setup` | Interactive Ollama configuration wizard | Load-bearing **and the sharpest hazard in the CLI** | Documented |
 
 The namespace is configuration and diagnostics end to end. **No verb sends a message to anything.** `ai` is the most conversational noun in the CLI and nothing under it is conversational.
@@ -322,9 +322,9 @@ The namespace is configuration and diagnostics end to end. **No verb sends a mes
 
 | Verb | Referent | Does | Status | Callers |
 |---|---|---|---|---|
-| `init` | An agent *app* | Pure alias for `app_init(name, "python_agent")` — app scaffolding, nothing agent-specific beyond the template | Thin but real | Survives as the replacement for the removed `app init --agent`; a public SKILL.md cites it |
-| `add` / `update` / `list` | An agent *definition* | Copies `AGENT.md` into `<workspace>/<channel>/agents/<name>/` with empty `memory/` and `logs/` | **Demo-grade — nothing in the host reads the result** | `plexi agent list` only |
-| `report` | An external *process* | Sends `set_agent_state` over the pane socket → `AppRequest::SetAgentState` → Cmd+P rows and activity pips | **Load-bearing, and a machine ABI** | Three *externally installed* consumers: hook entries written into `~/.claude/settings.json`, the Codex hooks file, and the pi extension |
+| `init` | An agent *plugin* | Pure alias for `app_init(name, "python_agent")` — plugin scaffolding, nothing agent-specific beyond the template | Thin but real | Survives as the replacement for the removed `plugin init --agent`; a public SKILL.md cites it |
+| `add` / `update` / `list` | An agent *definition* | Copies `AGENT.md` into `<workspace>/.plexi/agents/<name>/` with empty `memory/` and `logs/` | **Demo-grade — nothing in the host reads the result** | `plexi agent list` only |
+| `report` | An external *process* | Sends `set_agent_state` over the pane socket → `HostRequest::SetAgentState` → Cmd+P rows and activity pips | **Load-bearing, and a machine ABI** | Three *externally installed* consumers: hook entries written into `~/.claude/settings.json`, the Codex hooks file, and the pi extension |
 | `status` / `hook` | An external *process* | Human and skill entry points onto `report`'s mechanism | Load-bearing | Generated CLI docs; `assets/hooks/`; a currently-disabled dispatch skill |
 
 **Two rows deserve correction and emphasis.**
@@ -339,7 +339,7 @@ The namespace is configuration and diagnostics end to end. **No verb sends a mes
 
 - **The skill-surface gate reads only one file.** It checks `skills/plexi-cli/SKILL.md`, while live invocations also sit in `README.md`, the website drafts, `docs/pgap.md`, and the disabled dispatch skill — checked by nothing. Its coverage floors sit well below current coverage, so a namespace deletion is silently absorbed rather than failing the gate.
 - **The website CLI reference regenerates only through self-committing recipes**, per the trap recorded in the root `AGENTS.md`. Documentation drift after a rename is the default outcome, not the unlucky one.
-- **`plexi agent add` already prints a path it does not write** — it reports `.plexi/agents/` while writing the channel directory, and the published CLI docs repeat the wrong path. The surface is documented incorrectly today, before anything moves.
+- **`plexi agent add` writes `<workspace>/.plexi/agents/<name>/`**, the same path it prints. A definition left under the channel directory is copied there once on the next add, update, or list.
 
 **Two seams are clean and should stay that way.** `NotifyScope` and `RoutineCmd` have zero coupling to the agent namespaces — which is exactly what §5 assumes when it puts heads behind routines and notifications. Neither needs to move for any of this.
 
@@ -355,7 +355,7 @@ The namespace is configuration and diagnostics end to end. **No verb sends a mes
 - **Keep `doctor`. Fold `setup` into it behind a real TOML editor.** The wizard's function is wanted; its implementation deletes user configuration.
 - **Delete `onboard`, or wire it.** A single `README.md` reference is not a live surface. Either it earns a caller or it goes.
 - **Delete the `add` / `update` / `list` definition registry outright.** Nothing in the host reads it, and §4's capability cards supersede what it was reaching for. This is the one clean deletion available, and it is only clean *because* the audit showed the registry is unread — the earlier reading of this document, that `AgentRegistry` consumed these directories, was wrong.
-- **Fold `init` back into app scaffolding.** It is an alias for `app_init` with a template argument and does not need a namespace.
+- **Fold `init` back into plugin scaffolding.** It is an alias for `app_init` with a template argument and does not need a namespace.
 - **Add `plexi assistant`** for heads: send a message, list reachable heads, show one, addressed by context root or `--global`. Rejected — folding heads into `plexi ai`, which is setup and diagnostics; rejected — taking `plexi agent`, which is where three meanings already collide.
 
 **The cost is the external hooks, and it is the whole cost.** Everything else here is repo-local and moves in one change. The hook consumers live in `~/.claude/settings.json`, a Codex hooks file, and a pi extension on machines this repository cannot reach, which is why they get a version contract instead of a migration. Ian rules on the naming and on whether the `report` mechanism moves at all.
@@ -370,7 +370,7 @@ What has to be reworked, in dependency order:
 2. **An in-flight turn currently dies with its pane**, because the worker channels are pane fields. A head that answers a CLI message (§8) or an `ask_question` (§4) with no pane open requires the turn to be owned by the head. **This is the largest single piece of work in the PRM**, and every other surface here is blocked behind it.
 3. **`pending_reply` assumes a rendered permission sheet.** A blocked worker waits on a `SyncSender<PermissionReply>` that a pane-drawn modal answers. A headless head reaching an ask-tier tool has nobody to draw it. Destination: it escalates through the notification surface under §6's contract. Until that exists, a headless head is confined to what its standing posture already permits, and that confinement is an explicit config field, never an implied behavior.
 4. **The multi-conversation model collapses into one thread per head.** This is the §8 ruling's cost, and it is larger than it looks. `state.toml` keys `[contexts.<context_id>]` — context-scoped, which is half right — but each of those tables carries an `active_conversation` pointer and a `session_name`, transcripts accumulate as separate `conversations/<id>.jsonl` files that are workspace-wide, and `ConversationHistory::context_id` claims an untagged conversation for whichever context activates it first. The slash commands that move the pointer (`/new`, `/resume`) are surfaces on that model. Under one canonical thread per head, the pointer, the claiming rule, and the thread-switching commands all go, and "unclaimed, visible to every context" stops being a reachable state. Existing multi-conversation transcripts on disk are the migration, and the no-shim rule means they are converted in the same change, not read through a compatibility path.
-5. **Broker attribution is per-app, not per-head.** `AiBrokerRequest` carries `app_id`, and `ledger::check_budget` enforces per-app daily caps against it. Every head reporting as the Assistant shares one budget line and is indistinguishable in the ledger, so per-context spend is unknowable and one busy head can exhaust every other head's budget.
+5. **Broker attribution is per-plugin, not per-head.** `AiBrokerRequest` carries `plugin_id`, and `ledger::check_budget` enforces per-plugin daily caps against it. Every head reporting as the Assistant shares one budget line and is indistinguishable in the ledger, so per-context spend is unknowable and one busy head can exhaust every other head's budget.
 
 ### Broker-layer hazards
 
@@ -382,11 +382,11 @@ The broker was built for one Assistant driving one workspace from one pane. Ever
 
 **H3 — The budget gate is pre-flight, per-turn, and fails open.** `check_budget` runs before a turn against `today_spend`, which returns zero spend on any I/O or parse error by design, while the authoritative cost row is written seconds later from a detached thread after the generation cost is fetched. N heads waking on one routine tick all read the same pre-spend total and all pass, so the daily cap can be exceeded by N full turns before anything is recorded. **Obligation: budget reservation happens atomically at dispatch rather than as an advisory pre-read, and the mesh's fan-out factor is bounded by config rather than by hope.**
 
-**H4 — Caller identity is hardcoded.** Both `ToolDispatcher::from_registry` call sites in the Assistant pass `caller_pane_id` as literal `0`; the broker request carries `app_id: "assistant"`; and `HostEvent::AgentTurn` records `pane_id: None`. Every head is therefore the same caller in the ledger, in the audit trail, and in tool-dispatch logs. This is the same finding as the per-app budget bucket above, seen from the attribution side: **per-head identity is a precondition for H3's fix, for §3's drain, and for any claim that the audit trail is attributable.**
+**H4 — Caller identity is hardcoded.** Both `ToolDispatcher::from_registry` call sites in the Assistant pass `caller_pane_id` as literal `0`; the broker request carries `plugin_id: "assistant"`; and `HostEvent::AgentTurn` records `pane_id: None`. Every head is therefore the same caller in the ledger, in the audit trail, and in tool-dispatch logs. This is the same finding as the per-plugin budget bucket above, seen from the attribution side: **per-head identity is a precondition for H3's fix, for §3's drain, and for any claim that the audit trail is attributable.**
 
 **H5 — Nothing cancels a turn when its viewer goes away, and today's cleanup is accidental.** A completion send is discarded with `let _`, and the current safe-ish behavior — a dropped receiver causing a permission denial — is a side effect of the pane owning the channel. Move ownership to the head, as §2 requires, and that accident disappears with nothing deliberate in its place. **Obligation: turn cancellation becomes explicit and head-owned, using the `CancelToken` seam that already exists in `src/plexi_ai/mod.rs` for exactly this purpose.**
 
-**H6 — Workspace matching does not canonicalize, and the grant plane does.** `snapshot_for_caller` compares roots by raw path components, while the grant plane canonicalizes (`src/broker/mod.rs` resolves through `canonicalize` before recording a decision). The two planes therefore disagree about what "the same workspace" means the moment a symlink, a `/var` versus `/private/var` prefix, or a git worktree is involved — and the tool list comes back silently empty rather than erroring. Worse for this design: **a nested context root structurally never matches its parent's workspace, so a per-context head can see zero tools from its own workspace.** **Obligation: one canonicalization rule shared by both planes. This is a v1-shaped correctness bug that exists today without any mesh, and §2 makes it unavoidable rather than creating it.**
+**H6 — Tool visibility is context reach, not a raw path compare.** `snapshot_for_caller` filters with `evaluate_reach` on the caller's `context_id`. The grant plane still canonicalizes workspace paths before it records a decision. A nested context is a different reach set from its parent; that is the context-owned rule, not a component-wise path compare. **Obligation: keep discovery on `evaluate_reach` and authorization on the permission monitor. Do not bring raw workspace-root equality back as a dispatcher filter.**
 
 **H7 — The pane snapshot in the system prompt is machine-global.** Every turn's prompt carries a snapshot of panes unfiltered by context or workspace, so §2's relevance boundary does not exist at the prompt layer at all — the model sees the whole machine regardless of which head it is. The dirty-check is pane-count-only, so a same-frame swap of one pane for another leaves a stale snapshot in place. **Obligation: the snapshot is scoped to the head's context before it reaches the prompt, and its dirty-check keys on content rather than cardinality.** Until then, no statement about a head's relevance boundary is true where it matters most.
 
@@ -425,7 +425,7 @@ Two qualifications on claims made earlier in this document, both from the same a
 
 **S8 — Every Assistant shares one subscriber identity.** Subscriptions are registered under a single `ASSISTANT_ACTOR_ID`, so a second Assistant pane wipes the first's subscriptions and whichever pumps first steals deliveries. **This is the same defect as H4 seen from the bus side, and it is fatal to per-head addressing: §2 cannot be built on an identity that is a constant.**
 
-**S9 — Subscriptions match on `app_id` only**, giving cross-context and cross-workspace delivery leakage, and undrained deliveries accumulate without bound. **Obligation: subscription matching carries head identity and context, and undelivered queues have a ceiling.**
+**S9 — Subscriptions match on `plugin_id` only**, giving cross-context and cross-workspace delivery leakage, and undrained deliveries accumulate without bound. **Obligation: subscription matching carries head identity and context, and undelivered queues have a ceiling.**
 
 **Escalation and notifications.**
 
@@ -435,7 +435,7 @@ Two qualifications on claims made earlier in this document, both from the same a
 
 **S11 — The scheduler's semantics do not yet fit an agent target.** Cron routines have no missed-tick catch-up, so a host closed at 9am silently skips the day, while interval routines all fire at once on startup — the two failure modes point in opposite directions and neither is what a person expects from "check this every morning." `fire_routine` can only spawn terminal panes, and an unscoped routine targets whatever window happens to be active. The overlap guard's liveness fact is "the terminal exited," which has no analogue for a head. **Obligation: §5's head-addressed routine defines catch-up policy, targeting, and its own liveness fact explicitly — none of the four transfers from the pane-spawning path.**
 
-### Assistant-app hazards
+### Assistant-plugin hazards
 
 The broker and substrate hazards above are about layers the Assistant sits on. These are in the Assistant itself, and several are structural obstacles to sections of this document rather than defects to schedule around.
 
@@ -447,7 +447,7 @@ The broker and substrate hazards above are about layers the Assistant sits on. T
 
 **A4 — `state.toml` is an unlocked read-modify-write.** A save reads, mutates, and rewrites the whole file, so a write from one context reverts another context's pointer. With per-context heads writing independently this stops being a rare interleaving and becomes routine. **Obligation: per-head state is separately addressable, or writes are serialized through one owner.**
 
-**A5 — At most one headless Assistant can exist machine-wide.** `background_apps` is keyed by app *type* id, so the headless slot holds one entry for the Assistant and no more. §2 wants a head per context root plus a global head. **Obligation: headless instances are keyed by head identity, not app type.**
+**A5 — At most one headless Assistant can exist machine-wide.** `background_apps` is keyed by plugin *type* id, so the headless slot holds one entry for the Assistant and no more. §2 wants a head per context root plus a global head. **Obligation: headless instances are keyed by head identity, not plugin type.**
 
 **A6 — Conversation claiming fires on every activation, and the global head has no home.** `set_active_conversation` stamps the context claim on every call rather than once, and a global head — belonging to no context — collapses onto the `$HOME` store, which is also where every rootless context already lands. §8's one-canonical-thread ruling removes the claiming mechanism entirely; the global head's storage location is a separate question that ruling does not answer. **Obligation: the global head's store is addressed explicitly, never by falling back to a home directory that other things also fall back to.**
 
@@ -469,6 +469,6 @@ The broker and substrate hazards above are about layers the Assistant sits on. T
 
 - **No isolation claim.** Heads are a relevance and addressing structure. Sandboxing arrives with the WASM platform phase; nothing here narrows the authority plane.
 - **No memory search infrastructure.** Recall resolves pointers and filters records. Embeddings, ranking, and a vector store are not in this design and would violate the portable-format commandment if added carelessly.
-- **No new inter-agent transport, and no foreign one on the inside.** `ask_question` is a host tool; structured cross-agent data rides the event bus; heads never talk over PTY injection. The distinction that governs §7 is *where the boundary is*: a standard wire protocol is the right thing at the edge where an outside party is on the other side — MCP Apps' postMessage bridge is adopted exactly there and nowhere else — and the wrong thing between two of the host's own heads. A2A and ACP compatibility, if ever wanted, is likewise an edge bridge and never the internal wire.
+- **No new inter-agent transport, and no foreign one on the inside.** `ask_question` is a host tool; structured cross-agent data rides the event bus; heads never talk over PTY injection. The distinction that governs §7 is *where the boundary is*: a standard wire protocol is the right thing at the edge where an outside party is on the other side — MCP Plugins' postMessage bridge is adopted exactly there and nowhere else — and the wrong thing between two of the host's own heads. A2A and ACP compatibility, if ever wanted, is likewise an edge bridge and never the internal wire.
 - **No multi-user and no cloud dependency.** A head is local. The portable-instance phase may carry it later; nothing here may require it.
 - **No autonomous authority escalation.** A head cannot grant itself, or another head, anything. The user remains the only source of new authority.

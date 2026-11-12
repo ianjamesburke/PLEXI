@@ -11,21 +11,21 @@ pub(crate) struct PythonRuntime {
     pub(crate) version: String,
 }
 
-pub(crate) fn ensure_app_venv(
-    app_id: &str,
-    app_dir: &Path,
+pub(crate) fn ensure_plugin_venv(
+    plugin_id: &str,
+    plugin_dir: &Path,
     dependencies: &[String],
 ) -> Result<PathBuf, String> {
-    let venv_path = app_dir.join(".venv");
+    let venv_path = plugin_dir.join(".venv");
     let python = venv_path.join("bin").join("python");
 
     if python.exists() {
         let version = check_python_version(&python)?;
         log::info!(
-            "python_env[{app_id}]: using existing venv {} ({version})",
+            "python_env[{plugin_id}]: using existing venv {} ({version})",
             venv_path.display()
         );
-        install_dependencies(app_id, &python, dependencies)?;
+        install_dependencies(plugin_id, &python, dependencies)?;
         return Ok(python);
     }
 
@@ -39,12 +39,12 @@ pub(crate) fn ensure_app_venv(
 
     let uv = Command::new("uv").arg("--version").output().map_err(|e| {
         format!(
-            "`uv` is required to create a Python {PYTHON_APP_VENV_VERSION} app venv but could not be started: {e}"
+            "`uv` is required to create a Python {PYTHON_APP_VENV_VERSION} plugin venv but could not be started: {e}"
         )
     })?;
     if !uv.status.success() {
         return Err(format!(
-            "`uv --version` failed while preparing Python app venv: {}",
+            "`uv --version` failed while preparing Python plugin venv: {}",
             command_output_summary(&uv)
         ));
     }
@@ -64,32 +64,32 @@ pub(crate) fn ensure_app_venv(
 
     let version = check_python_version(&python)?;
     log::info!(
-        "python_env[{app_id}]: created venv at {} ({version})",
+        "python_env[{plugin_id}]: created venv at {} ({version})",
         venv_path.display()
     );
-    install_dependencies(app_id, &python, dependencies)?;
+    install_dependencies(plugin_id, &python, dependencies)?;
     Ok(python)
 }
 
 pub(crate) fn resolve_python_runtime(
-    app_id: &str,
+    plugin_id: &str,
     entry_path: &Path,
     ensure_venv: bool,
     dependencies: &[String],
 ) -> Result<PythonRuntime, String> {
-    let app_dir = entry_path.parent().ok_or_else(|| {
+    let plugin_dir = entry_path.parent().ok_or_else(|| {
         format!(
-            "could not determine app directory for Python entry {}",
+            "could not determine plugin directory for Python entry {}",
             entry_path.display()
         )
     })?;
 
     if ensure_venv {
-        let python = ensure_app_venv(app_id, app_dir, dependencies)?;
+        let python = ensure_plugin_venv(plugin_id, plugin_dir, dependencies)?;
         return runtime_from_path("venv", python);
     }
 
-    let venv_python = app_dir.join(".venv").join("bin").join("python");
+    let venv_python = plugin_dir.join(".venv").join("bin").join("python");
     if venv_python.exists() {
         return runtime_from_path("venv", venv_python);
     }
@@ -120,7 +120,7 @@ fn runtime_from_path(source: &str, python: PathBuf) -> Result<PythonRuntime, Str
 }
 
 fn install_dependencies(
-    app_id: &str,
+    plugin_id: &str,
     python: &Path,
     dependencies: &[String],
 ) -> Result<(), String> {
@@ -136,7 +136,7 @@ fn install_dependencies(
         .map_err(|e| format!("failed to run `uv pip install`: {e}"))?;
     if output.status.success() {
         log::info!(
-            "python_env[{app_id}]: installed {} Python dep(s): {}",
+            "python_env[{plugin_id}]: installed {} Python dep(s): {}",
             dependencies.len(),
             dependencies.join(", ")
         );

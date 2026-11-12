@@ -41,20 +41,20 @@ if [[ "$status" == "done" || "$status" == "archived" ]]; then
 fi
 
 # Find this stint's lane branch(es). The id can sit anywhere in a multi-id
-# batch branch (feature/stint-<id>[-<id>...]-<slug>), so match by segment.
-branches="$(git -C "$alpha_root" for-each-ref --format='%(refname:short)' 'refs/heads/feature/stint-*' \
-  | grep -E "^feature/stint-([0-9]+-)*${stint_id}-" || true)"
+# batch branch (feature/stint-<id>[-<id>...]-<slug> or legacy <id>-impl-<slug>), so match by segment.
+branches="$(git -C "$alpha_root" for-each-ref --format='%(refname:short)' 'refs/heads/feature/stint-*' 'refs/heads/*-impl-*' \
+  | grep -E "^(feature/stint-([0-9]+-)*${stint_id}-|([0-9]+-)*${stint_id}-impl-)" || true)"
 if [[ -z "$branches" ]]; then
   echo "bs-reset: no local branch carries stint ${stint_id} (feature/stint-*${stint_id}-*) — nothing to wipe."
 fi
 
 for branch in $branches; do
-  # Uninstall any PR build whose open PR heads this branch.
-  pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-  if [[ -n "$pr" ]]; then
-    echo "bs-reset: uninstalling PR build plexi-pr-$pr (open PR #$pr heads $branch)"
+  # Uninstall any PR build whose PR (open or closed) heads this branch.
+  prs="$(gh pr list --head "$branch" --state all --json number --jq '.[].number' 2>/dev/null || true)"
+  for pr in $prs; do
+    echo "bs-reset: uninstalling PR build plexi-pr-$pr (PR #$pr heads $branch)"
     (cd "$alpha_root" && just channel-clean "pr-$pr")
-  fi
+  done
 
   worktree="$alpha_root/worktrees/$branch"
   if [[ -d "$worktree" ]]; then

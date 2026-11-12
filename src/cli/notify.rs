@@ -18,19 +18,31 @@ pub fn parse_notify_scope(
     }
 }
 
-// Arg-struct refactor is a design change tracked in stint 0661.
-#[allow(clippy::too_many_arguments)]
-pub fn notify_cli(
-    title: &str,
-    body: &str,
-    choices: &[(String, String, Option<String>)],
-    wait_for_response: bool,
-    display_timeout_secs: u64,
-    wait_timeout_secs: u64,
-    scope: Option<crate::protocol::NotifyScope>,
-    source_context_id: Option<u64>,
-    source_pane_id: Option<u64>,
-) -> i32 {
+#[derive(Default)]
+pub struct NotifyCliArgs<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub choices: &'a [(String, String, Option<String>)],
+    pub wait_for_response: bool,
+    pub display_timeout_secs: u64,
+    pub wait_timeout_secs: u64,
+    pub scope: Option<crate::protocol::NotifyScope>,
+    pub source_context_id: Option<u64>,
+    pub source_pane_id: Option<u64>,
+}
+
+pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
+    let NotifyCliArgs {
+        title,
+        body,
+        choices,
+        wait_for_response,
+        display_timeout_secs,
+        wait_timeout_secs,
+        scope,
+        source_context_id,
+        source_pane_id,
+    } = args;
     // An explicit context/window scope needs the caller's own identity on the
     // wire — the host never guesses the sender from its active state, so
     // without `PLEXI_CONTEXT_ID` there is no context to attach to.
@@ -128,11 +140,11 @@ pub fn notify_cli(
     );
 
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
+    use crate::platform::ipc::{self, IpcStream};
+    let mut stream = match IpcStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            let _ = std::fs::remove_file(&socket_path);
+            ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
             return 1;
         }
@@ -178,13 +190,14 @@ pub fn notify_cli(
         println!("{notify_id}");
         return 0;
     };
+    crate::rpc::register_client_stream(response_file.clone(), stream);
     log::info!("notify:cli: polling for response at {response_file:?}");
 
     let timeout =
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
     match crate::rpc::poll_string(&response_file, timeout) {
         Ok(key) => {
-            log::info!("notify:cli: response received {:?}", key.trim());
+            log::info!("notify:cli: response received chars={}", key.trim().chars().count());
             print!("{}", key.trim());
             0
         }
@@ -223,8 +236,8 @@ pub fn dismiss_notify_cli(
         "response_file": response_file,
     });
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
+    use crate::platform::ipc::IpcStream;
+    let mut stream = match IpcStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) => {
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
@@ -235,6 +248,10 @@ pub fn dismiss_notify_cli(
         eprintln!("error: could not write to socket: {e}");
         return 1;
     }
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let mut ack = [0u8; 1];
+    let _ = std::io::Read::read_exact(&mut stream, &mut ack);
+    crate::rpc::register_client_stream(response_file.clone(), stream);
     match crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(30))) {
         Ok(result) if result.trim() == "dismissed" => 0,
         Ok(result) => {
@@ -250,7 +267,7 @@ pub fn dismiss_notify_cli(
 
 #[cfg(test)]
 mod notify_tests {
-    use super::notify_cli;
+    use super::{notify_cli, NotifyCliArgs};
     use crate::cli::parse_notify_choice;
     use serde_json::Value;
     use std::io::{BufRead, BufReader};
@@ -297,17 +314,12 @@ mod notify_tests {
     fn notify_cli_no_socket_returns_one() {
         let env = socket_env_guard();
         env.unset();
-        let code = notify_cli(
-            "Test title",
-            "Test body",
-            &[],
-            true,
-            0,
-            0,
-            None,
-            None,
-            None,
-        );
+        let code = notify_cli(NotifyCliArgs {
+            title: "Test title",
+            body: "Test body",
+            wait_for_response: true,
+            ..Default::default()
+        });
         assert_eq!(code, 1);
     }
 
@@ -321,17 +333,12 @@ mod notify_tests {
         )];
 
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli(
-                "Ready",
-                "Review tests",
-                &choices,
-                false,
-                0,
-                0,
-                None,
-                None,
-                None,
-            )
+            notify_cli(NotifyCliArgs {
+                title: "Ready",
+                body: "Review tests",
+                choices: &choices,
+                ..Default::default()
+            })
         });
 
         assert_eq!(code, 0);
@@ -349,17 +356,12 @@ mod notify_tests {
     fn notify_cli_timeout_is_sent_as_display_lifetime() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli(
-                "Expiry",
-                "body",
-                &[],
-                false,
-                30,
-                0,
-                None,
-                None,
-                None,
-            )
+            notify_cli(NotifyCliArgs {
+                title: "Expiry",
+                body: "body",
+                display_timeout_secs: 30,
+                ..Default::default()
+            })
         });
 
         assert_eq!(code, 0);
@@ -377,17 +379,15 @@ mod notify_tests {
         let _channel_guard = crate::config::set_test_channel("notify-test");
         let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli(
-                "Ready",
-                "Review tests",
-                &choices,
-                true,
-                1,
-                1,
-                None,
-                None,
-                None,
-            )
+            notify_cli(NotifyCliArgs {
+                title: "Ready",
+                body: "Review tests",
+                choices: &choices,
+                wait_for_response: true,
+                display_timeout_secs: 1,
+                wait_timeout_secs: 1,
+                ..Default::default()
+            })
         });
         assert_eq!(code, 2, "timeout must exit 2");
         let rf = payload["response_file"]
@@ -435,17 +435,15 @@ mod notify_tests {
         });
 
         let choices = vec![("talk".to_string(), "Talk to Claude".to_string(), None)];
-        let code = notify_cli(
-            "Ready",
-            "Review tests",
-            &choices,
-            true,
-            1,
-            1,
-            None,
-            None,
-            None,
-        );
+        let code = notify_cli(NotifyCliArgs {
+            title: "Ready",
+            body: "Review tests",
+            choices: &choices,
+            wait_for_response: true,
+            display_timeout_secs: 1,
+            wait_timeout_secs: 1,
+            ..Default::default()
+        });
         let payload = handle.join().expect("payload thread");
 
         assert_eq!(code, 0);
@@ -495,7 +493,13 @@ mod notify_tests {
     fn notify_cli_sends_caller_identity() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", &[], false, 0, 0, None, Some(7), Some(42))
+            notify_cli(NotifyCliArgs {
+                title: "T",
+                body: "B",
+                source_context_id: Some(7),
+                source_pane_id: Some(42),
+                ..Default::default()
+            })
         });
         assert_eq!(code, 0);
         assert_eq!(payload["source_context_id"], 7);
@@ -508,7 +512,11 @@ mod notify_tests {
     fn notify_cli_omits_identity_when_absent() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
-            notify_cli("T", "B", &[], false, 0, 0, None, None, None)
+            notify_cli(NotifyCliArgs {
+                title: "T",
+                body: "B",
+                ..Default::default()
+            })
         });
         assert_eq!(code, 0);
         assert!(payload.get("source_context_id").is_none());
@@ -526,7 +534,12 @@ mod notify_tests {
             crate::protocol::NotifyScope::Context,
             crate::protocol::NotifyScope::Window,
         ] {
-            let code = notify_cli("T", "B", &[], false, 0, 0, Some(scope), None, None);
+            let code = notify_cli(NotifyCliArgs {
+                title: "T",
+                body: "B",
+                scope: Some(scope),
+                ..Default::default()
+            });
             assert_eq!(code, 1, "{scope:?} without a caller context must error");
         }
     }

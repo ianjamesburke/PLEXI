@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 /// major 0, on the assumption that v1 is a breaking format change.
 pub const PLEXI_DESCRIPTOR_MAJOR: u32 = 0;
 
+/// Synthetic leaf used by the help crawler for CLIs that have flags but no
+/// subcommands. Renderers omit it when assembling the executable command.
+pub const ROOT_COMMAND_NAME: &str = "__plexi_root__";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlexiDescriptor {
@@ -41,15 +45,6 @@ pub struct PlexiDescriptor {
     pub commands: Vec<Command>,
     #[serde(default)]
     pub live_state: Option<LiveState>,
-    /// Shell command to spawn as a PGAP process instead of rendering the
-    /// auto-generated form UI. Split on whitespace: first token is the binary,
-    /// rest are initial args.
-    #[serde(default)]
-    pub plexi_app: Option<String>,
-    /// Capability strings granted to the spawned PGAP process. Same vocabulary
-    /// as manifest.toml capabilities.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
@@ -525,31 +520,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_descriptor_with_plexi_app() {
+    fn parse_rejects_removed_plexi_plugin_field() {
         let json = r#"{
             "plexi_version": "0.1",
             "name": "parallax",
             "version": "1.0.0",
             "commands": [],
-            "plexi_app": "parallax-ui --pane",
-            "capabilities": ["ai.query", "panes.spawn"]
+            "plexi_app": "parallax-ui --pane"
         }"#;
-        let d = parse(json).expect("descriptor with plexi_app parses");
-        assert_eq!(d.plexi_app.as_deref(), Some("parallax-ui --pane"));
-        assert_eq!(d.capabilities, vec!["ai.query", "panes.spawn"]);
+        let err = parse(json).expect_err("removed plexi_app field must reject");
+        match err {
+            DescriptorError::SchemaMismatch { message, .. } => {
+                assert!(message.contains("plexi_app"), "message: {message}");
+            }
+            other => panic!("expected SchemaMismatch, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_descriptor_without_plexi_app_still_works() {
+    fn parse_rejects_removed_capabilities_field() {
         let json = r#"{
             "plexi_version": "0.1",
-            "name": "old-cli",
-            "version": "0.1.0",
-            "commands": []
+            "name": "parallax",
+            "version": "1.0.0",
+            "commands": [],
+            "capabilities": ["ai.query"]
         }"#;
-        let d = parse(json).expect("old-style descriptor without plexi_app parses");
-        assert!(d.plexi_app.is_none());
-        assert!(d.capabilities.is_empty());
+        let err = parse(json).expect_err("removed capabilities field must reject");
+        match err {
+            DescriptorError::SchemaMismatch { message, .. } => {
+                assert!(message.contains("capabilities"), "message: {message}");
+            }
+            other => panic!("expected SchemaMismatch, got {other:?}"),
+        }
     }
 
     #[test]

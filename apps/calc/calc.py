@@ -7,10 +7,10 @@ import json
 import math
 from typing import Any, Callable
 
-from plexi_sdk import log, state, tools
+from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import SetState, SetStatus, SetTitle, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction
-from plexi_sdk.ui import Button, Column, FooterKeys, HStack, Spacer, Text
+from plexi_sdk.ui import SurfaceHeader, Button, Card, Column, FooterKeys, HStack, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -40,7 +40,10 @@ BINARY_OPS: dict[str, Callable[[float, float], float]] = {
 
 def _button_row(labels: list[str]) -> HStack:
     return HStack(
-        [Button(label, f"calc:key:{label}", style=_button_style(label)) for label in labels],
+        [
+            Button(label, f"calc:key:{label}", style=_button_style(label))
+            for label in labels
+        ],
         gap=8.0,
     )
 
@@ -114,12 +117,30 @@ def update(event) -> list:
 def view():
     data = _state()
     subtitle = f"{_format_number(data['pending'])} {data['op']}" if data["op"] else ""
+    expr_line = subtitle or "ready"
+    readout = Card(
+        [
+            Text(expr_line, size=11.0, color=theme.muted, align="end"),
+            Text(data["display"], size=28.0, bold=True, truncate=True, align="end"),
+        ],
+        padding=12.0,
+        gap=4.0,
+    )
+    keypad = Column(
+        [_button_row(row) for row in BUTTON_ROWS],
+        gap=8.0,
+    )
     return Column(
         [
-            Text("Calculator", bold=True, size=15.0),
-            Text(subtitle or "ready", size=11.0),
-            Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
-            *[_button_row(row) for row in BUTTON_ROWS],
+            SurfaceHeader("Calculator", expr_line),
+            Card(
+                [
+                    readout,
+                    keypad,
+                ],
+                padding=16.0,
+                gap=12.0,
+            ),
             Spacer(grow=True),
             FooterKeys(
                 [
@@ -210,17 +231,7 @@ def _event_label(event) -> str | None:
         return key
     if key in {".", "+", "-", "*", "/", "%"}:
         return key
-    # AUTHORING.md's key table documents canonical names ("plus", "minus",
-    # "equals", "slash") for these physical keys; accept both the canonical
-    # name and the literal glyph so the operator keys work regardless of
-    # which form a given input path delivers.
-    if key in {"plus"}:
-        return "+"
-    if key in {"minus"}:
-        return "-"
-    if key in {"slash"}:
-        return "/"
-    if key in {"=", "equals", "return", "enter"}:
+    if key in {"=", "enter"}:
         return "="
     if key == "backspace":
         return "backspace"

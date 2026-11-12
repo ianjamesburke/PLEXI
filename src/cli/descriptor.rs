@@ -128,7 +128,7 @@ pub enum ResolveError {
 
 /// Resolve a renderable descriptor for a bare CLI through the full tier chain:
 /// Tier 1 native `--plexi` → Tier 2 registry → Tier 3 recursive `--help` crawl.
-/// This is the single entry point both `plexi app open --cli` and the
+/// This is the single entry point both `plexi view open --cli` and the
 /// `cli:<name>` prefix route share, so every open path gets native detection,
 /// registry curation, recursive crawl, and disk cache identically.
 pub fn resolve_cli(cli_name: &str) -> Result<Resolved, ResolveError> {
@@ -259,12 +259,6 @@ fn print_summary(d: &PlexiDescriptor, source: SummarySource) {
             "live_state: {:?} {} (poll {} ms, {:?})",
             ls.source, ls.path, ls.poll_ms, ls.format
         );
-    }
-    if let Some(app_cmd) = &d.plexi_app {
-        println!("plexi_app: {app_cmd}");
-        if !d.capabilities.is_empty() {
-            println!("  capabilities: {}", d.capabilities.join(", "));
-        }
     }
 }
 

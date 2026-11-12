@@ -13,12 +13,18 @@ SKIP=(
   "account"      # marketplace login, no standalone docs yet
   "agent"        # agent definitions, no standalone docs yet
   "ai"           # AI config, no standalone docs yet
+  "command-view" # lead projection; canonical in skills/plexi-cli and the agents API
+  "lease"       # resource admission; generated CLI reference + plexi-cli skill are canonical
+  "ledger"       # local AI usage summary; generated CLI reference and the plexi-cli skill are canonical
   "completions"  # internal shell integration, documented in getting-started
   "context"      # context scoping, no standalone docs yet
   "demo"         # self-documenting interactive tutorial
   "doctor"       # diagnostic tool, no standalone docs yet
   "events"       # developer API, covered in sdk-emitter
   "lock"         # build-recipe primitive; generated CLI reference + plexi-cli skill are canonical
+  "changes"      # text-editor change sets; generated CLI reference + scripts/change-sets-e2e.sh are canonical
+  "needs-you"    # waiting-on-you record; generated CLI reference + plexi-cli skill are canonical
+  "relay"        # phone relay; generated CLI reference + plexi-cli skill are canonical
   "note"         # alias for notes, covered in quick-note
   "notify"       # developer API, covered in sdk-emitter
   "registry"     # internal developer tool

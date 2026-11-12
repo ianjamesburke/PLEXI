@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::host::context::Window;
+use crate::host::keys::Direction;
 use crate::testing::HostHarness;
 
 fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
@@ -20,7 +21,22 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     }
 }
 
-fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_right(context_id: u64, window_id: u64) -> Window {
+    Window {
+        name: "Window B".into(),
+        path: crate::testing::scratch_context_root("window-b"),
+        tree: egui_tiles::Tree::empty("test_tree_right"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id,
+        context_id,
+    }
+}
+
+fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_below");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -34,11 +50,11 @@ fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 1,
         window_id,
-        context_id: 1, // same workspace as window 0
+        context_id,
     }
 }
 
-fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
+fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -> Window {
     let mut tree = egui_tiles::Tree::empty("test_tree_bottom");
     let tile = tree.tiles.insert_pane(pane_id);
     tree.root = Some(tile);
@@ -52,8 +68,155 @@ fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
         grid_x: 0,
         grid_y: 2,
         window_id,
-        context_id: 1,
+        context_id,
     }
+}
+
+/// Set up the child half of a conjoined agent view without spawning a PTY.
+/// The parent remains in window 0; window 1 is the active child sub-context.
+fn conjoined_navigation_fixture(h: &mut HostHarness) -> (u64, egui_tiles::TileId, u64) {
+    let parent = h.add_test_pane();
+    let child_context_id = h.app.windows[0].context_id + 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context_id, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Agent tools".into(),
+        root: crate::testing::scratch_context_root("agent-tools"),
+        description: None,
+        context_id: child_context_id,
+        parent_id: Some(h.app.windows[0].context_id),
+        depth: 1,
+        parked: false,
+    });
+    let (child_tile, child) = h.app.add_view_pane_in_window(1, "child");
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    h.app.windows[1].focused_pane = Some(child_tile);
+    h.app.conjoined_contexts.insert(child_context_id, parent);
+    (parent, child_tile, child)
+}
+
+#[test]
+fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = parent_context + 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Agent tools".into(),
+        root: crate::testing::scratch_context_root("agent-tools"),
+        description: None,
+        context_id: child_context,
+        parent_id: Some(parent_context),
+        depth: 1,
+        parked: false,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    let (tile, top) = h.app.add_view_pane_in_window(1, "top");
+    h.app.windows[1].focused_pane = Some(tile);
+    h.run_frames(2);
+    let child = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("child terminal");
+    h.app.conjoined_contexts.insert(child_context, parent);
+    h.app.focus_pane_in_strip(child);
+    h.run_frames(2);
+    assert!(h
+        .app
+        .strip_for_context(child_context)
+        .columns
+        .iter()
+        .any(|column| column.panes == vec![top, child]));
+    assert!(h.app.dive_into_agent_children(parent));
+    h.run_frames(2);
+    let command = egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND;
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    h.press_key(egui::Key::L, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    assert_eq!(h.app.visual_owner_pane(), Some(child));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    backend.enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    assert_eq!(backend.take_input_tap(), b"\x09");
+    assert!(h.app.switch_to_context_restoring_last_pane(parent_context));
+    assert!(h.app.switch_to_context_restoring_last_pane(child_context));
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    h.press_key(egui::Key::H, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    assert_eq!(h.app.visual_owner_pane(), Some(parent));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    h.terminal_backend(parent).enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(h.terminal_backend(parent).take_input_tap(), b"\x09");
+    assert_eq!(h.app.windows[0].context_id, parent_context);
+    assert_eq!(h.app.windows[1].context_id, child_context);
+    assert!(h.app.windows[0].panes.contains_key(&parent));
+    assert!(h.app.windows[1].panes.contains_key(&child));
+}
+
+#[test]
+fn navigate_right_moves_from_conjoined_parent_to_last_focused_child() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
+    h.app.conjoined_parent_focus = Some(parent);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.conjoined_parent_focus, None);
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(child));
+}
+
+#[test]
+fn navigate_right_from_conjoined_parent_falls_back_to_first_child() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
+    h.app.windows[1].focused_pane = None;
+    h.app.conjoined_parent_focus = Some(parent);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.conjoined_parent_focus, None);
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(child));
+}
+
+#[test]
+fn navigate_left_from_child_boundary_focuses_conjoined_parent() {
+    let mut h = HostHarness::new();
+    let (parent, child_tile, _child) = conjoined_navigation_fixture(&mut h);
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Left));
+
+    assert_eq!(h.app.conjoined_parent_focus, Some(parent));
+    assert_eq!(h.app.windows[1].focused_pane, Some(child_tile));
+    assert_eq!(h.app.fleet_focused_pane(), Some(parent));
 }
 
 /// Regression guard for #791: pane_navigate with a pane in the active
@@ -96,6 +259,191 @@ fn pane_navigate_cross_window_updates_active_window() {
     );
 }
 
+#[test]
+fn closing_focused_pane_in_background_window_keeps_nearest_sibling_focused() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
+
+    let (left_tile, left_pane) = h.app.add_view_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_view_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+    h.app.windows[1].focused_pane = Some(right_tile);
+
+    h.app.close_pane_by_id(right_pane);
+
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = h.app.windows[1].focused_pane.expect("B keeps a focus");
+    assert!(matches!(
+        h.app.windows[1].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
+    assert_eq!(
+        PlexiApp::find_pane_in_tile(&h.app.windows[1].tree, focus),
+        Some(left_pane),
+        "closing B's focused pane must focus its explicit sibling while A stays active"
+    );
+    assert_eq!(
+        h.app.active_window, 0,
+        "background close must not steal focus"
+    );
+    assert!(h.app.windows[1].panes.contains_key(&left_pane));
+}
+
+#[test]
+fn closing_background_pane_in_background_window_preserves_its_focus() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
+
+    let (left_tile, left_pane) = h.app.add_view_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_view_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+    h.app.windows[1].focused_pane = Some(left_tile);
+
+    h.app.close_pane_by_id(right_pane);
+
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = h.app.windows[1].focused_pane.expect("B keeps a focus");
+    assert!(matches!(
+        h.app.windows[1].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
+    assert_eq!(
+        PlexiApp::find_pane_in_tile(&h.app.windows[1].tree, focus),
+        Some(left_pane),
+        "closing a background pane must preserve B's focused sibling"
+    );
+    assert_eq!(
+        h.app.active_window, 0,
+        "background close must not steal focus"
+    );
+}
+
+#[test]
+fn close_focused_pane_prefers_window_local_history_and_keeps_successor_visible() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let c = h.add_test_pane();
+    let d = h.add_test_pane();
+    let e = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, vec![vec![a], vec![b], vec![c, d], vec![e]]);
+
+    // A second window in the same context must not become a close target.
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
+    let (other_tile, _other_pane) = h.app.add_view_pane_in_window(1, "other");
+    let main_window_id = h.app.windows[0].window_id;
+    let other_window_id = h.app.windows[1].window_id;
+
+    h.app.focus_pane_in_strip(a);
+    h.run_frames(2);
+    assert!(h.app.navigate_columns_strip(Direction::Right));
+    assert_eq!(h.app.active_focused_pane_id(), Some(b));
+    let b_tile = h.app.windows[0].tree.tiles.find_pane(&b).unwrap();
+    h.app.pane_focus_history.push((other_window_id, other_tile));
+    h.app.pane_focus_history.push((
+        main_window_id,
+        h.app.windows[0].tree.tiles.find_pane(&a).unwrap(),
+    ));
+    h.app.close_pane_by_id(b);
+    assert_eq!(h.app.active_focused_pane_id(), Some(a));
+    assert_eq!(h.app.active_window, 0);
+    assert_eq!(h.app.windows[1].focused_pane, None);
+    assert!(h.app.windows[0].tree.tiles.get(b_tile).is_none());
+
+    // No history: close the bottom tile of a stack and choose the pane above.
+    h.app.pane_focus_history.clear();
+    h.app.focus_pane_in_strip(d);
+    h.app.close_pane_by_id(d);
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+
+    // No history and no same-column sibling: prefer the left adjacent column.
+    h.app.pane_focus_history.clear();
+    h.app.focus_pane_in_strip(e);
+    h.app.close_pane_by_id(e);
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+    let c_column = h
+        .app
+        .columns_for_context(context_id)
+        .into_iter()
+        .find(|column| column.panes.contains(&c))
+        .unwrap()
+        .index;
+    let offset = h.app.strip_offset_for(context_id);
+    assert!(
+        c_column >= offset && c_column < offset + 2,
+        "close target column must remain in the visible strip"
+    );
+}
+
+#[test]
+fn page_arrival_repairs_focusless_destination_before_lateral_navigation() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .windows
+        .push(same_workspace_window_right(context_id, 2));
+    let (left_tile, left_pane) = h.app.add_view_pane_in_window(1, "left");
+    let (right_tile, right_pane) = h.app.add_view_pane_in_window(1, "right");
+    let root = h.app.windows[1]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![left_tile, right_tile]);
+    h.app.windows[1].tree.root = Some(root);
+
+    // Lay out B once so its geometric left/right relationship is real, then
+    // restore the persisted focusless state before navigating into it.
+    h.app.active_window = 1;
+    h.run_frames(1);
+    h.app.active_window = 0;
+    h.app.windows[1].focused_pane = None;
+    let left_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&left_pane)
+        .expect("left pane must remain in B's tree after layout");
+    let right_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&right_pane)
+        .expect("right pane must remain in B's tree after layout");
+    assert_eq!(h.app.leftmost_pane_in_window(1), Some(left_tile));
+
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(
+        h.app.windows[1].focused_pane,
+        Some(left_tile),
+        "arrival must select B's leftmost pane; left={:?} right={:?}",
+        h.app.windows[1].tree.tiles.rect(left_tile),
+        h.app.windows[1].tree.tiles.rect(right_tile),
+    );
+    assert!(h.app.navigate(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.active_window, 1, "lateral navigation must stay in B");
+    assert_eq!(h.app.windows[1].focused_pane, Some(right_tile));
+}
+
 /// Regression guard for #823: pane_navigate must also sync router.active_idx
 /// so the sidebar context switcher reflects the new active context immediately.
 #[test]
@@ -126,8 +474,8 @@ fn pane_navigate_cross_window_syncs_router() {
 /// `self.windows[self.active_window]`. Before the fix, a pane in window 1
 /// returned "not found" when `active_window == 0`.
 ///
-/// Strategy: insert an App pane into a second window, keep `active_window = 0`,
-/// inject `SendToPane` targeting that pane. App panes accept text through the
+/// Strategy: insert an View pane into a second window, keep `active_window = 0`,
+/// inject `SendToPane` targeting that pane. View panes accept text through the
 /// production egui input path, so success plus cross-window focus proves the
 /// lookup reached the target instead of returning "not found".
 
@@ -136,19 +484,20 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Working,
         agent: "claude-code".to_string(),
         detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
     let info_file = std::env::temp_dir().join("plexi_test_pane_info_agent_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
         pane_id,
         response_file: info_file.to_string_lossy().to_string(),
     });
@@ -164,7 +513,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(info["agent"]["session_id"], "session-33");
 
     let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
+    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
         response_file: list_file.to_string_lossy().to_string(),
         context_id: None,
     });
@@ -188,23 +537,46 @@ fn pane_info_and_list_include_agent_state() {
 }
 
 #[test]
-fn get_agent_states_collects_state_from_panes() {
+fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_failure() {
     let mut h = HostHarness::new();
-    let pane_id = h.add_test_pane();
+    let terminal_pane = h.add_focused_terminal();
+    let view_pane = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
-        pane_id,
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        peer_ancestry: None,
+        pane_id: view_pane,
         state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
-        detail: None,
+        detail: Some("waiting for review".to_string()),
         session_id: None,
-            event: None,
-            blocked_reason: None,
+        event: None,
+        blocked_reason: None,
+    });
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        peer_ancestry: None,
+        pane_id: terminal_pane,
+        state: crate::protocol::AgentState::Working,
+        agent: "pi".to_string(),
+        detail: Some("building2".to_string()),
+        session_id: None,
+        event: None,
+        blocked_reason: None,
     });
     h.app.drain_pane_cmd_channel();
 
+    {
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&terminal_pane)
+            .expect("pane must remain present")
+            .as_terminal_mut()
+            .expect("test pane is terminal");
+        terminal.exited = true;
+        terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+    }
+
     let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetAgentStates {
+    h.inject_ipc(crate::protocol::HostRequest::GetAgentStates {
         response_file: states_file.to_string_lossy().to_string(),
     });
     h.app.drain_pane_cmd_channel();
@@ -212,12 +584,81 @@ fn get_agent_states_collects_state_from_panes() {
     let states_json =
         std::fs::read_to_string(&states_file).expect("GetAgentStates must write response file");
     let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
-    assert_eq!(states.len(), 1);
-    assert_eq!(states[0]["pane_id"], pane_id);
-    assert_eq!(states[0]["state"], "blocked");
-    assert_eq!(states[0]["agent"], "claude-code");
-    assert!(states[0]["detail"].is_null());
-    assert!(states[0]["session_id"].is_null());
+    assert_eq!(states.len(), 2);
+    let plugin_state = states
+        .iter()
+        .find(|state| state["pane_id"].as_u64() == Some(view_pane))
+        .expect("non-terminal agent report must remain visible");
+    assert_eq!(plugin_state["state"], "blocked");
+    assert_eq!(plugin_state["agent"], "claude-code");
+    assert_eq!(plugin_state["detail"], "waiting for review");
+    assert!(plugin_state["session_id"].is_null());
+
+    let terminal_state = states
+        .iter()
+        .find(|state| state["pane_id"].as_u64() == Some(terminal_pane))
+        .expect("terminal agent report must remain visible");
+    assert_eq!(terminal_state["state"], "failed");
+    assert_eq!(terminal_state["agent"], "pi");
+    assert_eq!(terminal_state["detail"], "exited (3)");
+    assert!(terminal_state["session_id"].is_null());
+
+    let responses = tempfile::tempdir().unwrap();
+    let info_file = responses.path().join("info.json");
+    let list_file = responses.path().join("list.json");
+    let fleet_file = responses.path().join("fleet.json");
+    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
+        pane_id: terminal_pane,
+        response_file: info_file.to_string_lossy().into_owned(),
+    });
+    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
+        response_file: list_file.to_string_lossy().into_owned(),
+        context_id: None,
+    });
+    h.inject_ipc(crate::protocol::HostRequest::AgentFleet {
+        filter: crate::protocol::FleetFilter::All,
+        response_file: fleet_file.to_string_lossy().into_owned(),
+    });
+    h.app.drain_pane_cmd_channel();
+    let fleet_json = std::fs::read_to_string(fleet_file).unwrap();
+    assert!(fleet_json.contains("exited (3)"));
+    let info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(info_file).unwrap()).unwrap();
+    let list: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(list_file).unwrap()).unwrap();
+    let entry = list.iter().find(|p| p["id"] == terminal_pane).unwrap();
+    assert_eq!(info["agent"]["state"], "failed");
+    assert_eq!(entry["agent"]["state"], "failed");
+    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    assert_eq!(
+        fleet.tasks[0].rows[0].display_state,
+        crate::agent::fleet::DisplayState::Failed
+    );
+
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&terminal_pane)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap();
+    let failed_session = terminal.build_saved_agent_session().unwrap();
+    assert_eq!(
+        failed_session.last_state,
+        crate::protocol::AgentState::Failed
+    );
+    terminal.standby_session = Some(failed_session);
+    terminal.agent_completed = true;
+    assert_eq!(
+        terminal.build_saved_agent_session().unwrap().last_state,
+        crate::protocol::AgentState::Completed
+    );
+    assert_eq!(
+        terminal
+            .build_history_record(1, "test", std::path::PathBuf::new())
+            .unwrap()
+            .last_state,
+        crate::protocol::AgentState::Completed
+    );
 
     let _ = std::fs::remove_file(&states_file);
 }
@@ -227,8 +668,13 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     let mut h = HostHarness::new();
     let pane_a = h.add_test_pane();
     // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .windows
+        .push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app
+        .windows
+        .push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     assert!(
         h.app.pane_navigate(pane_a),
@@ -250,8 +696,13 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
 fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
-    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
-    h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .windows
+        .push(same_workspace_window_below(context_id, 2, 9910)); // grid_y=1
+    h.app
+        .windows
+        .push(same_workspace_window_bottom(context_id, 3, 9911)); // grid_y=2
 
     // Start from the middle window.
     assert_eq!(h.app.active_window, 0);
@@ -295,6 +746,150 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
     );
 }
 
+#[test]
+fn directional_navigation_exits_zoom_only_when_navigation_succeeds() {
+    // Tile ids are regenerated whenever the host layout is reconciled, so this
+    // scenario tracks panes by PaneId rather than by TileId.
+    fn zoomed_pane_id(h: &HostHarness) -> Option<PaneId> {
+        let win = &h.app.windows[0];
+        let tile = win.zoomed_pane?;
+        match win.tree.tiles.get(tile) {
+            Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+            _ => None,
+        }
+    }
+
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first).run_frames(1);
+    // The navigation source panes are terminals: view panes such as the file
+    // browser own some Cmd+<letter> chords themselves before the host sees them.
+    let second = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("side-by-side split must create a neighboring column");
+    h.run_frames(2).focus_pane(second);
+    let third = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("stacked split must create a pane below in the column");
+    h.run_frames(2);
+    let ctx = h.app.router.active().context_id;
+    h.app
+        .set_context_columns(ctx, vec![vec![first], vec![second, third]]);
+    h.run_frames(2).focus_pane(second);
+
+    // On non-macOS egui folds Cmd into Ctrl, so the default Cmd+H/J/K/L
+    // navigation chords are identical to the Cmd+Ctrl+H/J/K/L pane-swap chords
+    // and the earlier swap entries claim them. Drop the swap entries so this
+    // test exercises navigation on every platform.
+    h.app
+        .binding_table
+        .retain(|b| !matches!(b.action, crate::host::keys::Action::SwapPane(_)));
+
+    let toggle_zoom_mods = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+
+    // Down inside the column succeeds: focus moves and zoom exits.
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::J, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(third));
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "moving within a column must exit zoom"
+    );
+
+    // Up from the lower pane succeeds and must not restore a stale zoom.
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(third));
+    h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(second));
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "returning to the upper pane must not restore stale zoom"
+    );
+
+    // Left across columns succeeds and exits zoom.
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::H, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(first));
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "moving to another column must exit zoom"
+    );
+
+    // Up at the top of the column is a boundary no-op that preserves zoom.
+    h.focus_pane(second);
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(zoomed_pane_id(&h), Some(second));
+    h.press_key(egui::Key::K, egui::Modifiers::COMMAND);
+    assert_eq!(h.app.active_focused_pane_id(), Some(second));
+    assert_eq!(
+        zoomed_pane_id(&h),
+        Some(second),
+        "a failed directional move must keep zoom"
+    );
+
+    let mut boundary = HostHarness::new();
+    let only = boundary.add_test_pane();
+    boundary.focus_pane(only).run_frames(1);
+    let only_tile = boundary.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&only)
+        .expect("only pane must have a tile");
+    boundary.app.windows[0].zoom_to(only_tile);
+    boundary.press_key(egui::Key::H, egui::Modifiers::COMMAND);
+    assert_eq!(boundary.app.active_window, 0);
+    assert_eq!(boundary.app.windows[0].focused_pane, Some(only_tile));
+    assert_eq!(
+        boundary.app.windows[0].zoomed_pane,
+        Some(only_tile),
+        "a boundary no-op must preserve zoom"
+    );
+}
+
+#[test]
+fn toggle_zoom_requires_a_sibling_pane_in_the_active_window() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first).run_frames(1);
+
+    let toggle_zoom_mods = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert!(
+        h.app.windows[0].zoomed_pane.is_none(),
+        "zoom must be ignored when the active window has only one pane"
+    );
+
+    let second = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split must create a sibling pane");
+    h.run_frames(2).focus_pane(second);
+    let second_tile = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&second)
+        .expect("second pane must have a tile");
+
+    h.press_key(egui::Key::Enter, toggle_zoom_mods);
+    assert_eq!(
+        h.app.windows[0].zoomed_pane,
+        Some(second_tile),
+        "zoom must remain available once the active window has a sibling pane"
+    );
+}
+
 /// GetPreviousPaneInfo returns the last live entry from pane_focus_history.
 #[test]
 fn get_previous_pane_info_returns_previous_pane() {
@@ -314,7 +909,7 @@ fn get_previous_pane_info_returns_previous_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_info.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -353,7 +948,7 @@ fn get_previous_pane_info_skips_stale_tile() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -386,7 +981,7 @@ fn get_previous_pane_info_empty_history_returns_error() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -430,7 +1025,7 @@ fn get_previous_pane_info_steps_two_returns_second_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps2.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 2,
     });
@@ -465,7 +1060,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
     let _ = std::fs::remove_file(&resp_file);
 
     // Only 1 valid entry in history; requesting step 5 should error.
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 5,
     });
@@ -483,7 +1078,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
 
 // ── `[launch] on_launch` dedup policy (#0336) ───────────────────────────────
 
-/// An empty window in `context_id`, ready for `add_app_pane_in_window`.
+/// An empty window in `context_id`, ready for `add_view_pane_in_window`.
 fn empty_window(context_id: u64, window_id: u64) -> Window {
     Window {
         name: "Ctx".into(),
@@ -511,35 +1106,34 @@ fn context_b(context_id: u64) -> crate::host::context::Context {
     }
 }
 
-/// Build an `AppRegistry` holding a single app `id` with the given `on_launch`
+/// Build an `PluginRegistry` holding a single plugin `id` with the given `on_launch`
 /// policy, staged from a real manifest so it exercises the same load path as
 /// production. The returned `TempDir` must be kept alive by the caller.
 fn registry_with_on_launch(
     id: &str,
     on_launch: &str,
-) -> (tempfile::TempDir, crate::app::registry::AppRegistry) {
+) -> (tempfile::TempDir, crate::app::registry::PluginRegistry) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let global = tmp.path().join("global-apps");
-    let app_dir = global.join(id);
-    std::fs::create_dir_all(&app_dir).expect("app dir");
+    let plugin_dir = global.join(id);
+    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
     std::fs::write(
-        app_dir.join("manifest.toml"),
+        plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\n\
-             version = \"0.0.1\"\nentry = \"main.py\"\n\n[launch]\non_launch = \"{on_launch}\"\n"
+            "schema_version = 2\n\n[launch]\non_launch = \"{on_launch}\"\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         ),
     )
     .expect("manifest");
-    std::fs::write(app_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("entry");
-    let registry = crate::app::registry::AppRegistry::load_with_global(tmp.path(), &global);
+    std::fs::write(plugin_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("entry");
+    let registry = crate::app::registry::PluginRegistry::load_with_global(tmp.path(), &global);
     assert!(
         registry.get(id).is_some(),
-        "staged app '{id}' must load into the registry"
+        "staged plugin '{id}' must load into the registry"
     );
     (tmp, registry)
 }
 
-/// `focus_existing`: relaunching an app that is already open in a *different*
+/// `focus_existing`: relaunching a plugin that is already open in a *different*
 /// context focuses the existing pane and jumps to its context instead of
 /// spawning a second instance.
 #[test]
@@ -548,7 +1142,7 @@ fn on_launch_focus_existing_focuses_cross_context_instead_of_spawning() {
     let _pane_a = h.add_test_pane(); // window 0, context 1
 
     h.app.windows.push(empty_window(2, 2)); // window index 1, context 2
-    let (_tile, instance_pane) = h.app.add_app_pane_in_window(1, "singleton");
+    let (_tile, instance_pane) = h.app.add_view_pane_in_window(1, "singleton");
     h.app.router.push(context_b(2));
 
     let (_tmp, registry) = registry_with_on_launch("singleton", "focus_existing");
@@ -577,7 +1171,7 @@ fn on_launch_focus_existing_focuses_cross_context_instead_of_spawning() {
     );
     assert!(
         h.app
-            .find_app_pane_by_type("singleton", None)
+            .find_view_pane_by_type("singleton", None)
             .map(|(p, _)| p)
             == Some(instance_pane),
         "no second instance should have been spawned"
@@ -594,7 +1188,7 @@ fn on_launch_focus_existing_in_context_is_per_context() {
 
     // An instance living in context 2 must NOT satisfy a launch from context 1.
     h.app.windows.push(empty_window(2, 2)); // window index 1, context 2
-    let _other = h.app.add_app_pane_in_window(1, "percontext");
+    let _other = h.app.add_view_pane_in_window(1, "percontext");
     h.app.router.push(context_b(2));
 
     let (_tmp, registry) = registry_with_on_launch("percontext", "focus_existing_in_context");
@@ -611,7 +1205,7 @@ fn on_launch_focus_existing_in_context_is_per_context() {
     assert_eq!(h.app.active_window, 0, "no cross-context jump should occur");
 
     // Now plant an instance in context 1 (window 0); the relaunch must focus it.
-    let (_tile, same_ctx_pane) = h.app.add_app_pane_in_window(0, "percontext");
+    let (_tile, same_ctx_pane) = h.app.add_view_pane_in_window(0, "percontext");
     assert_eq!(
         h.app
             .resolve_on_launch_policy("percontext", ctx1, &[], None),
@@ -621,7 +1215,7 @@ fn on_launch_focus_existing_in_context_is_per_context() {
     assert_eq!(h.app.active_window, 0);
     assert_eq!(
         h.app
-            .find_app_pane_by_type("percontext", Some(ctx1))
+            .find_view_pane_by_type("percontext", Some(ctx1))
             .map(|(p, _)| p),
         Some(same_ctx_pane),
         "the in-context instance is the focus target"
@@ -639,10 +1233,10 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
     let _pane_a = h.add_test_pane(); // window 0, context 1
 
     // Instance whose runtime type_id is the generic "wasm" but whose manifest
-    // identity is the real app id — as a WASM app pane is stored.
+    // identity is the real plugin id — as a WASM view pane is stored.
     let (_tile, wasm_pane) =
         h.app
-            .add_app_pane_in_window_with_runtime_id(0, "wasm_singleton", "wasm");
+            .add_view_pane_in_window_with_runtime_id(0, "wasm_singleton", "wasm");
 
     let (_tmp, registry) = registry_with_on_launch("wasm_singleton", "focus_existing");
     let ctx1_root = h.app.router.active().root.clone();
@@ -650,7 +1244,7 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
 
     assert_eq!(
         h.app
-            .find_app_pane_by_type("wasm_singleton", None)
+            .find_view_pane_by_type("wasm_singleton", None)
             .map(|(p, _)| p),
         Some(wasm_pane),
         "lookup must match the WASM instance by manifest id"
@@ -665,7 +1259,7 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
 }
 
 /// Regression: an instance sitting behind an overlay is still deduped.
-/// Overlay launches move the covered pane into the overlay app's
+/// Overlay launches move the covered pane into the overlay plugin's
 /// `overlay_replaced` (it leaves `win.panes`), so a naive top-level scan would
 /// miss it and spawn a duplicate. `focus_existing` must find the buried
 /// instance, pop the overlay to reveal it, and focus it.
@@ -674,7 +1268,7 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
 fn on_launch_always_new_never_dedups() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane(); // window 0, context 1
-    let _existing = h.app.add_app_pane_in_window(0, "stacker");
+    let _existing = h.app.add_view_pane_in_window(0, "stacker");
 
     let (_tmp, registry) = registry_with_on_launch("stacker", "always_new");
     let ctx1_root = h.app.router.active().root.clone();
@@ -688,8 +1282,8 @@ fn on_launch_always_new_never_dedups() {
         "always_new must always let the caller spawn a fresh instance"
     );
 
-    // An app with no [launch] on_launch at all defaults to always_new.
-    let _unset = h.app.add_app_pane_in_window(0, "test");
+    // An plugin with no [launch] on_launch at all defaults to always_new.
+    let _unset = h.app.add_view_pane_in_window(0, "test");
     assert!(
         h.app
             .resolve_on_launch_policy("test", ctx1, &[], None)
@@ -700,21 +1294,21 @@ fn on_launch_always_new_never_dedups() {
 
 /// The split-mirror path duplicates the focused pane on purpose, so it must
 /// bypass the on_launch dedup policy: mirror-splitting a `focus_existing`
-/// (singleton) app spawns a SECOND instance instead of focusing the first and
+/// (singleton) plugin spawns a SECOND instance instead of focusing the first and
 /// silently no-oping. Without the bypass the policy would win and pane_count
 /// would stay at 1.
 #[test]
 fn split_mirror_bypasses_on_launch_dedup() {
     let mut h = HostHarness::new();
 
-    // Launch a builtin app into the empty context → one focused App pane.
+    // Launch a builtin plugin into the empty context → one focused View pane.
     // (text-editor is a builtin, so it launches without an external process.)
     h.app
-        .launch_app_by_id_with_layout("text-editor", None, &[], None)
+        .launch_view_by_id_with_layout("text-editor", None, &[], None)
         .expect("text-editor launch must succeed");
     assert_eq!(h.pane_count(), 1, "one instance after the first launch");
 
-    // Make the app a singleton. The registry entry names the same id as the
+    // Make the plugin a singleton. The registry entry names the same id as the
     // builtin, so the dedup policy is now live for "text-editor".
     let (_tmp, registry) = registry_with_on_launch("text-editor", "focus_existing");
     let ctx1_root = h.app.router.active().root.clone();
@@ -736,7 +1330,7 @@ fn split_mirror_bypasses_on_launch_dedup() {
     assert_eq!(
         h.pane_count(),
         2,
-        "mirror-split of a focus_existing app must spawn a second instance, not dedup"
+        "mirror-split of a focus_existing plugin must spawn a second instance, not dedup"
     );
 }
 
@@ -748,7 +1342,7 @@ fn assistant_pane_count(app: &PlexiApp) -> usize {
     app.windows
         .iter()
         .flat_map(|w| w.panes.values())
-        .filter(|p| p.as_app().is_some_and(|a| a.manifest_id == "assistant"))
+        .filter(|p| p.as_view().is_some_and(|a| a.manifest_id == "assistant"))
         .count()
 }
 
@@ -758,9 +1352,11 @@ fn assistant_pane_count(app: &PlexiApp) -> usize {
 fn assistant_open_focuses_existing_in_same_window() {
     // Alpha-tier channel so the assistant feature gate passes.
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane(); // window 0, context 1
-    let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
+    let (assistant_tile, assistant_pane) = h.app.add_view_pane_in_window(0, "assistant");
 
     h.app.open_assistant_pane();
 
@@ -777,7 +1373,7 @@ fn assistant_open_focuses_existing_in_same_window() {
     );
     assert_eq!(
         h.app
-            .find_app_pane_by_type("assistant", Some(h.app.windows[0].context_id))
+            .find_view_pane_by_type("assistant", Some(h.app.windows[0].context_id))
             .map(|(p, _)| p),
         Some(assistant_pane)
     );
@@ -788,13 +1384,16 @@ fn assistant_open_focuses_existing_in_same_window() {
 #[test]
 fn assistant_open_focuses_existing_across_windows_of_same_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let mut h = HostHarness::new();
-    let _pane_a = h.add_test_pane(); // window 0, context 1
-    let (assistant_tile, assistant_pane) = h.app.add_app_pane_in_window(0, "assistant");
+    let _pane_a = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    let (assistant_tile, assistant_pane) = h.app.add_view_pane_in_window(0, "assistant");
 
-    // Window B of the SAME context 1, caller side.
-    h.app.windows.push(empty_window(1, 2));
-    let _other = h.app.add_app_pane_in_window(1, "test");
+    // Window B of the same context, caller side.
+    h.app.windows.push(empty_window(context_id, 2));
+    let _other = h.app.add_view_pane_in_window(1, "test");
     h.app.active_window = 1;
 
     h.app.open_assistant_pane();
@@ -811,7 +1410,7 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
     assert_eq!(h.app.windows[0].focused_pane, Some(assistant_tile));
     assert_eq!(
         h.app
-            .find_app_pane_by_type("assistant", Some(1))
+            .find_view_pane_by_type("assistant", Some(context_id))
             .map(|(p, _)| p),
         Some(assistant_pane)
     );
@@ -820,6 +1419,8 @@ fn assistant_open_focuses_existing_across_windows_of_same_context() {
 #[test]
 fn assistant_open_uses_caller_context_root_as_workspace() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     let root = tempfile::tempdir().expect("context root");
     let expected = root.path().to_path_buf();
     let mut h = HostHarness::new();
@@ -833,7 +1434,7 @@ fn assistant_open_uses_caller_context_root_as_workspace() {
         .panes
         .values()
         .find_map(|pane| {
-            pane.as_app()
+            pane.as_view()
                 .filter(|app| app.manifest_id == "assistant")
                 .map(|app| app.workspace_root.clone())
         })
@@ -847,6 +1448,8 @@ fn assistant_open_uses_caller_context_root_as_workspace() {
 #[test]
 fn assistant_open_spawns_second_instance_in_other_context() {
     let _channel = crate::config::set_test_channel("pr-0538");
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Assistant]);
     // Pin the workspace root to this repo checkout by planting the channel
     // marker dir the workspace resolver walks up to. The channel is unique to
     // this test and the dir is git-ignored (`.plexi-pr-*/`); nothing here may
@@ -863,25 +1466,29 @@ fn assistant_open_spawns_second_instance_in_other_context() {
     let _cleanup = Cleanup(marker);
     let workspace_root =
         crate::config::active_workspace_root().expect("marker dir must make cwd a workspace root");
-    assert_eq!(workspace_root, cwd, "workspace root must resolve to the repo checkout");
+    assert_eq!(
+        workspace_root, cwd,
+        "workspace root must resolve to the repo checkout"
+    );
 
     let mut h = HostHarness::new();
-    let (pane_a_tile, _pane_a) = h.app.add_test_pane(); // window 0, context 1
+    let (pane_a_tile, _pane_a) = h.app.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
     h.app.windows[0].focused_pane = Some(pane_a_tile);
 
-    // First open spawns in context 1.
+    // First open spawns in the harness context.
     h.app.open_assistant_pane();
     assert_eq!(assistant_pane_count(&h.app), 1);
 
     // A window of context 2, caller side.
     h.app.windows.push(empty_window(2, 2));
-    let (pane_b_tile, _pane_b) = h.app.add_app_pane_in_window(1, "test");
+    let (pane_b_tile, _pane_b) = h.app.add_view_pane_in_window(1, "test");
     h.app.router.push(context_b(2));
     h.app.jump_to_context(1, 2, None);
     h.app.windows[1].focused_pane = Some(pane_b_tile);
 
-    // Opening from context 2 must NOT focus context 1's instance — it spawns
-    // a second one in the current window.
+    // Opening from context 2 must not focus the first context's instance — it
+    // spawns a second one in the current window.
     h.app.open_assistant_pane();
     assert_eq!(
         assistant_pane_count(&h.app),
@@ -893,16 +1500,19 @@ fn assistant_open_spawns_second_instance_in_other_context() {
         h.app.windows[1]
             .panes
             .values()
-            .any(|p| p.as_app().is_some_and(|a| a.manifest_id == "assistant")),
+            .any(|p| p.as_view().is_some_and(|a| a.manifest_id == "assistant")),
         "the second instance must live in the caller's window"
     );
 
     // Each context persisted its own conversation pointer in its store,
     // anchored at that context's root (stint 0651: the root is the anchor —
     // the cwd-walk workspace fallback is gone).
-    let root_ctx1 = h.app.context_root_for(1).expect("context 1 root");
+    let root_ctx1 = h
+        .app
+        .context_root_for(context_id)
+        .expect("caller context root");
     let root_ctx2 = h.app.context_root_for(2).expect("context 2 root");
-    let store_ctx1 = crate::assistant::store::AssistantStore::new(&root_ctx1, 1);
+    let store_ctx1 = crate::assistant::store::AssistantStore::new(&root_ctx1, context_id);
     let store_ctx2 = crate::assistant::store::AssistantStore::new(&root_ctx2, 2);
     let conv1 = store_ctx1
         .active_conversation()
@@ -914,4 +1524,147 @@ fn assistant_open_spawns_second_instance_in_other_context() {
         conv1, conv2,
         "each context must persist (and resume) its own conversation"
     );
+}
+
+/// Stint 0735: every config entry point routes through
+/// `open_config_in_editor`, which splits a Plexi text-editor pane on the
+/// config file (template written when absent) and focuses — never duplicates —
+/// an already-open config.
+#[test]
+fn open_config_in_editor_splits_and_dedups() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let before = h.pane_count();
+
+    let path = crate::config::ensure_config_file();
+    assert!(path.exists(), "ensure_config_file must write the template");
+    let on_disk = std::fs::read_to_string(&path).expect("template readable");
+
+    h.app.open_config_in_editor(path.clone());
+    assert_eq!(h.pane_count(), before + 1, "config opens in a new split");
+    let editor = h
+        .app
+        .find_open_text_editor_pane_any_window(&path)
+        .expect("a text-editor pane holds the config path");
+    assert_ne!(editor, first);
+
+    h.app.open_config_in_editor(path.clone());
+    assert_eq!(
+        h.pane_count(),
+        before + 1,
+        "second open focuses, not stacks"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("config readable"),
+        on_disk,
+        "opening the editor must not rewrite the config"
+    );
+}
+
+#[test]
+fn conjoined_parent_reference_survives_workspace_restart() {
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = crate::testing::reserve_test_context_id();
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Child".into(),
+        root: h.workspace_root(),
+        description: None,
+        context_id: child_context,
+        parent_id: Some(parent_context),
+        depth: 1,
+        parked: false,
+    });
+    let (_, child) = h.app.add_view_pane_in_window(1, "child");
+    h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_view_mut()
+        .unwrap()
+        .manifest_id = "agents".into();
+    h.app.conjoined_contexts.insert(child_context, parent);
+    let profile = h.profile_dir().to_path_buf();
+    h.app.save_workspace_now();
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(
+        restored.app.conjoined_contexts.get(&child_context),
+        Some(&parent)
+    );
+    assert!(restored.app.find_pane_in_any_window(parent).is_some());
+    assert_eq!(
+        restored
+            .app
+            .windows
+            .iter()
+            .find(|w| w.panes.contains_key(&parent))
+            .unwrap()
+            .context_id,
+        parent_context
+    );
+}
+
+#[test]
+fn legacy_multi_window_conversion_retains_membership_and_focus() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.app.windows[0]
+        .panes
+        .get_mut(&first)
+        .unwrap()
+        .as_view_mut()
+        .unwrap()
+        .manifest_id = "agents".into();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first]]);
+    let second_window = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(context, second_window));
+    let (tile, second) = h.app.add_view_pane_in_window(1, "second");
+    h.app.windows[1]
+        .panes
+        .get_mut(&second)
+        .unwrap()
+        .as_view_mut()
+        .unwrap()
+        .manifest_id = "agents".into();
+    h.app.windows[1].focused_pane = Some(tile);
+    h.app.active_window = 1;
+    h.app.context_active_window.insert(context, second_window);
+    h.app.focus_pane_in_strip(second);
+    h.app.save_workspace_now();
+    let profile = h.profile_dir().to_path_buf();
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 2.into();
+    legacy.as_object_mut().unwrap().remove("strips");
+    legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+    let original = serde_json::to_vec(&legacy).unwrap();
+    std::fs::write(&path, &original).unwrap();
+    let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
+    assert_eq!(migrated.context_active_window[&context], second_window);
+    assert!(migrated
+        .windows
+        .iter()
+        .any(|window| window.window_id == second_window
+            && window.panes.iter().any(|pane| pane.id == second)));
+    assert_eq!(migrated.strips[&context].focused_pane, Some(second));
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(
+        restored.app.windows[restored.app.active_window].window_id,
+        second_window
+    );
+    assert_eq!(restored.app.focused_pane_id(), Some(second));
+    assert!(restored.app.find_pane_in_any_window(first).is_some());
 }

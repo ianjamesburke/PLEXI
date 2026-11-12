@@ -8,10 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from plexi_sdk import state
+from plexi_sdk import log, state
 from plexi_sdk.effects import PersistState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import FocusChanged, KeyEvent, TimerFired
-from plexi_sdk.ui import AppBar, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, SelectList, Spacer, Text
 
 DAY_START_HOUR = 4
 IDLE_THRESHOLD_SECS = 15 * 60
@@ -34,6 +34,7 @@ class Metrics:
 
 
 def init(size, args) -> list:
+    log.info("stats: initialized")
     effects: list = [
         SetTitle("Stats"),
         SetTimer(REFRESH_TIMER_ID, REFRESH_MS, repeat=True),
@@ -52,13 +53,18 @@ def update(event) -> list:
     if isinstance(event, FocusChanged):
         focus_events = list(state.get("focus_events", []))
         focus_events.append(_event_from_focus_changed(event))
+        log.info(
+            f"stats: recorded focus_changed reason={event.reason or 'unknown'} duration_secs={event.duration_secs}"
+        )
         return [
             PersistState({"focus_events": focus_events[-5000:]}),
             SetStatus(_summary_text(_compute_metrics(focus_events, _day_start_hour()))),
         ]
     if isinstance(event, TimerFired) and event.id == REFRESH_TIMER_ID:
+        log.info("stats: timer refresh")
         return [SetStatus(_summary_text(_metrics_from_state()))]
     if isinstance(event, KeyEvent) and event.pressed and event.key == "r":
+        log.info("stats: manual refresh")
         return [SetStatus(_summary_text(_metrics_from_state()))]
     return []
 
@@ -67,7 +73,7 @@ def view():
     metrics = _metrics_from_state()
     if not metrics.has_data:
         return Column([
-            AppBar("Stats", "no focus events"),
+            SurfaceHeader("Stats", "no focus events"),
             Text("No focus events yet.", size=16.0, bold=True),
             Text("Stats will fill in as Plexi sends focus-change events.", size=12.0),
             Spacer(grow=True),
@@ -79,13 +85,13 @@ def view():
         for ctx in metrics.contexts
     ]
     return Column([
-        AppBar("Stats", _summary_text(metrics)),
+        SurfaceHeader("Stats", _summary_text(metrics)),
         Text(_activity_clock(metrics), size=14.0),
         Text(_summary_tiles(metrics), size=12.0),
         Text("Top contexts", size=12.0, bold=True),
         SelectList(rows, selected_idx=0) if rows else Text("No contexts yet.", size=12.0),
         Spacer(grow=True),
-        Text("r refreshes.", size=11.0),
+        FooterKeys([("r", "refresh")]),
     ], grow=True)
 
 

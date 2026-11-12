@@ -3,8 +3,7 @@
 use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use crate::ui::style;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
 
@@ -22,18 +21,19 @@ fn update_check_due(last_update_check: std::time::Instant, now: std::time::Insta
 pub(crate) const WORKSPACE_SAVE_DEBOUNCE_MS: u64 = 1_000;
 
 fn workspace_save_due(last: std::time::Instant, now: std::time::Instant) -> bool {
-    now.saturating_duration_since(last) >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
+    now.saturating_duration_since(last)
+        >= std::time::Duration::from_millis(WORKSPACE_SAVE_DEBOUNCE_MS)
 }
 
 impl PlexiApp {
-    /// Keep app runtime state truthful before serving pane IPC. This lives in
+    /// Keep plugin runtime state truthful before serving pane IPC. This lives in
     /// the logic preamble because eframe can skip `ui()` while a host is
     /// minimized or occluded.
-    fn poll_app_runtime_state(&mut self) {
+    fn poll_plugin_runtime_state(&mut self) {
         for window in &mut self.windows {
             for pane in window.panes.values_mut() {
-                if let Some(app_pane) = pane.as_app_mut() {
-                    app_pane.runtime.poll_runtime_state();
+                if let Some(view_pane) = pane.as_view_mut() {
+                    view_pane.runtime.poll_runtime_state();
                 }
             }
         }
@@ -114,19 +114,13 @@ impl PlexiApp {
                     self.last_update_check = now;
                 }
             }
-            if self.workspace_dirty && workspace_save_due(self.last_workspace_save, now) {
-                self.save_workspace_now();
-                self.workspace_dirty = false;
-                self.last_workspace_save = now;
-                log::debug!("workspace: debounce flush after churn");
-            }
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::PreambleRuntimePoll,
         );
-        crate::platform::logging::time_drain("poll_app_runtime_state", || {
-            self.poll_app_runtime_state()
+        crate::platform::logging::time_drain("poll_plugin_runtime_state", || {
+            self.poll_plugin_runtime_state()
         });
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -136,20 +130,10 @@ impl PlexiApp {
             self.drain_pane_cmd_channel()
         });
         if self.shutdown_requested {
-            // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
-            // This one cannot route through the window-close path: a hidden or
-            // occluded host runs no `App::ui` pass at all, so the close request
-            // would never be seen. Save synchronously, then exit successfully
-            // so launchd also treats this as a clean stop.
-            log::info!("host: shutdown requested — saving workspace and exiting");
-            self.save_workspace_now();
-            self.workspace_dirty = false;
-            log::info!("workspace: synchronous save (shutdown/update-quit)");
-            // `on_exit` never runs on this path — exiting from mid-frame is
-            // what makes it reliable — so close the focus segment here, the
-            // same way the window-close path does from `on_exit`.
-            self.bank_final_focus_segment();
-            crate::app::quit::exit_host("host stop");
+            crate::app::quit::trace("host_stop_received");
+            self.shutdown_requested = false;
+            self.request_quit(crate::app::quit::ExitReason::HostStop);
+            return;
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -158,28 +142,29 @@ impl PlexiApp {
             }
         }
         if self.update_quit_pending {
-            self.save_workspace_now();
-            self.workspace_dirty = false;
-            log::info!("workspace: synchronous save (shutdown/update-quit)");
-            log::info!("ui: restarting for update");
-            if let Some(bundle) = std::env::current_exe().ok().and_then(|p| {
-                p.ancestors()
-                    .find(|a| a.extension().is_some_and(|e| e == "app"))
-                    .map(|b| b.to_path_buf())
-            }) {
-                let script = format!(
-                    "while kill -0 {} 2>/dev/null; do sleep 0.2; done; open '{}'",
-                    std::process::id(),
-                    bundle.display(),
-                );
-                let _ = std::process::Command::new("bash")
-                    .args(["-c", &script])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+            crate::app::quit::trace("update_restart_received");
+            self.update_quit_pending = false;
+            self.request_quit(crate::app::quit::ExitReason::UpdateRestart);
+            return;
+        }
+        let now = std::time::Instant::now();
+        if !self.quit_coordinator.is_active()
+            && self.workspace_dirty
+            && workspace_save_due(self.last_workspace_save, now)
+            && self
+                .workspace_save_retry_at
+                .is_none_or(|retry_at| now >= retry_at)
+        {
+            if self.save_workspace_now() {
+                self.workspace_dirty = false;
+                self.workspace_save_retry_at = None;
+                log::debug!("workspace: debounce flush after churn");
+            } else {
+                let delay = std::time::Duration::from_secs(30);
+                self.workspace_save_retry_at = Some(now + delay);
+                self.schedule_workspace_save_wake(delay);
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.last_workspace_save = now;
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -196,6 +181,7 @@ impl PlexiApp {
         crate::platform::logging::time_drain("update_pane_context_snapshot", || {
             self.update_pane_context_snapshot()
         });
+        self.refresh_portal_context_states();
 
         // Auto-dismiss notifications from the focused pane before reconciling
         // the focus stack so modal state is already correct this frame.
@@ -207,19 +193,64 @@ impl PlexiApp {
         );
         self.auto_dismiss_sender_focused_notifications();
         self.resurface_in_view_notifications();
-        self.sync_notification_modal_focus();
+        if let Some(pid) = self.focused_pane_id() {
+            let active_ctx_id = self.router.active().context_id;
+            self.zoom.context_last_pane.insert(active_ctx_id, pid);
+        }
+        self.sync_attention_queue();
         self.sync_confirm_close_focus();
         self.sync_context_close_focus();
         self.sync_command_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
-        self.sync_cli_setup_prompt_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
         self.sync_event_consent_focus();
         self.sync_raw_wasm_review_focus();
+        self.sync_unsaved_changes_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
+    }
+
+    /// Recompute cached `ContextState` on every `PortalPane` across all windows.
+    /// Runs in `update_preamble` (part of `App::logic`) so portal state stays
+    /// truthful even while the window is hidden or a sub-context is in the background.
+    pub(crate) fn refresh_portal_context_states(&mut self) {
+        let targets: Vec<(usize, PaneId, u64)> = self
+            .windows
+            .iter()
+            .enumerate()
+            .flat_map(|(win_idx, win)| {
+                win.panes.iter().filter_map(move |(&pid, pane)| {
+                    pane.as_portal()
+                        .map(|portal| (win_idx, pid, portal.target_context_id))
+                })
+            })
+            .collect();
+        for (win_idx, pid, child_ctx_id) in targets {
+            let state = crate::host::context_state::ContextState::compute(
+                child_ctx_id,
+                self.router.as_slice(),
+                &self.windows,
+            );
+            if let Some(portal) = self.windows[win_idx]
+                .panes
+                .get_mut(&pid)
+                .and_then(|p| p.as_portal_mut())
+            {
+                let old_status = portal.context_state.as_ref().map(|s| s.status.clone());
+                let new_status = state.status.clone();
+                if old_status.as_ref() != Some(&new_status) {
+                    log::info!(
+                        "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} panes={} agents={}",
+                        new_status,
+                        state.pane_count,
+                        state.active_agents,
+                    );
+                }
+                portal.context_state = Some(state);
+            }
+        }
     }
 
     /// Render the toolbar, toolbar separator, sidebar, central panel, quit overlay,
@@ -234,21 +265,29 @@ impl PlexiApp {
         // Taken exactly once by whichever production path renders the focused
         // terminal this frame: the tiling behavior or the zoom overlay.
         let mut focused_terminal_input = focused_terminal_input;
+        // The native button area is in macOS points; egui coordinates also
+        // include Plexi's zoom, so reserve it in logical points here.
+        let safe_area = crate::platform::titlebar::logical_safe_area(&ctx);
         // Toolbar
         egui::Panel::top("toolbar")
-            .exact_size(28.0)
+            .exact_size(crate::platform::titlebar::toolbar_height(&ctx))
             .frame(
                 egui::Frame::new()
                     .fill(self.colors.bg_toolbar)
                     .inner_margin(egui::Margin {
-                        left: 80,
+                        left: 0,
                         right: 8,
                         top: 4,
                         bottom: 4,
                     }),
             )
             .show_inside(ui, |ui| {
-                crate::platform::ui_profile::time("toolbar", || self.draw_toolbar(ui));
+                let mut row = ui.max_rect();
+                row.min.x = (row.min.x + safe_area.x).min(row.max.x);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(row));
+                    crate::platform::ui_profile::time("toolbar", || self.draw_toolbar(ui));
+                });
             });
 
         // Separator line under toolbar
@@ -257,34 +296,12 @@ impl PlexiApp {
             .frame(egui::Frame::new().fill(self.colors.border))
             .show_inside(ui, |_ui| {});
 
+        // Zoom path bar (context breadcrumb, column pips)
+        self.draw_zoom_path_bar(ui);
+
         // Sidebar
         if self.sidebar_visible {
-            ctx.input(|i| {
-                for e in &i.events {
-                    if let egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        modifiers: m,
-                        ..
-                    } = e
-                    {
-                        log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
-                    }
-                }
-            });
-            egui::Panel::left("sidebar")
-                .default_size(style::SIDEBAR_DEFAULT_W)
-                .size_range(140.0..=400.0)
-                .resizable(true)
-                .show_separator_line(false)
-                .frame(
-                    egui::Frame::new()
-                        .fill(self.colors.bg_sidebar)
-                        .inner_margin(egui::Margin::same(0)),
-                )
-                .show_inside(ui, |ui| {
-                    crate::platform::ui_profile::time("sidebar", || self.draw_sidebar(ui));
-                });
+            self.show_sidebar_panel(ui);
         }
 
         // Central panel — terminal tiles (or welcome screen when context is empty)
@@ -296,77 +313,31 @@ impl PlexiApp {
                 ..Default::default()
             })
             .show_inside(ui, |ui| {
+                if crate::app::card_gallery::enabled() {
+                    self.draw_card_gallery(ui);
+                    return;
+                }
+                match self.zoom.level {
+                    crate::app::zoom::ZoomLevel::TreeAtlas => {
+                        self.draw_tree_atlas_canvas(ui);
+                        return;
+                    }
+                    crate::app::zoom::ZoomLevel::Columns => {}
+                }
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
-                    if self.router.len() > 1 {
-                        let delete_pressed = ctx.input_mut(|input| {
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                                || input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                        });
-                        if delete_pressed {
-                            let now = std::time::Instant::now();
-                            let elapsed = self
-                                .welcome_delete_last_press
-                                .and_then(|t| now.checked_duration_since(t))
-                                .unwrap_or(std::time::Duration::MAX);
-                            if elapsed > std::time::Duration::from_millis(1500) {
-                                self.welcome_delete_press_count = 0;
-                            }
-                            self.welcome_delete_press_count += 1;
-                            self.welcome_delete_last_press = Some(now);
-                            if self.welcome_delete_press_count >= 3 {
-                                let ctx_idx = self.router.active_idx();
-                                log::info!(
-                                    "welcome_delete: triple-tap delete context idx={ctx_idx} name={:?}",
-                                    self.router.active().name
-                                );
-                                self.welcome_delete_press_count = 0;
-                                self.welcome_delete_last_press = None;
-                                self.delete_context(ctx_idx);
-                                self.mark_workspace_dirty();
-                                return;
-                            }
-                        }
-                    }
                     self.draw_welcome_screen(ui);
-                    if self.welcome_delete_press_count > 0 {
-                        let timed_out = self
-                            .welcome_delete_last_press
-                            .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
-                            .unwrap_or(false);
-                        if timed_out {
-                            self.welcome_delete_press_count = 0;
-                            self.welcome_delete_last_press = None;
-                        } else {
-                            self.draw_welcome_delete_overlay(&ctx);
-                            // Same 100ms confirm-timeout poll as the quit overlay.
-                            crate::platform::frame_diag::note(
-                                crate::platform::frame_diag::RepaintCause::QuitConfirm,
-                            );
-                            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                        }
-                    }
                     return;
                 }
 
                 // Build per-pane notification counts before `ctx` mutably borrows
-                // `self.windows`. Calls the extracted `notification_visible` free
-                // function (plain scalar ids) rather than
-                // `PlexiApp::notification_is_visible` to avoid a borrow conflict
-                // with the mutable `ctx` reference below.
+                // `self.windows`. Use the same full visibility predicate as queue
+                // selection and the toolbar, including snooze and orphaned-scope
+                // handling, so badges cannot advertise different work.
                 let notify_counts: std::collections::HashMap<u64, usize> = {
-                    let active_context_id = self.router.active().context_id;
-                    let active_window_id = self.windows[self.active_window].window_id;
                     let mut counts = std::collections::HashMap::new();
                     for n in &self.pending_notifications {
-                        let visible = crate::app::notifications::notification_visible(
-                            n.scope,
-                            n.source_window_id,
-                            n.source_context_id,
-                            active_window_id,
-                            active_context_id,
-                        );
-                        if visible {
+                        if self.notification_is_visible(n) {
                             *counts.entry(n.sender_pane_id).or_insert(0) += 1;
                         }
                     }
@@ -426,29 +397,53 @@ impl PlexiApp {
                                         _ => None,
                                     };
                                     let kind = match pane_ref {
-                                        Some(p) if p.as_app().is_some_and(|a| a.manifest_id == "text-editor") => {
+                                        Some(p) if p.as_view().is_some_and(|a| a.manifest_id == "text-editor") => {
                                             crate::spatial::tiling::PaneKind::TextEditor
                                         }
-                                        Some(p) if p.as_app().is_some() => crate::spatial::tiling::PaneKind::App,
+                                        Some(p) if p.as_view().is_some() => crate::spatial::tiling::PaneKind::View,
                                         Some(p) if p.as_portal().is_some() => crate::spatial::tiling::PaneKind::Portal,
                                         _ => crate::spatial::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
-                                        p.as_terminal().and_then(|t| t.name.clone())
-                                            .or_else(|| p.as_app().map(|a| a.name.clone()))
+                                        p.as_terminal().and_then(|t| t.display_name().map(str::to_string))
+                                            .or_else(|| p.as_view().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
-                                    let activity = pane_ref
-                                        .and_then(|p| p.effective_activity())
-                                        .cloned();
+                                    let is_exited = pane_ref
+                                        .and_then(|p| p.as_terminal())
+                                        .is_some_and(|t| t.exited);
+                                    let is_error_exit = pane_ref
+                                        .and_then(|p| p.as_terminal())
+                                        .is_some_and(|t| {
+                                            t.exited
+                                                && t.exit_status
+                                                    .as_ref()
+                                                    .is_some_and(|s| s.is_failure())
+                                        });
+                                    let activity = if is_error_exit {
+                                        Some(crate::protocol::AgentState::Interrupted)
+                                    } else {
+                                        pane_ref
+                                            .and_then(|p| {
+                                                p.effective_activity().cloned().or_else(|| {
+                                                    p.as_terminal().and_then(|t| {
+                                                        t.standby_session.as_ref().map(|_| {
+                                                            crate::protocol::AgentState::NeedsYou
+                                                        })
+                                                    })
+                                                })
+                                            })
+                                    };
                                     crate::spatial::tiling::MiniPane {
+                                        pane_id: pane_ref.map(|pane| pane.id()),
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
                                         has_content: true,
                                         title,
-                                        active: true,
+                                        active: !is_exited,
                                         activity,
+                                        static_health_pip: pane_ref.is_some_and(|pane| pane.static_health_pip()),
                                     }
                                 }).collect();
                                 Some(crate::spatial::tiling::MiniWindow {
@@ -458,14 +453,43 @@ impl PlexiApp {
                                 })
                             })
                             .collect();
+                        let computed_state = crate::host::context_state::ContextState::compute(
+                            child_ctx_id,
+                            self.router.as_slice(),
+                            &self.windows,
+                        );
+                        let existing_state = self.windows[active_win]
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|p| p.as_portal())
+                            .and_then(|portal| portal.context_state.as_ref());
+                        let effective_state = if child_windows.is_empty()
+                            && computed_state.pane_count == 0
+                            && matches!(
+                                computed_state.status,
+                                crate::host::context_state::ContextStatus::Idle
+                            ) {
+                            existing_state.cloned().unwrap_or(computed_state)
+                        } else {
+                            computed_state
+                        };
+                        let status_summary = effective_state.status_summary_badge();
+                        let status = effective_state.status.clone();
+                        let effective_pane_count = if pane_count == 0 {
+                            effective_state.pane_count as usize
+                        } else {
+                            pane_count
+                        };
                         let window_count = child_windows.len();
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
-                            pane_count,
+                            pane_count: effective_pane_count,
                             notification_count: notif_count,
                             windows: child_windows,
                             window_count,
+                            status,
+                            status_summary,
                         });
                     }
                     map
@@ -479,31 +503,62 @@ impl PlexiApp {
                 // the active window has no portal panes.
                 crate::platform::ui_profile::time("portal_state", || {
                     for &(pid, child_ctx_id) in &portal_panes {
-                        let state = crate::host::context_state::ContextState::compute(
+                        let computed = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
                             self.router.as_slice(),
                             &self.windows,
                         );
+                        let has_child_windows =
+                            self.windows.iter().any(|w| w.context_id == child_ctx_id);
                         if let Some(portal) = self.windows[active_win].panes.get_mut(&pid)
                             .and_then(|p| p.as_portal_mut())
                         {
+                            if !has_child_windows
+                                && computed.pane_count == 0
+                                && matches!(
+                                    computed.status,
+                                    crate::host::context_state::ContextStatus::Idle
+                                )
+                                && portal.context_state.is_some()
+                            {
+                                continue;
+                            }
                             let old_status = portal.context_state.as_ref().map(|s| s.status.clone());
-                            let new_status = state.status.clone();
+                            let new_status = computed.status.clone();
                             if old_status.as_ref() != Some(&new_status) {
                                 log::info!(
-                                    "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} panes={} agents={}",
-                                    new_status, state.pane_count, state.active_agents,
+                                    "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} summary={:?} panes={} agents={}",
+                                    new_status,
+                                    computed.status_summary_badge(),
+                                    computed.pane_count,
+                                    computed.active_agents,
                                 );
                             }
-                            portal.context_state = Some(state);
+                            portal.context_state = Some(computed);
                         }
                     }
                 });
 
-                // Computed before the mutable borrow of `ctx`: the pane that
-                // owns input this frame (stint 0429). `None` while an overlay
-                // owns input, so every pane renders unfocused under a modal.
-                let owner_pane = self.owner_pane(ui.ctx());
+                // Computed before the mutable borrow of `ctx`. Visual focus
+                // follows host pane focus, not OS window focus: a blurred
+                // window (Xvfb, another plugin in front) still paints the
+                // focused pane at full color, so a waiting line stays the
+                // theme warning color. `None` while an overlay owns input,
+                // so every pane renders unfocused under a modal. Key routing
+                // keeps the OS-focus gate via `input_owner`.
+                let owner_pane = self.visual_owner_pane();
+                if !ui.input(|i| i.viewport().focused.unwrap_or(true)) {
+                    if let Some(pane_id) = owner_pane {
+                        let logged_id = egui::Id::new("blurred_visual_owner_logged");
+                        let logged: bool = ui.ctx().data(|d| d.get_temp(logged_id).unwrap_or(false));
+                        if !logged {
+                            log::info!(
+                                "pane focus: blurred window keeps pane {pane_id} at full color"
+                            );
+                            ui.ctx().data_mut(|d| d.insert_temp(logged_id, true));
+                        }
+                    }
+                }
 
                 // Resolved before the mutable borrow of the active window. The
                 // explicit context root is a cheap field clone; the cwd-derived
@@ -537,6 +592,25 @@ impl PlexiApp {
                 // this frame's pending click for whichever pane they render.
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
+                let child_agent_strips = self.child_agent_strips();
+                let pane_lineage = self.pane_lineage();
+                let lineage_log_id = egui::Id::new("visible_pane_lineage");
+                if ui.ctx().data(|d| d.get_temp::<HashMap<PaneId, String>>(lineage_log_id)).as_ref() != Some(&pane_lineage) {
+                    if !pane_lineage.is_empty() {
+                        log::info!("pane lineage: visible children={pane_lineage:?}");
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
+                }
+                let focus_painter = ui.painter().clone();
+                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let owner_pane = self.visual_owner_pane();
+                let mut child_ui;
+                let ui = if let Some(rect) = right {
+                    child_ui = ui.new_child(egui::UiBuilder::new().id_salt("conjoined-children").max_rect(rect));
+                    child_ui.set_clip_rect(rect);
+                    &mut child_ui
+                } else { ui };
+                let canvas_full_rect = ui.available_rect_before_wrap();
                 let ctx = &mut self.windows[self.active_window];
 
                 ctx.reconcile_stale_tiles();
@@ -554,24 +628,31 @@ impl PlexiApp {
                     None
                 };
                 let tab_info = ctx.compute_tab_info();
-                let pane_names: HashMap<PaneId, String> = ctx
+                let mut pane_names: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
-                    .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
+                    .filter_map(|(&id, p)| p.as_terminal()?.display_name().map(|n| (id, n.to_string())))
                     .collect();
                 let tab_labels: HashMap<PaneId, String> = ctx
                     .panes
                     .iter()
                     .map(|(&id, p)| {
-                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.name.as_ref()) {
-                            name.clone()
+                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.display_name()) {
+                            name.to_string()
                         } else {
                             match p {
                                 crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
-                                crate::host::pane::Pane::App(a) => a.name.clone(),
-                                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+                                crate::host::pane::Pane::View(a) => a.name.clone(),
+                                crate::host::pane::Pane::Portal(_) => portal_info.get(&id)
+                                    .map(|preview| preview.context_name.clone())
+                                    .unwrap_or_else(|| "Portal".to_string()),
                             }
                         };
+                        let label = if let Some(parent) = pane_lineage.get(&id) {
+                            let label = format!("↳ {label} · child of {parent}");
+                            pane_names.insert(id, label.clone());
+                            label
+                        } else { label };
                         (id, label)
                     })
                     .collect();
@@ -632,13 +713,13 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(hover_id, false));
                 }
 
-                // Propagate pre-computed notification counts into each app pane so
+                // Propagate pre-computed notification counts into each view pane so
                 // App runtimes can render the per-pane chrome badge without
                 // holding a reference to PlexiApp.
                 for pane in ctx.panes.values_mut() {
-                    if let Some(app_pane) = pane.as_app_mut() {
-                        let count = notify_counts.get(&app_pane.id).copied().unwrap_or(0);
-                        app_pane.runtime.set_pending_notification_count(count);
+                    if let Some(view_pane) = pane.as_view_mut() {
+                        let count = notify_counts.get(&view_pane.id).copied().unwrap_or(0);
+                        view_pane.runtime.set_pending_notification_count(count);
                     }
                 }
 
@@ -668,6 +749,12 @@ impl PlexiApp {
                 }
 
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+                let pane_radius_log = egui::Id::new("pane_corner_radius_logged");
+                let pane_radius_setting = self.config.pane_corner_radius.unwrap_or(crate::ui::style::RADIUS_PANE.nw);
+                if ui.ctx().data(|d| d.get_temp::<u8>(pane_radius_log)) != Some(pane_radius_setting) {
+                    log::info!("pane corner radius: {pane_radius_setting} points");
+                    ui.ctx().data_mut(|d| d.insert_temp(pane_radius_log, pane_radius_setting));
+                }
                 {
                     let overlay_log_id = egui::Id::new("pane_id_overlay_on");
                     let was_held: bool =
@@ -684,6 +771,9 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
+                    child_agent_strips,
+                    pane_lineage,
+                    child_agent_dive: None,
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -702,11 +792,16 @@ impl PlexiApp {
                     owner_pane,
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
+                    pane_corner_radius: self.config.pane_corner_radius,
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
                     focused_terminal_input: focused_terminal_input.take(),
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
+                    off_strip_panes: Default::default(),
+                    strip_layout_jump: false,
+                    strip_layout: None,
+                    resized: false,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -723,13 +818,12 @@ impl PlexiApp {
                 });
                 log::debug!("[DRAG] tiling: done");
 
-                // Paint the active pane focus outline using the parent painter which
-                // has the full window clip rect. paint_on_top_of_tile cannot do this —
-                // its painter is clipped to the tile rect, making Outside strokes invisible.
-                if zoomed_pane.is_none() && owner_pane.is_some() {
-                    if let Some(tile_id) = ctx.focused_pane {
-                        if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
-                            let gap = behavior.pane_gap;
+                // Paint after the tile contents and their corner masks, clipping to
+                // the viewport rather than manufacturing corners at a scroll edge.
+                if zoomed_pane.is_none() {
+                    if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
+                        let focus_rect = ctx.tree.tiles.rect(tile_id);
+                        if let Some(rect) = focus_rect.filter(|r| r.width() > 0.5 && r.height() > 0.5) {
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -746,13 +840,49 @@ impl PlexiApp {
                             } else {
                                 self.colors.accent
                             };
-                            let stroke = egui::Stroke::new(gap, stroke_color);
-                            ui.painter().rect_stroke(
+                            let stroke = egui::Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, stroke_color);
+                            focus_painter.with_clip_rect(canvas_full_rect).rect_stroke(
                                 rect,
-                                0.0,
+                                crate::ui::style::pane_radius(behavior.pane_corner_radius, rect),
                                 stroke,
-                                egui::StrokeKind::Outside,
+                                egui::StrokeKind::Inside,
                             );
+                        }
+                    }
+                }
+
+                if zoomed_pane.is_none() {
+                    if let Some(selection) = self.host.pane_selection(ctx.window_id) {
+                        for pane in &selection.panes {
+                            if let Some(rect) = ctx.tree.tiles.find_pane(pane).and_then(|tile| ctx.tree.tiles.rect(tile)) {
+                                let painter = focus_painter.with_clip_rect(canvas_full_rect);
+                                let radius = crate::ui::style::pane_radius(behavior.pane_corner_radius, rect);
+                                painter.rect_filled(rect, radius, self.colors.accent.gamma_multiply(0.12));
+                                painter.rect_stroke(rect, radius, Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, self.colors.accent), StrokeKind::Inside);
+                            }
+                        }
+                    }
+                }
+
+                // State rings are painted after focus, selection, and corner masks so
+                // neither a selection wash nor a focus stroke obscures their color.
+                if zoomed_pane.is_none() {
+                    let selected = self.host.pane_selection(ctx.window_id);
+                    for (&pane_id, pane) in behavior.panes.iter() {
+                        if behavior.off_strip_panes.contains(&pane_id) { continue; }
+                        let Some(rect) = ctx.tree.tiles.find_pane(&pane_id).and_then(|tile| ctx.tree.tiles.rect(tile)) else { continue; };
+                        if !rect.intersects(canvas_full_rect) { continue; }
+                        let color = if pane.as_portal().is_some() {
+                            behavior.portal_info.get(&pane_id).and_then(|preview| crate::ui::activity::context_status_color(&preview.status, &self.colors))
+                        } else {
+                            crate::ui::activity::pane_state_color(pane, &self.colors)
+                        };
+                        if let Some(color) = color {
+                            static LOG_PANE_STATE_RING: std::sync::Once = std::sync::Once::new();
+                            LOG_PANE_STATE_RING.call_once(|| log::info!("pane chrome: painting state rings inside focus and selection rings"));
+                            let outlined = owner_pane == Some(pane_id) || selected.is_some_and(|selection| selection.panes.contains(&pane_id));
+                            crate::ui::style::paint_pane_state_ring(&focus_painter.with_clip_rect(canvas_full_rect), rect,
+                                crate::ui::style::pane_radius(behavior.pane_corner_radius, rect), outlined, color);
                         }
                     }
                 }
@@ -767,10 +897,13 @@ impl PlexiApp {
                 // Extract new_focused before the zoom overlay block so we can
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
+                let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
+                if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
+                let child_agent_dive = behavior.child_agent_dive.take();
 
                 // Draw zoom overlay if a pane is zoomed
                 let mut zoomed_tab_action: Option<(
@@ -784,7 +917,7 @@ impl PlexiApp {
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
                         let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
                         let zoomed_tab_labels = behavior.tab_labels.clone();
-                        let zoomed_tab_activities: HashMap<PaneId, AgentState> = zoomed_tab_info
+                        let zoomed_tab_activities: HashMap<PaneId, (AgentState, bool)> = zoomed_tab_info
                             .as_ref()
                             .map(|group| {
                                 group
@@ -794,7 +927,7 @@ impl PlexiApp {
                                         behavior
                                             .panes
                                             .get(id)
-                                            .and_then(|p| p.effective_activity().cloned())
+                                            .and_then(|p| p.effective_activity().cloned().map(|state| (state, p.static_health_pip())))
                                             .map(|a| (*id, a))
                                     })
                                     .collect()
@@ -815,7 +948,7 @@ impl PlexiApp {
                         // Thicker accent border (2px)
                         ui.painter().rect_stroke(
                             zoom_rect,
-                            CornerRadius::same(4),
+                            crate::ui::style::RADIUS_SMALL,
                             Stroke::new(2.0_f32, self.colors.accent),
                             StrokeKind::Inside,
                         );
@@ -848,10 +981,10 @@ impl PlexiApp {
                         // is no cursor/spacing gap between them.
                         let has_name = zoomed_pane_name.is_some();
                         let has_tabs = zoomed_tab_info.is_some();
-                        let is_overtaken_app = ctx
+                        let is_overtaken_plugin = ctx
                             .panes
                             .get(&pane_id)
-                            .and_then(|p| p.as_app())
+                            .and_then(|p| p.as_view())
                             .is_some_and(|a| a.overlay_replaced.is_some());
                         let has_top_bar = has_name || has_tabs;
                         const NAME_BAR_HEIGHT: f32 = 20.0;
@@ -869,13 +1002,15 @@ impl PlexiApp {
                                 if let Some(action) = crate::spatial::tiling::paint_tab_bar(
                                     ui.ctx(),
                                     ui.painter(),
-                                    bar_rect,
-                                    group,
-                                    &zoomed_tab_labels,
-                                    &zoomed_tab_activities,
-                                    &self.colors,
-                                    self.config.pane_title_font_size.unwrap_or(12.0),
-                                    is_overtaken_app,
+                                    crate::spatial::tiling::TabBarPaintParams {
+                                        bar_rect,
+                                        group,
+                                        tab_labels: &zoomed_tab_labels,
+                                        tab_activities: &zoomed_tab_activities,
+                                        colors: &self.colors,
+                                        font_size: self.config.pane_title_font_size.unwrap_or(12.0),
+                                        overtake_hint: is_overtaken_plugin,
+                                    },
                                 ) {
                                     zoomed_tab_action = Some((group.container_tile, action));
                                 }
@@ -894,35 +1029,35 @@ impl PlexiApp {
                         } else {
                             inner_rect
                         };
-                        // Branch on pane type BEFORE the Frame. PGAP app runtimes
+                        // Branch on pane type BEFORE the Frame. PGAP plugin runtimes
                         // paint via `ui.painter()` WITHOUT allocating UI space, so
                         // wrapping them in an `egui::Frame` collapses it to ~16x16
                         // at the top-left (see src/host/wasm_pane.rs docs). Mirror
-                        // the tiling path (tiling.rs pane_ui) for app panes instead:
-                        // full-rect background fill + child Ui + app_pane::render,
+                        // the tiling path (tiling.rs pane_ui) for view panes instead:
+                        // full-rect background fill + child Ui + view_pane::render,
                         // which also restores the overtake bar and nav-back chrome.
-                        let is_app_pane = ctx
+                        let is_view_pane = ctx
                             .panes
                             .get(&pane_id)
-                            .is_some_and(|p| p.as_app().is_some());
-                        if is_app_pane {
+                            .is_some_and(|p| p.as_view().is_some());
+                        if is_view_pane {
                             ui.painter()
                                 .rect_filled(frame_rect, 0.0, self.colors.bg_darkest);
                             let mut app_ui =
                                 ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
                             app_ui.set_opacity(0.88);
-                            if let Some(app_pane) =
-                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_app_mut())
+                            if let Some(view_pane) =
+                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_view_mut())
                             {
                                 if dropped_to_zoom {
-                                    crate::spatial::tiling::deliver_dropped_files_to_app(
-                                        &app_ui, pane_id, app_pane,
+                                    crate::spatial::tiling::deliver_dropped_files_to_plugin(
+                                        &app_ui, pane_id, view_pane,
                                     );
                                 }
                                 let pending_click = pending_pane_clicks.remove(&pane_id);
-                                crate::render::app_pane::render(
+                                crate::render::view_pane::render(
                                     &mut app_ui,
-                                    app_pane,
+                                    view_pane,
                                     &self.colors,
                                     has_tabs,
                                     pending_click,
@@ -983,6 +1118,7 @@ impl PlexiApp {
                                                     .set_focus(owner_pane == Some(pane_id))
                                                     .set_theme(self.theme.clone())
                                                     .set_font(theme::terminal_font(font_size))
+                                                    .set_padding(crate::render::terminal_pane::terminal_content_padding())
                                                     .set_size(Vec2::new(
                                                         ui.available_width(),
                                                         ui.available_height(),
@@ -1007,6 +1143,12 @@ impl PlexiApp {
 
                 // Apply canvas focus change now that behavior is dropped and
                 // ctx is freely borrowable again.
+                let clicked_pane_id = new_focused.and_then(|new_tile| {
+                    match ctx.tree.tiles.get(new_tile) {
+                        Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                        _ => None,
+                    }
+                });
                 let canvas_focus_changed = if let Some(new) = new_focused {
                     let changed = Some(new) != canvas_old_focus;
                     ctx.navigate_to(new);
@@ -1022,6 +1164,19 @@ impl PlexiApp {
                         self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
                     }
                 }
+
+                if let Some(pid) = clicked_pane_id {
+                    self.focus_pane_in_strip(pid);
+                }
+                if resized {
+                    self.mark_workspace_dirty();
+                    log::info!("pane layout: divider resized window={}", self.windows[self.active_window].window_id);
+                }
+
+                let context_id = self.router.active().context_id;
+                self.ensure_authoritative_strip(context_id);
+                let layout = self.active_strip_layout();
+                self.host.set_strip_layout(context_id, layout);
 
                 // ── Pane swap animation overlays ────────────────────────────────────────
                 {
@@ -1046,7 +1201,7 @@ impl PlexiApp {
                         };
                         ui.painter().rect_filled(
                             animated_rect,
-                            egui::CornerRadius::same(4),
+                            crate::ui::style::RADIUS_SMALL,
                             self.colors.accent.gamma_multiply(0.25),
                         );
                         crate::platform::frame_diag::note(
@@ -1109,6 +1264,8 @@ impl PlexiApp {
                     self.collapse_subcontext_if_empty(ctx_id);
                 }
 
+                if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
+
                 // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
                 if let Some(child_ctx_id) = portal_zoom {
                     if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
@@ -1130,33 +1287,20 @@ impl PlexiApp {
         // Shortcuts overlay
         self.draw_shortcuts_overlay(&ctx);
 
-        // Changelog overlay
-        self.draw_changelog_overlay(&ctx);
-
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
+        self.draw_plugin_notice(&ctx);
 
-        // First-launch completions nudge
-        self.draw_completions_banner(&ctx);
-
-        // Minimap overlay — auto-hidden when current workspace has <2 windows.
-        let ws_id = self.router.active().context_id;
-        let window_count = self
-            .windows
-            .iter()
-            .filter(|c| c.context_id == ws_id)
-            .count();
-        if window_count >= 2 {
-            self.draw_minimap_overlay(&ctx);
-        } else {
-            self.minimap.visible = false;
-        }
+        self.draw_minimap_overlay(&ctx);
 
         // Command palette, run palette, rename-pane overlay, notification
         // modal, and confirm-close are all drawn by the early input-capture
         // path at the top of `update()` — they own a `FocusKind` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
+        self.draw_notes_delete_toast(&ctx);
+        self.draw_config_notice(&ctx);
+
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {
             // Reset on Escape or timeout
@@ -1176,8 +1320,6 @@ impl PlexiApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
-
-        self.draw_feature_effects(&ctx);
 
         // Egui focus is NOT touched here: the post-frame reconciler
         // (`reconcile_egui_focus`, called at the end of `update()`) projects

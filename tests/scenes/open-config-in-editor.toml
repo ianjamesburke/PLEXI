@@ -1,0 +1,30 @@
+# Cmd+, opens the config chooser. Selecting the global row opens a Plexi
+# editor split, and selecting it again focuses the existing editor.
+size = [1200.0, 720.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "scratch", args = ["{tmp}/scratch.md"] }
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+key = { target = "host", value = "cmd+," }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert = { pane_count = 2 }
+
+[[steps]]
+key = { target = "host", value = "cmd+," }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert = { pane_count = 2 }
+
+[[steps]]
+shot = "open-config-in-editor.png"

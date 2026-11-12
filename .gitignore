@@ -61,6 +61,7 @@ tools/e2e_authoring/*.egg-info/
 .plexi-beta/
 .plexi-pr-*/
 .superpowers/
+.pi/
 
 # Claude agent memory (local, not shared)
 .claude/agent-memory/

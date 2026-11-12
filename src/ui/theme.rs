@@ -31,7 +31,6 @@ fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
 
 /// WCAG relative luminance.
 pub(crate) fn luminance(c: Color32) -> f32 {
-    let rgba = egui::Rgba::from(c);
     fn linear(v: f32) -> f32 {
         if v <= 0.03928 {
             v / 12.92
@@ -39,7 +38,9 @@ pub(crate) fn luminance(c: Color32) -> f32 {
             ((v + 0.055) / 1.055).powf(2.4)
         }
     }
-    0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
+    0.2126 * linear(c.r() as f32 / 255.0)
+        + 0.7152 * linear(c.g() as f32 / 255.0)
+        + 0.0722 * linear(c.b() as f32 / 255.0)
 }
 
 /// WCAG contrast ratio between two relative luminances.
@@ -61,7 +62,10 @@ pub struct Colors {
     pub bg_sidebar: Color32,
     pub bg_toolbar: Color32,
     pub terminal_bg: Color32,
+    pub tile_bg: Color32,
+    pub code_bg: Color32,
     pub bg_hover: Color32,
+    pub bg_elevated: Color32,
     pub bg_sidebar_hover: Color32,
     pub bg_active: Color32,
     // Text
@@ -75,10 +79,25 @@ pub struct Colors {
     pub danger: Color32,
     pub success: Color32,
     pub warning: Color32,
-    // Activity pip colors — override success/warning/danger when set in [theme]
-    pub pip_working: Color32,
-    pub pip_idle: Color32,
-    pub pip_blocked: Color32,
+    pub state_working: Color32,
+    pub state_waiting: Color32,
+    pub state_blocked: Color32,
+    pub state_needs_you: Color32,
+    pub state_interrupted: Color32,
+    pub state_error: Color32,
+    // Motorways / Zoom / Attention Queue tokens
+    pub zoom_needs: Color32,
+    pub zoom_failed: Color32,
+    pub zoom_notice: Color32,
+    pub depth_tints: [Color32; 5],
+    pub shadow_flat: Color32,
+    pub scrim_decision: Color32,
+    pub scrim_queue: Color32,
+    pub needs_fill: Color32,
+    pub needs_badge_fill: Color32,
+    pub failed_fill: Color32,
+    pub focus_fill: Color32,
+    pub focus_glow: Color32,
     // Opacity multiplier for unfocused pips (default 0.72)
     pub pip_dim: f32,
     // Terminal fg/bg as bytes for dynamic colors
@@ -87,6 +106,11 @@ pub struct Colors {
 }
 
 impl Colors {
+    /// Egui and window mode follow the resolved plugin backdrop, including overrides.
+    pub fn is_dark(&self) -> bool {
+        luminance(self.terminal_bg) < 0.179
+    }
+
     /// Readable foreground for text drawn on `fill` (accent buttons, danger
     /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
     /// has the higher WCAG contrast ratio against the fill; if neither
@@ -113,7 +137,7 @@ impl Colors {
     }
 
     /// Foreground for *primary* labels that used to render in `text_dim`
-    /// (sidebar context names, app-bar subtitles, pane-name bars). `text_dim`
+    /// (sidebar context names, surface-header subtitles, pane-name bars). `text_dim`
     /// sits around 3:1 on most presets — fine for true-secondary metadata,
     /// too faint for a label the user reads constantly. Blends `text_dim`
     /// toward `text_primary` just far enough to reach WCAG 4.5:1 on `bg`
@@ -138,6 +162,18 @@ impl Colors {
         result
     }
 
+    /// Legible status-badge text over the tinted pane header.
+    pub fn status_badge_color(&self, color: Color32) -> Color32 {
+        let header = self.pane_header_bg();
+        (0..=32)
+            .map(|step| lerp_color(color, self.text_primary, step as f32 / 32.0))
+            .find(|candidate| {
+                let fill = lerp_color(header, *candidate, 36.0 / 255.0);
+                contrast(luminance(*candidate), luminance(fill)) >= 4.5
+            })
+            .unwrap_or(self.text_primary)
+    }
+
     /// Background for terminal pane name bars: `terminal_bg` darkened ~12%.
     /// Matches the zoom overlay, where the same bar is painted at 0.88
     /// opacity over the dark scrim — keeps the header tone identical in
@@ -151,56 +187,115 @@ impl Colors {
         )
     }
 
+    /// Surface depth tint for tree depth 0..4 (clamped at 4).
+    pub fn depth_tint(&self, depth: usize) -> Color32 {
+        self.depth_tints[depth.min(4)]
+    }
+
     pub fn from_config(cfg: &ThemeConfig) -> Self {
+        let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x20, 0x23, 0x32));
+        let states = state_palette(cfg);
+        let warning = parse_hex_or(&cfg.yellow, Color32::from_rgb(0xe0, 0xaf, 0x68));
+        let danger = parse_hex_or(&cfg.red, Color32::from_rgb(0xf7, 0x76, 0x8e));
+        let primary = parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xc0, 0xca, 0xf5));
+        let backgrounds = [
+            parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_hover,
+            parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x29, 0x2e, 0x42)),
+            parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x1a, 0x1b, 0x26)),
+            parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+        ];
+        let readable = |color| {
+            (0..=32)
+                .map(|step| lerp_color(color, primary, step as f32 / 32.0))
+                .find(|candidate| {
+                    backgrounds
+                        .iter()
+                        .all(|bg| contrast(luminance(*candidate), luminance(*bg)) >= 4.5)
+                })
+                .unwrap_or(primary)
+        };
+        let zoom_needs = readable(warning);
+        let zoom_failed = readable(danger);
+        let accent = parse_hex_or(&cfg.accent, Color32::from_rgb(0x7a, 0xa2, 0xf7));
+        let tint = |c: Color32, alpha| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha);
+        let shadow = parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x0c, 0x0e, 0x14));
         Self {
-            bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
-            bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x18, 0x18, 0x25)),
-            bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
-            terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x29, 0x2a, 0x44)),
-            bg_hover: parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
+            state_working: parse_hex_or(
+                &cfg.state_working
+                    .clone()
+                    .or_else(|| cfg.pip_working.clone()),
+                states[0],
+            ),
+            state_waiting: parse_hex_or(
+                &cfg.state_waiting.clone().or_else(|| cfg.pip_idle.clone()),
+                states[1],
+            ),
+            state_blocked: parse_hex_or(
+                &cfg.state_blocked
+                    .clone()
+                    .or_else(|| cfg.pip_blocked.clone()),
+                states[2],
+            ),
+            state_needs_you: parse_hex_or(&cfg.state_needs_you, states[3]),
+            state_interrupted: parse_hex_or(&cfg.state_interrupted, states[4]),
+            state_error: parse_hex_or(&cfg.state_error, states[5]),
+            bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x1a, 0x1b, 0x26)),
+            tile_bg: bg_hover,
+            code_bg: Color32::from_rgb(0x13, 0x14, 0x1c),
+            bg_hover,
+            bg_elevated: bg_hover,
             bg_sidebar_hover: parse_hex_or(
                 &cfg.bg_sidebar_hover,
-                Color32::from_rgb(0x2e, 0x2e, 0x48),
+                Color32::from_rgb(0x26, 0x2a, 0x3d),
             ),
-            bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x31, 0x31, 0x44)),
-            text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xcd, 0xd6, 0xf4)),
-            text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x6c, 0x70, 0x86)),
-            text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x58, 0x5b, 0x70)),
-            accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x89, 0xb4, 0xfa)),
-            border: parse_hex_or(&cfg.border, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
-            // Derive from the theme's ANSI red; fallback matches the Dracula red used in event_log.rs.
-            danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
-            success: parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
-            warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
-            pip_working: parse_hex_or(
-                &cfg.pip_working,
-                parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
-            ),
-            pip_idle: parse_hex_or(
-                &cfg.pip_idle,
-                parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
-            ),
-            pip_blocked: parse_hex_or(
-                &cfg.pip_blocked,
-                parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
-            ),
+            bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x29, 0x2e, 0x42)),
+            text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xc0, 0xca, 0xf5)),
+            text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x73, 0x7a, 0xa2)),
+            text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x56, 0x5f, 0x89)),
+            accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x7a, 0xa2, 0xf7)),
+            border: parse_hex_or(&cfg.border, Color32::from_rgb(0x3b, 0x42, 0x61)),
+            danger,
+            success: parse_hex_or(&cfg.green, Color32::from_rgb(0x9e, 0xce, 0x6a)),
+            warning,
+            zoom_needs,
+            zoom_failed,
+            zoom_notice: readable(accent),
+            depth_tints: [
+                Color32::from_rgb(0x1a, 0x1b, 0x26),
+                Color32::from_rgb(0x20, 0x24, 0x36),
+                Color32::from_rgb(0x29, 0x2e, 0x42),
+                Color32::from_rgb(0x31, 0x3c, 0x58),
+                Color32::from_rgb(0x39, 0x4b, 0x70),
+            ],
+            shadow_flat: Color32::from_rgb(0x0c, 0x0e, 0x14),
+            scrim_decision: tint(shadow, 204),
+            scrim_queue: tint(shadow, 140),
+            needs_fill: tint(zoom_needs, 31),
+            needs_badge_fill: tint(zoom_needs, 36),
+            failed_fill: tint(zoom_failed, 26),
+            focus_fill: tint(accent, 36),
+            focus_glow: tint(accent, 38),
             pip_dim: cfg.pip_dim.unwrap_or(0.72),
-            terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
-            terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
+            terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xc0, 0xca, 0xf5]),
+            terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x1a, 0x1b, 0x26]),
         }
     }
 
     /// Serialize the semantic color roles to a `role -> #rrggbb` map for the
-    /// SDK `Init` payload. Apps read these via `ctx.theme.<role>` so app-drawn
+    /// SDK `Init` payload. Plugins read these via `ctx.theme.<role>` so plugin-drawn
     /// chrome tracks the host theme (light/dark + user `[theme]` overrides).
     /// Both the SDK-semantic names (bg/surface/muted/...) and ANSI aliases
-    /// (red/green/yellow) are emitted so apps can pull whichever they need.
+    /// (red/green/yellow) are emitted so plugins can pull whichever they need.
     pub fn to_theme_map(self) -> std::collections::HashMap<String, String> {
         fn hex(c: Color32) -> String {
             format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
         }
-        // `bg` is the color the host paints behind the app pane (terminal_bg),
-        // so an app that clears to theme.bg matches its container in any theme.
+        // `bg` is the color the host paints behind the view pane (terminal_bg),
+        // so a plugin that clears to theme.bg matches its container in any theme.
         [
             ("bg", self.terminal_bg),
             ("bg_darkest", self.bg_darkest),
@@ -211,6 +306,12 @@ impl Colors {
             ("muted", self.text_dim),
             ("text_section", self.text_section),
             ("accent", self.accent),
+            ("state_working", self.state_working),
+            ("state_waiting", self.state_waiting),
+            ("state_blocked", self.state_blocked),
+            ("state_needs_you", self.state_needs_you),
+            ("state_interrupted", self.state_interrupted),
+            ("state_error", self.state_error),
             ("danger", self.danger),
             ("red", self.danger),
             ("success", self.success),
@@ -224,23 +325,96 @@ impl Colors {
     }
 }
 
-/// Resolve the active `Colors` from a loaded config: merges the user's
-/// `[theme]` overrides over the named preset (or pure user config if no
-/// preset). Shared by the GUI and the headless `app render` path.
-pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
+/// State presets retain a separate shape channel; mono intentionally shares a color.
+pub const STATE_PRESETS: &[&str] = &["default", "okabe-ito", "high-contrast", "mono"];
+
+fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
+    let sidebar = parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(24, 24, 37));
+    let terminal = parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(41, 42, 68));
+    let light = luminance(sidebar) > 0.4;
+    let mono = if light {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let preset = cfg.state_preset.as_deref().unwrap_or("okabe-ito");
+    // Light themes need separated lightness levels, not uniform darkening:
+    // otherwise orange, vermillion and yellow converge under red/green CVD.
+    if light && preset != "mono" {
+        return [
+            [26, 54, 70],
+            [104, 72, 0],
+            [158, 88, 128],
+            [64, 28, 0],
+            [0, 95, 69],
+            [116, 109, 26],
+        ]
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b));
+    }
+    let rgb = match preset {
+        "mono" => return [mono; 6],
+        "high-contrast" => [
+            [0, 114, 178],
+            [240, 228, 66],
+            [204, 121, 167],
+            [213, 94, 0],
+            [0, 158, 115],
+            [230, 159, 0],
+        ],
+        _ => [
+            [0, 114, 178],
+            [230, 159, 0],
+            [204, 121, 167],
+            [213, 94, 0],
+            [0, 158, 115],
+            [240, 228, 66],
+        ],
+    };
+    rgb.map(|[r, g, b]| {
+        let c = Color32::from_rgb(r, g, b);
+        // Preserve hue while adapting the Okabe-Ito swatch to both adjacent surfaces.
+        for step in 0..=100 {
+            let candidate = lerp_color(c, mono, step as f32 / 100.0);
+            if [sidebar, terminal]
+                .iter()
+                .all(|bg| contrast(luminance(candidate), luminance(*bg)) >= 3.1)
+            {
+                return candidate;
+            }
+        }
+        mono
+    })
+}
+
+/// The preset a fresh profile starts in and the base used when a config names
+/// none. Every default decision (built-in fallback, `config.toml` template,
+/// `config reset`) derives from this one constant; a test pins the template.
+pub const DEFAULT_PRESET: &str = "plexi-dusk";
+
+/// Resolve the effective `[theme]` for a loaded config: the named preset
+/// (`[theme] preset`, else legacy top-level `theme_preset`, else
+/// [`DEFAULT_PRESET`]) with the user's `[theme]` overrides on top. An
+/// unknown preset name (already-invalid file; `config check` and `config set`
+/// reject it) logs a warning and falls back to [`DEFAULT_PRESET`].
+pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::config::ThemeConfig {
     let user_theme = config.theme.clone().unwrap_or_default();
     let preset_name = user_theme
         .preset
         .as_deref()
-        .or(config.theme_preset.as_deref());
-    let cfg = match preset_name {
-        Some(preset_name) => match preset_colors(preset_name) {
-            Some(preset) => apply_preset(&preset, &user_theme),
-            None => user_theme,
-        },
-        None => user_theme,
-    };
-    Colors::from_config(&cfg)
+        .or(config.theme_preset.as_deref())
+        .unwrap_or(DEFAULT_PRESET);
+    let preset = preset_colors(preset_name).unwrap_or_else(|| {
+        log::warn!("Unknown theme preset {preset_name:?}; using {DEFAULT_PRESET}");
+        preset_colors(DEFAULT_PRESET).expect("DEFAULT_PRESET names a built-in preset")
+    });
+    log::info!("Applying theme preset: {}", preset_name.trim());
+    apply_preset(&preset, &user_theme)
+}
+
+/// Resolve the active `Colors` from a loaded config. Shared by the GUI and
+/// the headless `view render` path.
+pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
+    Colors::from_config(&resolve_theme_config(config))
 }
 
 fn hex_to_bytes(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
@@ -277,12 +451,15 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
         "matrix" => Some("matrix"),
         "bios" | "retro" | "retro-bios" => Some("bios"),
         "plexi-night" | "plexinight" => Some("plexi-night"),
+        "plexi-dusk" | "plexidusk" => Some("plexi-dusk"),
+        "plexi-dawn" | "plexidawn" => Some("plexi-dawn"),
         "plexi-day" | "plexiday" => Some("plexi-day"),
         _ => None,
     }
 }
 
-/// Returns true for presets with a light background — used to flip egui's dark_mode flag.
+/// Nominal preset classification used by palette tests; runtime uses resolved colors.
+#[cfg(test)]
 pub fn is_light_preset(name: &str) -> bool {
     matches!(
         canonical_preset_name(name),
@@ -290,16 +467,12 @@ pub fn is_light_preset(name: &str) -> bool {
             | Some("solarized-light")
             | Some("gruvbox-light")
             | Some("tokyo-day")
+            | Some("plexi-dawn")
             | Some("plexi-day")
     )
 }
 
 /// Returns the list of available preset names.
-///
-/// Test-only: the WCAG contrast tests sweep every preset. Production code
-/// reaches presets by name through [`preset_colors`], so a non-test build has
-/// no caller and `-D warnings` rejects one.
-#[cfg(test)]
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
@@ -315,6 +488,8 @@ pub fn preset_names() -> &'static [&'static str] {
         "matrix",
         "bios",
         "plexi-night",
+        "plexi-dusk",
+        "plexi-dawn",
         "plexi-day",
     ]
 }
@@ -326,6 +501,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
     match canonical {
         "catppuccin-mocha" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#11111b"),
             bg_sidebar: s("#181825"),
             bg_toolbar: s("#181825"),
@@ -361,6 +537,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "dracula" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#1e1f29"),
             bg_sidebar: s("#21222c"),
             bg_toolbar: s("#21222c"),
@@ -396,19 +573,20 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "tokyo-night" => Some(ThemeConfig {
             preset: None,
-            bg_darkest: s("#13131d"),
+
+            bg_darkest: s("#16161e"),
             bg_sidebar: s("#16161e"),
             bg_toolbar: s("#16161e"),
             terminal_bg: s("#1a1b26"),
-            bg_hover: s("#232433"),
+            bg_hover: s("#202332"),
             bg_sidebar_hover: s("#262a3d"),
             bg_active: s("#292e42"),
-            text_primary: s("#a9b1d6"),
-            text_dim: s("#565f89"),
-            text_section: s("#444b6a"),
+            text_primary: s("#c0caf5"),
+            text_dim: s("#737aa2"),
+            text_section: s("#565f89"),
             accent: s("#7aa2f7"),
-            border: s("#292e42"),
-            foreground: s("#a9b1d6"),
+            border: s("#3b4261"),
+            foreground: s("#c0caf5"),
             background: s("#1a1b26"),
             black: s("#16161e"),
             red: s("#f7768e"),
@@ -431,6 +609,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "tokyo-day" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#b0b3c0"),
             bg_sidebar: s("#d5d6db"),
             bg_toolbar: s("#d5d6db"),
@@ -438,7 +617,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_hover: s("#cbccd5"),
             bg_sidebar_hover: s("#c4c8da"),
             bg_active: s("#c4c8da"),
-            text_primary: s("#3760bf"),
+            text_primary: s("#3156ac"),
             text_dim: s("#6172b0"),
             text_section: s("#848cb5"),
             accent: s("#2e7de9"),
@@ -466,6 +645,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "gruvbox-dark" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#1d2021"),
             bg_sidebar: s("#282828"),
             bg_toolbar: s("#282828"),
@@ -501,6 +681,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "gruvbox-light" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#f2e5bc"),
             bg_sidebar: s("#fbf1c7"),
             bg_toolbar: s("#fbf1c7"),
@@ -536,6 +717,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "nord" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#242933"),
             bg_sidebar: s("#3b4252"),
             bg_toolbar: s("#3b4252"),
@@ -571,6 +753,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "solarized-dark" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#00212b"),
             bg_sidebar: s("#073642"),
             bg_toolbar: s("#073642"),
@@ -606,6 +789,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "catppuccin-latte" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#dce0e8"),
             bg_sidebar: s("#eff1f5"),
             bg_toolbar: s("#eff1f5"),
@@ -641,6 +825,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "solarized-light" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#eee8d5"),
             bg_sidebar: s("#fdf6e3"),
             bg_toolbar: s("#fdf6e3"),
@@ -648,7 +833,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_hover: s("#e0dcc8"),
             bg_sidebar_hover: s("#d8d4c0"),
             bg_active: s("#d0ccb8"),
-            text_primary: s("#657b83"),
+            text_primary: s("#586e75"),
             text_dim: s("#586e75"),
             text_section: s("#657b83"),
             accent: s("#268bd2"),
@@ -676,6 +861,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "matrix" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#000000"),
             bg_sidebar: s("#001100"),
             bg_toolbar: s("#001100"),
@@ -711,6 +897,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "bios" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#000055"),
             bg_sidebar: s("#000080"),
             bg_toolbar: s("#000080"),
@@ -746,20 +933,21 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "plexi-night" => Some(ThemeConfig {
             preset: None,
-            bg_darkest: s("#060609"),
+
+            bg_darkest: s("#000000"),
             bg_sidebar: s("#0c0c14"),
             bg_toolbar: s("#0c0c14"),
-            terminal_bg: s("#0e0e18"),
-            bg_hover: s("#151520"),
-            bg_sidebar_hover: s("#1a1a28"),
-            bg_active: s("#1e1e30"),
+            terminal_bg: s("#0f0f1a"),
+            bg_hover: s("#202030"),
+            bg_sidebar_hover: s("#242436"),
+            bg_active: s("#33334f"),
             text_primary: s("#e8e8f0"),
-            text_dim: s("#6060a0"),
-            text_section: s("#404070"),
+            text_dim: s("#9a9af5"),
+            text_section: s("#7777cc"),
             accent: s("#7c3aed"),
-            border: s("#1e1e30"),
+            border: s("#33334f"),
             foreground: s("#e8e8f0"),
-            background: s("#0e0e18"),
+            background: s("#0f0f1a"),
             black: s("#1a1a28"),
             red: s("#ef4444"),
             green: s("#4ade80"),
@@ -768,7 +956,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             magenta: s("#a855f7"),
             cyan: s("#22d3ee"),
             white: s("#c8c8e0"),
-            bright_black: s("#3a3a5c"),
+            bright_black: s("#7a7abd"),
             bright_red: s("#f87171"),
             bright_green: s("#86efac"),
             bright_yellow: s("#fde047"),
@@ -779,30 +967,103 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#f0f0f8"),
             ..ThemeConfig::default()
         }),
+        "plexi-dusk" => Some(ThemeConfig {
+            preset: None,
+
+            bg_darkest: s("#1a1b30"),
+            bg_sidebar: s("#22233c"),
+            bg_toolbar: s("#22233c"),
+            terminal_bg: s("#292a44"),
+            bg_hover: s("#30314e"),
+            bg_sidebar_hover: s("#37385a"),
+            bg_active: s("#44446c"),
+            text_primary: s("#e8e8f0"),
+            text_dim: s("#afafff"),
+            text_section: s("#8a8aef"),
+            accent: s("#9568f6"),
+            border: s("#44446c"),
+            foreground: s("#e8e8f0"),
+            background: s("#292a44"),
+            black: s("#1a1b30"),
+            red: s("#f26b6b"),
+            green: s("#4ade80"),
+            yellow: s("#facc15"),
+            blue: s("#60a5fa"),
+            magenta: s("#bb82f8"),
+            cyan: s("#22d3ee"),
+            white: s("#c8c8e0"),
+            bright_black: s("#8b8bdc"),
+            bright_red: s("#fa8585"),
+            bright_green: s("#86efac"),
+            bright_yellow: s("#fde047"),
+            bright_blue: s("#93c5fd"),
+            bright_magenta: s("#d0a0ff"),
+            bright_cyan: s("#67e8f9"),
+            bright_white: s("#f0f0f8"),
+            bright_foreground: s("#f0f0f8"),
+            ..ThemeConfig::default()
+        }),
+        "plexi-dawn" => Some(ThemeConfig {
+            preset: None,
+
+            bg_darkest: s("#b9b8cc"),
+            bg_sidebar: s("#cecddd"),
+            bg_toolbar: s("#cecddd"),
+            terminal_bg: s("#d7d6e4"),
+            bg_hover: s("#bab9ce"),
+            bg_sidebar_hover: s("#b5b4ca"),
+            bg_active: s("#a6a5c1"),
+            text_primary: s("#17172b"),
+            text_dim: s("#33335f"),
+            text_section: s("#40406e"),
+            accent: s("#5b21b6"),
+            border: s("#9392b4"),
+            foreground: s("#17172b"),
+            background: s("#d7d6e4"),
+            black: s("#2a2a48"),
+            red: s("#a3181b"),
+            green: s("#125a2c"),
+            yellow: s("#6c4700"),
+            blue: s("#1a45c2"),
+            magenta: s("#701fb8"),
+            cyan: s("#09566c"),
+            white: s("#3e3e5c"),
+            bright_black: s("#40406a"),
+            bright_red: s("#9e1f15"),
+            bright_green: s("#0d5c29"),
+            bright_yellow: s("#683f00"),
+            bright_blue: s("#1b3a9e"),
+            bright_magenta: s("#701fb8"),
+            bright_cyan: s("#084f63"),
+            bright_white: s("#d7d6e4"),
+            bright_foreground: s("#08080f"),
+            ..ThemeConfig::default()
+        }),
         "plexi-day" => Some(ThemeConfig {
             preset: None,
+
             bg_darkest: s("#d8d8e8"),
             bg_sidebar: s("#ededf5"),
             bg_toolbar: s("#ededf5"),
             terminal_bg: s("#f5f5fb"),
-            bg_hover: s("#e2e2ef"),
-            bg_sidebar_hover: s("#d5d5e8"),
-            bg_active: s("#c8c8e0"),
+            bg_hover: s("#d8d8ea"),
+            bg_sidebar_hover: s("#d0d0e6"),
+            bg_active: s("#bcbcd8"),
             text_primary: s("#1a1a2e"),
-            text_dim: s("#6060a0"),
-            text_section: s("#8080b0"),
+            text_dim: s("#46468a"),
+            text_section: s("#585894"),
             accent: s("#7c3aed"),
-            border: s("#c8c8e0"),
+            border: s("#b8b8d4"),
             foreground: s("#1a1a2e"),
             background: s("#f5f5fb"),
             black: s("#2a2a40"),
-            red: s("#dc2626"),
-            green: s("#16a34a"),
-            yellow: s("#ca8a04"),
+            red: s("#c81e1e"),
+            green: s("#15803d"),
+            yellow: s("#92600a"),
             blue: s("#2563eb"),
             magenta: s("#7c3aed"),
-            cyan: s("#0891b2"),
-            white: s("#d8d8e8"),
+            cyan: s("#0b6f8a"),
+            white: s("#4a4a68"),
             bright_black: s("#5a5a80"),
             bright_red: s("#ef4444"),
             bright_green: s("#22c55e"),
@@ -823,6 +1084,13 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     let m = |u: &Option<String>, p: &Option<String>| u.clone().or_else(|| p.clone());
     ThemeConfig {
         preset: None,
+        state_preset: m(&user.state_preset, &preset.state_preset),
+        state_working: m(&user.state_working, &preset.state_working),
+        state_waiting: m(&user.state_waiting, &preset.state_waiting),
+        state_blocked: m(&user.state_blocked, &preset.state_blocked),
+        state_needs_you: m(&user.state_needs_you, &preset.state_needs_you),
+        state_interrupted: m(&user.state_interrupted, &preset.state_interrupted),
+        state_error: m(&user.state_error, &preset.state_error),
         bg_darkest: m(&user.bg_darkest, &preset.bg_darkest),
         bg_sidebar: m(&user.bg_sidebar, &preset.bg_sidebar),
         bg_toolbar: m(&user.bg_toolbar, &preset.bg_toolbar),
@@ -865,8 +1133,9 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 /// egui widget the host still renders (buttons, combos, menus, scroll areas,
 /// text edits) inherits the Plexi look from here instead of stock egui — this
 /// is the single place where the default-egui appearance is retired.
-pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
+pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
     use crate::ui::style as tokens;
+    let dark_mode = colors.is_dark();
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.global_style()).clone();
     style.visuals = if dark_mode {
@@ -883,7 +1152,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     v.extreme_bg_color = colors.bg_active; // TextEdit / ScrollArea / code block backgrounds.
     v.faint_bg_color = colors.bg_hover; // Striped rows / blockquote tints.
     v.code_bg_color = colors.bg_darkest;
-    v.override_text_color = Some(colors.text_primary);
+    v.override_text_color = None;
 
     // Window / menu / popup chrome: token radii, hairline border, soft
     // long-throw shadows instead of egui's tight dark halo.
@@ -917,9 +1186,10 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     w.noninteractive.bg_fill = colors.bg_sidebar;
     w.noninteractive.weak_bg_fill = colors.bg_sidebar;
     w.noninteractive.bg_stroke = hairline; // Separators.
-    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, colors.text_dim);
-    w.inactive.bg_fill = colors.bg_hover;
-    w.inactive.weak_bg_fill = colors.bg_hover;
+    w.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0_f32, colors.text_secondary(colors.bg_sidebar));
+    w.inactive.bg_fill = colors.bg_elevated;
+    w.inactive.weak_bg_fill = colors.bg_elevated;
     w.inactive.bg_stroke = hairline;
     w.inactive.fg_stroke = text(1.0);
     w.hovered.bg_fill = colors.bg_sidebar_hover;
@@ -948,7 +1218,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
 
     style.spacing.item_spacing = egui::vec2(tokens::SPACE_SM, tokens::SPACE_XS);
     // Default egui button padding is (4, 1) — the single biggest "default
-    // egui" tell. Real apps give labels room to breathe.
+    // egui" tell. Real plugins give labels room to breathe.
     style.spacing.button_padding = egui::vec2(tokens::SPACE_MD, 6.0);
     style.spacing.menu_margin = egui::Margin::same(tokens::SPACE_SM as i8);
     style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);
@@ -957,10 +1227,18 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     // Reserve a gutter for the floating bar so full-width content (text
     // fields, selectable rows) never runs underneath it at the right edge.
     style.spacing.scroll.floating_allocated_width = tokens::SPACE_MD;
-    ctx.set_global_style(style);
+    ctx.set_theme(if dark_mode {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
-pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
+/// Terminal palette from the theme config. `minimum_contrast` is the resolved
+/// `terminal.minimum_contrast` (1.0 = off).
+pub fn terminal_theme(cfg: &ThemeConfig, minimum_contrast: f32) -> TerminalTheme {
     let fg = cfg.foreground.as_deref().unwrap_or("#e8e6ed");
     let bg = cfg.background.as_deref().unwrap_or("#292a44");
     TerminalTheme::new(Box::new(ColorPalette {
@@ -993,6 +1271,7 @@ pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
         dim_cyan: cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
         dim_white: cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
     }))
+    .with_minimum_contrast(minimum_contrast)
 }
 
 pub fn terminal_dynamic_colors(colors: &Colors) -> HashMap<usize, [u8; 3]> {
@@ -1168,25 +1447,19 @@ mod tests {
                     assert_ne!(regular.family, bold.family);
                     assert_eq!(fonts.row_height(&regular), fonts.row_height(&bold));
                     for c in "mMW08[]".chars() {
-                        assert_eq!(
-                            fonts.glyph_width(&regular, c),
-                            fonts.glyph_width(&bold, c)
-                        );
+                        assert_eq!(fonts.glyph_width(&regular, c), fonts.glyph_width(&bold, c));
                     }
                 }
             });
         });
     }
 
-    /// pip_working/idle/blocked fall back to warning/success/danger when not set,
-    /// and use the override color when set. pip_dim defaults to 0.72.
+    /// Legacy pip color overrides remain aliases for the new semantic tokens.
     #[test]
     fn pip_colors_fall_back_to_semantic_and_accept_overrides() {
         let default_cfg = ThemeConfig::default();
         let colors = Colors::from_config(&default_cfg);
-        assert_eq!(colors.pip_working, colors.warning);
-        assert_eq!(colors.pip_idle, colors.success);
-        assert_eq!(colors.pip_blocked, colors.danger);
+        assert_ne!(colors.state_working, colors.state_waiting);
         assert!((colors.pip_dim - 0.72).abs() < f32::EPSILON);
 
         let override_cfg = ThemeConfig {
@@ -1197,9 +1470,9 @@ mod tests {
             ..ThemeConfig::default()
         };
         let oc = Colors::from_config(&override_cfg);
-        assert_eq!(oc.pip_working, Color32::from_rgb(0xff, 0x00, 0x00));
-        assert_eq!(oc.pip_idle, Color32::from_rgb(0x00, 0xff, 0x00));
-        assert_eq!(oc.pip_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
+        assert_eq!(oc.state_working, Color32::from_rgb(0xff, 0x00, 0x00));
+        assert_eq!(oc.state_waiting, Color32::from_rgb(0x00, 0xff, 0x00));
+        assert_eq!(oc.state_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
         assert!((oc.pip_dim - 0.7).abs() < f32::EPSILON);
     }
 
@@ -1224,7 +1497,7 @@ mod tests {
     }
 
     /// Stint 0528 contrast floor: primary labels rendered in the secondary
-    /// tone (inactive sidebar context names, app-bar subtitles, pane-name
+    /// tone (inactive sidebar context names, surface-header subtitles, pane-name
     /// bars) must reach WCAG 4.5:1 on their actual backgrounds for every
     /// preset. `text_dim` alone sits near 3:1 on most presets.
     #[test]
@@ -1279,6 +1552,7 @@ mod tests {
             "solarized-light",
             "gruvbox-light",
             "tokyo-day",
+            "plexi-dawn",
             "plexi-day",
         ] {
             assert!(preset_colors(name).is_some(), "missing light preset {name}");
@@ -1315,5 +1589,345 @@ mod tests {
                 "{name}: chip text_on(bg_active) below 3:1 (chip text illegible)"
             );
         }
+    }
+
+    #[test]
+    fn setup_style_locks_theme_against_os_system_theme_override() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&ThemeConfig::default());
+        setup_style(&ctx, &colors);
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                system_theme: Some(egui::Theme::Light),
+                ..Default::default()
+            },
+            |_ui| {},
+        );
+
+        assert!(ctx.global_style().visuals.dark_mode);
+        assert_eq!(
+            ctx.global_style().visuals.widgets.inactive.bg_fill,
+            colors.bg_elevated
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn simulate_cvd(c: Color32, kind: usize) -> Color32 {
+    // Machado et al. (2009), severity 1.0, linear RGB matrices.
+    let matrices = [
+        [
+            [0.152286, 1.052583, -0.204868],
+            [0.114503, 0.786281, 0.099216],
+            [-0.003882, -0.048116, 1.051998],
+        ],
+        [
+            [0.367322, 0.860646, -0.227968],
+            [0.280085, 0.672501, 0.047413],
+            [-0.011820, 0.042940, 0.968881],
+        ],
+        [
+            [1.255528, -0.076749, -0.178779],
+            [-0.078411, 0.930809, 0.147602],
+            [0.004733, 0.691367, 0.303900],
+        ],
+    ];
+    let rgba = egui::Rgba::from(c);
+    let input = [rgba.r(), rgba.g(), rgba.b()];
+    let result = matrices[kind].map(|row| {
+        row.iter()
+            .zip(input)
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+            .clamp(0.0, 1.0)
+    });
+    egui::Rgba::from_rgb(result[0], result[1], result[2]).into()
+}
+
+#[cfg(test)]
+mod state_palette_tests {
+    use super::*;
+    fn tokens(c: Colors) -> [Color32; 6] {
+        [
+            c.state_working,
+            c.state_waiting,
+            c.state_blocked,
+            c.state_needs_you,
+            c.state_interrupted,
+            c.state_error,
+        ]
+    }
+    fn lab(c: Color32) -> [f32; 3] {
+        let rgb = egui::Rgba::from(c);
+        let [r, g, b] = [rgb.r(), rgb.g(), rgb.b()];
+        let f = |v: f32| {
+            if v > 0.008856 {
+                v.cbrt()
+            } else {
+                7.787 * v + 16.0 / 116.0
+            }
+        };
+        let x = f((0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047);
+        let y = f(0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
+        let z = f((0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883);
+        [116.0 * y - 16.0, 500.0 * (x - y), 200.0 * (y - z)]
+    }
+    #[test]
+    fn state_presets_contrast_and_cvd() {
+        for theme in PLEXI_PRESETS {
+            for preset in STATE_PRESETS {
+                let mut cfg = preset_colors(theme).unwrap();
+                cfg.state_preset = Some((*preset).into());
+                let colors = Colors::from_config(&cfg);
+                let states = tokens(colors);
+                for color in states {
+                    for bg in [colors.bg_sidebar, colors.terminal_bg] {
+                        assert!(
+                            contrast(luminance(color), luminance(bg)) >= 3.0,
+                            "{theme}/{preset}: {color:?} against {bg:?}"
+                        );
+                    }
+                }
+                if *preset != "mono" {
+                    assert!(
+                        (lab(states[0])[0] - lab(states[1])[0]).abs() >= 8.0,
+                        "{theme}/{preset}: working/waiting lightness separation"
+                    );
+                }
+                if *preset == "mono" {
+                    assert!(states.iter().all(|c| *c == states[0]));
+                    continue; // Mono uses distinct glyphs, never color separation.
+                }
+                for kind in 0..3 {
+                    let simulated = states.map(|c| lab(simulate_cvd(c, kind)));
+                    for i in 0..6 {
+                        for j in i + 1..6 {
+                            let delta = simulated[i]
+                                .iter()
+                                .zip(simulated[j])
+                                .map(|(a, b)| (a - b).powi(2))
+                                .sum::<f32>()
+                                .sqrt();
+                            assert!(
+                                delta >= 10.0,
+                                "{theme}/{preset}, CVD={kind}, pair={i}/{j}, deltaE={delta}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn state_override_wins_over_legacy_and_preset() {
+        let cfg = ThemeConfig {
+            state_working: Some("#abcdef".into()),
+            pip_working: Some("#123456".into()),
+            state_preset: Some("mono".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Colors::from_config(&cfg).state_working,
+            Color32::from_rgb(0xab, 0xcd, 0xef)
+        );
+    }
+    #[test]
+    fn luminance_uses_srgb_once() {
+        assert!((luminance(Color32::from_rgb(128, 128, 128)) - 0.21586).abs() < 0.001);
+    }
+}
+
+/// The Plexi theme family, dark first. `is_light_preset` must agree with the
+/// light/dark column.
+#[cfg(test)]
+const PLEXI_PRESETS: [&str; 4] = ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"];
+
+#[cfg(test)]
+mod plexi_family_tests {
+    use super::*;
+
+    fn tok(name: &str, field: &str, v: &Option<String>) -> Color32 {
+        let hex = v
+            .as_deref()
+            .unwrap_or_else(|| panic!("{name}: {field} unset"));
+        let [r, g, b] = hex_to_bytes(Some(hex), [0, 0, 0]);
+        Color32::from_rgb(r, g, b)
+    }
+
+    /// Every contrast pair the family must satisfy. Targets: text 4.5:1
+    /// (WCAG 1.4.3), accent 3:1 (1.4.11), structural edges 1.5:1 (`border`,
+    /// `bg_active`), hover fills 1.2:1 against the sidebar they sit on, and the
+    /// gap background `bg_darkest` 1.1:1 against the terminal surface. Hover
+    /// and gap fills carry no information alone, so they sit below the edge
+    /// target; Night stays near-black, which caps its gap ratio.
+    fn failures(name: &str) -> Vec<String> {
+        let cfg = preset_colors(name).unwrap_or_else(|| panic!("missing preset {name}"));
+        let t = |f: &str, v: &Option<String>| tok(name, f, v);
+        let c = |f: &str, v: &Option<String>| (f.to_string(), t(f, v));
+        let fills = [
+            c("terminal_bg", &cfg.terminal_bg),
+            c("bg_sidebar", &cfg.bg_sidebar),
+            c("bg_hover", &cfg.bg_hover),
+            c("bg_sidebar_hover", &cfg.bg_sidebar_hover),
+            c("bg_active", &cfg.bg_active),
+        ];
+        let mut pairs: Vec<(String, Color32, String, Color32, f32)> = Vec::new();
+        let mut add = |fg: (String, Color32), bg: &(String, Color32), need: f32| {
+            pairs.push((fg.0, fg.1, bg.0.clone(), bg.1, need));
+        };
+        for bg in &fills {
+            add(c("text_primary", &cfg.text_primary), bg, 4.5);
+            add(c("text_dim", &cfg.text_dim), bg, 4.5);
+        }
+        for bg in &fills[..2] {
+            add(c("text_section", &cfg.text_section), bg, 4.5);
+            add(c("accent", &cfg.accent), bg, 3.0);
+        }
+        let term = &fills[0];
+        for (f, v) in [
+            ("bright_black", &cfg.bright_black),
+            ("white", &cfg.white),
+            ("red", &cfg.red),
+            ("green", &cfg.green),
+            ("yellow", &cfg.yellow),
+            ("blue", &cfg.blue),
+            ("magenta", &cfg.magenta),
+            ("cyan", &cfg.cyan),
+        ] {
+            add(c(f, v), term, 4.5);
+        }
+        let side = &fills[1];
+        add(c("border", &cfg.border), term, 1.5);
+        add(c("border", &cfg.border), side, 1.5);
+        add(c("bg_active", &cfg.bg_active), term, 1.5);
+        add(c("bg_active", &cfg.bg_active), side, 1.5);
+        add(c("bg_hover", &cfg.bg_hover), side, 1.2);
+        add(c("bg_sidebar_hover", &cfg.bg_sidebar_hover), side, 1.2);
+        add(c("bg_darkest", &cfg.bg_darkest), term, 1.1);
+        pairs
+            .into_iter()
+            .filter_map(|(fg, fc, bg, bc, need)| {
+                let ratio = contrast(luminance(fc), luminance(bc));
+                (ratio < need).then(|| format!("{name}: {fg} on {bg} = {ratio:.2}, need {need}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plexi_family_meets_contrast_targets() {
+        let all: Vec<String> = PLEXI_PRESETS.iter().flat_map(|n| failures(n)).collect();
+        assert!(all.is_empty(), "contrast failures:\n{}", all.join("\n"));
+    }
+
+    #[test]
+    fn attention_chrome_contrast_on_plexi_themes() {
+        let mut failures = Vec::new();
+        for name in PLEXI_PRESETS {
+            let colors = Colors::from_config(&preset_colors(name).unwrap());
+            for (label, fg) in [
+                ("asks", colors.zoom_needs),
+                ("failed", colors.zoom_failed),
+                ("notice", colors.zoom_notice),
+            ] {
+                for (surface, bg) in [
+                    ("toolbar", colors.bg_toolbar),
+                    ("hover", colors.bg_hover),
+                    ("active", colors.bg_active),
+                ] {
+                    let ratio = contrast(luminance(fg), luminance(bg));
+                    if ratio < 4.5 {
+                        failures.push(format!("{name} {label} on {surface}: {ratio:.2}"));
+                    }
+                }
+            }
+            let header = colors.pane_header_bg();
+            for (label, fg, alpha, target) in [
+                ("outside workspace", colors.zoom_needs, 28.0 / 255.0, 4.5),
+                ("needs badge", colors.zoom_needs, 36.0 / 255.0, 3.0),
+                ("failed badge", colors.zoom_failed, 26.0 / 255.0, 3.0),
+            ] {
+                let bg = lerp_color(header, fg, alpha);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                if ratio < target {
+                    failures.push(format!("{name} {label} on header: {ratio:.2}"));
+                }
+            }
+            for (label, state, is_error) in [
+                (
+                    "needs status",
+                    Some(crate::protocol::AgentState::NeedsYou),
+                    false,
+                ),
+                (
+                    "failed status",
+                    Some(crate::protocol::AgentState::Failed),
+                    false,
+                ),
+                ("error status", None, true),
+            ] {
+                let fg = colors.status_badge_color(
+                    crate::ui::activity::escalation_color(state.as_ref(), is_error, &colors)
+                        .unwrap(),
+                );
+                let bg = lerp_color(header, fg, 36.0 / 255.0);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                if ratio < 3.0 {
+                    failures.push(format!("{name} {label} on header: {ratio:.2}"));
+                }
+            }
+            let provenance = colors.text_secondary(header);
+            let ratio = contrast(luminance(provenance), luminance(header));
+            if ratio < 3.0 {
+                failures.push(format!("{name} provenance on header: {ratio:.2}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn plexi_family_light_dark_classification() {
+        for (name, light) in [
+            ("plexi-night", false),
+            ("plexi-dusk", false),
+            ("plexi-dawn", true),
+            ("plexi-day", true),
+        ] {
+            assert_eq!(is_light_preset(name), light, "{name}");
+            let bg = Colors::from_config(&preset_colors(name).unwrap()).terminal_bg;
+            assert_eq!(luminance(bg) > 0.4, light, "{name} terminal_bg luminance");
+        }
+    }
+
+    #[test]
+    fn plexi_family_names_are_registered() {
+        for name in PLEXI_PRESETS {
+            assert!(
+                preset_names().contains(&name),
+                "{name} missing from preset_names"
+            );
+            assert_eq!(canonical_preset_name(name), Some(name));
+        }
+    }
+
+    #[test]
+    fn unknown_legacy_preset_falls_back_to_the_default_preset() {
+        let config = crate::config::PlexiConfig {
+            theme_preset: Some("plexi-bogus".into()),
+            ..Default::default()
+        };
+        let expected = Colors::from_config(&preset_colors(DEFAULT_PRESET).unwrap());
+        assert!(colors_from_config(&config) == expected);
+    }
+
+    #[test]
+    fn default_preset_is_plexi_dusk() {
+        assert_eq!(DEFAULT_PRESET, "plexi-dusk");
+        let expected = Colors::from_config(&preset_colors("plexi-dusk").unwrap());
+        let fallback = colors_from_config(&crate::config::PlexiConfig::default());
+        assert!(
+            fallback == expected,
+            "config naming no preset must resolve to the default preset"
+        );
     }
 }

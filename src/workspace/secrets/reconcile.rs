@@ -14,7 +14,7 @@ use super::KEYCHAIN_SERVICE;
 
 #[cfg(all(target_os = "macos", not(test)))]
 use super::index::{index_read, index_write};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use super::system_store;
 
 /// Legacy → canonical friendly-name spellings. One canonical form per secret;
@@ -22,9 +22,7 @@ use super::system_store;
 const FRIENDLY_NAME_ALIASES: &[(&str, &str)] = &[("openrouter-api-key", "OPENROUTER_API_KEY")];
 
 /// Split `plexi:<scope>:<friendly>` into its scope and friendly parts. `None`
-/// for any account that is not in the namespaced form (e.g. the pre-#322
-/// `plexi-run/<dir>/<key>` accounts, which `migrate_legacy_global_secrets`
-/// owns).
+/// for any account that is not in the namespaced form.
 fn split_account(account: &str) -> Option<(&str, &str)> {
     account.strip_prefix("plexi:")?.split_once(':')
 }
@@ -252,7 +250,7 @@ pub(super) fn reconcile(
 }
 
 /// Scan the store backend, reconcile `secrets-index.json` against it, and
-/// persist the result. Called when the Secrets app loads or is refreshed.
+/// persist the result. Called when the Secrets plugin loads or is refreshed.
 #[cfg(all(target_os = "macos", not(test)))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
@@ -272,28 +270,24 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     Ok(report)
 }
 
-/// Linux variant. The file store IS its own index — `scan_accounts` and
-/// `list_with_prefix` read the same bytes — so there is no separate
-/// `secrets-index.json` to reconcile against or persist. Reconciliation still
-/// runs for its other job: collapsing legacy friendly-name spellings onto one
-/// canonical account, non-destructively.
+/// Index-free variant, for test builds and for Windows.
+///
+/// Test binaries have the index-file layer compiled out entirely — its only
+/// possible target is the user's real `secrets-index.json` — so there is no
+/// file to read back or persist. Windows never had one: `CredEnumerateW`
+/// enumerates the backend directly, so the scan is already authoritative and
+/// a sidecar could only go stale. Either way the scan is the whole truth.
 #[cfg(all(target_os = "linux", not(test)))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
     let scanned = store.scan_accounts()?;
-    // Passing the scan as the index makes every live account already-indexed,
-    // so nothing is reported adopted or stale. On a backend that cannot drift
-    // from itself those two categories are meaningless; renames and conflicts
-    // are the only real findings.
     Ok(reconcile(&scanned, &scanned, store))
 }
 
-/// Test variant. The index-file layer is compiled out of test binaries
-/// entirely — its only possible target is the user's real
-/// `secrets-index.json` — so there is no file to read back or persist and the
-/// scan is the whole truth. Keeps the Secrets app's load path callable under
-/// test without giving a test binary a route to the real index.
-#[cfg(all(any(target_os = "macos", target_os = "linux"), test))]
+#[cfg(any(
+    all(any(target_os = "macos", target_os = "linux"), test),
+    all(windows, not(test))
+))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();
     let scanned = store.scan_accounts()?;

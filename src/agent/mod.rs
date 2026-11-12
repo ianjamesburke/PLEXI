@@ -5,19 +5,23 @@
 //! files in the workspace:
 //!
 //! ```text
-//! <workspace>/<workspace_channel_dir>/agents/<id>/
+//! <workspace>/.plexi/agents/<id>/
 //!   AGENT.md       — role prose, injected as the system prompt
 //!   settings.toml  — identity, requested permissions, requested subscriptions
 //! ```
+//!
+//! A workspace that still has definitions under `<workspace_channel_dir>/agents/`
+//! is migrated once into `.plexi/agents/` on load. The copy does not grant
+//! anything; host grant records stay the only authority.
 //!
 //! `settings.toml` *requests* behavior; only broker grant records (and the
 //! agent's own posture for actor-tier allow/ask/deny) decide what the agent
 //! may actually do:
 //!
 //! - **Event subscriptions** always require a persisted user `Allow` grant on
-//!   `app_event_stream:<app_id>::<event>`. A denied/ungranted subscription
+//!   `plugin_event_stream:<plugin_id>::<event>`. A denied/ungranted subscription
 //!   means the agent never sees the events.
-//! - **App tools** are gated per turn on `app_connector:app.<tool_name>`.
+//! - **App tools** are gated per turn on `plugin_connector:plugin.<tool_name>`.
 //!   The agent's `[permissions]` posture participates at the actor tiers, so
 //!   read-only tools in `allow = [...]` work without a user grant, while
 //!   `ask = [...]` tools need an explicit user grant record. Non-allowed
@@ -28,11 +32,15 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
+pub mod fleet;
+pub mod runs;
+pub(crate) mod team;
+
 use crate::broker::{
-    ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
-    TargetType,
+    ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
+    PermissionRequest, TargetType,
 };
-use crate::host::app_timeline::{AppTimeline, EventDelivery};
+use crate::host::plugin_timeline::{EventDelivery, PluginTimeline};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
@@ -41,12 +49,34 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-/// System prompt for the built-in `default` agent.
+/// The built-in `default` agent's template, embedded at compile time.
 ///
-/// Every other agent reads its prose from an `AGENT.md` in its own directory;
-/// the built-in one has no directory, so its `AGENT.md` ships beside this
-/// module and is embedded at compile time.
-pub const DEFAULT_AGENT_PROMPT: &str = include_str!("AGENT.md");
+/// Every other agent reads its prose from a persona file in its own directory;
+/// the built-in one has no directory, so its definition ships beside this
+/// module and is seeded into `<workspace>/.plexi/agents/default/` on first use
+/// (`ensure_workspace_default_agent`) so the user owns and can edit the file.
+/// The registry's built-in and the seeded copy parse the same template, so they
+/// cannot drift.
+pub const DEFAULT_AGENT_SETTINGS: &str = include_str!("default/settings.toml");
+pub const DEFAULT_AGENT_PERSONA: &str = include_str!("default/persona.md");
+
+/// Parse the embedded built-in `default`. `None` only if the compiled-in
+/// template is invalid, which `builtin_default_agent_is_a_launchable_pi_agent`
+/// keeps from shipping.
+fn builtin_default_agent() -> Option<AgentDefinition> {
+    match AgentDefinition::parse_from(
+        DEFAULT_AGENT_PERSONA,
+        DEFAULT_AGENT_SETTINGS,
+        AgentSource::BuiltIn,
+        None,
+    ) {
+        Ok(definition) => Some(definition),
+        Err(error) => {
+            log::error!("assistant: embedded default agent template is invalid: {error}");
+            None
+        }
+    }
+}
 
 // ── Agent definition ─────────────────────────────────────────────────────────
 
@@ -98,6 +128,17 @@ pub struct AgentSubscriptionRequest {
     pub default: Decision,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentHarnessConfig {
+    pub cli: String,
+    pub model: Option<String>,
+    pub fallback: Option<String>,
+    pub ephemeral: bool,
+    pub result_schema: Option<serde_json::Value>,
+    pub extensions: Vec<String>,
+    pub flags: Vec<String>,
+}
+
 /// A loaded agent: `AGENT.md` prose + parsed `settings.toml`.
 #[derive(Debug, Clone)]
 pub struct AgentDefinition {
@@ -117,11 +158,27 @@ pub struct AgentDefinition {
     pub tools: Vec<String>,
     pub skills: Vec<String>,
     pub hooks: Vec<String>,
+    /// Default ledger client for this agent's runs. A per-run override wins.
+    pub client: Option<String>,
+    /// Default ledger kind. `None` means the run's own kind, or `output`.
+    pub kind: Option<crate::plexi_ai::ledger::RunKind>,
+    /// Optional `[harness]` configuration for CLI worker agents (`plexi agent spawn`).
+    pub harness: Option<AgentHarnessConfig>,
+    pub can_call: Vec<String>,
+    pub can_handoff: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SettingsToml {
+    #[serde(default)]
+    can_call: Vec<String>,
+    #[serde(default)]
+    can_handoff: Vec<String>,
     agent: AgentTable,
+    #[serde(default)]
+    harness: Option<HarnessTable>,
+    #[serde(default)]
+    permissions: Option<toml::Value>,
     #[serde(default)]
     subscriptions: Vec<SubscriptionTable>,
     #[serde(default)]
@@ -132,6 +189,28 @@ struct SettingsToml {
     skills: NameList,
     #[serde(default)]
     hooks: NameList,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarnessTable {
+    #[serde(default)]
+    can_call: Option<Vec<String>>,
+    #[serde(default)]
+    can_handoff: Option<Vec<String>>,
+    cli: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    fallback: Option<String>,
+    #[serde(default)]
+    ephemeral: Option<bool>,
+    #[serde(default)]
+    result_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    extensions: Vec<String>,
+    #[serde(default, alias = "args")]
+    flags: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -150,20 +229,44 @@ struct ModelRouteTable {
 struct AgentTable {
     id: String,
     display_name: String,
-    default_tier: String,
+    #[serde(default)]
+    default_tier: Option<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
     effort: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct SubscriptionTable {
+    // Permanent settings.toml spelling; agents keep their existing subscriptions.
     app: String,
     events: Vec<String>,
     payload: String,
     trigger: String,
     default: String,
+}
+
+/// `script` is a one-shot `/bin/sh -c` harness: allowed only as the explicit
+/// `cli` type, never as a `fallback` that a missing agent binary could fall into.
+fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let script_ok = field == "cli" && trimmed == "script";
+    if matches!(trimmed, "pi" | "claude" | "codex" | "agy") || script_ok {
+        Ok(trimmed.to_string())
+    } else if field == "cli" {
+        Err(format!(
+            "settings.toml: [harness] invalid {field} '{raw}' (expected one of: pi, claude, codex, agy, script)"
+        ))
+    } else {
+        Err(format!(
+            "settings.toml: [harness] invalid {field} '{raw}' (expected one of: pi, claude, codex, agy)"
+        ))
+    }
 }
 
 impl AgentDefinition {
@@ -192,15 +295,146 @@ impl AgentDefinition {
         if settings.agent.display_name.trim().is_empty() {
             return Err("settings.toml: [agent] display_name must be non-empty".to_string());
         }
-        let default_tier = parse_enum::<ModelTier>("default_tier", &settings.agent.default_tier)
-            .map_err(|e| format!("settings.toml: [agent] {e}"))?;
-        let posture = PermissionPosture::from_toml_str(settings_toml)
-            .map_err(|e| format!("settings.toml: {e}"))?;
+        let has_harness = settings.harness.is_some();
+        let default_tier = match settings.agent.default_tier.as_deref() {
+            Some(raw) => parse_enum::<ModelTier>("default_tier", raw)
+                .map_err(|e| format!("settings.toml: [agent] {e}"))?,
+            None if has_harness => ModelTier::Medium,
+            None => {
+                return Err(
+                    "settings.toml: [agent] missing required field `default_tier`".to_string(),
+                )
+            }
+        };
+        let posture = if settings.permissions.is_some() || !has_harness {
+            PermissionPosture::from_toml_str(settings_toml)
+                .map_err(|e| format!("settings.toml: {e}"))?
+        } else {
+            PermissionPosture {
+                default_posture: Decision::Ask,
+                allow: Vec::new(),
+                ask: Vec::new(),
+                deny: Vec::new(),
+            }
+        };
+        let can_call = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_call.clone())
+            .unwrap_or(settings.can_call);
+        let can_handoff = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_handoff.clone())
+            .unwrap_or(settings.can_handoff);
+        for (field, roles) in [("can_call", &can_call), ("can_handoff", &can_handoff)] {
+            for role in roles {
+                crate::cli::agent::validate_agent_slug(role)
+                    .map_err(|error| format!("settings.toml: {field}: {error}"))?;
+            }
+        }
+        let harness = match settings.harness {
+            None => None,
+            Some(h) => {
+                let cli = parse_harness_cli_name("cli", &h.cli)?;
+                let fallback = h
+                    .fallback
+                    .as_deref()
+                    .map(|fb| parse_harness_cli_name("fallback", fb))
+                    .transpose()?;
+                let model = h
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let result_schema = match &h.result_schema {
+                    None => None,
+                    Some(serde_json::Value::String(spec)) => Some(
+                        crate::host::pane_result::parse_schema_spec(spec, path.as_deref())
+                            .map_err(|e| format!("settings.toml: [harness] result_schema: {e}"))?,
+                    ),
+                    Some(raw @ serde_json::Value::Object(_)) => Some(
+                        crate::host::pane_result::normalize_schema_value(raw, path.as_deref())
+                            .map_err(|e| format!("settings.toml: [harness] result_schema: {e}"))?,
+                    ),
+                    Some(_) => {
+                        return Err(
+                            "settings.toml: [harness] result_schema must be a JSON Schema table/object or a path/JSON string"
+                                .to_string(),
+                        )
+                    }
+                };
+                let mut extensions = Vec::with_capacity(h.extensions.len());
+                for (i, ext) in h.extensions.iter().enumerate() {
+                    let trimmed = ext.trim();
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "settings.toml: [harness] extensions[{i}] must be non-empty"
+                        ));
+                    }
+                    extensions.push(trimmed.to_string());
+                }
+                let mut flags = Vec::with_capacity(h.flags.len());
+                for (i, flag) in h.flags.iter().enumerate() {
+                    let trimmed = flag.trim();
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "settings.toml: [harness] flags[{i}] must be non-empty"
+                        ));
+                    }
+                    flags.push(flag.clone());
+                }
+                if let Some(adapter) = crate::cli::agent::harness_adapter(&cli) {
+                    crate::cli::agent::validate_custom_harness_flags(
+                        adapter,
+                        &flags,
+                        model.as_deref(),
+                    )
+                    .map_err(|e| format!("settings.toml: [harness] {e}"))?;
+                }
+                if let Some(ref fb) = fallback {
+                    if let Some(fb_adapter) = crate::cli::agent::harness_adapter(fb) {
+                        crate::cli::agent::validate_custom_harness_flags(
+                            fb_adapter,
+                            &flags,
+                            model.as_deref(),
+                        )
+                        .map_err(|e| format!("settings.toml: [harness] fallback '{fb}': {e}"))?;
+                    }
+                }
+                Some(AgentHarnessConfig {
+                    cli,
+                    model,
+                    fallback,
+                    ephemeral: h.ephemeral.unwrap_or(false),
+                    result_schema,
+                    extensions,
+                    flags,
+                })
+            }
+        };
         let effort = settings
             .agent
             .effort
             .as_deref()
             .map(ReasoningEffort::parse)
+            .transpose()
+            .map_err(|e| format!("settings.toml: [agent] {e}"))?;
+        let client = settings
+            .agent
+            .client
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        let kind = settings
+            .agent
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(crate::plexi_ai::ledger::RunKind::parse)
             .transpose()
             .map_err(|e| format!("settings.toml: [agent] {e}"))?;
         let mut model_routes = AgentModelRoutes::default();
@@ -234,9 +468,9 @@ impl AgentDefinition {
             subscriptions.push(AgentSubscriptionRequest {
                 app: sub.app.clone(),
                 events: sub.events.clone(),
-                payload: parse_enum::<PayloadMode>("payload", &sub.payload).map_err(&ctx)?,
-                trigger: parse_enum::<TriggerMode>("trigger", &sub.trigger).map_err(&ctx)?,
-                default: parse_enum::<Decision>("default", &sub.default).map_err(&ctx)?,
+                payload: parse_enum::<PayloadMode>("payload", &sub.payload).map_err(ctx)?,
+                trigger: parse_enum::<TriggerMode>("trigger", &sub.trigger).map_err(ctx)?,
+                default: parse_enum::<Decision>("default", &sub.default).map_err(ctx)?,
             });
         }
         Ok(Self {
@@ -254,20 +488,76 @@ impl AgentDefinition {
             tools: settings.tools.enabled,
             skills: settings.skills.enabled,
             hooks: settings.hooks.enabled,
+            client,
+            kind,
+            harness,
+            can_call,
+            can_handoff,
         })
     }
 
-    /// Load one agent directory (`AGENT.md` + `settings.toml`) as belonging to
+    /// Load one agent directory (persona file + `settings.toml`) as belonging to
     /// `source` — the tier it was discovered in, which the caller knows and the
     /// files themselves do not record.
     pub fn load_dir(dir: &Path, source: AgentSource) -> Result<Self, String> {
-        let prompt_path = dir.join("AGENT.md");
+        let prompt_path = agent_persona_path(dir).ok_or_else(|| {
+            format!(
+                "{} has no persona file — expected AGENT.md or persona.md (it is the agent's system prompt)",
+                dir.display()
+            )
+        })?;
         let settings_path = dir.join("settings.toml");
         let prompt = std::fs::read_to_string(&prompt_path)
             .map_err(|e| format!("failed to read {}: {e}", prompt_path.display()))?;
         let settings = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("failed to read {}: {e}", settings_path.display()))?;
         Self::parse_from(&prompt, &settings, source, Some(dir.to_path_buf()))
+    }
+}
+
+/// Local discovery projection. An empty interface list advertises no A2A server.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCard {
+    name: String,
+    description: String,
+    skills: Vec<AgentCardSkill>,
+    capabilities: serde_json::Value,
+    supported_interfaces: Vec<serde_json::Value>,
+    version: String,
+    default_input_modes: Vec<String>,
+    default_output_modes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AgentCardSkill {
+    id: String,
+    name: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+impl AgentCard {
+    pub fn from_definition(definition: &AgentDefinition) -> Self {
+        Self {
+            name: definition.id.clone(),
+            description: definition.description.clone(),
+            skills: definition
+                .skills
+                .iter()
+                .map(|name| AgentCardSkill {
+                    id: name.clone(),
+                    name: name.clone(),
+                    description: name.clone(),
+                    tags: Vec::new(),
+                })
+                .collect(),
+            capabilities: serde_json::json!({}),
+            supported_interfaces: Vec::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+        }
     }
 }
 
@@ -279,37 +569,23 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     pub fn load(profile_dir: &Path, workspace_root: &Path) -> Self {
-        let default = AgentDefinition {
-            id: "default".to_string(),
-            display_name: "Plexi Assistant".to_string(),
-            default_tier: ModelTier::Medium,
-            prompt: DEFAULT_AGENT_PROMPT.to_string(),
-            posture: PermissionPosture {
-                default_posture: Decision::Ask,
-                allow: Vec::new(),
-                ask: Vec::new(),
-                deny: Vec::new(),
-            },
-            subscriptions: Vec::new(),
-            source: AgentSource::BuiltIn,
-            path: None,
-            description: "General workspace assistant".to_string(),
-            model_routes: AgentModelRoutes::default(),
-            effort: None,
-            tools: Vec::new(),
-            skills: Vec::new(),
-            hooks: Vec::new(),
-        };
+        Self::load_with_optional_workspace(profile_dir, Some(workspace_root))
+    }
+
+    pub fn load_with_optional_workspace(profile_dir: &Path, workspace_root: Option<&Path>) -> Self {
+        let builtin_default = builtin_default_agent();
         let user_dir = profile_dir.join("agents");
-        let workspace_dir = workspace_agents_dir(workspace_root);
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
-        let workspace_agents = load_agents_dir(&workspace_dir, AgentSource::Workspace);
+        let workspace_agents = workspace_root
+            .map(load_workspace_agent_definitions)
+            .unwrap_or_default();
         log::info!(
-            "assistant: agent registry sources built-in=1 user={} workspace={}",
+            "assistant: agent registry sources built-in={} user={} workspace={}",
+            usize::from(builtin_default.is_some()),
             user_agents.len(),
             workspace_agents.len()
         );
-        let mut definitions = vec![default];
+        let mut definitions: Vec<AgentDefinition> = builtin_default.into_iter().collect();
         definitions.extend(user_agents);
         definitions.extend(workspace_agents);
         let mut active = BTreeMap::new();
@@ -342,11 +618,281 @@ impl AgentRegistry {
     }
 }
 
-/// `<workspace>/<workspace_channel_dir>/agents` — the workspace agent tier.
+/// An agent directory's persona file: `AGENT.md` (every agent written so far),
+/// else `persona.md` (what the built-in default's template seeds).
+fn agent_persona_path(dir: &Path) -> Option<PathBuf> {
+    let agent_md = dir.join("AGENT.md");
+    if agent_md.is_file() {
+        return Some(agent_md);
+    }
+    let persona_md = dir.join("persona.md");
+    persona_md.is_file().then_some(persona_md)
+}
+
+/// Write the built-in `default` into `<workspace>/.plexi/agents/default/` on
+/// first use, as a definition the user owns, versions, and can edit.
+///
+/// A directory that already exists is left exactly as it is — a user's own
+/// `default` always wins over the template. Partial-write cleanup only ever
+/// removes the directory this call created.
+pub fn ensure_workspace_default_agent(workspace_root: &Path) -> Result<PathBuf, String> {
+    let parent = workspace_agents_dir(workspace_root);
+    let dir = parent.join("default");
+    if dir.exists() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    if let Err(error) = std::fs::create_dir(&dir) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            // Another first use won the race; that definition is the user's now.
+            return Ok(dir);
+        }
+        return Err(format!("create {}: {error}", dir.display()));
+    }
+    for (name, contents) in [
+        ("settings.toml", DEFAULT_AGENT_SETTINGS),
+        ("persona.md", DEFAULT_AGENT_PERSONA),
+    ] {
+        let path = dir.join(name);
+        if let Err(error) = std::fs::write(&path, contents) {
+            if let Err(cleanup) = std::fs::remove_dir_all(&dir) {
+                log::error!(
+                    "agent definitions: failed to remove partial default agent {}: {cleanup}",
+                    dir.display()
+                );
+            }
+            return Err(format!("write {}: {error}", path.display()));
+        }
+    }
+    log::info!(
+        "agent definitions: seeded the workspace default agent at {}",
+        dir.display()
+    );
+    Ok(dir)
+}
+
+/// `<workspace>/.plexi/agents` — the only workspace agent-definition tier.
+/// Channel profiles stay out of this path; skills already use the same
+/// neutral `.plexi` root.
 pub fn workspace_agents_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root
+    workspace_root.join(".plexi").join("agents")
+}
+
+/// Channel-scoped directory that held workspace agent definitions before they
+/// moved to `.plexi/agents`. `None` when that path is already the canonical
+/// directory (a `.plexi` channel).
+pub fn legacy_workspace_agents_dir(workspace_root: &Path) -> Option<PathBuf> {
+    let legacy = workspace_root
         .join(crate::config::workspace_channel_dir())
-        .join("agents")
+        .join("agents");
+    if legacy == workspace_agents_dir(workspace_root) {
+        None
+    } else {
+        Some(legacy)
+    }
+}
+
+/// Read workspace definitions, migrating a legacy channel directory first.
+pub fn load_workspace_agent_definitions(workspace_root: &Path) -> Vec<AgentDefinition> {
+    migrate_legacy_workspace_agents(workspace_root);
+    load_agents_dir(
+        &workspace_agents_dir(workspace_root),
+        AgentSource::Workspace,
+    )
+}
+
+/// Copy legacy workspace agent definitions into `.plexi/agents`, then remove
+/// the old directory. A second call is a no-op. A definition that already
+/// exists with different bytes is left in place and marked, never overwritten
+/// and never given a new id. `grants.toml` is not copied: the file cannot
+/// authorize anything.
+pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
+    let Some(legacy) = legacy_workspace_agents_dir(workspace_root) else {
+        return;
+    };
+    if !legacy.is_dir() {
+        return;
+    }
+    let canonical = workspace_agents_dir(workspace_root);
+    let entries = match std::fs::read_dir(&legacy) {
+        Ok(entries) => entries,
+        Err(error) => {
+            log::error!(
+                "agent definitions: failed to read legacy directory {}: {error}",
+                legacy.display()
+            );
+            return;
+        }
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_dir() && agent_persona_path(&path).is_some() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+            Err(error) => log::error!(
+                "agent definitions: failed to read legacy entry in {}: {error}",
+                legacy.display()
+            ),
+        }
+    }
+    names.sort();
+    if names.is_empty() {
+        log::info!(
+            "agent definitions: legacy directory {} has no agent definitions",
+            legacy.display()
+        );
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&canonical) {
+        log::error!(
+            "agent definitions: failed to create {}: {error}",
+            canonical.display()
+        );
+        return;
+    }
+    for name in names {
+        let src = legacy.join(&name);
+        let dest = canonical.join(&name);
+        let kept = src.join(".plexi-migration-kept");
+        if kept.is_file() {
+            log::info!(
+                "agent definitions: collision for '{name}' already recorded; legacy left at {}",
+                src.display()
+            );
+            continue;
+        }
+        if dest.exists() {
+            if definition_files_match(&src, &dest) {
+                match std::fs::remove_dir_all(&src) {
+                    Ok(()) => log::info!(
+                        "agent definitions: '{name}' already at {}; removed legacy {}",
+                        dest.display(),
+                        src.display()
+                    ),
+                    Err(error) => log::error!(
+                        "agent definitions: '{name}' already migrated but legacy {} could not be removed: {error}",
+                        src.display()
+                    ),
+                }
+            } else {
+                log::info!(
+                    "agent definitions: collision migrating '{name}' — {} differs from {}; legacy kept",
+                    dest.display(),
+                    src.display()
+                );
+                if let Err(error) = std::fs::write(&kept, "divergent definition; not overwritten\n")
+                {
+                    log::error!(
+                        "agent definitions: failed to mark legacy {} kept: {error}",
+                        src.display()
+                    );
+                }
+            }
+            continue;
+        }
+        if let Err(error) = copy_tree_skipping_grants(&src, &dest) {
+            log::error!(
+                "agent definitions: failed to copy '{name}' from {} to {}: {error}",
+                src.display(),
+                dest.display()
+            );
+            if dest.exists() {
+                if let Err(cleanup) = std::fs::remove_dir_all(&dest) {
+                    log::error!(
+                        "agent definitions: failed to remove partial copy {}: {cleanup}",
+                        dest.display()
+                    );
+                }
+            }
+            continue;
+        }
+        append_migration_receipt(&canonical, &name);
+        match std::fs::remove_dir_all(&src) {
+            Ok(()) => log::info!(
+                "agent definitions: migrated '{name}' from {} to {}",
+                src.display(),
+                dest.display()
+            ),
+            Err(error) => log::error!(
+                "agent definitions: copied '{name}' to {} but failed to remove legacy {}: {error}",
+                dest.display(),
+                src.display()
+            ),
+        }
+    }
+}
+
+fn definition_files_match(left: &Path, right: &Path) -> bool {
+    for name in ["AGENT.md", "persona.md", "settings.toml"] {
+        let a = left.join(name);
+        let b = right.join(name);
+        match (std::fs::read(&a), std::fs::read(&b)) {
+            (Ok(left_bytes), Ok(right_bytes)) => {
+                if left_bytes != right_bytes {
+                    return false;
+                }
+            }
+            (Err(left_error), Err(right_error))
+                if left_error.kind() == std::io::ErrorKind::NotFound
+                    && right_error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn copy_tree_skipping_grants(src: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|error| format!("create {}: {error}", dest.display()))?;
+    let entries =
+        std::fs::read_dir(src).map_err(|error| format!("read {}: {error}", src.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read entry in {}: {error}", src.display()))?;
+        let name = entry.file_name();
+        if name == "grants.toml" || name == ".plexi-migration-kept" {
+            log::info!(
+                "agent definitions: not copying {} from {} — a definition file grants nothing",
+                name.to_string_lossy(),
+                src.display()
+            );
+            continue;
+        }
+        let from = entry.path();
+        let to = dest.join(&name);
+        if from.is_dir() {
+            copy_tree_skipping_grants(&from, &to)?;
+        } else if from.is_file() {
+            std::fs::copy(&from, &to)
+                .map_err(|error| format!("copy {} to {}: {error}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn append_migration_receipt(canonical: &Path, name: &str) {
+    let path = canonical.join(".migration-receipt");
+    let prior = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = format!("migrated {name}\n");
+    if prior
+        .lines()
+        .any(|existing| existing == format!("migrated {name}"))
+    {
+        return;
+    }
+    let mut next = prior;
+    next.push_str(&line);
+    if let Err(error) = std::fs::write(&path, next) {
+        log::error!(
+            "agent definitions: failed to write migration receipt {}: {error}",
+            path.display()
+        );
+    }
 }
 
 /// Every agent directory under `dir`, in sorted path order. A missing dir means
@@ -419,13 +965,171 @@ pub fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> 
         .collect()
 }
 
+// ── Agent directory scan ─────────────────────────────────────────────────────
+
+/// Why a scanned agent directory will not be presented as a live agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentDirIssue {
+    /// The card sits under the pre-rename filename. `head.json` was renamed to
+    /// `agent.json` in code but never migrated on disk, so a legacy authority record was
+    /// unreachable and looked exactly like a missing agent.
+    LegacyAuthorityFilename {
+        found: &'static str,
+        expected: &'static str,
+        migrated: bool,
+    },
+    /// The directory lacks a file an agent definition requires.
+    MissingRequiredFile { missing: &'static str },
+}
+
+impl AgentDirIssue {
+    /// One line naming the file that is missing or legacy.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::LegacyAuthorityFilename {
+                found,
+                expected,
+                migrated,
+            } => {
+                if *migrated {
+                    format!("legacy {found} - migrated to {expected}")
+                } else {
+                    format!("legacy {found} - could not be migrated to {expected}")
+                }
+            }
+            Self::MissingRequiredFile { missing } => format!("missing {missing}"),
+        }
+    }
+}
+
+/// One scanned directory the loader will not present as an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognisedAgentDir {
+    pub path: PathBuf,
+    pub issue: AgentDirIssue,
+}
+
+/// The authority file for a directory, renaming a legacy `head.json` in place.
+///
+/// The rename *is* the migration: reading `head.json` under its old name would
+/// keep the old name alive forever, and skipping it is what made a real agent
+/// invisible. A failed rename returns `None` so the caller reports it.
+pub(crate) fn authority_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
+    let canonical = dir.join("agent.json");
+    if canonical.is_file() {
+        return Some(canonical);
+    }
+    let legacy = dir.join("head.json");
+    if !legacy.is_file() {
+        return None;
+    }
+    match std::fs::rename(&legacy, &canonical) {
+        Ok(()) => {
+            log::info!(
+                "agents: migrated legacy authority record {} to {}",
+                legacy.display(),
+                canonical.display()
+            );
+            Some(canonical)
+        }
+        Err(error) => {
+            log::error!(
+                "agents: could not migrate legacy authority record {} to {}: {error}",
+                legacy.display(),
+                canonical.display()
+            );
+            None
+        }
+    }
+}
+
+/// Classify one directory: `None` when it is a usable agent, `Some(issue)`
+/// when it is not. Migrates a legacy authority record filename on the way.
+fn classify_agent_dir(dir: &Path) -> Option<AgentDirIssue> {
+    if dir.join("agent.json").is_file() {
+        return None;
+    }
+    if dir.join("head.json").is_file() {
+        let migrated = authority_file_migrating_legacy(dir).is_some();
+        return Some(AgentDirIssue::LegacyAuthorityFilename {
+            found: "head.json",
+            expected: "agent.json",
+            migrated,
+        });
+    }
+    let has_persona = agent_persona_path(dir).is_some();
+    if has_persona && dir.join("settings.toml").is_file() {
+        return None;
+    }
+    let missing = if has_persona {
+        "settings.toml"
+    } else {
+        "AGENT.md"
+    };
+    Some(AgentDirIssue::MissingRequiredFile { missing })
+}
+
+/// Classify one directory by path, naming the path that was scanned.
+///
+/// `None` when the directory does not exist or is a usable agent.
+pub fn unrecognised_agent_dir(dir: &Path) -> Option<UnrecognisedAgentDir> {
+    if !dir.is_dir() {
+        return None;
+    }
+    classify_agent_dir(dir).map(|issue| {
+        log::info!(
+            "assistant: agent directory {} is unrecognised: {}",
+            dir.display(),
+            issue.describe()
+        );
+        UnrecognisedAgentDir {
+            path: dir.to_path_buf(),
+            issue,
+        }
+    })
+}
+
+/// Every directory under `root` that is not a usable agent, in sorted path
+/// order, each with the reason it is not one. A missing root means no agents.
+///
+/// Never fails: a legitimate layout this build does not understand is reported,
+/// not treated as an error.
+pub fn scan_agent_dirs(root: &Path) -> Vec<UnrecognisedAgentDir> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            log::error!(
+                "assistant: failed to read agent directory {}: {error}",
+                root.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(error) => log::error!(
+                "assistant: failed to read entry in agent directory {}: {error}",
+                root.display()
+            ),
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| unrecognised_agent_dir(&path))
+        .collect()
+}
+
 // ── Transcript ───────────────────────────────────────────────────────────────
 
 /// One user-visible line in an agent's conversation record. The Phase D
 /// Assistant UI renders this; until then it is surfaced via the host log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEntry {
-    /// `"event"` (injected app event), `"agent"` (model text), or `"error"`.
+    /// `"event"` (injected plugin event), `"agent"` (model text), or `"error"`.
     pub role: String,
     pub text: String,
     /// RFC 3339.
@@ -454,7 +1158,7 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     fn push_transcript(&mut self, role: &str, text: String) {
-        log::info!("agent[{}] {role}: {text}", self.def.id);
+        log::info!("{}", transcript_info_log_message(&self.def.id, role, &text));
         self.transcript.push(TranscriptEntry {
             role: role.to_string(),
             text,
@@ -463,15 +1167,20 @@ impl AgentRuntime {
     }
 }
 
+fn transcript_info_log_message(agent_id: &str, role: &str, text: &str) -> String {
+    format!("agent[{agent_id}] {role}: len={}", text.chars().count())
+}
+
 // ── AgentHost ────────────────────────────────────────────────────────────────
 
 /// Host-level registry of attached agents. Owned by `PlexiApp`, ticked once
 /// per frame. Holds its own broker grant store (same `grants.toml` as the
-/// panes) and the shared app timeline.
+/// panes) and the shared plugin timeline.
 pub struct AgentHost {
     pub agents: Vec<AgentRuntime>,
     pub grant_store: GrantStore,
-    timeline: Arc<Mutex<AppTimeline>>,
+    pub monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    timeline: Arc<Mutex<PluginTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
     /// The active host context this `AgentHost` last reloaded for — stint
@@ -484,7 +1193,7 @@ pub struct AgentHost {
     /// NOTE: `AgentHost` itself remains a single active-context singleton
     /// (like `workspace_root`) — reloaded wholesale on every context
     /// transition rather than keyed per-context the way `RegistryViews`
-    /// (Phase B) is. This mirrors the pre-Phase-B `AppRegistry` bug class for
+    /// (Phase B) is. This mirrors the pre-Phase-B `PluginRegistry` bug class for
     /// agents specifically; fixing it is out of scope for Phase C and is
     /// flagged for a future stint.
     context_id: u64,
@@ -502,7 +1211,7 @@ impl AgentHost {
     /// shared timeline, and the live AI broker.
     pub fn new(
         grant_store: GrantStore,
-        timeline: Arc<Mutex<AppTimeline>>,
+        timeline: Arc<Mutex<PluginTimeline>>,
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
     ) -> Self {
@@ -510,6 +1219,7 @@ impl AgentHost {
         Self {
             agents: Vec::new(),
             grant_store,
+            monitor: crate::broker::gate::PermissionMonitor::ephemeral(),
             timeline,
             ai_broker,
             workspace_root,
@@ -522,10 +1232,10 @@ impl AgentHost {
 
     /// Re-point the host at a (possibly different or newly active) workspace.
     /// Called from `apply_context_transition_effects` — the same choke point
-    /// that rescans the app registry — so agents defined in a workspace that
+    /// that rescans the plugin registry — so agents defined in a workspace that
     /// becomes active after boot are picked up. Detaches every current agent
-    /// (removing its timeline subscriptions), re-reads grants from disk when
-    /// `grants_dir` is set, and attaches the new root's agents. `None` =
+    /// (removing its timeline subscriptions), keeps the live profile permission
+    /// monitor when `grants_dir` is set, and attaches the new root's agents. `None` =
     /// no active workspace = no agents. `context_id` is the host-observed
     /// active context (`WorkspaceRouter::active().context_id` at the call
     /// site) — stored unconditionally so `gated_dispatcher`'s connector-tool
@@ -543,14 +1253,24 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
+            // The profile monitor is the live grant store (`runs` records
+            // scope allows here). Replacing it from disk drops an allow whose
+            // seal save has not landed, and the next `agents.list` comes back
+            // as `permission_required` with no `agents` field. Keep that
+            // monitor. The subscription copy is still the file on disk.
             self.grant_store = GrantStore::load_or_default(dir);
+            self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);
+            log::info!(
+                "agent: workspace reload kept the live permission monitor ({} grant(s))",
+                self.monitor.store().records().len()
+            );
         }
         let Some(root) = workspace_root else {
             log::info!("agent: no active workspace — no agents attached");
             return;
         };
         self.workspace_root = root.clone();
-        for def in load_agents_dir(&workspace_agents_dir(&root), AgentSource::Workspace) {
+        for def in load_workspace_agent_definitions(&root) {
             self.attach(def);
         }
         log::info!(
@@ -562,7 +1282,7 @@ impl AgentHost {
 
     /// Attach an agent: register it as an `ActorType::Agent` actor and create
     /// broker-gated subscriptions for its requested event streams. Every
-    /// event target (`app_event_stream:<app>::<event>`) must evaluate to a
+    /// event target (`plugin_event_stream:<plugin>::<event>`) must evaluate to a
     /// persisted user `Allow`; anything else (including posture-only allows)
     /// is refused — subscriptions always need an explicit user grant. The
     /// agent is attached either way; without subscriptions it sees nothing.
@@ -572,13 +1292,14 @@ impl AgentHost {
             let mut granted = true;
             for event in &sub.events {
                 let target = format!("{}::{}", sub.app, event);
-                let req = PermissionRequest::new(
+                let req = PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
                     ActorType::Agent,
                     &def.id,
-                    TargetType::AppEventStream,
+                    ActorScope::User,
                     &target,
-                    Some(&self.workspace_root),
-                );
+                    &self.workspace_root,
+                    None,
+                ));
                 // Subscriptions deliberately evaluate WITHOUT the agent's own
                 // posture: an agent must not self-grant event access from its
                 // settings file. Only user/workspace/managed grants count.
@@ -597,11 +1318,11 @@ impl AgentHost {
             }
             let subscription_id = format!("agent-sub-{}", uuid::Uuid::new_v4());
             self.timeline.lock().unwrap().add_subscription(
-                crate::host::app_timeline::SubscriptionRecord {
+                crate::host::plugin_timeline::SubscriptionRecord {
                     subscription_id: subscription_id.clone(),
                     subscriber_type: ActorType::Agent,
                     subscriber_id: def.id.clone(),
-                    app_id: sub.app.clone(),
+                    plugin_id: sub.app.clone(),
                     event_names: sub.events.clone(),
                     payload_mode: sub.payload,
                     trigger_mode: sub.trigger,
@@ -689,7 +1410,7 @@ impl AgentHost {
         for d in deliveries {
             let agent = &mut self.agents[agent_idx];
             // Never trigger an agent from its own actions: events it emitted
-            // as the actor, or events an app emitted while servicing one of
+            // as the actor, or events a plugin emitted while servicing one of
             // its tool calls (`caused_by`). Without this, a move → move.played
             // → turn → move feedback loop plays the game against itself.
             let self_caused =
@@ -704,7 +1425,7 @@ impl AgentHost {
             }
             let line = format!(
                 "[{}] {} {}{}",
-                d.app_id,
+                d.plugin_id,
                 d.event,
                 d.summary.as_deref().unwrap_or("(no summary)"),
                 d.payload
@@ -735,43 +1456,56 @@ impl AgentHost {
     }
 
     /// Build the broker-gated tool snapshot for an agent: tools visible in
-    /// this workspace whose `app_connector:app.<tool_name>` target evaluates
+    /// this workspace whose `plugin_connector:plugin.<tool_name>` target evaluates
     /// to `Allow` for the agent (user grants + the agent's posture tiers).
     fn gated_dispatcher(&self, agent: &AgentRuntime) -> ToolDispatcher {
-        let mut dispatcher =
-            ToolDispatcher::from_registry(0, format!("agent:{}", agent.def.id), self.context_id);
-        let allowed: HashSet<String> = dispatcher
+        // Discovery does not authorize. Posture deny still hides a tool;
+        // everything else stays visible and `dispatch_call` rechecks the monitor.
+        let mut dispatcher = ToolDispatcher::from_registry(
+            crate::plexi_ai::tool_dispatch::DispatchScope {
+                caller_pane_id: 0,
+                caller_plugin_id: format!("agent:{}", agent.def.id),
+                actor_type: ActorType::Agent,
+                actor_scope: ActorScope::User,
+                workspace_root: self.workspace_root.clone(),
+                context_id: self.context_id,
+                trust_origin: "host".to_string(),
+                posture: Some(agent.def.posture.clone()),
+            },
+            std::sync::Arc::clone(&self.monitor),
+        );
+        let denied: HashSet<String> = dispatcher
             .all_tools()
             .into_iter()
             .filter(|tool| {
                 let req = PermissionRequest::new(
                     ActorType::Agent,
                     &agent.def.id,
-                    TargetType::AppConnector,
-                    &format!("app.{}", tool.name),
+                    TargetType::PluginConnector,
+                    &tool.name,
                     Some(&self.workspace_root),
                 );
-                let with_posture = self.grant_store.evaluate(&req, Some(&agent.def.posture));
-                // `Ask` from the posture tier is satisfied by an explicit
-                // user grant: re-evaluate without the posture — `Allow` then
-                // means a persisted user/workspace allow exists (denies still
-                // dominate both evaluations).
-                let allowed = with_posture == Decision::Allow
-                    || (with_posture == Decision::Ask
-                        && self.grant_store.evaluate(&req, None) == Decision::Allow);
-                if !allowed {
+                let decision = self.grant_store.evaluate(&req, Some(&agent.def.posture));
+                if decision == Decision::Deny {
                     log::info!(
-                        "agent[{}]: tool '{}' withheld from turn ({})",
+                        "agent[{}]: tool '{}' withheld from turn (deny)",
                         agent.def.id,
-                        tool.name,
-                        with_posture.as_str()
+                        tool.name
                     );
                 }
-                allowed
+                decision == Decision::Deny
             })
             .map(|tool| tool.name)
             .collect();
-        dispatcher.retain_allowed(&allowed);
+        if !denied.is_empty() {
+            let allowed: HashSet<String> = dispatcher
+                .all_tools()
+                .into_iter()
+                .map(|tool| tool.name)
+                .filter(|name| !denied.contains(name))
+                .collect();
+            dispatcher.retain_allowed(&allowed);
+        }
         dispatcher
     }
 
@@ -796,8 +1530,11 @@ impl AgentHost {
         });
 
         let request = AiBrokerRequest {
-            app_id: format!("agent:{}", agent.def.id),
-            model_tier: agent.def.default_tier,
+            plugin_id: format!("agent:{}", agent.def.id),
+            model_mode: match agent.def.default_tier {
+                ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow,
+                ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast,
+            },
             concrete_model: agent
                 .def
                 .model_routes
@@ -812,11 +1549,18 @@ impl AgentHost {
             tool_dispatcher: Some(dispatcher),
             cancel: crate::plexi_ai::CancelToken::new(),
             max_tool_iterations: None,
+            client: agent.def.client.clone(),
+            kind: agent.def.kind,
         };
         let agent_id = agent.def.id.clone();
         log::info!(
-            "agent[{agent_id}]: starting conversation turn ({} event line(s))",
-            event_lines.len()
+            "agent[{agent_id}]: starting conversation turn ({} event line(s)) client={:?} kind={}",
+            event_lines.len(),
+            request.client,
+            request
+                .kind
+                .map(crate::plexi_ai::ledger::RunKind::as_str)
+                .unwrap_or("output")
         );
         let broker = Arc::clone(&self.ai_broker);
         let outcome_tx = self.outcome_tx.clone();
@@ -851,17 +1595,24 @@ impl AgentHost {
     /// here — `apply_context_transition_effects` runs at the end of every
     /// `PlexiApp` constructor and on every context change, and its
     /// `reload_workspace` call is the single owner of agent loading.
-    pub fn production(ai_config: Option<crate::config::AiConfig>) -> Self {
+    pub fn production(
+        ai_config: Option<crate::config::AiConfig>,
+        model_modes: crate::config::ResolvedModelModes,
+    ) -> Self {
         let config_dir = crate::config::config_dir();
         let grant_store = GrantStore::load_or_default(&config_dir);
         // The config dir is an inert root that matches no pane's workspace —
         // replaced by the first `reload_workspace` with an active workspace.
         let mut host = Self::new(
             grant_store,
-            crate::host::app_timeline::global(),
-            Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(ai_config)),
+            crate::host::plugin_timeline::global(),
+            Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                ai_config,
+                model_modes,
+            )),
             config_dir.clone(),
         );
+        host.monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
         host.grants_dir = Some(config_dir);
         host
     }
@@ -872,7 +1623,7 @@ impl AgentHost {
     pub fn inert() -> Self {
         Self::new(
             GrantStore::default(),
-            Arc::new(Mutex::new(AppTimeline::default())),
+            Arc::new(Mutex::new(PluginTimeline::default())),
             Arc::new(InertAiBroker),
             std::env::temp_dir(),
         )
@@ -881,7 +1632,7 @@ impl AgentHost {
     /// Test constructor: isolated timeline + injected broker, no disk I/O.
     #[cfg(test)]
     pub fn new_for_test(
-        timeline: Arc<Mutex<AppTimeline>>,
+        timeline: Arc<Mutex<PluginTimeline>>,
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
     ) -> Self {
@@ -902,7 +1653,7 @@ impl AiBroker for InertAiBroker {
     ) -> crate::plexi_ai::broker::AiBrokerResponse {
         log::warn!(
             "agent: InertAiBroker dispatch for '{}' — no AI broker in this context",
-            request.app_id
+            request.plugin_id
         );
         crate::plexi_ai::broker::AiBrokerResponse::err("no AI broker in this context")
     }
@@ -939,6 +1690,367 @@ trigger = "conversation"
 default = "ask"
 "#;
 
+    /// Stint 1035: `default` must be a launchable agent, not the paused
+    /// Assistant's `harness: None` persona.
+    #[test]
+    fn builtin_default_agent_is_a_launchable_pi_agent() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::load(profile.path(), ws.path());
+
+        let default = registry.active("default").expect("built-in default exists");
+        assert_eq!(default.source, AgentSource::BuiltIn);
+        assert_eq!(
+            default.harness.as_ref().map(|h| h.cli.as_str()),
+            Some("pi"),
+            "the built-in default must launch on a harness"
+        );
+        assert_ne!(default.display_name, "Plexi Assistant");
+        assert!(!default.prompt.contains("Plexi Assistant"));
+        for def in registry.agents().chain(registry.shadowed("default")) {
+            if def.id == "default" {
+                assert!(
+                    def.harness.is_some(),
+                    "no entry named `default` may carry harness: None"
+                );
+            }
+        }
+    }
+
+    /// Stint 1035: first use seeds `<workspace>/.plexi/agents/default/` — a file
+    /// the user owns, which a later first use must not overwrite.
+    #[test]
+    fn workspace_default_agent_seeds_once_and_stays_the_users_file() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+
+        let dir = ensure_workspace_default_agent(ws.path()).unwrap();
+        assert_eq!(dir, workspace_agents_dir(ws.path()).join("default"));
+        assert!(dir.join("settings.toml").is_file());
+        assert!(dir.join("persona.md").is_file());
+
+        let definitions = load_workspace_agent_definitions(ws.path());
+        let default = definitions
+            .iter()
+            .find(|d| d.id == "default")
+            .expect("the seeded default loads as a workspace agent");
+        assert_eq!(default.source, AgentSource::Workspace);
+        assert_eq!(default.harness.as_ref().map(|h| h.cli.as_str()), Some("pi"));
+
+        std::fs::write(dir.join("persona.md"), "my own persona\n").unwrap();
+        assert_eq!(ensure_workspace_default_agent(ws.path()).unwrap(), dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("persona.md")).unwrap(),
+            "my own persona\n",
+            "seeding must never overwrite the user's definition"
+        );
+    }
+
+    /// The seeded template's persona file name, which `load_dir` accepts
+    /// alongside the older `AGENT.md`.
+    #[test]
+    fn persona_md_loads_when_agent_md_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("default");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("persona.md"), "persona from persona.md\n").unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            "[agent]\nid = \"default\"\ndisplay_name = \"Default\"\n\n[harness]\ncli = \"pi\"\n",
+        )
+        .unwrap();
+
+        let definition = AgentDefinition::load_dir(&dir, AgentSource::Workspace).unwrap();
+        assert_eq!(definition.prompt, "persona from persona.md\n");
+    }
+
+    /// Stint 1036: a scan names every directory it will not present as an
+    /// agent, and a legacy `head.json` is migrated rather than skipped.
+    #[test]
+    fn scan_reports_legacy_card_and_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("lead-120cadfb");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let pane = root.path().join("writer");
+        std::fs::create_dir_all(&pane).unwrap();
+        std::fs::write(pane.join("AGENT.md"), "legacy-writer-marker\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        let legacy_issue = issues
+            .iter()
+            .find(|i| i.path == legacy)
+            .expect("legacy dir");
+        assert!(
+            legacy_issue.issue.describe().contains("head.json")
+                && legacy_issue.issue.describe().contains("agent.json"),
+            "{}",
+            legacy_issue.issue.describe()
+        );
+        assert!(
+            legacy.join("agent.json").is_file() && !legacy.join("head.json").exists(),
+            "a rename that lands as a data migration"
+        );
+        let pane_issue = issues
+            .iter()
+            .find(|i| i.path == pane)
+            .expect("AGENT.md-only dir");
+        assert!(
+            pane_issue.issue.describe().contains("settings.toml"),
+            "{}",
+            pane_issue.issue.describe()
+        );
+    }
+
+    /// Stint 1036: a legacy filename and a missing required file are distinct
+    /// reasons, not one "unrecognised" bucket.
+    #[test]
+    fn scan_distinguishes_a_legacy_filename_from_a_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{}").unwrap();
+        let incomplete = root.path().join("incomplete");
+        std::fs::create_dir_all(&incomplete).unwrap();
+        std::fs::write(incomplete.join("AGENT.md"), "prose\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        let legacy_issue = issues.iter().find(|i| i.path == legacy).unwrap();
+        let incomplete_issue = issues.iter().find(|i| i.path == incomplete).unwrap();
+        assert!(matches!(
+            legacy_issue.issue,
+            AgentDirIssue::LegacyAuthorityFilename { .. }
+        ));
+        assert!(matches!(
+            incomplete_issue.issue,
+            AgentDirIssue::MissingRequiredFile { .. }
+        ));
+    }
+
+    /// Stint 1036: a legitimate layout is not an error, so a complete
+    /// definition and a root that does not exist report nothing.
+    #[test]
+    fn scan_reports_nothing_for_a_complete_definition_or_a_missing_root() {
+        let root = tempfile::tempdir().unwrap();
+        let good = root.path().join("good");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join("AGENT.md"), "prose\n").unwrap();
+        std::fs::write(
+            good.join("settings.toml"),
+            "[agent]\nid = \"good\"\ndisplay_name = \"Good\"\n",
+        )
+        .unwrap();
+        assert_eq!(scan_agent_dirs(root.path()), Vec::new());
+        assert_eq!(scan_agent_dirs(&root.path().join("absent")), Vec::new());
+    }
+
+    #[test]
+    fn transcript_info_log_omits_turn_text() {
+        let sentinel = "SENTINEL_SECRET_DO_NOT_LOG";
+        let message = transcript_info_log_message("reviewer", "agent", sentinel);
+        assert!(!message.contains(sentinel), "{message}");
+        assert_eq!(message, "agent[reviewer] agent: len=26");
+    }
+
+    #[test]
+    fn transcript_logging_never_emits_raw_turns_at_trace_level() {
+        let source = include_str!("mod.rs");
+        let implementation = source
+            .split("impl AgentRuntime {")
+            .nth(1)
+            .unwrap()
+            .split("fn transcript_info_log_message")
+            .next()
+            .unwrap();
+        assert!(!implementation.contains("log::trace!"));
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn logging_sentinel_stays_out_of_log_and_session_trace() {
+        const SENTINEL: &str = "SENTINEL_SECRET_0948_DO_NOT_LEAK";
+        const CHILD: &str = "PLEXI_0948_SENTINEL_PROFILE";
+        if let Some(profile) = std::env::var_os(CHILD) {
+            let profile = std::path::PathBuf::from(profile);
+            let _guard = crate::config::set_test_profile_dir(profile.clone());
+            crate::platform::logging::init(log::LevelFilter::Trace, 30, false);
+            let def = AgentDefinition::parse("prompt", "[agent]\nid='audit'\ndisplay_name='Audit'\ndefault_tier='medium'\n[permissions]\ndefault_posture='ask'\n").unwrap();
+            let mut runtime = AgentRuntime {
+                def,
+                subscription_ids: vec![],
+                transcript: vec![],
+                in_flight: 0,
+            };
+            runtime.push_transcript("user", SENTINEL.to_string());
+            let mut harness = crate::testing::HostHarness::new();
+            let terminal = harness.add_focused_terminal();
+            let sender = harness.app.windows[0]
+                .panes
+                .iter()
+                .find_map(|(&id, pane)| pane.as_view().map(|_| id))
+                .unwrap();
+            harness.app.windows[0]
+                .panes
+                .get_mut(&sender)
+                .unwrap()
+                .as_view_mut()
+                .unwrap()
+                .linked_pane_id = Some(terminal);
+            harness.terminal_backend(terminal).enable_input_tap();
+            harness.app.dispatch_run_in_linked_terminal(
+                sender,
+                terminal,
+                SENTINEL.to_string(),
+                true,
+            );
+            assert_eq!(
+                harness.terminal_backend(terminal).take_input_tap(),
+                format!("{SENTINEL}\n").as_bytes()
+            );
+            harness
+                .app
+                .handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                    generated_operation_id: false,
+                    pane_id: terminal,
+                    text: SENTINEL.to_string(),
+                    submit: false,
+                    paste: false,
+                    response_file: None,
+                    operation_id: None,
+                    peer_ancestry: None,
+                });
+            assert_eq!(
+                harness.terminal_backend(terminal).take_input_tap(),
+                SENTINEL.as_bytes()
+            );
+            use crate::workspace::secrets::SecretStore;
+            let workspace = tempfile::tempdir().unwrap();
+            let config = workspace
+                .path()
+                .join(crate::config::workspace_channel_dir());
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(config.join("workspace.toml"), "id='audit'\n").unwrap();
+            std::fs::write(
+                config.join("secrets.toml"),
+                "fallback=true\n[terminal.env]\ninject=['SERVICE_TOKEN']\n",
+            )
+            .unwrap();
+            let store = crate::workspace::secrets::InMemoryKeychain::new();
+            store.set("plexi:audit:SERVICE_TOKEN", SENTINEL).unwrap();
+            let injected =
+                crate::workspace::secrets::resolve_terminal_env(workspace.path(), &store).unwrap();
+            assert_eq!(
+                injected.get("SERVICE_TOKEN").map(|v| v.as_str()),
+                Some(SENTINEL)
+            );
+            let mut env = std::collections::HashMap::from([(
+                "PLEXI_PERMISSION_MAC".to_string(),
+                SENTINEL.to_string(),
+            )]);
+            crate::broker::seal::scrub_pane_env(&mut env, true);
+            assert!(!env.contains_key("PLEXI_PERMISSION_MAC"));
+            crate::host::flight_recorder::adopt_session(&profile, "sess-sentinel");
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "tool_call_requested",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"input": {"text": SENTINEL}}),
+            );
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "tool_call_completed",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"output": {"value": SENTINEL}, "error": SENTINEL}),
+            );
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "timeline_event",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"summary": SENTINEL, "payload": {"text": SENTINEL}, "rollback_token": SENTINEL}),
+            );
+            for args in [
+                vec!["plexi", "pane", "send", "42", SENTINEL],
+                vec!["plexi", "pane", "submit", "42", SENTINEL],
+                vec!["plexi", "agent", "ask", "--pane-id", "42", SENTINEL],
+                vec!["plexi", "secret", "set", "SERVICE_TOKEN", SENTINEL],
+                vec!["plexi", "pane", "new", "--env", &format!("KEY={SENTINEL}")],
+            ] {
+                let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
+                crate::host::flight_recorder::handle_cli_trace(
+                    &profile,
+                    &serde_json::json!({
+                        "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
+                        "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
+                    }),
+                )
+                .unwrap();
+            }
+            log::logger().flush();
+            let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
+            let trace =
+                std::fs::read_to_string(profile.join("sessions/sess-sentinel.jsonl")).unwrap();
+            assert!(!log.contains(SENTINEL), "sentinel leaked to log");
+            assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
+            assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
+            assert!(log.contains(&format!("payload_len={}", SENTINEL.chars().count() + 1)));
+            assert!(trace.contains(&format!("len={}", SENTINEL.chars().count())));
+            return;
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::tests::logging_sentinel_stays_out_of_log_and_session_trace",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, profile.path())
+            .env_remove("PLEXI_TRACE_CAPTURE_CONTENT")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn script_harness_is_allowed_as_an_explicit_cli_but_never_as_a_fallback() {
+        let base = "[agent]\nid='s'\ndisplay_name='S'\n[harness]\n";
+        let def = AgentDefinition::parse("Run it.", &format!("{base}cli='script'")).unwrap();
+        assert_eq!(def.harness.unwrap().cli, "script");
+        let err = AgentDefinition::parse("Run it.", &format!("{base}cli='pi'\nfallback='script'"))
+            .unwrap_err();
+        assert!(err.contains("invalid fallback 'script'"), "{err}");
+        let err = AgentDefinition::parse("Run it.", &format!("{base}cli='bash'")).unwrap_err();
+        assert!(
+            err.contains("expected one of: pi, claude, codex, agy, script"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn agent_tool_permissions_accept_harness_and_top_level() {
+        for settings in [
+            "can_call = ['tester']\ncan_handoff = ['writer']\n[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'",
+            "[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'\ncan_call=['tester']\ncan_handoff=['writer']",
+        ] {
+            let def = AgentDefinition::parse("Lead.", settings).unwrap();
+            assert_eq!(def.can_call, vec!["tester"]);
+            assert_eq!(def.can_handoff, vec!["writer"]);
+        }
+    }
+
     #[test]
     fn spec_settings_example_parses() {
         let def = AgentDefinition::parse("You are a chess opponent.", SETTINGS)
@@ -956,6 +2068,26 @@ default = "ask"
         assert_eq!(sub.payload, PayloadMode::Full);
         assert_eq!(sub.trigger, TriggerMode::Conversation);
         assert_eq!(sub.default, Decision::Ask);
+        assert!(def.client.is_none());
+        assert!(def.kind.is_none());
+    }
+
+    #[test]
+    fn run_tags_default_when_absent_and_parse_when_set() {
+        let tagged = SETTINGS.replace(
+            "default_tier = \"medium\"\n",
+            "default_tier = \"medium\"\nclient = \"narrative\"\nkind = \"system\"\n",
+        );
+        let def = AgentDefinition::parse("You are a helper.", &tagged).expect("tagged settings");
+        assert_eq!(def.client.as_deref(), Some("narrative"));
+        assert_eq!(def.kind, Some(crate::plexi_ai::ledger::RunKind::System));
+
+        let bad = SETTINGS.replace(
+            "default_tier = \"medium\"\n",
+            "default_tier = \"medium\"\nkind = \"nope\"\n",
+        );
+        let err = AgentDefinition::parse("p", &bad).unwrap_err();
+        assert!(err.contains("kind"), "{err}");
     }
 
     #[test]
@@ -1033,7 +2165,7 @@ default_tier = "low"
     /// and switching away detaches them and removes their subscriptions.
     #[test]
     fn reload_workspace_attaches_and_detaches_agents() {
-        use crate::broker::{ActorScope, GrantRecord, GrantSource, ResourceScope};
+        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
 
         let ws = tempfile::tempdir().unwrap();
         let agent_dir = ws
@@ -1045,7 +2177,7 @@ default_tier = "low"
         std::fs::write(agent_dir.join("AGENT.md"), "You are a chess opponent.").unwrap();
         std::fs::write(agent_dir.join("settings.toml"), SETTINGS).unwrap();
 
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         // Host built with NO workspace — the boot-before-workspace case.
         let mut host = AgentHost::new_for_test(
             timeline.clone(),
@@ -1061,21 +2193,16 @@ default_tier = "low"
             "move.undone",
             "game.ended",
         ] {
-            host.grant_store.record(GrantRecord {
-                actor_type: ActorType::Agent,
-                actor_id: "chess-opponent".to_string(),
-                actor_scope: ActorScope::User,
-                workspace_root: None,
-                target_type: TargetType::AppEventStream,
-                target_id: format!("chess::{event}"),
-                resource_scope: ResourceScope::Game,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Session,
-                source: GrantSource::User,
-                created_at: 0,
-                expires_at: None,
-            });
+            host.grant_store.record(GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                "chess-opponent",
+                ActorScope::User,
+                &format!("chess::{event}"),
+                ws.path(),
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
         }
         assert!(host.agents.is_empty());
 
@@ -1096,48 +2223,115 @@ default_tier = "low"
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
     }
 
-    /// Self-caused deliveries (the agent as actor, or events an app emitted
+    /// A scope allow that has not reached disk must survive a workspace
+    /// reload. The profile monitor is the store `agents.list` admits against.
+    #[test]
+    fn reload_workspace_keeps_unsaved_scope_allows() {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::{
+            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
+        };
+
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        let mut host =
+            AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), ws.path().to_path_buf());
+        host.grants_dir = Some(profile.path().to_path_buf());
+        host.monitor = PermissionMonitor::for_profile(profile.path());
+        let binding = crate::broker::ExactBinding {
+            actor_type: ActorType::Agent,
+            actor_id: "agent:lead".to_string(),
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host".to_string(),
+            workspace_root: ws.path().to_path_buf(),
+            target_type: TargetType::HostTool,
+            target_id: "agents.list".to_string(),
+            resource_scope: crate::broker::ResourceScope::Workspace,
+            resource_id: None,
+            args_fingerprint: "scope".to_string(),
+            session_id: None,
+            package_id: "agents".to_string(),
+            instance_id: Some(0),
+            context_id: Some(0),
+            call_id: String::new(),
+            operation_id: String::new(),
+        };
+        let mut record = GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::User,
+            "grant_scope",
+        );
+        record.args_unbound = true;
+        host.monitor.store().record(record);
+
+        host.reload_workspace(Some(ws.path().to_path_buf()), 1);
+
+        let admission = host.monitor.admit(AdmitRequest {
+            call_id: "call_list",
+            tool: "agents.list",
+            input_json: "{}",
+            actor_type: ActorType::Agent,
+            actor_id: "agent:lead",
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: ws.path(),
+            context_id: 0,
+            package_id: "agents",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        });
+        assert!(
+            matches!(admission, Admission::Proceed { .. }),
+            "scope allow was dropped by workspace reload"
+        );
+    }
+
+    /// Self-caused deliveries (the agent as actor, or events a plugin emitted
     /// while servicing the agent's tool call) must never trigger a turn —
     /// otherwise an agent that moves causes `move.played`/`turn.ready` which
     /// trigger it again, and it plays the game against itself.
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
-        use crate::host::app_timeline::EventDelivery;
-        use crate::protocol::AppEventActor;
+        use crate::host::plugin_timeline::EventDelivery;
+        use crate::protocol::PluginEventActor;
 
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         let mut host =
             AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), std::env::temp_dir());
         host.attach(AgentDefinition::parse("prose", SETTINGS).unwrap());
         assert_eq!(host.agents[0].in_flight, 0);
 
-        let delivery = |id: u64, actor: AppEventActor, actor_id: &str, caused_by: Option<&str>| {
-            EventDelivery {
-                delivery_id: id,
-                subscription_id: "sub-1".to_string(),
-                subscriber_type: ActorType::Agent,
-                subscriber_id: "chess-opponent".to_string(),
-                trigger_mode: TriggerMode::Conversation,
-                app_id: "chess".to_string(),
-                event: "turn.ready".to_string(),
-                event_id: id,
-                resource_id: "game-1".to_string(),
-                actor,
-                actor_id: actor_id.to_string(),
-                caused_by: caused_by.map(str::to_string),
-                summary: Some("black to move".to_string()),
-                payload: None,
-                state_ref: None,
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-            }
-        };
+        let delivery =
+            |id: u64, actor: PluginEventActor, actor_id: &str, caused_by: Option<&str>| {
+                EventDelivery {
+                    delivery_id: id,
+                    subscription_id: "sub-1".to_string(),
+                    subscriber_type: ActorType::Agent,
+                    subscriber_id: "chess-opponent".to_string(),
+                    trigger_mode: TriggerMode::Conversation,
+                    plugin_id: "chess".to_string(),
+                    event: "turn.ready".to_string(),
+                    event_id: id,
+                    resource_id: "game-1".to_string(),
+                    actor,
+                    actor_id: actor_id.to_string(),
+                    caused_by: caused_by.map(str::to_string),
+                    summary: Some("black to move".to_string()),
+                    payload: None,
+                    state_ref: None,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                }
+            };
 
         // Agent's own move (actor_id matches its caller identity): no turn.
         host.handle_deliveries(
             0,
             vec![delivery(
                 1,
-                AppEventActor::Agent,
+                PluginEventActor::Agent,
                 "agent:chess-opponent",
                 None,
             )],
@@ -1149,7 +2343,7 @@ default_tier = "low"
             0,
             vec![delivery(
                 2,
-                AppEventActor::App,
+                PluginEventActor::Plugin,
                 "chess",
                 Some("agent:chess-opponent"),
             )],
@@ -1163,7 +2357,7 @@ default_tier = "low"
         assert_eq!(host.agents[0].transcript.len(), 2);
 
         // A user-caused event triggers a turn.
-        host.handle_deliveries(0, vec![delivery(3, AppEventActor::User, "chess", None)]);
+        host.handle_deliveries(0, vec![delivery(3, PluginEventActor::User, "chess", None)]);
         assert_eq!(host.agents[0].in_flight, 1, "user event must trigger");
     }
 
@@ -1204,6 +2398,21 @@ default_tier = "low"
     }
 
     #[test]
+    fn discovery_card_projects_skills_without_authority() {
+        let mut definition = builtin_default_agent().unwrap();
+        definition.skills = vec!["research".to_string()];
+        definition.can_call = vec!["private-child".to_string()];
+        let card = serde_json::to_value(AgentCard::from_definition(&definition)).unwrap();
+        assert_eq!(card["skills"][0]["id"], "research");
+        assert_eq!(card["skills"][0]["name"], "research");
+        assert!(card["skills"][0]["description"].is_string());
+        assert!(card["skills"][0]["tags"].is_array());
+        assert!(card.get("grants").is_none());
+        assert!(card.get("can_call").is_none());
+        assert_eq!(card["supportedInterfaces"], serde_json::json!([]));
+    }
+
+    #[test]
     fn definition_parses_routes_effort_tools_skills_and_hooks() {
         let settings = r#"
 [agent]
@@ -1233,6 +2442,424 @@ enabled = ["before-turn"]
         assert_eq!(
             definition.model_routes.high.unwrap().model,
             "anthropic/claude-sonnet-4"
+        );
+    }
+
+    fn write_definition(dir: &Path, id: &str, prompt: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("AGENT.md"), prompt).unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            format!(
+                "[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\nallow = [\"chess.play\"]\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fresh_install_reads_and_writes_only_dot_plexi_agents() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let empty = AgentRegistry::load(profile.path(), ws.path());
+        assert!(empty.active("writer").is_none());
+        assert!(legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .starts_with(ws.path().join(".plexi-alpha")));
+        assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
+
+        let dir = workspace_agents_dir(ws.path()).join("writer");
+        assert_eq!(
+            workspace_agents_dir(ws.path()),
+            ws.path().join(".plexi").join("agents")
+        );
+        write_definition(&dir, "writer", "fresh prompt");
+        let decoy = ws.path().join("agents").join("decoy");
+        write_definition(&decoy, "decoy", "not a workspace agent");
+
+        let registry = AgentRegistry::load(profile.path(), ws.path());
+        let writer = registry
+            .active("writer")
+            .expect("canonical definition loads");
+        assert_eq!(writer.source, AgentSource::Workspace);
+        assert_eq!(writer.prompt, "fresh prompt");
+        assert_eq!(writer.path.as_deref(), Some(dir.as_path()));
+        assert!(
+            registry.active("decoy").is_none(),
+            "root agents/ is not a tier"
+        );
+        assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
+        assert!(!writer.posture.allow.is_empty());
+        assert!(GrantStore::load_or_default(profile.path())
+            .records()
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_channel_agents_migrate_once_without_granting() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
+        write_definition(&legacy, "writer", "legacy prompt");
+        std::fs::write(legacy.join("grants.toml"), "decision = \"allow\"\n").unwrap();
+
+        let registry = AgentRegistry::load(profile.path(), ws.path());
+        let writer = registry
+            .active("writer")
+            .expect("migrated definition loads");
+        assert_eq!(writer.prompt, "legacy prompt");
+        assert_eq!(writer.source, AgentSource::Workspace);
+        let canonical = workspace_agents_dir(ws.path()).join("writer");
+        assert_eq!(writer.path.as_deref(), Some(canonical.as_path()));
+        assert!(canonical.join("AGENT.md").is_file());
+        assert!(canonical.join("settings.toml").is_file());
+        assert!(
+            !canonical.join("grants.toml").exists(),
+            "a copied definition must not carry a grant file"
+        );
+        assert!(
+            !legacy.exists(),
+            "legacy directory is removed after the copy"
+        );
+        let receipt =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
+        assert_eq!(
+            receipt
+                .lines()
+                .filter(|line| *line == "migrated writer")
+                .count(),
+            1
+        );
+        assert!(
+            GrantStore::load_or_default(profile.path())
+                .records()
+                .is_empty(),
+            "settings allow lists and leftover grant files do not authorize"
+        );
+
+        let again = AgentRegistry::load(profile.path(), ws.path());
+        assert_eq!(again.active("writer").unwrap().prompt, "legacy prompt");
+        let receipt_again =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
+        assert_eq!(
+            receipt, receipt_again,
+            "a second load must not rewrite the receipt"
+        );
+    }
+
+    #[test]
+    fn migration_rerun_keeps_a_divergent_definition_and_its_id() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
+        write_definition(&legacy, "writer", "legacy prompt");
+        let canonical = workspace_agents_dir(ws.path()).join("writer");
+        write_definition(&canonical, "writer", "canonical prompt");
+
+        AgentRegistry::load(profile.path(), ws.path());
+        assert_eq!(
+            std::fs::read_to_string(canonical.join("AGENT.md")).unwrap(),
+            "canonical prompt"
+        );
+        assert!(legacy.join(".plexi-migration-kept").is_file());
+        assert_eq!(
+            AgentRegistry::load(profile.path(), ws.path())
+                .active("writer")
+                .unwrap()
+                .id,
+            "writer"
+        );
+
+        std::fs::write(legacy.join("AGENT.md"), "changed again").unwrap();
+        AgentRegistry::load(profile.path(), ws.path());
+        assert_eq!(
+            std::fs::read_to_string(canonical.join("AGENT.md")).unwrap(),
+            "canonical prompt"
+        );
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("AGENT.md")).unwrap(),
+            "changed again"
+        );
+        assert_eq!(
+            AgentRegistry::load(profile.path(), ws.path())
+                .agents()
+                .filter(|agent| agent.id == "writer")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn harness_table_parses_and_validates_fields() {
+        let settings = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+description = "Reads the codebase and returns findings"
+
+[harness]
+cli = "pi"
+model = "openrouter/~z-ai/glm-flash-latest"
+fallback = "claude"
+ephemeral = true
+result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
+"#;
+        let def = AgentDefinition::parse("You are a researcher.", settings)
+            .expect("valid [harness] settings must parse without default_tier or [permissions]");
+        assert_eq!(def.id, "researcher");
+        assert_eq!(def.default_tier, ModelTier::Medium);
+        let h = def.harness.expect("harness must be present");
+        assert_eq!(h.cli, "pi");
+        assert_eq!(
+            h.model.as_deref(),
+            Some("openrouter/~z-ai/glm-flash-latest")
+        );
+        assert_eq!(h.fallback.as_deref(), Some("claude"));
+        assert!(h.ephemeral);
+        let schema = h.result_schema.expect("result_schema must be present");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], serde_json::json!(["answer"]));
+        assert!(h.extensions.is_empty());
+
+        // Optional extensions list inside [harness] parses and trims entries.
+        let with_extensions = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+extensions = ["/tmp/ext-a.ts", "builtin:plan-mode"]
+"#;
+        let def_ext = AgentDefinition::parse("Persona.", with_extensions).unwrap();
+        assert_eq!(
+            def_ext.harness.unwrap().extensions,
+            vec!["/tmp/ext-a.ts".to_string(), "builtin:plan-mode".to_string()]
+        );
+
+        // Empty extension path in [harness] extensions is rejected.
+        let empty_ext = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+extensions = ["   "]
+"#;
+        let err = AgentDefinition::parse("Persona.", empty_ext).unwrap_err();
+        assert!(err.contains("extensions[0]"), "{err}");
+
+        // Unknown key inside [harness] fails naming the key.
+        let unknown_key = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+bogus_key = "nope"
+"#;
+        let err = AgentDefinition::parse("Persona.", unknown_key).unwrap_err();
+        assert!(
+            err.contains("bogus_key"),
+            "unknown key error must name the key: {err}"
+        );
+
+        // Missing cli inside [harness] fails naming cli.
+        let missing_cli = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+model = "sonnet"
+"#;
+        let err = AgentDefinition::parse("Persona.", missing_cli).unwrap_err();
+        assert!(
+            err.contains("cli"),
+            "missing cli error must name cli: {err}"
+        );
+
+        // Invalid cli inside [harness] fails naming cli.
+        let bad_cli = r#"
+[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "cursor"
+"#;
+        let err = AgentDefinition::parse("Persona.", bad_cli).unwrap_err();
+        assert!(err.contains("cli") && err.contains("cursor"), "{err}");
+
+        // Without [harness], default_tier is still required.
+        let no_harness_no_tier = r#"
+[agent]
+id = "assistant-only"
+display_name = "Assistant Only"
+
+[permissions]
+default_posture = "ask"
+"#;
+        let err = AgentDefinition::parse("Persona.", no_harness_no_tier).unwrap_err();
+        assert!(
+            err.contains("default_tier"),
+            "missing default_tier without [harness] must fail: {err}"
+        );
+    }
+
+    #[test]
+    fn harness_result_schema_supports_inline_table_and_relative_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("auditor");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "Audit carefully.").unwrap();
+        std::fs::write(
+            agent_dir.join("schema.json"),
+            r#"{"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            r#"
+[agent]
+id = "auditor"
+display_name = "Auditor"
+
+[harness]
+cli = "claude"
+result_schema = "schema.json"
+"#,
+        )
+        .unwrap();
+
+        let def = AgentDefinition::load_dir(&agent_dir, AgentSource::Workspace)
+            .expect("relative schema.json in agent dir must load");
+        let schema = def
+            .harness
+            .as_ref()
+            .and_then(|h| h.result_schema.as_ref())
+            .expect("schema resolved");
+        assert_eq!(schema["required"], serde_json::json!(["verdict"]));
+
+        // Inline TOML table for result_schema also parses.
+        let inline_table = r#"
+[agent]
+id = "auditor"
+display_name = "Auditor"
+
+[harness]
+cli = "codex"
+result_schema = { type = "object", required = ["ok"], properties = { ok = { type = "boolean" } } }
+"#;
+        let def2 = AgentDefinition::parse("Audit.", inline_table)
+            .expect("inline TOML result_schema table must parse");
+        let schema2 = def2
+            .harness
+            .and_then(|h| h.result_schema)
+            .expect("schema present");
+        assert_eq!(schema2["required"], serde_json::json!(["ok"]));
+    }
+
+    #[test]
+    fn harness_flags_parsing_alias_and_validation() {
+        // flags = [...] parsed
+        let toml_flags = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--verbose", "--permission-mode", "plan"]
+"#;
+        let def = AgentDefinition::parse("Test.", toml_flags).expect("valid flags should parse");
+        let harness = def.harness.expect("harness present");
+        assert_eq!(
+            harness.flags,
+            vec!["--verbose", "--permission-mode", "plan"]
+        );
+
+        // args = [...] alias parsed
+        let toml_args = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+args = ["--verbose"]
+"#;
+        let def_args =
+            AgentDefinition::parse("Test.", toml_args).expect("valid args alias should parse");
+        assert_eq!(def_args.harness.unwrap().flags, vec!["--verbose"]);
+
+        // non-array flags must fail deserialization
+        let toml_str_flag = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = "--verbose"
+"#;
+        assert!(AgentDefinition::parse("Test.", toml_str_flag).is_err());
+
+        // injection metacharacter must fail validation
+        let toml_injection = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--verbose; rm -rf /"]
+"#;
+        let err = AgentDefinition::parse("Test.", toml_injection).unwrap_err();
+        assert!(err.contains("forbidden shell operator"), "error was: {err}");
+
+        // reserved security override must fail validation
+        let toml_security = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--dangerously-skip-permissions"]
+"#;
+        let err = AgentDefinition::parse("Test.", toml_security).unwrap_err();
+        assert!(
+            err.contains("reserved security override"),
+            "error was: {err}"
+        );
+
+        // fallback harness flags validated against fallback CLI
+        let toml_fallback_invalid = r#"
+[agent]
+id = "tester"
+display_name = "Tester"
+
+[harness]
+cli = "claude"
+flags = ["--theme", "dark"]
+fallback = "codex"
+"#;
+        let err = AgentDefinition::parse("Test.", toml_fallback_invalid).unwrap_err();
+        assert!(
+            err.contains("does not support flag '--theme'"),
+            "fallback validation must fail: {err}"
         );
     }
 }

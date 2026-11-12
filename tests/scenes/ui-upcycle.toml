@@ -1,0 +1,61 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+text = { target = "host", value = "ui upcycle cargo" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+shot = "ui-upcycle-palette.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 2 }
+
+[[steps]]
+shot = "ui-upcycle-list.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "--target" }
+
+[[steps]]
+text = { target = "host", value = "aarch64-apple-darwin" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "$ cargo build --target aarch64-apple-darwin" }
+
+[[steps]]
+shot = "ui-upcycle-form.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert_label = { target = "host", label = "last: $ cargo build --target aarch64-apple-darwin" }
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+assert = { pane_count = 2 }

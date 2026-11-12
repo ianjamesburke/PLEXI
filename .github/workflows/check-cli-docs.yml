@@ -6,20 +6,28 @@ on:
     branches: [alpha]
     paths:
       - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/lib.rs'
       - 'src/cli/args.rs'
       - 'tools/gen_cli_docs/**'
+      - 'justfile'
+      - 'scripts/cargo-with-lease.sh'
       - 'website/src/content/docs/cli.md'
   pull_request:
     branches: [alpha]
     paths:
       - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/lib.rs'
       - 'src/cli/args.rs'
       - 'tools/gen_cli_docs/**'
+      - 'justfile'
+      - 'scripts/cargo-with-lease.sh'
       - 'website/src/content/docs/cli.md'
 
 jobs:
   check-cli-docs:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
@@ -27,13 +35,7 @@ jobs:
         uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: cli-docs
+          just: 'true'
 
       - name: Check CLI docs are up to date
-        run: |
-          cargo run -p gen_cli_docs > /tmp/fresh_cli.md
-          if ! diff -q website/src/content/docs/cli.md /tmp/fresh_cli.md; then
-            echo "website/src/content/docs/cli.md is stale. Run 'just gen-cli-docs' and commit the result."
-            diff website/src/content/docs/cli.md /tmp/fresh_cli.md
-            exit 1
-          fi
-          echo "CLI docs are up to date."
+        run: just check-cli-docs

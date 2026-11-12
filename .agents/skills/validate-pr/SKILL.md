@@ -38,7 +38,7 @@ Extract:
 - `PR_NUMBER` = from arg
 - `ISSUE_NUMBER` = parse from branch name — **empty in stint-first mode**
 
-**Stint-first mode.** A `feature/stint-<id>[-<id>...]-<slug>` branch has no issue: `.stint/` is authoritative and issues are optional. Do not read a digit run out of that branch as an issue number — `0469` is a stint id, and `gh issue view 469` returns an unrelated issue. In this mode, for the whole skill:
+**Stint-first mode** means the PR is backed by one or more `.stint/` tasks rather than a GitHub issue. A `feature/stint-<id>[-<id>...]-<slug>` branch identifies the stint ids; it does not identify a GitHub issue: `.stint/` is authoritative and issues are optional. Do not read a digit run out of that branch as an issue number — `0469` is a stint id, and `gh issue view 469` returns an unrelated issue. In this mode, for the whole skill:
 
 - `ISSUE_NUMBER` is empty; the **PR body** is the Ship Log (read/append there instead of an issue body)
 - attempt counting reads the PR body: `gh pr view $PR_NUMBER --json body --jq '.body'`
@@ -108,41 +108,35 @@ While handling validation feedback, `just install` is banned. Reinstall only wit
 
 ## Step 1 — Validation Mode Gate
 
-Check changed files and classify the validation mode:
-```bash
-gh pr diff $PR_NUMBER --name-only
-gh pr diff $PR_NUMBER
-```
+Read the stint's Done-When and qualification, actual PR diff, current head and
+worker evidence. Classify behavior and risk using [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), not size or file paths alone.
+Consume the `/testing` conclusion from the issue Ship Log or PR body in
+stint-first mode. A missing, stale, incomplete or contradictory evidence block is
+not a skip: request the missing evidence or use the applicable installed path.
+Record the exact head, selected and skipped checks with reasons, screenshot
+origin and durable link when applicable. A required missing capture is a failure.
 
-**Step 1a — Test evidence gate (check this first).** Read the issue Ship Log for a `**Test evidence:**` block written by the `/testing` skill during implementation:
-```bash
-gh issue view $ISSUE_NUMBER --json body --jq '.body' | grep -A5 "Test evidence"
-```
+The testing skill owns non-aggregate install-skip criteria; aggregate records
+always require an installed-head record. `apps/`, installed runtime, packaging,
+PTY, and explicit installed acceptance can require installation regardless of
+size. An independent tester must verify affected behavior; the worker's tests
+are evidence, not an independent verdict. Avoid rerunning unrelated suites;
+perform the minimum independent checks needed for the affected behavior.
 
-Evaluate the conclusion, **then apply overrides**:
-
-| Conclusion | Default decision | Override |
-|---|---|---|
-| `install skippable — full coverage` | diff-review mode | Install anyway if `apps/` files changed or Done When requires binary |
-| `binary install required — <reason>` | install | — |
-| `docs-only — no test evidence required` | diff-review mode | — |
-| block absent | fall through to install-trigger list below | — |
-
-**Do not re-run `cargo test` in validation.** The suite ran during implementation; the Test Evidence block is the authoritative record. Validation owns diff review and user acceptance, not test execution. Never re-run a suite that the Ship Log already reports as green.
-
-**Default mode: install the binary.** Always run `just pr-install $PR_NUMBER` unless the skip gate below applies. The install cost is low and gives the user the option to manually exercise the change.
-
-**Skip install when the Test Evidence conclusion says to.** The `/testing` skill's Step 5 conclusion rules are the single source of truth for this decision — consume the conclusion verbatim, do not re-derive it here:
-- `install skippable — full coverage` or `docs-only` → diff-review mode
-- `binary install required` → install
-- Block absent → fall through to the install-trigger list below
-- Override regardless of conclusion: `apps/` files changed, or Done When requires binary exercise
-
-If skipping → mark Install row as `skipped — <reason>`, proceed to Step 3 (write and surface the testing block).
+If installation is not required, independently exercise the affected behavior
+at the exact source head, document the skip and evidence, then proceed to Step 3.
+If an installed check is required, the assigned tester owns `pr-install` so the
+worker and tester do not both install the same head. After any head movement,
+reassess the evidence and rerun the applicable head-dependent checks.
 
 ---
 
 ## Step 2 — Install
+
+The installer consumes a matching candidate artifact and successful pretest
+receipt under the persistent slot lock as defined by TESTING.md. A mismatch
+reruns the applicable work. Keep independent affected-behavior validation and
+the installed SDK guard; cache reuse is not independent acceptance.
 
 One recipe owns the mechanics — PR/branch/worktree resolution, the install, and provenance. `just pr-install` resolves and builds the PR's actual head itself (cwd-independent), so there is nothing to hand-derive here:
 
@@ -155,17 +149,17 @@ The recipe fails loudly (and publishes a `validate:failed` slot report) when the
 
 Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 3.
 
-> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
+After installing, the independent tester exercises the affected behavior on the exact installed head using `/drive-host` when applicable. Record provenance and observable results; only ask Ian to act for a real human gate. Never present an install or a headless image as live behavior proof.
 
 ---
 
-## No AI review in this phase
+## Independent review
 
-AI diff review happens **once**, pre-push, in `/implement-stint` Phase 4. This skill does not run it again — a second pass over the same diff costs a full Codex run and, in babysitter mode, duplicates what the tester pane is already doing with fresh eyes.
-
-Carry the implementation phase's verdict into the testing block as `AI_FINDINGS` (the Ship Log's `Codex verdict:` line). If that line is missing, set `AI_FINDINGS="no pre-push review recorded"` and say so plainly rather than running a review here to fill the gap.
-
-Surface the testing block as soon as the install and mergeable check are done. Do not launch the PR app, browse logs, or run broad full-suite tests unless the install or build shows a real blocker.
+An independent tester verifies the Done-When and affected behavior. Do not invent
+an implementation-phase AI verdict: if one exists, report it separately from
+the independent result. Do not rerun a broad suite merely because it ran before;
+run the focused checks needed to establish independent evidence and TESTING.md's
+phase gate. The final combined candidate has its own full-suite requirement.
 
 ---
 
@@ -221,19 +215,19 @@ Reply: "pass" | "fail: <desc>" | "modify: <change>"
 |---|---|
 | PR | #<n> |
 | Issue | #<issue-number> — <ISSUE_TITLE> |
-| Install | skipped — diff review only |
+| Install | skipped — <policy reason> |
 | AI review | <one-line finding or "No issues found"> |
 | Test evidence | <conclusion line, or "none"> |
 
 What this ships: <ISSUE_WHAT — one line>
 
-No binary install was run; validation is limited to the diff and Codex review.
+No binary install was run: <reason>. Independent affected-behavior checks: <commands and outcomes at head>.
 AI findings: <AI_FINDINGS verbatim, or "No issues found.">
 
 Reply: "pass" | "fail: <desc>" | "modify: <change>"
 ```
 
-On the diff-review path, omit the `Pass:` / `Fail:` criteria entirely. The user is reviewing the Codex findings, not exercising a binary. Only the install path asks the user to verify observable stop-check criteria.
+On the diff-review path, omit the `Pass:` / `Fail:` criteria entirely. The tester records the independent source-level verification and its limits. Only the install path asks the user to verify observable stop-check criteria.
 
 AI_FINDINGS always shown verbatim when a pre-push review verdict exists; if none was recorded, say so in one line rather than leaving the row blank.
 
@@ -326,7 +320,7 @@ git commit -m "fix: <description>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall with `just bs-validate-setup $PR_NUMBER` (Step 2). Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
+Reassess the new head and run the applicable TESTING.md gates; reinstall with `just bs-validate-setup $PR_NUMBER` when required. Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
 
 Append to Ship Log:
 ```markdown
@@ -337,7 +331,7 @@ Append to Ship Log:
 
 "fail" without a description: ask for it before taking any action.
 
-**Check attempt count** — same marker as Step 0. `### Attempt` counts *implementation* attempts (written by `/implement-issue` and `/implement-stint`), not validation rounds; counting those here made the 3-strikes gate fire off a different number than Step 0 computed:
+**Check attempt count** — same marker as Step 0. `### Attempt` counts *implementation* attempts (written by `/implement-issue` and `/implement-stint-v2`), not validation rounds; counting those here made the 3-strikes gate fire off a different number than Step 0 computed:
 ```bash
 ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
   | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
@@ -362,7 +356,7 @@ git commit -m "fix: <description from failure>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall with `just bs-validate-setup $PR_NUMBER` (Step 2). Never run `just install` during validation.
+Reassess the new head and run the applicable TESTING.md gates; reinstall with `just bs-validate-setup $PR_NUMBER` when required. Never run `just install` during validation.
 
 Append to Ship Log:
 ```markdown
@@ -453,12 +447,12 @@ Issue re-labeled ready for next attempt
 
 ---
 
-## Diff-Review Testing Block (default)
+## Diff-Review Testing Block
 
 Surface the diff-review testing block format from Step 3. Key differences from the install path:
 - No attempt count in header (no retry loop for diff-only)
 - No `Pass:` / `Fail:` stop-check criteria — those are only for binary install validation
-- Show AI_FINDINGS verbatim (the pre-push verdict carried from `/implement-stint`); the user is reviewing those findings plus the diff, not exercising a binary
+- Record the independent source-level checks and their limits; report any prior review separately without inventing one
 
 Flip pane status the same as the install path before notifying:
 ```bash
@@ -470,10 +464,8 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 
 ## Rules
 
-- Binary install is the default. Skip only per the Test Evidence conclusion (single source: `/testing` Step 5), with the `apps/`-changed and Done-When overrides.
-- **This skill runs no AI diff review.** Pre-push Codex review is owned by `/implement-stint` Phase 4 — see "Who reviews what" there. Validation owns install and user acceptance, not review.
-- Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
-- Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
+- Select install or source-level validation by the actual behavior, phase, and `/testing` conclusion. Where the conclusion is missing or stale, obtain current evidence or use the applicable installed path. Preserve aggregate, installed-boundary, `apps/`, and Done-When requirements.
+- Independent validation checks the affected behavior and may run focused tests; do not rerun unrelated suites. Treat visible UI as visual evidence under TESTING.md, regardless of whether a change is called cosmetic.
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action

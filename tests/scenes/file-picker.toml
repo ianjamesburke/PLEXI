@@ -15,10 +15,10 @@ picker_script = [
 open = { kind = "process", path = "apps/dev/file-picker-poc", as = "picker", args = ["--auto"] }
 
 [[steps]]
-wait_app_frame = { target = "picker", timeout_s = 30.0 }
 
 # The auto flow finishes with a pick the script cancels; by the time the
 # cancel lands, the write -> read round trip has already completed.
+wait_view_frame = { target = "picker", timeout_s = 30.0 }
 [[steps]]
 expect = { target = "picker", tree_contains = "status: cancelled:cancel-1", timeout_s = 20.0 }
 

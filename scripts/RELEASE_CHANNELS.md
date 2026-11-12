@@ -22,17 +22,15 @@ when they are built from the same release commit.
 
 ## Feature Gates
 
-Release-gated features are centralized in `src/release.rs`.
+Experiments are centralized in `src/release.rs`. Channels do not decide
+features: every experiment is off by default on every channel, including alpha,
+and is turned on per user with `plexi experiments enable <name>` (see
+`docs/CONFIG.md`). Channels still decide update cadence and profile directory.
 
-- `main` and `rc-*` are stable tier.
-- `beta` is beta tier.
-- `alpha` and `pr-*` are alpha tier.
-- Unknown named channels disable release-gated features.
-
-Use release gates for product surface that is not part of stable v1, such as
-the experimental DAW, media I/O, accessibility, Assistant, app wrappers, and
-marketplace/account flows. Use config sections for
-stable user preferences, such as `[effects]`.
+Use an experiment for product surface that is not part of stable v1. Use config
+sections for stable user preferences, such as `[effects]`. CLI app wrappers
+(`app open --cli`) are part of stable v1; `--mcp` wrappers are the `mcp_client`
+experiment.
 
 ## Local RC Flow
 
@@ -44,24 +42,11 @@ plexi-rc-010 --version
 just channel-list
 ```
 
-This creates:
-
-- `/Applications/Plexi Rc-010.app`
-- `/usr/local/bin/plexi-rc-010`
-- `~/.plexi-rc-010/`
-
-RC installs also install shell completions for the channel binary, for example
-`_plexi-rc-010` for zsh.
+Installation destinations and ownership are defined in [Distribution contract](DISTRIBUTION.md).
 
 After installing a new or updated channel, open a fresh Plexi pane before testing
-completion behavior. Existing zsh sessions may keep an old completion cache; if
-autocomplete still looks stale, reset it in that pane:
-
-```sh
-rm -f ~/.zcompdump*
-autoload -Uz compinit
-compinit
-```
+completion behavior. Shell registration and cache handling follow the
+[Distribution contract](DISTRIBUTION.md).
 
 Workspace config for that RC lives under `.plexi-rc-010/` inside the project
 root. For example:
@@ -73,43 +58,15 @@ my-project/.plexi-rc-010/config.toml
 That config affects preferences only. It does not change release tier. The
 running binary name decides release-gated feature availability.
 
-## Bare CLI Shim
+## CLI launchers
 
-On macOS, `/usr/local/bin/plexi` is a contextual shim, not a direct symlink to
-the stable app-bundle binary. The real stable binary remains:
-
-```text
-/Applications/Plexi.app/Contents/MacOS/plexi
-```
-
-When `PLEXI_CHANNEL` is set inside a Plexi PTY and the matching
-`/usr/local/bin/plexi-$PLEXI_CHANNEL` binary exists, the shim delegates to that
-channel binary with the original arguments. Otherwise it falls back to the
-stable app-bundle binary.
-
-Examples:
-
-```sh
-# inside a beta PTY
-plexi app browse      # runs plexi-beta app browse
-
-# inside an rc-010 PTY
-plexi app browse      # runs plexi-rc-010 app browse, stable-tier gates apply
-
-# outside Plexi
-plexi app browse      # runs stable Plexi
-```
-
-Host commands that use `PLEXI_SOCKET`, such as `plexi pane info`, route to the
-running instance. Binary-local behavior, such as config paths, workspace paths,
-update/install behavior, and release gates, comes from whichever binary the
-shim executes.
+The contextual bare command and channel-scoped launchers are defined in
+[Distribution contract](DISTRIBUTION.md).
 
 ## Release Tags
 
-Three lanes publish source-build tags. The updater resolves these tags, checks
-out the selected commit, and builds it locally. `.github/workflows/release.yml`
-records tag metadata for that lookup. It does not publish binary assets.
+The package requirements, unsigned policy and publication gates live in
+[Distribution contract](DISTRIBUTION.md).
 
 | Lane | Tag scheme | Branch tagged from |
 |---|---|---|
@@ -121,6 +78,11 @@ The base `X.Y.Z` is the current `Cargo.toml` version. Prerelease tags do **not**
 bump `Cargo.toml` or touch the changelog — they pin a commit on `alpha` for
 testing the next version. The stable bump (`just bump`) sets the base version and
 regenerates the changelog.
+
+Alpha tags are cut nightly by `.github/workflows/nightly.yml` when `alpha` has
+commits since the last alpha tag (`scripts/nightly-alpha-tag.sh` picks the next
+`N`); beta and stable stay manual. Pushes to `alpha` run no Rust host CI, only
+pull requests do.
 
 SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
 The Python SDK publishes only on stable tags; prerelease tags skip
@@ -144,9 +106,9 @@ Standard release batch:
 ```sh
 just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
 just promote beta                  # alpha→beta
-just release beta                  # publish vX.Y.Z-beta.N source-build tag, trigger CI
+just release beta                  # publish vX.Y.Z-beta.N binary release, trigger CI
 just promote main                  # beta→main
-just release main                  # publish vX.Y.Z source-build tag, trigger CI
+just release main                  # publish vX.Y.Z binary release, trigger CI
 ```
 
 Promote code only and stop there (test locally before publishing):
@@ -165,21 +127,9 @@ just promote main install
 
 ## Channel Update Policy
 
-A binary updates only to releases its channel accepts. The policy lives in
-`UpdateChannel::accepts` (`src/cli/release_resolver.rs`); the table below mirrors
-it.
+Release selection, channel acceptance, immutable identity and rollback are
+defined in [Distribution contract](DISTRIBUTION.md).
 
-| Binary channel | Accepts |
-|---|---|
-| `plexi` (stable) | stable only |
-| `plexi-beta` | beta + stable |
-| `plexi-alpha`, `plexi-pr-*` | alpha + beta + stable |
+## Round-trip acceptance
 
-`plexi update` lists all published tags (not just `/latest`), filters by the running
-binary's channel, picks the highest SemVer candidate newer than the current
-version, checks out that exact tag in `~/.plexi-src`, and rebuilds. The install
-target channel is always the running binary's channel — updating `plexi-alpha`
-to a stable tag still installs as `alpha`.
-
-Do not use `plexi-beta update` to test unreleased alpha work — beta never
-accepts alpha tags.
+The bump, promote and release flow above is exercised end to end, without publishing, by `scripts/release-round-trip-e2e.sh` (CI: `release-round-trip.yml`). Contract: `scripts/AGENTS.md`.

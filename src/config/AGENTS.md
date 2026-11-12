@@ -16,7 +16,7 @@ Configuration loading, validation, channel-scoped profile dirs, and workspace co
 
 - **Never hardcode profile or workspace paths.** See path rules in `src/cli/AGENTS.md`.
 - **Required fields have no defaults.** Fail fast with a clear error. Optional fields are clearly marked.
-- **Alpha config stays default.** `just install` refreshes it from the template. Beta config is the staging ground.
+- **Existing channel configs are retained.** Fresh installations seed the template; upgrades preserve settings.
 - When adding a new config key, update `scripts/default-config.toml` in the same change.
 
 ## Style

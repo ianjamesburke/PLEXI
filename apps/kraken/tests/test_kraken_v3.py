@@ -30,3 +30,51 @@ def test_parse_prices_maps_kraken_pair_to_requested_pair():
 
     assert prices["XBTUSD"]["last"] == "65000.1"
     assert prices["XBTUSD"]["bid"] == "64999.0"
+
+
+def test_select_list_mouse_selection_and_refresh_subtitle():
+    import plexi_sdk as sdk
+    from plexi_sdk import _v3_state
+    from plexi_sdk.effects import SetState
+    from plexi_sdk.events import UiAction
+
+    app = _load_app_module()
+    _v3_state._state = sdk.StateSnapshot(dict(app.DEFAULT_STATE, loading=True), {})
+    _v3_state._in_view = False
+
+    node = app.view().to_node()
+    header = node["children"][0]
+    assert header["type"] == "surface_header"
+    assert header["subtitle"] == "market ticker · refreshing…"
+    select_list = node["children"][1]
+    assert select_list["on_select"] == "pair"
+    detail_card = node["children"][2]
+    assert detail_card["type"] == "card"
+
+    effects = app.update(UiAction("pair:2"))
+    updated = next(effect for effect in effects if isinstance(effect, SetState)).data
+    assert updated["selected"] == 2
+
+    # Pre-seeded ticker state is preserved by init() without forcing loading=True.
+    _v3_state._state = sdk.StateSnapshot(
+        {
+            "pairs": [
+                {
+                    "pair": "XBTUSD",
+                    "label": "BTC/USD",
+                    "last": "65000.1",
+                    "change": "+2.1%",
+                    "high": "66000.0",
+                    "low": "64000.0",
+                    "volume": "1234.5",
+                }
+            ],
+            "selected": 0,
+        },
+        {},
+    )
+    init_effects = app.init((800, 600), [])
+    init_state = next(e for e in init_effects if isinstance(e, SetState)).data
+    assert init_state["loading"] is False
+    assert init_state["prices"]["XBTUSD"]["last"] == "65000.1"
+

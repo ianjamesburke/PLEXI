@@ -23,8 +23,7 @@ use egui::Id;
 pub(crate) enum InputOwner {
     /// The OS window is unfocused; no surface receives keys.
     OsUnfocused,
-    /// A host overlay surface owns input (modal focus stack or an inline
-    /// sidebar editor).
+    /// A host overlay surface owns input.
     Overlay(OverlaySurface),
     /// The focused pane of the active window owns input.
     Pane(PaneId),
@@ -33,37 +32,44 @@ pub(crate) enum InputOwner {
     Nobody,
 }
 
-/// The overlay surfaces that can own input. `Layer` covers every modal on
-/// the focus stack; the sidebar's inline context-rename editor is host state
-/// (`renaming_window` + visible sidebar) that never pushes a stack layer, so
-/// it gets its own variant instead of a sixth ad-hoc convention.
+/// The overlay surfaces that can own input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum OverlaySurface {
     /// The top of the modal focus stack.
     Layer(FocusKind),
-    /// Inline context rename in the visible sidebar.
-    SidebarRename,
+    /// Decision overlay (`What would you do here?`).
+    DecisionOverlay,
+    /// Attention queue list (`Cmd+I`).
+    AttentionQueue,
+    /// Tree atlas level (`ZoomLevel::TreeAtlas`).
+    TreeAtlas,
 }
 
 impl PlexiApp {
     /// The overlay surface that owns input, if any: the top of the modal
-    /// focus stack, else the inline sidebar rename editor. This is the single
+    /// focus stack or other host overlays. This is the single
     /// derivation behind [`Self::input_captured_by_overlay`] and
     /// [`Self::input_owner`] — never re-derive it elsewhere.
     pub(crate) fn overlay_surface(&self) -> Option<OverlaySurface> {
+        if self.attention_queue.decision_overlay.is_some() {
+            return Some(OverlaySurface::DecisionOverlay);
+        }
+        if self.attention_queue.open {
+            return Some(OverlaySurface::AttentionQueue);
+        }
         if let Some(kind) = self.focus_stack.last() {
             return Some(OverlaySurface::Layer(*kind));
         }
-        if self.sidebar_visible && self.renaming_window.is_some() {
-            return Some(OverlaySurface::SidebarRename);
+        match self.zoom.level {
+            crate::app::zoom::ZoomLevel::Columns => None,
+            crate::app::zoom::ZoomLevel::TreeAtlas => Some(OverlaySurface::TreeAtlas),
         }
-        None
     }
 
     /// Derive this frame's input owner from host state. Precedence:
     /// OS window focus > overlay surfaces > the focused pane.
     ///
-    /// The OS-focus gate applies to key *routing* (`dispatch_app_key_events`,
+    /// The OS-focus gate applies to key *routing* (`dispatch_plugin_key_events`,
     /// the terminal steal): while another window owns the keyboard, no pane
     /// receives keys. It does not apply to egui-focus *projection* — see
     /// [`Self::host_input_owner`].
@@ -84,6 +90,15 @@ impl PlexiApp {
         if let Some(surface) = self.overlay_surface() {
             return InputOwner::Overlay(surface);
         }
+        if let Some(parent) = self.conjoined_parent() {
+            if self.conjoined_parent_focus == Some(parent) {
+                return if self.pane_qualifies_for_input(parent) {
+                    InputOwner::Pane(parent)
+                } else {
+                    InputOwner::Nobody
+                };
+            }
+        }
         let win = &self.windows[self.active_window];
         if let Some(focused_tile) = win.focused_pane {
             // `focused_pane` can transiently point at a container after
@@ -97,17 +112,21 @@ impl PlexiApp {
             };
             if let Some(pane_tile) = pane_tile {
                 if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(pane_tile) {
-                    return InputOwner::Pane(*pane_id);
+                    if self.pane_qualifies_for_input(*pane_id) {
+                        return InputOwner::Pane(*pane_id);
+                    }
                 }
             }
         }
         InputOwner::Nobody
     }
 
-    /// The pane that owns input this frame, if the owner is a pane. Feeds the
-    /// tiling behavior's `is_focused` so pane visuals track real ownership.
-    pub(crate) fn owner_pane(&self, ctx: &egui::Context) -> Option<PaneId> {
-        match self.input_owner(ctx) {
+    /// The pane painted at full opacity. OS blur does not dim it: ghost
+    /// applies to the other panes only. An overlay still returns `None`, so
+    /// every pane dims under a modal. Key routing stays on [`Self::input_owner`],
+    /// which keeps the OS-focus gate.
+    pub(crate) fn visual_owner_pane(&self) -> Option<PaneId> {
+        match self.host_input_owner() {
             InputOwner::Pane(pane_id) => Some(pane_id),
             _ => None,
         }
@@ -186,9 +205,10 @@ impl PlexiApp {
         // every unfocused terminal.
         let mut locked_terminal = None;
         if let InputOwner::Pane(pane_id) = owner {
-            if self.windows[self.active_window]
-                .panes
-                .get(&pane_id)
+            if self
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pane_id))
                 .is_some_and(|pane| pane.as_terminal().is_some())
             {
                 let terminal_id = egui_term::terminal_widget_id(pane_id);
@@ -226,8 +246,8 @@ impl PlexiApp {
 /// `pane_id` on the previous frame. Key dispatch runs before the render
 /// pass, so the current frame's registry is still empty — the previous
 /// frame's registrations are the freshest complete picture. Used by
-/// `dispatch_app_key_events` to keep keystrokes with a focused declarative
-/// `TextInput` instead of forwarding them to the app as raw key events
+/// `dispatch_plugin_key_events` to keep keystrokes with a focused declarative
+/// `TextInput` instead of forwarding them to the plugin as raw key events
 /// (stint 0456).
 pub(crate) fn focused_pane_text_surface(ctx: &egui::Context, pane_id: PaneId) -> bool {
     let id = Id::new(PREVIOUS_SURFACES_ID);
@@ -274,12 +294,35 @@ pub(crate) fn pane_receives_ipc_text(ctx: &egui::Context, pane_id: PaneId) -> bo
 
 const PREVIOUS_SURFACES_ID: &str = "plexi_text_surfaces_previous_frame";
 const PREVIOUS_OWNER_ID: &str = "plexi_input_owner_previous_frame";
+const FRAME_INPUT_OWNER_ID: &str = "plexi_frame_input_owner";
 
-fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
+/// Publish the host input owner for the frame that is about to render.
+/// egui widget focus is only reconciled at the end of the frame, so a pane
+/// that just lost host focus can still `has_focus` its text widget while
+/// `ui()` runs. Editors must consult this value before inserting keystrokes.
+pub(crate) fn publish_frame_input_owner(ctx: &egui::Context, owner: InputOwner) {
     ctx.memory_mut(|memory| {
         memory
             .data
-            .insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
+            .insert_temp(Id::new(FRAME_INPUT_OWNER_ID), owner);
+    });
+}
+
+/// `Some(true)` when this frame's published owner is `pane_id`, `Some(false)`
+/// when another owner was published, `None` when nothing was published
+/// (isolated widget renders that are not a host frame).
+pub(crate) fn published_frame_owner_is_pane(ctx: &egui::Context, pane_id: PaneId) -> Option<bool> {
+    ctx.memory(|memory| {
+        memory
+            .data
+            .get_temp::<InputOwner>(Id::new(FRAME_INPUT_OWNER_ID))
+            .map(|owner| matches!(owner, InputOwner::Pane(id) if id == pane_id))
+    })
+}
+
+fn store_previous_owner(ctx: &egui::Context, owner: InputOwner) {
+    ctx.memory_mut(|memory| {
+        memory.data.insert_temp(Id::new(PREVIOUS_OWNER_ID), owner);
     });
 }
 

@@ -1,24 +1,24 @@
-# Plexi WASM apps
+# Plexi WASM plugins
 
-The Rust SDK wraps the `plexi-app` world in [`wit/plexi.wit`](https://github.com/ianjamesburke/PLEXI/blob/alpha/wit/plexi.wit). See [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md) for the host architecture and security model.
+The Rust SDK wraps the `plexi-plugin` world in [`wit/plexi.wit`](https://github.com/ianjamesburke/PLEXI/blob/alpha/wit/plexi.wit). See [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md) for the host architecture and security model.
 
-## Create an app
+## Create an plugin
 
-Install `cargo-component`, then scaffold, build, and open an app:
+Install `cargo-component`, then scaffold, build, and open an plugin:
 
 ```sh
 cargo install cargo-component
-plexi app init --wasm counter --global
+plexi plugin init --wasm counter --global
 ```
 
-Change to the exact app path printed by `app init`, then run:
+Change to the exact plugin path printed by `plugin init`, then run:
 
 ```sh
 cargo component build --release --target wasm32-wasip2
-plexi app open .
+plexi view open .
 ```
 
-The scaffold is a Cargo workspace. It carries a generated SDK snapshot under `.plexi-sdk/`, and its `wit` symlink points at the matching embedded WIT contract. This keeps the app build independent of the Plexi source checkout that produced the CLI. `cargo-component` writes the loadable component to `target/wasm32-wasip1/release/<crate>.wasm`; `manifest.toml` uses that path.
+The scaffold is a Cargo workspace. It carries a generated SDK snapshot under `.plexi-sdk/`, and its `wit` symlink points at the matching embedded WIT contract. This keeps the plugin build independent of the Plexi source checkout that produced the CLI. `cargo-component` writes the loadable component to `target/wasm32-wasip1/release/<crate>.wasm`; `manifest.toml` uses that path.
 
 Implement `App` and export one instance:
 
@@ -51,11 +51,11 @@ imports.
 snapshot. `context.get(key)` returns the initial bytes for one key. The `state`
 module exposes live `get`, `set`, `delete`, `list_prefix`, and `snapshot` host
 imports. State values are byte arrays; choose and document an encoding in the
-app when values are not plain UTF-8.
+plugin when values are not plain UTF-8.
 
 ## Effects
 
-The `effects` module constructs every effect in the standard app world:
+The `effects` module constructs every effect in the standard plugin world:
 
 - `file_read(path)` and `file_write(path, bytes)` require the matching scoped
   filesystem capability. Results arrive as `FileReadResult` and
@@ -80,7 +80,7 @@ The `effects` module constructs every effect in the standard app world:
   `clipboard.write`. Results arrive as `ClipboardReadResult` and
   `ClipboardWriteResult`.
 - `notify(title, body)` requires `notify` and returns `NotifyResult`.
-- `spawn(app_id)` requires `spawn.app` and returns `SpawnResult`. Construct
+- `spawn(plugin_id)` requires `spawn.plugin` and returns `SpawnResult`. Construct
   `SpawnEffect` directly when the launch needs a layout or arguments.
 - `open_file_picker(request_id, filter, multiple, mode)` requires `fs.pick`
   and shows a host file dialog (`FilePickerMode::Open` / `Folder` / `Save`).
@@ -96,8 +96,8 @@ Effect results arrive later through `App::update` as `InputEvent` variants. The 
 
 ## Event streams
 
-Declare and emit streams owned by the current app, or subscribe to streams
-declared by another app:
+Declare and emit streams owned by the current plugin, or subscribe to streams
+declared by another plugin:
 
 ```rust
 use plexi_wasm_sdk::{effects, Effect, EventStreamDecl, SubscribeEventStreamsEffect};
@@ -111,7 +111,7 @@ fn event_effects() -> Vec<Effect> {
         }]),
         effects::subscribe_event_streams(SubscribeEventStreamsEffect {
             request_id: "subscribe-counter".into(),
-            app_id: "counter".into(),
+            plugin_id: "counter".into(),
             event_names: vec!["counter.changed".into()],
             payload_mode: "full".into(),
             trigger_mode: "conversation".into(),
@@ -122,10 +122,10 @@ fn event_effects() -> Vec<Effect> {
 ```
 
 `EventSubscriptionResult` returns the subscription ID. Matching events arrive
-as `InputEvent::AppEvent`, including the publisher ID, stream name, host event
+as `InputEvent::PluginEvent`, including the publisher ID, stream name, host event
 ID, resource ID, and the payload selected by `payload_mode`. Subscriptions are
 session-scoped and disappear when the pane closes. The host permission broker
-may ask the user before allowing a cross-app subscription.
+may ask the user before allowing a cross-plugin subscription.
 
 ## App tools
 
@@ -158,11 +158,11 @@ fn handle_tool(event: InputEvent) -> Vec<Effect> {
 
 Both schemas are JSON Schema encoded as strings in WIT. Invalid schema JSON is
 rejected at declaration time. `read_only` must be true only when a call cannot
-mutate app or workspace state. External MCP agents in the same workspace see
-tools namespaced as `<app_id>__<tool>` through the config printed by
+mutate plugin or workspace state. External MCP agents in the same workspace see
+tools namespaced as `<plugin_id>__<tool>` through the config printed by
 `plexi events mcp-config`. For Assistant calls specifically, read-only calls
 are auto-granted unless an explicit deny applies. Mutating Assistant calls use
-the normal app-connector permission prompt, and denied calls never enter the
+the normal plugin-connector permission prompt, and denied calls never enter the
 component. The host audit logs every allowed invocation.
 
 ## UI nodes
@@ -191,11 +191,11 @@ Builders set common defaults. The generated node records and enums are re-export
 
 ## Capabilities
 
-Declare requested capabilities in `manifest.toml`. The host rejects effects that the app did not declare and asks the user before granting sensitive access.
+Declare requested capabilities in `manifest.toml`. The host rejects effects that the plugin did not declare and asks the user before granting sensitive access.
 
 ```toml
-[app.capabilities]
-capabilities = ["clipboard.write", "notify", "spawn.app"]
+[plugin.capabilities]
+capabilities = ["clipboard.write", "notify", "spawn.plugin"]
 
 [app.capabilities.wasm]
 required = []
@@ -204,11 +204,11 @@ optional = []
 
 Use scoped filesystem and network capability IDs for file and HTTP effects.
 The standard effect IDs are `ai.query`, `clipboard.read`, `clipboard.write`,
-`notify`, and `spawn.app`. Imported state and pipe interfaces use
+`notify`, and `spawn.plugin`. Imported state and pipe interfaces use
 `state:read-write` and `pipe.open`. GPU and audio worlds declare `gpu.render`,
 `audio.playback`, or `audio:record` as required by the app.
 
 The host asks before granting an unknown session capability and returns the
 decision through `update`. Capability names and their host behavior are defined
 in [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md). Keep the manifest list
-limited to effects and imported interfaces the app uses.
+limited to effects and imported interfaces the plugin uses.

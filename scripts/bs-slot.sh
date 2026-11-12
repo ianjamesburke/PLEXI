@@ -46,8 +46,8 @@ if [[ -z "${PLEXI_PANE_ID:-}" ]]; then
   exit 0
 fi
 
-if ! plexi pane slot write report "$report" --replace \
-  || ! plexi pane slot write status "${phase}:${state}" --replace; then
+if ! plexi pane slot write report "$report" --pane-id "$PLEXI_PANE_ID" --replace \
+  || ! plexi pane slot write status "${phase}:${state}" --pane-id "$PLEXI_PANE_ID" --replace; then
   echo "bs-slot: slot write failed on pane $PLEXI_PANE_ID — report was: $report" >&2
   exit 1
 fi

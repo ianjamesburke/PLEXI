@@ -8,7 +8,7 @@ suite = true
 open = { kind = "process", path = "apps/dev/canvas-click-probe", as = "probe" }
 
 [[steps]]
-wait_app_frame = { target = "probe", timeout_s = 15.0 }
+wait_view_frame = { target = "probe", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 2

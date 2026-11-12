@@ -2,11 +2,13 @@
 //!
 //! `AssistantModel` owns the active conversation, composer text, and
 //! streaming state. State transitions return `AssistantEffect`s; the pane
-//! shell (`AssistantApp`) executes them.
+//! shell (`AssistantView`) executes them.
+
+use std::collections::VecDeque;
 
 use super::commands::{self, ParsedCommand};
-use crate::protocol::ModelTier;
 use crate::plexi_ai::broker::ReasoningEffort;
+use crate::protocol::ModelTier;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -16,7 +18,7 @@ pub enum TurnRole {
     Assistant,
     Tool,
     Error,
-    /// An app event delivered through a granted subscription (Phase D3).
+    /// An plugin event delivered through a granted subscription (Phase D3).
     Event,
     /// Output of a slash command the user ran, shared with the model. It
     /// enters the next turn's history as clearly-labelled command output so
@@ -96,7 +98,7 @@ pub struct ActiveToolCall {
     /// Compact summary of the call's input, shown on the running row.
     pub input_summary: String,
     /// When the call started, so the running row can show elapsed time — a
-    /// long `app check` reads as progress instead of a hang (stint 0460).
+    /// long `plugin check` reads as progress instead of a hang (stint 0460).
     pub started: std::time::Instant,
 }
 
@@ -117,7 +119,7 @@ pub struct FinishedToolCall {
 }
 
 /// A permission sheet awaiting the user's decision (renderable state only —
-/// the worker reply channel lives in `AssistantApp`).
+/// the worker reply channel lives in `AssistantView`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPermission {
     pub tool: String,
@@ -125,6 +127,34 @@ pub struct PendingPermission {
     /// Keyboard cursor over `PermissionChoice::ORDER`, so Tab/arrow nav can
     /// move it and Enter can activate whatever it lands on.
     pub selected: usize,
+    pub actor_id: String,
+    pub resource_id: String,
+    pub pending_request_id: String,
+    /// Set when an external turn opened the sheet. Desktop asks leave this
+    /// empty so the sheet copy stays the desktop sentence.
+    pub source: Option<String>,
+}
+
+impl PendingPermission {
+    /// Sentence the desktop sheet shows for this ask.
+    pub fn prompt_line(&self) -> String {
+        let who = if self.actor_id.is_empty() {
+            "assistant (medium)".to_string()
+        } else {
+            self.actor_id.clone()
+        };
+        let resource = if self.resource_id.is_empty() {
+            String::new()
+        } else {
+            format!(" on {}", self.resource_id)
+        };
+        let source = self
+            .source
+            .as_deref()
+            .map(|source| format!(" — requested from a {source} turn"))
+            .unwrap_or_default();
+        format!("{who} wants to run '{}'{resource}{source}", self.tool)
+    }
 }
 
 /// What the user chose on the permission sheet.
@@ -133,16 +163,20 @@ pub enum PermissionChoice {
     AllowOnce,
     AllowSession,
     AllowAlways,
+    /// Store a denial until the person resets or allows it.
+    DenyAlways,
+    /// Refuse this call only. The next call asks again.
     Deny,
 }
 
 impl PermissionChoice {
     /// Left-to-right order the sheet renders its actions in — also the
-    /// Tab/arrow traversal order.
-    pub const ORDER: [PermissionChoice; 4] = [
+    /// Tab/arrow traversal order. Deny stays last so it remains the default.
+    pub const ORDER: [PermissionChoice; 5] = [
         PermissionChoice::AllowOnce,
         PermissionChoice::AllowSession,
         PermissionChoice::AllowAlways,
+        PermissionChoice::DenyAlways,
         PermissionChoice::Deny,
     ];
 }
@@ -160,7 +194,7 @@ pub struct StreamingState {
     /// this prefix from the broker's final text so only the tail commits.
     pub committed_answer: String,
     /// The model is currently generating a tool call (stint 0467) — the
-    /// longest otherwise-silent stretch of an app-build turn. Cleared when
+    /// longest otherwise-silent stretch of a plugin-build turn. Cleared when
     /// the finished call dispatches (`tool_call_started`) or the turn ends.
     pub tool_progress: Option<ToolArgProgress>,
 }
@@ -178,8 +212,7 @@ pub struct ToolArgProgress {
 /// Observable lifecycle for `/compact`. This deliberately records feedback,
 /// not compaction mechanics: raw history and checkpoint format remain owned
 /// by the store layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CompactionState {
     #[default]
     Idle,
@@ -190,23 +223,28 @@ pub enum CompactionState {
     },
 }
 
-
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssistantEffect {
-    /// Run a model turn for `prompt` in `conversation_id`.
+    /// Run a model turn for `prompt` in `conversation_id`. `turn_id` is the
+    /// id of the user turn this dispatch answers.
     AiQuery {
         conversation_id: String,
+        turn_id: String,
         prompt: String,
+        /// Per-run ledger client. `None` uses the agent tag, then `[ai] client`.
+        client: Option<String>,
+        /// Per-run ledger kind (`system` or `output`). `None` uses the agent tag, then `output`.
+        kind: Option<String>,
     },
     /// Persist unwritten turns and the active conversation id to disk.
     SessionWrite {
         conversation_id: String,
     },
-    /// `/tools`: list discovered app connector tools with broker decisions.
+    /// `/tools`: list discovered plugin connector tools with broker decisions.
     ListTools,
-    /// `/apps`: list running apps and their exposed connectors.
-    ListApps,
+    /// `/plugins`: list running plugins and their exposed connectors.
+    ListPlugins,
     ListSkills,
     ShowContext,
     ShowHooks,
@@ -289,8 +327,14 @@ pub enum AssistantOverlay {
     },
 }
 
-fn new_conversation_id() -> String {
+pub(crate) fn new_conversation_id() -> String {
     format!("conv-{}", uuid::Uuid::new_v4())
+}
+
+/// Id of one user turn that a model dispatch answers. External callers
+/// correlate replies by this id.
+pub(crate) fn new_turn_id() -> String {
+    format!("turn-{}", uuid::Uuid::new_v4())
 }
 
 /// Pure Assistant state: one active conversation + composer + streaming.
@@ -313,6 +357,15 @@ pub struct AssistantModel {
     /// appended to `turns`; this count tells the pump to dispatch one
     /// follow-up turn that folds them in.
     pub queued_user_turns: usize,
+    /// Id of the model turn currently in flight, when one has been dispatched.
+    pub active_turn_id: Option<String>,
+    /// Turn ids for user prompts waiting to be dispatched, oldest first.
+    pub queued_turn_ids: VecDeque<String>,
+    /// Turn id assigned by the most recent `submit_prompt`, dispatched or queued.
+    pub last_submitted_turn_id: Option<String>,
+    /// Ledger tag overrides for user messages queued behind an in-flight turn,
+    /// in arrival order. A follow-up turn keeps the latest non-empty value.
+    queued_run_tags: Vec<(Option<String>, Option<String>)>,
     /// Transcript index where the in-flight turn's rows belong: just after
     /// the user message that started it. Tool rows and the final reply
     /// insert here (advancing it), so output appended mid-turn — slash-view
@@ -347,6 +400,10 @@ impl AssistantModel {
             active_tools: Vec::new(),
             pending_permission: None,
             queued_user_turns: 0,
+            active_turn_id: None,
+            queued_turn_ids: VecDeque::new(),
+            last_submitted_turn_id: None,
+            queued_run_tags: Vec::new(),
             turn_anchor: None,
             show_thoughts: false,
             active_agent_id: "default".to_string(),
@@ -545,23 +602,40 @@ impl AssistantModel {
     /// Submit text as a user prompt without slash-command reparsing. Used
     /// after an installed skill command has already consumed its command name.
     pub fn submit_prompt(&mut self, input: String) -> Vec<AssistantEffect> {
+        self.submit_prompt_tagged(input, None, None)
+    }
+
+    /// [`submit_prompt`] with an optional per-run ledger client and kind.
+    pub fn submit_prompt_tagged(
+        &mut self,
+        input: String,
+        client: Option<String>,
+        kind: Option<String>,
+    ) -> Vec<AssistantEffect> {
+        let turn_id = new_turn_id();
+        self.last_submitted_turn_id = Some(turn_id.clone());
         if self.streaming.in_flight {
             log::info!(
-                "assistant[{}]: message queued — turn in flight ({} chars)",
+                "assistant[{}]: message queued — turn in flight ({} chars) turn_id={turn_id} client={client:?} kind={kind:?}",
                 self.conversation_id,
                 input.len()
             );
             self.turns.push(Turn::now(TurnRole::User, input));
             self.queued_user_turns += 1;
+            self.queued_turn_ids.push_back(turn_id);
+            if client.is_some() || kind.is_some() {
+                self.queued_run_tags.push((client, kind));
+            }
             return vec![AssistantEffect::SessionWrite {
                 conversation_id: self.conversation_id.clone(),
             }];
         }
         log::info!(
-            "assistant[{}]: turn start ({} chars)",
+            "assistant[{}]: turn start ({} chars) turn_id={turn_id} client={client:?} kind={kind:?}",
             self.conversation_id,
             input.len()
         );
+        self.active_turn_id = Some(turn_id.clone());
         self.turns.push(Turn::now(TurnRole::User, input.clone()));
         self.turn_anchor = Some(self.turns.len());
         self.streaming = StreamingState {
@@ -574,9 +648,27 @@ impl AssistantModel {
             },
             AssistantEffect::AiQuery {
                 conversation_id: self.conversation_id.clone(),
+                turn_id,
                 prompt: input,
+                client,
+                kind,
             },
         ]
+    }
+
+    /// Latest non-empty ledger tags queued behind the in-flight turn.
+    pub(crate) fn take_queued_run_tags(&mut self) -> (Option<String>, Option<String>) {
+        let mut client = None;
+        let mut kind = None;
+        for (queued_client, queued_kind) in self.queued_run_tags.drain(..) {
+            if queued_client.is_some() {
+                client = queued_client;
+            }
+            if queued_kind.is_some() {
+                kind = queued_kind;
+            }
+        }
+        (client, kind)
     }
 
     /// Recall previous user messages into the composer. The first Up starts
@@ -633,6 +725,9 @@ impl AssistantModel {
         self.active_tools.clear();
         self.pending_permission = None;
         self.queued_user_turns = 0;
+        self.queued_turn_ids.clear();
+        self.active_turn_id = None;
+        self.queued_run_tags.clear();
         self.turn_anchor = None;
         vec![AssistantEffect::CancelTurn]
     }
@@ -747,7 +842,7 @@ impl AssistantModel {
             // Real Phase 2 views: the pane shell reads the broker/audit state
             // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
-            "apps" => vec![AssistantEffect::ListApps],
+            "plugins" => vec![AssistantEffect::ListPlugins],
             "skills" => vec![AssistantEffect::ListSkills],
             "context" => vec![AssistantEffect::ShowContext],
             "hooks" => vec![AssistantEffect::ShowHooks],
@@ -760,7 +855,7 @@ impl AssistantModel {
             "rewind" if cmd.args.is_empty() => {
                 self.turns.push(Turn::now(
                     TurnRole::Error,
-                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and apps are untouched.",
+                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and plugins are untouched.",
                 ));
                 vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
@@ -980,6 +1075,10 @@ impl AssistantModel {
         }
         let mut turn = match &call.error {
             None => Turn::tool(call.tool.clone(), ToolStatus::Succeeded),
+            Some(e) if e.contains("stale_revision") => Turn::tool(
+                "stale revision — the board changed before this move".to_string(),
+                ToolStatus::Failed,
+            ),
             Some(e) => Turn::tool(format!("{} — {e}", call.tool), ToolStatus::Failed),
         };
         turn.detail = call.detail;
@@ -995,10 +1094,25 @@ impl AssistantModel {
     /// The cursor starts on `Deny` (`ORDER`'s last slot) — the safe default
     /// if the user reflexively hits Enter without looking.
     pub fn permission_requested(&mut self, tool: &str, input_summary: &str) {
+        self.permission_requested_scoped(tool, input_summary, "", "", "");
+    }
+
+    pub fn permission_requested_scoped(
+        &mut self,
+        tool: &str,
+        input_summary: &str,
+        actor_id: &str,
+        resource_id: &str,
+        pending_request_id: &str,
+    ) {
         self.pending_permission = Some(PendingPermission {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
             selected: PermissionChoice::ORDER.len() - 1,
+            actor_id: actor_id.to_string(),
+            resource_id: resource_id.to_string(),
+            pending_request_id: pending_request_id.to_string(),
+            source: None,
         });
     }
 
@@ -1034,9 +1148,21 @@ impl AssistantModel {
             return Vec::new();
         };
         match choice {
-            PermissionChoice::Deny => {
+            PermissionChoice::Deny | PermissionChoice::DenyAlways if pending.source.is_some() => {
+                Vec::new()
+            }
+            PermissionChoice::Deny | PermissionChoice::DenyAlways => {
+                let lead = if choice == PermissionChoice::DenyAlways {
+                    "always denied by user"
+                } else {
+                    "denied by user for this call only"
+                };
                 self.push_flight_turn(Turn::tool(
-                    format!("{} — denied by user", pending.tool),
+                    format!(
+                        "{} — {lead}. {}",
+                        pending.tool,
+                        crate::cli::introspect::permission_undo_text()
+                    ),
                     ToolStatus::Failed,
                 ));
                 vec![AssistantEffect::SessionWrite {
@@ -1115,6 +1241,7 @@ impl AssistantModel {
         self.streaming = StreamingState::default();
         self.active_tools.clear();
         self.pending_permission = None;
+        self.active_turn_id = None;
         self.turn_anchor = None;
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
@@ -1163,7 +1290,7 @@ mod tests {
             "progress outside an in-flight turn must be ignored"
         );
 
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me a plugin");
         m.apply_tool_progress(None, 12);
         let p = m.streaming.tool_progress.as_ref().expect("progress set");
         assert_eq!((p.name.as_deref(), p.arg_chars), (None, 12));
@@ -1201,9 +1328,31 @@ mod tests {
         assert_eq!(effects.len(), 2);
         assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
         assert!(
-            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, prompt }
-                if *conversation_id == m.conversation_id && prompt == "hello there")
+            matches!(&effects[1], AssistantEffect::AiQuery { conversation_id, turn_id, prompt, client, kind }
+                if *conversation_id == m.conversation_id && prompt == "hello there" && !turn_id.is_empty() && client.is_none() && kind.is_none())
         );
+    }
+
+    #[test]
+    fn tagged_submit_keeps_the_latest_queued_override() {
+        let mut m = AssistantModel::fresh();
+        let effects = m.submit_prompt_tagged(
+            "now".into(),
+            Some("narrative".into()),
+            Some("output".into()),
+        );
+        assert!(
+            matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
+            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output"))
+        );
+        let queued =
+            m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
+        assert!(matches!(queued[0], AssistantEffect::SessionWrite { .. }));
+        assert_eq!(queued.len(), 1);
+        let _ = m.submit_prompt_tagged("after".into(), Some("personal".into()), None);
+        let (client, kind) = m.take_queued_run_tags();
+        assert_eq!(client.as_deref(), Some("personal"));
+        assert_eq!(kind.as_deref(), Some("system"));
     }
 
     #[test]
@@ -1691,7 +1840,7 @@ mod tests {
     #[test]
     fn tool_turn_detail_attaches_and_round_trips() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "edit the app");
+        submitted(&mut m, "edit the plugin");
         tool_started(&mut m, "host.files.edit");
         tool_finished(
             &mut m,
@@ -1714,7 +1863,7 @@ mod tests {
     #[test]
     fn tool_calls_and_queued_message_stay_in_chronological_order() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me a plugin");
 
         tool_started(&mut m, "host.files.write");
         tool_finished(&mut m, "host.files.write", None, None);
@@ -1724,20 +1873,20 @@ mod tests {
         submitted(&mut m, "also add a footer");
         assert_eq!(m.queued_user_turns, 1);
 
-        tool_started(&mut m, "plexi.app_check");
-        tool_finished(&mut m, "plexi.app_check", None, None);
+        tool_started(&mut m, "plexi.plugin_check");
+        tool_finished(&mut m, "plexi.plugin_check", None, None);
 
         let id = m.conversation_id.clone();
-        m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));
+        m.finish_turn(&id, Ok("Done — plugin scaffolded.".to_string()));
 
         let roles: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
         assert_eq!(
             roles,
             vec![
-                (TurnRole::User, "build me an app".to_string()),
+                (TurnRole::User, "build me a plugin".to_string()),
                 (TurnRole::Tool, "host.files.write".to_string()),
-                (TurnRole::Tool, "plexi.app_check".to_string()),
-                (TurnRole::Assistant, "Done — app scaffolded.".to_string()),
+                (TurnRole::Tool, "plexi.plugin_check".to_string()),
+                (TurnRole::Assistant, "Done — plugin scaffolded.".to_string()),
                 (TurnRole::User, "also add a footer".to_string()),
             ],
             "tool calls and the reply must commit before the queued follow-up, in the order they happened"
@@ -1770,8 +1919,8 @@ mod tests {
         m.permission_move_prev();
         assert_eq!(
             m.permission_selected_choice(),
-            Some(PermissionChoice::AllowAlways),
-            "wraps backward from the first action to the last"
+            Some(PermissionChoice::DenyAlways),
+            "one step back from Deny lands on Always deny"
         );
 
         m.permission_move_next();
@@ -1812,6 +1961,9 @@ mod tests {
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("denied by user"));
+        assert!(row.text.contains("plexi permissions list"));
+        assert!(row.text.contains("plexi permissions reset"));
+        assert!(!row.text.contains("gear"));
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
         // Resolving with no pending sheet is a no-op.
@@ -1883,7 +2035,7 @@ mod tests {
     #[test]
     fn streamed_text_flushes_before_tool_rows_and_tail_commits_at_finish() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build the app");
+        submitted(&mut m, "build the plugin");
 
         m.apply_answer_delta("Let me build this for you.");
         m.apply_reasoning_delta("plan the scaffold");
@@ -1915,7 +2067,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                (TurnRole::User, "build the app".to_string()),
+                (TurnRole::User, "build the plugin".to_string()),
                 (
                     TurnRole::Assistant,
                     "Let me build this for you.".to_string()

@@ -4,7 +4,7 @@ suite = true
 [[steps]]
 open = { kind = "process", path = "apps/snake", as = "snake" }
 [[steps]]
-wait_app_frame = { target = "snake", timeout_s = 15.0 }
+wait_view_frame = { target = "snake", timeout_s = 15.0 }
 [[steps]]
 assert = { target = "snake", fit = "contain" }
 

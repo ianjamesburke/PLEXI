@@ -1,14 +1,14 @@
 //! `ai.query` capability broker — issue #284, #383.
 //!
-//! The broker is the host-side bridge between an app's `DrawCommand::AiQuery`
+//! The broker is the host-side bridge between a plugin's `DrawCommand::AiQuery`
 //! and the live Plexi AI backend. The capability gate, model-tier resolution,
 //! ledger append, and outbound `PlexiEvent::AiResponse` are all funnelled
 //! through this module so:
 //!
 //!   1. Tests can replace `LiveAiBroker` with a canned `AiBroker` mock and
 //!      drive `host::wasm_pane` deterministically (no real LLM).
-//!   2. Any PGAP app with `ai.query` can reuse the same broker — the turn
-//!      loop is owned by the app, which calls into `LiveAiBroker` over PGAP.
+//!   2. Any PGAP plugin with `ai.query` can reuse the same broker — the turn
+//!      loop is owned by the plugin, which calls into `LiveAiBroker` over PGAP.
 //!
 //! Today the broker drives the synchronous `turn_loop::run_turn` path (which
 //! itself spawns a worker thread inside the backend) so we never hit the UI
@@ -17,18 +17,51 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::config::{AiConfig, ModelTiers};
+use crate::config::{AiConfig, ResolvedModelModes};
 use crate::host::event_log::{self, HostEvent};
-use crate::plexi_ai::backend::local::LocalOpenAiBackend;
-use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 pub use crate::plexi_ai::backend::{ConcreteModelRoute, ReasoningEffort};
-use crate::plexi_ai::ledger::{self, LedgerRow};
+use crate::plexi_ai::ledger::{self, LedgerRow, RunKind, RunTags};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
 use crate::plexi_ai::CancelToken;
 use crate::protocol::{AiMessage, AiTool, ModelTier};
+
+/// The two user-configurable broker targets. This deliberately has no
+/// medium tier: callers choose cheap/quick FAST or deliberate SLOW work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelMode {
+    Fast,
+    Slow,
+}
+
+impl ModelMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Slow => "slow",
+        }
+    }
+}
+
+fn backend_tier(mode: ModelMode) -> ModelTier {
+    match mode {
+        ModelMode::Fast => ModelTier::Low,
+        ModelMode::Slow => ModelTier::High,
+    }
+}
+
+impl ModelMode {
+    /// WASM SDK requests still use the legacy low/medium/high wire enum.
+    /// The medium tier was retired: low and medium select FAST; high selects SLOW.
+    pub fn from_wasm_tier(tier: ModelTier) -> Self {
+        match tier {
+            ModelTier::High => Self::Slow,
+            ModelTier::Low | ModelTier::Medium => Self::Fast,
+        }
+    }
+}
 
 /// Lightweight context for a single open pane (injected into system prompt).
 #[derive(Debug, Clone)]
@@ -65,13 +98,13 @@ pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
     pane_snapshot().read().unwrap().clone()
 }
 
-/// One brokered request — what the routing layer hands to a broker. `app_id`
-/// is required so the ledger can attribute spend per-app.
+/// One brokered request — what the routing layer hands to a broker. `plugin_id`
+/// is required so the ledger can attribute spend per-plugin.
 #[derive(Debug, Clone)]
 pub struct AiBrokerRequest {
-    pub app_id: String,
-    pub model_tier: ModelTier,
-    /// Optional agent-selected provider/model route. Ordinary app callers
+    pub plugin_id: String,
+    pub model_mode: ModelMode,
+    /// Optional agent-selected provider/model route. Ordinary plugin callers
     /// leave this unset and retain configured tier routing.
     pub concrete_model: Option<ConcreteModelRoute>,
     /// Optional agent-selected reasoning effort.
@@ -96,10 +129,14 @@ pub struct AiBrokerRequest {
     pub cancel: CancelToken,
     /// Override for the default tool-call round cap (see
     /// `MAX_TOOL_ITERATIONS_DEFAULT`). Callers that expect a turn to need many
-    /// rounds (e.g. the assistant's app-build skill) set a higher value so the
+    /// rounds (e.g. the assistant's plugin-build skill) set a higher value so the
     /// turn pauses gracefully later instead of being cut short. `None` uses
     /// the default.
     pub max_tool_iterations: Option<usize>,
+    /// Ledger client tag. Blank or `None` uses `[ai] client`.
+    pub client: Option<String>,
+    /// Ledger run kind. `None` means `output`.
+    pub kind: Option<RunKind>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -162,13 +199,24 @@ pub struct LiveAiBroker {
     /// AI broker configuration loaded from `config.toml [ai]`.
     /// `None` when the section is absent; `dispatch` fails fast in that case.
     ai_config: Option<AiConfig>,
+    model_modes: ResolvedModelModes,
 }
 
 impl LiveAiBroker {
-    /// Construct from the loaded `AiConfig` (may be `None` when `[ai]` is
-    /// absent from config.toml — errors are surfaced at dispatch time).
+    /// Test-only constructor with built-in model defaults.
+    #[cfg(test)]
     pub fn new(ai_config: Option<AiConfig>) -> Self {
-        Self { ai_config }
+        Self::with_model_modes(
+            ai_config,
+            crate::config::PlexiConfig::default().resolved_model_modes(),
+        )
+    }
+
+    pub fn with_model_modes(ai_config: Option<AiConfig>, model_modes: ResolvedModelModes) -> Self {
+        Self {
+            ai_config,
+            model_modes,
+        }
     }
 }
 
@@ -181,144 +229,79 @@ impl AiBroker for LiveAiBroker {
         let ai_config = match &self.ai_config {
             Some(c) => c,
             None => {
-                let msg = "ai_config_missing: add [ai] section with model_low, model_medium, model_high to config.toml";
-                log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+                let msg = "ai_config_missing: add [ai] and [models.fast] / [models.slow] settings to config.toml";
+                log::warn!(
+                    "ai_broker[{}]: dispatch failed — {}",
+                    request.plugin_id,
+                    msg
+                );
                 return AiBrokerResponse::err(msg);
             }
         };
 
         // Budget gate — fail open on ledger I/O errors (today_spend returns 0 on error).
-        if let Err(reason) = ledger::check_budget(&request.app_id, ai_config) {
+        if let Err(reason) = ledger::check_budget(&request.plugin_id, ai_config) {
             log::warn!(
                 "ai_broker[{}]: request denied by budget gate — {reason}",
-                request.app_id
+                request.plugin_id
             );
             return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
         }
 
+        let configured = match request.model_mode {
+            ModelMode::Fast => &self.model_modes.fast,
+            ModelMode::Slow => &self.model_modes.slow,
+        };
         let backend_name = request
             .concrete_model
             .as_ref()
             .map(|route| route.provider.clone())
-            .or_else(|| ai_config.backend.clone())
-            .unwrap_or_else(|| "openrouter".to_string());
+            .unwrap_or_else(|| configured.provider.clone());
 
         match backend_name.as_str() {
-            "ollama" => dispatch_ollama(request, ai_config, on_delta),
-            "openrouter" => dispatch_openrouter(request, ai_config, on_delta),
-            "local" => dispatch_local(request, ai_config, on_delta),
+            "openrouter" => dispatch_openrouter(request, ai_config, configured, on_delta),
             other => AiBrokerResponse::err(format!("unsupported_model_provider: {other}")),
         }
     }
 }
 
-/// The per-backend facts [`dispatch_backend`] needs: which provider a
-/// `concrete_model` route must name to be routable here, which config section
-/// to name when no model is configured, that section's tier table, and how
-/// turns on this backend are billed.
-struct BackendDispatch<'a> {
-    provider: &'a str,
-    section: &'a str,
-    tiers: &'a ModelTiers,
-    billing: BillingModel,
-}
-
-/// Shared dispatch path for every backend.
-///
-/// Rejects a route naming a different provider, resolves the model id from the
-/// route or the section's tier table, then hands off to `build` for the parts
-/// that genuinely differ per backend. `build` returns the backend plus the API
-/// key used only by the OpenRouter cost fetch — empty for backends with no
-/// metered cost lookup.
-fn dispatch_backend(
-    request: AiBrokerRequest,
-    spec: BackendDispatch<'_>,
-    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
-    build: impl FnOnce(&AiBrokerRequest, &str) -> Result<(Box<dyn AiBackend>, String), AiBrokerResponse>,
-) -> AiBrokerResponse {
-    if let Some(route) = request
-        .concrete_model
-        .as_ref()
-        .filter(|route| route.provider != spec.provider)
-    {
-        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
-    }
-    let model_id = request
-        .concrete_model
-        .as_ref()
-        .map(|route| route.model.clone())
-        .or_else(|| spec.tiers.resolve(request.model_tier));
-    let model_id = match model_id {
-        Some(m) => m,
-        None => {
-            let msg = format!(
-                "ai_config_missing: model_{} not set in {} config section",
-                request.model_tier.as_str(),
-                spec.section
-            );
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    let (backend, api_key) = match build(&request, &model_id) {
-        Ok(pair) => pair,
-        Err(response) => return response,
-    };
-
-    run_turn_and_respond(
-        request,
-        backend.as_ref(),
-        spec.billing,
-        model_id,
-        api_key,
-        on_delta,
-    )
+fn fill_run_tags(request: &mut AiBrokerRequest, config_client: Option<&str>) {
+    let tags = RunTags::resolve(request.client.as_deref(), request.kind, config_client);
+    request.client = tags.client;
+    request.kind = Some(tags.kind);
 }
 
 /// Dispatch through the OpenRouter backend.
 fn dispatch_openrouter(
-    request: AiBrokerRequest,
+    mut request: AiBrokerRequest,
     ai_config: &AiConfig,
+    configured: &crate::config::ResolvedModelMode,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
-    let or_config = match ai_config.openrouter.as_ref() {
-        Some(c) => c,
-        None => {
-            let msg = "ai_config_missing: [ai.openrouter] section required for openrouter backend";
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .unwrap_or_else(|| configured.model.clone());
+    if request.reasoning_effort.is_none() {
+        request.reasoning_effort = ReasoningEffort::parse(&configured.thinking).ok();
+    }
+    let api_key = match resolve_openrouter_api_key(request.workspace_root.as_deref()) {
+        Ok(key) => key,
+        Err(msg) => return AiBrokerResponse::err(msg),
     };
-
-    dispatch_backend(
+    fill_run_tags(&mut request, ai_config.client.as_deref());
+    let backend = OpenRouterBackend {
+        api_key: api_key.clone(),
+        model: model_id.clone(),
+    };
+    run_turn_and_respond(
         request,
-        BackendDispatch {
-            provider: "openrouter",
-            section: "[ai.openrouter]",
-            tiers: &or_config.tiers,
-            billing: BillingModel::Metered,
-        },
+        &backend,
+        BillingModel::Metered,
+        model_id,
+        api_key,
         on_delta,
-        |request, model_id| {
-            let api_key_env = or_config
-                .api_key_env
-                .as_deref()
-                .unwrap_or("OPENROUTER_API_KEY");
-            let api_key =
-                match resolve_openrouter_api_key(api_key_env, request.workspace_root.as_deref()) {
-                    Ok(k) => k,
-                    Err(msg) => {
-                        log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
-                        return Err(AiBrokerResponse::err(msg));
-                    }
-                };
-            let backend = OpenRouterBackend {
-                api_key: api_key.clone(),
-                model: model_id.to_string(),
-            };
-            Ok((Box::new(backend), api_key))
-        },
     )
 }
 
@@ -356,10 +339,8 @@ fn test_channel_api_key_if(
     lookup(TEST_CHANNEL_API_KEY_ENV).filter(|v| !v.is_empty())
 }
 
-fn resolve_openrouter_api_key(
-    api_key_env: &str,
-    workspace_root: Option<&std::path::Path>,
-) -> Result<String, String> {
+fn resolve_openrouter_api_key(workspace_root: Option<&std::path::Path>) -> Result<String, String> {
+    const API_KEY_NAME: &str = "OPENROUTER_API_KEY";
     // Test channels only: take the key straight from the environment so the
     // Keychain (and its human-only access dialog) is never touched.
     let channel = crate::config::build_channel();
@@ -372,13 +353,13 @@ fn resolve_openrouter_api_key(
     }
 
     // An empty value is treated as unset so it falls through to the keychain.
-    let process_env = std::env::var(api_key_env).ok().filter(|v| !v.is_empty());
+    let process_env = std::env::var(API_KEY_NAME).ok().filter(|v| !v.is_empty());
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         let store = crate::workspace::secrets::system_store();
         match resolve_openrouter_api_key_from_store(
-            api_key_env,
+            API_KEY_NAME,
             workspace_root,
             process_env.as_deref(),
             store,
@@ -389,23 +370,19 @@ fn resolve_openrouter_api_key(
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        // No platform secret store, so the workspace route cannot be
-        // consulted — the process environment is the only source.
-        let _ = workspace_root;
-        if let Some(k) = process_env {
-            log::info!("ai_broker: resolved {api_key_env} from process env");
-            return Ok(k);
-        }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    if let Some(k) = process_env {
+        log::info!("ai_broker: resolved {API_KEY_NAME} from process env");
+        return Ok(k);
     }
 
-    Err(format!(
-        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set OPENROUTER_API_KEY --global`"
-    ))
+    Err(
+        "api_key_missing: OPENROUTER_API_KEY not set — export it in your shell profile or run `plexi secret set OPENROUTER_API_KEY --global`"
+            .to_string(),
+    )
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn resolve_openrouter_api_key_from_store(
     api_key_env: &str,
     workspace_root: Option<&std::path::Path>,
@@ -511,128 +488,6 @@ fn resolve_openrouter_api_key_from_store(
     Ok(None)
 }
 
-/// Dispatch through the Ollama backend.
-fn dispatch_ollama(
-    request: AiBrokerRequest,
-    ai_config: &AiConfig,
-    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
-) -> AiBrokerResponse {
-    let ollama_config = match ai_config.ollama.as_ref() {
-        Some(c) => c,
-        None => {
-            let msg = "Ollama backend selected but [ai.ollama] config section is missing";
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    dispatch_backend(
-        request,
-        BackendDispatch {
-            provider: "ollama",
-            section: "[ai.ollama]",
-            tiers: &ollama_config.tiers,
-            billing: BillingModel::Subscription,
-        },
-        on_delta,
-        |_request, model_id| {
-            let backend = OllamaBackend {
-                host: ollama_config
-                    .host
-                    .as_deref()
-                    .unwrap_or("http://localhost:11434")
-                    .to_string(),
-                model: model_id.to_string(),
-            };
-            Ok((Box::new(backend), String::new()))
-        },
-    )
-}
-
-/// Dispatch through a local OpenAI-compatible backend (`[ai.local]`).
-fn dispatch_local(
-    request: AiBrokerRequest,
-    ai_config: &AiConfig,
-    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
-) -> AiBrokerResponse {
-    let local_config = match ai_config.local.as_ref() {
-        Some(c) => c,
-        None => {
-            let msg = "ai_config_missing: [ai.local] section required for local backend";
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    // base_url is required — no default (missing required config throws).
-    let base_url = match local_config.base_url.as_deref() {
-        Some(u) => u.to_string(),
-        None => {
-            let msg = "ai_config_missing: base_url not set in [ai.local] config section — required for local backend";
-            log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
-            return AiBrokerResponse::err(msg);
-        }
-    };
-
-    dispatch_backend(
-        request,
-        BackendDispatch {
-            provider: "local",
-            section: "[ai.local]",
-            tiers: &local_config.tiers,
-            billing: BillingModel::Subscription,
-        },
-        on_delta,
-        |request, model_id| {
-            // Never touches the Keychain or workspace secrets: local proxies either
-            // need no key or take one from a plain env var named in api_key_env.
-            let api_key = match resolve_local_api_key(local_config.api_key_env.as_deref(), |name| {
-                std::env::var(name).ok()
-            }) {
-                Ok(k) => k,
-                Err(msg) => {
-                    log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
-                    return Err(AiBrokerResponse::err(msg));
-                }
-            };
-
-            log::info!(
-                "ai_broker[{}]: dispatch backend=local base_url={} model={}",
-                request.app_id,
-                base_url,
-                model_id
-            );
-
-            let backend = LocalOpenAiBackend {
-                base_url,
-                api_key,
-                model: model_id.to_string(),
-            };
-            Ok((Box::new(backend), String::new()))
-        },
-    )
-}
-
-/// Resolve the local backend API key. `api_key_env = None` means no auth —
-/// `Ok(None)` — for proxies that accept unauthenticated requests. When
-/// `api_key_env` names a variable, it must be set non-empty or the dispatch
-/// fails with an error naming the variable. `lookup` is injected so this
-/// stays testable without mutating process env.
-fn resolve_local_api_key(
-    api_key_env: Option<&str>,
-    lookup: impl Fn(&str) -> Option<String>,
-) -> Result<Option<String>, String> {
-    let Some(env_name) = api_key_env else {
-        return Ok(None);
-    };
-    match lookup(env_name).filter(|v| !v.is_empty()) {
-        Some(key) => Ok(Some(key)),
-        None => Err(format!(
-            "api_key_missing: {env_name} not set — export it in your shell profile, or remove api_key_env from [ai.local] if the server needs no auth"
-        )),
-    }
-}
-
 /// Build a compact host context block to prepend to the system prompt.
 /// Budget: ≤2000 tokens (~8000 chars). Skipped when the system prompt
 /// starts with `# no-host-context`.
@@ -695,6 +550,7 @@ fn run_turn_and_respond(
     api_key: String,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
+    let started = std::time::Instant::now();
     // Build effective system prompt (optionally prepend host context).
     // Wrap in `Arc<str>` immediately so each tool-loop iteration clones only
     // the pointer rather than the full string.
@@ -724,23 +580,27 @@ fn run_turn_and_respond(
     let tool_names: Vec<&str> = all_tools_vec.iter().map(|t| t.name.as_str()).collect();
     log::info!(
         "ai_broker[{}]: model={model_id}, tools={tool_names:?}",
-        request.app_id,
+        request.plugin_id,
     );
     let all_tools: Arc<[AiTool]> = all_tools_vec.into();
 
     // Convert messages to JSON values for the backend.
     let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
 
-    // High enough for multi-step host workflows (e.g. the build-plexi-app
+    // High enough for multi-step host workflows (e.g. the build-plexi-plugin
     // pipeline pairs every terminal command with a host.terminals.read).
-    // Callers expecting longer turns (app-build skill) raise this via
+    // Callers expecting longer turns (plugin-build skill) raise this via
     // `AiBrokerRequest::max_tool_iterations`.
     const MAX_TOOL_ITERATIONS_DEFAULT: usize = 30;
     let max_tool_iterations = request
         .max_tool_iterations
         .unwrap_or(MAX_TOOL_ITERATIONS_DEFAULT);
-    let mut total_tokens_in: u32 = 0;
-    let mut total_tokens_out: u32 = 0;
+    // `None` until a provider actually reports a count. A missing usage
+    // object must stay unknown — substituting 0 made every OpenRouter turn
+    // look free in the ledger.
+    let mut total_tokens_in: Option<u32> = None;
+    let mut total_tokens_out: Option<u32> = None;
+    let mut turn_cost = TurnCost::default();
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
 
@@ -751,7 +611,7 @@ fn run_turn_and_respond(
         if request.cancel.is_cancelled() {
             log::info!(
                 "ai_broker[{}]: turn cancelled before iteration {iteration} — folding partial ({} chars)",
-                request.app_id,
+                request.plugin_id,
                 final_text.len()
             );
             break;
@@ -759,7 +619,7 @@ fn run_turn_and_respond(
         if iteration == max_tool_iterations {
             log::warn!(
                 "ai_broker[{}]: tool loop hit max iterations ({max_tool_iterations}), pausing gracefully",
-                request.app_id
+                request.plugin_id
             );
             // Never end the turn silently, and never just truncate mid-build:
             // ask the model for one more, tool-free round summarizing what it
@@ -770,12 +630,14 @@ fn run_turn_and_respond(
                 &conv,
                 &system,
                 max_tool_iterations,
-                &request.app_id,
-                request.model_tier,
+                &request.plugin_id,
+                backend_tier(request.model_mode),
                 request.reasoning_effort,
                 &request.cancel,
                 &mut total_tokens_in,
                 &mut total_tokens_out,
+                &mut turn_cost,
+                &mut last_generation_id,
                 &mut *on_delta,
             );
             break;
@@ -785,12 +647,12 @@ fn run_turn_and_respond(
             messages: conv.clone(),
             system: Arc::clone(&system),
             tools: Arc::clone(&all_tools),
-            model_tier: Some(request.model_tier),
+            model_tier: Some(backend_tier(request.model_mode)),
             reasoning_effort: request.reasoning_effort,
             cancel: request.cancel.clone(),
         };
 
-        // Forward every streamed increment live so the app sees tokens as
+        // Forward every streamed increment live so the plugin sees tokens as
         // they arrive — including reasoning deltas and text from tool-call
         // turns (assistant commentary between tool rounds).
         let turn = turn_loop::run_turn(backend, backend_req, &mut *on_delta);
@@ -803,12 +665,16 @@ fn run_turn_and_respond(
                 if request.cancel.is_cancelled() {
                     log::info!(
                         "ai_broker[{}]: stream cancelled mid-turn — folding partial ({} chars)",
-                        request.app_id,
+                        request.plugin_id,
                         final_text.len()
                     );
                     break;
                 }
-                log::warn!("ai_broker[{}]: turn failed: {e}", request.app_id);
+                log::warn!(
+                    "ai_broker[{}]: turn failed error_chars={}",
+                    request.plugin_id,
+                    e.to_string().chars().count()
+                );
                 let message = match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
                     TurnError::StreamError(s) => format!("stream error: {s}"),
@@ -817,10 +683,11 @@ fn run_turn_and_respond(
                 return AiBrokerResponse::err(message);
             }
             Ok(result) => {
-                total_tokens_in += result.input_tokens.unwrap_or(0);
-                total_tokens_out += result.output_tokens.unwrap_or(0);
+                add_reported_tokens(&mut total_tokens_in, result.input_tokens);
+                add_reported_tokens(&mut total_tokens_out, result.output_tokens);
+                turn_cost.note(result.cost_usd);
                 if result.generation_id.is_some() {
-                    last_generation_id = result.generation_id.clone();
+                    last_generation_id = result.generation_id;
                 }
 
                 // Cancelled while this round streamed: commit whatever text the
@@ -829,7 +696,7 @@ fn run_turn_and_respond(
                     final_text = result.text;
                     log::info!(
                         "ai_broker[{}]: turn cancelled after stream — folding partial ({} chars)",
-                        request.app_id,
+                        request.plugin_id,
                         final_text.len()
                     );
                     break;
@@ -869,7 +736,7 @@ fn run_turn_and_respond(
                     None => {
                         log::warn!(
                             "ai_broker[{}]: model requested tool calls but no dispatcher available",
-                            request.app_id
+                            request.plugin_id
                         );
                         // Append error result for each call so the model can recover.
                         for tc in &tool_calls {
@@ -891,7 +758,7 @@ fn run_turn_and_respond(
                     let call_id = format!("{}-{}", tc.id, i + 1);
                     log::debug!(
                         "ai_broker[{}]: dispatching tool '{}' call_id={call_id}",
-                        request.app_id,
+                        request.plugin_id,
                         tc.name,
                     );
                     let tool_result = dispatcher.dispatch_call(call_id, &tc.name, tc.arguments);
@@ -913,126 +780,162 @@ fn run_turn_and_respond(
         }
     }
 
-    // If we have a generation ID and an API key, fetch authoritative metrics
-    // on a detached background thread and return immediately. The generation
-    // record appears ~7-15s after stream completion (Gemini via OpenRouter
-    // reports 0/0 in the stream), and blocking dispatch() on it holds the
-    // caller's whole turn open — the assistant pane sat "in flight" for
-    // 10-15s after every visible reply doing exactly that. The thread writes
-    // the ledger row and AgentTurn event with the exact counts; the response
-    // carries stream counts, which are advisory (apps see them in
-    // AiResponse — billing always reads the ledger).
-    if let Some(gen_id) = last_generation_id {
-        if !api_key.is_empty() {
-            let app_id = request.app_id.clone();
-            let backend_name = backend.name().to_string();
-            let model_id_bg = model_id.clone();
-            // Capture the finish timestamp before spawning — the background thread
-            // sleeps while waiting for the generation record, so generating the
-            // timestamp inside the thread would report a delayed time that doesn't
-            // represent when the AI turn actually completed.
-            let finish_ts = event_log::now_timestamp();
-            log::info!(
-                "ai_broker[{}]: fetching background metrics for gen_id={}",
-                request.app_id,
-                gen_id
-            );
-            let spawn_result = std::thread::Builder::new()
-                .name("plexi-ai-metrics".to_string())
-                .spawn(move || {
-                    let metrics = fetch_generation_metrics(&gen_id, &api_key);
-                    let (tokens_in, tokens_out, cost_usd) = match metrics {
-                        Some(m) => {
-                            let ti = m.prompt_tokens.unwrap_or(total_tokens_in);
-                            let to = m.completion_tokens.unwrap_or(total_tokens_out);
-                            log::info!(
-                                "ai_broker[{app_id}]: background usage prompt={} completion={} cached={:?} reasoning={:?} cost_usd={:?}",
-                                ti, to, m.cached_tokens, m.reasoning_tokens, m.cost_usd,
-                            );
-                            (ti, to, m.cost_usd)
-                        }
-                        None => {
-                            log::warn!(
-                                "ai_broker[{app_id}]: background metrics unavailable; using stream counts prompt={} completion={}",
-                                total_tokens_in, total_tokens_out,
-                            );
-                            (total_tokens_in, total_tokens_out, None)
-                        }
-                    };
-                    let cost_cents = cost_usd
-                        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
-                        .unwrap_or(0);
-                    let row = LedgerRow::with_attribution(
-                        &backend_name,
-                        billing,
-                        Some(app_id),
-                        Some(model_id_bg),
-                        Some(tokens_in),
-                        Some(tokens_out),
-                        cost_usd,
-                    );
-                    ledger::append(&row);
-                    // Runs on a spawned background thread with no `PlexiApp`
-                    // access and `pane_id: None` already — no origin is
-                    // resolvable here without a new ambient lookup.
-                    event_log::emit_scoped(
-                        HostEvent::AgentTurn {
-                            pane_id: None,
-                            tokens_in,
-                            tokens_out,
-                            cost_cents,
-                            timestamp: finish_ts,
-                        },
-                        None,
-                    );
-                });
-            match spawn_result {
-                Ok(_) => {
-                    return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out);
-                }
-                Err(e) => {
-                    // Thread spawn failed — fall through to synchronous path so
-                    // billing records are never silently lost.
-                    log::error!(
-                        "ai_broker[{}]: failed to spawn metrics thread: {e} — writing ledger synchronously",
-                        request.app_id,
-                    );
-                }
-            }
-        }
-    }
-
-    // No generation ID (non-OpenRouter) or no API key — write ledger and event
-    // synchronously using stream token counts.
-    log::warn!(
-        "ai_broker[{}]: no generation ID — using stream token counts prompt={} completion={}",
-        request.app_id,
+    // Write the ledger row before returning. The generation record appears
+    // several seconds after the stream ends; waiting for it (or writing the
+    // row on that background thread) drops the row when the host stops in
+    // the gap. Stream `usage.cost` is the cost. The generation lookup only
+    // fills a still-null cost afterwards and does not touch tokens.
+    let cost_usd = turn_cost.total();
+    let wall_ms = Some(elapsed_ms(started));
+    let tags = RunTags {
+        client: request.client.clone(),
+        kind: request.kind.unwrap_or(RunKind::Output),
+    };
+    log::info!(
+        "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?} cost_usd={cost_usd:?} client={:?} kind={} wall_ms={wall_ms:?}",
+        request.plugin_id,
         total_tokens_in,
         total_tokens_out,
+        tags.client,
+        tags.kind.as_str(),
     );
     let row = LedgerRow::with_attribution(
         backend.name(),
         billing,
-        Some(request.app_id),
+        Some(request.plugin_id.clone()),
         Some(model_id),
-        Some(total_tokens_in),
-        Some(total_tokens_out),
-        None,
-    );
+        total_tokens_in,
+        total_tokens_out,
+        cost_usd,
+    )
+    .tagged(tags, wall_ms);
+    let row_ts = row.ts.clone();
     ledger::append(&row);
+    let cost_cents = cost_cents(cost_usd);
     // Free function with no `PlexiApp`/router access and `pane_id: None`
     // already — no origin is resolvable here without a new ambient lookup.
+    // Billing reads the ledger, so a later cost patch does not emit again.
     event_log::emit_scoped(
         HostEvent::AgentTurn {
             pane_id: None,
-            tokens_in: total_tokens_in,
-            tokens_out: total_tokens_out,
-            cost_cents: 0,
+            tokens_in: total_tokens_in.unwrap_or(0),
+            tokens_out: total_tokens_out.unwrap_or(0),
+            cost_cents,
             timestamp: event_log::now_timestamp(),
         },
         None,
     );
-    AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
+    if let Some(gen_id) = generation_cost_fallback(cost_usd, &last_generation_id, &api_key) {
+        // Capture the ledger path on this thread. `config_dir()` is
+        // thread-local under test, so the worker must not look it up itself.
+        let ledger_path = ledger::ledger_path();
+        let plugin_id = request.plugin_id.clone();
+        let fill_ts = row_ts.clone();
+        log::info!(
+            "ai_broker[{plugin_id}]: usage had no cost; generation lookup will fill row ts={row_ts} gen_id={gen_id}"
+        );
+        let spawn_result = std::thread::Builder::new()
+            .name("plexi-ai-metrics".to_string())
+            .spawn(move || {
+                match fetch_generation_metrics(&gen_id, &api_key) {
+                    Some(metrics) => match metrics.cost_usd {
+                        Some(cost) => {
+                            log::info!(
+                                "ai_broker[{plugin_id}]: generation {gen_id} cost_usd={cost} cached={:?} reasoning={:?}",
+                                metrics.cached_tokens,
+                                metrics.reasoning_tokens,
+                            );
+                            if ledger::fill_cost(&ledger_path, &fill_ts, cost) {
+                                log::info!(
+                                    "ai_broker[{plugin_id}]: filled ledger cost_usd={cost} from generation {gen_id} on row ts={fill_ts}"
+                                );
+                            }
+                        }
+                        None => {
+                            let tokens_usable = generation_metrics_usable(&metrics);
+                            log::info!(
+                                "ai_broker[{plugin_id}]: generation {gen_id} returned no cost (tokens_usable={tokens_usable}); row ts={fill_ts} stays unknown"
+                            );
+                        }
+                    },
+                    None => {
+                        log::info!(
+                            "ai_broker[{plugin_id}]: generation {gen_id} lookup failed; row ts={fill_ts} stays unknown"
+                        );
+                    }
+                }
+            });
+        if let Err(e) = spawn_result {
+            log::error!(
+                "ai_broker[{}]: failed to spawn generation cost lookup: {e} — row ts={row_ts} keeps a null cost",
+                request.plugin_id,
+            );
+        }
+    }
+    AiBrokerResponse::ok(
+        final_text,
+        total_tokens_in.unwrap_or(0),
+        total_tokens_out.unwrap_or(0),
+    )
+}
+
+/// Running USD cost across tool rounds. The total is `Some` only when every
+/// completed round reported a cost, so a partial sum is never stored as the
+/// whole turn. No completed rounds stays unknown.
+#[derive(Default)]
+struct TurnCost {
+    sum: f64,
+    incomplete: bool,
+    rounds: u32,
+}
+
+impl TurnCost {
+    fn note(&mut self, reported: Option<f64>) {
+        self.rounds += 1;
+        match reported {
+            Some(n) => self.sum += n,
+            None => self.incomplete = true,
+        }
+    }
+
+    fn total(&self) -> Option<f64> {
+        if self.rounds > 0 && !self.incomplete {
+            Some(self.sum)
+        } else {
+            None
+        }
+    }
+}
+
+fn cost_cents(cost_usd: Option<f64>) -> u64 {
+    cost_usd
+        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
+        .unwrap_or(0)
+}
+
+/// Generation id to look up, or `None` when the stream already carried a
+/// cost, the key is empty, or there is no id. `Some(0.0)` is a real cost.
+fn generation_cost_fallback(
+    cost_usd: Option<f64>,
+    generation_id: &Option<String>,
+    api_key: &str,
+) -> Option<String> {
+    if cost_usd.is_some() || api_key.is_empty() {
+        return None;
+    }
+    generation_id.as_ref().filter(|id| !id.is_empty()).cloned()
+}
+
+/// Add a provider-reported count into a running total. `None` and `Some(0)`
+/// leave the total unchanged, so a missing or zero reading stays unknown.
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn add_reported_tokens(total: &mut Option<u32>, reported: Option<u32>) {
+    if let Some(n) = reported.filter(|n| *n > 0) {
+        *total = Some(total.unwrap_or(0).saturating_add(n));
+    }
 }
 
 /// Hitting `max_tool_iterations` must never strand a half-finished turn on a
@@ -1046,12 +949,14 @@ fn summarize_progress_on_pause(
     conv: &[serde_json::Value],
     system: &Arc<str>,
     max_tool_iterations: usize,
-    app_id: &str,
+    plugin_id: &str,
     model_tier: ModelTier,
     reasoning_effort: Option<ReasoningEffort>,
     cancel: &CancelToken,
-    total_tokens_in: &mut u32,
-    total_tokens_out: &mut u32,
+    total_tokens_in: &mut Option<u32>,
+    total_tokens_out: &mut Option<u32>,
+    turn_cost: &mut TurnCost,
+    last_generation_id: &mut Option<String>,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> String {
     let fallback = || {
@@ -1082,8 +987,12 @@ fn summarize_progress_on_pause(
 
     match turn_loop::run_turn(backend, pause_request, on_delta) {
         Ok(result) => {
-            *total_tokens_in += result.input_tokens.unwrap_or(0);
-            *total_tokens_out += result.output_tokens.unwrap_or(0);
+            add_reported_tokens(total_tokens_in, result.input_tokens);
+            add_reported_tokens(total_tokens_out, result.output_tokens);
+            turn_cost.note(result.cost_usd);
+            if result.generation_id.is_some() {
+                *last_generation_id = result.generation_id;
+            }
             if result.text.is_empty() {
                 fallback()
             } else {
@@ -1092,17 +1001,27 @@ fn summarize_progress_on_pause(
         }
         Err(e) => {
             log::warn!(
-                "ai_broker[{app_id}]: pause-summary turn failed: {e} — falling back to canned message",
+                "ai_broker[{plugin_id}]: pause-summary turn failed: {e} — falling back to canned message",
             );
+            turn_cost.note(None);
             fallback()
         }
     }
 }
 
-/// Fetch the real USD cost for a completed generation from the OpenRouter
-/// generation endpoint.
+/// A generation row with neither side above zero is not a real reading.
+/// OpenRouter's record is eventually consistent and can appear as `0/0`
+/// before token counts are filled in; accepting that row writes the ledger
+/// as zero and never retries.
+fn generation_metrics_usable(metrics: &GenerationMetrics) -> bool {
+    metrics.prompt_tokens.is_some_and(|n| n > 0) || metrics.completion_tokens.is_some_and(|n| n > 0)
+}
+
+/// Fetch USD cost from the OpenRouter generation endpoint. Used only when
+/// the stream response omitted `usage.cost`.
 ///
-/// **Endpoint:** `GET https://openrouter.ai/api/v1/generation?id=<gen_id>`
+/// **Endpoint:** `GET {openrouter api root}/generation?id=<gen_id>`
+/// (`PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`).
 ///
 /// **Response shape:**
 /// ```json
@@ -1112,7 +1031,7 @@ fn summarize_progress_on_pause(
 /// Eventual consistency: if the generation is not yet queryable, OpenRouter
 /// returns 404 or a 200 with `data` absent/null. Three attempts: after 2s,
 /// 5s, and 8s (15s total). Gemini models via OpenRouter are the slowest;
-/// their records appear ~30s post-stream but well within the 35s app timeout.
+/// their records appear ~30s post-stream but well within the 35s plugin timeout.
 /// If still unavailable after all attempts, logs a warning and returns `None`.
 #[derive(Debug, Clone, Copy, Default)]
 struct GenerationMetrics {
@@ -1124,7 +1043,7 @@ struct GenerationMetrics {
 }
 
 fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMetrics> {
-    let url = format!("https://openrouter.ai/api/v1/generation?id={gen_id}");
+    let url = crate::plexi_ai::backend::openrouter::openrouter_generation_endpoint(gen_id);
 
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))
@@ -1163,7 +1082,10 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let body: serde_json::Value = match serde_json::from_str(&body_str) {
             Ok(v) => v,
             Err(e) => {
-                log::debug!("ai_broker: generation response parse error: {e} — body={body_str}");
+                log::debug!(
+                    "ai_broker: generation response parse error: {e} body_bytes={}",
+                    body_str.len()
+                );
                 return None;
             }
         };
@@ -1171,7 +1093,8 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
             Some(d) if !d.is_null() => d,
             _ => {
                 log::debug!(
-                    "ai_broker: generation response missing 'data' field — body={body_str}"
+                    "ai_broker: generation response missing 'data' field body_bytes={}",
+                    body_str.len()
                 );
                 return None;
             }
@@ -1182,8 +1105,17 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let cost_usd = total_cost
             .as_f64()
             .or_else(|| total_cost.as_str().and_then(|s| s.parse::<f64>().ok()));
-        let prompt_tokens = data["tokens_prompt"].as_u64().map(|n| n as u32);
-        let completion_tokens = data["tokens_completion"].as_u64().map(|n| n as u32);
+        let as_u32 = |v: &serde_json::Value| -> Option<u32> {
+            v.as_u64()
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .map(|n| n as u64)
+                })
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let prompt_tokens = as_u32(&data["tokens_prompt"]);
+        let completion_tokens = as_u32(&data["tokens_completion"]);
         let cached_tokens = data["native_tokens_cached"]
             .as_u64()
             .or_else(|| data["tokens_cached"].as_u64())
@@ -1205,12 +1137,25 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     // queryable immediately after the stream completes. Gemini models via
     // OpenRouter are especially slow: manually confirmed at ~30s. Use three
     // attempts: wait 2s, wait 5s, wait 8s (15s total sleep, well within
-    // the 35s app timeout).
+    // the 35s plugin timeout). A 200 whose token counts are still 0 is treated
+    // as "not ready" and retried; the stream's own usage is the fallback.
+    let mut last_without_tokens: Option<GenerationMetrics> = None;
     for (attempt, delay_secs) in [(1u32, 2u64), (2, 5), (3, 8)] {
         std::thread::sleep(std::time::Duration::from_secs(delay_secs));
         if let Some(metrics) = try_fetch(attempt) {
-            return Some(metrics);
+            if generation_metrics_usable(&metrics) {
+                return Some(metrics);
+            }
+            log::debug!("ai_broker: generation {gen_id} attempt {attempt} has no token counts yet");
+            last_without_tokens = Some(metrics);
         }
+    }
+
+    if last_without_tokens.is_some() {
+        log::info!(
+            "ai_broker: generation {gen_id} never reported token counts; stream usage will be recorded"
+        );
+        return last_without_tokens;
     }
 
     log::warn!(
@@ -1222,7 +1167,7 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AiConfig, OpenRouterBackendConfig};
+    use crate::config::{AiConfig, ResolvedModelMode, ResolvedModelModes};
     use std::sync::{Arc, Mutex};
 
     /// Test broker: records every request and returns a canned response.
@@ -1251,38 +1196,35 @@ mod tests {
         }
     }
 
-    fn test_ai_config() -> AiConfig {
-        AiConfig {
-            backend: Some("openrouter".to_string()),
-            openrouter: Some(OpenRouterBackendConfig {
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("qwen/qwen3.6-flash".to_string()),
-                    model_medium: Some("xiaomi/mimo-v2.5".to_string()),
-                    model_high: Some("anthropic/claude-fable-5".to_string()),
+    #[test]
+    fn broker_resolves_fast_and_slow_from_config() {
+        let broker = LiveAiBroker::with_model_modes(
+            Some(AiConfig::default()),
+            ResolvedModelModes {
+                fast: ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "test/fast".into(),
+                    thinking: "low".into(),
                 },
-            }),
-            ollama: None,
-            ..Default::default()
-        }
+                slow: ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "test/slow".into(),
+                    thinking: "high".into(),
+                },
+            },
+        );
+        assert_eq!(broker.model_modes.fast.model, "test/fast");
+        assert_eq!(broker.model_modes.slow.model, "test/slow");
     }
 
     #[test]
-    fn config_resolves_tiers_to_openrouter_model_ids() {
-        let config = test_ai_config();
-        let or_config = config.openrouter.as_ref().unwrap();
+    fn configured_thinking_levels_keep_their_wire_meaning() {
+        assert_eq!(ReasoningEffort::parse("off").unwrap(), ReasoningEffort::Off);
         assert_eq!(
-            or_config.tiers.resolve(ModelTier::Low).as_deref(),
-            Some("qwen/qwen3.6-flash")
+            ReasoningEffort::parse("minimal").unwrap().label(),
+            "minimal"
         );
-        assert_eq!(
-            or_config.tiers.resolve(ModelTier::Medium).as_deref(),
-            Some("xiaomi/mimo-v2.5")
-        );
-        assert_eq!(
-            or_config.tiers.resolve(ModelTier::High).as_deref(),
-            Some("anthropic/claude-fable-5")
-        );
+        assert_eq!(ReasoningEffort::parse("xhigh").unwrap().label(), "xhigh");
     }
 
     #[test]
@@ -1307,8 +1249,8 @@ mod tests {
         ];
         let resp = broker.dispatch(
             AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
+                plugin_id: "test".to_string(),
+                model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
                 system: "be helpful".to_string(),
@@ -1319,6 +1261,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1330,50 +1274,6 @@ mod tests {
             "messages must round-trip unchanged"
         );
         assert_eq!(seen[0].system, "be helpful");
-    }
-
-    #[test]
-    fn live_broker_errors_when_api_key_missing() {
-        let missing_env = "PLEXI_TEST_OPENROUTER_API_KEY_MISSING";
-        let orig = std::env::var(missing_env).ok();
-        unsafe { std::env::remove_var(missing_env) };
-
-        let mut config = test_ai_config();
-        config.openrouter.as_mut().unwrap().api_key_env = Some(missing_env.to_string());
-        let broker = LiveAiBroker::new(Some(config));
-        let resp = broker.dispatch(
-            AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
-                concrete_model: None,
-                reasoning_effort: None,
-                system: String::new(),
-                messages: vec![AiMessage {
-                    role: "user".to_string(),
-                    content: "hi".to_string(),
-                }],
-                tools: vec![],
-                workspace_root: None,
-                open_panes: Arc::new(Vec::new()),
-                tool_dispatcher: None,
-                cancel: CancelToken::new(),
-                max_tool_iterations: None,
-            },
-            &mut |_| {},
-        );
-
-        if let Some(v) = orig {
-            unsafe { std::env::set_var(missing_env, v) };
-        }
-
-        assert!(resp.error.is_some());
-        assert!(
-            resp.error
-                .as_deref()
-                .unwrap_or("")
-                .contains("api_key_missing"),
-            "missing-key error must surface the api_key_missing tag"
-        );
     }
 
     #[test]
@@ -1714,8 +1614,8 @@ mod tests {
         let broker = LiveAiBroker::new(None);
         let resp = broker.dispatch(
             AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
+                plugin_id: "test".to_string(),
+                model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
                 system: String::new(),
@@ -1729,6 +1629,8 @@ mod tests {
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
                 max_tool_iterations: None,
+                client: None,
+                kind: None,
             },
             &mut |_| {},
         );
@@ -1742,186 +1644,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn live_broker_errors_when_ollama_selected_but_config_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("ollama".to_string()),
-            openrouter: None,
-            ollama: None,
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(
-            AiBrokerRequest {
-                app_id: "test".to_string(),
-                model_tier: ModelTier::Low,
-                concrete_model: None,
-                reasoning_effort: None,
-                system: String::new(),
-                messages: vec![AiMessage {
-                    role: "user".to_string(),
-                    content: "hi".to_string(),
-                }],
-                tools: vec![],
-                workspace_root: None,
-                open_panes: Arc::new(Vec::new()),
-                tool_dispatcher: None,
-                cancel: CancelToken::new(),
-                max_tool_iterations: None,
-            },
-            &mut |_| {},
-        );
-        assert!(resp.error.is_some());
-        assert!(
-            resp.error.as_deref().unwrap_or("").contains("[ai.ollama]"),
-            "error must mention missing [ai.ollama] section"
-        );
-    }
-
-    /// Minimal dispatch request for local-backend error-path tests.
-    fn local_test_request() -> AiBrokerRequest {
-        AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            concrete_model: None,
-            reasoning_effort: None,
-            system: String::new(),
-            messages: vec![AiMessage {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-            }],
-            tools: vec![],
-            workspace_root: None,
-            open_panes: Arc::new(Vec::new()),
-            tool_dispatcher: None,
-            cancel: CancelToken::new(),
-            max_tool_iterations: None,
-        }
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_selected_but_config_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            openrouter: None,
-            ollama: None,
-            local: None,
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("ai_config_missing") && err.contains("[ai.local]"),
-            "error must carry the ai_config_missing tag and name [ai.local]: {err}"
-        );
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_base_url_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: None,
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("claude-haiku-4-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        }));
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("base_url") && err.contains("[ai.local]"),
-            "error must name base_url and [ai.local]: {err}"
-        );
-    }
-
-    #[test]
-    fn live_broker_errors_when_local_model_tier_missing() {
-        let broker = LiveAiBroker::new(Some(AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: Some("http://127.0.0.1:3456".to_string()),
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_high: Some("claude-fable-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        }));
-        // Request is Low tier — only model_high is configured.
-        let resp = broker.dispatch(local_test_request(), &mut |_| {});
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("model_low") && err.contains("[ai.local]"),
-            "error must name model_low in [ai.local]: {err}"
-        );
-    }
-
-    /// `dispatch_local` guards against a concrete route naming a foreign
-    /// provider (same defensive check as the openrouter/ollama paths —
-    /// unreachable through `LiveAiBroker::dispatch`, which routes by
-    /// provider first, but load-bearing for any direct caller).
-    #[test]
-    fn dispatch_local_rejects_foreign_provider_route() {
-        let ai_config = AiConfig {
-            backend: Some("local".to_string()),
-            local: Some(crate::config::LocalBackendConfig {
-                base_url: Some("http://127.0.0.1:3456".to_string()),
-                api_key_env: None,
-                tiers: ModelTiers {
-                    model_low: Some("claude-haiku-4-5".to_string()),
-                    ..Default::default()
-                },
-            }),
-            ..Default::default()
-        };
-        let mut request = local_test_request();
-        request.concrete_model = Some(ConcreteModelRoute {
-            provider: "openrouter".to_string(),
-            model: "anthropic/claude-fable-5".to_string(),
-        });
-        let resp = dispatch_local(request, &ai_config, &mut |_| {});
-        assert!(
-            resp.error
-                .as_deref()
-                .unwrap_or("")
-                .contains("unsupported_model_provider"),
-            "foreign provider route must be rejected"
-        );
-    }
-
-    /// `api_key_env` unset = unauthenticated proxy; set = env var must be
-    /// non-empty. Lookup is injected — never mutates process env.
-    #[test]
-    fn resolve_local_api_key_contract() {
-        // No api_key_env configured — no auth, no lookup needed.
-        assert_eq!(resolve_local_api_key(None, |_| None), Ok(None));
-
-        // Configured and set non-empty — key flows through.
-        assert_eq!(
-            resolve_local_api_key(Some("MERIDIAN_KEY"), |name| {
-                assert_eq!(name, "MERIDIAN_KEY");
-                Some("sk-abc".to_string())
-            }),
-            Ok(Some("sk-abc".to_string()))
-        );
-
-        // Configured but unset or empty — error names the variable.
-        for lookup in [
-            (|_: &str| None) as fn(&str) -> Option<String>,
-            (|_: &str| Some(String::new())) as fn(&str) -> Option<String>,
-        ] {
-            let err = resolve_local_api_key(Some("MERIDIAN_KEY"), lookup).unwrap_err();
-            assert!(
-                err.contains("api_key_missing") && err.contains("MERIDIAN_KEY"),
-                "error must tag api_key_missing and name the env var: {err}"
-            );
-        }
-    }
-
     /// Verify the tool loop: a backend that returns one tool call on the first
     /// turn and a text reply on the second. Confirms that `system` and `tools`
     /// are consistent across iterations (pointer-equality for Arc fields) and
@@ -1929,10 +1651,10 @@ mod tests {
     /// correctly across both turns.
     #[test]
     fn tool_loop_builds_conversation_correctly() {
-        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
+        use crate::protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
@@ -1980,6 +1702,7 @@ mod tests {
                     let _ = tx.send(StreamEvent::Done {
                         input_tokens: Some(10),
                         output_tokens: Some(5),
+                        cost_usd: None,
                         generation_id: None,
                     });
                 } else {
@@ -1987,6 +1710,7 @@ mod tests {
                     let _ = tx.send(StreamEvent::Done {
                         input_tokens: Some(20),
                         output_tokens: Some(8),
+                        cost_usd: None,
                         generation_id: None,
                     });
                 }
@@ -2013,8 +1737,8 @@ mod tests {
         // No dispatcher: the broker appends an error tool result and continues to
         // the next iteration, where the backend returns the final text.
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: crate::protocol::ModelTier::Low,
+            plugin_id: "test".to_string(),
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2028,6 +1752,8 @@ mod tests {
             tool_dispatcher: None,
             cancel: CancelToken::new(),
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
@@ -2072,10 +1798,10 @@ mod tests {
     /// verifies `max_tool_iterations` overrides the default cap.
     #[test]
     fn tool_loop_pauses_gracefully_after_max_iterations() {
-        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
+        use crate::protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
@@ -2109,6 +1835,7 @@ mod tests {
                     input_tokens: Some(1),
                     output_tokens: Some(1),
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2127,14 +1854,14 @@ mod tests {
             read_only: false,
         };
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            plugin_id: "test".to_string(),
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
             messages: vec![AiMessage {
                 role: "user".to_string(),
-                content: "build me an app".to_string(),
+                content: "build me a plugin".to_string(),
             }],
             tools: vec![tool],
             workspace_root: None,
@@ -2142,6 +1869,8 @@ mod tests {
             tool_dispatcher: None,
             cancel: CancelToken::new(),
             max_tool_iterations: Some(2),
+            client: None,
+            kind: None,
         };
 
         let resp = run_turn_and_respond(
@@ -2201,6 +1930,7 @@ mod tests {
                     input_tokens: None,
                     output_tokens: None,
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2213,8 +1943,8 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel();
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            plugin_id: "test".to_string(),
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2228,6 +1958,8 @@ mod tests {
             tool_dispatcher: None,
             cancel,
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
         let resp = run_turn_and_respond(
             request,
@@ -2283,6 +2015,7 @@ mod tests {
                     input_tokens: Some(3),
                     output_tokens: Some(2),
                     generation_id: None,
+                    cost_usd: None,
                 });
                 Ok(())
             }
@@ -2295,8 +2028,8 @@ mod tests {
             cancel: cancel.clone(),
         };
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
+            plugin_id: "test".to_string(),
+            model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
@@ -2310,6 +2043,8 @@ mod tests {
             tool_dispatcher: None,
             cancel,
             max_tool_iterations: None,
+            client: None,
+            kind: None,
         };
         let resp = run_turn_and_respond(
             request,
@@ -2330,6 +2065,44 @@ mod tests {
             Some("partial answer"),
             "the partial text streamed before cancel must be committed"
         );
+    }
+
+    /// Missing provider usage stays `None` across rounds; reported counts add.
+    /// A generation row of 0/0 is not a usable reading.
+    #[test]
+    fn absent_usage_stays_unknown_and_reported_counts_add() {
+        let mut total: Option<u32> = None;
+        add_reported_tokens(&mut total, None);
+        assert!(
+            total.is_none(),
+            "a round with no usage must not become zero"
+        );
+        add_reported_tokens(&mut total, Some(194));
+        add_reported_tokens(&mut total, Some(12));
+        assert_eq!(total, Some(206));
+        add_reported_tokens(&mut total, Some(0));
+        assert_eq!(
+            total,
+            Some(206),
+            "a zero reading must not change a real total"
+        );
+        let mut zeroed: Option<u32> = None;
+        add_reported_tokens(&mut zeroed, Some(0));
+        assert!(
+            zeroed.is_none(),
+            "a lone zero reading must stay unknown, not Some(0)"
+        );
+
+        assert!(!generation_metrics_usable(&GenerationMetrics {
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+            ..GenerationMetrics::default()
+        }));
+        assert!(generation_metrics_usable(&GenerationMetrics {
+            prompt_tokens: Some(24),
+            completion_tokens: Some(29),
+            ..GenerationMetrics::default()
+        }));
     }
 
     /// Verify `fetch_generation_cost` parses total_cost as string or float.
@@ -2362,5 +2135,102 @@ mod tests {
             (parsed - 9.075e-05).abs() < 1e-12,
             "float total_cost must parse to 9.075e-05"
         );
+    }
+
+    /// A reported stream cost is the ledger cost. The generation id does not
+    /// delay the row or start a lookup.
+    #[test]
+    fn stream_cost_is_recorded_before_return_even_with_generation_id() {
+        use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, StreamEvent};
+        use std::sync::mpsc;
+
+        struct CostBackend;
+        impl AiBackend for CostBackend {
+            fn name(&self) -> &str {
+                "openrouter"
+            }
+            fn stream_to_channel(
+                &self,
+                _req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                let _ = tx.send(StreamEvent::Text("priced".to_string()));
+                let _ = tx.send(StreamEvent::Done {
+                    input_tokens: Some(3463),
+                    output_tokens: Some(14),
+                    cost_usd: Some(0.021),
+                    generation_id: Some("gen-priced".to_string()),
+                });
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::TempDir::new().expect("temp profile dir");
+        let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let request = AiBrokerRequest {
+            plugin_id: "assistant".to_string(),
+            model_mode: ModelMode::Fast,
+            concrete_model: None,
+            reasoning_effort: None,
+            system: String::new(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel: CancelToken::new(),
+            max_tool_iterations: None,
+            client: Some("narrative".to_string()),
+            kind: Some(RunKind::Output),
+        };
+        let started = std::time::Instant::now();
+        let resp = run_turn_and_respond(
+            request,
+            &CostBackend,
+            BillingModel::Metered,
+            "xiaomi/mimo-v2.5".to_string(),
+            "sk-test".to_string(),
+            &mut |_| {},
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "recording the row must not wait on the generation endpoint"
+        );
+        assert_eq!(resp.content.as_deref(), Some("priced"));
+        assert_eq!(resp.tokens_in, 3463);
+        assert_eq!(resp.tokens_out, 14);
+        let body = std::fs::read_to_string(ledger::ledger_path()).unwrap_or_default();
+        assert!(
+            body.contains(r#""input_tokens":3463"#)
+                && body.contains(r#""output_tokens":14"#)
+                && body.contains(r#""cost_usd":0.021"#)
+                && body.contains(r#""client":"narrative""#),
+            "the row must be on disk before the turn returns: {body}"
+        );
+        assert!(
+            generation_cost_fallback(Some(0.021), &Some("gen-priced".to_string()), "sk-test")
+                .is_none(),
+            "a stream cost must not start a generation lookup"
+        );
+    }
+
+    #[test]
+    fn generation_lookup_runs_only_when_stream_cost_is_missing() {
+        let id = Some("gen-1".to_string());
+        assert_eq!(
+            generation_cost_fallback(None, &id, "sk-test").as_deref(),
+            Some("gen-1")
+        );
+        assert!(generation_cost_fallback(Some(0.021), &id, "sk-test").is_none());
+        assert!(
+            generation_cost_fallback(Some(0.0), &id, "sk-test").is_none(),
+            "a reported zero is a real cost"
+        );
+        assert!(generation_cost_fallback(None, &id, "").is_none());
+        assert!(generation_cost_fallback(None, &None, "sk-test").is_none());
+        assert!(generation_cost_fallback(None, &Some(String::new()), "sk-test").is_none());
     }
 }

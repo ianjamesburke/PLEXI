@@ -1,6 +1,6 @@
 """Entry point for v3 apps: python -m plexi_sdk._v3_process <app.py> [args...]
 
-Delegates to V3AppRuntime. This module exists solely as the entry point
+Delegates to PluginRuntime. This module exists solely as the entry point
 the host invokes; the runtime implementation lives in _v3_runtime.
 """
 from __future__ import annotations

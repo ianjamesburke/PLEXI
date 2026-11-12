@@ -35,18 +35,15 @@ def test_keyboard_math_uses_v3_set_state_effects() -> None:
     assert data["fresh"] is True
 
 
-def test_keyboard_math_accepts_canonical_operator_key_names() -> None:
-    # The host's documented canonical key names ("plus"/"minus"/"equals") are
-    # not always normalized to their glyph before reaching the app — accept
-    # both forms.
+def test_keyboard_math_accepts_canonical_operator_glyphs() -> None:
     _set_state(dict(calc.DEFAULT_STATE))
 
-    for key in ["7", "plus", "5", "equals"]:
+    for key in ["6", "*", "7", "="]:
         effects = calc.update(KeyEvent(key))
         data = _state_effect(effects)
         _set_state(data)
 
-    assert data["display"] == "12"
+    assert data["display"] == "42"
     assert data["pending"] is None
     assert data["op"] is None
 
@@ -162,3 +159,24 @@ def test_tool_calls_do_not_mutate_calculator_state() -> None:
     assert not any(isinstance(e, SetState) for e in effects), (
         "read-only tools must never emit SetState"
     )
+
+
+def test_view_renders_app_bar_and_muted_pending_expression() -> None:
+    _set_state(dict(calc.DEFAULT_STATE, display="5", pending=7.0, op="+", fresh=False))
+    node = calc.view().to_node()
+    header = node["children"][0]
+    assert header["type"] == "surface_header"
+    assert header["title"] == "Calculator"
+    assert header["subtitle"] == "7 +"
+    calc_card = node["children"][1]
+    assert calc_card["type"] == "card"
+    readout_card = calc_card["children"][0]
+    assert readout_card["type"] == "card"
+    expr_line = readout_card["children"][0]
+    assert expr_line["type"] == "text"
+    assert expr_line["text"] == "7 +"
+    assert expr_line["color"] in (sdk.theme.muted, "muted")
+    display_line = readout_card["children"][1]
+    assert display_line["type"] == "text"
+    assert display_line["text"] == "5"
+

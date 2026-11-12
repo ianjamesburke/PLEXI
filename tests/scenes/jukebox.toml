@@ -11,6 +11,7 @@
 # Run with `just scene tests/scenes/jukebox.toml`.
 size = [900.0, 640.0]
 suite = true
+experiments = ["wasm_apps", "media_io"]
 
 [[steps]]
 open = { kind = "wasm", path = "tests/wasm-fixtures/jukebox.wasm", as = "jukebox" }

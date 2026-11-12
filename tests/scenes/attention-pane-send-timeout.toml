@@ -1,0 +1,16 @@
+sizes = [[520.0, 640.0], [1280.0, 800.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+seed_pane_send_timeout = true
+
+[[steps]]
+shot = "attention-pane-send-timeout.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+shot = "attention-pane-send-decision.png"

@@ -1,6 +1,6 @@
-//! App permission enforcement — PGAP v3 capability-based model.
+//! App permission enforcement — PGAP v4 capability-based model.
 //!
-//! Permissions are keyed by `(app_id, workspace_root, capability)` triple and
+//! Permissions are keyed by `(plugin_id, workspace_root, capability)` triple and
 //! persisted to `permissions.jsonl` (append-only, one decision per line).
 //!
 //! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
@@ -32,8 +32,8 @@ pub enum Capability {
     SecretsGet,
     /// Open typed pipes (JSON or binary mode).
     PipeOpen,
-    /// Launch another app in a new pane.
-    SpawnApp,
+    /// Launch another plugin in a new pane.
+    SpawnView,
     /// Capture microphone audio via host broker.
     AudioRecord,
     /// Play audio via host `rodio` broker.
@@ -47,7 +47,7 @@ pub enum Capability {
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
     /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
-    /// The host owns the API key and the cost ledger; apps never see the key.
+    /// The host owns the API key and the cost ledger; plugins never see the key.
     AiQuery,
     /// Receive MIDI 1.0 byte streams from a connected hardware controller via
     /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
@@ -61,11 +61,11 @@ pub enum Capability {
     /// Primitives (`terminal.bindings`, #78). Covers all of:
     /// `RequestLinkedTerminal`, `RunInLinkedTerminal`, `InsertPathToken`,
     /// `RequestCommandPreview`, `OpenArtifact`. Single capability across
-    /// the surface so an app's manifest declares one intent ("I drive a
+    /// the surface so a plugin's manifest declares one intent ("I drive a
     /// terminal") rather than enumerating each verb.
     TerminalBindings,
     /// Show a native macOS file picker dialog (`fs.pick`, #514).
-    /// Returns picked paths via `PlexiEvent::FilePicked`. Apps without this
+    /// Returns picked paths via `PlexiEvent::FilePicked`. Plugins without this
     /// capability receive `PlexiEvent::FilePickCancelled` immediately.
     FsPick,
     /// Spawn a new pane via DrawCommand::SpawnPane (#592).
@@ -77,19 +77,19 @@ pub enum Capability {
     PanesRead,
     /// Act on other panes (stint 0013/0014). Gates the PGAP path for
     /// `FocusPane`, `ClosePane`, `SendToPane`, `KeyPane`, `SetPaneTitle`,
-    /// and `SendAppAction` — the same host handlers the `plexi pane` CLI
+    /// and `SendPaneAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
     PanesControl,
-    /// Inspect and mutate other apps' permission state (stint 0017). Gates
+    /// Inspect and mutate other plugins' permission state (stint 0017). Gates
     /// the PGAP path for `ListPermissions` and `SetPermission`, the host-
-    /// mediated surface a permission-manager app uses to list, grant, and
+    /// mediated surface a permission-manager plugin uses to list, grant, and
     /// revoke capabilities.
     PermissionsManage,
     /// Read the Plexi host channel log via the host-mediated `read_host_log`
     /// effect (stint 0444). The host owns path resolution — it tails its own
-    /// `~/.plexi-<channel>/plexi.log` and returns the text — so the app never
+    /// `~/.plexi-<channel>/plexi.log` and returns the text — so the plugin never
     /// names or opens the file and the WASM sandbox mounts stay limited to the
-    /// SDK and app dir. Non-sensitive by necessity: the CPython-in-WASM runtime
+    /// SDK and plugin dir. Non-sensitive by necessity: the CPython-in-WASM runtime
     /// has no interactive-consent seam yet (`capability_request` only reflects
     /// the launch-granted set), so a withheld sensitive cap could never be
     /// granted at runtime. Auto-granted when declared, exactly like `fs.read`.
@@ -97,13 +97,18 @@ pub enum Capability {
     /// Connect to an MCP server the *user* configured in
     /// `<config_dir>/mcp_servers.toml` (stint 0382). Gates
     /// `Effect::McpConnect` / `McpSend` / `McpDisconnect`: the host spawns and
-    /// owns the server process, the app speaks the MCP protocol over it.
+    /// owns the server process, the plugin speaks the MCP protocol over it.
     ///
-    /// The app names a server by id only. Argv comes from user-owned config
-    /// and never from the app, so this capability authorizes "talk to a server
-    /// the user configured", never "run this command" — an app holding it
+    /// The plugin names a server by id only. Argv comes from user-owned config
+    /// and never from the plugin, so this capability authorizes "talk to a server
+    /// the user configured", never "run this command" — a plugin holding it
     /// cannot reach a binary the user has not already listed.
     McpClient,
+    /// Request the typed one-shot CLI operations the plugin package declares in
+    /// `[[cli_operation]]` (stint 1175). Manifest membership only allows the plugin
+    /// to *ask*: every invocation is separately admitted by the permission
+    /// monitor against the exact operation, workspace, package and executable.
+    CliOperations,
 }
 
 impl fmt::Display for Capability {
@@ -113,6 +118,18 @@ impl fmt::Display for Capability {
 }
 
 impl Capability {
+    /// Capabilities guarding the protocol media operations (audio playback,
+    /// microphone capture and device listing, MIDI device listing/in/out,
+    /// video decoder open/state/close). All sit behind the `media_io`
+    /// release experiment.
+    pub const MEDIA_IO: [Capability; 5] = [
+        Self::AudioRecord,
+        Self::AudioPlayback,
+        Self::VideoPlayback,
+        Self::MidiIn,
+        Self::MidiOut,
+    ];
+
     /// One-line human-readable description shown in the permission grant
     /// modal under the wire-format capability string.
     pub fn description(self) -> &'static str {
@@ -122,7 +139,7 @@ impl Capability {
             Self::NetHttp => "Make outbound HTTP requests",
             Self::SecretsGet => "Read secrets scoped to this workspace",
             Self::PipeOpen => "Open data pipes to other panes",
-            Self::SpawnApp => "Launch another app in a new pane",
+            Self::SpawnView => "Launch another plugin in a new pane",
             Self::AudioRecord => "Capture microphone audio",
             Self::AudioPlayback => "Play audio",
             Self::GpuRender => "Render through the WASM GPU surface",
@@ -135,11 +152,12 @@ impl Capability {
             Self::TerminalBindings => "Drive a linked terminal pane",
             Self::FsPick => "Show a native file picker",
             Self::PanesSpawn => "Open new panes in your workspace",
-            Self::PanesRead => "See your open panes and read app or terminal pane state",
-            Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
-            Self::PermissionsManage => "See and change what other apps are allowed to do",
+            Self::PanesRead => "See your open panes and read plugin or terminal pane state",
+            Self::PanesControl => "Control your panes: focus, close, send input, and drive plugins",
+            Self::PermissionsManage => "See and change what other plugins are allowed to do",
             Self::LogsRead => "Read the Plexi host log",
             Self::McpClient => "Talk to the MCP servers you have configured",
+            Self::CliOperations => "Ask to run the approved command-line operations it declares",
         }
     }
 
@@ -150,7 +168,7 @@ impl Capability {
             Self::NetHttp => "net.http",
             Self::SecretsGet => "secrets.get",
             Self::PipeOpen => "pipe.open",
-            Self::SpawnApp => "spawn.app",
+            Self::SpawnView => "spawn.plugin",
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::GpuRender => "gpu.render",
@@ -168,20 +186,21 @@ impl Capability {
             Self::PermissionsManage => "permissions.manage",
             Self::LogsRead => "logs.read",
             Self::McpClient => "mcp.client",
+            Self::CliOperations => "cli.operations",
         }
     }
 
     /// Every capability variant. The single source of truth for "all known
     /// capabilities" — validators iterate this instead of hand-rolling string
-    /// lists. When adding a variant, `as_str`/`try_from` won't compile without
-    /// it, and `capability_all_round_trips` fails if it is missing here.
+    /// lists. `as_str` owns the wire spelling; parsing and manifest validation
+    /// derive their accepted IDs from this list.
     pub const ALL: &'static [Capability] = &[
         Self::FsRead,
         Self::FsWrite,
         Self::NetHttp,
         Self::SecretsGet,
         Self::PipeOpen,
-        Self::SpawnApp,
+        Self::SpawnView,
         Self::AudioRecord,
         Self::AudioPlayback,
         Self::GpuRender,
@@ -199,6 +218,7 @@ impl Capability {
         Self::PermissionsManage,
         Self::LogsRead,
         Self::McpClient,
+        Self::CliOperations,
     ];
 
     /// All capability wire strings, derived from [`Capability::ALL`].
@@ -208,7 +228,7 @@ impl Capability {
 
     /// Returns a human-readable description of why this capability cannot be
     /// satisfied by the current config, or `None` if it is satisfiable.
-    /// Called before spawning any app process — if any declared capability
+    /// Called before spawning any plugin process — if any declared capability
     /// returns `Some(...)`, the host shows an error tile instead of launching.
     pub fn config_missing_reason(&self, config: &crate::config::PlexiConfig) -> Option<String> {
         match self {
@@ -226,23 +246,35 @@ impl Capability {
 
     /// Returns true for capabilities that require explicit first-run user consent.
     /// These are withheld (treated as Yellow) when no stored decision exists,
-    /// so the app must send a CapabilityRequest to trigger the consent modal.
+    /// so the plugin must send a CapabilityRequest to trigger the consent modal.
     pub fn is_sensitive(self) -> bool {
-        matches!(
-            self,
+        // List both groups explicitly so new capabilities require a consent decision.
+        match self {
             Self::PanesSpawn
-                | Self::PanesRead
-                | Self::PanesControl
-                | Self::PermissionsManage
-                | Self::SpawnApp
-                | Self::AiQuery
-                | Self::Llm
-                | Self::AudioRecord
-                | Self::TerminalBindings
-                | Self::FsWrite
-                | Self::SecretsGet
-                | Self::NetHttp
-        )
+            | Self::PanesRead
+            | Self::PanesControl
+            | Self::PermissionsManage
+            | Self::SpawnView
+            | Self::AiQuery
+            | Self::Llm
+            | Self::AudioRecord
+            | Self::TerminalBindings
+            | Self::FsWrite
+            | Self::SecretsGet
+            | Self::NetHttp => true,
+            Self::FsRead
+            | Self::PipeOpen
+            | Self::AudioPlayback
+            | Self::GpuRender
+            | Self::VideoPlayback
+            | Self::Timer
+            | Self::MidiIn
+            | Self::MidiOut
+            | Self::FsPick
+            | Self::LogsRead
+            | Self::McpClient
+            | Self::CliOperations => false,
+        }
     }
 }
 
@@ -302,46 +334,47 @@ impl<'a> TryFrom<&'a str> for Capability {
     type Error = UnknownCapability;
 
     fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        match s {
-            "fs.read" => Ok(Self::FsRead),
-            "fs.write" => Ok(Self::FsWrite),
-            "net.http" => Ok(Self::NetHttp),
-            "secrets.get" => Ok(Self::SecretsGet),
-            "pipe.open" => Ok(Self::PipeOpen),
-            "spawn.app" => Ok(Self::SpawnApp),
-            "audio.record" => Ok(Self::AudioRecord),
-            "audio.playback" => Ok(Self::AudioPlayback),
-            "gpu.render" => Ok(Self::GpuRender),
-            "video.playback" => Ok(Self::VideoPlayback),
-            "llm" => Ok(Self::Llm),
-            "timer" => Ok(Self::Timer),
-            "ai.query" => Ok(Self::AiQuery),
-            "midi.in" => Ok(Self::MidiIn),
-            "midi.out" => Ok(Self::MidiOut),
-            "terminal.bindings" => Ok(Self::TerminalBindings),
-            "fs.pick" => Ok(Self::FsPick),
-            "panes.spawn" => Ok(Self::PanesSpawn),
-            "panes.read" => Ok(Self::PanesRead),
-            "panes.control" => Ok(Self::PanesControl),
-            "permissions.manage" => Ok(Self::PermissionsManage),
-            "logs.read" => Ok(Self::LogsRead),
-            "mcp.client" => Ok(Self::McpClient),
-            other => Err(UnknownCapability(other.to_string())),
-        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|cap| cap.as_str() == s)
+            .ok_or_else(|| UnknownCapability(s.to_string()))
     }
 }
 
-// ── AppPermissions ────────────────────────────────────────────────────────────
+/// IDs owned by future host projections. Reservation never creates a grant.
+pub const RESERVED_CAPABILITY_IDS: &[&str] = &["usage.read", "usage.refresh"];
 
-/// Per-app, per-workspace permission set (v3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityId {
+    Available,
+    Reserved,
+}
+
+/// The manifest capability registry: existing runtime IDs plus reserved IDs.
+/// All callers derive strings from the runtime enum rather than duplicate lists.
+pub fn capability_ids() -> impl Iterator<Item = (&'static str, CapabilityId)> {
+    Capability::ALL
+        .iter()
+        .map(|cap| (cap.as_str(), CapabilityId::Available))
+        .chain(
+            RESERVED_CAPABILITY_IDS
+                .iter()
+                .map(|id| (*id, CapabilityId::Reserved)),
+        )
+}
+
+// ── PluginPermissions ────────────────────────────────────────────────────────────
+
+/// Per-plugin, per-workspace permission set (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AppPermissions {
-    /// Granted capabilities for this app in this workspace.
+pub struct PluginPermissions {
+    /// Granted capabilities for this plugin in this workspace.
     pub capabilities: HashSet<Capability>,
     /// Permanently blocked capabilities — auto-denied without a modal.
     #[serde(default)]
     pub blocked: HashSet<Capability>,
-    /// True when this is a built-in app; bypasses all capability checks.
+    /// True when this is a built-in plugin; bypasses all capability checks.
     #[serde(default)]
     pub is_builtin: bool,
     /// Allowed HTTP hosts. Empty = unrestricted.
@@ -349,8 +382,23 @@ pub struct AppPermissions {
     pub allowed_hosts: Vec<String>,
 }
 
-impl AppPermissions {
-    /// Full permissions for built-in first-party apps — bypasses all checks.
+impl PluginPermissions {
+    /// Move every media-I/O capability out of the granted set and into
+    /// `blocked`, so each protocol media operation (playback, capture, device
+    /// listing, MIDI in/out, video decode) is auto-denied without a prompt.
+    /// Returns the withheld capabilities. Release gating is additive: this
+    /// never grants anything, and the remaining capability checks are untouched.
+    pub fn withhold_media_io(&mut self) -> Vec<Capability> {
+        let withheld: Vec<Capability> = Capability::MEDIA_IO
+            .iter()
+            .copied()
+            .filter(|cap| self.capabilities.remove(cap))
+            .collect();
+        self.blocked.extend(Capability::MEDIA_IO.iter().copied());
+        withheld
+    }
+
+    /// Full permissions for built-in first-party plugins — bypasses all checks.
     pub fn builtin() -> Self {
         Self {
             capabilities: HashSet::new(), // not needed — is_builtin bypasses checks
@@ -363,7 +411,8 @@ impl AppPermissions {
     /// Create a permissions set from a list of v3 capability strings.
     /// Unknown capability strings are logged and dropped — manifest loaders
     /// should validate with `parse_capability_strings` first and refuse to
-    /// install an app that names an unknown capability.
+    /// install a plugin that names an unknown capability.
+    #[cfg(test)]
     pub fn from_capability_strings(strings: &[String]) -> Self {
         let mut capabilities = HashSet::new();
         for s in strings {
@@ -386,7 +435,7 @@ impl AppPermissions {
 }
 
 /// Parse a list of capability strings, returning an error on the first unknown
-/// entry. Manifest loaders should call this before installing an app.
+/// entry. Manifest loaders should call this before installing a plugin.
 pub fn parse_capability_strings(
     strings: &[String],
 ) -> Result<HashSet<Capability>, UnknownCapability> {
@@ -408,9 +457,9 @@ pub enum PermissionCheck {
 
 // ── v3 check API ──────────────────────────────────────────────────────────────
 
-/// Check whether a specific capability is granted for an app+workspace pair.
+/// Check whether a specific capability is granted for a plugin+workspace pair.
 #[cfg(test)]
-pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
+pub fn check(perms: &PluginPermissions, cap: Capability) -> PermissionCheck {
     if perms.is_builtin {
         return PermissionCheck::Allowed;
     }
@@ -424,11 +473,11 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
     }
 }
 
-/// Returns true if this capability is permanently blocked for this app.
+/// Returns true if this capability is permanently blocked for this plugin.
 /// Callers should check this before adding to pending_prompts — blocked
 /// caps should be auto-denied without showing a modal.
 #[cfg(test)]
-pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
+pub fn is_blocked(perms: &PluginPermissions, cap: Capability) -> bool {
     !perms.is_builtin && perms.blocked.contains(&cap)
 }
 
@@ -437,7 +486,7 @@ pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
 /// Serializable data stored in `permissions.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PermissionStoreData {
-    /// Flat map: key = "app_id::workspace_path::capability_str" → state.
+    /// Flat map: key = "plugin_id::workspace_path::capability_str" → state.
     pub entries: HashMap<String, PermissionState>,
     /// Raw WASM capability ids such as `fs:read:/tmp` or
     /// `net:fetch:api.github.com`. These cannot use [`Capability`] because
@@ -447,11 +496,11 @@ pub struct PermissionStoreData {
 }
 
 /// Loads, mutates, and persists `permissions.toml` in the Plexi config dir.
-/// File handling (load-or-default, corrupt backup, atomic save) lives in
-/// [`TomlStore`]; this type owns only the entry-key rules.
+/// The file is HMAC-sealed. A missing or bad MAC drops every entry.
 #[derive(Debug)]
 pub struct PermissionStore {
     file: TomlStore<PermissionStoreData>,
+    untrusted: Option<crate::broker::seal::IntegrityFault>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,47 +514,95 @@ impl Default for PermissionStore {
     fn default() -> Self {
         Self {
             file: TomlStore::detached(STORE_LABEL),
+            untrusted: None,
         }
     }
 }
 
 impl PermissionStore {
-    fn entry_key(app_id: &str, workspace_root: &Path, cap: Capability) -> String {
-        let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
+    // Permanent disk representation: preserve both grants and denials without
+    // rewriting a sealed authority store. This is not a public capability alias.
+    fn stored_capability(id: &str) -> &str {
+        if id == "spawn.plugin" {
+            "spawn.app"
+        } else {
+            id
+        }
     }
 
-    fn wasm_entry_key(app_id: &str, workspace_root: &Path, capability_id: &str) -> String {
-        let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", app_id, canonical.display(), capability_id)
+    fn public_capability(id: &str) -> &str {
+        if id == "spawn.app" {
+            "spawn.plugin"
+        } else {
+            id
+        }
     }
 
-    /// Split a store key (`app_id::workspace_path::capability_str`) into its
+    fn entry_key(plugin_id: &str, workspace_root: &Path, cap: Capability) -> String {
+        let canonical = crate::platform::path::canonical_or_self(workspace_root);
+        format!(
+            "{}::{}::{}",
+            plugin_id,
+            canonical.display(),
+            Self::stored_capability(cap.as_str())
+        )
+    }
+
+    fn wasm_entry_key(plugin_id: &str, workspace_root: &Path, capability_id: &str) -> String {
+        let canonical = crate::platform::path::canonical_or_self(workspace_root);
+        format!(
+            "{}::{}::{}",
+            plugin_id,
+            canonical.display(),
+            Self::stored_capability(capability_id)
+        )
+    }
+
+    /// Split a store key (`plugin_id::workspace_path::capability_str`) into its
     /// parts. Splits from the right so workspace paths containing `::` parse
     /// correctly.
     /// Returns `None` for malformed keys.
     fn parse_entry_key(key: &str) -> Option<(&str, &str, &str)> {
         let (left, cap_str) = key.rsplit_once("::")?;
-        let (app_id, workspace) = left.split_once("::")?;
-        Some((app_id, workspace, cap_str))
+        let (plugin_id, workspace) = left.split_once("::")?;
+        Some((plugin_id, workspace, cap_str))
     }
 
-    /// Iterate all stored entries as `(app_id, workspace_path, capability, state)`.
+    /// Raw WASM rows as `(plugin_id, workspace_path, capability_id, state)`.
+    pub fn iter_wasm_entries(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, &str, PermissionState)> + '_ {
+        self.file
+            .data
+            .wasm_entries
+            .iter()
+            .filter_map(|(key, &state)| {
+                let (plugin_id, workspace, capability_id) = Self::parse_entry_key(key)?;
+                Some((
+                    plugin_id,
+                    workspace,
+                    Self::public_capability(capability_id),
+                    state,
+                ))
+            })
+    }
+
+    /// Iterate all stored entries as `(plugin_id, workspace_path, capability, state)`.
     /// Entries with malformed keys or unknown capability strings are skipped
     /// (logged at warn). Used by the `ListPermissions` host handler.
     pub fn iter_entries(
         &self,
     ) -> impl Iterator<Item = (&str, &str, Capability, PermissionState)> + '_ {
         self.file.data.entries.iter().filter_map(|(key, &state)| {
-            let Some((app_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
+            let Some((plugin_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
                 log::warn!("permission_store: skipping malformed entry key '{key}'");
                 return None;
             };
-            let Ok(cap) = Capability::try_from(cap_str) else {
+            let Ok(cap) = Capability::try_from(Self::public_capability(cap_str)) else {
                 log::warn!("permission_store: skipping entry with unknown capability '{cap_str}'");
                 return None;
             };
-            Some((app_id, workspace, cap, state))
+            Some((plugin_id, workspace, cap, state))
         })
     }
 
@@ -514,8 +611,8 @@ impl PermissionStore {
     fn migrate_raw_path_keys(data: &mut PermissionStoreData) -> usize {
         let mut to_rekey: Vec<(String, String, PermissionState)> = Vec::new();
         for (key, &state) in &data.entries {
-            // key format: "app_id::workspace_path::cap_str"
-            let Some((app_id, workspace_raw, cap_str)) = Self::parse_entry_key(key) else {
+            // key format: "plugin_id::workspace_path::cap_str"
+            let Some((plugin_id, workspace_raw, cap_str)) = Self::parse_entry_key(key) else {
                 continue;
             };
 
@@ -527,7 +624,7 @@ impl PermissionStore {
                 continue;
             }
 
-            let new_key = format!("{}::{}::{}", app_id, canonical.display(), cap_str);
+            let new_key = format!("{}::{}::{}", plugin_id, canonical.display(), cap_str);
             if new_key != *key {
                 to_rekey.push((key.clone(), new_key, state));
             }
@@ -540,23 +637,48 @@ impl PermissionStore {
         count
     }
 
-    /// Load from `config_dir/permissions.toml`. Returns empty store on missing file.
-    /// On parse failure: logs the error, renames the corrupt file to
-    /// `permissions.toml.corrupt-<timestamp>` for recovery, and returns an empty store.
+    /// Load from `config_dir/permissions.toml`. A missing file is an empty store.
+    /// A missing or bad MAC quarantines the file and returns empty;
+    /// [`Self::integrity_fault`] names it. A signed file that does not parse is
+    /// backed up and also returns empty.
+    ///
+    /// A pre-seal file with no MAC is adopted in memory when
+    /// [`crate::broker::seal::profile_never_sealed`] is true. It is not
+    /// quarantined and it does not create a host key; the grant import seals
+    /// the profile and retires this file.
     pub fn load_or_default(config_dir: &Path) -> Self {
-        let file = TomlStore::load_or_default(
-            config_dir,
-            "permissions.toml",
-            STORE_LABEL,
-            |data: &PermissionStoreData, path| {
-                log::info!(
-                    "permission_store: loaded {} entries from {}",
-                    data.entries.len(),
-                    path.display()
-                );
-            },
-        );
-        let mut store = Self { file };
+        let path = config_dir.join("permissions.toml");
+        if let Some(store) = Self::adopt_legacy_unsealed(config_dir, &path) {
+            return store;
+        }
+        let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(&path);
+        if loaded.key_unreadable {
+            log::info!(
+                "permission_store: mac key unreadable; left {} in place and loaded no entries",
+                path.display()
+            );
+            return Self {
+                file: TomlStore::at(path, STORE_LABEL, PermissionStoreData::default()),
+                untrusted: None,
+            };
+        }
+        if loaded.trusted {
+            log::info!(
+                "permission_store: loaded {} entries from {}",
+                loaded.data.entries.len(),
+                path.display()
+            );
+        }
+        if let Some(fault) = loaded.fault.clone() {
+            crate::broker::seal::note_integrity_fault(config_dir, fault);
+        }
+        let mut store = Self {
+            file: TomlStore::at(path, STORE_LABEL, loaded.data),
+            untrusted: loaded.fault,
+        };
+        if store.untrusted.is_some() {
+            return store;
+        }
         let migrated = Self::migrate_raw_path_keys(&mut store.file.data);
         if migrated > 0 {
             log::info!(
@@ -567,24 +689,49 @@ impl PermissionStore {
         store
     }
 
-    /// Get the stored state for a (app, workspace, capability) triple.
+    fn adopt_legacy_unsealed(config_dir: &Path, path: &Path) -> Option<Self> {
+        let body = crate::broker::seal::legacy_unsealed_body(path)?;
+        if !crate::broker::seal::profile_never_sealed(config_dir) {
+            return None;
+        }
+        let mut data = toml::from_str::<PermissionStoreData>(&body).ok()?;
+        log::info!("permission_store: migrated legacy unsealed permissions.toml");
+        let migrated = Self::migrate_raw_path_keys(&mut data);
+        if migrated > 0 {
+            log::info!(
+                "permission_store: migrated {migrated} entries to canonical workspace paths"
+            );
+        }
+        Some(Self {
+            file: TomlStore::at(path.to_path_buf(), STORE_LABEL, data),
+            untrusted: None,
+        })
+    }
+
+    /// Set when the file on disk was refused. The in-memory entries are empty.
+    pub fn integrity_fault(&self) -> Option<&crate::broker::seal::IntegrityFault> {
+        self.untrusted.as_ref()
+    }
+
+    /// Get the stored state for a (plugin, workspace, capability) triple.
+    #[cfg(test)]
     pub fn get(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         cap: Capability,
     ) -> Option<PermissionState> {
         self.file
             .data
             .entries
-            .get(&Self::entry_key(app_id, workspace_root, cap))
+            .get(&Self::entry_key(plugin_id, workspace_root, cap))
             .copied()
     }
 
-    /// Set the state for a (app, workspace, capability) triple.
+    /// Set the state for a (plugin, workspace, capability) triple.
     pub fn set(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         cap: Capability,
         state: PermissionState,
@@ -592,53 +739,68 @@ impl PermissionStore {
         self.file
             .data
             .entries
-            .insert(Self::entry_key(app_id, workspace_root, cap), state);
+            .insert(Self::entry_key(plugin_id, workspace_root, cap), state);
     }
 
     /// Get the stored state for a raw WASM capability id.
+    #[cfg(test)]
     pub fn get_wasm(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
     ) -> Option<PermissionState> {
         self.file
             .data
             .wasm_entries
-            .get(&Self::wasm_entry_key(app_id, workspace_root, capability_id))
+            .get(&Self::wasm_entry_key(
+                plugin_id,
+                workspace_root,
+                capability_id,
+            ))
             .copied()
     }
 
     /// Set the stored state for a raw WASM capability id.
     pub fn set_wasm(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
         state: PermissionState,
     ) {
         self.file.data.wasm_entries.insert(
-            Self::wasm_entry_key(app_id, workspace_root, capability_id),
+            Self::wasm_entry_key(plugin_id, workspace_root, capability_id),
             state,
         );
     }
 
-    /// Atomically write to disk. No-op for a test store with no path.
+    /// Atomically write a sealed file. No-op for a test store with no path.
     pub fn save(&self) {
-        self.file.save();
+        let label = self.file.label();
+        if let Err(error) = crate::broker::seal::write_toml(&self.file.path, label, &self.file.data)
+        {
+            log::error!(
+                "{label}: failed to save {}: {error}",
+                self.file.path.display()
+            );
+        } else {
+            crate::broker::integrity::note_saved_file(&self.file.path);
+        }
     }
 
     /// Apply stored state for a set of declared capabilities.
-    /// Returns `(capabilities, blocked)` sets for constructing AppPermissions.
+    /// Returns `(capabilities, blocked)` sets for constructing PluginPermissions.
     /// - Declared + Green → granted (capabilities set)
     /// - Declared + not stored + non-sensitive → granted (capabilities set)
     /// - Declared + not stored + sensitive → withheld (will prompt on CapabilityRequest)
     /// - Declared + Yellow → not pre-granted (will prompt on CapabilityRequest)
     /// - Declared + Red → blocked (blocked set)
     /// - Previously runtime-granted (Green, not in declared) → also added to capabilities
+    #[cfg(test)]
     pub fn build_permission_sets(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &HashSet<Capability>,
     ) -> (HashSet<Capability>, HashSet<Capability>) {
@@ -647,7 +809,7 @@ impl PermissionStore {
 
         // Apply stored state to declared capabilities
         for &cap in declared {
-            match self.get(app_id, workspace_root, cap) {
+            match self.get(plugin_id, workspace_root, cap) {
                 Some(PermissionState::Yellow) => {} // will prompt on use
                 Some(PermissionState::Red) => {
                     blocked.insert(cap);
@@ -657,11 +819,11 @@ impl PermissionStore {
                 }
                 None if cap.is_sensitive() => {
                     // Sensitive caps require explicit user consent on first launch.
-                    // The app must send CapabilityRequest to trigger the modal.
+                    // The plugin must send CapabilityRequest to trigger the modal.
                     log::info!(
                         "permission_store: '{}' withheld for '{}' — first-run consent required",
                         cap,
-                        app_id
+                        plugin_id
                     );
                 }
                 None => {
@@ -673,7 +835,7 @@ impl PermissionStore {
         // Also restore any runtime-granted capabilities from previous sessions.
         // Entries stored before this fix are migrated to canonical keys by load_or_default.
         let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
-        let prefix = format!("{}::{}::", app_id, canonical_root.display());
+        let prefix = format!("{}::{}::", plugin_id, canonical_root.display());
         for (key, &state) in &self.file.data.entries {
             if !key.starts_with(&prefix) {
                 continue;
@@ -682,7 +844,7 @@ impl PermissionStore {
                 Some(s) => s,
                 None => continue,
             };
-            let Ok(cap) = Capability::try_from(cap_str) else {
+            let Ok(cap) = Capability::try_from(Self::public_capability(cap_str)) else {
                 continue;
             };
             if declared.contains(&cap) {
@@ -704,9 +866,10 @@ impl PermissionStore {
 
     /// Apply stored state for raw WASM capability ids. Raw ids include scoped
     /// host access such as `fs:read:/project` and `net:fetch:api.example.com`.
+    #[cfg(test)]
     pub fn build_wasm_permission_sets(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &HashSet<String>,
     ) -> (HashSet<String>, HashSet<String>) {
@@ -714,7 +877,7 @@ impl PermissionStore {
         let mut blocked = HashSet::new();
 
         for cap in declared {
-            match self.get_wasm(app_id, workspace_root, cap) {
+            match self.get_wasm(plugin_id, workspace_root, cap) {
                 Some(PermissionState::Yellow) => {}
                 Some(PermissionState::Red) => {
                     blocked.insert(cap.clone());
@@ -726,7 +889,7 @@ impl PermissionStore {
                     log::info!(
                         "permission_store: raw wasm capability '{}' withheld for '{}' — first-run consent required",
                         cap,
-                        app_id
+                        plugin_id
                     );
                 }
                 None => {
@@ -736,7 +899,7 @@ impl PermissionStore {
         }
 
         let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
-        let prefix = format!("{}::{}::", app_id, canonical_root.display());
+        let prefix = format!("{}::{}::", plugin_id, canonical_root.display());
         for (key, &state) in &self.file.data.wasm_entries {
             if !key.starts_with(&prefix) {
                 continue;
@@ -744,6 +907,7 @@ impl PermissionStore {
             let Some(capability_id) = key.strip_prefix(&prefix) else {
                 continue;
             };
+            let capability_id = Self::public_capability(capability_id);
             if declared.contains(capability_id) {
                 continue;
             }
@@ -768,7 +932,7 @@ impl PermissionStore {
     /// capabilities are not silently granted by the default unset behavior.
     pub fn apply_wasm_install_review(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         required: &[String],
         optional: &[String],
@@ -776,7 +940,7 @@ impl PermissionStore {
     ) -> WasmInstallGrantSummary {
         for capability_id in required {
             self.set_wasm(
-                app_id,
+                plugin_id,
                 workspace_root,
                 capability_id,
                 PermissionState::Green,
@@ -791,7 +955,7 @@ impl PermissionStore {
             } else {
                 PermissionState::Yellow
             };
-            self.set_wasm(app_id, workspace_root, capability_id, optional_state);
+            self.set_wasm(plugin_id, workspace_root, capability_id, optional_state);
         }
 
         WasmInstallGrantSummary {
@@ -815,7 +979,7 @@ pub fn wasm_capability_requires_consent(capability_id: &str) -> bool {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
-        || capability_id == "spawn.app"
+        || capability_id == "spawn.plugin"
         || capability_id == "clipboard.read"
         || capability_id == "clipboard.write"
         || capability_id == "notify"
@@ -836,7 +1000,7 @@ pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
-        || capability_id == "spawn.app"
+        || capability_id == "spawn.plugin"
         || capability_id == "clipboard.read"
         || capability_id == "clipboard.write"
         || capability_id == "notify"
@@ -846,7 +1010,7 @@ pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, spawn.app, clipboard.read, clipboard.write, notify, or open-pane"
+            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, spawn.plugin, clipboard.read, clipboard.write, notify, or open-pane"
         ))
     }
 }
@@ -855,7 +1019,7 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
     if capability_id == "ai.query" {
         "Make AI calls through the Plexi broker"
     } else if capability_id == "state:read-write" {
-        "Read and write app state through the host store"
+        "Read and write plugin state through the host store"
     } else if capability_id == "pipe.open" {
         "Open data pipes to other panes"
     } else if capability_id == "gpu.render" {
@@ -872,8 +1036,8 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
         "Capture microphone audio"
     } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
         "Spawn a child process"
-    } else if capability_id == "spawn.app" {
-        "Open another app in a pane"
+    } else if capability_id == "spawn.plugin" {
+        "Open another plugin in a pane"
     } else if capability_id == "clipboard.read" {
         "Read text from the clipboard"
     } else if capability_id == "clipboard.write" {
@@ -892,6 +1056,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plugin_rename_keeps_stored_grants_and_denials_without_public_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::default();
+        let key = format!(
+            "notes::{}::spawn.app",
+            root.path().canonicalize().unwrap().display()
+        );
+        store
+            .file
+            .data
+            .entries
+            .insert(key.clone(), PermissionState::Red);
+        store
+            .file
+            .data
+            .wasm_entries
+            .insert(key, PermissionState::Green);
+        assert_eq!(
+            store.get("notes", root.path(), Capability::SpawnView),
+            Some(PermissionState::Red)
+        );
+        assert_eq!(
+            store.get_wasm("notes", root.path(), "spawn.plugin"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.iter_entries().next().unwrap().2,
+            Capability::SpawnView
+        );
+        assert_eq!(store.iter_wasm_entries().next().unwrap().2, "spawn.plugin");
+        assert!(Capability::try_from("spawn.app").is_err());
+        assert_eq!(
+            serde_json::to_string(&crate::broker::TargetType::PluginEventStream).unwrap(),
+            "\"app_event_stream\""
+        );
+    }
+
+    #[test]
     fn capability_all_round_trips() {
         // ALL must contain every variant exactly once, and each variant must
         // round-trip through as_str / try_from. A variant added to the enum
@@ -906,7 +1108,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            23,
+            24,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
@@ -921,7 +1123,7 @@ mod tests {
         assert_eq!(parsed.as_str(), "ai.query");
 
         // Permissions parser must populate the granted set.
-        let perms = AppPermissions::from_capability_strings(&["ai.query".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["ai.query".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::AiQuery),
             "ai.query must end up in granted capabilities"
@@ -934,7 +1136,7 @@ mod tests {
 
     #[test]
     fn logs_read_capability_recognized_and_auto_granted() {
-        // The logs app declares `logs.read` to reach the host-mediated
+        // The logs plugin declares `logs.read` to reach the host-mediated
         // `read_host_log` effect (stint 0444). It must round-trip through the
         // manifest validator and, being non-sensitive, auto-grant on first
         // launch — the CPython-in-WASM path has no runtime-consent seam, so a
@@ -947,7 +1149,7 @@ mod tests {
             "logs.read must stay non-sensitive until the WASM Python path gains interactive consent"
         );
 
-        let perms = AppPermissions::from_capability_strings(&["logs.read".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["logs.read".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::LogsRead),
             "logs.read must end up in granted capabilities"
@@ -966,7 +1168,7 @@ mod tests {
         assert_eq!(parsed, Capability::TerminalBindings);
         assert_eq!(parsed.as_str(), "terminal.bindings");
 
-        let perms = AppPermissions::from_capability_strings(&["terminal.bindings".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["terminal.bindings".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::TerminalBindings),
             "terminal.bindings must end up in granted capabilities"
@@ -976,7 +1178,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
 
-        let empty = AppPermissions::from_capability_strings(&[]);
+        let empty = PluginPermissions::from_capability_strings(&[]);
         match check(&empty, Capability::TerminalBindings) {
             PermissionCheck::Denied(reason) => {
                 assert!(
@@ -995,7 +1197,7 @@ mod tests {
         let parsed = Capability::try_from("panes.spawn").expect("panes.spawn must parse");
         assert_eq!(parsed, Capability::PanesSpawn);
         assert_eq!(parsed.as_str(), "panes.spawn");
-        let perms = AppPermissions::from_capability_strings(&["panes.spawn".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.spawn".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesSpawn),
             "panes.spawn must end up in granted capabilities"
@@ -1005,7 +1207,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesSpawn,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1024,7 +1226,7 @@ mod tests {
         assert_eq!(parsed, Capability::PanesRead);
         assert_eq!(parsed.as_str(), "panes.read");
         assert!(parsed.is_sensitive(), "panes.read must be sensitive");
-        let perms = AppPermissions::from_capability_strings(&["panes.read".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.read".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesRead),
             "panes.read must end up in granted capabilities"
@@ -1034,7 +1236,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesRead,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1053,7 +1255,7 @@ mod tests {
         assert_eq!(parsed, Capability::PanesControl);
         assert_eq!(parsed.as_str(), "panes.control");
         assert!(parsed.is_sensitive(), "panes.control must be sensitive");
-        let perms = AppPermissions::from_capability_strings(&["panes.control".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.control".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesControl),
             "panes.control must end up in granted capabilities"
@@ -1063,7 +1265,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesControl,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1086,14 +1288,14 @@ mod tests {
             parsed.is_sensitive(),
             "permissions.manage must be sensitive"
         );
-        let perms = AppPermissions::from_capability_strings(&["permissions.manage".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["permissions.manage".to_string()]);
         assert!(perms.capabilities.contains(&Capability::PermissionsManage));
         assert!(matches!(
             check(&perms, Capability::PermissionsManage),
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PermissionsManage,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1138,8 +1340,8 @@ mod tests {
 
         let entries: Vec<_> = store.iter_entries().collect();
         assert_eq!(entries.len(), 1);
-        let (app_id, ws, cap, state) = entries[0];
-        assert_eq!(app_id, "my-app");
+        let (plugin_id, ws, cap, state) = entries[0];
+        assert_eq!(plugin_id, "my-app");
         assert_eq!(ws, "/test/project");
         assert_eq!(cap, Capability::NetHttp);
         assert_eq!(state, PermissionState::Red);
@@ -1147,7 +1349,7 @@ mod tests {
 
     #[test]
     fn ai_query_denied_when_not_declared() {
-        let perms = AppPermissions::from_capability_strings(&[]);
+        let perms = PluginPermissions::from_capability_strings(&[]);
         match check(&perms, Capability::AiQuery) {
             PermissionCheck::Denied(reason) => {
                 assert!(
@@ -1225,14 +1427,14 @@ mod tests {
     #[test]
     fn sensitive_cap_withheld_on_first_launch() {
         // Sensitive caps with no stored decision must NOT be pre-granted.
-        // The app must send a CapabilityRequest to trigger the consent modal.
+        // The plugin must send a CapabilityRequest to trigger the consent modal.
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
         let store = PermissionStore::load_or_default(tmp.path());
 
         let sensitive: HashSet<Capability> = [
             Capability::PanesSpawn,
-            Capability::SpawnApp,
+            Capability::SpawnView,
             Capability::AiQuery,
             Capability::Llm,
             Capability::AudioRecord,
@@ -1314,7 +1516,7 @@ mod tests {
 
     #[test]
     fn is_blocked_returns_true_for_blocked_cap() {
-        let mut perms = AppPermissions::default();
+        let mut perms = PluginPermissions::default();
         perms.blocked.insert(Capability::NetHttp);
         assert!(is_blocked(&perms, Capability::NetHttp));
         assert!(!is_blocked(&perms, Capability::FsRead));
@@ -1322,7 +1524,7 @@ mod tests {
 
     #[test]
     fn is_blocked_always_false_for_builtin() {
-        let mut perms = AppPermissions::builtin();
+        let mut perms = PluginPermissions::builtin();
         perms.blocked.insert(Capability::NetHttp); // even if manually set
         assert!(!is_blocked(&perms, Capability::NetHttp));
     }
@@ -1341,17 +1543,18 @@ mod tests {
             "corrupt permissions.toml must be renamed, not left in place"
         );
 
-        // A .corrupt-* backup must exist.
+        // An unsigned file is quarantined, not parsed.
         let backup_exists = std::fs::read_dir(tmp.path()).unwrap().any(|e| {
             e.unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with("permissions.toml.corrupt-")
+                .starts_with("permissions.toml.untrusted-")
         });
         assert!(
             backup_exists,
-            "a .corrupt-<timestamp> backup must be created"
+            "a .untrusted-<timestamp> backup must be created"
         );
+        assert!(store.integrity_fault().is_some());
 
         // Returned store must be empty.
         assert!(
@@ -1426,7 +1629,11 @@ mod tests {
         // Write entry with raw key directly to the TOML file.
         let raw_key = format!("my-app::{}::fs.read", raw_path.display());
         let toml_content = format!("[entries]\n\"{raw_key}\" = \"green\"\n");
-        std::fs::write(config_tmp.path().join("permissions.toml"), toml_content).unwrap();
+        crate::broker::seal::write_sealed(
+            &config_tmp.path().join("permissions.toml"),
+            toml_content.as_bytes(),
+        )
+        .expect("seal legacy permissions file");
 
         let store = PermissionStore::load_or_default(config_tmp.path());
 
@@ -1448,7 +1655,7 @@ mod tests {
         let workspace_extra = std::path::Path::new("/work/project-extra");
         let workspace = std::path::Path::new("/work/project");
 
-        // Grant fs.read for app in /work/project-extra.
+        // Grant fs.read for plugin in /work/project-extra.
         let mut store = PermissionStore::load_or_default(tmp.path());
         store.set(
             "my-app",
@@ -1624,7 +1831,7 @@ mod tests {
             "net:fetch:api.github.com",
             "audio:record",
             "spawn-child",
-            "spawn.app",
+            "spawn.plugin",
             "clipboard.read",
             "clipboard.write",
             "notify",

@@ -61,7 +61,7 @@ impl<'a> ReadOnlyCodeViewer<'a> {
                     })
                     .inner
             })
-            .inner
+            .response
     }
 }
 

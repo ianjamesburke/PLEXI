@@ -1,0 +1,10 @@
+# Phone relay service. `railway up` from the repository root reads this file.
+# The Docker build context is that root (service root directory `/`), which is
+# what lets the Dockerfile copy clients/phone-web/static. See services/relay/DEPLOY.md.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "services/relay/Dockerfile"
+
+[deploy]
+healthcheckPath = "/healthz"

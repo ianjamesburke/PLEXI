@@ -7,22 +7,40 @@ use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Classification of how a new context was spawned (stint 1008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NewContextKind {
+    Empty,
+    AtPath,
+}
+
+/// Recorded stage durations for a completed new context initialization (stint 1008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewContextTiming {
+    pub(crate) context_id: u64,
+    pub(crate) kind: NewContextKind,
+    pub(crate) id_resolve: std::time::Duration,
+    pub(crate) pane_spawn: std::time::Duration,
+    pub(crate) router_register: std::time::Duration,
+    pub(crate) total: std::time::Duration,
+}
 
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
 /// Calls the shared `init_workspace` function which creates all workspace files
-/// (workspace.toml, secrets.toml, apps.toml, commands.toml) under the channel dir.
+/// (workspace.toml, secrets.toml, plugins.toml, commands.toml) under the channel dir.
 ///
 /// Idempotent — skips if the channel dir already has workspace.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
 /// Ensure `<root>/.plexi/.gitignore` covers `app_states/` so a user can never
-/// accidentally commit their app state with a project (standing ruling: app
+/// accidentally commit their plugin state with a project (standing ruling: plugin
 /// state is personal, single-user, local data). Idempotent; preserves any
 /// existing user rules. Every path that creates or rewrites a context root
 /// calls this.
-fn ensure_context_state_ignore(root: &std::path::Path) {
-    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
+pub(super) fn ensure_context_state_ignore(root: &std::path::Path) {
+    if let Err(error) = crate::workspace::secrets::ensure_plugin_state_gitignore(root) {
         log::warn!(
             "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
             root.display()
@@ -384,8 +402,15 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: child_depth,
         };
-        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) =
-            self.create_context_pane_set(&child_env, path.clone(), &pane_commands, layout)
+        let caller_is_agent = anchor_pane.is_some_and(|pid| !self.is_human_owned_pane(pid));
+        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) = self
+            .create_context_pane_set(
+                &child_env,
+                path.clone(),
+                &pane_commands,
+                layout,
+                caller_is_agent,
+            )
         else {
             log::error!("new_child_context: failed to create terminals for child context");
             return Err("failed to create terminals for child context".to_string());
@@ -444,6 +469,7 @@ impl PlexiApp {
                     pane_id: sub_ctx_pane_id,
                     target_context_id: ctx_id,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -555,130 +581,13 @@ impl PlexiApp {
                 (win_idx, focused_tile)
             }
         };
-        let parent_ctx_id = self.windows[parent_win_idx].context_id;
-        let parent_depth = self
-            .router
-            .iter()
-            .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| c.depth)
-            .unwrap_or(0);
-
-        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(target_tile) {
-            Some(egui_tiles::Tile::Pane(pid)) => *pid,
-            _ => {
-                log::warn!("push_pane_to_subcontext: target tile is not a pane");
-                return;
-            }
-        };
-
-        if self.windows[parent_win_idx]
-            .panes
-            .get(&pane_id)
-            .map(|p| p.as_portal().is_some())
-            .unwrap_or(false)
-        {
-            log::warn!("push_pane_to_subcontext: cannot push a portal pane");
+        let Some(egui_tiles::Tile::Pane(pane_id)) =
+            self.windows[parent_win_idx].tree.tiles.get(target_tile)
+        else {
             return;
-        }
-
-        let pane_name = self.windows[parent_win_idx]
-            .panes
-            .get(&pane_id)
-            .and_then(|p| {
-                p.as_terminal()
-                    .and_then(|t| t.name.clone())
-                    .or_else(|| p.as_app().map(|a| a.name.clone()))
-            });
-        let ctx_name = name
-            .or(pane_name)
-            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
-
-        let parent_root = self
-            .router
-            .iter()
-            .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| c.root.clone())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-
-        let ctx_id = self.next_window_id;
-        self.next_window_id += 1;
-        let win_id = self.next_window_id;
-        self.next_window_id += 1;
-        let child_depth = parent_depth + 1;
-
-        log::info!(
-            "push_pane_to_subcontext: pane_id={pane_id} ctx_name={ctx_name} \
-             parent_ctx_id={parent_ctx_id} child_depth={child_depth}"
-        );
-
-        let pane = match self.windows[parent_win_idx].panes.remove(&pane_id) {
-            Some(p) => p,
-            None => {
-                log::error!("push_pane_to_subcontext: pane not found in parent window");
-                return;
-            }
         };
-
-        let portal_pane_id = self.host.alloc_pane_id();
-        if let Some(egui_tiles::Tile::Pane(slot)) =
-            self.windows[parent_win_idx].tree.tiles.get_mut(target_tile)
-        {
-            *slot = portal_pane_id;
-        }
-        self.windows[parent_win_idx].panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: ctx_id,
-                context_state: None,
-                hidden: false,
-            })),
-        );
-
-        let mut child_tiles = egui_tiles::Tiles::default();
-        let child_tile_id = child_tiles.insert_pane(pane_id);
-        let child_tree = egui_tiles::Tree::new("child_tree", child_tile_id, child_tiles);
-        let child_root_tile = child_tree.root.unwrap();
-        let mut child_panes = std::collections::HashMap::new();
-        child_panes.insert(pane_id, pane);
-
-        ensure_context_state_ignore(&parent_root);
-        self.router.insert_after_subtree(
-            parent_ctx_id,
-            crate::host::context::Context {
-                name: ContextName::custom(ctx_name),
-                root: parent_root.clone(),
-                description: None,
-                context_id: ctx_id,
-                parent_id: Some(parent_ctx_id),
-                depth: child_depth,
-                parked: false,
-            },
-        );
-        self.windows.push(Window {
-            name: String::new(),
-            path: parent_root,
-            tree: child_tree,
-            panes: child_panes,
-            focused_pane: Some(child_root_tile),
-            zoomed_pane: None,
-            grid_x: 0,
-            grid_y: 0,
-            window_id: win_id,
-            context_id: ctx_id,
-        });
-        self.context_active_window.insert(ctx_id, win_id);
-
-        let current_win_id = self.windows[parent_win_idx].window_id;
-        self.router
-            .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
-        let new_ctx_idx = self
-            .router
-            .position(|c| c.context_id == ctx_id)
-            .expect("just-inserted subcontext must be in router");
-        self.switch_workspace(new_ctx_idx);
-
-        self.mark_workspace_dirty();
+        let pane_id = *pane_id;
+        self.wrap_panes_to_subcontext(&[pane_id], pane_id, name);
     }
 
     pub(crate) fn new_context(&mut self) {
@@ -798,9 +707,11 @@ impl PlexiApp {
 
     /// Create a new standalone empty context at the home directory.
     fn new_context_empty(&mut self) {
+        let total_start = std::time::Instant::now();
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
 
+        let id_start = std::time::Instant::now();
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
@@ -814,9 +725,11 @@ impl PlexiApp {
             root: Some(cwd.clone()),
             depth: 0,
         };
+        let id_duration = id_start.elapsed();
 
         // Push an empty window, then seed its base root pane with the new
         // context's identity before it is registered in the router.
+        let spawn_start = std::time::Instant::now();
         self.windows.push(Window {
             name: String::new(),
             path: cwd.clone(),
@@ -831,14 +744,21 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, cwd.clone(), None, false)
+            .seed_window_root_pane(
+                new_idx,
+                &context_env,
+                cwd.clone(),
+                super::create::TerminalSpawnOptions::default(),
+            )
             .is_none()
         {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
             self.windows.pop();
             return;
         }
+        let spawn_duration = spawn_start.elapsed();
 
+        let register_start = std::time::Instant::now();
         ensure_context_state_ignore(&cwd);
         self.router.push(crate::host::context::Context {
             name: ContextName::auto(String::new()),
@@ -856,6 +776,20 @@ impl PlexiApp {
         self.apply_context_transition_effects();
 
         self.mark_workspace_dirty();
+        let register_duration = register_start.elapsed();
+        let total_duration = total_start.elapsed();
+
+        log::info!(
+            "new_context_stage_timing: context_id={ctx_id} kind=empty total={total_duration:?} id_resolve={id_duration:?} pane_spawn={spawn_duration:?} router_register={register_duration:?}"
+        );
+        self.last_new_context_timing = Some(NewContextTiming {
+            context_id: ctx_id,
+            kind: NewContextKind::Empty,
+            id_resolve: id_duration,
+            pane_spawn: spawn_duration,
+            router_register: register_duration,
+            total: total_duration,
+        });
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={ctx_name}"
         );
@@ -875,8 +809,10 @@ impl PlexiApp {
     /// directory basename, unless the path has a `.plexi/workspace.toml` with
     /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
+        let total_start = std::time::Instant::now();
         log::info!("new_context_at_path: path={}", path.display());
 
+        let config_and_id_start = std::time::Instant::now();
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
@@ -920,9 +856,11 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: 0,
         };
+        let config_and_id_duration = config_and_id_start.elapsed();
 
         // Push an empty window, then seed its base root pane in place with the
         // context identity resolved above.
+        let spawn_start = std::time::Instant::now();
         self.windows.push(Window {
             name: String::new(),
             path: path.clone(),
@@ -937,7 +875,12 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         if self
-            .seed_window_root_pane(new_idx, &context_env, path.clone(), None, false)
+            .seed_window_root_pane(
+                new_idx,
+                &context_env,
+                path.clone(),
+                super::create::TerminalSpawnOptions::default(),
+            )
             .is_none()
         {
             log::error!(
@@ -947,7 +890,9 @@ impl PlexiApp {
             self.windows.pop();
             return;
         }
+        let spawn_duration = spawn_start.elapsed();
 
+        let register_start = std::time::Instant::now();
         ensure_context_state_ignore(&path);
         self.router.push(crate::host::context::Context {
             name: context_name,
@@ -963,10 +908,27 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
         self.apply_context_transition_effects();
+        self.mark_workspace_dirty();
+        let register_duration = register_start.elapsed();
+        let total_duration = total_start.elapsed();
+
+        log::info!(
+            "new_context_stage_timing: context_id={ctx_id} kind=at_path total={total_duration:?} config_and_id={config_and_id_duration:?} pane_spawn={spawn_duration:?} router_register={register_duration:?}"
+        );
+        self.last_new_context_timing = Some(NewContextTiming {
+            context_id: ctx_id,
+            kind: NewContextKind::AtPath,
+            id_resolve: config_and_id_duration,
+            pane_spawn: spawn_duration,
+            router_register: register_duration,
+            total: total_duration,
+        });
     }
 
-    /// Create a new page immediately to the right of the active page on the
-    /// same grid row, then switch to it.
+    /// Create a new terminal page immediately to the right of the active page
+    /// on the same grid row, then switch to it.
+    ///
+    /// This is the established Cmd+N contract.
     pub(crate) fn new_page_right(&mut self) {
         let ws_id = self.router.active().context_id;
         let active_y = self.windows[self.active_window].grid_y;
@@ -980,7 +942,12 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y, ws_id, None, false, None);
+        self.create_page_at(
+            new_x,
+            active_y,
+            ws_id,
+            super::create::TerminalSpawnOptions::default(),
+        );
     }
 
     /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
@@ -990,10 +957,15 @@ impl PlexiApp {
         grid_x: u32,
         grid_y: u32,
         context_id: u64,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        cwd_override: Option<PathBuf>,
+        options: super::create::TerminalSpawnOptions<'_>,
     ) {
+        let super::create::TerminalSpawnOptions {
+            initial_cmd,
+            close_on_exit,
+            cwd_override,
+            agent_pane,
+            inject_folder_secrets,
+        } = options;
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -1002,7 +974,7 @@ impl PlexiApp {
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!(
-            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
+            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} close_on_exit={close_on_exit}",
             cwd.display()
         );
         let context_env = self.pane_context_env_for_context(context_id);
@@ -1011,6 +983,8 @@ impl PlexiApp {
             Some(cwd.clone()),
             initial_cmd,
             close_on_exit,
+            agent_pane,
+            inject_folder_secrets,
         ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -1034,6 +1008,7 @@ impl PlexiApp {
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
+        log::info!("window: created window={win_id} context={ctx_id}");
         self.minimap.visible = true;
     }
 
@@ -1059,15 +1034,33 @@ impl PlexiApp {
         win_idx: usize,
         context: &super::create::PaneContextEnv,
         cwd: PathBuf,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
+        options: super::create::TerminalSpawnOptions<'_>,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
-        let (tree, panes, root_tile) =
-            self.create_single_pane_tree(context, Some(cwd), initial_cmd, close_on_exit)?;
+        let super::create::TerminalSpawnOptions {
+            initial_cmd,
+            close_on_exit,
+            cwd_override: _,
+            agent_pane,
+            inject_folder_secrets,
+        } = options;
+        let spawn_start = std::time::Instant::now();
+        let (tree, panes, root_tile) = self.create_single_pane_tree(
+            context,
+            Some(cwd),
+            initial_cmd,
+            close_on_exit,
+            agent_pane,
+            inject_folder_secrets,
+        )?;
+        let spawn_duration = spawn_start.elapsed();
         let pane_id = *panes
             .keys()
             .next()
             .expect("create_single_pane_tree always yields exactly one pane");
+        log::info!(
+            "seed_window_root_pane: spawned root pane {pane_id} in {spawn_duration:?} (win_idx={win_idx}, context_id={})",
+            context.context_id
+        );
         let win = &mut self.windows[win_idx];
         win.tree = tree;
         win.panes = panes;
@@ -1090,6 +1083,8 @@ impl PlexiApp {
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
+        agent_pane: bool,
+        inject_folder_secrets: bool,
     ) -> Option<crate::spatial::tiling::PaneId> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = cwd_override
@@ -1098,15 +1093,24 @@ impl PlexiApp {
             .unwrap_or(home);
         let active = self.active_window;
         let context = self.pane_context_env_for_window(active);
-        let Some((pane_id, _root_tile)) =
-            self.seed_window_root_pane(active, &context, cwd, initial_cmd, close_on_exit)
-        else {
+        let Some((pane_id, _root_tile)) = self.seed_window_root_pane(
+            active,
+            &context,
+            cwd,
+            super::create::TerminalSpawnOptions {
+                initial_cmd,
+                close_on_exit,
+                cwd_override: None,
+                agent_pane,
+                inject_folder_secrets,
+            },
+        ) else {
             log::error!("seed_root_pane: failed to create terminal for empty active window");
             return None;
         };
+        let window_id = self.windows[active].window_id;
         log::info!(
-            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
-            self.windows[active].window_id
+            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
         );
         Some(pane_id)
     }
@@ -1120,7 +1124,7 @@ impl PlexiApp {
         );
         let context = self.pane_context_env_for_window(self.active_window);
         let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(&context, Some(cwd), None, false)
+            self.create_single_pane_tree(&context, Some(cwd), None, false, false, true)
         else {
             log::error!("Failed to create terminal for reset context");
             return;
@@ -1134,6 +1138,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
+        self.cancel_context_rename("context removal");
         if self.router.len() <= 1 {
             return;
         }
@@ -1179,7 +1184,21 @@ impl PlexiApp {
             .iter()
             .filter(|window| deleted.contains(&window.context_id))
         {
-            revoke_window_pane_credentials(window);
+            for pane in window.panes.values() {
+                self.record_closed_agent_pane(window.context_id, &window.path, pane);
+            }
+        }
+        let doomed_pane_ids: Vec<crate::spatial::tiling::PaneId> = self
+            .windows
+            .iter()
+            .filter(|window| deleted.contains(&window.context_id))
+            .flat_map(|window| {
+                revoke_window_pane_credentials(window);
+                window.panes.keys().copied().collect::<Vec<_>>()
+            })
+            .collect();
+        for pane_id in doomed_pane_ids {
+            self.reclaim_pane_worktree(pane_id);
         }
         let doomed: Vec<Window> = {
             let mut kept = Vec::new();
@@ -1275,6 +1294,8 @@ impl PlexiApp {
                 None => break,
             }
         }
+        self.context_active_window
+            .retain(|context_id, _| !deleted.contains(context_id));
 
         // 5b. Emit ContextRemoved AFTER the router mutation above, not
         // before: `RegistryViews::invalidate` (stint 0724 Phase B) decides
@@ -1331,27 +1352,263 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
-    /// Pop the depth stack and return to the parent context/window/focus.
-    /// Shared body of Cmd+Escape (`Action::ContextZoomOut`) and the
-    /// `ZoomOutOfContext` IPC request. Returns true when a switch happened.
-    pub(crate) fn zoom_out_of_context(&mut self) -> bool {
-        if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
-            if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
-                self.switch_workspace(ctx_idx);
-                if let Some(win_idx) = self
-                    .windows
-                    .iter()
-                    .position(|w| w.window_id == parent_win_id)
-                {
-                    self.active_window = win_idx;
-                    self.windows[win_idx].focused_pane = focused_tile;
-                }
-                return true;
-            }
+    /// A close-triggered portal can represent its parent only while it remains
+    /// the sole owned pane on the sole page and its target is a live child.
+    pub(crate) fn revealed_child(&self, parent_id: u64) -> Option<u64> {
+        let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);
+        let page = pages.next()?;
+        if pages.next().is_some() || page.panes.len() != 1 {
+            return None;
         }
-        false
+        let (pane_id, pane) = page.panes.iter().next()?;
+        let portal = pane.as_portal()?;
+        if !portal.reveal_after_close
+            || portal.hidden
+            || page.tree.tiles.find_pane(pane_id).is_none()
+        {
+            return None;
+        }
+        let child = self
+            .router
+            .iter()
+            .find(|c| c.context_id == portal.target_context_id)?;
+        if child.parent_id != Some(parent_id) || !self.context_has_visible_pane(child.context_id) {
+            return None;
+        }
+        Some(child.context_id)
     }
 
+    /// Explicit focus on a revealed portal resolves to the child as well.
+    pub(crate) fn focus_revealed_portal(&mut self, pane_id: u64) -> bool {
+        let Some((parent_id, target)) = self.windows.iter().find_map(|w| {
+            w.panes
+                .get(&pane_id)
+                .and_then(|pane| pane.as_portal())
+                .map(|portal| (w.context_id, portal.target_context_id))
+        }) else {
+            return false;
+        };
+        if self.revealed_child(parent_id) != Some(target) {
+            return false;
+        }
+        let Some(index) = self.router.position(|c| c.context_id == parent_id) else {
+            return false;
+        };
+        self.switch_workspace(index);
+        true
+    }
+
+    /// A closing pane may leave a portal as the only remaining owned pane.
+    pub(crate) fn reveal_sole_portal_after_close(&mut self, parent_id: u64) {
+        let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);
+        let Some(page) = pages.next() else { return };
+        if pages.next().is_some() || page.panes.len() != 1 {
+            return;
+        }
+        let Some((&pane_id, pane)) = page.panes.iter().next() else {
+            return;
+        };
+        let Some(portal) = pane.as_portal() else {
+            return;
+        };
+        let target = portal.target_context_id;
+        if portal.hidden
+            || page.tree.tiles.find_pane(&pane_id).is_none()
+            || !self
+                .router
+                .iter()
+                .any(|c| c.context_id == target && c.parent_id == Some(parent_id))
+            || !self.context_has_visible_pane(target)
+        {
+            return;
+        }
+        let page_id = page.window_id;
+        if let Some(portal) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.window_id == page_id)
+            .and_then(|w| w.panes.get_mut(&pane_id))
+            .and_then(|p| p.as_portal_mut())
+        {
+            portal.reveal_after_close = true;
+        }
+        self.mark_workspace_dirty();
+        log::info!("context_navigation: close revealed child={target} parent={parent_id}");
+        if self.router.active().context_id == parent_id {
+            if let Some(index) = self.router.position(|c| c.context_id == target) {
+                self.prefer_visible_reveal_page(target);
+                self.conjoined_parent_focus = None;
+                self.switch_workspace(index);
+            }
+        }
+    }
+
+    fn context_has_visible_pane(&self, context_id: u64) -> bool {
+        self.windows
+            .iter()
+            .filter(|w| w.context_id == context_id)
+            .any(|w| {
+                w.panes
+                    .iter()
+                    .any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+            })
+    }
+
+    fn prefer_visible_reveal_page(&mut self, context_id: u64) {
+        let visible = |w: &&crate::host::context::Window| {
+            w.context_id == context_id
+                && w.panes
+                    .iter()
+                    .any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+        };
+        let preferred = self.context_active_window.get(&context_id).copied();
+        if self
+            .windows
+            .iter()
+            .filter(visible)
+            .any(|w| Some(w.window_id) == preferred)
+        {
+            return;
+        }
+        if let Some(window_id) = self.windows.iter().find(visible).map(|w| w.window_id) {
+            self.context_active_window.insert(context_id, window_id);
+        }
+    }
+
+    /// Validate the complete target before mutating focus, sharing parent
+    /// history/window restoration with keyboard and CLI navigation.
+    pub(crate) fn navigate_context_ancestor(&mut self, source: u64, target: u64) -> bool {
+        let path = self.router.active_ancestry();
+        let position = path
+            .iter()
+            .position(|&i| self.router.get(i).context_id == target);
+        if self.router.active().context_id != source {
+            log::info!("breadcrumb_navigation: source={source} target={target} rejected=stale_source_or_nonancestor");
+            return false;
+        }
+        let Some(index) = position else {
+            log::info!(
+                "breadcrumb_navigation: source={source} target={target} rejected=nonancestor"
+            );
+            return false;
+        };
+        if let Some(&child_index) = path.get(index + 1) {
+            let child = self.router.get(child_index).context_id;
+            if !self.restore_context_parent(child, target, false) {
+                log::info!("breadcrumb_navigation: source={source} target={target} rejected=missing_parent");
+                return false;
+            }
+        }
+        // A direct entry may leave unrelated history with no entry for target.
+        // Keep only genuine ancestors of the chosen location.
+        let ancestors: std::collections::HashSet<_> = path[..index]
+            .iter()
+            .map(|&i| self.router.get(i).context_id)
+            .collect();
+        self.router
+            .depth_stack
+            .retain(|(id, _, _)| ancestors.contains(id));
+        log::info!("breadcrumb_navigation: source={source} target={target} accepted");
+        true
+    }
+
+    /// Return to the immediate parent, restoring its entry window and focus when available.
+    /// Ancestry is authoritative; navigation history is optional and may be stale after a switch.
+    pub(crate) fn zoom_out_of_context(&mut self) -> bool {
+        let child_id = self.router.active().context_id;
+        let Some(mut parent_id) = self.router.active().parent_id else {
+            log::info!("context_navigation: already at root context={child_id}");
+            return false;
+        };
+        // Skip only close-triggered, still-redundant ancestors. A top-level
+        // context with no meaningful ancestor leaves us in the current child.
+        let mut child_for_parent = child_id;
+        for _ in 0..self.router.len() {
+            if self.revealed_child(parent_id) != Some(child_for_parent) {
+                break;
+            }
+            let Some(next) = self
+                .router
+                .iter()
+                .find(|c| c.context_id == parent_id)
+                .and_then(|c| c.parent_id)
+            else {
+                return false;
+            };
+            child_for_parent = parent_id;
+            parent_id = next;
+        }
+        self.restore_context_parent(child_for_parent, parent_id, true)
+    }
+
+    /// Shared history, window and pane restoration. Explicit breadcrumb targets
+    /// may inspect a revealed parent without changing its presentation flag.
+    fn restore_context_parent(
+        &mut self,
+        child_id: u64,
+        parent_id: u64,
+        honor_reveal: bool,
+    ) -> bool {
+        let Some(parent_idx) = self.router.position(|c| c.context_id == parent_id) else {
+            log::warn!("context_navigation: missing parent={parent_id} child={child_id}");
+            return false;
+        };
+        let entry = self
+            .router
+            .depth_stack
+            .iter()
+            .rposition(|(ctx, _, _)| *ctx == parent_id)
+            .map(|index| {
+                self.router.depth_stack.truncate(index + 1);
+                self.router.pop_depth().expect("matching entry retained")
+            });
+        self.conjoined_parent_focus = None;
+        self.switch_workspace_target(parent_idx, honor_reveal);
+        if let Some((_, window_id, focus)) = entry {
+            if let Some(index) = self
+                .windows
+                .iter()
+                .position(|w| w.window_id == window_id && w.context_id == parent_id)
+            {
+                self.active_window = index;
+                self.context_active_window.insert(parent_id, window_id);
+                if let Some(tile) =
+                    focus.filter(|tile| self.windows[index].tree.tiles.get(*tile).is_some())
+                {
+                    self.windows[index].navigate_to(tile);
+                    log::info!("context_navigation: child={child_id} parent={parent_id} restored entry window={window_id}");
+                    return true;
+                }
+            }
+        }
+        // Direct switches and restored workspaces have no entry history. Prefer the portal
+        // back to the child, then retain the parent's remembered window and focus.
+        let portal = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.context_id == parent_id)
+            .find_map(|(index, w)| {
+                w.panes.iter().find_map(|(id, pane)| match pane {
+                    crate::host::pane::Pane::Portal(portal)
+                        if portal.target_context_id == child_id =>
+                    {
+                        w.tree.tiles.find_pane(id).map(|tile| (index, tile))
+                    }
+                    _ => None,
+                })
+            });
+        if let Some((index, tile)) = portal {
+            self.active_window = index;
+            self.windows[index].navigate_to(tile);
+            self.context_active_window
+                .insert(parent_id, self.windows[index].window_id);
+        }
+        log::info!(
+            "context_navigation: child={child_id} parent={parent_id} restored from ancestry"
+        );
+        true
+    }
     /// If `ctx_id` names a subcontext whose windows are now all empty, delete
     /// it. When it was the active context, first zoom back out to the parent
     /// exactly as if Cmd+Escape had been pressed. Root contexts are never
@@ -1406,6 +1663,9 @@ impl PlexiApp {
         self.minimap_visible_per_context
             .insert(removed_ws_id, self.minimap.visible);
 
+        for pane in self.windows[index].panes.values() {
+            self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
+        }
         revoke_window_pane_credentials(&self.windows[index]);
         let removed_window = self.windows.remove(index);
         log::info!(
@@ -1455,13 +1715,7 @@ impl PlexiApp {
             self.active_window -= 1;
         }
 
-        if self.renaming_window == Some(index) {
-            self.renaming_window = None;
-        } else if let Some(r) = self.renaming_window {
-            if r > index {
-                self.renaming_window = Some(r - 1);
-            }
-        }
+        self.sync_context_rename_focus();
 
         // ── Compact the grid: shift columns left if a column becomes empty ──
         self.compact_workspace_grid(removed_ws_id);
@@ -1539,6 +1793,34 @@ impl PlexiApp {
     /// This is the standard path for context navigation. Focus-history traversal
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        self.switch_workspace_target(new_ctx_idx, true);
+    }
+
+    fn switch_workspace_target(&mut self, new_ctx_idx: usize, honor_reveal: bool) {
+        let mut new_ctx_idx = new_ctx_idx;
+        let mut redirected = false;
+        for _ in 0..if honor_reveal { self.router.len() } else { 0 } {
+            let id = self.router.get(new_ctx_idx).context_id;
+            let Some(child) = self.revealed_child(id) else {
+                break;
+            };
+            let Some(index) = self.router.position(|c| c.context_id == child) else {
+                break;
+            };
+            if index == new_ctx_idx {
+                break;
+            }
+            new_ctx_idx = index;
+            redirected = true;
+        }
+        if redirected {
+            let context_id = self.router.get(new_ctx_idx).context_id;
+            self.prefer_visible_reveal_page(context_id);
+            self.conjoined_parent_focus = None;
+        }
+        if new_ctx_idx != self.router.active_idx() {
+            self.cancel_context_rename("context switch");
+        }
         // Record the outgoing focus so Cmd+[ can return here from any context.
         if let Some(w) = self.windows.get(self.active_window) {
             let old_window_id = w.window_id;
@@ -1546,8 +1828,11 @@ impl PlexiApp {
             self.push_focus_history(old_window_id, old_focus);
         }
 
-        // Save current context's active window + minimap state.
+        // Save current context's active window + minimap state + last focused pane.
         let old_ctx_id = self.router.active().context_id;
+        if let Some(old_pane_id) = self.active_focused_pane_id() {
+            self.zoom.context_last_pane.insert(old_ctx_id, old_pane_id);
+        }
         self.context_active_window
             .insert(old_ctx_id, self.windows[self.active_window].window_id);
         self.minimap_visible_per_context
@@ -1556,8 +1841,33 @@ impl PlexiApp {
         self.router.set_active(new_ctx_idx);
         self.pick_active_context_from_workspace();
 
-        // Restore minimap state for the new context.
+        // Restore minimap state and last focused pane for the new context (R36).
         let new_ctx_id = self.router.active().context_id;
+        if let Some(target_pid) = self.resolve_remembered_pane_for_context(new_ctx_id) {
+            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(target_pid) {
+                if self.windows[win_idx].context_id == new_ctx_id {
+                    self.active_window = win_idx;
+                    self.windows[win_idx].navigate_to(tile_id);
+                }
+            }
+        } else if let Some(win) = self.windows.get_mut(self.active_window) {
+            if let Some(first_tile) = win.tree.root.and_then(|r| win.find_first_pane_in(r)) {
+                win.navigate_to(first_tile);
+            }
+        }
+        self.record_focused_pane_memory();
+        if let Some(active_pane_id) = self.active_focused_pane_id() {
+            self.zoom
+                .context_last_pane
+                .insert(new_ctx_id, active_pane_id);
+            let vp = self.active_strip_viewport();
+            let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+            let strip = self.ensure_authoritative_strip(new_ctx_id);
+            strip.focus_pane(active_pane_id);
+            if let Some(col_idx) = strip.find_column_for_pane(active_pane_id) {
+                strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+            }
+        }
         let page_count = self
             .windows
             .iter()
@@ -1570,6 +1880,7 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
 
         self.apply_context_transition_effects();
+        self.sync_attention_queue();
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
@@ -1599,41 +1910,16 @@ impl PlexiApp {
     /// click), the context is restored and focused.
     pub(crate) fn toggle_park_active_context(&mut self) {
         let idx = self.router.active_idx();
-        let is_parked = self.router.get(idx).parked;
-
-        if is_parked {
-            // Unpark
-            self.router.get_mut(idx).parked = false;
-            log::info!(
-                "context: unparked '{}' (idx={idx})",
-                self.router.get(idx).name
-            );
-            self.mark_workspace_dirty();
-            return;
+        if self.router.get(idx).parked {
+            self.unpark_context(idx);
+        } else {
+            self.park_context(idx);
         }
-
-        // Park the active context
-        let name = self.router.get(idx).name.clone();
-        self.router.get_mut(idx).parked = true;
-        log::info!("context: parked '{name}' (idx={idx})");
-
-        // Find the nearest unparked context to switch focus to.
-        // Search forward first, then backward.
-        let len = self.router.len();
-        let next_unparked = (1..len)
-            .map(|offset| (idx + offset) % len)
-            .find(|&i| !self.router.get(i).parked);
-
-        if let Some(new_idx) = next_unparked {
-            self.switch_workspace(new_idx);
-        }
-        // If all contexts are parked, stay on the current one (degenerate case).
-
-        self.mark_workspace_dirty();
     }
 
     /// Park a specific context by index, moving focus to the nearest unparked neighbor.
     pub(crate) fn park_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context parked");
         if self.router.get(idx).parked {
             return;
         }
@@ -1655,6 +1941,7 @@ impl PlexiApp {
 
     /// Unpark a specific context by index and switch focus to it.
     pub(crate) fn unpark_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context unparked");
         self.router.get_mut(idx).parked = false;
         log::info!(
             "context: unparked '{}' (idx={idx})",
@@ -1664,19 +1951,56 @@ impl PlexiApp {
         self.mark_workspace_dirty();
     }
 
-    /// Resolve an optional context id to a router index. Falls back to the
-    /// active context (with a warning) when the id is absent or unknown.
-    pub(crate) fn resolve_context_idx(&self, context_id: Option<u64>, op: &str) -> usize {
+    /// An omitted target uses the active context; an unknown explicit target fails closed.
+    pub(crate) fn resolve_context_idx(
+        &self,
+        context_id: Option<u64>,
+        op: &str,
+    ) -> Result<usize, String> {
         match context_id {
-            Some(cid) => match self.router.position(|c| c.context_id == cid) {
-                Some(idx) => idx,
-                None => {
-                    log::warn!("{op}: context_id={cid} not found — falling back to active context");
-                    self.router.active_idx()
-                }
-            },
-            None => self.router.active_idx(),
+            Some(cid) => self
+                .router
+                .position(|c| c.context_id == cid)
+                .ok_or_else(|| {
+                    let error = format!("context {cid} not found");
+                    log::info!("{op}: rejected: {error}");
+                    error
+                }),
+            None => Ok(self.router.active_idx()),
         }
+    }
+
+    /// Explicit folder navigation, independent of terminal cwd observations.
+    pub(crate) fn open_context_root(&mut self, root: &std::path::Path) -> Result<u64, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| format!("open context {}: {error}", root.display()))?;
+        if !root.is_dir() {
+            return Err(format!(
+                "context root {} is not a directory",
+                root.display()
+            ));
+        }
+        let existing = self
+            .router
+            .position(|context| context.root.canonicalize().is_ok_and(|path| path == root));
+        if let Some(index) = existing {
+            // Explicit open means this context, even if it has a revealed child.
+            self.switch_workspace_target(index, false);
+        } else {
+            let count = self.router.len();
+            self.new_context_at_path(root.clone());
+            if self.router.len() == count {
+                return Err(format!("could not create context at {}", root.display()));
+            }
+        }
+        let id = self.router.active().context_id;
+        log::info!(
+            "context_open: context_id={id} root={} created={}",
+            root.display(),
+            existing.is_none()
+        );
+        Ok(id)
     }
 
     /// Set the `root` of a context. `context_id` targets a specific context
@@ -1688,7 +2012,10 @@ impl PlexiApp {
     /// name is reconciled to the new root's basename exactly once, in one
     /// place, rather than in each caller.
     pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
-        let idx = self.resolve_context_idx(context_id, "set_context_root");
+        let idx = match self.resolve_context_idx(context_id, "set_context_root") {
+            Ok(idx) => idx,
+            Err(_) => return,
+        };
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         let old_root = self.router.get(idx).root.clone();
@@ -1722,7 +2049,6 @@ impl PlexiApp {
             old_root,
             new_root: root,
         });
-
 
         // Transition effects (registry rescan, watcher restart, agent reload)
         // only apply when the *active* context's root changed.
@@ -1758,7 +2084,7 @@ impl PlexiApp {
         // the old background-thread load (guarded by `context_id`) could.
         let _ = self.registries.view_for_context(context_id, &self.router);
         self.reconcile_registry_watchers();
-        // Same workspace resolution `AppRegistry::load` performs internally
+        // Same workspace resolution `PluginRegistry::load` performs internally
         // (cwd-walk to the channel dir) — agents live in that workspace's
         // `agents/` dir.
         self.agent_host.reload_workspace(
@@ -2066,17 +2392,79 @@ impl PlexiApp {
         let was_clean = !self.workspace_dirty;
         self.workspace_dirty = true;
         if was_clean {
-            let wake = std::sync::Arc::clone(&self.ui_wake);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    crate::app::render::WORKSPACE_SAVE_DEBOUNCE_MS,
-                ));
-                wake.wake("workspace_dirty_flush");
-            });
+            self.schedule_workspace_save_wake(std::time::Duration::from_millis(
+                crate::app::render::WORKSPACE_SAVE_DEBOUNCE_MS,
+            ));
         }
     }
 
-    pub(crate) fn save_workspace_now(&self) {
+    pub(crate) fn schedule_workspace_save_wake(&self, delay: std::time::Duration) {
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            wake.wake("workspace_dirty_flush");
+        });
+    }
+
+    pub(crate) fn record_closed_agent_pane(
+        &self,
+        context_id: u64,
+        win_path: &Path,
+        pane: &crate::host::pane::Pane,
+    ) {
+        let Some(t) = pane.as_terminal() else {
+            return;
+        };
+        if !t.is_agent_pane() {
+            return;
+        }
+        let context_name = self
+            .router
+            .iter()
+            .find(|c| c.context_id == context_id)
+            .map(|c| c.name.displayed().to_string())
+            .unwrap_or_default();
+        let cwd = t
+            .standby_cwd
+            .clone()
+            .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
+            .unwrap_or_else(|| win_path.to_path_buf());
+        if let Some(record) = t.build_history_record(context_id, &context_name, cwd) {
+            self.fleet_history.borrow_mut().push(record.clone());
+            if let Err(e) = crate::workspace::append_agent_history(&record) {
+                log::warn!(
+                    "agent_history: failed to append closed run for pane {}: {e}",
+                    t.id
+                );
+            }
+        }
+    }
+
+    pub(crate) fn save_workspace_now(&mut self) -> bool {
+        self.save_workspace_result().is_ok()
+    }
+
+    /// Same save, but hands the cause back so the quit path can show it.
+    pub(crate) fn save_workspace_result(&mut self) -> std::io::Result<()> {
+        let save_start = std::time::Instant::now();
+        // Trees can also be simplified by egui, independently of pane commands.
+        // Reconcile every window before snapshotting, even when UI is occluded.
+        for window in &mut self.windows {
+            let (old_focus, old_zoom) = (window.focused_pane, window.zoomed_pane);
+            window.reconcile_stale_tiles();
+            if (old_focus, old_zoom) != (window.focused_pane, window.zoomed_pane) {
+                let message = format!(
+                    "workspace save: reconciled stale focus/zoom window={} \
+                     focus {:?} -> {:?} zoom {:?} -> {:?}",
+                    window.window_id, old_focus, window.focused_pane, old_zoom, window.zoomed_pane
+                );
+                if window.focused_pane.is_none() && !window.panes.is_empty() {
+                    log::warn!("{message} (window still has panes but no focus)");
+                } else {
+                    log::info!("{message}");
+                }
+            }
+        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::WorkspaceSave,
@@ -2094,15 +2482,18 @@ impl PlexiApp {
                 debug_assert_eq!(pane.id(), id);
                 let pane_hidden = pane.is_hidden();
                 if let Some(t) = pane.as_terminal() {
-                    let cwd = shell::get_pid_cwd(t.backend.child_pid())
+                    let cwd = t
+                        .standby_cwd
+                        .clone()
+                        .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
                         .unwrap_or_else(|| win.path.clone());
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::Terminal,
                         cwd,
                         name: t.name.clone(),
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2117,18 +2508,44 @@ impl PlexiApp {
                         }),
                         runtime_kind: None,
                         launch: None,
+                        slots: t.slots.clone(),
+                        agent_session: t.build_saved_agent_session_with_scrollback(
+                            self.config.standby_scrollback_lines(),
+                        ),
                     });
-                } else if let Some(a) = pane.as_app() {
+                } else if let Some(a) = pane.as_view() {
+                    if let crate::host::pane::ViewRuntime::Builtin(view) = &a.runtime {
+                        if let Some(original) = view.disabled_plugin_record() {
+                            let mut saved = original.clone();
+                            saved.id = id;
+                            saved.hidden = pane_hidden;
+                            saved.slots = a.slots.clone();
+                            saved_panes.push(saved);
+                            continue;
+                        }
+                    }
+                    // A headless Assistant is hidden and absent from the tile
+                    // tree. Saving it would restore a layout-less pane on the
+                    // next launch. Conversation state is already per context.
+                    if a.hidden
+                        && a.manifest_id == "assistant"
+                        && !win.tree.tiles.iter().any(
+                            |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == id),
+                        )
+                    {
+                        log::info!("assistant: skipping headless pane {id} in workspace save");
+                        continue;
+                    }
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
-                        kind: crate::workspace::SavedPaneKind::App,
+                        kind: crate::workspace::SavedPaneKind::View,
                         cwd: a.workspace_root.clone(),
                         name: Some(a.name.clone()),
-                        // The app's real manifest identity (stint 0680) — the
-                        // runtime kind alone (`AppRuntime::type_id()`) cannot
+                        // The plugin's real manifest identity (stint 0680) — the
+                        // runtime kind alone (`ViewRuntime::type_id()`) cannot
                         // be looked up in `builtin_factory` or relaunched.
-                        app_id: Some(a.manifest_id.clone()),
-                        app_state: a.runtime.serialize_state(),
+                        plugin_id: Some(a.manifest_id.clone()),
+                        plugin_state: a.runtime.serialize_state(),
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2143,17 +2560,22 @@ impl PlexiApp {
                         }),
                         runtime_kind: Some(a.runtime.type_id().to_string()),
                         launch: a.runtime.launch_spec(),
+                        slots: a.slots.clone(),
+                        agent_session: None,
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::Portal {
                             context_id: child_ctx_id,
+                            reveal_after_close: pane
+                                .as_portal()
+                                .is_some_and(|p| p.reveal_after_close),
                         },
                         cwd: std::path::PathBuf::new(),
                         name: None,
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2168,6 +2590,8 @@ impl PlexiApp {
                         }),
                         runtime_kind: None,
                         launch: None,
+                        slots: std::collections::HashMap::new(),
+                        agent_session: None,
                     });
                 }
             }
@@ -2185,7 +2609,13 @@ impl PlexiApp {
         }
 
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
+            conjoined_contexts: self.conjoined_contexts.clone(),
+            strips: self
+                .router
+                .iter()
+                .map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id)))
+                .collect(),
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),
@@ -2194,9 +2624,11 @@ impl PlexiApp {
             context_active_window: self.context_active_window.clone(),
         };
 
-        if let Err(e) = ws.save() {
-            log::error!("Failed to save workspace: {e}");
-        }
+        ws.save()
+            .inspect_err(|e| log::error!("Failed to save workspace: {e}"))?;
+        let save_duration = save_start.elapsed();
+        log::info!("save_workspace_now: saved workspace in {save_duration:?}");
+        Ok(())
     }
 }
 
@@ -2213,15 +2645,17 @@ mod tests {
                 .iter()
                 .map(|id| crate::workspace::SavedPane {
                     id: *id,
-                    kind: crate::workspace::SavedPaneKind::App,
+                    kind: crate::workspace::SavedPaneKind::View,
                     cwd: std::env::temp_dir(),
                     name: None,
-                    app_id: Some("test".to_string()),
-                    app_state: None,
+                    plugin_id: Some("test".to_string()),
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,
+                    slots: std::collections::HashMap::new(),
+                    agent_session: None,
                 })
                 .collect(),
             focused_pane: None,
@@ -2245,7 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_init_existing_channel_workspace_ensures_neutral_app_state_ignore() {
+    fn auto_init_existing_channel_workspace_ensures_neutral_plugin_state_ignore() {
         let root = tempfile::tempdir().expect("root");
         let channel_dir = crate::config::workspace_channel_dir();
         let channel_path = root.path().join(channel_dir);

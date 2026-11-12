@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import Texture from '../components/Texture.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 
@@ -10,8 +11,8 @@ interface Props {
   type?: 'website' | 'article';
 }
 const {
-  title = "Plexi — The last app you'll ever need.",
-  description = 'Your terminal, your agents, your apps — all in one window. Build tools with AI and own everything you make.',
+  title = "Plexi — The last plugin you'll ever need.",
+  description = 'Your terminal, your agents, your plugins — all in one window. Build tools with AI and own everything you make.',
   image = '/og-default.png',
   type = 'website',
 } = Astro.props;
@@ -23,6 +24,7 @@ const imageURL = new URL(image, Astro.site).toString();
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="theme-color" content="#16161e" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Primary -->
@@ -49,14 +51,10 @@ const imageURL = new URL(image, Astro.site).toString();
   <meta name="twitter:image" content={imageURL} />
 </head>
 <body>
-  <div class="atmosphere">
-    <div class="glow-hero"></div>
-    <div class="glow-funding"></div>
-    <div class="glow-mission"></div>
-    <div class="grain"></div>
-  </div>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <Texture />
   <Nav />
-  <main>
+  <main id="main" tabindex="-1">
     <slot />
   </main>
   <Footer />

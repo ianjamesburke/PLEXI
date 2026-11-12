@@ -29,9 +29,12 @@ pub struct TurnResult {
     pub input_tokens: Option<u32>,
     /// Output token count — `Some` only for metered (native API) backend.
     pub output_tokens: Option<u32>,
+    /// USD cost from the provider's `usage.cost`. `None` when that field
+    /// was absent. A reported zero is `Some(0.0)`.
+    pub cost_usd: Option<f64>,
     /// OpenRouter generation ID from `X-Generation-Id` response header.
     /// `Some` when the OpenRouter backend is used; `None` otherwise.
-    /// The broker uses this to fetch the real per-call cost after the turn.
+    /// The broker queries it only when `cost_usd` is missing.
     pub generation_id: Option<String>,
     /// Tool calls requested by the model during this turn. Non-empty only when
     /// the backend sent `StreamEvent::ToolCalls`. The broker dispatches these
@@ -95,6 +98,7 @@ pub fn run_turn(
     let mut text = String::new();
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
+    let mut cost_usd: Option<f64> = None;
     let mut generation_id: Option<String> = None;
     let mut tool_calls: Vec<RawToolCall> = Vec::new();
 
@@ -119,10 +123,12 @@ pub fn run_turn(
             Ok(StreamEvent::Done {
                 input_tokens: in_tok,
                 output_tokens: out_tok,
+                cost_usd: cost,
                 generation_id: gen_id,
             }) => {
                 input_tokens = in_tok;
                 output_tokens = out_tok;
+                cost_usd = cost;
                 generation_id = gen_id;
                 break;
             }
@@ -144,6 +150,7 @@ pub fn run_turn(
         text,
         input_tokens,
         output_tokens,
+        cost_usd,
         generation_id,
         tool_calls,
     })

@@ -29,21 +29,60 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 
 ## Install
 
-> **macOS only.** Linux is untested.
+### macOS (Apple Silicon; Intel when published)
 
-### One-liner
-
-Plexi needs Git and a Rust toolchain. If Rust is missing, the installer offers
-to install it with rustup. A cold build takes several minutes.
+Downloads the matching current macOS stable release. Requires `bash`, `curl`,
+`tar`, and `shasum`, not Git, Rust, a package manager, or administrator access.
 
 ```bash
-curl -fsSL https://plexiapp.com/install | sh
+curl -fsSL https://plexiapp.com/install | bash
 ```
 
-The installer clones Plexi into `~/.plexi-src`, builds it on your Mac, copies
-Plexi.app to `/Applications`, installs the `plexi` CLI, and adds shell
-completions. It may ask for your password to write the CLI to `/usr/local/bin`.
-Restart your terminal when done.
+The installer selects the matching macOS archive. If the selected channel has
+no Intel archive, it stops with a clear missing-asset error; from a checkout,
+build with Rust, just, uv and Python 3.11 using `scripts/install.sh --from-source alpha`.
+It verifies the release archive's SHA-256 checksum before installing it.
+
+### Linux (x86_64, X11)
+
+Downloads the current Linux x64 stable release. Requires `bash`, `curl`, `tar`,
+and `sha256sum` (or `shasum`); it installs into user-owned directories.
+
+```bash
+curl -fsSL https://plexiapp.com/install | bash
+```
+
+It verifies the release archive's SHA-256 checksum before installing it.
+
+Linux support is X11-only; Wayland is not supported. This is not an apt, yay,
+AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets use Secret Service via `secret-tool`, or an AES-256-GCM
+encrypted-file fallback with key material outside the profile. See
+[Linux secret storage](https://plexiapp.com/docs/secrets/#linux-storage).
+Hardware video decoding is not implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
+
+### Windows (x64)
+
+Run this in Windows PowerShell 5.1 or later. It downloads the current Windows
+x64 stable release and verifies its SHA-256 checksum; it does not build from
+source.
+
+```powershell
+irm https://plexiapp.com/install.ps1 | iex
+```
+
+The Unix `curl | bash` command is not a Windows installer. Windows has no
+equivalent source-install script. The installer records package ownership separately from your profile, adds its
+per-user launcher directory to PATH and starts that installation.
+
+### Unsigned builds
+
+Stable, alpha and beta builds are unsigned and not notarized. Follow [Opening an unsigned Plexi
+build](docs/unsigned-install.md) before bypassing a macOS Gatekeeper or Windows
+SmartScreen warning. Linux users who unpack an archive manually may need
+`chmod +x plexi`.
+
+See [v1 binary install](docs/v1-binary-install.md) and [release artifact
+policy](docs/release-artifacts.md) for supported release assets and channels.
 
 First run:
 
@@ -58,18 +97,6 @@ To install a pre-release channel, pass `--channel`:
 ```bash
 curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
-```
-
-**First launch (unsigned app):** macOS may block it on first open.
-- **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
-- **Or:** `xattr -cr /Applications/Plexi.app && open /Applications/Plexi.app`
-
-### Build from source
-
-Needs Rust ([rustup.rs](https://rustup.rs)).
-
-```bash
-just install
 ```
 
 ---
@@ -274,15 +301,21 @@ Full current runtime reference: [`docs/wasm-runtime.md`](docs/wasm-runtime.md). 
 
 ## Secrets management *(in development)*
 
-Workspace-scoped secrets store credentials in the macOS Keychain. Secrets use canonical environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as their primary identity. A workspace value wins over a global fallback value — two workspaces can hold different values for the same key.
+Workspace-scoped secrets store credentials in the macOS Keychain on macOS and
+through Secret Service or the AES-256-GCM encrypted-file fallback on Linux
+(key material stays outside the profile; see
+[Linux storage](https://plexiapp.com/docs/secrets/#linux-storage)). Secrets use canonical
+environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as
+their primary identity. A workspace value wins over a global fallback value —
+two workspaces can hold different values for the same key.
 
 **CLI:**
 
 ```bash
-plexi secret set <KEY>          # prompt for value, store in Keychain
+plexi secret set <KEY>          # prompt for value, store in the platform secret store
 plexi secret get <KEY>          # retrieve (requires workspace context)
 plexi secret list               # list keys scoped to current workspace
-plexi secret delete <KEY>       # remove from Keychain
+plexi secret delete <KEY>       # remove from the platform secret store
 ```
 
 **From an app**, request the `secrets.get` capability in the manifest. The SDK effect API for secret access is documented in [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).
@@ -320,22 +353,23 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 
 ## Tiling layout
 
-Split panes, navigate, and zoom with keyboard shortcuts. Press `Cmd+/` for the full shortcut list at any time.
+Split the selected pane beside or below itself; nested splits fit within the current window. Create additional internal windows in the same context with `Cmd+N`. Press `Cmd+/` for the full shortcut list at any time.
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+D` | Split horizontally |
+| `Cmd+D` | Split horizontally; when zoomed, wrap and split in a subcontext |
 | `Cmd+Shift+D` | Split vertically |
 | `Cmd+H/J/K/L` | Navigate between panes |
 | `Cmd+Ctrl+K` | Send pane to the front |
 | `Cmd+Ctrl+J` | Send pane to the back |
-| `Cmd+Enter` | Zoom focused pane full-screen |
+| `Cmd+Enter` | Wrap selected panes, enter a portal, or toggle pane zoom |
 | `Cmd+W` | Close focused pane |
 | `Cmd+P` | Command palette |
 | `Cmd+T` | New tab |
-| `Cmd+N` | New page (right) |
+| `Cmd+N` | New internal window in the current context |
 | `Cmd+R` | Rename pane |
-| `Cmd+[` / `Cmd+]` | Focus history — back / forward |
+| `Cmd+[` / `Cmd+]` | Previous / next tab |
+| `Cmd+Shift+H/J/K/L` | Extend pane selection |
 
 ---
 

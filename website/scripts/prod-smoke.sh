@@ -21,7 +21,7 @@ check() {
 
 check "home page"        "$BASE/"
 check "download page"    "$BASE/download"
-check "install redirect" "$BASE/install" 200   # -L follows 302 to install.sh
+check "installer bootstrap" "$BASE/install" 200
 check "registry index"   "$BASE/registry/v1/index.json"
 
 # Every artifact in the index must download and match its checksum name.

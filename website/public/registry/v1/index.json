@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "apps": [
+  "schema_version": 2,
+  "plugins": [
     {
       "id": "calc",
       "name": "Calculator",
@@ -13,11 +13,29 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed Python plugin — human-reviewed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "e479f7d5cc1eb3df54bf44b9c50b120eba9e0fcd4f2f3dce9e51b35ae9d77441"
+      "checksum": "54428838fc61d9aec9b5de4cb8ba7bb03edcbeac58c07699fc289ab54f4e5d7f"
+    },
+    {
+      "id": "chess",
+      "name": "Chess",
+      "version": "0.2.0",
+      "description": "One chess game that people and agents play through the same domain operations: chess.* tools, revision-checked moves with receipts, and chess.move_committed events.",
+      "publisher": "plexi",
+      "capabilities": [],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed Python plugin — human-reviewed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "f8b80965c10e4c02ba216051dd23e161c7c9802a478b3834e32132c453e7c876"
     },
     {
       "id": "logs",
@@ -34,31 +52,29 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed Python plugin — human-reviewed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "70559eb823b6be8ffe21a7ef2034d31a2b940a5d29526ec501fc33293e6c2a7e"
+      "checksum": "a21b15ef6e0b8d1262b5fa2ad71f20abe7cb6ed3a0b36b8394c3a734f7534816"
     },
     {
       "id": "permissions",
       "name": "Permissions",
       "version": "0.1.0",
-      "description": "View and manage capability permissions for every app",
+      "description": "Review and change live tool permission decisions",
       "publisher": "plexi",
-      "capabilities": [
-        "permissions.manage"
-      ],
+      "capabilities": [],
       "tags": [
         "core",
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed Python plugin — human-reviewed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "801014be8ef95ce62973624dd5d851a73871f22575a29450e731be7c71526c95"
+      "checksum": "196ddbc8b19deec833cf494aaf40bd8b9ee1c8e37db9edb349f8a384dfdead11"
     },
     {
       "id": "todo",
@@ -72,11 +88,11 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed Python plugin — human-reviewed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "7e3c57e5b67c767096a3f91d5fd98997125242d51ff5d609f7c3d044915b4952"
+      "checksum": "e2c49217ec2a32d49a56d7a26a734f3bb856ad6b2d444178a4e6726e1e2753e5"
     },
     {
       "id": "wikipedia",
@@ -92,11 +108,11 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed Python plugin — human-reviewed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "6ef655d2a40f83169beb6c5c6723deb5c2238fcbf91193c3f0ddc9c528eacd51"
+      "checksum": "20b7d273148aad0444a26231e6c56b81fd19aa23112597914a22753780e79a37"
     }
   ]
 }

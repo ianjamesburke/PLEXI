@@ -1,4 +1,4 @@
-"""V3AppRuntime: standalone runtime for module-level Plexi apps.
+"""PluginRuntime: standalone runtime for module-level Plexi apps.
 
 Replaces the V3ProcessApp(App) inheritance adapter with a composition-based
 runtime that owns its own protocol transport, frame clock, and state. No
@@ -22,8 +22,8 @@ from pathlib import Path
 import plexi_sdk as sdk
 from plexi_sdk import _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
-from plexi_sdk._v3_delta import node_patch as _node_patch
-from plexi_sdk._v3_state import StateSnapshot
+from plexi_sdk._v3_delta import CONTAINER_FIELDS, child_refs, node_patch as _node_patch
+from plexi_sdk._v3_state import _COMPONENT_STATE_NAMESPACE, StateSnapshot
 
 
 _LOCK = threading.Lock()
@@ -82,24 +82,24 @@ def _finish_emit_batch() -> None:
         sys.stdout.flush()
 
 
-def _load_module(app_path: Path):
-    parent = str(app_path.parent)
+def _load_module(plugin_path: Path):
+    parent = str(plugin_path.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    spec = importlib.util.spec_from_file_location("plexi_v3_app", app_path)
+    spec = importlib.util.spec_from_file_location("plexi_v3_app", plugin_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load app module from {app_path!s}")
+        raise RuntimeError(f"could not load app module from {plugin_path!s}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["plexi_v3_app"] = module
     spec.loader.exec_module(module)
     return module
 
 
-class V3AppRuntime:
+class PluginRuntime:
     """Purpose-built runtime for SDK v3 module-level apps (init/update/view)."""
 
-    def __init__(self, app_path: Path, launch_args: list[str] | None = None) -> None:
-        self._module = _load_module(app_path)
+    def __init__(self, plugin_path: Path, launch_args: list[str] | None = None) -> None:
+        self._module = _load_module(plugin_path)
         self._launch_args = launch_args or []
         # Per-scope state, keyed by declared scope name. The first entry of
         # ``_scopes`` is the app's default scope; ``_values`` always aliases
@@ -111,10 +111,14 @@ class V3AppRuntime:
         self._force_full_tree = True
         self._prefer_full_tree = False
         self._tree_size_check_in = 0
+        self._keyed_tree_delta = False
+        self._next_tree_node_id = 0
         self._frame_id = 0
-        self._app_id = ""
+        self._plugin_id = ""
         self._workspace_root = ""
         self._capabilities: list[str] = []
+        self._http_tags: dict[str, str] = {}
+        self._pipe_handles: dict[str, int] = {}
         self._running = True
 
     def run(self) -> None:
@@ -162,6 +166,18 @@ class V3AppRuntime:
                 server_id=ev.get("server_id", ""),
                 error=ev.get("error"),
             ))
+        elif t == "cli_operation_result":
+            self._dispatch(events.CliOperationResult(
+                request_id=ev.get("request_id", ""),
+                operation_id=ev.get("operation_id", ""),
+                ok=bool(ev.get("ok", False)),
+                data=ev.get("data"),
+                error_code=ev.get("error_code"),
+                error=ev.get("error"),
+                exit_code=ev.get("exit_code"),
+                stderr=ev.get("stderr"),
+                data_available=ev.get("data_available"),
+            ))
         elif t == "mcp_message":
             self._handle_mcp_message(ev)
         elif t == "mcp_closed":
@@ -175,24 +191,25 @@ class V3AppRuntime:
                 name=ev.get("name", ""),
                 input_json=ev.get("input_json", ""),
                 caller_id=ev.get("caller_id", ""),
+                authorization=ev.get("authorization"),
             ))
-        elif t == "app_events_subscribed":
+        elif t == "plugin_events_subscribed":
             self._dispatch(events.EventSubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 subscription_id=ev.get("subscription_id"),
                 error=ev.get("error"),
             ))
-        elif t == "app_events_unsubscribed":
+        elif t == "plugin_events_unsubscribed":
             self._dispatch(events.EventUnsubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 removed=bool(ev.get("removed", False)),
                 error=ev.get("error"),
             ))
-        elif t == "app_event":
+        elif t == "plugin_event":
             payload = ev.get("payload")
-            self._dispatch(events.AppEvent(
+            self._dispatch(events.PluginEvent(
                 subscription_id=ev.get("subscription_id", ""),
-                app_id=ev.get("app_id", ""),
+                plugin_id=ev.get("plugin_id", ""),
                 event=ev.get("event", ""),
                 event_id=int(ev.get("event_id", 0)),
                 resource_id=ev.get("resource_id", ""),
@@ -238,6 +255,15 @@ class V3AppRuntime:
             self._dispatch(events.FilePickCancelled(
                 request_id=ev.get("request_id", ""),
             ))
+        elif t == "permission_inventory":
+            entries = ev.get("entries") or []
+            if not isinstance(entries, list):
+                entries = []
+            self._dispatch(events.PermissionInventory(
+                entries=entries,
+                notice=str(ev.get("notice") or ""),
+                status=str(ev.get("status") or ""),
+            ))
         elif t == "host_log_result":
             content = ev.get("content")
             self._dispatch(events.HostLogResult(
@@ -251,6 +277,14 @@ class V3AppRuntime:
             self._handle_ui_action(ev)
         elif t == "focus_changed":
             self._handle_focus_changed(ev)
+        elif t == "focus_gained":
+            self._dispatch(events.FocusGained())
+        elif t == "focus_lost":
+            self._dispatch(events.FocusLost())
+        elif t == "pane_shown":
+            self._dispatch(events.PaneShown())
+        elif t == "pane_hidden":
+            self._dispatch(events.PaneHidden())
         elif t == "capability_granted":
             self._dispatch(events.CapabilityGranted(name=ev.get("name", "")))
         elif t == "capability_denied":
@@ -274,6 +308,24 @@ class V3AppRuntime:
                 self._set_state(in_view=False)
         elif t == "state_changed":
             self._handle_state_changed(ev)
+        elif t == "pipe_message":
+            self._handle_pipe_message(ev)
+
+    def _handle_pipe_message(self, ev: dict) -> None:
+        pipe_id = str(ev.get("pipe_id", ""))
+        payload = ev.get("payload")
+        handle = self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+        payload_json = (
+            json.dumps(payload, separators=_JSON_SEPARATORS)
+            if payload is not None
+            else None
+        )
+        self._dispatch(events.PipeMessage(
+            handle=handle,
+            payload=events.PipePayload(json=payload_json),
+            pipe_id=pipe_id,
+            data=payload,
+        ))
 
     def _handle_state_changed(self, ev: dict) -> None:
         """A scope's backing file changed outside our own persist flow.
@@ -305,10 +357,11 @@ class V3AppRuntime:
         ))
 
     def _handle_init(self, ev: dict) -> None:
-        self._app_id = ev.get("app_id", "")
+        self._plugin_id = ev.get("plugin_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
-        # Host-provided launch args (plexi app open <id> -- <args>, scene
+        self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])
+        # Host-provided launch args (plexi view open <id> -- <args>, scene
         # `open` args). Under the CPython-in-WASM bridge the process argv
         # carries no app args, so the init event is their only route to
         # init(size, args); argv args stay authoritative for bare
@@ -394,6 +447,12 @@ class V3AppRuntime:
         after, and remembered in between (see the interval's docstring for why
         measuring every frame is not affordable).
         """
+        # Stable arena ids are an extension negotiated with the host. Older
+        # hosts still interpret a node id as its positional arena slot, so
+        # changing ids for their full frames would make their next delta patch
+        # the wrong node.
+        if getattr(self, "_keyed_tree_delta", False):
+            encoded = self._stabilize_tree_ids(encoded)
         prev = self._last_tree
         self._last_tree = encoded
         nodes = encoded["nodes"]
@@ -404,7 +463,6 @@ class V3AppRuntime:
             force_full
             or prev is None
             or encoded["root"] != prev["root"]
-            or len(nodes) != len(prev["nodes"])
         ):
             self._tree_size_check_in = 0
             _emit(full)
@@ -414,8 +472,20 @@ class V3AppRuntime:
             self._tree_size_check_in -= 1
             _emit(full)
             return
+        old_by_id = {node["id"]: node for node in prev["nodes"]}
+        new_by_id = {node["id"]: node for node in nodes}
+        added = [node for node in nodes if node["id"] not in old_by_id]
+        removed = [node["id"] for node in prev["nodes"] if node["id"] not in new_by_id]
+        structural = self._keyed_structure_only(prev, encoded)
+        if (added or removed or structural) and not (self._keyed_tree_delta and structural):
+            self._tree_size_check_in = 0
+            _emit(full)
+            return
         changed: list[dict] = []
-        for node, old in zip(nodes, prev["nodes"]):
+        for node in nodes:
+            old = old_by_id.get(node["id"])
+            if old is None:
+                continue
             if node == old:
                 continue
             if node["key"] != old["key"]:
@@ -423,9 +493,10 @@ class V3AppRuntime:
                 _emit(full)
                 return
             changed.append(_node_patch(node, old))
-        delta_line = _dump_line(
-            {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
-        )
+        delta = {"type": "tree_delta", "frame_id": frame_id, "changed": changed}
+        if added or removed:
+            delta.update({"added": added, "removed": removed})
+        delta_line = _dump_line(delta)
         if measure:
             full_line = _dump_line(full)
             self._prefer_full_tree = len(full_line) <= len(delta_line)
@@ -434,6 +505,73 @@ class V3AppRuntime:
             return
         self._tree_size_check_in -= 1
         _emit_line(delta_line)
+
+    def _stabilize_tree_ids(self, encoded: dict) -> dict:
+        """Give keyed paths durable arena ids while leaving unkeyed frames positional."""
+        prev_by_key = {node["key"]: node["id"] for node in (self._last_tree or {}).get("nodes", [])}
+        keys = [node["key"] for node in encoded["nodes"]]
+        next_id = getattr(self, "_next_tree_node_id", 0)
+        if not isinstance(next_id, int):
+            next_id = 0
+        # Never reuse an id that appeared in a prior full tree. In particular,
+        # a duplicate-key frame cannot retain keys, but it must not fall back
+        # to positional ids that collide with ids already handed out.
+        next_id = max([next_id, *(node["id"] + 1 for node in (self._last_tree or {}).get("nodes", []))])
+        mapping: dict[int, int] = {}
+        if len(keys) != len(set(keys)):
+            # Duplicate keys cannot identify a durable node. Give this whole
+            # frame fresh ids so it remains a valid full tree and forces a
+            # clean resync point for the next keyed frame.
+            for node in encoded["nodes"]:
+                mapping[node["id"]] = next_id
+                next_id += 1
+        else:
+            used_ids = set(prev_by_key.values())
+            for node in encoded["nodes"]:
+                old_id = node["id"]
+                stable_id = prev_by_key.get(node["key"])
+                if stable_id is None:
+                    while next_id in used_ids:
+                        next_id += 1
+                    stable_id = next_id
+                    next_id += 1
+                mapping[old_id] = stable_id
+                used_ids.add(stable_id)
+        self._next_tree_node_id = next_id
+        def remap_data(data: dict) -> dict:
+            data = dict(data)
+            spec = CONTAINER_FIELDS.get(data.get("type", "").lower())
+            if spec is not None:
+                field, many = spec
+                data[field] = ([mapping[item] for item in child_refs(data)] if many
+                               else mapping[data[field]])
+            return data
+        return {"root": mapping[encoded["root"]], "nodes": [
+            {**node, "id": mapping[node["id"]], "data": remap_data(node["data"])}
+            for node in encoded["nodes"]
+        ]}
+
+    @staticmethod
+    def _keyed_structure_only(previous: dict, current: dict) -> bool:
+        """Whether all changed child lists contain direct explicit Keyed children."""
+        old_by_id = {node["id"]: node for node in previous["nodes"]}
+        new_by_id = {node["id"]: node for node in current["nodes"]}
+        old_keys = {node["key"] for node in previous["nodes"]}
+        new_keys = {node["key"] for node in current["nodes"]}
+        if not all("/@" in key for key in old_keys ^ new_keys):
+            return False
+        saw_structure = bool(old_keys ^ new_keys)
+        for node_id in old_by_id.keys() & new_by_id.keys():
+            old, new = old_by_id[node_id], new_by_id[node_id]
+            if child_refs(old["data"]) == child_refs(new["data"]):
+                continue
+            saw_structure = True
+            parent_key = new["key"] + "/@"
+            for child_id in [*child_refs(old["data"]), *child_refs(new["data"])]:
+                child = old_by_id.get(child_id) or new_by_id.get(child_id)
+                if child is None or not child["key"].startswith(parent_key):
+                    return False
+        return saw_structure
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))
@@ -517,14 +655,50 @@ class V3AppRuntime:
             self._dispatch(events.UiValueChange(handler_id=tid, value=value))
 
     def _handle_http_response(self, ev: dict) -> None:
+        req_id = ev.get("request_id")
+        tag = ev.get("tag")
+        if tag is None and isinstance(req_id, str):
+            tag = self._http_tags.pop(req_id, req_id)
         error = ev.get("error")
-        if error:
-            body = error.encode("utf-8")
-            status = 0
+        raw_status = ev.get("status")
+        if isinstance(raw_status, int):
+            status = raw_status
         else:
-            body = ev.get("body", "").encode("utf-8")
-            status = 200
-        self._dispatch(events.HttpResponse(status=status, headers=[], body=body))
+            status = 0 if error else 200
+        raw_body = ev.get("body")
+        if isinstance(raw_body, (bytes, bytearray)):
+            body = bytes(raw_body)
+        elif isinstance(raw_body, list):
+            body = bytes(raw_body)
+        elif isinstance(raw_body, str) and raw_body:
+            body = raw_body.encode("utf-8")
+        elif error:
+            body = str(error).encode("utf-8")
+        else:
+            body = b""
+        raw_headers = ev.get("headers")
+        headers: list[tuple[str, str]] = []
+        if isinstance(raw_headers, dict):
+            for k, v in raw_headers.items():
+                if isinstance(v, list):
+                    for item in v:
+                        headers.append((str(k), str(item)))
+                else:
+                    headers.append((str(k), str(v)))
+        elif isinstance(raw_headers, list):
+            for item in raw_headers:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    headers.append((str(item[0]), str(item[1])))
+        truncated = bool(ev.get("truncated", False))
+        self._dispatch(events.HttpResponse(
+            status=status,
+            headers=headers,
+            body=body,
+            error=str(error) if error is not None else None,
+            request_id=str(req_id) if req_id is not None else None,
+            tag=str(tag) if tag is not None else None,
+            truncated=truncated,
+        ))
 
     def _handle_mcp_message(self, ev: dict) -> None:
         """Parse one server line. A server that emits non-JSON is a protocol
@@ -603,12 +777,12 @@ class V3AppRuntime:
         state_changed = False
         for effect in app_effects or []:
             if isinstance(effect, effects.SetState):
-                self._scope_dict(getattr(effect, "scope", None)).update(effect.data)
+                self._merge_state_effect(self._scope_dict(getattr(effect, "scope", None)), effect.data)
                 state_changed = True
             elif isinstance(effect, effects.PersistState):
                 scope_name = self._resolve_scope(getattr(effect, "scope", None))
                 scoped = self._scoped_values[scope_name]
-                scoped.update(effect.data)
+                self._merge_state_effect(scoped, effect.data)
                 state_changed = True
                 _emit({
                     "type": "save_app_state",
@@ -634,16 +808,23 @@ class V3AppRuntime:
                     payload["fps"] = int(effect.fps)
                 _emit(payload)
             elif isinstance(effect, effects.HttpFetch):
+                req_id = effect.request_id or effect.tag or str(uuid.uuid4())
+                if effect.tag:
+                    self._http_tags[req_id] = effect.tag
                 payload = {
                     "type": "http_request",
-                    "request_id": str(uuid.uuid4()),
+                    "request_id": req_id,
                     "method": effect.method,
-                    "url": effect.url,
+                    "url": effect.resolved_url(),
                 }
                 if effect.headers:
                     payload["headers"] = effect.headers
                 if effect.body is not None:
-                    payload["body"] = effect.body.decode("utf-8")
+                    payload["body"] = (
+                        effect.body.decode("utf-8", errors="replace")
+                        if isinstance(effect.body, (bytes, bytearray))
+                        else str(effect.body)
+                    )
                 _emit(payload)
             elif isinstance(effect, effects.McpConnect):
                 _emit({
@@ -667,6 +848,20 @@ class V3AppRuntime:
                 })
             elif isinstance(effect, effects.McpDisconnect):
                 _emit({"type": "mcp_disconnect", "server_id": effect.server_id})
+            elif isinstance(effect, effects.CliOperation):
+                if not isinstance(effect.values, dict):
+                    raise TypeError(
+                        "CliOperation.values must be a dict of typed slot values, got "
+                        f"{type(effect.values).__name__}"
+                    )
+                _emit({
+                    "type": "cli_operation",
+                    "request_id": effect.request_id,
+                    "operation_id": effect.operation_id,
+                    "values": effect.values,
+                })
+            elif isinstance(effect, effects.CliOperationCancel):
+                _emit({"type": "cli_operation_cancel", "request_id": effect.request_id})
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.OpenFilePicker):
@@ -695,6 +890,14 @@ class V3AppRuntime:
                     "type": "file_write",
                     "path": effect.path,
                     "content_b64": base64.b64encode(bytes(content)).decode("ascii"),
+                })
+            elif isinstance(effect, effects.ReadPermissionDecisions):
+                _emit({"type": "read_permission_decisions"})
+            elif isinstance(effect, effects.PermissionDecision):
+                _emit({
+                    "type": "permission_decision",
+                    "id": effect.id,
+                    "action": effect.action,
                 })
             elif isinstance(effect, effects.ReadHostLog):
                 _emit({"type": "read_host_log", "max_bytes": int(effect.max_bytes)})
@@ -727,6 +930,8 @@ class V3AppRuntime:
                     payload["output_json"] = effect.output_json
                 if effect.error is not None:
                     payload["error"] = effect.error
+                if effect.error_code is not None:
+                    payload["error_code"] = effect.error_code
                 _emit(payload)
             elif isinstance(effect, effects.DeclareEventStreams):
                 _emit({
@@ -762,7 +967,7 @@ class V3AppRuntime:
                 _emit({
                     "type": "subscribe_event_streams",
                     "request_id": effect.request_id,
-                    "app_id": effect.app_id,
+                    "plugin_id": effect.plugin_id,
                     "event_names": effect.event_names,
                     "payload_mode": effect.payload_mode,
                     "trigger_mode": effect.trigger_mode,
@@ -774,8 +979,46 @@ class V3AppRuntime:
                     "request_id": effect.request_id,
                     "subscription_id": effect.subscription_id,
                 })
+            elif isinstance(effect, effects.PipeOpenDirected):
+                pipe_id = str(effect.pipe_id)
+                self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+                _emit({
+                    "type": "pipe_open_directed",
+                    "pipe_id": pipe_id,
+                    "target_pane_id": int(effect.target_pane_id),
+                })
+            elif isinstance(effect, effects.PipeSend):
+                _emit({
+                    "type": "pipe_send",
+                    "pipe_id": str(effect.pipe_id),
+                    "payload": effect.payload,
+                })
         if state_changed:
             self._set_state(in_view=False)
+
+    @staticmethod
+    def _merge_state_effect(scoped: dict, updates: dict) -> None:
+        """Apply an effect while preserving independent component updates."""
+        component_updates = updates.get(_COMPONENT_STATE_NAMESPACE)
+        if not isinstance(component_updates, dict):
+            scoped.update(updates)
+            return
+        scoped.update({
+            key: value
+            for key, value in updates.items()
+            if key != _COMPONENT_STATE_NAMESPACE
+        })
+        existing = scoped.get(_COMPONENT_STATE_NAMESPACE)
+        components = dict(existing) if isinstance(existing, dict) else {}
+        for component_key, values in component_updates.items():
+            previous = components.get(component_key)
+            merged = dict(previous) if isinstance(previous, dict) else {}
+            if isinstance(values, dict):
+                merged.update(values)
+            else:
+                merged = values
+            components[component_key] = merged
+        scoped[_COMPONENT_STATE_NAMESPACE] = components
 
 
 def _host_log(level: str, msg: str) -> None:
@@ -786,10 +1029,10 @@ def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         raise SystemExit("usage: python -m plexi_sdk._v3_runtime <app.py> [args...]")
-    app_path = Path(args[0]).resolve()
+    plugin_path = Path(args[0]).resolve()
     launch_args = args[1:]
     _v3_state._host_log = _host_log
-    runtime = V3AppRuntime(app_path, launch_args)
+    runtime = PluginRuntime(plugin_path, launch_args)
     runtime.run()
 
 

@@ -1,0 +1,144 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Newsletter from '../../components/Newsletter.astro';
+---
+
+<Layout title="Plugins — Plexi" description="Build and run local Plexi plugins with the v1 plugin runtime and Python SDK.">
+  <div class="wrap">
+    <header class="plugins-header">
+      <div class="soon-badge">Local plugin runtime</div>
+      <h1>Build plugins for your workspace.</h1>
+      <p class="sub">
+        Create, test, and open plugins locally with <code>plexi plugin</code> and the
+        Python SDK. Plugins run in panes and request only the capabilities they need.
+      </p>
+    </header>
+
+    <div class="empty">
+      <p>Start with a local plugin, not a catalog.</p>
+      <p class="empty-sub">
+        See <a href="/docs/plugins">the plugin runtime guide</a> and the
+        <a href="/docs/sdk"> Python SDK reference</a>. Marketplace and publishing
+        flows are beta-gated and are not part of stable v1.
+      </p>
+    </div>
+  </div>
+
+  <Newsletter />
+</Layout>
+
+<style>
+  .plugins-header {
+    padding: 96px 0 48px;
+    text-align: center;
+  }
+
+  .soon-badge {
+    display: inline-block;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--accent-light);
+    border: 1px solid var(--accent-dim);
+    background: var(--accent-dim);
+    padding: 3px 10px;
+    border-radius: 99px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  .plugins-header h1 {
+    font-size: 52px;
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1;
+    margin-bottom: 16px;
+    color: var(--fg);
+  }
+
+  .sub {
+    color: var(--fg-4);
+    font-size: 15px;
+    line-height: 1.7;
+    max-width: 540px;
+    margin: 0 auto;
+  }
+
+  .sub code,
+  .empty code {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent-light);
+  }
+
+  .empty {
+    text-align: center;
+    padding: 48px 0 96px;
+    color: var(--fg-4);
+  }
+
+  .empty-sub {
+    font-size: 14px;
+    margin-top: 12px;
+  }
+  .empty-sub a { color: var(--accent-light); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    padding: 16px 0 96px;
+  }
+
+  .card {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    text-decoration: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .card:hover {
+    border-color: var(--accent-dim);
+  }
+
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .card-name {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .card-price {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-light);
+  }
+
+  .card-desc {
+    color: var(--fg-4);
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 8px 0 16px;
+  }
+
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-4);
+  }
+
+  .card-trust {
+    color: var(--fg-4);
+  }
+</style>

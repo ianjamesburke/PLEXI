@@ -1,34 +1,87 @@
-"""Key normalization: egui Debug names to SDK canonical names."""
+"""Key normalization: egui Debug / word names to SDK canonical key strings."""
 from __future__ import annotations
 
 _KEY_ALIASES: dict[str, str] = {
-    "ArrowLeft": "left",
-    "ArrowRight": "right",
-    "ArrowUp": "up",
-    "ArrowDown": "down",
-    "Enter": "return",
-    "Escape": "escape",
-    "Backspace": "backspace",
-    "Tab": "tab",
-    "Space": "space",
+    "arrowleft": "left",
+    "left": "left",
+    "arrowright": "right",
+    "right": "right",
+    "arrowup": "up",
+    "up": "up",
+    "arrowdown": "down",
+    "down": "down",
+    "enter": "enter",
+    "return": "enter",
+    "escape": "escape",
+    "esc": "escape",
+    "backspace": "backspace",
+    "delete": "delete",
+    "insert": "insert",
+    "home": "home",
+    "end": "end",
+    "pageup": "pageup",
+    "page_up": "pageup",
+    "pagedown": "pagedown",
+    "page_down": "pagedown",
+    "tab": "tab",
+    "space": "space",
     " ": "space",
-    "-": "minus",
-    "=": "equals",
-    "+": "plus",
-    "[": "open_bracket",
-    "]": "close_bracket",
-    "\\": "backslash",
-    ";": "semicolon",
-    "'": "quote",
-    "`": "backtick",
-    ",": "comma",
-    ".": "period",
-    # "/" is deliberately absent (stint 0462): the host already sends "/" as
-    # the literal character (python_key_name() in wasm_python.rs), matching
-    # what apps like logs.py check for (`key == "/"`). Aliasing it to "slash"
-    # here would re-break the exact bug that stint fixed.
+    "plus": "+",
+    "+": "+",
+    "minus": "-",
+    "-": "-",
+    "equals": "=",
+    "equal": "=",
+    "=": "=",
+    "slash": "/",
+    "/": "/",
+    "asterisk": "*",
+    "multiply": "*",
+    "*": "*",
+    "backslash": "\\",
+    "\\": "\\",
+    "semicolon": ";",
+    ";": ";",
+    "colon": ":",
+    ":": ":",
+    "quote": "'",
+    "'": "'",
+    "backtick": "`",
+    "`": "`",
+    "comma": ",",
+    ",": ",",
+    "period": ".",
+    ".": ".",
+    "openbracket": "[",
+    "open_bracket": "[",
+    "[": "[",
+    "closebracket": "]",
+    "close_bracket": "]",
+    "]": "]",
+    "opencurlybracket": "{",
+    "open_curly_bracket": "{",
+    "{": "{",
+    "closecurlybracket": "}",
+    "close_curly_bracket": "}",
+    "}": "}",
+    "pipe": "|",
+    "|": "|",
+    "questionmark": "?",
+    "?": "?",
+    "exclamationmark": "!",
+    "!": "!",
 }
 
 
 def normalize_key(key: str) -> str:
-    return _KEY_ALIASES.get(key, key)
+    if not key:
+        return ""
+    if key == " ":
+        return "space"
+    lowered = key.lower()
+    if lowered in _KEY_ALIASES:
+        return _KEY_ALIASES[lowered]
+    if lowered.startswith("num") and len(lowered) == 4 and lowered[3].isdigit():
+        return lowered[3]
+    return lowered
+

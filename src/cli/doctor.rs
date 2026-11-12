@@ -3,7 +3,8 @@ use serde::Serialize;
 #[derive(Serialize)]
 struct DoctorReport {
     healthy: bool,
-    apps: Vec<AppReport>,
+    installation: serde_json::Value,
+    plugins: Vec<PluginReport>,
     llm_servers: Vec<LlmServerReport>,
     openrouter: OpenRouterReport,
 }
@@ -20,7 +21,7 @@ struct OpenRouterReport {
 }
 
 #[derive(Serialize)]
-struct AppReport {
+struct PluginReport {
     id: String,
     missing: Vec<String>,
 }
@@ -35,13 +36,11 @@ struct LlmServerReport {
 /// Check whether an `OPENROUTER_API_KEY` global secret is stored and, if so,
 /// validate it against the OpenRouter models endpoint.
 fn check_openrouter() -> OpenRouterReport {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .find_map(|name| store.get(&keychain_user_name(name)));
+        super::workspace::reconcile_secrets_before_read("cli:doctor");
+        let key = system_store().get(&keychain_user_name("OPENROUTER_API_KEY"));
         match key {
             None => {
                 log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
@@ -74,7 +73,7 @@ fn check_openrouter() -> OpenRouterReport {
             }
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         log::info!(
             "cli:doctor: openrouter check skipped -- keychain not available on this platform"
@@ -138,7 +137,10 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let resp = match agent.get(url).call() {
         Ok(r) => r,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- not reachable: {e}");
+            log::debug!(
+                "cli:doctor: llm probe not reachable error_chars={}",
+                e.to_string().chars().count()
+            );
             return None;
         }
     };
@@ -146,7 +148,7 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let text = match resp.into_string() {
         Ok(t) => t,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- read error: {e}");
+            log::debug!("cli:doctor: llm probe read error: {e}");
             return None;
         }
     };
@@ -154,7 +156,7 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let body: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- bad JSON: {e}");
+            log::debug!("cli:doctor: llm probe bad JSON: {e}");
             return None;
         }
     };
@@ -205,13 +207,17 @@ fn discover_llm_servers() -> Vec<LlmServerReport> {
 pub fn doctor_cli(json: bool) -> i32 {
     log::info!("cli:doctor: starting capability audit (json={json})");
 
+    let (installation, installation_healthy) = installation_report();
+    if !json {
+        println!("Installation: {}", installation);
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app::registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let config = crate::config::PlexiConfig::load_with_workspace(
         crate::config::active_workspace_root().as_deref(),
     );
 
-    // Probe for local LLM servers and OpenRouter before the app audit.
+    // Probe for local LLM servers and OpenRouter before the plugin audit.
     let llm_servers = discover_llm_servers();
     let openrouter = check_openrouter();
 
@@ -219,8 +225,9 @@ pub fn doctor_cli(json: bool) -> i32 {
     if installed.is_empty() {
         if json {
             let report = DoctorReport {
-                healthy: true,
-                apps: Vec::new(),
+                healthy: installation_healthy,
+                installation,
+                plugins: Vec::new(),
                 llm_servers,
                 openrouter,
             };
@@ -232,33 +239,35 @@ pub fn doctor_cli(json: bool) -> i32 {
                 }
             }
         } else {
-            println!("No apps installed.");
+            println!("No plugins installed.");
+            print_shell_section(&installation["shell"]);
             print_llm_section(&llm_servers);
             print_openrouter_section(&openrouter);
         }
-        return 0;
+        return if installation_healthy { 0 } else { 1 };
     }
 
-    let mut sick_apps: Vec<AppReport> = Vec::new();
+    let mut sick_apps: Vec<PluginReport> = Vec::new();
     let total = installed.len();
 
     for app in &installed {
         let missing = registry.check_config_capabilities(&app.manifest.id, &config);
         if !missing.is_empty() {
-            sick_apps.push(AppReport {
+            sick_apps.push(PluginReport {
                 id: app.manifest.id.clone(),
                 missing,
             });
         }
     }
 
-    let healthy = sick_apps.is_empty();
+    let healthy = sick_apps.is_empty() && installation_healthy;
     let sick_count = sick_apps.len();
 
     if json {
         let report = DoctorReport {
             healthy,
-            apps: sick_apps,
+            installation,
+            plugins: sick_apps,
             llm_servers,
             openrouter,
         };
@@ -276,15 +285,15 @@ pub fn doctor_cli(json: bool) -> i32 {
         let dim = if no_color { "" } else { "\x1b[2m" };
         let reset = if no_color { "" } else { "\x1b[0m" };
 
-        println!("Checking {total} installed app(s)...\n");
+        println!("Checking {total} installed plugin(s)...\n");
 
         if healthy {
-            println!("  {green}\u{2713}{reset} {total} app(s) -- all capabilities satisfied");
+            println!("  {green}\u{2713}{reset} {total} plugin(s) -- all capabilities satisfied");
         } else {
             let ok_count = total - sick_count;
             if ok_count > 0 {
                 println!(
-                    "  {green}\u{2713}{reset} {ok_count} app(s) -- all capabilities satisfied"
+                    "  {green}\u{2713}{reset} {ok_count} plugin(s) -- all capabilities satisfied"
                 );
             }
             for app in &sick_apps {
@@ -296,15 +305,16 @@ pub fn doctor_cli(json: bool) -> i32 {
                 println!("  {:14} {dim}--> run: plexi config edit{reset}", "");
             }
             println!(
-                "\n{sick_count} app(s) have unsatisfied capabilities. Run 'plexi config edit' to fix."
+                "\n{sick_count} plugin(s) have unsatisfied capabilities. Run 'plexi config edit' to fix."
             );
         }
 
+        print_shell_section(&installation["shell"]);
         print_llm_section(&llm_servers);
         print_openrouter_section(&openrouter);
     }
 
-    log::info!("cli:doctor: audit complete -- {total} app(s), {sick_count} unhealthy");
+    log::info!("cli:doctor: audit complete -- {total} plugin(s), {sick_count} unhealthy");
 
     if healthy {
         0
@@ -339,5 +349,65 @@ fn print_llm_section(servers: &[LlmServerReport]) {
             };
             println!("  {} ({}) -- {}", s.name, s.url, model_summary);
         }
+    }
+}
+
+fn print_shell_section(shell: &serde_json::Value) {
+    let cli_name = shell["cli_name"].as_str().unwrap_or("plexi");
+    let shim_path = shell["shim_path"].as_str().unwrap_or("~/.local/bin/plexi");
+    let shim_installed = shell["shim_installed"].as_bool().unwrap_or(false);
+    let in_path = shell["in_path"].as_bool().unwrap_or(false);
+    let completions = shell["completions_installed"].as_bool().unwrap_or(false);
+    println!("\nCLI & shell:");
+    println!(
+        "  shim ({cli_name}): {} ({shim_path})",
+        if shim_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
+    println!(
+        "  external PATH: {}",
+        if in_path { "configured" } else { "not in PATH" }
+    );
+    println!(
+        "  completions: {}",
+        if completions { "installed" } else { "missing" }
+    );
+    if !shim_installed || !in_path || !completions {
+        println!("  --> run: plexi cli setup");
+    }
+}
+
+fn installation_report() -> (serde_json::Value, bool) {
+    let cli = crate::distribution::build_info();
+    let running = super::host::running_build_info();
+    let shell = crate::cli::setup::external_shell_status();
+    match crate::distribution::installed() {
+        Ok(Some(receipt)) => {
+            let package_error = plexi_distribution::package::Package::load(&receipt.active.path)
+                .and_then(|p| p.validate())
+                .err()
+                .map(|e| e.to_string());
+            let cli_matches = cli["build_id"].as_str() == Some(&receipt.active.build_id);
+            let running_matches = running
+                .as_ref()
+                .and_then(|v| v["build_id"].as_str())
+                .map(|id| id == receipt.active.build_id);
+            let healthy = package_error.is_none() && cli_matches && running_matches != Some(false);
+            (
+                serde_json::json!({ "cli": cli, "installed": receipt, "running": running, "shell": shell, "cli_matches_installed": cli_matches, "running_matches_installed": running_matches, "package_error": package_error }),
+                healthy,
+            )
+        }
+        Ok(None) => (
+            serde_json::json!({ "cli": cli, "running": running, "shell": shell, "managed": false }),
+            true,
+        ),
+        Err(error) => (
+            serde_json::json!({ "cli": cli, "running": running, "shell": shell, "error": error }),
+            false,
+        ),
     }
 }

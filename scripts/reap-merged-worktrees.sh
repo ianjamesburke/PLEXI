@@ -51,7 +51,7 @@ branch_states() {
 removed=0
 kept=0
 
-for wt_path in "$WORKTREES_DIR"/feature/* "$WORKTREES_DIR"/fix/*; do
+for wt_path in "$WORKTREES_DIR"/feature/* "$WORKTREES_DIR"/fix/* "$WORKTREES_DIR"/*-impl-* "$WORKTREES_DIR"/stint-*; do
   [[ -d "$wt_path" ]] || continue
 
   name="${wt_path#"$WORKTREES_DIR"/}"

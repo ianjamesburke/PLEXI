@@ -6,7 +6,7 @@ suite = true
 open = { kind = "process", path = "apps/balls", as = "balls" }
 
 [[steps]]
-wait_app_frame = { target = "balls", timeout_s = 15.0 }
+wait_view_frame = { target = "balls", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 5

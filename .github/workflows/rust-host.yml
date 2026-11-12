@@ -1,24 +1,10 @@
 name: Rust host
 
+# Hosted host verification is post-landing via nightly.yml. Local full-suite
+# and independent validation gate Alpha landing; PRs do not start this workflow.
+
 on:
-  push:
-    branches: [alpha]
-    paths-ignore:
-      - '**/*.md'
-      - '.agents/**'
-      - '.claude/**'
-      - 'docs/**'
-      - 'website/**'
-      - '.stint/**'
-  pull_request:
-    branches: [alpha]
-    paths-ignore:
-      - '**/*.md'
-      - '.agents/**'
-      - '.claude/**'
-      - 'docs/**'
-      - 'website/**'
-      - '.stint/**'
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +17,7 @@ jobs:
   test:
     name: test
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -46,6 +33,8 @@ jobs:
         # action restores from the Actions cache (fetching it in its own step on
         # a miss, so a network failure is attributed to the fetch, not the test).
         run: |
+          # Closed-stdout regression drives the real CLI, never a libtest child.
+          cargo build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             cargo test --bin plexi
@@ -53,6 +42,7 @@ jobs:
   clippy:
     name: clippy
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -63,3 +53,37 @@ jobs:
 
       - name: Lint host
         run: cargo clippy --bin plexi -- -D warnings
+
+  # Advisory observer, deliberately (PR #2814). `continue-on-error` keeps the
+  # WORKFLOW RUN green when this job fails, and `alpha` has no required status
+  # checks, so nothing here gates a merge to alpha. It still runs because it is a
+  # second observer of the same Rust code: macOS cannot see a platform-tuned
+  # assumption, and this job is what caught stint 1008's two Linux-only test
+  # failures. The job's own check still reports `failure` — treat that as a
+  # signal to investigate, not a gate to re-litigate. Linux bring-up is paused
+  # and lives on `feature/linux-alpha-bringup`, never on alpha. See root
+  # `AGENTS.md`, Testing.
+  linux:
+    name: linux
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      PLEXI_CPYTHON_BUNDLE_DIR: /home/runner/.plexi-ci/wasm-bundles
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set up Plexi CI environment
+        uses: ./.github/actions/plexi-ci-env
+        with:
+          cache-key: linux-host
+          cpython-bundle: 'true'
+      - name: Build and test host
+        run: |
+          cargo build --release --bin plexi
+          env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
+            -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
+            cargo test --bin plexi

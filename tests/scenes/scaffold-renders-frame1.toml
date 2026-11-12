@@ -10,7 +10,7 @@ suite = false
 open = { kind = "process", path = "apps/dev/counter", as = "counter" }
 
 [[steps]]
-wait_app_frame = { target = "counter", timeout_s = 15.0 }
+wait_view_frame = { target = "counter", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 8

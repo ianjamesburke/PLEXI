@@ -2,7 +2,7 @@
 //!
 //! When a project directory contains `.plexi/`, that directory is an *anchor*:
 //! opening Plexi from it attaches to a root context with pre-configured
-//! metadata, secrets, and app layout. The anchor is purely local — no cloud
+//! metadata, secrets, and plugin layout. The anchor is purely local — no cloud
 //! state.
 //!
 //! # Profile dir guard
@@ -44,8 +44,8 @@ impl Anchor {
         }
 
         // Guard: never treat home dir as an anchor. ~/.plexi/ is the stable
-        // profile dir, and ~/  would cause the AppRegistry to load stable
-        // apps instead of the active channel's apps (issue #1064).
+        // profile dir, and ~/  would cause the PluginRegistry to load stable
+        // plugins instead of the active channel's plugins (issue #1064).
         if is_profile_dir(path) {
             log::info!("anchor::detect: skipping profile dir at {}", path.display());
             return None;

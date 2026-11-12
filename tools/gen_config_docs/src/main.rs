@@ -266,9 +266,9 @@ Changes take effect on the next launch unless a command says otherwise.
 
 ## Channel discipline
 
-Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
+Existing configuration is preserved on every channel when Plexi is installed or upgraded. A fresh channel starts with the built-in template.
 
-Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
+Beta is the staging channel for testing migrations and settings before promoting a release.
 
 PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
 
@@ -282,6 +282,8 @@ plexi config reset
 
 `config edit` opens the active channel config. `config check` validates known keys and TOML syntax. `config reset` backs up the current file to `config.toml.bak`, then writes the built-in default template.
 
+A key with a wrong value type, a retired key, or an unknown key never discards the rest of the file: Plexi logs an error naming the file and key to `plexi.log`, skips that key, and loads every other setting. `config check`, and the Config Error notification shown when a saved config reloads, list the same keys. Only a TOML syntax error ignores the whole file.
+
 ## Reference
 
 ### Top-level (`config.toml`)
@@ -293,12 +295,16 @@ plexi config reset
     const SKIP_TOPLEVEL: &[&str] = &[
         "theme",
         "effects",
+        "terminal",
         "log",
         "notifications",
         "ai",
+        "models",
         "keybindings",
+        "keys",
         "agents",
         "cli",
+        "permissions",
         "marketplace",
         "file_handlers",
     ];
@@ -317,7 +323,7 @@ plexi config reset
 
 Pick a preset and optionally override individual colors. Individual color fields override preset values when both are set.
 
-Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-day`.
+Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-dusk`, `plexi-dawn`, `plexi-day`.
 
 "#
     );
@@ -328,6 +334,18 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
     // ── Effects ──────────────────────────────────────────────────────────────
     println!("### Effects (`[effects]`)\n");
     if let Some(s) = structs.get("EffectsConfig") {
+        emit_table(&s.fields);
+    }
+
+    // ── Terminal ─────────────────────────────────────────────────────────────
+    print!(
+        r#"### Terminal (`[terminal]`)
+
+`minimum_contrast` keeps text readable on every theme. Each text cell's foreground is checked against its background and, when the WCAG contrast ratio is below the minimum, moved toward black or white by the smallest amount that reaches it. Hidden text stays hidden, and emoji and images are untouched. Applies live on config reload.
+
+"#
+    );
+    if let Some(s) = structs.get("TerminalConfig") {
         emit_table(&s.fields);
     }
 
@@ -376,18 +394,9 @@ plexi secret set openrouter-api-key --global
         emit_table_refs(&scalar);
     }
 
-    println!("#### OpenRouter (`[ai.openrouter]`)\n");
-    if let Some(s) = structs.get("OpenRouterBackendConfig") {
-        emit_table(&s.fields);
-    }
-
-    println!("#### Ollama (`[ai.ollama]`)\n");
-    if let Some(s) = structs.get("OllamaBackendConfig") {
-        emit_table(&s.fields);
-    }
-
-    println!("#### Local OpenAI-compatible (`[ai.local]`)\n");
-    if let Some(s) = structs.get("LocalBackendConfig") {
+    println!("### Model modes (`[models.fast]`, `[models.slow]`)\n");
+    println!("pi-plexi and the host AI broker read resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently. OpenRouter keys use the existing `OPENROUTER_API_KEY` secret lookup.\n");
+    if let Some(s) = structs.get("ModelModeConfig") {
         emit_table(&s.fields);
     }
 
@@ -421,7 +430,9 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
         println!("| Action | Description |");
         println!("|---|---|");
         for f in &s.fields {
-            let desc = if f.doc.is_empty() {
+            let desc = if f.name == "open_assistant" {
+                "open assistant (beta-gated; not part of stable v1)".to_string()
+            } else if f.doc.is_empty() {
                 human_action_name(&f.name)
             } else {
                 f.doc.clone()
@@ -431,9 +442,24 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
         println!();
     }
 
+    // ── User command shortcuts ───────────────────────────────────────────────
+    print!(
+        r#"### User command shortcuts (`[keys]`)
+
+Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<repo>/.plexi-<channel>/commands.toml` (`~/.plexi/commands.toml` and `<repo>/.plexi/commands.toml` on stable) using `"<chord>" = "run:<name>"` (for example `"cmd+shift+p" = "run:play"`). Keybindings resolve the workspace from the adopted/host workspace root, falling back to the active context root (`run_user_command_by_name`), with precedence workspace `commands.toml` > global `commands.toml` > global `scripts/`, and re-read `commands.toml` on every invocation without a restart. Reserved Plexi shortcuts are rejected by `plexi config check`.
+
+"#
+    );
+
     // ── CLI ──────────────────────────────────────────────────────────────────
     println!("### CLI (`[cli]`)\n");
     if let Some(s) = structs.get("CliConfig") {
+        emit_table(&s.fields);
+    }
+
+    // ── Permissions ──────────────────────────────────────────────────────────
+    println!("### Permissions (`[permissions]`)\n");
+    if let Some(s) = structs.get("PermissionsConfig") {
         emit_table(&s.fields);
     }
 
@@ -441,15 +467,15 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
     print!(
         r#"### File handlers (`[file_handlers]`)
 
-Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
+Choose which view opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
 
 | Value | Behavior |
 |---|---|
-| `app:<id>` | Open in a Plexi app by its registry id (e.g. `app:text-editor`) |
+| `app:<id>` | Stored config spelling: open a plugin default view by its registry id (e.g. `app:text-editor`) |
 | `os` | Hand to the OS default opener (`open` / `xdg-open`) |
 | `cmd:<command>` | Reserved; falls back to `os` until wired |
 
-A handler here overrides an app's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
+A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
 
 "#
     );
@@ -458,7 +484,7 @@ A handler here overrides an app's own `file_types` association. Unmapped extensi
     print!(
         r#"### Marketplace (`[marketplace]`)
 
-All fields are optional. Omitting the section uses the official `plexiapp.com` registry and CDN. Override only to point at a private registry or to test publishing flows.
+Marketplace configuration is beta-gated and is not part of stable v1. Use it only in a beta or explicit worktree channel while testing publishing flows. All fields are optional.
 
 "#
     );

@@ -1,8 +1,8 @@
 //! HostServices — host side-effect plumbing.
 //!
 //! `EventSink` is the only production field right now; fs/secrets/net/spawn
-//! trait seams live in the app runtimes (`host::wasm_python`, `host::wasm_app`)
-//! and `app_registry` until HostModel owns their routing.
+//! trait seams live in the plugin runtimes (`host::wasm_python`, `host::wasm_view`)
+//! and `plugin_registry` until HostModel owns their routing.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;
@@ -14,30 +14,20 @@ pub trait EventSink: Send {
 }
 
 /// Append-only JSONL sink. One line per `HostEffect` written to the configured
-/// path. Production wires this to `~/.plexi-v3/events.jsonl` so every command
-/// path leaves a durable audit trail and the Runs palette + future agent
-/// consumers have a single source of truth.
+/// path, each carrying an RFC 3339 `ts`. Production wires this to
+/// `<profile>/effects.jsonl` so every command path leaves a durable audit trail
+/// and the Runs palette + future agent consumers have a single source of truth.
+/// The file rolls over live at 10 MB or a day change. Pane and focus effects are
+/// also mirrored into the session flight trace.
 pub struct FileEventSink {
     path: std::path::PathBuf,
-    writer: Option<std::io::BufWriter<std::fs::File>>,
+    writer: Option<crate::platform::rolling::RollingFile>,
 }
 
 impl FileEventSink {
     pub fn new(path: std::path::PathBuf) -> Self {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!(
-                    "FileEventSink: create_dir_all({}) failed: {e}",
-                    parent.display()
-                );
-            }
-        }
-        let writer = match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            Ok(f) => Some(std::io::BufWriter::new(f)),
+        let writer = match crate::platform::rolling::RollingFile::open(&path) {
+            Ok(f) => Some(f),
             Err(e) => {
                 log::error!("FileEventSink: open({}) failed: {e}", path.display());
                 None
@@ -46,11 +36,13 @@ impl FileEventSink {
         let mut sink = Self { path, writer };
         // Startup heartbeat so the post-install smoke test can assert the
         // sink opened the file for write (non-empty file means the wiring
-        // is live, even before the first AppRequest fires).
+        // is live, even before the first HostRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
             let now = crate::platform::clock::now_secs();
-            let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now}}}\n");
+            let ts = crate::platform::clock::now_rfc3339();
+            let line =
+                format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now},\"ts\":\"{ts}\"}}\n");
             if let Err(e) = writer
                 .write_all(line.as_bytes())
                 .and_then(|()| writer.flush())
@@ -68,10 +60,27 @@ impl FileEventSink {
 impl EventSink for FileEventSink {
     fn emit(&mut self, effect: &HostEffect) {
         use std::io::Write;
+        let ts = crate::platform::clock::now_rfc3339();
+        let mut value = match serde_json::to_value(effect) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("FileEventSink serialize failed: {e}");
+                return;
+            }
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.insert("ts".to_string(), serde_json::Value::String(ts));
+        }
+        // EventEmitted carries a HostEvent that `event_log::emit_scoped`
+        // already mirrors; the structural effects are mirrored here.
+        if !matches!(effect, HostEffect::EventEmitted(_)) {
+            let pane_id = value.get("pane_id").and_then(|v| v.as_u64());
+            crate::host::flight_recorder::record("host_effect", None, pane_id, None, value.clone());
+        }
         let Some(writer) = self.writer.as_mut() else {
             return;
         };
-        match serde_json::to_string(effect) {
+        match serde_json::to_string(&value) {
             Ok(mut line) => {
                 line.push('\n');
                 if let Err(e) = writer.write_all(line.as_bytes()) {
@@ -169,7 +178,7 @@ pub trait NetService: Send + Sync {
 }
 
 /// Production impl — blocking HTTP via `ureq`. Pure-Rust, no tokio.
-/// 10s connect timeout, 30s total timeout so apps cannot wedge the host
+/// 10s connect timeout, 30s total timeout so plugins cannot wedge the host
 /// forever on a hung peer.
 pub struct UreqNetService {
     agent: ureq::Agent,
@@ -254,7 +263,10 @@ impl NetService for UreqNetService {
             // bodies or GitHub's JSON error payloads).
             Err(ureq::Error::Status(_, resp)) => Self::finish(resp, max_body_bytes),
             Err(ureq::Error::Transport(t)) => {
-                log::warn!("UreqNetService: transport error for {method} {url}: {t}");
+                log::warn!(
+                    "UreqNetService: transport error method={method} error_chars={}",
+                    t.to_string().chars().count()
+                );
                 HttpResponse {
                     status: 0,
                     body: String::new(),
@@ -312,14 +324,13 @@ impl PickerService for RfdPickerService {
             dialog = dialog.add_filter("files", &extensions);
         }
         let paths: Vec<std::path::PathBuf> = match request.mode {
-            FilePickerMode::Open if request.multiple => {
-                block_on_dialog(dialog.pick_files()).map_or_else(Vec::new, |handles| {
+            FilePickerMode::Open if request.multiple => block_on_dialog(dialog.pick_files())
+                .map_or_else(Vec::new, |handles| {
                     handles
                         .iter()
                         .map(|handle| handle.path().to_path_buf())
                         .collect()
-                })
-            }
+                }),
             FilePickerMode::Open => block_on_dialog(dialog.pick_file())
                 .map_or_else(Vec::new, |handle| vec![handle.path().to_path_buf()]),
             FilePickerMode::Folder => block_on_dialog(dialog.pick_folder())
@@ -440,7 +451,7 @@ impl PickerService for ScriptedPickerService {
     }
 }
 
-/// The picker backend a newly launched app pane should use. Priority:
+/// The picker backend a newly launched view pane should use. Priority:
 /// in-process override (scenes, tests) → `PLEXI_PICKER_SCRIPT` env (live
 /// hosts driven by tester agents) → native `rfd` dialog.
 pub fn default_picker_service() -> std::sync::Arc<dyn PickerService> {
@@ -487,8 +498,7 @@ fn picker_override() -> Option<std::sync::Arc<dyn PickerService>> {
 }
 
 #[cfg(test)]
-fn picker_override_slot()
--> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
+fn picker_override_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
     static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>>> =
         std::sync::OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(None))
@@ -598,6 +608,9 @@ mod tests {
         let error = ScriptedPickerService::from_script_file(&script)
             .err()
             .expect("malformed script entry must fail");
-        assert!(error.contains("picks.json"), "error names the file: {error}");
+        assert!(
+            error.contains("picks.json"),
+            "error names the file: {error}"
+        );
     }
 }

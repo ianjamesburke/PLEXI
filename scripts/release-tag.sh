@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cut and publish a source-build release tag for a channel. Never moves code
+# Cut and publish a binary release tag for a channel. Never moves code
 # between branches — that's `just promote`. Run this only after
 # `just promote beta|main` has landed on the target branch and you're ready
 # to make the result live for that channel's auto-updaters.
@@ -42,6 +42,9 @@ remote_head=$(git -C "$tree" rev-parse "origin/$branch")
 [[ "$local_head" == "$remote_head" ]] \
     || die "$branch worktree ($local_head) does not match origin/$branch ($remote_head) — run 'just promote $branch' first, or pull"
 
+python3 "$(dirname "${BASH_SOURCE[0]}")/release-evidence.py" "$local_head" "$branch" \
+    || die "missing successful verify-only release evidence for $local_head; run: gh workflow run release.yml --ref $branch -f tag=$local_head -f verify_only=true"
+
 version=$(grep '^version' "$tree/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
 if [[ "$channel" == "beta" ]]; then
@@ -59,25 +62,24 @@ if [[ "$channel" == "beta" ]]; then
     git -C "$tree" tag "$tag" "$local_head"
     git -C "$tree" push origin "$tag"
     echo ""
-    echo "Published $tag for source-build updates."
+    echo "Pushed $tag; package installation gates must pass before publication."
 else
     tag="v$version"
     if git -C "$tree" tag -l "$tag" | grep -q "$tag"; then
         tagged_commit=$(git -C "$tree" rev-list -n 1 "$tag")
         if [[ "$tagged_commit" != "$local_head" ]]; then
-            echo "info: tag $tag points at an older commit — re-tagging at main HEAD..."
-            git -C "$tree" tag -f "$tag" "$local_head"
+            die "tag $tag already identifies another commit; cut a new version instead of moving it"
         fi
     else
         echo "Creating tag $tag at main HEAD..."
         git -C "$tree" tag "$tag" "$local_head"
     fi
-    echo "Publishing tag $tag for source-build updates..."
-    git -C "$tree" push origin "$tag" --force
+    echo "Publishing tag $tag for binary-asset updates..."
+    git -C "$tree" push origin "$tag"
     echo ""
     echo "REMINDER: republish the agent-skill mirror from this release tree —"
     echo "          copy $tree/skills/plexi-cli/SKILL.md to ianjamesburke/plexi-skills,"
     echo "          push main, tag $tag. Steps: skills/AGENTS.md."
 fi
 
-echo "$tag is live."
+echo "$tag is queued for validation. It becomes available only after the release workflow publishes its complete assets."

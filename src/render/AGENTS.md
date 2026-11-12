@@ -4,11 +4,12 @@
 
 ## Scope
 
-Host-side rendering: the CLI renderer app only. The legacy app-render pipeline and draw-command dispatch (`app_render.rs`, `draw_commands.rs`, `components.rs`) were deleted by stint 0389 — WIT is now the single UI node language, rendered by `src/host/wasm_render.rs`.
+Host-side rendering includes the CLI and MCP visualizer apps. The legacy app-render pipeline and draw-command dispatch (`app_render.rs`, `draw_commands.rs`, `components.rs`) were deleted by stint 0389 — WIT is now the single UI node language, rendered by `src/host/wasm_render.rs`.
 
 ## Reference
 
 - [CLI_APP_CONTRACT.md](CLI_APP_CONTRACT.md) — CLI-backed app runtime contract: launch sequence, ready/run/reload lifecycle, descriptor caching, permissions, logging, known gaps.
+- [MCP_APP_CONTRACT.md](MCP_APP_CONTRACT.md) — MCP visualizer launch, consent, protocol and lifecycle.
 
 ## Traps
 

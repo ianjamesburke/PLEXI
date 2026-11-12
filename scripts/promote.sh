@@ -137,7 +137,7 @@ if [[ "$to" == "beta" ]]; then
     fi
 
     echo ""
-    echo "Code promoted to beta. Run 'just release beta' to publish its source-build tag."
+    echo "Code promoted to beta. Run 'just release beta' to publish its binary release."
     exit 0
 fi
 
@@ -178,4 +178,4 @@ if [[ "$do_install" == "install" ]]; then
 fi
 
 echo ""
-echo "v$version is on main. Run 'just release main' to publish its source-build tag."
+echo "v$version is on main. Run 'just release main' to publish its binary release."

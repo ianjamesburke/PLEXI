@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::protocol::AppRequest;
+use crate::protocol::HostRequest;
 
 /// How long a `pane new --agent` spawn waits for the agent's first idle
 /// self-report when the caller does not say. Generous on purpose: a cold agent
@@ -21,7 +21,7 @@ pub(crate) struct AgentBootSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaneLaunchTarget {
     Terminal,
-    AppId(String),
+    PluginId(String),
     Path(PathBuf),
 }
 
@@ -40,6 +40,10 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) context_name: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) agent: Option<AgentBootSpec>,
+    pub(crate) worktree: Option<String>,
+    pub(crate) result_schema: Option<serde_json::Value>,
+    /// Host-stamped. See `HostRequest::SpawnPane::peer_ancestry`.
+    pub(crate) peer_ancestry: Option<Vec<u32>>,
 }
 
 impl PaneLaunchSpec {
@@ -62,11 +66,14 @@ impl PaneLaunchSpec {
             context_name: None,
             name: None,
             agent: None,
+            worktree: None,
+            result_schema: None,
+            peer_ancestry: None,
         })
     }
 
-    pub(crate) fn from_spawn_pane(request: &AppRequest) -> Result<Self, String> {
-        let AppRequest::SpawnPane {
+    pub(crate) fn from_spawn_pane(request: &HostRequest) -> Result<Self, String> {
+        let HostRequest::SpawnPane {
             type_id,
             layout,
             args,
@@ -82,6 +89,9 @@ impl PaneLaunchSpec {
             name,
             agent_cmd,
             boot_timeout_secs,
+            worktree,
+            result_schema,
+            peer_ancestry,
             ..
         } = request
         else {
@@ -91,6 +101,34 @@ impl PaneLaunchSpec {
         if context_name.as_deref().is_some_and(|c| !c.is_empty()) && type_id != "terminal" {
             return Err("context_name is only supported for terminal spawns".to_string());
         }
+
+        let worktree = match worktree.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(branch) => {
+                if type_id != "terminal" {
+                    return Err("worktree is only supported for terminal spawns".to_string());
+                }
+                if branch.starts_with('-') {
+                    return Err(format!("invalid worktree branch name: {branch}"));
+                }
+                Some(branch.to_string())
+            }
+            None => {
+                if worktree.is_some() {
+                    return Err("worktree branch name cannot be empty".to_string());
+                }
+                None
+            }
+        };
+
+        let result_schema = match result_schema {
+            Some(schema_val) => {
+                let base_dir = cwd.as_deref().map(std::path::Path::new);
+                Some(crate::host::pane_result::normalize_schema_value(
+                    schema_val, base_dir,
+                )?)
+            }
+            None => None,
+        };
 
         let agent = match agent_cmd.as_deref().filter(|cmd| !cmd.is_empty()) {
             Some(command) => {
@@ -129,12 +167,14 @@ impl PaneLaunchSpec {
         let target = match (type_id.as_str(), path.as_deref()) {
             ("terminal", None) => PaneLaunchTarget::Terminal,
             ("", Some(path)) => PaneLaunchTarget::Path(PathBuf::from(path)),
-            (type_id, None) if !type_id.is_empty() => PaneLaunchTarget::AppId(type_id.to_string()),
+            (type_id, None) if !type_id.is_empty() => {
+                PaneLaunchTarget::PluginId(type_id.to_string())
+            }
             ("terminal", Some(_)) => {
                 return Err("spawn_pane cannot set both terminal and path target".to_string());
             }
             (type_id, Some(_)) if !type_id.is_empty() => {
-                return Err("spawn_pane cannot set both app id and path target".to_string());
+                return Err("spawn_pane cannot set both plugin id and path target".to_string());
             }
             ("", None) => return Err("spawn_pane target is empty".to_string()),
             _ => return Err("invalid spawn_pane target".to_string()),
@@ -154,6 +194,9 @@ impl PaneLaunchSpec {
             context_name: context_name.clone(),
             name: name.clone(),
             agent,
+            worktree,
+            result_schema,
+            peer_ancestry: peer_ancestry.clone(),
         })
     }
 
@@ -172,16 +215,16 @@ impl PaneLaunchSpec {
         self
     }
 
-    pub(crate) fn to_spawn_pane_request(&self) -> AppRequest {
+    pub(crate) fn to_spawn_pane_request(&self) -> HostRequest {
         let (type_id, path) = match &self.target {
             PaneLaunchTarget::Terminal => ("terminal".to_string(), None),
-            PaneLaunchTarget::AppId(type_id) => (type_id.clone(), None),
+            PaneLaunchTarget::PluginId(type_id) => (type_id.clone(), None),
             PaneLaunchTarget::Path(path) => {
                 (String::new(), Some(path.to_string_lossy().into_owned()))
             }
         };
 
-        AppRequest::SpawnPane {
+        HostRequest::SpawnPane {
             type_id,
             layout: self.layout.clone(),
             args: self.args.clone(),
@@ -201,13 +244,16 @@ impl PaneLaunchSpec {
             name: self.name.clone(),
             agent_cmd: self.agent.as_ref().map(|agent| agent.command.clone()),
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
+            worktree: self.worktree.clone(),
+            result_schema: self.result_schema.clone(),
+            peer_ancestry: self.peer_ancestry.clone(),
         }
     }
 
     pub(crate) fn target_for_log(&self) -> String {
         match &self.target {
             PaneLaunchTarget::Terminal => "terminal".to_string(),
-            PaneLaunchTarget::AppId(type_id) => format!("app:{type_id}"),
+            PaneLaunchTarget::PluginId(type_id) => format!("app:{type_id}"),
             PaneLaunchTarget::Path(path) => format!("path:{}", path.display()),
         }
     }
@@ -216,10 +262,10 @@ impl PaneLaunchSpec {
 #[cfg(test)]
 mod tests {
     use super::{PaneLaunchSpec, PaneLaunchTarget, DEFAULT_AGENT_BOOT_TIMEOUT};
-    use crate::protocol::AppRequest;
+    use crate::protocol::HostRequest;
 
-    fn spawn_pane(type_id: &str, path: Option<&str>, args: &[&str]) -> AppRequest {
-        AppRequest::SpawnPane {
+    fn spawn_pane(type_id: &str, path: Option<&str>, args: &[&str]) -> HostRequest {
+        HostRequest::SpawnPane {
             type_id: type_id.to_string(),
             layout: Some("split_v".to_string()),
             args: args.iter().map(|arg| arg.to_string()).collect(),
@@ -236,12 +282,15 @@ mod tests {
             name: None,
             agent_cmd: None,
             boot_timeout_secs: None,
+            worktree: None,
+            result_schema: None,
+            peer_ancestry: None,
         }
     }
 
-    fn agent_spawn(type_id: &str, agent_cmd: Option<&str>, timeout: Option<f64>) -> AppRequest {
+    fn agent_spawn(type_id: &str, agent_cmd: Option<&str>, timeout: Option<f64>) -> HostRequest {
         let mut request = spawn_pane(type_id, None, &[]);
-        if let AppRequest::SpawnPane {
+        if let HostRequest::SpawnPane {
             agent_cmd: slot,
             boot_timeout_secs,
             ..
@@ -264,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn from_spawn_pane_rejects_agent_on_app_target() {
+    fn from_spawn_pane_rejects_agent_on_view_target() {
         let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("snake", Some("c-large"), None))
             .unwrap_err();
 
@@ -299,10 +348,7 @@ mod tests {
             PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)))
                 .unwrap_err();
 
-        assert!(
-            err.contains("at most"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("at most"), "unexpected error: {err}");
     }
 
     #[test]
@@ -325,11 +371,76 @@ mod tests {
     }
 
     #[test]
-    fn from_spawn_pane_rejects_app_id_and_path_conflict() {
+    fn from_spawn_pane_rejects_plugin_id_and_path_conflict() {
         let request = spawn_pane("demo", Some("/tmp/app.wasm"), &[]);
 
         let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
 
-        assert_eq!(err, "spawn_pane cannot set both app id and path target");
+        assert_eq!(err, "spawn_pane cannot set both plugin id and path target");
+    }
+
+    #[test]
+    fn from_spawn_pane_accepts_worktree_on_terminal() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        if let HostRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("feature/0668-test".to_string());
+        }
+        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        assert_eq!(spec.worktree.as_deref(), Some("feature/0668-test"));
+        assert_eq!(
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            spec
+        );
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_worktree_on_view_target() {
+        let mut request = spawn_pane("snake", None, &[]);
+        if let HostRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("feature/0668-test".to_string());
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        assert_eq!(err, "worktree is only supported for terminal spawns");
+    }
+
+    #[test]
+    fn from_spawn_pane_rejects_flag_like_worktree_branch() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        if let HostRequest::SpawnPane { worktree, .. } = &mut request {
+            *worktree = Some("-b".to_string());
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        assert!(err.contains("invalid worktree branch name"));
+    }
+
+    #[test]
+    fn from_spawn_pane_accepts_and_validates_result_schema() {
+        let mut request = spawn_pane("terminal", None, &[]);
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {
+                "verdict": { "type": "string", "enum": ["PASS", "FAIL"] }
+            }
+        });
+        if let HostRequest::SpawnPane { result_schema, .. } = &mut request {
+            *result_schema = Some(schema.clone());
+        }
+        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        assert_eq!(spec.result_schema, Some(schema));
+        assert_eq!(
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            spec
+        );
+
+        let mut bad_request = spawn_pane("terminal", None, &[]);
+        if let HostRequest::SpawnPane { result_schema, .. } = &mut bad_request {
+            *result_schema = Some(serde_json::json!({"type": "not_a_valid_type"}));
+        }
+        let err = PaneLaunchSpec::from_spawn_pane(&bad_request).unwrap_err();
+        assert!(
+            err.contains("unknown JSON Schema type"),
+            "unexpected error: {err}"
+        );
     }
 }

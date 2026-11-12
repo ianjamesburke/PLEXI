@@ -1,18 +1,9 @@
-schema_version = 1
-
-[app]
-id = "balls"
-type = "app"
-name = "Balls"
-version = "0.1.0"
-description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
-entry = "balls.py"
-
-[app.capabilities]
-capabilities = []
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "balls.py"
 
 [launch]
 
@@ -21,3 +12,16 @@ python_compat = true
 # visibility = "public"   # public | unlisted | private
 # price = "free"          # "free", or a price like "4.99"
 # publisher = "plexi"     # first-party Plexi app
+
+[plugin]
+id = "balls"
+name = "Balls"
+version = "0.1.0"
+description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "balls.main"
+default = true

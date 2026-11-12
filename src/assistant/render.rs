@@ -15,17 +15,38 @@ use std::hash::{Hash, Hasher};
 
 use egui::RichText;
 
-use crate::ui::button::{chrome_button, ButtonKind};
+use crate::ui::button::{ButtonKind, KitButton};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::ListRow;
 use crate::ui::style;
 use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
-use crate::protocol::ModelTier;
 use crate::broker::Decision;
+use crate::protocol::ModelTier;
 
 use super::commands;
+
+/// Stable accessibility label for a chess-style `move` field in a tool summary.
+fn move_label(summary: &str) -> Option<String> {
+    let mv = if let Some(start) = summary.find("move: ") {
+        let rest = &summary[start + "move: ".len()..];
+        let end = rest.find([',', '}', '\n']).unwrap_or(rest.len());
+        rest[..end].trim().trim_matches('"').to_string()
+    } else {
+        let start = summary.find("\"move\"")?;
+        let rest = summary[start + "\"move\"".len()..].trim_start();
+        let rest = rest.strip_prefix(':')?.trim_start();
+        let rest = rest.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        rest[..end].to_string()
+    };
+    if mv.is_empty() {
+        None
+    } else {
+        Some(format!("move {mv}"))
+    }
+}
 use super::model::{
     AssistantModel, AssistantOverlay, CompactionState, PermissionChoice, ToolStatus, TurnRole,
 };
@@ -40,6 +61,8 @@ pub enum ComposerEvent {
     Submit,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
+    /// Open the Permissions plugin from a denied tool row.
+    ReviewPermissions,
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
 }
@@ -65,6 +88,14 @@ enum BubbleSide {
 
 /// Stateless renderer for the Assistant pane.
 pub struct AssistantRenderer;
+
+struct TurnRenderContext<'a> {
+    md_cache: &'a mut egui_commonmark::CommonMarkCache,
+    text_cache: &'a mut MarkdownTextCache,
+    conversation_id: &'a str,
+    colors: &'a Colors,
+    show_thoughts: bool,
+}
 
 #[derive(Default)]
 pub(crate) struct MarkdownTextCache {
@@ -132,7 +163,7 @@ impl AssistantRenderer {
         colors: &Colors,
         host_pane_id: u64,
     ) -> Option<ComposerEvent> {
-        // Match the terminal/editor surface, not the darker app-pane base
+        // Match the terminal/editor surface, not the darker plugin-pane base
         // fill — the assistant is host chrome, same as the scratchpad.
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
@@ -231,13 +262,17 @@ impl AssistantRenderer {
                 }
             });
 
+        let mut transcript_event = None;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(style::SPACE_MD as i8, 0)),
             )
             .show_inside(ui, |ui| {
-                Self::draw_transcript(ui, model, md_cache, text_cache, colors);
+                transcript_event = Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
+        if event.is_none() {
+            event = transcript_event;
+        }
 
         if let Some(rect) = composer_rect {
             if model.overlay_active() {
@@ -256,7 +291,7 @@ impl AssistantRenderer {
         md_cache: &mut egui_commonmark::CommonMarkCache,
         text_cache: &mut MarkdownTextCache,
         colors: &Colors,
-    ) {
+    ) -> Option<ComposerEvent> {
         // Native cross-widget text selection: a drag started in one bubble must
         // extend through the gaps into the next, so the user can copy a span
         // across several messages. egui's multi-widget selection is already on
@@ -288,15 +323,17 @@ impl AssistantRenderer {
                     .turn_anchor
                     .unwrap_or(model.turns.len())
                     .min(model.turns.len());
-                Self::draw_turn_range(
+                let mut review = Self::draw_turn_range(
                     ui,
-                    md_cache,
-                    text_cache,
-                    &model.conversation_id,
+                    &mut TurnRenderContext {
+                        md_cache,
+                        text_cache,
+                        conversation_id: &model.conversation_id,
+                        colors,
+                        show_thoughts: model.show_thoughts,
+                    },
                     0,
-                    colors,
                     &model.turns[..anchor],
-                    model.show_thoughts,
                 );
                 for active in &model.active_tools {
                     Self::draw_active_tool_row(ui, colors, active);
@@ -315,18 +352,22 @@ impl AssistantRenderer {
                         Self::draw_streaming_row(ui, model, md_cache, colors);
                     });
                 }
-                Self::draw_turn_range(
+                review = review.or(Self::draw_turn_range(
                     ui,
-                    md_cache,
-                    text_cache,
-                    &model.conversation_id,
+                    &mut TurnRenderContext {
+                        md_cache,
+                        text_cache,
+                        conversation_id: &model.conversation_id,
+                        colors,
+                        show_thoughts: model.show_thoughts,
+                    },
                     anchor,
-                    colors,
                     &model.turns[anchor..],
-                    model.show_thoughts,
-                );
+                ));
                 ui.add_space(style::SPACE_SM);
-            });
+                review
+            })
+            .inner
     }
 
     /// Egui intentionally ignores wheel input while a child widget owns a
@@ -347,32 +388,22 @@ impl AssistantRenderer {
     /// turn, in strict chronological order (stint 0455). `index_offset` is
     /// the slice's absolute start index into `model.turns`, so cross-frame
     /// widget/cache keys stay stable.
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     fn draw_turn_range(
         ui: &mut egui::Ui,
-        md_cache: &mut egui_commonmark::CommonMarkCache,
-        text_cache: &mut MarkdownTextCache,
-        conversation_id: &str,
+        ctx: &mut TurnRenderContext<'_>,
         index_offset: usize,
-        colors: &Colors,
         turns: &[super::model::Turn],
-        show_thoughts: bool,
-    ) {
+    ) -> Option<ComposerEvent> {
+        let mut event = None;
         for (i, turn) in turns.iter().enumerate() {
             ui.push_id(index_offset + i, |ui| {
-                Self::draw_turn_row(
-                    ui,
-                    md_cache,
-                    text_cache,
-                    conversation_id,
-                    index_offset + i,
-                    colors,
-                    turn,
-                    show_thoughts,
-                );
+                let row = Self::draw_turn_row(ui, ctx, index_offset + i, turn);
+                if event.is_none() {
+                    event = row;
+                }
             });
         }
+        event
     }
 
     /// One completed tool call: a caret dropdown headed by status icon +
@@ -381,13 +412,34 @@ impl AssistantRenderer {
     /// 0455). Failures open by default and render in the danger hue — a
     /// failure must never hide. Rows persisted before the dropdown payloads
     /// existed render as a plain line (no caret over an empty body).
-    fn draw_tool_call_row(ui: &mut egui::Ui, colors: &Colors, turn: &super::model::Turn) {
+    fn draw_tool_call_row(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        turn: &super::model::Turn,
+    ) -> Option<ComposerEvent> {
         let failed = turn.status == Some(ToolStatus::Failed);
         let (icon, color) = if failed {
             ("✗", colors.danger)
         } else {
             ("✓", colors.text_dim)
         };
+        if turn.text.contains("stale revision") {
+            ui.label(
+                RichText::new("stale revision")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.danger),
+            );
+        }
+        if let Some(preview) = &turn.output_preview {
+            if let Some(line) = preview.lines().find(|line| line.starts_with("actor:")) {
+                ui.label(
+                    RichText::new(line)
+                        .size(style::TEXT_CAPTION)
+                        .monospace()
+                        .color(colors.text_primary),
+                );
+            }
+        }
         let header = RichText::new(format!("{icon} {}", turn.text))
             .size(style::TEXT_CAPTION)
             .monospace()
@@ -396,24 +448,33 @@ impl AssistantRenderer {
             turn.input_summary.is_some() || turn.output_preview.is_some() || turn.detail.is_some();
         if !has_body {
             ui.label(header);
-            ui.add_space(style::SPACE_SM);
-            return;
+        } else {
+            egui::CollapsingHeader::new(header)
+                .id_salt("tool_call")
+                .default_open(failed)
+                .show(ui, |ui| {
+                    if let Some(input) = &turn.input_summary {
+                        Self::draw_preview_block(ui, colors, "in", input);
+                    }
+                    if let Some(output) = &turn.output_preview {
+                        Self::draw_preview_block(ui, colors, "out", output);
+                    }
+                    if let Some(diff) = &turn.detail {
+                        Self::draw_diff_block(ui, colors, diff);
+                    }
+                });
         }
-        egui::CollapsingHeader::new(header)
-            .id_salt("tool_call")
-            .default_open(failed)
-            .show(ui, |ui| {
-                if let Some(input) = &turn.input_summary {
-                    Self::draw_preview_block(ui, colors, "in", input);
-                }
-                if let Some(output) = &turn.output_preview {
-                    Self::draw_preview_block(ui, colors, "out", output);
-                }
-                if let Some(diff) = &turn.detail {
-                    Self::draw_diff_block(ui, colors, diff);
-                }
-            });
+        let review = if turn.text.contains("plexi permissions list") {
+            let response =
+                ui.add(KitButton::new("Review permissions", colors).kind(ButtonKind::Secondary));
+            response
+                .clicked()
+                .then_some(ComposerEvent::ReviewPermissions)
+        } else {
+            None
+        };
         ui.add_space(style::SPACE_SM);
+        review
     }
 
     /// A labeled multi-line preview (tool input/output, stint 0460): real
@@ -498,21 +559,22 @@ impl AssistantRenderer {
         );
     }
 
-    // Arg-struct refactor is a design change tracked in stint 0661.
-    #[allow(clippy::too_many_arguments)]
     fn draw_turn_row(
         ui: &mut egui::Ui,
-        md_cache: &mut egui_commonmark::CommonMarkCache,
-        text_cache: &mut MarkdownTextCache,
-        conversation_id: &str,
+        ctx: &mut TurnRenderContext<'_>,
         turn_index: usize,
-        colors: &Colors,
         turn: &super::model::Turn,
-        show_thoughts: bool,
-    ) {
+    ) -> Option<ComposerEvent> {
+        let TurnRenderContext {
+            ref mut md_cache,
+            ref mut text_cache,
+            conversation_id,
+            colors,
+            show_thoughts,
+        } = *ctx;
         let text = turn.text.as_str();
         match turn.role {
-            // Delivered app events are compact single-line rows.
+            // Delivered plugin events are compact single-line rows.
             TurnRole::Event => {
                 ui.label(
                     RichText::new(text)
@@ -524,7 +586,7 @@ impl AssistantRenderer {
             }
             // Completed tool calls are caret-dropdown rows (stint 0455).
             TurnRole::Tool => {
-                Self::draw_tool_call_row(ui, colors, turn);
+                return Self::draw_tool_call_row(ui, colors, turn);
             }
             // User turns sit right-aligned in an outlined bubble, like every
             // mainstream chat client. The body is a galley measured up-front at
@@ -579,6 +641,7 @@ impl AssistantRenderer {
                 ui.add_space(style::SPACE_MD);
             }
         }
+        None
     }
 
     /// A tool call currently running inside the in-flight turn. The input
@@ -592,7 +655,7 @@ impl AssistantRenderer {
         // Braille spinner keyed to wall clock — the assistant already
         // repaints continuously while a turn is in flight, so this animates
         // without extra repaint requests. Elapsed seconds make a long tool
-        // call (a 60s+ `app check`) read as progress, not a hang.
+        // call (a 60s+ `plugin check`) read as progress, not a hang.
         let elapsed = active.started.elapsed();
         let frame = SPINNER_FRAMES[(elapsed.as_millis() / 100) as usize % SPINNER_FRAMES.len()];
         let elapsed_label = if elapsed.as_secs() >= 2 {
@@ -654,13 +717,17 @@ impl AssistantRenderer {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.set_max_width(ui.available_width());
                     ui.label(
-                        RichText::new(format!(
-                            "assistant (medium) wants to run the app tool '{}'",
-                            pending.tool
-                        ))
-                        .size(style::TEXT_BODY)
-                        .color(colors.text_primary),
+                        RichText::new(pending.prompt_line())
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_primary),
                     );
+                    if let Some(mv) = move_label(&pending.input_summary) {
+                        ui.label(
+                            RichText::new(mv)
+                                .size(style::TEXT_BODY)
+                                .color(colors.text_primary),
+                        );
+                    }
                 });
                 if !pending.input_summary.is_empty() {
                     ui.scope(|ui| {
@@ -669,30 +736,59 @@ impl AssistantRenderer {
                     });
                 }
                 ui.add_space(style::SPACE_XS);
-                let actions: [(&str, ButtonKind, PermissionChoice); 4] = [
+                let actions: [(&str, ButtonKind, PermissionChoice); 5] = [
                     (
                         "Allow once",
-                        ButtonKind::Accent,
+                        ButtonKind::Primary,
                         PermissionChoice::AllowOnce,
                     ),
                     (
                         "Allow this session",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowSession,
                     ),
                     (
                         "Always allow",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowAlways,
+                    ),
+                    (
+                        "Always deny",
+                        ButtonKind::Danger,
+                        PermissionChoice::DenyAlways,
                     ),
                     ("Deny", ButtonKind::Danger, PermissionChoice::Deny),
                 ];
                 // `Ui::horizontal_wrapped` reflows buttons onto additional
                 // rows instead of clipping or forcing the frame wider than
                 // the pane, so the sheet stays usable at small window sizes.
+                let mut painted: Vec<(&str, [f64; 4])> = Vec::new();
                 ui.horizontal_wrapped(|ui| {
                     for (i, (label, kind, value)) in actions.into_iter().enumerate() {
-                        let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        let resp = ui.add(KitButton::new(label, colors).kind(kind));
+                        let rect = resp.rect;
+                        // Pane state reads accesskit. The chrome button's
+                        // glyph runs are not a labeled button, so the click
+                        // driver cannot see "Allow once" unless we publish it.
+                        ui.ctx().accesskit_node_builder(resp.id, |node| {
+                            node.set_role(egui::accesskit::Role::Button);
+                            node.set_label(label);
+                            node.set_bounds(egui::accesskit::Rect {
+                                x0: f64::from(rect.left()),
+                                y0: f64::from(rect.top()),
+                                x1: f64::from(rect.right()),
+                                y1: f64::from(rect.bottom()),
+                            });
+                        });
+                        painted.push((
+                            label,
+                            [
+                                f64::from(rect.left()),
+                                f64::from(rect.top()),
+                                f64::from(rect.right()),
+                                f64::from(rect.bottom()),
+                            ],
+                        ));
                         if i == selected {
                             ui.painter().rect_stroke(
                                 resp.rect.expand(2.0),
@@ -706,6 +802,14 @@ impl AssistantRenderer {
                         }
                     }
                 });
+                // The click driver reads these bounds from `assistant permission
+                // list` when pane state has no labeled button. Window points,
+                // same space as the accesskit rect above.
+                if let Some(monitor) =
+                    crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+                {
+                    monitor.publish_sheet_buttons(&painted);
+                }
             });
         ui.add_space(style::SPACE_XS);
         choice
@@ -885,7 +989,7 @@ impl AssistantRenderer {
     }
 
     /// The model is writing a tool call — the longest otherwise-silent
-    /// stretch of an app-build turn. Spinner + tool name + cumulative
+    /// stretch of a plugin-build turn. Spinner + tool name + cumulative
     /// argument size + elapsed, so a 60s code generation reads as progress.
     fn draw_tool_progress_row(
         ui: &mut egui::Ui,
@@ -1447,13 +1551,15 @@ mod tests {
                 row_rect = ui.available_rect_before_wrap();
                 AssistantRenderer::draw_turn_row(
                     ui,
-                    &mut md_cache,
-                    &mut text_cache,
-                    "test-conversation",
+                    &mut TurnRenderContext {
+                        md_cache: &mut md_cache,
+                        text_cache: &mut text_cache,
+                        conversation_id: "test-conversation",
+                        colors: &colors,
+                        show_thoughts: false,
+                    },
                     0,
-                    &colors,
                     &turn,
-                    false,
                 );
             });
         });

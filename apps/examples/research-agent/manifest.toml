@@ -1,14 +1,20 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "research-agent"
-type = "app"
 name = "Research Agent"
 version = "0.1.0"
 description = "AI research assistant that summarizes topics, cites sources, and helps structure findings."
-entry = "research_agent.py"
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["ai.query"]
 
-[launch]
+[runtime]
+kind = "python"
+entry = "research_agent.py"
+
+[[contributes.views]]
+id = "research-agent.main"
+default = true

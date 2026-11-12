@@ -1,0 +1,51 @@
+name: Release round trip
+
+# Non-publishing acceptance for bump -> promote -> release. Runs the real
+# release scripts against a temp repo whose origin is a local bare directory,
+# with `gh` shimmed to fail. It never pushes to this repository, never creates
+# a GitHub Release, and never touches a Plexi profile. See
+# scripts/release-round-trip-e2e.sh; real publication stays in release.yml.
+on:
+  pull_request:
+    branches: [alpha]
+    paths:
+      - 'scripts/release-*'
+      - 'scripts/promote.sh'
+      - 'scripts/gen-doc-safe.sh'
+      - 'scripts/cargo-with-lease.sh'
+      - 'cliff.toml'
+      - 'crates/distribution/**'
+      - '.github/workflows/release-round-trip.yml'
+  push:
+    branches: [alpha]
+    paths:
+      - 'scripts/release-*'
+      - 'scripts/promote.sh'
+      - 'cliff.toml'
+      - 'crates/distribution/**'
+      - '.github/workflows/release-round-trip.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  round-trip:
+    name: round trip
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/plexi-ci-env
+        with:
+          cache-key: release-round-trip
+          just: 'true'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install git-cliff
+        run: brew install git-cliff
+      - name: Bump, promote and release in isolation
+        run: bash scripts/release-round-trip-e2e.sh

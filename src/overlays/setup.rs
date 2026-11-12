@@ -1,7 +1,7 @@
 use super::*;
 
 impl PlexiApp {
-    /// Render the spatial-grid minimap in the top-right corner of the work
+    /// Render the spatial-grid minimap in the bottom-right corner of the work
     /// area. Uses an `egui::Area` so it floats above all content.
     pub(crate) fn draw_minimap_overlay(&mut self, ctx: &egui::Context) {
         if !self.minimap.visible {
@@ -36,13 +36,15 @@ impl PlexiApp {
             .show(ctx, |ui| {
                 if let Some(clicked_idx) = crate::render::minimap::render_minimap(
                     ui,
-                    content_rect,
-                    &self.windows,
-                    active_context,
-                    &self.last_page_x_per_row,
-                    &colors,
-                    ws_id,
-                    &ws_name,
+                    crate::render::minimap::MinimapRenderParams {
+                        content_rect,
+                        windows: &self.windows,
+                        active_window: active_context,
+                        last_visited: &self.last_page_x_per_row,
+                        colors: &colors,
+                        workspace_id: ws_id,
+                        workspace_name: &ws_name,
+                    },
                 ) {
                     let old = &self.windows[self.active_window];
                     self.last_page_x_per_row.insert(old.grid_y, old.grid_x);
@@ -93,10 +95,9 @@ impl PlexiApp {
                             let cell = egui::vec2(10.0 * scale, 10.0 * scale);
                             let s1 = 5.0 * scale;
                             let s2 = 17.0 * scale;
-                            let rx = egui::CornerRadius::same((1.5 * scale).round() as u8);
-                            let outline =
-                                Stroke::new(0.9 * scale, egui::Color32::from_rgb(0xe4, 0xe4, 0xe7));
-                            let purple = egui::Color32::from_rgb(0x3b, 0x07, 0x64);
+                            let rx = crate::ui::style::radius_frac(scale, 1.5);
+                            let outline = Stroke::new(0.9 * scale, colors.text_primary);
+                            let purple = colors.accent;
                             for (dx, dy, filled) in [
                                 (s1, s1, false),
                                 (s2, s1, false),
@@ -187,183 +188,5 @@ impl PlexiApp {
                     draw_contact_footer(ui, &colors);
                 });
         });
-    }
-
-    pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
-        let cli_name = crate::cli::setup::cli_name();
-        let colors = self.colors;
-        let cmd = crate::cli::setup::INSTALL_COMMAND;
-
-        let title = format!("Install `{cli_name}`");
-        // No scrim — this prompt floats over the welcome screen at startup
-        // and shouldn't dim it (matches its pre-kit behavior).
-        let response = crate::ui::overlay::ModalShell::centered("cli_setup_modal")
-            .title(&title)
-            .width(400.0)
-            .scrim(false)
-            .escape(true)
-            .show(ctx, &colors, |ui| {
-                {
-                    {
-                        ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new("Lets shell scripts, agents, and hooks:")
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            );
-                            ui.add_space(2.0);
-                            for item in &["send notifications", "trigger actions", "pipe data into Plexi"] {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(style::SPACE_SM);
-                                    ui.label(
-                                        RichText::new(format!("· {item}"))
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_dim),
-                                    );
-                                });
-                            }
-                            ui.add_space(style::SPACE_MD);
-                            ui.label(
-                                RichText::new(
-                                    "Open Terminal and run this command.\n\
-                                     You'll be asked for your password."
-                                )
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            ui.label(
-                                RichText::new("Run this in the terminal:")
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim)
-                                    .strong(),
-                            );
-                            ui.add_space(2.0);
-
-                            crate::ui::surface::copyable_command(
-                                ui,
-                                egui::Id::new("cli_setup_copy"),
-                                cmd,
-                                &colors,
-                            );
-
-                            ui.add_space(style::SPACE_MD);
-
-                            // Show result feedback from a previous check.
-                            if let Some(false) = self.cli_setup_check_result {
-                                ui.label(
-                                    RichText::new("CLI not found. Run the command above and try again.")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.accent),
-                                );
-                                ui.add_space(style::SPACE_SM);
-                            }
-
-                            ui.horizontal(|ui| {
-                                let check_btn = crate::ui::button::chrome_button(
-                                    ui,
-                                    "Check for success",
-                                    crate::ui::button::ButtonKind::Primary,
-                                    &colors,
-                                    150.0,
-                                );
-
-                                if check_btn.clicked() {
-                                    log::info!("cli_setup: user clicked Check for success");
-                                    if crate::cli::setup::is_installed() {
-                                        log::info!("cli_setup: CLI found - closing modal");
-                                        crate::cli::setup::mark_prompted();
-                                        self.cli_setup_check_result = None;
-                                        self.show_cli_setup_prompt = false;
-                                    } else {
-                                        log::info!("cli_setup: CLI not found - showing retry");
-                                        self.cli_setup_check_result = Some(false);
-                                    }
-                                }
-
-                                let skip_btn = crate::ui::button::chrome_button(
-                                    ui,
-                                    "Not now",
-                                    crate::ui::button::ButtonKind::Secondary,
-                                    &colors,
-                                    100.0,
-                                );
-
-                                if skip_btn.clicked() {
-                                    log::info!("cli_setup: user chose Not now - will ask again next launch");
-                                    self.show_cli_setup_prompt = false;
-                                }
-                            });
-                        });
-                    }
-                }
-            });
-
-        if response.dismissed {
-            log::info!("cli_setup: dismissed via Escape — will ask again next launch");
-            self.show_cli_setup_prompt = false;
-        }
-    }
-
-    pub(crate) fn draw_completions_banner(&mut self, ctx: &egui::Context) {
-        if !self.show_completions_banner {
-            return;
-        }
-        let colors = self.colors;
-        let cmd = crate::cli::setup::INSTALL_COMMAND;
-
-        crate::ui::toast::ToastShell::bottom("completions_banner")
-            .offset(egui::vec2(0.0, -20.0))
-            .show(ctx, &colors, |ui| {
-                ui.horizontal(|ui| {
-                    crate::ui::toast::toast_caption(
-                        ui,
-                        "Shell completions aren't set up.",
-                        &colors,
-                    );
-                    crate::ui::surface::compact_copyable_command(
-                        ui,
-                        egui::Id::new("completions_banner_copy"),
-                        cmd,
-                        &colors,
-                    );
-                    if crate::ui::button::chrome_button_sized(
-                        ui,
-                        "Done",
-                        crate::ui::button::ButtonKind::Primary,
-                        &colors,
-                        56.0,
-                        crate::ui::toast::TOAST_CONTROL_H,
-                    )
-                    .clicked()
-                    {
-                        log::info!("cli_setup: completions banner — user clicked Done, marking sentinel");
-                        crate::cli::setup::completions_mark_prompted();
-                        self.show_completions_banner = false;
-                    }
-                    if crate::ui::button::chrome_button_sized(
-                        ui,
-                        "Not now",
-                        crate::ui::button::ButtonKind::Secondary,
-                        &colors,
-                        72.0,
-                        crate::ui::toast::TOAST_CONTROL_H,
-                    )
-                    .clicked()
-                    {
-                        log::info!("cli_setup: completions banner — user clicked Not now (session-only dismiss)");
-                        self.show_completions_banner = false;
-                    }
-                });
-            });
-    }
-}
-
-impl PlexiApp {
-    pub(crate) fn cli_setup_prompt_handle_key(
-        &mut self,
-        _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
     }
 }

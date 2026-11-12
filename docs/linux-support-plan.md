@@ -11,7 +11,7 @@ macOS. macOS behavior is unchanged: every Linux affordance is added behind
 `cfg(target_os = ...)`, never by deleting a macOS path.
 
 Linux is a **second host platform**, not a port. The three scope models, the
-CLI surface, the pane model, and the app runtime are platform-neutral already;
+CLI surface, the pane model, and the plugin runtime are platform-neutral already;
 only the platform seam (`src/platform/`, secrets, menus, video decode, shell
 probes, window activation) is macOS-shaped and needs Linux arms.
 
@@ -59,8 +59,10 @@ sudo apt-get install -y build-essential pkg-config cmake \
 
 Why each group is load-bearing:
 
-- **X11 + xkbcommon + wayland** — winit's Linux backends. Missing headers fail
-  the *link*, not the compile, so they surface late and look like an unrelated
+- **X11 + xkbcommon** — the supported Linux display path. The Wayland
+  development library may be needed by the current dependency build, but that
+  does not make Wayland a supported runtime backend. Missing headers fail the
+  *link*, not the compile, so they surface late and look like an unrelated
   error.
 - **ALSA (`libasound2-dev`)** — `cpal` and `rodio` have no Linux backend
   without it; the build fails inside `alsa-sys`' build script.
@@ -91,8 +93,9 @@ list:
 - `wgpu` enables only the `metal` backend — Linux needs `vulkan` (and `gl` as
   a fallback), or `create_surface` finds no adapter at runtime even though the
   build is green.
-- `eframe` runs `default-features = false`, which drops winit's `x11` /
-  `wayland` features; they must be re-enabled for Linux.
+- `eframe` runs `default-features = false`, which drops winit's Linux backend
+  features; the X11 feature must be enabled for the supported Linux path. A
+  Wayland feature compiling is not evidence of Wayland support.
 - `notify` enables `macos_fsevent` with defaults off. Linux needs the inotify
   backend enabled explicitly for the hot-reload watcher.
 - The `objc2*` / `security-framework` / `core-foundation` block is already
@@ -206,7 +209,7 @@ a skipped test. A test that is silently absent on Linux is invisible rot.
 
 `install.sh` and `scripts/install.sh` take a Linux branch rather than
 refusing. Same script, same channel/suffix rules, same profile seeding; only
-the artifact and its placement differ, because Linux has no `.app` bundle.
+the artifact and its placement differ, because Linux has no `.plugin` bundle.
 
 | | macOS | Linux |
 |---|---|---|
@@ -250,14 +253,10 @@ must say so rather than pretend:
   package repository.
 - **App Nap.** A macOS-only energy concept with no Linux analogue — the Linux
   arm is a documented no-op, not an emulation.
-- **Keyring-backed secrets.** No libsecret / gnome-keyring integration in v0.
-  Linux resolves `system_store()` to a file-backed `SecretStore` (`FileStore`,
-  in the secrets store module) writing a `0600` JSON file in the channel
-  profile dir. That is strictly weaker than the macOS Keychain — same-user
-  readable, not encrypted at rest — and the store says so in the log the first
-  time it is touched. It exists because the alternative is no store at all,
-  which makes `plexi ai onboard`, the OpenRouter key lookup, terminal env
-  injection and the Secrets app dead code on Linux.
+- **Keyring-backed secrets.** Linux user and folder secrets use Secret Service
+  when available. Without it they use the labeled encrypted-file fallback;
+  plaintext values are never written in the channel profile. A legacy
+  `secrets.json` is migrated only after every entry has been copied.
 - **Finder service / macOS menu bar / dock integration.**
 - **Wayland.** X11 only for v0. Wayland may work incidentally; it is not
   verified and not claimed.
@@ -265,7 +264,6 @@ must say so rather than pretend:
   channel (`plexi-alpha`, `plexi-beta`, `plexi-pr-<N>`) with the same suffix
   rules as macOS, but the promotion and release-tagging scripts around it are
   untested off macOS.
-- **CI.** No Linux job added to the pipeline in v0.
 
 ## Definition of done — "alpha runs on this Linux VM"
 

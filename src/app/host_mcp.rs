@@ -1,16 +1,16 @@
 //! Host-level MCP server — `stints 0214, 0653`.
 //!
 //! The native transport for MCP-aware agents (Claude Code, Codex). Unlike the
-//! rejected per-app-server design, this is a single host-wide server started
-//! once at boot. It exposes event subscription tools and the live app tools
+//! rejected per-plugin-server design, this is a single host-wide server started
+//! once at boot. It exposes event subscription tools and the live plugin tools
 //! registered through `ExposeTools`.
 //!
 //! Tools:
-//! - `list_event_streams` — discover the `(app, stream)` pairs running apps declare.
+//! - `list_event_streams` — discover the `(plugin, stream)` pairs running plugins declare.
 //! - `subscribe_and_wait` — broker-checked subscribe, block for the next event,
 //!   return it, then drop the subscription. A long-poll, so an agent can "wait
 //!   for the next event and report it" in one tool call.
-//! - `<app_id>__<tool>` — workspace-scoped tools registered by live app panes.
+//! - `<plugin_id>__<tool>` — workspace-scoped tools registered by live view panes.
 //!
 //! Discovery: the bound port + bearer token are injected into every pane's PTY
 //! env as `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`, so an agent in a pane
@@ -26,7 +26,6 @@
 
 use crate::app::ui_mailbox::UiMailbox;
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
-use crate::mcp_http::{read_json_rpc_request, write_http_response, RequestOutcome};
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -45,6 +44,11 @@ fn discovery() -> Option<u16> {
     DISCOVERY.get().copied()
 }
 
+/// Port the host MCP listener bound, when the server is up.
+pub(crate) fn bound_port() -> Option<u16> {
+    discovery()
+}
+
 #[derive(Clone)]
 struct McpCaller {
     pane_id: u64,
@@ -53,6 +57,9 @@ struct McpCaller {
     /// this, never from `workspace_root` path-equality.
     context_id: u64,
     workspace_root: PathBuf,
+    /// Set when the bearer is an agent run token rather than a pane credential.
+    run_id: Option<String>,
+    actor_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -79,6 +86,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
                 pane_id,
                 context_id,
                 workspace_root,
+                run_id: None,
+                actor_id: None,
             },
         );
         return token;
@@ -91,6 +100,8 @@ fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathB
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -170,6 +181,8 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
             pane_id,
             context_id,
             workspace_root: workspace_root.clone(),
+            run_id: None,
+            actor_id: None,
         },
     );
     log::info!(
@@ -179,7 +192,22 @@ pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    credentials().lock().unwrap().by_token.get(token).cloned()
+    if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
+        return Some(caller);
+    }
+    let auth = crate::agent::runs::authenticate_run_token(token)?;
+    log::info!(
+        "host_mcp: authenticated agent run {} actor={}",
+        auth.run_id,
+        auth.actor_id
+    );
+    Some(McpCaller {
+        pane_id: 0,
+        context_id: 0,
+        workspace_root: auth.workspace,
+        run_id: Some(auth.run_id),
+        actor_id: Some(auth.actor_id),
+    })
 }
 
 #[cfg(test)]
@@ -265,6 +293,10 @@ pub fn start_host_mcp_server(
     save_identity(config_dir, port);
 
     let _ = DISCOVERY.set(port);
+    // The directory this server was started with is the grant profile. Callers
+    // pass `config_dir()` in production. Connection threads must not call
+    // `config_dir()` themselves: a test's profile override is thread-local.
+    let profile = config_dir.to_path_buf();
 
     std::thread::Builder::new()
         .name(format!("host-mcp-accept-{port}"))
@@ -273,10 +305,11 @@ pub fn start_host_mcp_server(
                 match stream {
                     Ok(stream) => {
                         let subscribe_tx = subscribe_tx.clone();
+                        let profile = profile.clone();
                         std::thread::Builder::new()
                             .name("host-mcp-conn".to_string())
                             .spawn(move || {
-                                if let Err(e) = handle_connection(stream, &subscribe_tx) {
+                                if let Err(e) = handle_connection(stream, &subscribe_tx, &profile) {
                                     log::warn!("host_mcp: connection error: {e}");
                                 }
                             })
@@ -298,30 +331,65 @@ pub fn start_host_mcp_server(
 fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> serde_json::Value {
     let mut tools = vec![
         serde_json::json!({
+            "name": "permissions_list",
+            "description": "List live permission decisions from the permission monitor. Same rows as `plexi permissions list`.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        serde_json::json!({
+            "name": "permissions_revoke",
+            "description": "Remove an allow or refuse a pending ask. Narrows authority.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_reset",
+            "description": "Ask to clear a stored denial. An MCP caller files Needs you and does not clear it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
+            "name": "permissions_allow",
+            "description": "Ask to allow a denial or a pending ask. An MCP caller files Needs you and does not grant it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+        serde_json::json!({
             "name": "list_event_streams",
-            "description": "List the event streams currently declared by running Plexi apps. Returns an array of {app_id, stream} pairs.",
+            "description": "List the event streams currently declared by running Plexi plugins. Returns an array of {plugin_id, stream} pairs.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         serde_json::json!({
             "name": "subscribe_and_wait",
-            "description": "Subscribe to a Plexi app's event stream and block until the next event arrives (or the timeout elapses), then return it. The subscription is dropped when the call returns.",
+            "description": "Subscribe to a Plexi plugin's event stream and block until the next event arrives (or the timeout elapses), then return it. The subscription is dropped when the call returns.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "app_id": { "type": "string", "description": "App that publishes the stream, e.g. event-probe." },
+                    "plugin_id": { "type": "string", "description": "App that publishes the stream, e.g. event-probe." },
                     "stream": { "type": "string", "description": "Stream name, e.g. probe.tick. Omit with all=true to subscribe to every stream." },
-                    "all": { "type": "boolean", "description": "Subscribe to all of the app's declared streams." },
+                    "all": { "type": "boolean", "description": "Subscribe to all of the plugin's declared streams." },
                     "payload": { "type": "string", "enum": ["off", "summary", "full", "state_ref"], "description": "How much of the event to deliver (default full)." },
                     "timeout_secs": { "type": "integer", "description": "Max seconds to wait for the next event (default 25, max 55)." }
                 },
-                "required": ["app_id"],
+                "required": ["plugin_id"],
                 "additionalProperties": false
             }
         }),
     ];
-    let mut app_tools = dispatcher.all_tools();
-    app_tools.sort_by(|a, b| a.name.cmp(&b.name));
-    tools.extend(app_tools.into_iter().map(|tool| {
+    let mut plugin_tools = dispatcher.all_tools();
+    plugin_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    tools.extend(plugin_tools.into_iter().map(|tool| {
         serde_json::json!({
             "name": tool.name,
             "description": tool.description,
@@ -329,97 +397,178 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
             "outputSchema": tool.output_schema,
         })
     }));
+    tools.extend(crate::agent::runs::mcp_tool_defs());
     serde_json::Value::Array(tools)
 }
 
 fn handle_connection(
     stream: std::net::TcpStream,
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
+    profile: &std::path::Path,
 ) -> std::io::Result<()> {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let mut write_stream = stream.try_clone()?;
-
-    let (json, caller) = match read_json_rpc_request(&stream, authenticate)? {
-        RequestOutcome::Json { body, auth } => (body, auth),
-        RequestOutcome::Handled => return Ok(()),
-    };
-    let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
-        caller.pane_id,
-        caller.context_id,
-    );
-
-    let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method_name = json.get("method").and_then(|m| m.as_str()).unwrap_or("");
-
-    let response_body = match method_name {
-        "initialize" => serde_json::json!({
-            "jsonrpc": "2.0", "id": id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "plexi-host", "version": "1.0.0" }
-            }
-        }),
-        "notifications/initialized" => serde_json::json!({
-            "jsonrpc": "2.0", "id": serde_json::Value::Null, "result": serde_json::Value::Null
-        }),
-        "tools/list" => serde_json::json!({
-            "jsonrpc": "2.0", "id": id, "result": { "tools": tool_defs(&dispatcher) }
-        }),
-        "tools/call" => {
-            let params = json.get("params").cloned().unwrap_or_default();
-            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
-            log::info!(
-                "host_mcp: tool_call caller_pane={} workspace={} tool={tool_name} peer={peer}",
+    crate::mcp_http::handle_connection(stream, authenticate, |json, caller| {
+        let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
+            crate::plexi_ai::tool_dispatch::DispatchScope::new(
                 caller.pane_id,
-                caller.workspace_root.display()
-            );
-            let result = match tool_name {
-                "list_event_streams" => tool_list_event_streams(&caller),
-                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, &caller),
-                other => {
-                    let input_json = serde_json::to_string(&arguments)
-                        .map_err(|error| format!("serialize tool arguments: {error}"));
-                    match input_json {
+                format!("mcp:pane:{}", caller.pane_id),
+                caller.workspace_root.clone(),
+                caller.context_id,
+            ),
+            crate::broker::gate::PermissionMonitor::for_profile(profile),
+        );
+
+        let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let method_name = json.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+        let response_body = match method_name {
+            "initialize" => serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "plexi-host", "version": "1.0.0" }
+                }
+            }),
+            "notifications/initialized" => serde_json::json!({
+                "jsonrpc": "2.0", "id": serde_json::Value::Null, "result": serde_json::Value::Null
+            }),
+            "tools/list" => serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "result": { "tools": tool_defs(&dispatcher) }
+            }),
+            "tools/call" => {
+                let params = json.get("params").cloned().unwrap_or_default();
+                let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                log::info!(
+                    "host_mcp: tool_call caller_pane={} workspace={} tool={tool_name} peer={peer}",
+                    caller.pane_id,
+                    caller.workspace_root.display()
+                );
+                let result = if tool_name.starts_with("agents.") {
+                    match serde_json::to_string(&arguments) {
                         Ok(input_json) => {
-                            let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
-                            let result = dispatcher.dispatch_call(call_id, other, input_json);
-                            match (result.output_json, result.error) {
-                                (_, Some(error)) => Err(error),
-                                (Some(output), None) => Ok(output),
-                                (None, None) => Ok("null".to_string()),
+                            let auth = crate::agent::runs::McpAuth {
+                                workspace: caller.workspace_root.clone(),
+                                run_id: caller.run_id.clone(),
+                                actor_id: caller.actor_id.clone(),
+                                pane_id: caller.pane_id,
+                                context_id: caller.context_id,
+                            };
+                            crate::agent::runs::mcp_call(&auth, tool_name, &input_json)
+                        }
+                        Err(error) => Err(format!("serialize tool arguments: {error}")),
+                    }
+                } else {
+                    match tool_name {
+                        "permissions_list" => {
+                            tool_permissions("list", &arguments, profile, &caller)
+                        }
+                        "permissions_revoke" => {
+                            tool_permissions("revoke", &arguments, profile, &caller)
+                        }
+                        "permissions_reset" => {
+                            tool_permissions("reset", &arguments, profile, &caller)
+                        }
+                        "permissions_allow" => {
+                            tool_permissions("allow", &arguments, profile, &caller)
+                        }
+                        "list_event_streams" => tool_list_event_streams(&caller),
+                        "subscribe_and_wait" => {
+                            tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
+                        }
+                        other => {
+                            let input_json = serde_json::to_string(&arguments)
+                                .map_err(|error| format!("serialize tool arguments: {error}"));
+                            match input_json {
+                                Ok(input_json) => {
+                                    let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
+                                    let result =
+                                        dispatcher.dispatch_call(call_id, other, input_json);
+                                    match (result.output_json, result.error) {
+                                        (_, Some(error)) => Err(error),
+                                        (Some(output), None) => Ok(output),
+                                        (None, None) => Ok("null".to_string()),
+                                    }
+                                }
+                                Err(error) => Err(error),
                             }
                         }
-                        Err(error) => Err(error),
                     }
+                };
+                match result {
+                    Ok(text) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }], "isError": false }
+                    }),
+                    Err(msg) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": msg }], "isError": true }
+                    }),
                 }
-            };
-            match result {
-                Ok(text) => serde_json::json!({
-                    "jsonrpc": "2.0", "id": id,
-                    "result": { "content": [{ "type": "text", "text": text }], "isError": false }
-                }),
-                Err(msg) => serde_json::json!({
-                    "jsonrpc": "2.0", "id": id,
-                    "result": { "content": [{ "type": "text", "text": msg }], "isError": true }
-                }),
             }
-        }
-        other => serde_json::json!({
-            "jsonrpc": "2.0", "id": id,
-            "error": { "code": -32601, "message": format!("method not found: {other}") }
-        }),
-    };
+            other => serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32601, "message": format!("method not found: {other}") }
+            }),
+        };
 
-    let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
-    write_http_response(&mut write_stream, 200, &body_bytes)
+        response_body
+    })
+}
+
+/// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
+/// allow file Needs you and change nothing.
+fn tool_permissions(
+    op: &str,
+    arguments: &serde_json::Value,
+    profile: &std::path::Path,
+    caller: &McpCaller,
+) -> Result<String, String> {
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile);
+    if op == "list" {
+        let entries = monitor.list_entries();
+        log::info!(
+            "host_mcp: permissions_list count={} pane={}",
+            entries.len(),
+            caller.pane_id
+        );
+        return serde_json::to_string(&serde_json::json!({"ok": true, "entries": entries}))
+            .map_err(|error| error.to_string());
+    }
+    let id = arguments
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let outcome = monitor.mutate_entry(
+        id,
+        op,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("mcp:pane:{}", caller.pane_id),
+        },
+    );
+    log::info!("host_mcp: permissions_{op} id={id} pane={}", caller.pane_id);
+    let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+    let ok = matches!(
+        outcome,
+        crate::broker::gate::PermissionMutation::Applied { .. }
+    );
+    if let Some(map) = body.as_object_mut() {
+        map.insert("ok".to_string(), serde_json::json!(ok));
+    }
+    let text = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+    if ok {
+        Ok(text)
+    } else {
+        Err(text)
+    }
 }
 
 /// `list_event_streams` — read declared streams from the global timeline,
@@ -428,14 +577,14 @@ fn handle_connection(
 /// anyway (no cross-context grant exists), so listing it would be
 /// misleading.
 fn tool_list_event_streams(caller: &McpCaller) -> Result<String, String> {
-    let streams = crate::host::app_timeline::global()
+    let streams = crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
         .all_declared_streams();
     let arr: Vec<serde_json::Value> = streams
         .iter()
         .filter(|(context_id, _, _)| *context_id == caller.context_id)
-        .map(|(_, a, s)| serde_json::json!({ "app_id": a, "stream": s }))
+        .map(|(_, a, s)| serde_json::json!({ "plugin_id": a, "stream": s }))
         .collect();
     serde_json::to_string(&serde_json::json!({ "streams": arr }))
         .map_err(|e| format!("serialize failed: {e}"))
@@ -448,10 +597,10 @@ fn tool_subscribe_and_wait(
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
     caller: &McpCaller,
 ) -> Result<String, String> {
-    let app_id = args
-        .get("app_id")
+    let plugin_id = args
+        .get("plugin_id")
         .and_then(|v| v.as_str())
-        .ok_or("missing required argument: app_id")?
+        .ok_or("missing required argument: plugin_id")?
         .to_string();
     let all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
     let stream = args.get("stream").and_then(|v| v.as_str());
@@ -483,7 +632,7 @@ fn tool_subscribe_and_wait(
     let delivery_id = format!("{actor_id}:{}", uuid::Uuid::new_v4());
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostSubscribeReply>(1);
     let req = HostSubscribeRequest {
-        publisher_app_id: app_id.clone(),
+        publisher_plugin_id: plugin_id.clone(),
         event_names,
         payload_mode,
         trigger_mode: crate::protocol::TriggerMode::Conversation,
@@ -521,7 +670,7 @@ fn tool_subscribe_and_wait(
     };
 
     // Long-poll the global timeline for the next delivery.
-    let timeline = crate::host::app_timeline::global();
+    let timeline = crate::host::plugin_timeline::global();
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut first = None;
     while Instant::now() < deadline {
@@ -544,7 +693,7 @@ fn tool_subscribe_and_wait(
     match first {
         Some(d) => {
             let out = serde_json::json!({
-                "app_id": d.app_id,
+                "plugin_id": d.plugin_id,
                 "event": d.event,
                 "event_id": d.event_id,
                 "resource_id": d.resource_id,
@@ -556,7 +705,7 @@ fn tool_subscribe_and_wait(
             log::info!(
                 "host_mcp: subscribe_and_wait delivered event {} from {}",
                 d.event,
-                d.app_id
+                d.plugin_id
             );
             serde_json::to_string(&out).map_err(|e| format!("serialize failed: {e}"))
         }
@@ -572,8 +721,88 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
-    fn post(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    const TEST_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+    fn parse_http_response(resp: &[u8]) -> (u16, Vec<u8>) {
+        let s = String::from_utf8_lossy(resp);
+        let status_line = s
+            .lines()
+            .next()
+            .filter(|line| !line.is_empty())
+            .unwrap_or_else(|| {
+                panic!("host_mcp test helper: empty HTTP status line (raw bytes: {resp:?})")
+            });
+        let mut parts = status_line.split_whitespace();
+        let http_version = parts.next().unwrap_or("");
+        if !http_version.starts_with("HTTP/1.") {
+            panic!(
+                "host_mcp test helper: invalid HTTP version in status line {status_line:?} (raw bytes: {resp:?})"
+            );
+        }
+        let status_token = parts.next().unwrap_or_else(|| {
+            panic!(
+                "host_mcp test helper: missing status code in HTTP status line {status_line:?} (raw bytes: {resp:?})"
+            )
+        });
+        let status: u16 = status_token.parse().unwrap_or_else(|e| {
+            panic!(
+                "host_mcp test helper: unparseable HTTP status {status_token:?} in line {status_line:?}: {e} (raw bytes: {resp:?})"
+            )
+        });
+        let start = resp
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(resp.len());
+        (status, resp[start..].to_vec())
+    }
+
+    fn send_raw_with_timeout(
+        port: u16,
+        wire: &[u8],
+        shutdown_write: bool,
+        timeout: Duration,
+    ) -> (u16, Vec<u8>) {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap_or_else(|e| {
+            panic!("host_mcp test helper: connect to 127.0.0.1:{port} failed: {e}")
+        });
+        stream
+            .set_read_timeout(Some(timeout))
+            .expect("set_read_timeout on test client stream");
+        stream
+            .set_write_timeout(Some(timeout))
+            .expect("set_write_timeout on test client stream");
+        if !wire.is_empty() {
+            stream.write_all(wire).unwrap_or_else(|e| {
+                panic!("host_mcp test helper: write_all to 127.0.0.1:{port} failed: {e}")
+            });
+            stream.flush().unwrap_or_else(|e| {
+                panic!("host_mcp test helper: flush to 127.0.0.1:{port} failed: {e}")
+            });
+        }
+        if shutdown_write {
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .unwrap_or_else(|e| {
+                    panic!("host_mcp test helper: shutdown(Write) to 127.0.0.1:{port} failed: {e}")
+                });
+        }
+        let mut resp = Vec::new();
+        stream.read_to_end(&mut resp).unwrap_or_else(|e| {
+            panic!(
+                "host_mcp test helper: read_to_end from 127.0.0.1:{port} failed: {e} (partial text: {:?}, raw bytes: {resp:?})",
+                String::from_utf8_lossy(&resp)
+            )
+        });
+        parse_http_response(&resp)
+    }
+
+    fn post_with_timeout(
+        port: u16,
+        token: Option<&str>,
+        body: &[u8],
+        timeout: Duration,
+    ) -> (u16, Vec<u8>) {
         let auth = match token {
             Some(t) => format!("Authorization: Bearer {t}\r\n"),
             None => String::new(),
@@ -582,31 +811,21 @@ mod tests {
             "POST /mcp HTTP/1.1\r\nHost: localhost\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
-        stream.write_all(req.as_bytes()).unwrap();
-        stream.write_all(body).unwrap();
-        stream.flush().unwrap();
-        let mut resp = Vec::new();
-        let _ = stream.read_to_end(&mut resp);
-        let s = String::from_utf8_lossy(&resp);
-        let status = s
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|x| x.parse().ok())
-            .unwrap_or(0);
-        let start = s.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-        (status, resp[start..].to_vec())
+        let mut wire = req.into_bytes();
+        wire.extend_from_slice(body);
+        send_raw_with_timeout(port, &wire, false, timeout)
+    }
+
+    fn post(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+        post_with_timeout(port, token, body, TEST_HTTP_TIMEOUT)
     }
 
     /// A test server whose subscribe channel is serviced by a granted service
     /// bound to the global timeline (the production wiring, minus the UI loop).
-    fn start_test_server(grant_target: Option<&str>) -> (u16, String) {
+    fn start_test_server(grant_target: Option<&str>) -> (u16, String, std::path::PathBuf) {
         static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(80_000);
-        use crate::broker::{
-            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource,
-            ResourceScope, TargetType,
-        };
+            std::sync::atomic::AtomicU64::new(900_000_000);
+        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let actor_id = format!("mcp:pane:{pane_id}");
         let workspace_root = PathBuf::from(format!("/workspace/host-mcp-test-{pane_id}"));
@@ -616,25 +835,20 @@ mod tests {
         );
         let mut store = crate::broker::GrantStore::default();
         if let Some(target) = grant_target {
-            store.record(GrantRecord {
-                actor_type: ActorType::Agent,
-                actor_id,
-                actor_scope: ActorScope::User,
-                workspace_root: Some(workspace_root.clone()),
-                target_type: TargetType::AppEventStream,
-                target_id: target.to_string(),
-                resource_scope: ResourceScope::Global,
-                resource_id: None,
-                decision: Decision::Allow,
-                duration: GrantDuration::Session,
-                source: GrantSource::Session,
-                created_at: 0,
-                expires_at: None,
-            });
+            store.record(GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                &actor_id,
+                ActorScope::User,
+                target,
+                &workspace_root,
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            ));
         }
         let svc = crate::host::event_subscriptions::HostSubscriptionService::new_for_test(
             store,
-            crate::host::app_timeline::global(),
+            crate::host::plugin_timeline::global(),
         );
         std::thread::spawn(move || {
             while let Ok(req) = rx.recv() {
@@ -647,9 +861,12 @@ mod tests {
         // Each test server gets an isolated profile dir so its persisted
         // endpoint never collides with a sibling test's port.
         let dir = tempfile::tempdir().unwrap();
-        let port = start_host_mcp_server(tx, dir.path()).unwrap();
+        let profile = dir.path().to_path_buf();
+        let port = start_host_mcp_server(tx, &profile).unwrap();
+        // The accept thread keeps using this directory after the test returns.
+        std::mem::forget(dir);
         let token = register_pane_credential(pane_id, 1, workspace_root);
-        (port, token)
+        (port, token, profile)
     }
 
     #[test]
@@ -708,7 +925,7 @@ mod tests {
 
     #[test]
     fn no_auth_returns_401() {
-        let (port, _t) = start_test_server(None);
+        let (port, _t, _profile) = start_test_server(None);
         let (status, _) = post(
             port,
             None,
@@ -719,7 +936,7 @@ mod tests {
 
     #[test]
     fn tools_list_exposes_subscription_tools() {
-        let (port, token) = start_test_server(None);
+        let (port, token, _profile) = start_test_server(None);
         let (status, body) = post(
             port,
             Some(&token),
@@ -747,20 +964,23 @@ mod tests {
             context_root: PathBuf::from(format!("/ctx-root-{context_id}")),
             window_id: context_id,
             pane_id,
-            app_id: None,
+            plugin_id: None,
         }
     }
 
     #[test]
-    fn pane_credential_lists_and_calls_only_context_app_tools() {
+    fn pane_credential_lists_and_calls_only_context_view_tools() {
+        use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
         use crate::protocol::{AiTool, PlexiEvent};
-        use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
 
-        let (port, _test_token) = start_test_server(None);
-        let context_a = 100u64;
-        let context_b = 200u64; // a different context — must stay unreachable
+        let (port, _test_token, profile) = start_test_server(None);
+        let context_a = 900_000_100u64;
+        let context_b = 900_000_200u64; // a different context — must stay unreachable
+        let caller_pane = 900_007_001u64;
+        let provider_a_pane = 900_007_002u64;
+        let provider_b_pane = 900_007_003u64;
         let workspace_a = PathBuf::from("/workspace/host-mcp-a");
-        let caller_token = register_pane_credential(7_001, context_a, workspace_a);
+        let caller_token = register_pane_credential(caller_pane, context_a, workspace_a.clone());
         let (provider_tx, provider_rx) = std::sync::mpsc::channel();
         let (other_tx, _other_rx) = std::sync::mpsc::channel();
         let tool = |name: &str| AiTool {
@@ -772,18 +992,18 @@ mod tests {
             read_only: true,
         };
         tool_dispatch::register(
-            7_002,
+            provider_a_pane,
             "workspace-a-app".to_string(),
             vec![tool("echo")],
-            AppEventSender::Channel(provider_tx),
-            test_provider_origin(context_a, 7_002),
+            PluginEventSender::Channel(provider_tx),
+            test_provider_origin(context_a, provider_a_pane),
         );
         tool_dispatch::register(
-            7_003,
+            provider_b_pane,
             "workspace-b-app".to_string(),
             vec![tool("secret")],
-            AppEventSender::Channel(other_tx),
-            test_provider_origin(context_b, 7_003),
+            PluginEventSender::Channel(other_tx),
+            test_provider_origin(context_b, provider_b_pane),
         );
 
         let (status, body) = post(
@@ -818,6 +1038,41 @@ mod tests {
             "client arguments cannot override credential workspace: {json}"
         );
 
+        {
+            use crate::broker::{
+                ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord,
+                GrantSource, ResourceScope, TargetType,
+            };
+            let args = r#"{"value":7}"#;
+            let binding = ExactBinding {
+                actor_type: ActorType::Plugin,
+                actor_id: format!("mcp:pane:{caller_pane}"),
+                actor_scope: ActorScope::User,
+                trust_origin: "host".to_string(),
+                workspace_root: workspace_a.clone(),
+                target_type: TargetType::PluginConnector,
+                target_id: "workspace-a-app__echo".to_string(),
+                resource_scope: ResourceScope::Workspace,
+                resource_id: None,
+                args_fingerprint: crate::broker::gate::fingerprint_args(args).unwrap(),
+                session_id: None,
+                package_id: "workspace-a-app".to_string(),
+                instance_id: Some(provider_a_pane),
+                context_id: Some(context_a),
+                call_id: String::new(),
+                operation_id: String::new(),
+            };
+            crate::broker::gate::PermissionMonitor::for_profile(&profile)
+                .store()
+                .record(GrantRecord::from_binding(
+                    &binding,
+                    Decision::Allow,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    "grant-mcp-echo",
+                ));
+        }
+        let expected_caller_id = format!("mcp:pane:{caller_pane}");
         let responder = std::thread::spawn(move || {
             let line = provider_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -828,13 +1083,14 @@ mod tests {
                 name,
                 input_json,
                 caller_id,
+                authorization: _,
             } = event
             else {
                 panic!("expected ToolCall");
             };
             assert_eq!(name, "echo");
             assert_eq!(input_json, r#"{"value":7}"#);
-            assert_eq!(caller_id, "mcp:pane:7001");
+            assert_eq!(caller_id, expected_caller_id);
             tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"echo":7}"#));
         });
         let (status, body) = post(
@@ -851,9 +1107,9 @@ mod tests {
         );
         assert_eq!(json["result"]["isError"], false);
 
-        tool_dispatch::unregister(7_002);
-        tool_dispatch::unregister(7_003);
-        revoke_pane_credentials(7_001);
+        tool_dispatch::unregister(provider_a_pane);
+        tool_dispatch::unregister(provider_b_pane);
+        revoke_pane_credentials(caller_pane);
         let (status, _) = post(
             port,
             Some(&caller_token),
@@ -867,15 +1123,15 @@ mod tests {
     /// tool returns the event.
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
-        use crate::protocol::{AppEventActor, EventStreamDecl};
-        use crate::host::app_timeline::EmittedEvent;
+        use crate::host::plugin_timeline::EmittedEvent;
+        use crate::protocol::{EventStreamDecl, PluginEventActor};
         let app = "mcp-it-app";
         let stream = "it.tick";
         // `start_test_server` registers its pane credential with `context_id
         // = 1` (see `register_pane_credential(pane_id, 1, ...)` below), so
         // the stream must be declared under that same context for the
         // subscribe to see it as declared (stint 0724 Phase D).
-        crate::host::app_timeline::global()
+        crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
             .declare_streams(
@@ -888,12 +1144,12 @@ mod tests {
                 }],
             )
             .unwrap();
-        let (port, token) = start_test_server(Some(&format!("{app}::{stream}")));
+        let (port, token, _profile) = start_test_server(Some(&format!("{app}::{stream}")));
 
         // Emit shortly after the tool call begins its long-poll.
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
-            crate::host::app_timeline::global()
+            crate::host::plugin_timeline::global()
                 .lock()
                 .unwrap()
                 .record_event(
@@ -902,7 +1158,7 @@ mod tests {
                     1,
                     EmittedEvent {
                         event: stream.to_string(),
-                        actor: AppEventActor::User,
+                        actor: PluginEventActor::User,
                         actor_id: None,
                         caused_by: None,
                         summary: "it tick 1".to_string(),
@@ -921,7 +1177,7 @@ mod tests {
         });
 
         let call = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"subscribe_and_wait","arguments":{{"app_id":"{app}","stream":"{stream}","timeout_secs":5}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"subscribe_and_wait","arguments":{{"plugin_id":"{app}","stream":"{stream}","timeout_secs":5}}}}}}"#
         );
         let (status, body) = post(port, Some(&token), call.as_bytes());
         assert_eq!(status, 200);
@@ -931,5 +1187,78 @@ mod tests {
         assert_eq!(event["event"], stream);
         assert_eq!(event["summary"], "it tick 1");
         assert_eq!(event["payload"]["count"], 1);
+    }
+
+    #[test]
+    fn parse_http_response_fails_loudly_with_raw_bytes_on_bad_status_lines() {
+        let cases: &[(&str, &[u8])] = &[
+            ("empty response", b""),
+            ("invalid http version", b"GARBAGE 200 OK\r\n\r\n"),
+            ("missing status token", b"HTTP/1.1\r\n\r\n"),
+            ("non-numeric status token", b"HTTP/1.1 nope Bad\r\n\r\n"),
+        ];
+        for (label, raw) in cases {
+            let err = std::panic::catch_unwind(|| parse_http_response(raw))
+                .expect_err("bad HTTP status line must panic instead of defaulting to 0");
+            let msg = err
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| err.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            let expected_raw = format!("raw bytes: {raw:?}");
+            assert!(
+                msg.contains(&expected_raw),
+                "{label}: panic message {msg:?} must name {expected_raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_propagates_read_to_end_timeout_instead_of_coercing_to_status_zero() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stall listener");
+        let port = listener.local_addr().expect("local_addr").port();
+        let _server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept");
+            std::thread::sleep(Duration::from_millis(400));
+        });
+
+        let err = std::panic::catch_unwind(|| {
+            post_with_timeout(port, None, b"{}", Duration::from_millis(80))
+        })
+        .expect_err("timed-out read_to_end must panic with I/O error text");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("read_to_end from 127.0.0.1:") && msg.contains("raw bytes:"),
+            "panic message must include descriptive read_to_end error text and raw bytes: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn host_mcp_returns_400_on_empty_and_malformed_requests() {
+        let (port, token, _profile) = start_test_server(None);
+
+        let (status, _) = send_raw_with_timeout(port, b"", true, TEST_HTTP_TIMEOUT);
+        assert_eq!(status, 400, "empty request must return 400");
+
+        let (status, _) = send_raw_with_timeout(port, b"NOT_HTTP\r\n\r\n", true, TEST_HTTP_TIMEOUT);
+        assert_eq!(status, 400, "malformed request line must return 400");
+
+        let (status, _) = send_raw_with_timeout(
+            port,
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\n",
+            true,
+            TEST_HTTP_TIMEOUT,
+        );
+        assert_eq!(status, 400, "truncated headers must return 400");
+
+        let (status, _) = post(port, Some(&token), b"");
+        assert_eq!(status, 400, "empty POST /mcp body must return 400");
+
+        let (status, _) = post(port, Some(&token), b"{invalid-json");
+        assert_eq!(status, 400, "invalid JSON body must return 400");
     }
 }

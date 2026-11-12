@@ -1,0 +1,72 @@
+schema_version = 2
+
+[launch]
+
+# The fixture program is built from src/host/cli_ops/fixture_cli.rs and placed in
+# ~/.cargo/bin as `cli-op-fixture-cli`. It records every launch in
+# `.fixture-launched` in its working directory (the workspace).
+
+[[cli_operation]]
+id = "fixture.echo"
+executable = "cli-op-fixture-cli"
+argv = ["echo", "{word}"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 4096
+[cli_operation.authority]
+mode = "read"
+[cli_operation.slots.word]
+type = "string"
+max_len = 32
+
+[[cli_operation]]
+id = "fixture.set"
+executable = "cli-op-fixture-cli"
+argv = ["echo", "--priority={priority}", "--", "{task}"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 4096
+[cli_operation.authority]
+mode = "mutate"
+fs_write = ["workspace"]
+[cli_operation.slots.priority]
+type = "enum"
+values = ["p0", "p1", "p2"]
+[cli_operation.slots.task]
+type = "string"
+max_len = 32
+
+[[cli_operation]]
+id = "fixture.slow"
+executable = "cli-op-fixture-cli"
+argv = ["sleep", "{ms}"]
+timeout_ms = 20000
+[cli_operation.output]
+format = "json"
+max_bytes = 4096
+[cli_operation.authority]
+mode = "read"
+[cli_operation.slots.ms]
+type = "int"
+min = 0
+max = 20000
+
+[plugin]
+id = "cli-op-fixture"
+name = "Cli Op Fixture"
+version = "0.1.0"
+description = "POC: approved typed CLI operations against a fixture program"
+watch = true
+
+[plugin.capabilities]
+capabilities = ["cli.operations"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "cli-op-fixture.main"
+default = true

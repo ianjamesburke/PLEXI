@@ -1,6 +1,6 @@
 # docs - Agent Contract
 
-This directory contains active PRMs (product/architecture specs). Present-tense reference docs live next to the code they describe, in the owning directory's AGENTS.md.
+This directory contains active PRMs (product/architecture specs). Present-tense reference docs live next to the code they describe, in the owning directory's AGENTS.md. `security/` holds threat reviews; those files are not PRMs and have no stint row.
 
 ## PRM Rules
 
@@ -12,24 +12,36 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 
 **Delete rule:** delete the PRM in the same PR that closes its last stint task. The stint task is the delete trigger.
 
+`plexi agent team run <name>` resolves a workspace team by walking up from the
+current directory, then the active channel profile's `teams/` directory, then
+built-ins. Global and built-in teams run outside a workspace; their default
+reports are stored under that profile's `sessions/teams/` directory.
+
 ## Active PRMs
 
 | File | Covers | Stint |
 |---|---|---|
-| `agent-run-orchestration.md` | Host primitives + durable run record behind the babysitter loop | see file |
+| `agent-run-orchestration.md` | Superseded: prose queue-runner host primitives; direction now `@plexi/pi` (0796) + squads per `TRUTH.md` | see file |
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
-| `assistant-agent-mesh.md` | Per-context head agents, central memory drain, derived capability-card registry + `ask_question` routing, per-head testability, `plexi assistant` + picker + inter-agent receipts, MCP Apps pane + Tasks adoption | none yet |
+| `assistant-agent-mesh.md` | Superseded: built-in Assistant head-agent mesh; replaced by CLI coding agents + `@plexi/pi` (0796) + squads per `TRUTH.md` | none yet |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
-| `assistant-host-app.md` | Host assistant app spec | see file |
+| `specs/agents-api-and-permission-gate.md` | Agents API and the one permission gate. P1 is the monitor, exact grants, and host-approved chess | none yet |
+| `assistant-host-app.md` | Superseded: built-in Assistant is not the primary orchestrator (`TRUTH.md`) | see file |
 | `browser-surface.md` | Native browser App pane, profiles, context binding, automation, and live validation | see file |
 | `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
 | `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |
-| `decision-trust-plane.md` | Typed decision records, worker→head→human resolution, per-category trust folded from outcomes | none yet |
+| `decision-trust-plane.md` | Superseded: typed decision records on the retired head-agent mesh (`TRUTH.md`) | none yet |
 | `linux-support-plan.md` | Linux x86_64 as a second host platform: phase-by-phase verification contract, platform seam, v0 non-goals | none yet |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
+| `new-context-initialization-latency.md` | New-context workspace initialization latency measurement on Alpha — timings, stage breakdown, and decision | 1008 |
 | `notes-editor.md` | Native Notes editor, Live Preview, links, attachments, and agent validation | see file |
+| `prm/permissions-broker.md` | Thin core, public plugin capability API, broker consolidation and core-plugin extraction | see file |
 | `realtime-app-runtime.md` | Stable frame pacing and presentation across Python and native WASM apps | 0553 |
+| `search-primitive.md` | Unified upstream host search engine (`src/search/`) + `SearchBar` UI primitive (`src/ui/search_bar.rs`) for File Explorer, Notes Picker, Command Palette, and host tools | 0814 |
 | `search-results-detail-pattern.md` | Search→results→detail SDK vocabulary: `SelectList` usage, `Pending` wrapper for declarative loading state, canvas `ListRow` deletion — decision doc, taste call pending | 0728 |
+| `v1_one_note_proposal_contract.md` | Smallest safe contract for a manually invoked, one-selected-note proposal exemplar in Plexi V1 | 1009 |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
+| `windows-support-plan.md` | Windows x86_64 as a third host platform: what the PR #1604 replay landed, the Win32 platform seam, and the keymap decision that blocks Phase 4 | none yet |
+| `xml-video-editor.md` | XML sync review and creative editing through a shared human/agent document | see file |

@@ -1,7 +1,7 @@
 //! Pane-operation methods on `PlexiApp`, decomposed by concern:
 //!
-//! - [`create`] — pane / tile / app / agent creation, plus the app-launch
-//!   entry points used by the command palette and AppRequest routing.
+//! - [`create`] — pane / tile / plugin / agent creation, plus the plugin-launch
+//!   entry points used by the command palette and HostRequest routing.
 //! - [`layout`] — splits, tabs, close, navigation, zoom-free tree
 //!   manipulation on already-created panes.
 //! - [`workspace`] — multi-context management and on-disk workspace
@@ -11,19 +11,26 @@
 //! `PlexiApp` regardless of file, so call sites elsewhere in the crate are
 //! unchanged.
 
-mod create;
+pub(crate) mod create;
 mod events;
 mod layout;
 mod workspace;
+mod wrap;
 
 pub(crate) use create::cli_open_placement;
-pub(crate) use create::{restore_app_pane, RestoreTarget, RestoredAppPane};
 pub(crate) use create::restore_assistant_pane;
-pub(crate) use create::restore_builtin_app_pane;
+pub(crate) use create::restore_builtin_view_pane;
 pub(crate) use create::restore_launch_failed_pane;
+#[cfg(test)]
+pub(crate) use create::restore_view_pane;
+pub(crate) use create::{restore_view_pane_in_profile, RestoreTarget, RestoredViewPane};
+pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
 pub(crate) use workspace::ChildContextSpec;
+#[cfg(test)]
+pub(crate) use workspace::NewContextKind;
+pub(crate) use workspace::NewContextTiming;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.
@@ -36,17 +43,28 @@ pub(super) fn apply_initial_cmd(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
+    let is_agent = settings.env.contains_key("PLEXI_AGENT_SPAWNED");
     let effective_cmd: String = if !close_on_exit {
         let shell_path = &settings.shell;
         let trimmed = cmd.trim().trim_end_matches([';', ' ']);
         let sep = if trimmed.is_empty() { "" } else { "; " };
         match shell_name {
             "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+            "bash" if !is_agent => match crate::host::shell::ensure_bash_shell_integration() {
+                Ok(rcfile) => format!(
+                    "{trimmed}{sep}exec \"{shell_path}\" --rcfile \"{}\" -i",
+                    rcfile.to_string_lossy()
+                ),
+                Err(_) => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
+            },
             _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
         }
     } else {
         cmd.to_string()
     };
+    if close_on_exit {
+        settings.env.insert("PLEXI_EPHEMERAL".into(), "1".into());
+    }
     settings.args = match shell_name {
         "zsh" | "bash" => vec![
             "-i".to_string(),

@@ -1,4 +1,4 @@
-//! CPython-in-WASM adapter boundary for SDK v3 Python apps.
+//! CPython-in-WASM adapter boundary for SDK v3 Python plugins.
 //!
 //! This module owns the deterministic host side of the Python compatibility
 //! path: manifest routing, CPython bundle resolution, and JSON bridge
@@ -8,6 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+#[cfg(test)]
 use std::process::Command;
 #[cfg(test)]
 use std::process::Stdio;
@@ -25,23 +26,23 @@ use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
-use crate::app::registry::{AppManifest, RuntimeExecution};
+use crate::app::registry::{PluginManifest, RuntimeExecution};
 
-use super::wasm_app::bindings::plexi::platform::types::{
-    AppBarNode, BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine,
-    CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode,
-    IndexedNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
-    ScrollNode, SpaceNode, SpinnerNode, TextInputNode, TextNode, UiNodeData, UiTree,
+use super::wasm_frame::repaint_delay_until;
+use super::wasm_view::bindings::plexi::platform::types::{
+    BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
+    CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode, IndexedNode,
+    ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode, ScrollNode, SpaceNode,
+    SpinnerNode, SurfaceHeaderNode, TextInputNode, TextNode, UiNodeData, UiTree,
 };
 #[cfg(test)]
-use super::wasm_app::bindings::plexi::platform::types::{
+use super::wasm_view::bindings::plexi::platform::types::{
     DeclareToolsEffect, FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent,
     StateSnapshot, TimerEffect, ToolDecl, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
 };
-use super::wasm_app::Alignment;
+use super::wasm_view::Alignment;
 #[cfg(test)]
-use super::wasm_app::{Effect, Grants, StateStore, WasmApp};
-use super::wasm_frame::repaint_delay_until;
+use super::wasm_view::{Effect, Grants, StateStore, WasmView};
 
 struct InputState {
     bytes: VecDeque<u8>,
@@ -78,12 +79,11 @@ impl Default for InputState {
     }
 }
 
-static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+static NEXT_LOW_WATER_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_low_water_identity() -> Option<std::num::NonZeroU64> {
     let raw = NEXT_LOW_WATER_IDENTITY
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |current| current.checked_add(1),
@@ -489,7 +489,7 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
     if let Some(cached) = cache.get(&key) {
         return Ok(cached.clone());
     }
-    let engine = WasmtimeEngine::default();
+    let engine = super::wasm_engine::create_engine().map_err(|error| error.to_string())?;
     let module = Module::from_file(&engine, path).map_err(|error| error.to_string())?;
     cache.insert(key, (engine.clone(), module.clone()));
     Ok((engine, module))
@@ -505,7 +505,7 @@ pub enum WasmPythonError {
     #[error("parse manifest at {path}: {source}")]
     ParseManifest {
         path: PathBuf,
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("runtime.python_compat requires a .py or .pyc entry, got '{entry}'")]
     InvalidEntry { entry: String },
@@ -553,19 +553,19 @@ pub enum WasmPythonError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("read persisted app state at {path}: {source}")]
+    #[error("read persisted plugin state at {path}: {source}")]
     #[cfg(test)]
     ReadState {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("parse persisted app state at {path}: {source}")]
+    #[error("parse persisted plugin state at {path}: {source}")]
     #[cfg(test)]
     ParseState {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("persisted app state at {path} must be a JSON object, got {found}")]
+    #[error("persisted plugin state at {path} must be a JSON object, got {found}")]
     #[cfg(test)]
     StateNotObject { path: PathBuf, found: &'static str },
     #[error("invalid [state] declaration: {0}")]
@@ -582,8 +582,8 @@ pub enum WasmPythonError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonLaunchConfig {
-    pub app_id: String,
-    pub app_dir: PathBuf,
+    pub plugin_id: String,
+    pub plugin_dir: PathBuf,
     pub entry: PathBuf,
     pub module_name: String,
     pub launch_args: Vec<String>,
@@ -592,9 +592,9 @@ pub struct PythonLaunchConfig {
     pub allowed_hosts: Vec<String>,
     pub theme: std::collections::HashMap<String, String>,
     /// Validated `[state] scopes` from the manifest. Ordered; the first entry
-    /// is the app's default scope. See `crate::host::state_scope`.
+    /// is the plugin's default scope. See `crate::host::state_scope`.
     pub state_scopes: Vec<crate::host::state_scope::StateScope>,
-    /// Validated `[state] format` from the manifest. JSON unless the app
+    /// Validated `[state] format` from the manifest. JSON unless the plugin
     /// declared `format = "markdown"`, in which case the host is
     /// format-blind: the file's bytes round-trip verbatim under a single
     /// `document` key.
@@ -608,18 +608,18 @@ pub struct PythonLaunchConfig {
 }
 
 impl PythonLaunchConfig {
-    pub fn from_manifest_file(app_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
-        let manifest_path = app_dir.join("manifest.toml");
+    pub fn from_manifest_file(plugin_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
+        let manifest_path = plugin_dir.join("manifest.toml");
         let raw = std::fs::read_to_string(&manifest_path).map_err(|source| {
             WasmPythonError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
             }
         })?;
-        let manifest: AppManifest =
+        let manifest: PluginManifest =
             toml::from_str(&raw).map_err(|source| WasmPythonError::ParseManifest {
                 path: manifest_path,
-                source,
+                source: Box::new(source),
             })?;
 
         if manifest.runtime.execution != RuntimeExecution::Local {
@@ -635,11 +635,11 @@ impl PythonLaunchConfig {
             .state_format()
             .map_err(WasmPythonError::StateScopes)?;
 
-        let entry = manifest.app.entry;
+        let entry = manifest.plugin.entry;
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
             return Err(WasmPythonError::InvalidEntry { entry });
         }
-        let entry_path = app_dir.join(&entry);
+        let entry_path = plugin_dir.join(&entry);
         if !entry_path.is_file() {
             return Err(WasmPythonError::MissingEntry { path: entry_path });
         }
@@ -650,32 +650,28 @@ impl PythonLaunchConfig {
             .to_string();
 
         Ok(Some(Self {
-            app_id: manifest.app.id,
-            app_dir: app_dir.to_path_buf(),
+            plugin_id: manifest.plugin.id,
+            plugin_dir: plugin_dir.to_path_buf(),
             entry: entry_path,
             module_name,
             launch_args: Vec::new(),
-            workspace_root: app_dir.to_path_buf(),
-            capabilities: manifest.app.capabilities.capabilities,
-            allowed_hosts: manifest.app.capabilities.allowed_hosts,
+            workspace_root: plugin_dir.to_path_buf(),
+            capabilities: manifest.plugin.capabilities.capabilities,
+            allowed_hosts: manifest.plugin.capabilities.allowed_hosts,
             theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::load_with_workspace(Some(app_dir)),
+                &crate::config::PlexiConfig::load_with_workspace(Some(plugin_dir)),
             )
             .to_theme_map(),
             state_scopes,
             state_format,
-            context_root: app_dir.to_path_buf(),
+            context_root: plugin_dir.to_path_buf(),
         }))
     }
 }
 
-fn python_init_payload(
-    config: &PythonLaunchConfig,
-    state: Value,
-    size: (f32, f32),
-) -> Value {
+fn python_init_payload(config: &PythonLaunchConfig, state: Value, size: (f32, f32)) -> Value {
     // Same wire shape the live pane sends: state is always scope-keyed, never
-    // a flat `state` key. `state` here seeds only the app's default scope.
+    // a flat `state` key. `state` here seeds only the plugin's default scope.
     let default_scope = config
         .state_scopes
         .first()
@@ -688,9 +684,10 @@ fn python_init_payload(
         .collect();
     json!({
         "type": "init",
-        "app_id": config.app_id,
+        "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
+        "feature_flags": ["keyed_tree_delta"],
         "states": { default_scope.as_str(): state },
         "state_scopes": scope_names,
         "theme": config.theme,
@@ -722,7 +719,7 @@ pub struct WasmPythonRuntime {
     /// Wasmtime compile of the ~20 MB CPython WASI module takes seconds, and
     /// the compile cache is process-global and mutex-guarded, so a parallel
     /// caller can queue behind another one's compile). A caller polling for
-    /// the app's first message must not charge that to the app.
+    /// the plugin's first message must not charge that to the plugin.
     started: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -735,27 +732,40 @@ impl WasmPythonRuntime {
                 WasmPythonError::RuntimeStart("CPython bundle has no parent".to_string())
             })?
             .join("Lib");
-        let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+        let sdk = if let Some(resources) =
+            crate::distribution::resources().map_err(WasmPythonError::RuntimeStart)?
+        {
+            resources.join("sdk")
+        } else {
+            unbundled_python_sdk()
+        };
+        if !sdk.join("plexi_sdk/_v3_process.py").is_file() {
+            return Err(WasmPythonError::RuntimeStart(format!(
+                "Python SDK missing at {}",
+                sdk.display()
+            )));
+        }
+        log::info!("python_compat: using SDK at {}", sdk.display());
         let stdin = AppendableStdin::default();
         let stdout = DrainableOutput::default();
         let stderr = DrainableOutput::default();
         let thread_stdin = stdin.clone();
         let thread_stdout = stdout.clone();
         let thread_stderr = stderr.clone();
-        let app_dir = config.app_dir.clone();
+        let plugin_dir = config.plugin_dir.clone();
         let entry_name = config
             .entry
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| WasmPythonError::RuntimeStart("Python entry is not UTF-8".to_string()))?
             .to_string();
-        let app_id = config.app_id.clone();
+        let plugin_id = config.plugin_id.clone();
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_started = Arc::clone(&started);
-        let thread_app_id = app_id.clone();
+        let thread_plugin_id = plugin_id.clone();
 
         let thread = std::thread::Builder::new()
-            .name(format!("plexi-python-wasm-{app_id}"))
+            .name(format!("plexi-python-wasm-{plugin_id}"))
             .spawn(move || {
                 let compile_begin = std::time::Instant::now();
                 let (engine, module) = cached_cpython_module(&bundle)?;
@@ -785,7 +795,7 @@ impl WasmPythonRuntime {
                     .map_err(|e| e.to_string())?
                     .preopened_dir(&sdk, "/sdk", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?
-                    .preopened_dir(&app_dir, "/app", DirPerms::READ, FilePerms::READ)
+                    .preopened_dir(&plugin_dir, "/app", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?;
                 let mut store = Store::new(&engine, builder.build_p1());
                 let instance = linker
@@ -795,7 +805,7 @@ impl WasmPythonRuntime {
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .map_err(|e| e.to_string())?;
                 log::info!(
-                    "app::{thread_app_id}: CPython WASM guest entering _start \
+                    "plugin::{thread_plugin_id}: CPython WASM guest entering _start \
                      (module compiled in {compiled_in:?}, instantiated in {:?})",
                     compile_begin.elapsed() - compiled_in
                 );
@@ -803,7 +813,7 @@ impl WasmPythonRuntime {
                 start.call(&mut store, ()).map_err(|e| e.to_string())
             })
             .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
-        log::info!("app::{app_id}: CPython WASM runtime started with read-only SDK and app mounts");
+        log::info!("plugin::{plugin_id}: CPython WASM runtime started with read-only SDK and plugin mounts");
         Ok(Self {
             stdin,
             stdout,
@@ -843,9 +853,9 @@ impl WasmPythonRuntime {
 
     /// Whether the guest is executing Python yet. False while the CPython
     /// module is still being compiled or instantiated on the guest thread —
-    /// work that happens after `launch` returns and is not the app's doing.
-    /// Callers that police how long the app takes to answer start their clock
-    /// from here, so a cold compile is never reported as an unresponsive app.
+    /// work that happens after `launch` returns and is not the plugin's doing.
+    /// Callers that police how long the plugin takes to answer start their clock
+    /// from here, so a cold compile is never reported as an unresponsive plugin.
     pub fn has_started(&self) -> bool {
         self.started.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -872,7 +882,7 @@ impl Drop for WasmPythonRuntime {
     }
 }
 
-/// How long the app itself gets to answer, measured from the moment the guest
+/// How long the plugin itself gets to answer, measured from the moment the guest
 /// starts executing Python — never from `launch`, which returns before the
 /// CPython module has been compiled (see `WasmPythonRuntime::has_started`).
 const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -881,7 +891,7 @@ const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// compile of the CPython WASI module, plus any wait behind another caller's
 /// compile on the process-global module cache. Generous on purpose — this
 /// bound exists only so a wedged compile reports a diagnosable error instead
-/// of hanging `plexi app check` forever; it is not a performance assertion.
+/// of hanging `plexi plugin check` forever; it is not a performance assertion.
 const HEADLESS_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// What a headless poll should do next once the guest has been found alive.
@@ -900,8 +910,8 @@ enum PollVerdict {
 /// different parties. `launch` returns as soon as the guest *thread* is
 /// spawned; the Wasmtime compile of the CPython module happens on that thread
 /// afterwards, behind a process-global cache mutex. Charging that host-side
-/// cold start to the app's response budget is how a guest that crashes at
-/// import gets misreported as an unresponsive app: the single budget expires
+/// cold start to the plugin's response budget is how a guest that crashes at
+/// import gets misreported as an unresponsive plugin: the single budget expires
 /// while the guest is still queued behind a compile, before it has run a line
 /// of Python, so there is no process exit to observe yet.
 struct HeadlessDeadline {
@@ -931,9 +941,9 @@ impl HeadlessDeadline {
     }
 }
 
-/// One-shot headless run of a CPython-in-WASM app through the exact same
+/// One-shot headless run of a CPython-in-WASM plugin through the exact same
 /// runtime the live host uses (`WasmPythonRuntime` running
-/// `plexi_sdk._v3_process`) — for `plexi app check` / `plexi app render`.
+/// `plexi_sdk._v3_process`) — for `plexi plugin check` / `plexi view render`.
 /// Boots, waits for `ready`, sends one `render`, and returns the decoded
 /// `UiTree`. Unlike the deleted native-subprocess checker, there is no
 /// separate wire protocol to drift from what the live host executes.
@@ -948,7 +958,7 @@ pub fn run_headless_frame(
 
 /// Render once, then send a `ui_action` for each handler in order inside the
 /// same guest session, rendering after every action. State accumulates across
-/// clicks, like a real user driving the app. Stops at the first failed action
+/// clicks, like a real user driving the plugin. Stops at the first failed action
 /// — the guest is dead or wedged and later clicks cannot succeed. Returns the
 /// pre-action frame plus one `(handler_id, render result)` entry per
 /// attempted action.
@@ -1019,7 +1029,9 @@ impl HeadlessPythonSession {
             message_type == Some("frame_done")
         })?;
         let message = tree_message.ok_or_else(|| {
-            WasmPythonError::BridgeJson("app emitted frame_done with no component_tree".to_string())
+            WasmPythonError::BridgeJson(
+                "plugin emitted frame_done with no component_tree".to_string(),
+            )
         })?;
         let tree = match message.get("type").and_then(Value::as_str) {
             Some("tree_delta") => {
@@ -1036,7 +1048,12 @@ impl HeadlessPythonSession {
                             "tree_delta missing 'changed' array".to_string(),
                         )
                     })?;
-                apply_tree_delta(base, changed)?
+                apply_tree_delta(
+                    base,
+                    changed,
+                    message.get("added").and_then(Value::as_array),
+                    message.get("removed").and_then(Value::as_array),
+                )?
             }
             _ => {
                 let raw = message.get("tree").ok_or_else(|| {
@@ -1092,13 +1109,13 @@ impl HeadlessPythonSession {
     }
 
     /// The error returned when a deadline expires with the guest still alive.
-    /// Names which clock ran out, so an unresponsive app is never confused with
+    /// Names which clock ran out, so an unresponsive plugin is never confused with
     /// a host that could not get CPython compiled and running.
     fn timeout_error(&mut self, verdict: PollVerdict) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         let what = match verdict {
             PollVerdict::ResponseTimedOut => {
-                format!("timed out waiting for app response after {HEADLESS_DEFAULT_TIMEOUT:?}")
+                format!("timed out waiting for plugin response after {HEADLESS_DEFAULT_TIMEOUT:?}")
             }
             PollVerdict::BootTimedOut => format!(
                 "CPython WASM guest did not start executing within {HEADLESS_BOOT_TIMEOUT:?} \
@@ -1123,7 +1140,7 @@ impl HeadlessPythonSession {
     fn guest_death_error(&self) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         WasmPythonError::BridgeJson(format!(
-            "app exited before responding{}",
+            "plugin exited before responding{}",
             if stderr.trim().is_empty() {
                 String::new()
             } else {
@@ -1133,10 +1150,19 @@ impl HeadlessPythonSession {
     }
 }
 
+/// What the host last told a Python guest about its own pane. A new guest
+/// starts unshown and unfocused, so a pane opened in view is told both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PanePresence {
+    pub visible: bool,
+    pub focused: bool,
+}
+
 pub struct LivePythonPane {
+    presence: PanePresence,
     config: PythonLaunchConfig,
     runtime: WasmPythonRuntime,
-    app_id: String,
+    plugin_id: String,
     title: Option<String>,
     tree: Option<Arc<PythonUiTree>>,
     /// Monotonic generation of `tree`. Bumped on every swap (commit, reset) so
@@ -1176,7 +1202,7 @@ pub struct LivePythonPane {
     perf_ui_render: std::time::Duration,
     perf_canvas_render: std::time::Duration,
     /// Per-scope in-memory copy of persisted state, keyed by declared scope.
-    /// Each entry also caches the backing file's `(mtime, len)` from the last
+    /// Each entry also caches a content digest of the backing file from the last
     /// successful read/write so a persist can detect an external write that
     /// landed since (disk wins — see `save_state`).
     persisted_states: HashMap<crate::host::state_scope::StateScope, ScopeState>,
@@ -1230,7 +1256,7 @@ pub struct LivePythonPane {
     /// per-pane, live for the pane's lifetime (deliberately kept across
     /// hot-reload `relaunch`), and are never persisted.
     granted_fs_roots: Vec<PathBuf>,
-    pending_commands: Vec<crate::app::app_trait::AppCommand>,
+    pending_commands: Vec<crate::app::view_trait::ViewCommand>,
     /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
     /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
     /// calling `ui()`, so this is the pane's only chance to consume it. `ui()`
@@ -1247,6 +1273,22 @@ pub struct LivePythonPane {
     /// Lives on the pane because a traceback spans several `drain_stderr`
     /// calls and its state must survive between them.
     stderr_classifier: GuestStderrClassifier,
+    /// Last warn time per unrecognized guest message type. A 1 Hz poll must
+    /// not fill the channel log — and the Logs plugin that tails it — with the
+    /// same line.
+    unhandled_warned_at: HashMap<String, std::time::Instant>,
+    /// One info line the first time this pane serves
+    /// `read_permission_decisions`. Later polls stay quiet at info.
+    announced_permission_read: bool,
+    /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
+    /// opened by or targeting this Python runtime.
+    pipes: crate::host::typed_pipes::TypedPipeRegistry,
+    /// Approved one-shot CLI operations this pane requested (stint 1175).
+    /// Dropped with the pane, which kills every running program.
+    cli_ops: crate::host::cli_ops::service::CliOpService,
+    /// Host-established `(pane_id, context_id)` from `set_pipe_owner`. Used only
+    /// to route approval prompts; no grant binds to it.
+    pane_owner: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1258,7 +1300,7 @@ struct PythonUiTree {
 /// A decoded frame or bridge message handed from the decoder thread to the
 /// paint thread (stint 0438). JSON + tree decode happen on the decoder thread;
 /// the paint thread only picks up the ready result. Decode durations ride
-/// along so the per-app perf log keeps reporting `json_ms` / `tree_ms`.
+/// along so the per-plugin perf log keeps reporting `json_ms` / `tree_ms`.
 enum DecodedOutput {
     Tree {
         frame_id: Option<u64>,
@@ -1290,7 +1332,7 @@ struct ScheduledWake {
     at: std::time::Instant,
     /// The guest's frame interval while it drives its own cadence in
     /// continuous mode; `None` when the pending wake is not the frame cadence
-    /// (scheduled-mode apps, or a continuous app whose pipeline is full and
+    /// (scheduled-mode plugins, or a continuous plugin whose pipeline is full and
     /// whose next admission therefore depends on this very frame arriving).
     continuous_interval: Option<std::time::Duration>,
 }
@@ -1310,11 +1352,11 @@ type WakeSchedule = Arc<Mutex<WakeScheduleState>>;
 /// Whether a decoded frame needs its own immediate repaint wake, or can ride
 /// the repaint the paint thread already scheduled.
 ///
-/// Suppression only applies to an app driving a continuous cadence, where the
+/// Suppression only applies to a plugin driving a continuous cadence, where the
 /// pending wake is by construction at most one frame interval away — so the
 /// cost is a fraction of a frame of presentation latency, in exchange for not
 /// forcing a second full-host repaint per guest frame. An input-driven
-/// (scheduled-mode) app never suppresses: its frames are the *response* to
+/// (scheduled-mode) plugin never suppresses: its frames are the *response* to
 /// input, nothing else is scheduled to show them, and latency there is
 /// perceptible.
 ///
@@ -1347,7 +1389,7 @@ struct PythonOutputDecoder {
 impl PythonOutputDecoder {
     fn spawn(
         runtime: &WasmPythonRuntime,
-        app_id: String,
+        plugin_id: String,
         repaint: RepaintHook,
         wake_schedule: WakeSchedule,
     ) -> Self {
@@ -1358,12 +1400,12 @@ impl PythonOutputDecoder {
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread_queued = queued.clone();
         let thread = std::thread::Builder::new()
-            .name(format!("plexi-python-decode-{app_id}"))
+            .name(format!("plexi-python-decode-{plugin_id}"))
             .spawn(move || {
                 decode_loop(
                     thread_stdout,
                     stdin,
-                    app_id,
+                    plugin_id,
                     tx,
                     repaint,
                     thread_queued,
@@ -1412,7 +1454,7 @@ impl Drop for PythonOutputDecoder {
 fn decode_loop(
     stdout: DrainableOutput,
     stdin: AppendableStdin,
-    app_id: String,
+    plugin_id: String,
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
     queued: Arc<std::sync::atomic::AtomicUsize>,
@@ -1444,7 +1486,10 @@ fn decode_loop(
                     // beat its increment would underflow the unsigned counter
                     // into "always busy".
                     queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    if tx.send(DecodedOutput::DecodeError(error.to_string())).is_err() {
+                    if tx
+                        .send(DecodedOutput::DecodeError(error.to_string()))
+                        .is_err()
+                    {
                         queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     }
                     produced = true;
@@ -1455,7 +1500,14 @@ fn decode_loop(
             let message_type = value.get("type").and_then(Value::as_str);
             let output = match message_type {
                 Some("component_tree") => {
-                    decode_full_tree(&value, json_time, bytes, &mut last_tree)
+                    let output = decode_full_tree(&value, json_time, bytes, &mut last_tree);
+                    if matches!(output, Some(DecodedOutput::DecodeError(_))) {
+                        // A malformed full tree is a guest bug, not state drift.
+                        // Surface it to the pane; requesting another full tree would
+                        // only repeat the same invalid payload.
+                        last_tree = None;
+                    }
+                    output
                 }
                 Some("tree_delta") => {
                     match decode_tree_delta(&value, json_time, bytes, &last_tree) {
@@ -1470,13 +1522,13 @@ fn decode_loop(
                             if !awaiting_full {
                                 awaiting_full = true;
                                 log::warn!(
-                                    "app::{app_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
+                                    "plugin::{plugin_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
                                 );
                                 if let Err(error) =
                                     stdin.push_json_line(&json!({"type": "request_full_tree"}))
                                 {
                                     log::error!(
-                                        "app::{app_id}: failed to request full-tree resync: {error}"
+                                        "plugin::{plugin_id}: failed to request full-tree resync: {error}"
                                     );
                                 }
                             }
@@ -1584,7 +1636,10 @@ fn decode_tree_delta(
         .and_then(Value::as_array)
         .ok_or_else(|| "tree_delta missing 'changed' array".to_string())?;
     let tree_started = std::time::Instant::now();
-    let tree = apply_tree_delta(base, changed).map_err(|error| error.to_string())?;
+    let added = value.get("added").and_then(Value::as_array);
+    let removed = value.get("removed").and_then(Value::as_array);
+    let tree =
+        apply_tree_delta(base, changed, added, removed).map_err(|error| error.to_string())?;
     Ok(DecodedOutput::Tree {
         frame_id: value.get("frame_id").and_then(Value::as_u64),
         tree: Arc::new(tree),
@@ -1602,18 +1657,23 @@ fn decode_tree_delta(
 fn apply_tree_delta(
     base: &PythonUiTree,
     changed: &[Value],
+    added: Option<&Vec<Value>>,
+    removed: Option<&Vec<Value>>,
 ) -> Result<PythonUiTree, WasmPythonError> {
     let mut tree = base.tree.clone();
     let mut canvas_fits = base.canvas_fits.clone();
     for patch in changed {
         let id = required_u32(patch, "id")?;
-        let index = id as usize;
-        let slot = tree.nodes.get_mut(index).ok_or_else(|| {
-            WasmPythonError::BridgeJson(format!(
-                "tree_delta id {id} out of range (arena has {} nodes)",
-                base.tree.nodes.len()
-            ))
-        })?;
+        let slot = tree
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == id)
+            .ok_or_else(|| {
+                WasmPythonError::BridgeJson(format!(
+                    "tree_delta id {id} out of range (arena has {} nodes)",
+                    base.tree.nodes.len()
+                ))
+            })?;
         if let Some(commands_changed) = patch.get("commands_changed").and_then(Value::as_array) {
             let UiNodeData::Canvas(canvas) = &mut slot.data else {
                 return Err(WasmPythonError::BridgeJson(format!(
@@ -1658,6 +1718,44 @@ fn apply_tree_delta(
             *slot = node;
         }
     }
+    let mut remove_ids = std::collections::HashSet::new();
+    if let Some(removed) = removed {
+        for raw_id in removed {
+            let id = raw_id
+                .as_u64()
+                .filter(|id| *id <= u32::MAX as u64)
+                .ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "keyed tree_delta removal is not a u32 id".to_string(),
+                    )
+                })? as u32;
+            if !remove_ids.insert(id) || !tree.nodes.iter().any(|node| node.id == id) {
+                return Err(WasmPythonError::BridgeJson(
+                    "keyed tree_delta removes an unknown or duplicate id".to_string(),
+                ));
+            }
+        }
+    }
+    tree.nodes.retain(|node| !remove_ids.contains(&node.id));
+    for id in &remove_ids {
+        canvas_fits.remove(id);
+    }
+    if let Some(added) = added {
+        for raw_node in added {
+            let node = decode_indexed_node(raw_node)?;
+            if tree.nodes.iter().any(|existing| existing.id == node.id) {
+                return Err(WasmPythonError::BridgeJson(format!(
+                    "keyed tree_delta adds duplicate id {}",
+                    node.id
+                )));
+            }
+            if let Some(fit) = canvas_fit_for_node(raw_node)? {
+                canvas_fits.insert(node.id, fit);
+            }
+            tree.nodes.push(node);
+        }
+    }
+    validate_python_ui_tree(&tree)?;
     Ok(PythonUiTree { tree, canvas_fits })
 }
 
@@ -1808,16 +1906,19 @@ impl PythonFrameScheduler {
     }
 }
 
+/// SHA-256 of a state file's bytes: the identity foreign-write detection compares.
+type StateDigest = [u8; 32];
+
 /// One scope's in-memory state plus the file identity it was last synced
-/// against. `(mtime, len)` are `None` until the backing file has been seen on
-/// disk; `error` is set when the file exists but could not be decoded — the
+/// against. `digest` (SHA-256 of the file bytes) is `None` until the backing
+/// file has been seen on disk — content, not `(mtime, len)`, so a same-length
+/// write inside the filesystem's mtime granularity is still detected; `error` is set when the file exists but could not be decoded — the
 /// scope then refuses to persist until an external read clears it, so a
 /// corrupt file is never silently reset to `{}`.
 #[derive(Debug, Clone, Default)]
 struct ScopeState {
     values: serde_json::Map<String, Value>,
-    mtime: Option<std::time::SystemTime>,
-    len: Option<u64>,
+    digest: Option<StateDigest>,
     error: Option<String>,
 }
 
@@ -1836,19 +1937,19 @@ fn json_value_kind(value: &Value) -> &'static str {
 #[cfg(test)]
 fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
     if let Err(error) =
-        crate::workspace::secrets::ensure_app_state_gitignore(&config.workspace_root)
+        crate::workspace::secrets::ensure_plugin_state_gitignore(&config.workspace_root)
     {
         log::warn!(
-            "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-            config.app_id,
+            "plugin::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+            config.plugin_id,
             config.workspace_root.display()
         );
     }
 }
 
-/// Encode a scope's values for disk in the app's declared format.
+/// Encode a scope's values for disk in the plugin's declared format.
 ///
-/// JSON is pretty-printed. Markdown keeps the host format-blind: the app's
+/// JSON is pretty-printed. Markdown keeps the host format-blind: the plugin's
 /// `document` value (which must be a string) is written verbatim — no JSON
 /// envelope, no escaping.
 fn encode_state_file(
@@ -1873,7 +1974,7 @@ fn encode_state_file(
     }
 }
 
-/// Decode a state file's bytes in the app's declared format. The inverse of
+/// Decode a state file's bytes in the plugin's declared format. The inverse of
 /// [`encode_state_file`]: markdown text arrives as `{"document": "<file text>"}`.
 pub(crate) fn decode_state_file(
     bytes: &[u8],
@@ -1905,54 +2006,109 @@ pub(crate) fn decode_state_file(
 /// exists but fails to decode sets `error` and leaves `values` empty; the
 /// caller decides whether to keep previously-known values.
 fn read_python_state_file(
-    app_id: &str,
+    plugin_id: &str,
+    scope: crate::host::state_scope::StateScope,
     path: &Path,
     format: crate::host::state_scope::StateFormat,
 ) -> ScopeState {
-    let (mtime, len) = stat_state_file(path);
-    match std::fs::read(path) {
+    let read = std::fs::read(path);
+    let digest = read.as_ref().ok().map(|bytes| Sha256::digest(bytes).into());
+    match read {
         Ok(bytes) => match decode_state_file(&bytes, format) {
-            Ok(values) => ScopeState {
-                values,
-                mtime,
-                len,
-                error: None,
-            },
+            Ok(values) => {
+                log::info!(
+                    "{}",
+                    format_python_state_load_trace(
+                        plugin_id,
+                        scope,
+                        format,
+                        path,
+                        Some((bytes.len(), values.len())),
+                    )
+                );
+                ScopeState {
+                    values,
+                    digest,
+                    error: None,
+                }
+            }
             Err(error) => {
                 log::error!(
-                    "app::{app_id}: state {} is unreadable ({error}) — state is NOT reset; \
+                    "plugin::{plugin_id}: state {} is unreadable ({error}) — state is NOT reset; \
                      persists are blocked until the file is fixed",
                     path.display()
                 );
                 ScopeState {
                     values: serde_json::Map::new(),
-                    mtime,
-                    len,
+                    digest,
                     error: Some(error),
                 }
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ScopeState::default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            log::info!(
+                "{}",
+                format_python_state_load_trace(plugin_id, scope, format, path, None)
+            );
+            ScopeState::default()
+        }
         Err(error) => {
             let message = format!("read state {}: {error}", path.display());
-            log::error!("app::{app_id}: {message} — state is NOT reset");
+            log::error!("plugin::{plugin_id}: {message} — state is NOT reset");
             ScopeState {
                 values: serde_json::Map::new(),
-                mtime,
-                len,
+                digest,
                 error: Some(message),
             }
         }
     }
 }
 
-/// Stat a state file's `(mtime, len)` identity pair. `(None, None)` when the
-/// file does not exist (or cannot be statted).
-fn stat_state_file(path: &Path) -> (Option<std::time::SystemTime>, Option<u64>) {
-    match std::fs::metadata(path) {
-        Ok(meta) => (meta.modified().ok(), Some(meta.len())),
-        Err(_) => (None, None),
+fn format_python_state_load_trace(
+    plugin_id: &str,
+    scope: crate::host::state_scope::StateScope,
+    format: crate::host::state_scope::StateFormat,
+    path: &Path,
+    hit: Option<(usize, usize)>,
+) -> String {
+    match hit {
+        Some((bytes, keys)) => format!(
+            "plugin::{plugin_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
+            scope.as_str(),
+            format.as_str(),
+            path.display()
+        ),
+        None => format!(
+            "plugin::{plugin_id}: no state found for scope={} format={} at {} (fallback=none)",
+            scope.as_str(),
+            format.as_str(),
+            path.display()
+        ),
     }
+}
+
+fn format_python_state_persist_trace(
+    plugin_id: &str,
+    scope: crate::host::state_scope::StateScope,
+    format: crate::host::state_scope::StateFormat,
+    path: &Path,
+    bytes: usize,
+    replaced: bool,
+) -> String {
+    format!(
+        "plugin::{plugin_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
+        scope.as_str(),
+        format.as_str(),
+        path.display()
+    )
+}
+
+/// Content digest of a state file's current bytes. `None` when the file does
+/// not exist (or cannot be read).
+fn state_file_digest(path: &Path) -> Option<StateDigest> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| Sha256::digest(bytes).into())
 }
 
 /// Test-only convenience wrapping `load_python_states` down to "the one
@@ -1973,14 +2129,39 @@ fn load_python_state(
         .unwrap_or(crate::host::state_scope::StateScope::Global);
     let path = crate::host::state_scope::state_file(
         scope,
-        &config.app_id,
+        &config.plugin_id,
         config.state_format,
         &config.context_root,
     )
     .expect("resolve state path");
     match read_python_state_bytes(&path)? {
-        Some(bytes) => parse_python_state(&path, &bytes),
-        None => Ok(serde_json::Map::new()),
+        Some(bytes) => {
+            let state = parse_python_state(&path, &bytes)?;
+            log::info!(
+                "{}",
+                format_python_state_load_trace(
+                    &config.plugin_id,
+                    scope,
+                    config.state_format,
+                    &path,
+                    Some((bytes.len(), state.len())),
+                )
+            );
+            Ok(state)
+        }
+        None => {
+            log::info!(
+                "{}",
+                format_python_state_load_trace(
+                    &config.plugin_id,
+                    scope,
+                    config.state_format,
+                    &path,
+                    None,
+                )
+            );
+            Ok(serde_json::Map::new())
+        }
     }
 }
 
@@ -1994,9 +2175,7 @@ fn read_python_state_bytes(path: &Path) -> Result<Option<Vec<u8>>, WasmPythonErr
                     path: path.to_path_buf(),
                     source,
                 }),
-                Err(metadata_error)
-                    if metadata_error.kind() == std::io::ErrorKind::NotFound =>
-                {
+                Err(metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound => {
                     Ok(None)
                 }
                 Err(source) => Err(WasmPythonError::ReadState {
@@ -2042,15 +2221,17 @@ fn load_python_states(
         .map(|&scope| {
             let state = match crate::host::state_scope::state_file(
                 scope,
-                &config.app_id,
+                &config.plugin_id,
                 config.state_format,
                 &config.context_root,
             ) {
-                Ok(path) => read_python_state_file(&config.app_id, &path, config.state_format),
+                Ok(path) => {
+                    read_python_state_file(&config.plugin_id, scope, &path, config.state_format)
+                }
                 Err(error) => {
                     log::error!(
-                        "app::{}: cannot resolve state path for scope {}: {error}",
-                        config.app_id,
+                        "plugin::{}: cannot resolve state path for scope {}: {error}",
+                        config.plugin_id,
                         scope.as_str()
                     );
                     ScopeState {
@@ -2092,7 +2273,7 @@ struct McpHeldLine {
 }
 
 fn pump_mcp_inbound(
-    app_id: &str,
+    plugin_id: &str,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
     stdin: &AppendableStdin,
     connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
@@ -2132,11 +2313,11 @@ fn pump_mcp_inbound(
                 }
                 LowWaterArm::WrongInput { token } => {
                     log::error!(
-                        "app::{app_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
+                        "plugin::{plugin_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2146,7 +2327,7 @@ fn pump_mcp_inbound(
                 }
                 LowWaterArm::Closed => {
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2157,11 +2338,11 @@ fn pump_mcp_inbound(
                 LowWaterArm::BelowThreshold => break,
                 LowWaterArm::IdentityExhausted => {
                     log::error!(
-                        "app::{app_id}: guest stdin low-water identity space exhausted; closing stdin"
+                        "plugin::{plugin_id}: guest stdin low-water identity space exhausted; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2172,7 +2353,7 @@ fn pump_mcp_inbound(
             }
         }
         match deliver_mcp_line(
-            app_id,
+            plugin_id,
             pending.server_id,
             pending.line,
             rx,
@@ -2203,7 +2384,7 @@ enum McpDelivery {
 /// down, one latched error), never a per-line error. Other push failures
 /// (malformed JSON, hard cap) drop only this line, loudly.
 fn deliver_mcp_line(
-    app_id: &str,
+    plugin_id: &str,
     server_id: String,
     line: crate::host::mcp_client::McpLine,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
@@ -2227,13 +2408,13 @@ fn deliver_mcp_line(
         Ok(()) => {
             if let crate::host::mcp_client::McpLine::Closed(reason) = &line {
                 connections.remove(&server_id);
-                log::info!("app::{app_id}: mcp server {server_id} closed: {reason}");
+                log::info!("plugin::{plugin_id}: mcp server {server_id} closed: {reason}");
             }
             McpDelivery::Delivered
         }
         Err(WasmPythonError::StdinClosed) => {
             drop_undeliverable_mcp_backlog(
-                app_id,
+                plugin_id,
                 rx,
                 connections,
                 Some((server_id, line)),
@@ -2242,7 +2423,7 @@ fn deliver_mcp_line(
             McpDelivery::GuestGone
         }
         Err(error) => {
-            log::error!("app::{app_id}: deliver MCP line to guest failed — dropped: {error}");
+            log::error!("plugin::{plugin_id}: deliver MCP line to guest failed — dropped: {error}");
             McpDelivery::Delivered
         }
     }
@@ -2256,7 +2437,7 @@ fn deliver_mcp_line(
 /// latched pane-level error — latched, never per line, so a teardown racing
 /// a flooding server cannot turn its output into log growth.
 fn drop_undeliverable_mcp_backlog(
-    app_id: &str,
+    plugin_id: &str,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
     connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
     in_hand: Option<(String, crate::host::mcp_client::McpLine)>,
@@ -2268,7 +2449,7 @@ fn drop_undeliverable_mcp_backlog(
         dropped += 1;
         if let crate::host::mcp_client::McpLine::Closed(reason) = &l {
             connections.remove(&sid);
-            log::info!("app::{app_id}: mcp server {sid} closed: {reason}");
+            log::info!("plugin::{plugin_id}: mcp server {sid} closed: {reason}");
         }
         next = rx.try_recv().ok();
     }
@@ -2276,26 +2457,79 @@ fn drop_undeliverable_mcp_backlog(
     if !*closed_logged {
         *closed_logged = true;
         log::error!(
-            "app::{app_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
+            "plugin::{plugin_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionBridgeKind {
+    Read,
+    Decide,
+}
+
+/// How long to suppress a repeat of the same unrecognized guest message type.
+const UNHANDLED_WARN_REPEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn bridge_message_type(message: &Value) -> Option<&str> {
+    let raw = message.get("type").and_then(Value::as_str)?;
+    let trimmed = raw.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridgeKind> {
+    match message_type {
+        Some("read_permission_decisions") => Some(PermissionBridgeKind::Read),
+        Some("permission_decision") => Some(PermissionBridgeKind::Decide),
+        _ => None,
+    }
+}
+
+fn guest_log_level(raw: Option<&str>) -> log::Level {
+    match raw.map(str::trim) {
+        Some("debug") => log::Level::Debug,
+        Some("warn" | "warning") => log::Level::Warn,
+        Some("error") => log::Level::Error,
+        Some("trace") => log::Level::Trace,
+        _ => log::Level::Info,
+    }
+}
+
+fn unhandled_warn_is_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(at) => match now.checked_duration_since(at) {
+            Some(elapsed) => elapsed >= UNHANDLED_WARN_REPEAT,
+            None => true,
+        },
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum OutboundEventError {
+    Encode(String),
+    Send(String),
 }
 
 impl LivePythonPane {
     /// Send an event to the CPython guest. Failure means the message was
     /// dropped: malformed JSON, closed stdin, or the guest-stdin hard cap.
-    /// Log loudly so a dead or wedged app is diagnosable from plexi.log.
+    /// Log loudly so a dead or wedged plugin is diagnosable from plexi.log.
     fn send_to_runtime(&self, event: &Value) {
         if let Err(error) = self.runtime.send(event) {
             log::error!(
-                "app::{}: send to CPython runtime failed: {error}",
-                self.app_id
+                "plugin::{}: send to CPython runtime failed: {error}",
+                self.plugin_id
             );
         }
     }
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
-        let app_id = config.app_id.clone();
+        let plugin_id = config.plugin_id.clone();
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
@@ -2306,7 +2540,7 @@ impl LivePythonPane {
         let wake_schedule: WakeSchedule = Arc::new(Mutex::new(WakeScheduleState::default()));
         let decoder = PythonOutputDecoder::spawn(
             &runtime,
-            app_id.clone(),
+            plugin_id.clone(),
             repaint.clone(),
             wake_schedule.clone(),
         );
@@ -2325,9 +2559,10 @@ impl LivePythonPane {
             }
         });
         Ok(Self {
+            presence: PanePresence::default(),
             runtime,
             config,
-            app_id,
+            plugin_id,
             title: None,
             tree: None,
             tree_seq: 0,
@@ -2373,7 +2608,56 @@ impl LivePythonPane {
             pending_commands: Vec::new(),
             pending_click_carry: None,
             stderr_classifier: GuestStderrClassifier::new(),
+            unhandled_warned_at: HashMap::new(),
+            announced_permission_read: false,
+            pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
+                crate::config::config_dir().join("pipes"),
+            ),
+            cli_ops: crate::host::cli_ops::service::CliOpService::default(),
+            pane_owner: None,
         })
+    }
+
+    /// Stamp the owning pane's host-established scope onto this instance's
+    /// typed-pipe registry (stint 0742).
+    pub fn set_pipe_owner(&mut self, owner: crate::host::scope::Scope) {
+        if let crate::host::scope::Scope::Pane {
+            pane_id,
+            context_id,
+        } = &owner
+        {
+            self.pane_owner = Some((*pane_id, *context_id));
+        }
+        self.pipes.set_owner(owner);
+    }
+
+    /// Register a host-directed duplex JSON pipe on this Python instance's
+    /// typed-pipe registry so `has_pipe_reader` reflects the connection.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+        match self.pipes.open_json(
+            pipe_id.to_string(),
+            crate::host::typed_pipes::PipeDirection::Duplex,
+        ) {
+            Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {
+                log::info!(
+                    "plugin::{}: registered directed pipe '{pipe_id}' on Python runtime",
+                    self.plugin_id
+                );
+                true
+            }
+            Err(error) => {
+                log::warn!(
+                    "plugin::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
+                    self.plugin_id
+                );
+                false
+            }
+        }
+    }
+
+    /// True when `pipe_id` is open on this Python instance's typed-pipe registry.
+    pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
+        self.pipes.has_reader(pipe_id)
     }
 
     /// Refresh the live context root this pane resolves state paths against.
@@ -2381,8 +2665,8 @@ impl LivePythonPane {
     pub fn set_context_root(&mut self, root: &Path) {
         if self.context_root != root {
             log::info!(
-                "app::{}: context root changed {} -> {} — state scope resolution follows",
-                self.app_id,
+                "plugin::{}: context root changed {} -> {} — state scope resolution follows",
+                self.plugin_id,
                 self.context_root.display(),
                 root.display()
             );
@@ -2401,14 +2685,14 @@ impl LivePythonPane {
         // Stint 0426: the caller already removed `pending_click` from
         // `PlexiApp::pending_pane_clicks` before this call — it is not
         // re-queued there. A fresh click for this frame wins over a carried
-        // one from a prior frame that couldn't be delivered yet (an app is
+        // one from a prior frame that couldn't be delivered yet (a plugin is
         // never sent two independent clicks close enough together for both
         // to still be meaningful); the carried one is dropped in that case.
         let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
         if pending_click.is_some() {
             log::info!(
-                "app::{}: pending pane click/node-click entering render (carried={})",
-                self.app_id,
+                "plugin::{}: pending pane click/node-click entering render (carried={})",
+                self.plugin_id,
                 self.pending_click_carry.is_none()
             );
         }
@@ -2419,8 +2703,8 @@ impl LivePythonPane {
                 // resets pending_click_carry) — fail loud instead of
                 // silently swallowing the click forever.
                 log::error!(
-                    "app::{}: dropping pending pane click — pane is in a fatal error state: {error}",
-                    self.app_id
+                    "plugin::{}: dropping pending pane click — pane is in a fatal error state: {error}",
+                    self.plugin_id
                 );
             }
             ui.colored_label(colors.danger, error);
@@ -2431,8 +2715,8 @@ impl LivePythonPane {
             if !valid_python_viewport(size.x, size.y) {
                 if pending_click.is_some() {
                     log::info!(
-                        "app::{}: deferring pending pane click — viewport not yet valid",
-                        self.app_id
+                        "plugin::{}: deferring pending pane click — viewport not yet valid",
+                        self.plugin_id
                     );
                     self.pending_click_carry = pending_click;
                 }
@@ -2448,8 +2732,8 @@ impl LivePythonPane {
             if self.error.is_some() {
                 if pending_click.is_some() {
                     log::error!(
-                        "app::{}: dropping pending pane click — init send failed",
-                        self.app_id
+                        "plugin::{}: dropping pending pane click — init send failed",
+                        self.plugin_id
                     );
                 }
                 return;
@@ -2486,15 +2770,15 @@ impl LivePythonPane {
             self.timers.clear();
             self.pending_timer_events.clear();
             if self.tree.is_none() {
-                ui.colored_label(colors.danger, "app exited before rendering a frame");
+                ui.colored_label(colors.danger, "plugin exited before rendering a frame");
                 return;
             }
         }
         if !self.ready {
             if pending_click.is_some() {
                 log::info!(
-                    "app::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
-                    self.app_id
+                    "plugin::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
+                    self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
             }
@@ -2514,8 +2798,8 @@ impl LivePythonPane {
                 self.error = Some(error.to_string());
                 if pending_click.is_some() {
                     log::error!(
-                        "app::{}: dropping pending pane click — render request send failed: {error}",
-                        self.app_id
+                        "plugin::{}: dropping pending pane click — render request send failed: {error}",
+                        self.plugin_id
                     );
                 }
                 return;
@@ -2538,8 +2822,8 @@ impl LivePythonPane {
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
                 log::info!(
-                    "app::{}: emitted UI action at Python host boundary handler={action}",
-                    self.app_id
+                    "plugin::{}: emitted UI action at Python host boundary handler={action}",
+                    self.plugin_id
                 );
                 self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
             }
@@ -2560,8 +2844,8 @@ impl LivePythonPane {
         } else {
             if pending_click.is_some() {
                 log::info!(
-                    "app::{}: deferring pending pane click — no committed tree yet",
-                    self.app_id
+                    "plugin::{}: deferring pending pane click — no committed tree yet",
+                    self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
             }
@@ -2612,9 +2896,12 @@ impl LivePythonPane {
                     .unwrap_or_else(|e| e.into_inner())
                     .suppressed,
             );
-            log::info!(
-                "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
-                self.app_id,
+            // Debug, not info. The Logs plugin tails this same channel log and
+            // re-renders whenever the tail changes, so an info sample every
+            // window becomes a permanent row of this pane's own telemetry.
+            log::debug!(
+                "plugin::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
+                self.plugin_id,
                 self.perf_json_decode.as_secs_f64() * 1000.0,
                 self.perf_tree_decode.as_secs_f64() * 1000.0,
                 self.perf_ui_render.as_secs_f64() * 1000.0,
@@ -2649,7 +2936,7 @@ impl LivePythonPane {
 
     /// Logic-pass servicing of everything external that feeds this pane: MCP
     /// server lines, HTTP replies, file-pick outcomes, and decoded guest
-    /// messages (which carry the app's own `mcp_send` / `mcp_connect`
+    /// messages (which carry the plugin's own `mcp_send` / `mcp_connect`
     /// requests). `ui` drains too, but eframe never calls `App::ui` while the
     /// window is hidden (minimized or fully occluded) — every external drain
     /// must complete on logic-only passes alone (see the CLAUDE.md trap;
@@ -2688,21 +2975,22 @@ impl LivePythonPane {
             if !self.mcp_backpressured {
                 self.mcp_backpressured = true;
                 log::warn!(
-                    "app::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
-                    self.app_id,
+                    "plugin::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
+                    self.plugin_id,
                     self.runtime.stdin.buffered_bytes()
                 );
             }
         } else if self.mcp_backpressured {
             self.mcp_backpressured = false;
             log::info!(
-                "app::{}: MCP inbound backpressure released",
-                self.app_id
+                "plugin::{}: MCP inbound backpressure released",
+                self.plugin_id
             );
         }
     }
 
     fn drain_runtime(&mut self) {
+        self.poll_cli_operations();
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
@@ -2711,7 +2999,7 @@ impl LivePythonPane {
             }));
         }
         let mcp_backlogged = pump_mcp_inbound(
-            &self.app_id,
+            &self.plugin_id,
             &self.mcp_rx,
             &self.runtime.stdin,
             &mut self.mcp_connections,
@@ -2726,12 +3014,12 @@ impl LivePythonPane {
                     let granted = self.register_picked_grants(&paths);
                     if granted.is_empty() {
                         log::error!(
-                            "app::{}: file pick {request_id}: no picked path could be granted; cancelling",
-                            self.app_id
+                            "plugin::{}: file pick {request_id}: no picked path could be granted; cancelling",
+                            self.plugin_id
                         );
-                        self.queue_outbound_event(
-                            crate::protocol::PlexiEvent::FilePickCancelled { request_id },
-                        );
+                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                            request_id,
+                        });
                     } else {
                         let paths = granted
                             .iter()
@@ -2744,10 +3032,13 @@ impl LivePythonPane {
                     }
                 }
                 crate::host::services::FilePickOutcome::Cancelled => {
-                    log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
-                    self.queue_outbound_event(
-                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
+                    log::info!(
+                        "plugin::{}: file pick {request_id} cancelled",
+                        self.plugin_id
                     );
+                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                        request_id,
+                    });
                 }
             }
         }
@@ -2779,12 +3070,18 @@ impl LivePythonPane {
                     self.handle_message(value);
                 }
                 Ok(DecodedOutput::DecodeError(error)) => {
-                    log::error!("app::{}: decode CPython WASM message: {error}", self.app_id);
+                    log::error!(
+                        "plugin::{}: decode CPython WASM message: {error}",
+                        self.plugin_id
+                    );
                     self.error = Some(error);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::error!("app::{}: CPython WASM decoder thread ended", self.app_id);
+                    log::error!(
+                        "plugin::{}: CPython WASM decoder thread ended",
+                        self.plugin_id
+                    );
                     break;
                 }
             }
@@ -2810,30 +3107,34 @@ impl LivePythonPane {
         }
     }
 
-    /// One host record per guest stderr line, each carrying the `app::<id>`
-    /// prefix so the whole traceback is greppable by app (stint 0643).
+    /// One host record per guest stderr line, each carrying the `plugin::<id>`
+    /// prefix so the whole traceback is greppable by plugin (stint 0643).
     fn log_guest_stderr(&self, record: &GuestStderrRecord) {
         match record.kind {
             GuestStderrKind::BenignWasiStartup => log::debug!(
-                "app::{} CPython WASM stderr (benign WASI startup noise): {}",
-                self.app_id,
+                "plugin::{} CPython WASM stderr (benign WASI startup noise): {}",
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackException => log::error!(
-                "app::{} CPython WASM stderr exception: {}",
-                self.app_id,
+                "plugin::{} CPython WASM stderr exception: {}",
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackExceptionDetail => log::error!(
-                "app::{} CPython WASM stderr exception (cont): {}",
-                self.app_id,
+                "plugin::{} CPython WASM stderr exception (cont): {}",
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::Payload
             | GuestStderrKind::TracebackHeader
             | GuestStderrKind::TracebackFrame
             | GuestStderrKind::TracebackChainSeparator => {
-                log::error!("app::{} CPython WASM stderr: {}", self.app_id, record.line)
+                log::error!(
+                    "plugin::{} CPython WASM stderr: {}",
+                    self.plugin_id,
+                    record.line
+                )
             }
         }
     }
@@ -2848,19 +3149,29 @@ impl LivePythonPane {
     /// Handle one non-tree bridge message. Tree framing (`component_tree` /
     /// `tree_delta`) is resolved on the decoder thread and never reaches here.
     fn handle_message(&mut self, message: Value) {
-        let message_type = message.get("type").and_then(Value::as_str);
+        let message_type = bridge_message_type(&message);
         log::debug!(
-            "app::{}: CPython WASM message type={}",
-            self.app_id,
+            "plugin::{}: CPython WASM message type={}",
+            self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
+        // Permission polls arrive every second from the Permissions plugin.
+        // Handle them before the generic match so a miss cannot fall through
+        // to the unhandled warning and leave the list blank.
+        if let Some(kind) = permission_bridge_kind(message_type) {
+            match kind {
+                PermissionBridgeKind::Read => self.handle_read_permission_decisions(),
+                PermissionBridgeKind::Decide => self.handle_permission_decision(&message),
+            }
+            return;
+        }
         match message_type {
             Some("ready") => {
                 self.ready = true;
                 self.frame_scheduler
                     .request_render_at(std::time::Instant::now());
                 self.reset_perf_window();
-                log::info!("app::{}: CPython WASM bridge ready", self.app_id);
+                log::info!("plugin::{}: CPython WASM bridge ready", self.plugin_id);
             }
             Some("set_title") => {
                 self.title = message
@@ -2925,14 +3236,14 @@ impl LivePythonPane {
                     self.perf_guest_roundtrip += sent_at.elapsed();
                 } else {
                     log::warn!(
-                        "app::{}: CPython WASM completed unknown frame {:?}",
-                        self.app_id,
+                        "plugin::{}: CPython WASM completed unknown frame {:?}",
+                        self.plugin_id,
                         completed_frame
                     );
                 }
             }
             Some("close") | Some("close_self") => self.wants_close = true,
-            Some("save_app_state") => {
+            Some("save_plugin_state") => {
                 self.save_state(message.get("scope"), message.get("payload"))
             }
             Some("file_read") => self.handle_file_read(&message),
@@ -2943,38 +3254,56 @@ impl LivePythonPane {
             Some("mcp_connect") => self.handle_mcp_connect(&message),
             Some("mcp_send") => self.handle_mcp_send(&message),
             Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
+            Some("cli_operation") => self.handle_cli_operation(&message),
+            Some("cli_operation_cancel") => self.handle_cli_operation_cancel(&message),
             Some("capability_request") => self.handle_capability_request(&message),
-            Some("log") => log::info!(
-                "app::{}: {}",
-                self.app_id,
-                message
+            Some("log") => {
+                let level = guest_log_level(message.get("level").and_then(Value::as_str));
+                let text = message
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-            ),
-            Some("status_summary") => {}
-            _ => {
-                if let Some(command) = app_command_from_python_message(&message) {
-                    self.pending_commands.push(command);
-                } else {
-                    log::warn!(
-                        "app::{}: unhandled CPython WASM message: {message}",
-                        self.app_id
-                    );
-                }
+                    .unwrap_or_default();
+                log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
+            Some("status_summary") => {}
+            _ => match plugin_command_from_python_message(&message) {
+                Ok(Some(command)) => {
+                    if let Some(capability) =
+                        required_capability_for_python_plugin_command(&command)
+                    {
+                        if !self.has_capability(capability) {
+                            log::info!(
+                                "plugin::{}: {} denied: missing capability {capability}",
+                                self.plugin_id,
+                                message_type.unwrap_or("<missing>")
+                            );
+                            return;
+                        }
+                    }
+                    if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
+                        ref pipe_id,
+                        ..
+                    } = command
+                    {
+                        let _ = self.register_directed_pipe(pipe_id);
+                    }
+                    self.pending_commands.push(command);
+                }
+                Ok(None) => self.warn_unhandled_cpython_message(&message),
+                Err(error) => log::warn!(
+                    "plugin::{}: rejected CPython WASM message: {error}",
+                    self.plugin_id
+                ),
+            },
         }
     }
 
     fn has_capability(&self, capability: &str) -> bool {
-        self.config
-            .capabilities
-            .iter()
-            .any(|item| item == capability)
+        manifest_declares(&self.config.capabilities, capability)
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-        resolve_app_fs_path(
+        resolve_plugin_fs_path(
             &self.config.workspace_root,
             &self.granted_fs_roots,
             raw,
@@ -2985,7 +3314,7 @@ impl LivePythonPane {
     /// Service one `open_file_picker` request (stint 0508). The dialog (or
     /// scripted queue) runs on a background thread; the outcome re-enters the
     /// pane through `picker_rx` in `drain_runtime`, where grants are
-    /// registered before `FilePicked` reaches the app.
+    /// registered before `FilePicked` reaches the plugin.
     fn handle_open_file_picker(&mut self, message: &Value) {
         use crate::host::services::FilePickRequest;
         let request_id = message
@@ -2995,8 +3324,8 @@ impl LivePythonPane {
             .to_string();
         if request_id.is_empty() {
             log::error!(
-                "app::{}: open_file_picker missing request_id; cancelling",
-                self.app_id
+                "plugin::{}: open_file_picker missing request_id; cancelling",
+                self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
@@ -3005,8 +3334,8 @@ impl LivePythonPane {
         }
         if !self.has_capability("fs.pick") {
             log::info!(
-                "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
-                self.app_id
+                "plugin::{}: open_file_picker {request_id} denied: missing capability fs.pick",
+                self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
@@ -3034,19 +3363,19 @@ impl LivePythonPane {
                 Ok(mode) => mode,
                 Err(error) => {
                     log::error!(
-                        "app::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
-                        self.app_id
+                        "plugin::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
+                        self.plugin_id
                     );
-                    self.queue_outbound_event(
-                        crate::protocol::PlexiEvent::FilePickCancelled { request_id },
-                    );
+                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                        request_id,
+                    });
                     return;
                 }
             },
         };
         log::info!(
-            "app::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
-            self.app_id
+            "plugin::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
+            self.plugin_id
         );
         let picker = Arc::clone(&self.picker);
         let tx = self.picker_tx.clone();
@@ -3063,7 +3392,7 @@ impl LivePythonPane {
     }
 
     /// Register picked paths as per-pane fs grants and return the canonical
-    /// paths to deliver to the app. Paths that cannot be resolved (deleted
+    /// paths to deliver to the plugin. Paths that cannot be resolved (deleted
     /// between pick and delivery, unreachable parent) are skipped loudly.
     fn register_picked_grants(&mut self, paths: &[PathBuf]) -> Vec<PathBuf> {
         let mut granted = Vec::new();
@@ -3071,8 +3400,8 @@ impl LivePythonPane {
             match canonicalize_picked_path(path) {
                 Ok(resolved) => {
                     log::info!(
-                        "app::{}: fs grant registered for picked path {}",
-                        self.app_id,
+                        "plugin::{}: fs grant registered for picked path {}",
+                        self.plugin_id,
                         resolved.display()
                     );
                     self.granted_fs_roots.push(resolved.clone());
@@ -3080,8 +3409,8 @@ impl LivePythonPane {
                 }
                 Err(error) => {
                     log::error!(
-                        "app::{}: picked path {} not granted: {error}",
-                        self.app_id,
+                        "plugin::{}: picked path {} not granted: {error}",
+                        self.plugin_id,
                         path.display()
                     );
                 }
@@ -3121,8 +3450,8 @@ impl LivePythonPane {
         let response = match result {
             Ok(bytes) => {
                 log::info!(
-                    "app::{}: file_read {:?} -> {} bytes",
-                    self.app_id,
+                    "plugin::{}: file_read {:?} -> {} bytes",
+                    self.plugin_id,
                     message.get("path").and_then(Value::as_str).unwrap_or("?"),
                     bytes.len()
                 );
@@ -3145,8 +3474,8 @@ impl LivePythonPane {
                 .and_then(|path| {
                     decode_file_write_content(message).and_then(|bytes| {
                         log::info!(
-                            "app::{}: file_write {} ({} bytes, binary={})",
-                            self.app_id,
+                            "plugin::{}: file_write {} ({} bytes, binary={})",
+                            self.plugin_id,
                             path.display(),
                             bytes.len(),
                             message.get("content_b64").is_some()
@@ -3165,11 +3494,11 @@ impl LivePythonPane {
 
     /// Serve a capability-gated `read_host_log` request (stint 0444). The host
     /// owns log-path resolution: it tails its own channel log
-    /// (`crate::platform::logging::log_path()`), so the sandboxed app never
+    /// (`crate::platform::logging::log_path()`), so the sandboxed plugin never
     /// names or opens the file and the WASI mounts stay limited to the SDK and
-    /// app dir. The resolved path is echoed back so the app can show it in its
+    /// plugin dir. The resolved path is echoed back so the plugin can show it in its
     /// empty/error state. Both success and failure surface distinctly — a log
-    /// the app cannot reach must never render as a silent blank pane.
+    /// the plugin cannot reach must never render as a silent blank pane.
     fn handle_read_host_log(&mut self, message: &Value) {
         let path = crate::platform::logging::log_path();
         let result = if !self.has_capability("logs.read") {
@@ -3195,8 +3524,102 @@ impl LivePythonPane {
             }),
         };
         if let Err(error) = self.runtime.send(&response) {
-            log::error!("app::{}: send host_log_result: {error}", self.app_id);
+            log::error!("plugin::{}: send host_log_result: {error}", self.plugin_id);
         }
+    }
+
+    fn permission_entries() -> Vec<crate::broker::gate::PermissionEntry> {
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .list_entries()
+    }
+
+    fn send_permission_inventory(&mut self, notice: &str, status: &str) {
+        let entries = Self::permission_entries();
+        log::debug!(
+            "plugin::{}: permission inventory count={} status={status}",
+            self.plugin_id,
+            entries.len()
+        );
+        if let Err(error) = self.runtime.send(&json!({
+            "type": "permission_inventory",
+            "entries": entries,
+            "notice": notice,
+            "status": status,
+        })) {
+            log::error!(
+                "plugin::{}: send permission_inventory: {error}",
+                self.plugin_id
+            );
+        }
+    }
+
+    fn handle_read_permission_decisions(&mut self) {
+        if !self.announced_permission_read {
+            self.announced_permission_read = true;
+            log::info!(
+                "plugin::{}: serving read_permission_decisions",
+                self.plugin_id
+            );
+        }
+        self.send_permission_inventory("", "list");
+    }
+
+    /// Warn once per message type per window. Repeats stay at debug so a
+    /// guest that polls an unrecognized effect cannot flood the Logs tail.
+    fn warn_unhandled_cpython_message(&mut self, message: &Value) {
+        let key = bridge_message_type(message)
+            .unwrap_or("<missing>")
+            .to_string();
+        let now = std::time::Instant::now();
+        let due = unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now);
+        if !due {
+            log::debug!(
+                "plugin::{}: repeated unhandled CPython WASM message: {message}",
+                self.plugin_id
+            );
+            return;
+        }
+        self.unhandled_warned_at.insert(key, now);
+        log::warn!(
+            "plugin::{}: unhandled CPython WASM message: {message}",
+            self.plugin_id
+        );
+    }
+
+    fn handle_permission_decision(&mut self, message: &Value) {
+        let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+        let action = message.get("action").and_then(Value::as_str).unwrap_or("");
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let outcome = monitor.mutate_entry(
+            id,
+            action,
+            &crate::broker::gate::PermissionCaller {
+                human: true,
+                actor_id: format!("app:{}", self.plugin_id),
+            },
+        );
+        log::info!(
+            "plugin::{}: permission {action} id={id} human=true",
+            self.plugin_id
+        );
+        let (notice, status) = match &outcome {
+            crate::broker::gate::PermissionMutation::Applied { entry_id } => (
+                format!("{action} applied for {entry_id}"),
+                "applied".to_string(),
+            ),
+            crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
+                format!("filed Needs you {needs_you_id}"),
+                "needs_you".to_string(),
+            ),
+            crate::broker::gate::PermissionMutation::Missing { entry_id } => {
+                (format!("missing {entry_id}"), "missing".to_string())
+            }
+            crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
+                (error.clone(), "rejected".to_string())
+            }
+        };
+        self.send_permission_inventory(&notice, &status);
     }
 
     fn handle_http_request(&mut self, message: &Value) {
@@ -3240,23 +3663,22 @@ impl LivePythonPane {
             .and_then(Value::as_str)
             .map(str::to_string);
         let tx = self.http_tx.clone();
-        std::thread::spawn(move || {
-            use crate::host::services::NetService;
-            let response = crate::host::services::UreqNetService::new().http(
-                &method,
-                &url,
-                &headers,
-                body.as_deref(),
-                crate::host::services::DEFAULT_MAX_HTTP_BODY_BYTES,
-            );
-            if tx.send((request_id, response)).is_err() {
-                log::debug!("CPython WASM HTTP response dropped after pane closed");
-            }
-        });
+        super::wasm_pane::spawn_http_fetch_worker(
+            std::sync::Arc::new(crate::host::services::UreqNetService::new()),
+            method,
+            url,
+            headers,
+            body,
+            move |response| {
+                if tx.send((request_id, response)).is_err() {
+                    log::debug!("CPython WASM HTTP response dropped after pane closed");
+                }
+            },
+        );
     }
 
     /// Open a connection to a server the *user* configured. `server_id` is
-    /// resolved against `mcp_servers.toml`; the app never supplies argv, so
+    /// resolved against `mcp_servers.toml`; the plugin never supplies argv, so
     /// `mcp.client` cannot become arbitrary process execution (stint 0382).
     fn handle_mcp_connect(&mut self, message: &Value) {
         let request_id = message
@@ -3270,14 +3692,14 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         log::info!(
-            "app::{}: mcp_connect request_id={request_id} server_id={server_id}",
-            self.app_id
+            "plugin::{}: mcp_connect request_id={request_id} server_id={server_id}",
+            self.plugin_id
         );
 
         let fail = |pane: &mut Self, error: String| {
             log::warn!(
-                "app::{}: mcp_connect failed server_id={server_id}: {error}",
-                pane.app_id
+                "plugin::{}: mcp_connect failed server_id={server_id}: {error}",
+                pane.plugin_id
             );
             pane.send_to_runtime(&json!({
                 "type": "mcp_connected",
@@ -3297,8 +3719,8 @@ impl LivePythonPane {
         // touches `mcp_servers.toml` or spawns a process for this request.
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
             log::info!(
-                "app::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
-                self.app_id
+                "plugin::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
+                self.plugin_id
             );
             fail(
                 self,
@@ -3313,7 +3735,10 @@ impl LivePythonPane {
             return;
         }
         if self.mcp_connections.contains_key(&server_id) {
-            fail(self, format!("already connected to MCP server '{server_id}'"));
+            fail(
+                self,
+                format!("already connected to MCP server '{server_id}'"),
+            );
             return;
         }
         if self.mcp_registry.is_none() {
@@ -3347,8 +3772,7 @@ impl LivePythonPane {
             if let Some((context, viewport)) =
                 repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             {
-                context
-                    .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
             }
         });
         match crate::host::mcp_client::McpConnection::spawn(
@@ -3359,7 +3783,10 @@ impl LivePythonPane {
             wake,
         ) {
             Ok(connection) => {
-                log::info!("app::{}: mcp connected server_id={server_id}", self.app_id);
+                log::info!(
+                    "plugin::{}: mcp connected server_id={server_id}",
+                    self.plugin_id
+                );
                 self.mcp_connections.insert(server_id.clone(), connection);
                 self.send_to_runtime(&json!({
                     "type": "mcp_connected",
@@ -3376,7 +3803,7 @@ impl LivePythonPane {
 
     /// Forward one already-serialized JSON-RPC message to a live server. A send
     /// to an unopened server reports closed rather than vanishing — a request
-    /// that never gets a reply is the worst possible failure mode for an app
+    /// that never gets a reply is the worst possible failure mode for a plugin
     /// waiting on a response id.
     fn handle_mcp_send(&mut self, message: &Value) {
         let server_id = message
@@ -3388,7 +3815,7 @@ impl LivePythonPane {
             Some(Value::String(text)) => text.clone(),
             Some(value) => value.to_string(),
             None => {
-                log::warn!("app::{}: mcp_send missing 'message'", self.app_id);
+                log::warn!("plugin::{}: mcp_send missing 'message'", self.plugin_id);
                 self.send_to_runtime(&json!({
                     "type": "mcp_closed",
                     "server_id": server_id,
@@ -3398,7 +3825,10 @@ impl LivePythonPane {
             }
         };
         let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
-            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.app_id);
+            log::warn!(
+                "plugin::{}: mcp_send to unopened server {server_id}",
+                self.plugin_id
+            );
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
@@ -3407,7 +3837,10 @@ impl LivePythonPane {
             return;
         };
         if let Err(e) = connection.send(&payload) {
-            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.app_id);
+            log::warn!(
+                "plugin::{}: mcp_send failed server={server_id}: {e}",
+                self.plugin_id
+            );
             self.mcp_connections.remove(&server_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -3424,17 +3857,112 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         if self.mcp_connections.remove(&server_id).is_some() {
-            log::info!("app::{}: mcp disconnect server_id={server_id}", self.app_id);
+            log::info!(
+                "plugin::{}: mcp disconnect server_id={server_id}",
+                self.plugin_id
+            );
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
-                "reason": "disconnected by app",
+                "reason": "disconnected by plugin",
             }));
         } else {
             log::info!(
-                "app::{}: mcp disconnect of unopened server_id={server_id} ignored",
-                self.app_id
+                "plugin::{}: mcp disconnect of unopened server_id={server_id} ignored",
+                self.plugin_id
             );
+        }
+    }
+
+    fn cli_identity(&self) -> crate::host::cli_ops::service::PaneIdentity {
+        let (pane_id, context_id) = self.pane_owner.unwrap_or((0, 0));
+        crate::host::cli_ops::service::PaneIdentity {
+            plugin_id: self.plugin_id.clone(),
+            plugin_dir: self.config.plugin_dir.clone(),
+            workspace_root: self.config.workspace_root.clone(),
+            pane_id,
+            context_id,
+            has_capability: self
+                .has_capability(crate::app::permissions::Capability::CliOperations.as_str()),
+        }
+    }
+
+    fn cli_wake(&self) -> crate::host::cli_ops::exec::Wake {
+        let repaint = Arc::clone(&self.repaint);
+        Arc::new(move || {
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        })
+    }
+
+    /// Run `f` with the host-owned service environment. The caller supplies
+    /// nothing: executables, directories, limits and the monitor are the host's.
+    fn with_cli_service<R>(
+        &mut self,
+        f: impl FnOnce(
+            &mut crate::host::cli_ops::service::CliOpService,
+            &crate::host::cli_ops::service::PaneIdentity,
+            &crate::host::cli_ops::service::Env<'_>,
+        ) -> R,
+    ) -> R {
+        let who = self.cli_identity();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let search_dirs = crate::host::cli_ops::search_dirs();
+        let seal_base = crate::host::cli_ops::seal_base();
+        let wake = self.cli_wake();
+        let enabled =
+            crate::release::feature_enabled(crate::release::ReleaseFeature::CliOperations);
+        let message = if enabled {
+            String::new()
+        } else {
+            crate::release::feature_unavailable_message(
+                crate::release::ReleaseFeature::CliOperations,
+            )
+        };
+        let env = crate::host::cli_ops::service::Env {
+            monitor: &monitor,
+            search_dirs: &search_dirs,
+            seal_base: &seal_base,
+            wake: &wake,
+            enabled,
+            experiment_message: &message,
+            approval_timeout: crate::host::cli_ops::service::APPROVAL_TIMEOUT,
+        };
+        f(&mut self.cli_ops, &who, &env)
+    }
+
+    fn handle_cli_operation(&mut self, message: &Value) {
+        let replies = self.with_cli_service(|service, who, env| service.submit(who, env, message));
+        for reply in replies {
+            self.send_to_runtime(&reply);
+        }
+    }
+
+    fn handle_cli_operation_cancel(&mut self, message: &Value) {
+        let request_id = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let replies = self.with_cli_service(|service, _, _| service.cancel(&request_id));
+        for reply in replies {
+            self.send_to_runtime(&reply);
+        }
+    }
+
+    /// Advance parked and running operations. Runs from `drain_runtime`, so it
+    /// is serviced from `App::logic` and `background_tick` alike.
+    fn poll_cli_operations(&mut self) {
+        if !self.cli_ops.has_work() {
+            return;
+        }
+        let replies = self.with_cli_service(|service, who, env| service.poll(who, env));
+        for reply in replies {
+            self.send_to_runtime(&reply);
         }
     }
 
@@ -3449,7 +3977,7 @@ impl LivePythonPane {
         );
     }
 
-    /// The app's default state scope: the first declared entry. The scope
+    /// The plugin's default state scope: the first declared entry. The scope
     /// list is validated non-empty at manifest parse; an empty list here can
     /// only come from a hand-built test config and falls back to global.
     fn default_scope(&self) -> crate::host::state_scope::StateScope {
@@ -3469,7 +3997,7 @@ impl LivePythonPane {
     }
 
     fn states_json(&self) -> Value {
-        Value::Object(
+        let mut states = Value::Object(
             self.config
                 .state_scopes
                 .iter()
@@ -3485,7 +4013,25 @@ impl LivePythonPane {
                     )
                 })
                 .collect(),
-        )
+        );
+        if self.plugin_id == "permissions" {
+            let entries = Self::permission_entries();
+            log::info!(
+                "plugin::{}: seeded permission inventory count={}",
+                self.plugin_id,
+                entries.len()
+            );
+            if let Some(scope) = states
+                .get_mut(self.default_scope().as_str())
+                .and_then(Value::as_object_mut)
+            {
+                scope.insert(
+                    "entries".to_string(),
+                    serde_json::to_value(&entries).unwrap_or(json!([])),
+                );
+            }
+        }
+        states
     }
 
     /// Send the guest's `init` handshake exactly once. `size` is the pane's
@@ -3505,21 +4051,73 @@ impl LivePythonPane {
         self.initialized = true;
         self.viewport_size = Some(size);
         log::info!(
-            "app::{}: sending Python init size={}x{}", self.app_id, size.0, size.1
+            "plugin::{}: sending Python init size={}x{}",
+            self.plugin_id,
+            size.0,
+            size.1
         );
         if let Err(error) = self.runtime.send(&json!({
-            "type": "init", "app_id": self.app_id,
+            "type": "init", "plugin_id": self.plugin_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
+            "feature_flags": ["keyed_tree_delta"],
             "states": self.states_json(),
             "state_scopes": self.scope_names(),
             "theme": {},
             "args": self.config.launch_args,
             "size": [size.0, size.1]
         })) {
-            log::error!("app::{}: Python init send failed: {error}", self.app_id);
+            log::error!(
+                "plugin::{}: Python init send failed: {error}",
+                self.plugin_id
+            );
             self.error = Some(error.to_string());
         }
+    }
+
+    /// Tell the guest how its pane's visibility and focus changed since the
+    /// last call. Events go out in transition order (`pane_shown`,
+    /// `focus_gained`, `focus_lost`, `pane_hidden`) so a focused pane always
+    /// loses focus before it is hidden. Held back until the guest has been sent
+    /// `init`; the baseline stays unshown/unfocused until then, so the first
+    /// delivery reports the full current state. Runs from `App::logic`.
+    pub(crate) fn sync_presence(&mut self, pane_id: u64, target: PanePresence) {
+        if !self.initialized || self.error.is_some() || self.runtime.is_finished() {
+            return;
+        }
+        let from = self.presence;
+        let target = PanePresence {
+            visible: target.visible,
+            focused: target.visible && target.focused,
+        };
+        let mut wire: Vec<&'static str> = Vec::new();
+        if !from.visible && target.visible {
+            wire.push("pane_shown");
+        }
+        if !from.focused && target.focused {
+            wire.push("focus_gained");
+        }
+        if from.focused && !target.focused {
+            wire.push("focus_lost");
+        }
+        if from.visible && !target.visible {
+            wire.push("pane_hidden");
+        }
+        for kind in wire {
+            if let Err(error) = self.runtime.send(&json!({ "type": kind })) {
+                log::error!(
+                    "plugin::{}: pane {pane_id} {kind} send failed: {error}",
+                    self.plugin_id
+                );
+                self.error = Some(error.to_string());
+                return;
+            }
+            log::info!(
+                "plugin::{}: pane {pane_id} delivered {kind}",
+                self.plugin_id
+            );
+        }
+        self.presence = target;
     }
 
     /// Every declared scope's state file, resolved against the *current*
@@ -3532,15 +4130,15 @@ impl LivePythonPane {
             .filter_map(|&scope| {
                 match crate::host::state_scope::state_file(
                     scope,
-                    &self.app_id,
+                    &self.plugin_id,
                     self.config.state_format,
                     &self.context_root,
                 ) {
                     Ok(path) => Some((scope, path)),
                     Err(error) => {
                         log::error!(
-                            "app::{}: cannot resolve state path for scope {}: {error}",
-                            self.app_id,
+                            "plugin::{}: cannot resolve state path for scope {}: {error}",
+                            self.plugin_id,
                             scope.as_str()
                         );
                         None
@@ -3550,13 +4148,13 @@ impl LivePythonPane {
             .collect()
     }
 
-    /// Enough launch context to relaunch this exact app through the normal
+    /// Enough launch context to relaunch this exact plugin through the normal
     /// open path on a workspace restore (stint 0680). Deliberately omits
     /// granted capabilities — those live in `PermissionStore`, re-derived at
     /// restore time from the manifest, never persisted into the workspace.
-    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
-        crate::workspace::SavedAppLaunch::Python {
-            app_dir: self.config.app_dir.clone(),
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedViewLaunch {
+        crate::workspace::SavedViewLaunch::Python {
+            plugin_dir: self.config.plugin_dir.clone(),
             args: self.config.launch_args.clone(),
         }
     }
@@ -3581,58 +4179,58 @@ impl LivePythonPane {
 
     /// Re-read one scope's state file after an external change notification.
     ///
-    /// No-ops when the file's `(mtime, len)` identity matches the cached pair
+    /// No-ops when the file's content digest matches the cached digest
     /// — this is what suppresses watcher echoes of our own atomic writes. On
     /// a real change the on-disk values replace the scope's values wholesale
-    /// (disk wins; deleted keys vanish) and the app is notified via
+    /// (disk wins; deleted keys vanish) and the plugin is notified via
     /// `state_changed`. On a decode failure the previous values are kept, the
-    /// scope's `error` is set (blocking persists), and the app is notified
+    /// scope's `error` is set (blocking persists), and the plugin is notified
     /// with the error attached.
     pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
         if !self.config.state_scopes.contains(&scope) {
             log::warn!(
-                "app::{}: external state change for undeclared scope '{}' ignored",
-                self.app_id,
+                "plugin::{}: external state change for undeclared scope '{}' ignored",
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
         let path = match crate::host::state_scope::state_file(
             scope,
-            &self.app_id,
+            &self.plugin_id,
             self.config.state_format,
             &self.context_root,
         ) {
             Ok(path) => path,
             Err(error) => {
                 log::error!(
-                    "app::{}: cannot resolve state path for scope {}: {error}",
-                    self.app_id,
+                    "plugin::{}: cannot resolve state path for scope {}: {error}",
+                    self.plugin_id,
                     scope.as_str()
                 );
                 return;
             }
         };
-        let (mtime, len) = stat_state_file(&path);
+        let digest = state_file_digest(&path);
         let cached = self.persisted_states.entry(scope).or_default();
-        let unchanged_existing = mtime.is_some() && mtime == cached.mtime && len == cached.len;
-        let still_absent = mtime.is_none() && cached.mtime.is_none() && cached.error.is_none();
+        let unchanged_existing = digest.is_some() && digest == cached.digest;
+        let still_absent = digest.is_none() && cached.digest.is_none() && cached.error.is_none();
         if unchanged_existing || still_absent {
             log::debug!(
-                "app::{}: external state notification for scope {} matches cached identity — \
+                "plugin::{}: external state notification for scope {} matches cached identity — \
                  self-write echo, ignoring",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
-        let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+        let fresh = read_python_state_file(&self.plugin_id, scope, &path, self.config.state_format);
         match &fresh.error {
             None => {
                 log::info!(
-                    "app::{}: state scope={} changed on disk ({}) — replacing in-memory state \
-                     and notifying app",
-                    self.app_id,
+                    "plugin::{}: state scope={} changed on disk ({}) — replacing in-memory state \
+                     and notifying plugin",
+                    self.plugin_id,
                     scope.as_str(),
                     path.display()
                 );
@@ -3642,15 +4240,14 @@ impl LivePythonPane {
             }
             Some(error) => {
                 log::error!(
-                    "app::{}: external change to state scope={} ({}) is unreadable: {error} — \
+                    "plugin::{}: external change to state scope={} ({}) is unreadable: {error} — \
                      keeping previous values; persists blocked until the file is fixed",
-                    self.app_id,
+                    self.plugin_id,
                     scope.as_str(),
                     path.display()
                 );
                 cached.error = Some(error.clone());
-                cached.mtime = fresh.mtime;
-                cached.len = fresh.len;
+                cached.digest = fresh.digest;
                 let values = cached.values.clone();
                 let message = error.clone();
                 self.send_state_changed(scope, &values, Some(&message));
@@ -3662,8 +4259,8 @@ impl LivePythonPane {
         let Some(payload) = payload.and_then(Value::as_object) else {
             return;
         };
-        // Missing scope on the wire means the app's default scope. A scope
-        // the app did not declare is an error — never a silent fallback to
+        // Missing scope on the wire means the plugin's default scope. A scope
+        // the plugin did not declare is an error — never a silent fallback to
         // another scope's file.
         let scope = match scope_raw.and_then(Value::as_str) {
             None => self.default_scope(),
@@ -3671,8 +4268,8 @@ impl LivePythonPane {
                 Ok(scope) => scope,
                 Err(error) => {
                     log::error!(
-                        "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                        self.app_id
+                        "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                        self.plugin_id
                     );
                     return;
                 }
@@ -3680,9 +4277,9 @@ impl LivePythonPane {
         };
         if !self.config.state_scopes.contains(&scope) {
             log::error!(
-                "app::{}: save_app_state rejected — scope '{}' is not declared in \
+                "plugin::{}: save_plugin_state rejected — scope '{}' is not declared in \
                  [state] scopes {:?}; state NOT persisted",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str(),
                 self.scope_names()
             );
@@ -3694,59 +4291,60 @@ impl LivePythonPane {
             .and_then(|state| state.error.as_ref())
         {
             log::error!(
-                "app::{}: save_app_state refused — scope '{}' has an unresolved file error \
+                "plugin::{}: save_plugin_state refused — scope '{}' has an unresolved file error \
                  ({error}); fix the file on disk, a successful re-read clears this",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
         let path = match crate::host::state_scope::state_file(
             scope,
-            &self.app_id,
+            &self.plugin_id,
             self.config.state_format,
             &self.context_root,
         ) {
             Ok(path) => path,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                    self.app_id
+                    "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    self.plugin_id
                 );
                 return;
             }
         };
         // Read-back-before-write (disk wins): if the file changed since we
         // last synced with it, an external writer got there first — drop
-        // this persist, reload from disk, and tell the app so it can
+        // this persist, reload from disk, and tell the plugin so it can
         // re-apply its change on top of the fresh state.
-        let (disk_mtime, disk_len) = stat_state_file(&path);
-        let cached_identity = self
+        let disk_digest = state_file_digest(&path);
+        let cached_digest = self
             .persisted_states
             .get(&scope)
-            .map(|state| (state.mtime, state.len))
-            .unwrap_or((None, None));
-        if disk_mtime.is_some() && (disk_mtime, disk_len) != cached_identity {
-            log::warn!(
-                "app::{}: state scope={} ({}) changed on disk since load — reloading instead \
-                 of overwriting; persist dropped",
-                self.app_id,
+            .and_then(|state| state.digest);
+        if disk_digest.is_some() && disk_digest != cached_digest {
+            log::info!(
+                "plugin::{}: state scope={} ({}) changed on disk since this instance last synced \
+                 — reloading instead of overwriting; persist dropped, plugin notified",
+                self.plugin_id,
                 scope.as_str(),
                 path.display()
             );
-            let fresh = read_python_state_file(&self.app_id, &path, self.config.state_format);
+            let fresh =
+                read_python_state_file(&self.plugin_id, scope, &path, self.config.state_format);
             let error = fresh.error.clone();
             let values = fresh.values.clone();
             self.persisted_states.insert(scope, fresh);
             self.send_state_changed(scope, &values, error.as_deref());
             return;
         }
+        let replaced = disk_digest.is_some();
         let bytes = match encode_state_file(payload, self.config.state_format) {
             Ok(bytes) => bytes,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                    self.app_id
+                    "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    self.plugin_id
                 );
                 return;
             }
@@ -3754,54 +4352,55 @@ impl LivePythonPane {
         if let Err(error) = crate::host::state_scope::assert_within_scope(
             &path,
             scope,
-            crate::host::state_scope::UserDataKind::AppStates,
+            crate::host::state_scope::UserDataKind::PluginStates,
             &self.context_root,
         ) {
             log::error!(
-                "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                self.app_id
+                "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                self.plugin_id
             );
             return;
         }
         if scope == crate::host::state_scope::StateScope::Context {
-            // A user must never be able to accidentally commit their app
+            // A user must never be able to accidentally commit their plugin
             // state with a project (standing ruling; personal local data).
             if let Err(error) =
-                crate::workspace::secrets::ensure_app_state_gitignore(&self.context_root)
+                crate::workspace::secrets::ensure_plugin_state_gitignore(&self.context_root)
             {
                 log::warn!(
-                    "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-                    self.app_id,
+                    "plugin::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                    self.plugin_id,
                     self.context_root.display()
                 );
             }
         }
         match crate::platform::fs::atomic_write(&path, &bytes) {
             Ok(()) => {
-                // Re-stat AFTER the rename so the cached identity is the
-                // file we just produced — statting before the rename would
-                // make every self-write look external and loop reloads.
-                let (mtime, len) = stat_state_file(&path);
+                // Cache the digest of the bytes we just wrote so our own
+                // watcher echo reads as unchanged rather than external.
                 self.persisted_states.insert(
                     scope,
                     ScopeState {
                         values: payload.clone(),
-                        mtime,
-                        len,
+                        digest: Some(Sha256::digest(&bytes).into()),
                         error: None,
                     },
                 );
                 log::info!(
-                    "app::{}: persisted state scope={} format={} to {}",
-                    self.app_id,
-                    scope.as_str(),
-                    self.config.state_format.as_str(),
-                    path.display()
+                    "{}",
+                    format_python_state_persist_trace(
+                        &self.plugin_id,
+                        scope,
+                        self.config.state_format,
+                        &path,
+                        bytes.len(),
+                        replaced,
+                    )
                 );
             }
             Err(error) => log::error!(
-                "app::{}: write state {}: {error}",
-                self.app_id,
+                "plugin::{}: write state {}: {error}",
+                self.plugin_id,
                 path.display()
             ),
         }
@@ -3837,7 +4436,7 @@ impl LivePythonPane {
     pub fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         self.send_key_events(python_key_events(input.events()))
     }
 
@@ -3847,21 +4446,18 @@ impl LivePythonPane {
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         self.send_key_events(python_text_input_escape_events(input.events()))
     }
 
-    fn send_key_events(
-        &mut self,
-        events: Vec<Value>,
-    ) -> crate::app::app_trait::KeyDisposition {
+    fn send_key_events(&mut self, events: Vec<Value>) -> crate::app::view_trait::KeyDisposition {
         if events.is_empty() {
-            crate::app::app_trait::KeyDisposition::Passthrough
+            crate::app::view_trait::KeyDisposition::Passthrough
         } else {
             for event in &events {
                 log::info!(
-                    "app::{}: received key at Python host boundary key={} pressed={}",
-                    self.app_id,
+                    "plugin::{}: received key at Python host boundary key={} pressed={}",
+                    self.plugin_id,
                     event["key"].as_str().unwrap_or("<missing>"),
                     event["pressed"].as_bool().unwrap_or(false),
                 );
@@ -3871,12 +4467,12 @@ impl LivePythonPane {
                 "events": events,
             })) {
                 log::error!(
-                    "app::{}: send key events to CPython WASM: {error}",
-                    self.app_id
+                    "plugin::{}: send key events to CPython WASM: {error}",
+                    self.plugin_id
                 );
                 self.error = Some(error.to_string());
             }
-            crate::app::app_trait::KeyDisposition::Consumed
+            crate::app::view_trait::KeyDisposition::Consumed
         }
     }
 
@@ -3885,31 +4481,41 @@ impl LivePythonPane {
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+        let _ = self.try_queue_outbound_event(event);
+    }
+
+    pub(crate) fn try_queue_outbound_event(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), OutboundEventError> {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
                 if let Err(error) = self.runtime.send(&value) {
                     log::error!(
-                        "app::{}: queue host event to Python runtime: {error}",
-                        self.app_id
+                        "plugin::{}: queue host event to Python runtime: {error}",
+                        self.plugin_id
                     );
                     self.error = Some(error.to_string());
+                    return Err(OutboundEventError::Send(error.to_string()));
                 }
             }
             Err(error) => {
                 log::error!(
-                    "app::{}: serialize host event for Python runtime: {error}",
-                    self.app_id
+                    "plugin::{}: serialize host event for Python runtime: {error}",
+                    self.plugin_id
                 );
                 self.error = Some(error.to_string());
+                return Err(OutboundEventError::Encode(error.to_string()));
             }
         }
+        Ok(())
     }
 
     pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {
         self.runtime.stdin.clone()
     }
-    pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
+    pub fn take_pending_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -3964,7 +4570,8 @@ impl LivePythonPane {
                         Ok(()) => self.drain_runtime(),
                         Err(error) => {
                             log::error!(
-                                "app::{}: background render send failed: {error}", self.app_id
+                                "plugin::{}: background render send failed: {error}",
+                                self.plugin_id
                             );
                             self.error = Some(error.to_string());
                         }
@@ -3975,8 +4582,8 @@ impl LivePythonPane {
         let produced = self.pending_commands.len().saturating_sub(before);
         if produced > 0 {
             log::info!(
-                "app::{}: serviced {produced} command(s) off screen — pane is not rendering",
-                self.app_id
+                "plugin::{}: serviced {produced} command(s) off screen — pane is not rendering",
+                self.plugin_id
             );
         }
     }
@@ -3989,6 +4596,7 @@ impl LivePythonPane {
     /// before the deadline, with nothing left to wake it when the timer is due.
     pub fn needs_background_tick(&self) -> bool {
         self.decoder.has_queued_output()
+            || self.cli_ops.has_work()
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
                 && !self.runtime.is_finished()
@@ -3997,12 +4605,13 @@ impl LivePythonPane {
                     || self.tree.is_none()
                     || !self.timers.is_empty()
                     || !self.pending_timer_events.is_empty()
-                    || self.frame_scheduler
+                    || self
+                        .frame_scheduler
                         .next_repaint_deadline(std::time::Instant::now())
                         .is_some()))
     }
     pub fn display_name(&self) -> String {
-        self.title.clone().unwrap_or_else(|| self.app_id.clone())
+        self.title.clone().unwrap_or_else(|| self.plugin_id.clone())
     }
 
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
@@ -4035,8 +4644,8 @@ impl LivePythonPane {
         if self.error.as_deref() != Some(exception) {
             let exception = exception.to_string();
             log::info!(
-                "app::{}: guest entered failed state: {exception}",
-                self.app_id
+                "plugin::{}: guest entered failed state: {exception}",
+                self.plugin_id
             );
             self.error = Some(exception);
         }
@@ -4069,18 +4678,21 @@ impl LivePythonPane {
         // runtime's stdout. The shared repaint hook carries over so the new
         // decoder can wake the paint loop immediately; the published wake
         // schedule is cleared with the frame scheduler it describes, so the
-        // fresh decoder wakes for the relaunched app's first frames.
+        // fresh decoder wakes for the relaunched plugin's first frames.
         let runtime = WasmPythonRuntime::launch(&self.config)?;
         *self.wake_schedule.lock().unwrap_or_else(|e| e.into_inner()) =
             WakeScheduleState::default();
         self.decoder = PythonOutputDecoder::spawn(
             &runtime,
-            self.app_id.clone(),
+            self.plugin_id.clone(),
             self.repaint.clone(),
             self.wake_schedule.clone(),
         );
         let old_runtime = std::mem::replace(&mut self.runtime, runtime);
         drop(old_runtime);
+        // The restarted guest knows none of these request ids: kill what is
+        // running and forget what is waiting for approval.
+        self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
             // owned by the stdin just closed by `old_runtime`'s drop. The old
@@ -4092,6 +4704,7 @@ impl LivePythonPane {
         self.tree_seq += 1;
         self.pending_trees.clear();
         self.initialized = false;
+        self.presence = PanePresence::default();
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
@@ -4104,6 +4717,8 @@ impl LivePythonPane {
         // half-line or traceback state into it would misclassify the new
         // guest's first lines.
         self.stderr_classifier = GuestStderrClassifier::new();
+        self.unhandled_warned_at.clear();
+        self.announced_permission_read = false;
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -4111,12 +4726,15 @@ impl LivePythonPane {
             // nothing at all). Fail loud instead of a silent stale-node
             // click, matching the same policy as the other drop points above.
             log::error!(
-                "app::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
-                self.app_id,
+                "plugin::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
+                self.plugin_id,
                 dropped.target
             );
         }
-        log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
+        log::info!(
+            "plugin::{}: relaunched CPython WASM runtime",
+            self.plugin_id
+        );
         Ok(())
     }
 }
@@ -4373,80 +4991,87 @@ fn is_exception_record_line(line: &str) -> bool {
     }
     let head = line.split(':').next().unwrap_or_default();
     let mut chars = head.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 fn python_key_name(key: egui::Key) -> String {
-    match key {
-        egui::Key::ArrowDown => "down".to_string(),
-        egui::Key::ArrowUp => "up".to_string(),
-        egui::Key::ArrowLeft => "left".to_string(),
-        egui::Key::ArrowRight => "right".to_string(),
-        egui::Key::Enter => "enter".to_string(),
-        egui::Key::Backspace => "backspace".to_string(),
-        egui::Key::Escape => "escape".to_string(),
-        egui::Key::Space => "space".to_string(),
-        egui::Key::Num0 => "0".to_string(),
-        egui::Key::Num1 => "1".to_string(),
-        egui::Key::Num2 => "2".to_string(),
-        egui::Key::Num3 => "3".to_string(),
-        egui::Key::Num4 => "4".to_string(),
-        egui::Key::Num5 => "5".to_string(),
-        egui::Key::Num6 => "6".to_string(),
-        egui::Key::Num7 => "7".to_string(),
-        egui::Key::Num8 => "8".to_string(),
-        egui::Key::Num9 => "9".to_string(),
-        egui::Key::Slash => "/".to_string(),
-        egui::Key::Minus => "-".to_string(),
-        egui::Key::Equals => "=".to_string(),
-        egui::Key::Backslash => "\\".to_string(),
-        egui::Key::Semicolon => ";".to_string(),
-        egui::Key::Quote => "'".to_string(),
-        egui::Key::Backtick => "`".to_string(),
-        egui::Key::Comma => ",".to_string(),
-        egui::Key::Period => ".".to_string(),
-        other => format!("{other:?}").to_ascii_lowercase(),
+    super::wasm_pane::canonical_key_name(key)
+}
+
+fn python_key_name_for_event(key: egui::Key, modifiers: egui::Modifiers) -> String {
+    if key == egui::Key::Num8
+        && modifiers.shift
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.command
+    {
+        "*".to_string()
+    } else {
+        python_key_name(key)
     }
 }
 
 fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
-    events
-        .iter()
-        .filter_map(|event| {
-            let egui::Event::Key {
+    let has_key_asterisk = events.iter().any(|ev| {
+        matches!(
+            ev,
+            egui::Event::Key { key, modifiers, .. }
+                if python_key_name_for_event(*key, *modifiers) == "*"
+        )
+    });
+    let mut out = Vec::new();
+    for event in events {
+        match event {
+            egui::Event::Key {
                 key,
                 pressed,
                 modifiers,
                 ..
-            } = event
-            else {
-                return None;
-            };
-            // Command chords are host input, never guest input. This matches
-            // the WASM runtime and remains a defense-in-depth guard if host
-            // routing order changes. Bare Escape is also reserved for the host
-            // CloseApp binding; forwarding it would let `handle_key` claim it.
-            if modifiers.command || *key == egui::Key::Escape {
-                return None;
-            }
-            Some(json!({
-                "key": python_key_name(*key),
-                "pressed": pressed,
-                "modifiers": {
-                    "ctrl": modifiers.ctrl,
-                    "shift": modifiers.shift,
-                    "alt": modifiers.alt,
-                    "meta": modifiers.mac_cmd || modifiers.command,
+            } => {
+                // Command chords are host input, never guest input. This matches
+                // the WASM runtime and remains a defense-in-depth guard if host
+                // routing order changes. Bare Escape is also reserved for the host
+                // CloseView binding; forwarding it would let `handle_key` claim it.
+                if modifiers.command || *key == egui::Key::Escape {
+                    continue;
                 }
-            }))
-        })
-        .collect()
+                out.push(json!({
+                    "key": python_key_name_for_event(*key, *modifiers),
+                    "pressed": pressed,
+                    "modifiers": {
+                        "ctrl": modifiers.ctrl,
+                        "shift": modifiers.shift,
+                        "alt": modifiers.alt,
+                        "meta": modifiers.mac_cmd || modifiers.command,
+                    }
+                }));
+            }
+            egui::Event::Text(t) if t == "*" && !has_key_asterisk => {
+                for pressed in [true, false] {
+                    out.push(json!({
+                        "key": "*",
+                        "pressed": pressed,
+                        "modifiers": {
+                            "ctrl": false,
+                            "shift": false,
+                            "alt": false,
+                            "meta": false,
+                        }
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Encode only a physical, unmodified Escape press for the TextInput
 /// focus-loss handoff. Keeping this separate from [`python_key_events`] makes
-/// the host CloseApp reservation the normal bridge contract.
+/// the host CloseView reservation the normal bridge contract.
 fn python_text_input_escape_events(events: &[egui::Event]) -> Vec<Value> {
     events
         .iter()
@@ -4532,40 +5157,9 @@ fn commit_python_frame(
     Some(sent_at)
 }
 
-/// Resolve an app-supplied relative path inside `root`, rejecting absolute
-/// paths, `..` components, and symlink escapes. `for_write` permits a
-/// not-yet-existing final component as long as its parent resolves inside the
-/// jail. Shared by `file_read` and `file_write`; 0508's granted scopes will
-/// extend the allowed roots here once they land.
-fn resolve_jailed_path(root: &Path, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-    let path = Path::new(raw);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return Err(format!("path escapes workspace: {raw}"));
-    }
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("canonicalize workspace {}: {error}", root.display()))?;
-    let candidate = root.join(path);
-    let resolved = if for_write && !candidate.exists() {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| "path has no parent".to_string())?;
-        parent
-            .canonicalize()
-            .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
-    } else {
-        candidate.canonicalize()
-    }
-    .map_err(|error| format!("resolve workspace path {raw}: {error}"))?;
-    if !resolved.starts_with(&canonical_root) {
-        return Err(format!("path escapes workspace through symlink: {raw}"));
-    }
-    Ok(resolved)
-}
+#[cfg(test)]
+use super::wasm_pane::resolve_jailed_path;
+use super::wasm_pane::{canonicalize_picked_path, resolve_plugin_fs_path};
 
 /// Extract the payload of a `file_write` message: binary via `content_b64`
 /// (base64, the binary-safe bridge encoding) or text via `content`. Exactly one
@@ -4599,14 +5193,14 @@ fn decode_file_write_content(message: &Value) -> Result<Vec<u8>, String> {
 
 /// Default tail window for a `read_host_log` request: the last 256 KiB. Bounded
 /// so a multi-megabyte channel log never crosses the JSON bridge whole; the
-/// logs app renders far fewer lines than this holds.
+/// logs view renders far fewer lines than this holds.
 const DEFAULT_HOST_LOG_TAIL_BYTES: usize = 256 * 1024;
 
 /// Read the tail of the host channel log for the capability-gated
 /// `read_host_log` effect (stint 0444). Seeks to the last `max_bytes` and drops
-/// the partial leading line so the app only ever parses whole records. Returns
+/// the partial leading line so the plugin only ever parses whole records. Returns
 /// a typed error string (never an empty success) when the log cannot be reached
-/// so the app can render the failure instead of a blank pane.
+/// so the plugin can render the failure instead of a blank pane.
 fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file =
@@ -4633,60 +5227,36 @@ fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
     Ok(text)
 }
 
-/// Resolve an app-supplied fs path against the workspace jail and picker
-/// grants (stint 0508). This is the single chokepoint for CPython-WASM app fs
-/// access: relative paths stay jailed to `workspace_root` via
-/// `resolve_jailed_path` (stint 0509) exactly as before; absolute paths are
-/// accepted only when they resolve under a picker-granted root, with the same
-/// canonicalize + symlink-escape discipline, so a symlink inside either scope
-/// cannot reach outside it.
-fn resolve_app_fs_path(
-    workspace_root: &Path,
-    granted_roots: &[PathBuf],
-    raw: &str,
-    for_write: bool,
-) -> Result<PathBuf, String> {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        let resolved = resolve_concrete_path(path.to_path_buf(), for_write)?;
-        if granted_roots.iter().any(|root| resolved.starts_with(root)) {
-            return Ok(resolved);
-        }
-        return Err(format!(
-            "absolute path is outside every picker-granted scope: {raw}"
-        ));
+/// Manifest capability a Python guest must declare before the host executes
+/// this bridge command. `None` = ungated. Python grants are manifest membership
+/// (`LivePythonPane::has_capability`), not WIT session prompts (#2641).
+fn required_capability_for_python_plugin_command(
+    command: &crate::app::view_trait::ViewCommand,
+) -> Option<&'static str> {
+    use crate::app::permissions::Capability;
+    use crate::app::view_trait::ViewCommand;
+    match command {
+        ViewCommand::SpawnView { .. } => Some(Capability::SpawnView.as_str()),
+        ViewCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
+        ViewCommand::ForwardPaneRequest {
+            request: crate::protocol::HostRequest::FocusPane { .. },
+        } => Some(Capability::PanesControl.as_str()),
+        // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
+        ViewCommand::ShowNotification { .. } => Some("notify"),
+        _ => None,
     }
-    resolve_jailed_path(workspace_root, raw, for_write)
 }
 
-/// Canonicalize a candidate path; for a write target that does not exist yet,
-/// canonicalize its parent and re-attach the file name (same discipline the
-/// workspace jail has always used for new files).
-fn resolve_concrete_path(candidate: PathBuf, for_write: bool) -> Result<PathBuf, String> {
-    let display = candidate.display().to_string();
-    if for_write && !candidate.exists() {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| format!("path has no parent: {display}"))?;
-        let name = candidate
-            .file_name()
-            .ok_or_else(|| format!("path has no file name: {display}"))?
-            .to_os_string();
-        parent.canonicalize().map(|parent| parent.join(name))
-    } else {
-        candidate.canonicalize()
-    }
-    .map_err(|error| format!("resolve path {display}: {error}"))
+/// Manifest-membership grant check shared by `LivePythonPane::has_capability`
+/// and its tests.
+fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
+    capabilities.iter().any(|item| item == capability)
 }
 
-/// Canonicalize a picker-returned path for grant registration. Save-as
-/// targets may not exist yet, so a missing path resolves through its parent.
-fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
-    resolve_concrete_path(path.to_path_buf(), true)
-}
-
-fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
-    use crate::app::app_trait::AppCommand;
+fn plugin_command_from_python_message(
+    message: &Value,
+) -> Result<Option<crate::app::view_trait::ViewCommand>, String> {
+    use crate::app::view_trait::ViewCommand;
     let text = |key: &str| {
         message
             .get(key)
@@ -4694,14 +5264,45 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             .unwrap_or_default()
             .to_string()
     };
-    match message.get("type").and_then(Value::as_str)? {
+    let Some(message_type) = message.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if message_type == "show_notification" {
+        const UNSUPPORTED: &[&str] = &[
+            "kind",
+            "options",
+            "input_prompt",
+            "required",
+            "scope",
+            "image_inline",
+            "image_pipe_id",
+            "timeout_secs",
+            "on_dismiss",
+        ];
+        let rich_fields: Vec<&str> = UNSUPPORTED
+            .iter()
+            .copied()
+            .filter(|field| {
+                message
+                    .as_object()
+                    .is_some_and(|object| object.contains_key(*field))
+            })
+            .collect();
+        if !rich_fields.is_empty() {
+            return Err(format!(
+                "show_notification supports title and body only; unsupported field(s): {}",
+                rich_fields.join(", ")
+            ));
+        }
+    }
+    let command = (|| match message_type {
         "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
             .ok()
-            .map(|tools| AppCommand::ExposeTools {
+            .map(|tools| ViewCommand::ExposeTools {
                 tools,
                 pane_id: None,
             }),
-        "tool_result" => Some(AppCommand::ToolResult {
+        "tool_result" => Some(ViewCommand::ToolResult {
             call_id: text("call_id"),
             output_json: message
                 .get("output_json")
@@ -4709,6 +5310,10 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .map(str::to_string),
             error: message
                 .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            error_code: message
+                .get("error_code")
                 .and_then(Value::as_str)
                 .map(str::to_string),
         }),
@@ -4729,8 +5334,8 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
-            Some(AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::DeclareEventStreams { streams },
+            Some(ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::DeclareEventStreams { streams },
                 pane_id: None,
             })
         }
@@ -4751,8 +5356,8 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .map(serde_json::from_str)
                 .transpose()
                 .ok()?;
-            Some(AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::EmitEvent {
+            Some(ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::EmitEvent {
                     event: text("event"),
                     actor,
                     actor_id: message
@@ -4799,10 +5404,10 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 pane_id: None,
             })
         }
-        "subscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::protocol::AppRequest::SubscribeAppEvents {
+        "subscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
+            request: crate::protocol::HostRequest::SubscribePluginEvents {
                 request_id: text("request_id"),
-                app_id: text("app_id"),
+                plugin_id: text("plugin_id"),
                 event_names: message
                     .get("event_names")
                     .and_then(Value::as_array)
@@ -4823,43 +5428,43 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             },
             pane_id: None,
         }),
-        "unsubscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::protocol::AppRequest::UnsubscribeAppEvents {
+        "unsubscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
+            request: crate::protocol::HostRequest::UnsubscribePluginEvents {
                 request_id: text("request_id"),
                 subscription_id: text("subscription_id"),
             },
             pane_id: None,
         }),
-        "spawn_app" => Some(AppCommand::SpawnApp {
-            type_id: text("app_id"),
+        "spawn_view" => Some(ViewCommand::SpawnView {
+            type_id: text("plugin_id"),
             layout: message
                 .get("layout")
                 .and_then(Value::as_str)
                 .map(str::to_string),
             args: Vec::new(),
         }),
-        "spawn_pane" => Some(AppCommand::SpawnPane {
-            type_id: text("app_id"),
+        "spawn_pane" => Some(ViewCommand::SpawnPane {
+            type_id: text("plugin_id"),
             layout: text("layout"),
             args: Vec::new(),
             from_pane_id: None,
             request_id: None,
             target_context: None,
         }),
-        "focus_pane" => Some(AppCommand::ForwardPaneRequest {
-            request: crate::protocol::AppRequest::FocusPane {
+        "focus_pane" => Some(ViewCommand::ForwardPaneRequest {
+            request: crate::protocol::HostRequest::FocusPane {
                 pane_id: message
                     .get("pane_id")
                     .and_then(Value::as_u64)
                     .unwrap_or_default(),
             },
         }),
-        "pipe_send" => Some(AppCommand::DeliverPipeMessage {
+        "pipe_send" => Some(ViewCommand::DeliverPipeMessage {
             sender_pane_id: 0,
             pipe_id: text("pipe_id"),
             payload: message.get("payload").cloned().unwrap_or(Value::Null),
         }),
-        "pipe_open_directed" => Some(AppCommand::OpenDirectedPipe {
+        "pipe_open_directed" => Some(ViewCommand::OpenDirectedPipe {
             sender_pane_id: 0,
             pipe_id: text("pipe_id"),
             target_pane_id: message
@@ -4867,11 +5472,11 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
         }),
-        "run_update" => Some(AppCommand::DeliverRunUpdate {
+        "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
             event: crate::protocol::PlexiEvent::Resume,
         }),
-        "show_notification" => Some(AppCommand::ShowNotification {
+        "show_notification" => Some(ViewCommand::ShowNotification {
             notify_id: text("notify_id"),
             sender_pane_id: 0,
             source_context_id: 0,
@@ -4889,7 +5494,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             timeout_secs: None,
             on_dismiss: None,
         }),
-        "insert_path_token" => Some(AppCommand::InsertPathToken {
+        "insert_path_token" => Some(ViewCommand::InsertPathToken {
             sender_pane_id: 0,
             terminal_pane_id: message
                 .get("terminal_pane_id")
@@ -4898,7 +5503,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             path: text("path"),
             mode: crate::protocol::PathTokenMode::Append,
         }),
-        "command_preview" => Some(AppCommand::RequestCommandPreview {
+        "command_preview" => Some(ViewCommand::RequestCommandPreview {
             sender_pane_id: 0,
             request_id: text("request_id"),
             terminal_pane_id: message
@@ -4907,7 +5512,7 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .unwrap_or_default(),
             command: text("command"),
         }),
-        "query_context_state" => Some(AppCommand::QueryContextState {
+        "query_context_state" => Some(ViewCommand::QueryContextState {
             sender_pane_id: 0,
             context_id: message
                 .get("context_id")
@@ -4915,36 +5520,33 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .unwrap_or_default(),
         }),
         _ => None,
-    }
+    })();
+    Ok(command)
+}
+
+#[cfg(test)]
+fn unbundled_python_sdk() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python")
+}
+#[cfg(not(test))]
+fn unbundled_python_sdk() -> PathBuf {
+    std::env::var_os("PLEXI_SDK_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::config_dir().join("sdk"))
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
+    if let Some(resources) =
+        crate::distribution::resources().map_err(WasmPythonError::RuntimeStart)?
+    {
+        return resolve_cpython_bundle(resources.join("wasm-bundles"));
+    }
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(shared_wasm_bundle_dir);
-    match resolve_cpython_bundle(cache_dir.clone()) {
-        Ok(path) => Ok(path),
-        Err(WasmPythonError::MissingBundle { .. }) => {
-            let script =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/fetch-cpython-bundle.sh");
-            log::info!("python_compat: fetching verified CPython WASI bundle");
-            let status = Command::new("bash")
-                .arg(script)
-                .env(CPYTHON_BUNDLE_CACHE_ENV, &cache_dir)
-                .status()
-                .map_err(|source| WasmPythonError::ReadBundle {
-                    path: cache_dir.clone(),
-                    source,
-                })?;
-            if !status.success() {
-                return Err(WasmPythonError::RuntimeStart(
-                    "fetch verified CPython WASI bundle failed".to_string(),
-                ));
-            }
-            resolve_cpython_bundle(cache_dir)
-        }
-        Err(error) => Err(error),
-    }
+    // Development caches are fetched explicitly by the build/test scripts.
+    // Runtime execution must never invoke a script from a build checkout.
+    resolve_cpython_bundle(cache_dir)
 }
 
 fn shared_wasm_bundle_dir() -> PathBuf {
@@ -5042,7 +5644,7 @@ fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
         CpythonBundleAbi::LifecycleComponent => Ok(()),
         CpythonBundleAbi::RawWasiModule => Err(WasmPythonError::RawModuleAbiMismatch {
             path: path.to_path_buf(),
-            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:app/lifecycle init/update/view; Plexi needs a shim component that embeds CPython and exports lifecycle".to_string(),
+            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:plugin/lifecycle init/update/view; Plexi needs a shim component that embeds CPython and exports lifecycle".to_string(),
         }),
     }
 }
@@ -5054,9 +5656,9 @@ pub fn probe_cpython_shim_component(path: &Path) -> Result<(), WasmPythonError> 
 
 #[cfg(test)]
 fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<(), WasmPythonError> {
-    let grants = WasmApp::inspect_required_grants(path)
+    let grants = WasmView::inspect_required_grants(path)
         .map_err(|source| classify_component_load_error(path, source))?;
-    let mut app = WasmApp::load_with_grants(
+    let mut app = WasmView::load_with_grants(
         "python-shim-probe",
         path,
         StateStore::ephemeral(),
@@ -5103,7 +5705,7 @@ fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPy
         return WasmPythonError::RawModuleAbiMismatch {
             path: path.to_path_buf(),
             reason:
-                "artifact is a raw WASM module; expected a component exporting plexi:app/lifecycle"
+                "artifact is a raw WASM module; expected a component exporting plexi:plugin/lifecycle"
                     .to_string(),
         };
     }
@@ -5115,7 +5717,9 @@ fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPy
 
 #[cfg(test)]
 fn is_core_wasm_module(path: &Path) -> bool {
-    wasmtime::Module::from_file(&wasmtime::Engine::default(), path).is_ok()
+    super::wasm_engine::create_engine()
+        .and_then(|engine| wasmtime::Module::from_file(&engine, path))
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -5197,8 +5801,6 @@ pub fn encode_input_event(event: &InputEvent) -> Result<Value, WasmPythonError> 
         InputEvent::Resize(size) => {
             json!({ "type": "Resize", "width": size.width, "height": size.height })
         }
-        InputEvent::FocusGained => json!({ "type": "FocusGained" }),
-        InputEvent::FocusLost => json!({ "type": "FocusLost" }),
         InputEvent::TimerFired(id) => json!({ "type": "TimerFired", "id": id }),
         InputEvent::HttpResponse(response) => json!({
             "type": "HttpResponse",
@@ -5266,9 +5868,7 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
                     .get("tools")
                     .and_then(Value::as_array)
                     .ok_or_else(|| {
-                        WasmPythonError::BridgeJson(
-                            "ExposeTools missing array 'tools'".to_string(),
-                        )
+                        WasmPythonError::BridgeJson("ExposeTools missing array 'tools'".to_string())
                     })?
                     .iter()
                     .map(decode_tool_decl)
@@ -5282,7 +5882,10 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
                     .get("output_json")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                error: value.get("error").and_then(Value::as_str).map(str::to_string),
+                error: value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             },
         ))),
         "FileRead" => Ok(PythonBridgeEffect::Host(Effect::FileRead(FileReadEffect {
@@ -5350,6 +5953,7 @@ fn decode_ui_tree_value(value: &Value) -> Result<UiTree, WasmPythonError> {
 
 fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPythonError> {
     let tree = decode_ui_tree_value(value)?;
+    validate_python_ui_tree(&tree)?;
     let mut canvas_fits = HashMap::new();
     for node in value
         .get("nodes")
@@ -5362,6 +5966,41 @@ fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPython
         }
     }
     Ok(PythonUiTree { tree, canvas_fits })
+}
+
+/// A decoded tree is only renderable when its arena ids and every edge resolve.
+/// Treat violations as bridge desyncs so the decoder asks the guest for a full
+/// frame instead of letting the renderer silently skip missing nodes.
+fn validate_python_ui_tree(tree: &UiTree) -> Result<(), WasmPythonError> {
+    let ids: std::collections::HashSet<u32> = tree.nodes.iter().map(|node| node.id).collect();
+    if ids.len() != tree.nodes.len() {
+        return Err(WasmPythonError::BridgeJson(
+            "ui tree contains duplicate node ids".to_string(),
+        ));
+    }
+    if !ids.contains(&tree.root) {
+        return Err(WasmPythonError::BridgeJson(
+            "ui tree root is not present in its arena".to_string(),
+        ));
+    }
+    for node in &tree.nodes {
+        let references: &[u32] = match &node.data {
+            UiNodeData::Column(column) => &column.children,
+            UiNodeData::Row(row) => &row.children,
+            UiNodeData::ListView(list) => &list.items,
+            UiNodeData::Scroll(scroll) => std::slice::from_ref(&scroll.child),
+            UiNodeData::Padding(padding) => std::slice::from_ref(&padding.child),
+            UiNodeData::Pinned(pinned) => std::slice::from_ref(&pinned.child),
+            _ => &[],
+        };
+        if references.iter().any(|id| !ids.contains(id)) {
+            return Err(WasmPythonError::BridgeJson(format!(
+                "ui tree node {} references a missing child",
+                node.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The `CanvasFit` an encoded node maps to, or `None` when it is not a canvas.
@@ -5402,7 +6041,7 @@ struct NativePythonLifecycleOutput {
 #[cfg(test)]
 fn run_native_python_lifecycle_probe(
     sdk_dir: &Path,
-    app_dir: &Path,
+    plugin_dir: &Path,
     module_name: &str,
     init_arg: &Value,
     update_arg: &Value,
@@ -5412,16 +6051,16 @@ fn run_native_python_lifecycle_probe(
 import json
 import sys
 
-sdk_dir, app_dir, module_name, init_arg, update_arg, view_arg = sys.argv[1:]
+sdk_dir, plugin_dir, module_name, init_arg, update_arg, view_arg = sys.argv[1:]
 sys.path.insert(0, sdk_dir)
-sys.path.insert(0, app_dir)
+sys.path.insert(0, plugin_dir)
 
 import plexi_sdk._v3_state as v3_state
-from plexi_sdk._adapter import call_lifecycle, load_app
+from plexi_sdk._adapter import call_lifecycle, load_plugin
 
 v3_state._host_log = lambda level, msg: None
 
-load_app(module_name)
+load_plugin(module_name)
 print(json.dumps({
     "init": call_lifecycle("init", init_arg),
     "update": call_lifecycle("update", update_arg),
@@ -5432,7 +6071,7 @@ print(json.dumps({
         .arg("-c")
         .arg(script)
         .arg(sdk_dir)
-        .arg(app_dir)
+        .arg(plugin_dir)
         .arg(module_name)
         .arg(init_arg.to_string())
         .arg(update_arg.to_string())
@@ -5463,11 +6102,128 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
     let data = value
         .get("data")
         .ok_or_else(|| WasmPythonError::BridgeJson("indexed node missing data".to_string()))?;
+    let raw_key = required_string(value, "key")?;
+    let kind = data.get("type").and_then(Value::as_str).unwrap_or("");
+    let is_card = matches!(kind, "Card" | "card")
+        || data.get("card").and_then(Value::as_bool).unwrap_or(false);
+    let text_role = if matches!(kind, "Text" | "text") {
+        decode_text_role(data)?
+    } else {
+        None
+    };
+    let key = if is_card {
+        if raw_key.starts_with(super::wasm_render::CARD_NODE_KEY_PREFIX) {
+            raw_key
+        } else {
+            format!("{}{raw_key}", super::wasm_render::CARD_NODE_KEY_PREFIX)
+        }
+    } else if matches!(kind, "DataTable" | "data_table" | "table" | "Table") {
+        encode_table_node_key(data, raw_key)?
+    } else if let Some(role) = text_role {
+        role.key(&raw_key)
+    } else {
+        raw_key
+    };
     Ok(IndexedNode {
         id: required_u32(value, "id")?,
-        key: required_string(value, "key")?,
+        key,
         data: decode_node_data(data)?,
     })
+}
+
+fn encode_table_node_key(value: &Value, identity_key: String) -> Result<String, WasmPythonError> {
+    let columns: Vec<String> = value
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| c.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = value
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|row| {
+                    row.as_array()
+                        .map(|cells| {
+                            cells
+                                .iter()
+                                .map(|cell| {
+                                    cell.as_str()
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| cell.to_string())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let selected = value
+        .get("selected")
+        .or_else(|| value.get("selected_idx"))
+        .and_then(Value::as_u64)
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| WasmPythonError::BridgeJson("field 'selected' out of range".to_string()))?;
+    let on_select = value
+        .get("on_select")
+        .or_else(|| value.get("on-select"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let meta = super::wasm_render::TableNodeMeta {
+        identity_key,
+        columns,
+        rows,
+        selected,
+        on_select,
+    };
+    let encoded =
+        serde_json::to_string(&meta).map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
+    Ok(format!(
+        "{}{encoded}",
+        super::wasm_render::TABLE_NODE_KEY_PREFIX
+    ))
+}
+
+fn decode_text_role(
+    value: &Value,
+) -> Result<Option<super::wasm_render::TextRole>, WasmPythonError> {
+    use super::wasm_render::TextRole;
+    match value.get("color") {
+        None | Some(Value::Null) if value.get("tone").and_then(Value::as_str) == Some("hint") => {
+            Ok(Some(TextRole::Muted))
+        }
+        Some(Value::String(raw)) if !raw.is_empty() && !raw.starts_with('#') => {
+            TextRole::parse(raw).map(Some).ok_or_else(|| {
+                WasmPythonError::BridgeJson(format!(
+                    "unknown text color '{raw}': expected semantic role or #rrggbb"
+                ))
+            })
+        }
+        _ => Ok(None),
+    }
+}
+
+fn decode_text_color(value: &Value) -> Result<Option<Color>, WasmPythonError> {
+    // Semantic roles are carried as renderer metadata, never baked into RGBA.
+    if decode_text_role(value)?.is_some() {
+        return Ok(None);
+    }
+    match value.get("color") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(other) => decode_color(other).map(Some),
+    }
 }
 
 fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
@@ -5479,9 +6235,9 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         "Empty" => Ok(UiNodeData::Empty),
         "Text" | "text" | "label" => Ok(UiNodeData::Text(TextNode {
             text: required_string(value, "text")?,
-            size: optional_f32(value, "size")?,
+            size: optional_f32(value, "size")?.or(optional_f32(value, "font_size")?),
             bold: value.get("bold").and_then(Value::as_bool).unwrap_or(false),
-            color: None,
+            color: decode_text_color(value)?,
             truncate: value
                 .get("truncate")
                 .and_then(Value::as_bool)
@@ -5493,14 +6249,16 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .unwrap_or("start"),
             )?,
         })),
-        "AppBar" | "app_bar" | "app-bar" => Ok(UiNodeData::AppBar(AppBarNode {
-            title: required_string(value, "title")?,
-            subtitle: value
-                .get("subtitle")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        })),
+        "SurfaceHeader" | "surface_header" | "surface-header" => {
+            Ok(UiNodeData::SurfaceHeader(SurfaceHeaderNode {
+                title: required_string(value, "title")?,
+                subtitle: value
+                    .get("subtitle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            }))
+        }
         "FooterKeys" | "footer_keys" | "footer-keys" => {
             Ok(UiNodeData::FooterKeys(FooterKeysNode {
                 entries: value
@@ -5536,7 +6294,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         })),
         "Column" | "column" => Ok(UiNodeData::Column(ColumnNode {
             children: u32_list(value, "children")?,
-            // Default inter-child spacing when the app declares none. Absence
+            // Default inter-child spacing when the plugin declares none. Absence
             // means "use the good default"; an explicit `gap: 0.0` still wins
             // and packs children flush (stint 0445).
             gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_MD),
@@ -5548,6 +6306,19 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             )?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
+        "DataTable" | "data_table" | "table" | "Table" => {
+            let children = if value.get("children").is_some() {
+                u32_list(value, "children")?
+            } else {
+                Vec::new()
+            };
+            Ok(UiNodeData::Column(ColumnNode {
+                children,
+                gap: optional_f32(value, "gap")?.unwrap_or(4.0),
+                align: Alignment::Start,
+                grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
+            }))
+        }
         "Button" | "button" => Ok(UiNodeData::Button(ButtonNode {
             label: required_string(value, "label")?,
             on_click: required_string(value, "on_click")?,
@@ -5624,8 +6395,15 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             }))
         }
         "Badge" | "badge" => Ok(UiNodeData::Badge(
-            super::wasm_app::bindings::plexi::platform::types::BadgeNode {
-                text: required_string(value, "text")?,
+            super::wasm_view::bindings::plexi::platform::types::BadgeNode {
+                text: value
+                    .get("text")
+                    .or_else(|| value.get("label"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson("missing string field 'text'".to_string())
+                    })?,
                 color: decode_badge_color(
                     value
                         .get("color")
@@ -5657,13 +6435,26 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         })),
-        "Padding" | "padding" => Ok(UiNodeData::Padding(PaddingNode {
-            child: required_u32(value, "child")?,
-            top: optional_f32(value, "top")?.unwrap_or(0.0),
-            right: optional_f32(value, "right")?.unwrap_or(0.0),
-            bottom: optional_f32(value, "bottom")?.unwrap_or(0.0),
-            left: optional_f32(value, "left")?.unwrap_or(0.0),
-        })),
+        "Padding" | "padding" => {
+            let pad = optional_f32(value, "padding")?.unwrap_or(0.0);
+            Ok(UiNodeData::Padding(PaddingNode {
+                child: required_u32(value, "child")?,
+                top: optional_f32(value, "top")?.unwrap_or(pad),
+                right: optional_f32(value, "right")?.unwrap_or(pad),
+                bottom: optional_f32(value, "bottom")?.unwrap_or(pad),
+                left: optional_f32(value, "left")?.unwrap_or(pad),
+            }))
+        }
+        "Card" | "card" => {
+            let pad = optional_f32(value, "padding")?.unwrap_or(crate::ui::style::SPACE_MD);
+            Ok(UiNodeData::Padding(PaddingNode {
+                child: required_u32(value, "child")?,
+                top: optional_f32(value, "top")?.unwrap_or(pad),
+                right: optional_f32(value, "right")?.unwrap_or(pad),
+                bottom: optional_f32(value, "bottom")?.unwrap_or(pad),
+                left: optional_f32(value, "left")?.unwrap_or(pad),
+            }))
+        }
         "Canvas" | "canvas" => Ok(UiNodeData::Canvas(CanvasNode {
             width: optional_f32(value, "width")?.unwrap_or(640.0),
             height: optional_f32(value, "height")?.unwrap_or(360.0),
@@ -5957,9 +6748,9 @@ fn u32_list(value: &Value, field: &str) -> Result<Vec<u32>, WasmPythonError> {
 
 fn decode_alignment(value: &str) -> Result<Alignment, WasmPythonError> {
     match value {
-        "start" | "left_top" | "left_center" | "left_bottom" => Ok(Alignment::Start),
+        "start" | "left" | "left_top" | "left_center" | "left_bottom" => Ok(Alignment::Start),
         "center" | "center_top" | "center_center" | "center_bottom" => Ok(Alignment::Center),
-        "end" | "right_top" | "right_center" | "right_bottom" => Ok(Alignment::End),
+        "end" | "right" | "right_top" | "right_center" | "right_bottom" => Ok(Alignment::End),
         "stretch" => Ok(Alignment::Stretch),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown alignment: {other}"
@@ -6033,8 +6824,8 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::wasm_app::bindings::plexi::platform::types::HttpResponse;
-    use crate::host::wasm_app::Modifiers;
+    use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
+    use crate::host::wasm_view::Modifiers;
     use std::sync::Arc;
     use std::task::{Context, Wake, Waker};
     use tempfile::tempdir;
@@ -6056,20 +6847,18 @@ mod tests {
         stdin.arm_low_water_wake(LowWaterArmRequest::Fresh { threshold, wake })
     }
 
-    fn state_test_config(workspace_root: &Path, app_id: &str) -> PythonLaunchConfig {
+    fn state_test_config(workspace_root: &Path, plugin_id: &str) -> PythonLaunchConfig {
         PythonLaunchConfig {
-            app_id: app_id.to_string(),
-            app_dir: workspace_root.to_path_buf(),
+            plugin_id: plugin_id.to_string(),
+            plugin_dir: workspace_root.to_path_buf(),
             entry: workspace_root.join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: workspace_root.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             // These tests exercise root-scoped addressing (same root -> same
             // file, different root -> different file), which is exactly
             // `StateScope::Context`'s contract — `Global` would ignore the
@@ -6093,11 +6882,77 @@ mod tests {
             .unwrap_or(crate::host::state_scope::StateScope::Global);
         crate::host::state_scope::state_file(
             scope,
-            &config.app_id,
+            &config.plugin_id,
             config.state_format,
             &config.context_root,
         )
         .expect("resolve state path")
+    }
+
+    #[test]
+    fn python_bridge_protected_commands_require_capabilities() {
+        let required = |message: Value| {
+            plugin_command_from_python_message(&message)
+                .ok()
+                .flatten()
+                .and_then(|command| required_capability_for_python_plugin_command(&command))
+        };
+        assert_eq!(
+            required(serde_json::json!({"type": "spawn_view", "plugin_id": "x"})),
+            Some("spawn.plugin")
+        );
+        assert_eq!(
+            required(
+                serde_json::json!({"type": "spawn_pane", "plugin_id": "x", "layout": "split_h"})
+            ),
+            Some("panes.spawn")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "focus_pane", "pane_id": 1})),
+            Some("panes.control")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "show_notification", "title": "t", "body": "b"})),
+            Some("notify")
+        );
+        assert_eq!(
+            required(serde_json::json!({"type": "pipe_send", "pipe_id": "p"})),
+            None
+        );
+    }
+
+    #[test]
+    fn python_bridge_gate_is_manifest_membership() {
+        assert!(!manifest_declares(&[], "spawn.plugin"));
+        assert!(manifest_declares(
+            &["spawn.plugin".to_string()],
+            "spawn.plugin"
+        ));
+        assert!(!manifest_declares(&["spawn.plugin".to_string()], "notify"));
+    }
+
+    #[test]
+    fn python_bridge_notification_contract_rejects_rich_fields() {
+        let supported = plugin_command_from_python_message(&serde_json::json!({
+            "type": "show_notification", "title": "Saved", "body": "Done"
+        }))
+        .expect("message-only notification is supported")
+        .expect("message decodes");
+        assert!(
+            matches!(supported, crate::app::view_trait::ViewCommand::ShowNotification {
+            kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
+        } if options.is_empty())
+        );
+        let error = match plugin_command_from_python_message(&serde_json::json!({
+            "type": "show_notification", "title": "Ask", "body": "Continue?",
+            "kind": "choice", "options": [{"label": "yes"}]
+        })) {
+            Err(error) => error,
+            Ok(_) => panic!("the bridge must not silently discard rich fields"),
+        };
+        assert!(error.contains("supports title and body only"));
+        assert!(error.contains("kind"));
+        assert!(error.contains("options"));
     }
 
     #[test]
@@ -6128,21 +6983,16 @@ mod tests {
         let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
 
         assert_eq!(payload["theme"], json!(config.theme));
-        assert!(
-            payload["theme"]
-                .as_object()
-                .is_some_and(|theme| !theme.is_empty())
-        );
+        assert!(payload["theme"]
+            .as_object()
+            .is_some_and(|theme| !theme.is_empty()));
     }
 
     #[test]
     fn theme_event_updates_the_cached_python_relaunch_theme() {
         let workspace = tempdir().expect("workspace");
         let mut config = state_test_config(workspace.path(), "test.theme-relaunch");
-        let colors = std::collections::HashMap::from([(
-            "fg".to_string(),
-            "#123456".to_string(),
-        )]);
+        let colors = std::collections::HashMap::from([("fg".to_string(), "#123456".to_string())]);
 
         cache_python_theme_for_relaunch(
             &mut config,
@@ -6154,66 +7004,8 @@ mod tests {
         assert_eq!(config.theme, colors);
     }
 
-    /// Stint 0678 audit evidence (Q2/Q5): two live instances of one app under
-    /// the same root address one file, and the loser is the instance that
-    /// persists *last* with the older in-memory map — not the one that wrote
-    /// the stale bytes first. Replays the exact host sequence: each instance
-    /// loads at launch (`load_python_state`), then persists its own map through
-    /// the same writer `save_state` uses (`write_python_state_atomic`).
-    ///
-    /// Assertion discipline for every `audit_0678_*` test: see the comment on
-    /// the `audit_0678` module below.
-    #[test]
-    fn audit_0678_second_instance_clobbers_the_first_instances_items() {
-        // Isolate `config_dir()` so the global-state fallback in
-        // `load_python_state` resolves inside a tempdir, never the real profile.
-        let profile = tempdir().expect("profile");
-        let _profile = crate::config::set_test_profile_dir(profile.path().join("profile"));
-        let workspace = tempdir().expect("workspace");
-        let first = state_test_config(workspace.path(), "todo");
-        let second = state_test_config(workspace.path(), "todo");
-        assert_eq!(
-            python_state_path_for_config(&first),
-            python_state_path_for_config(&second),
-            "instance identity does not enter the state path — only app_id and workspace_root do"
-        );
-
-        // Both instances launch against an empty store and hold their own copy.
-        let mut first_state = load_python_state(&first).expect("first launch load");
-        let second_state = load_python_state(&second).expect("second launch load");
-        assert!(first_state.is_empty() && second_state.is_empty());
-
-        // The user adds an item in the first instance; it persists.
-        first_state.insert("items".to_string(), json!(["buy milk"]));
-        let path = python_state_path_for_config(&first);
-        std::fs::create_dir_all(path.parent().expect("state parent")).expect("mkdir");
-        crate::platform::fs::atomic_write(
-            &path,
-            &serde_json::to_vec_pretty(&first_state).expect("serialize"),
-        )
-        .expect("first persist");
-        assert_eq!(
-            load_python_state(&second).expect("readback")["items"],
-            json!(["buy milk"])
-        );
-
-        // The second instance persists anything at all — a draft keystroke is
-        // enough — and writes the empty item list it has held since launch.
-        crate::platform::fs::atomic_write(
-            &path,
-            &serde_json::to_vec_pretty(&second_state).expect("serialize"),
-        )
-        .expect("second persist");
-
-        let survivor = load_python_state(&first).expect("post-clobber load");
-        assert!(
-            survivor.get("items").is_none(),
-            "the second instance's launch-time map overwrote the item: {survivor:?}"
-        );
-    }
-
     /// Stint 0678 audit evidence (Q4/Q5): state is addressed by
-    /// `workspace_root`, so the same app id launched under a different root
+    /// `workspace_root`, so the same plugin id launched under a different root
     /// reads a different file and sees nothing. Nothing merges the two, and
     /// nothing warns — this is the "write to a path nobody reads" shape.
     #[test]
@@ -6235,7 +7027,9 @@ mod tests {
             json!(["buy milk"])
         );
         assert!(
-            load_python_state(&under_b).expect("load under B").is_empty(),
+            load_python_state(&under_b)
+                .expect("load under B")
+                .is_empty(),
             "a launch rooted elsewhere sees an empty store, not the items"
         );
         assert!(
@@ -6244,7 +7038,7 @@ mod tests {
         );
     }
 
-    /// Stint 0678 audit evidence that needs a *live* app: a real CPython-WASM
+    /// Stint 0678 audit evidence that needs a *live* plugin: a real CPython-WASM
     /// pane launched through the production path, so the copy of the root that
     /// actually owns the state path — `PythonLaunchConfig::workspace_root` —
     /// is the one under test.
@@ -6267,7 +7061,7 @@ mod tests {
     mod audit_0678 {
         use super::*;
 
-        /// Fails unless an app's persisted bytes are genuinely stranded:
+        /// Fails unless a plugin's persisted bytes are genuinely stranded:
         /// `live` must hold real bytes, and `reachable` — the address the
         /// system can still resolve after the operation under test — must be
         /// a different, empty location. Fixing the defect makes the two agree,
@@ -6279,8 +7073,7 @@ mod tests {
                 live.display()
             );
             assert_ne!(
-                reachable,
-                live,
+                reachable, live,
                 "{what}: the system still resolves the address the bytes are at — \
                  the defect this test documents no longer reproduces"
             );
@@ -6291,7 +7084,7 @@ mod tests {
             );
         }
 
-        /// A minimal but real Python app: a manifest the registry accepts and a
+        /// A minimal but real Python plugin: a manifest the registry accepts and a
         /// `.py` entry, which is all `LivePythonPane::launch` needs to start a
         /// runtime. The guest never has to render for the addressing questions
         /// this module asks. Declares `context` scope explicitly — every test
@@ -6299,26 +7092,23 @@ mod tests {
         /// only `context` scope resolves against; the manifest-omitted
         /// default is `global` (home-dir-relative, root-independent) and
         /// would make every address assertion here vacuous.
-        fn write_python_app(parent: &Path, app_id: &str) -> PathBuf {
-            let app_dir = parent.join(app_id);
-            std::fs::create_dir_all(&app_dir).expect("app dir");
+        fn write_python_plugin(parent: &Path, plugin_id: &str) -> PathBuf {
+            let plugin_dir = parent.join(plugin_id);
+            std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
             std::fs::write(
-                app_dir.join("manifest.toml"),
+                plugin_dir.join("manifest.toml"),
                 format!(
-                    "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
-                     name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n\
-                     \n[runtime]\npython_compat = true\n\
-                     \n[state]\nscopes = [\"context\"]\n"
+                    "schema_version = 2\n\n[runtime]\npython_compat = true\nkind = \"python\"\nentry = \"main.py\"\n\n[state]\nscopes = [\"context\"]\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"{plugin_id}\"\nversion = \"0.0.1\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
                 ),
             )
             .expect("write manifest");
             std::fs::write(
-                app_dir.join("main.py"),
+                plugin_dir.join("main.py"),
                 "def init(size, args): return []\ndef update(event): return []\n\
                  def view(): return None\n",
             )
             .expect("write entry");
-            app_dir
+            plugin_dir
         }
 
         /// The address the *running* instance writes to, read off its own
@@ -6328,10 +7118,12 @@ mod tests {
             let pane = win
                 .panes
                 .get(&pane_id)
-                .and_then(crate::host::pane::Pane::as_app)
-                .expect("the launched pane is an app pane");
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("the launched pane is a view pane");
             match &pane.runtime {
-                crate::host::pane::AppRuntime::Python(live) => python_state_path_for_config(&live.config),
+                crate::host::pane::ViewRuntime::Python(live) => {
+                    python_state_path_for_config(&live.config)
+                }
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
             }
         }
@@ -6343,64 +7135,64 @@ mod tests {
                 &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
                     .expect("serialize"),
             )
-            .expect("the app persists an item");
+            .expect("the plugin persists an item");
         }
 
-        /// Q5, positive regression — stint 0680's fix. A saved workspace now
-        /// records an app pane under its real manifest id, with enough launch
-        /// context to relaunch it, and `restore_app_pane` on that record
-        /// produces a runtime that re-addresses the exact state file the live
-        /// pane wrote. This replaces
-        /// `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`,
-        /// which documented the defect this asserts is fixed — per that
-        /// test's own docstring, the fix was expected to flip both of its
-        /// assertions together.
+        /// Q5, positive regression — stint 0680's fix + stint 0686's full
+        /// `HostHarness` save→restore round trip. A saved workspace records an
+        /// view pane under its real manifest id with launch context, and booting
+        /// a fresh `HostHarness::from_profile_dir` against that profile
+        /// reconstructs the workspace via `restore_workspace` so the restored
+        /// pane resolves the exact state file address the live pane wrote.
         #[test]
-        fn saved_app_pane_can_re_address_its_own_state() {
-            let mut harness = crate::testing::HostHarness::new();
+        fn saved_view_pane_can_re_address_its_own_state() {
+            let profile = tempdir().expect("profile dir");
             let root = tempdir().expect("workspace root");
+
+            let mut harness = crate::testing::HostHarness::from_profile_dir(profile.path());
             let context_id = harness.app.router.get(0).context_id;
             harness
                 .app
                 .set_context_root(root.path().to_path_buf(), Some(context_id));
-            let app_dir = write_python_app(root.path(), "todo");
+            let plugin_dir = write_python_plugin(root.path(), "todo");
 
             let pane_id = harness
                 .app
-                .launch_app_by_path_with_layout_no_review_modal(
-                    &app_dir.to_string_lossy(),
+                .launch_view_by_path_with_layout_no_review_modal(
+                    &plugin_dir.to_string_lossy(),
                     None,
                     Some(root.path().to_path_buf()),
                     &[],
                 )
-                .expect("launch the app")
+                .expect("launch the plugin")
                 .expect("a Python launch returns a pane id");
 
             let live_address = live_state_address(&harness, pane_id);
             seed_items(&live_address, &serde_json::json!(["buy milk"]));
 
             harness.app.save_workspace_now();
-            let saved = crate::workspace::WorkspaceFile::load().expect("saved workspace");
+            let saved = crate::workspace::WorkspaceFile::load_from(profile.path())
+                .expect("saved workspace");
             let record = saved
                 .windows
                 .iter()
                 .flat_map(|window| &window.panes)
                 .find(|pane| pane.id == pane_id)
-                .expect("the app pane is in the saved workspace")
+                .expect("the view pane is in the saved workspace")
                 .clone();
 
             let manifest_id = harness.app.windows[harness.app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(crate::host::pane::Pane::as_app)
-                .expect("app pane")
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("view pane")
                 .manifest_id
                 .clone();
 
             assert_eq!(
-                record.app_id.as_deref(),
+                record.plugin_id.as_deref(),
                 Some(manifest_id.as_str()),
-                "the saved record must name the real app, not the runtime kind"
+                "the saved record must name the real plugin, not the runtime kind"
             );
             assert_eq!(
                 record.runtime_kind.as_deref(),
@@ -6410,69 +7202,51 @@ mod tests {
             let launch = record
                 .launch
                 .clone()
-                .expect("a Python app pane records launch context");
-            let crate::workspace::SavedAppLaunch::Python {
-                app_dir: recorded_dir,
+                .expect("a Python view pane records launch context");
+            let crate::workspace::SavedViewLaunch::Python {
+                plugin_dir: recorded_dir,
                 args,
             } = &launch
             else {
                 panic!("expected a Python launch spec, got {launch:?}");
             };
-            assert_eq!(recorded_dir, &app_dir, "launch context must name the real app_dir");
+            assert_eq!(
+                recorded_dir, &plugin_dir,
+                "launch context must name the real plugin_dir"
+            );
             assert!(args.is_empty());
 
-            let colors =
-                crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-            let crate::pane_ops::RestoredAppPane {
-                pane, state_paths, ..
-            } = crate::pane_ops::restore_app_pane(
-                &manifest_id,
-                &launch,
-                crate::pane_ops::RestoreTarget {
-                    pane_id,
-                    context_id,
-                    workspace_root: root.path().to_path_buf(),
-                    context_root: root.path(),
-                    saved_name: record.name.as_deref(),
-                },
-                &colors,
-            )
-            .expect("the saved record can relaunch the same app");
-
-            let restored = pane.as_app().expect("restored pane is an app pane");
-            assert_eq!(restored.manifest_id, manifest_id);
+            // Drop the first harness and boot a fresh HostHarness from the same
+            // profile directory, exercising the full WorkspaceFile::load_from →
+            // restore_workspace → install_restored_workspace path.
+            drop(harness);
+            let restored_harness = crate::testing::HostHarness::from_profile_dir(profile.path());
+            let restored_pane = restored_harness.app.windows[restored_harness.app.active_window]
+                .panes
+                .get(&pane_id)
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("restored harness must contain the saved view pane");
+            assert_eq!(restored_pane.manifest_id, manifest_id);
             assert!(matches!(
-                restored.runtime,
-                crate::host::pane::AppRuntime::Python(_)
+                restored_pane.runtime,
+                crate::host::pane::ViewRuntime::Python(_)
             ));
-            let restored_address = match &restored.runtime {
-                crate::host::pane::AppRuntime::Python(live) => {
-                    python_state_path_for_config(&live.config)
-                }
-                other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
-            };
+            let restored_address = live_state_address(&restored_harness, pane_id);
             assert_eq!(
                 restored_address, live_address,
-                "the restored runtime must re-address the exact file the live pane wrote"
-            );
-            assert!(
-                state_paths.contains(&(
-                    crate::host::state_scope::StateScope::Context,
-                    live_address
-                )),
-                "restore_app_pane must report the re-addressed state path for watcher registration"
+                "the restored pane in a fresh HostHarness must resolve the exact state address the live pane wrote"
             );
         }
 
         /// Q3 — `set-root` after launch. The context's root moves; the running
-        /// app's address does not, because it was captured into
+        /// plugin's address does not, because it was captured into
         /// `PythonLaunchConfig` at launch and nothing revisits it. Asserted as
         /// a pair: the address is *unchanged*, and it *disagrees* with the
         /// root the context now has. Any addressing fix — call-time resolution
         /// against the live root, or a scope that drops the root entirely —
         /// breaks one half or the other.
         #[test]
-        fn audit_0678_set_context_root_leaves_a_running_app_at_the_old_address() {
+        fn audit_0678_set_context_root_leaves_a_running_plugin_at_the_old_address() {
             let mut harness = crate::testing::HostHarness::new();
             let root_a = tempdir().expect("root a");
             let root_b = tempdir().expect("root b");
@@ -6482,23 +7256,23 @@ mod tests {
                 .set_context_root(root_a.path().to_path_buf(), Some(context_id));
 
             // The launch root is the context root — what `resolve_new_pane_cwd`
-            // yields for an app the registry has no workspace root for.
-            let app_dir = write_python_app(root_a.path(), "todo");
+            // yields for a plugin the registry has no workspace root for.
+            let plugin_dir = write_python_plugin(root_a.path(), "todo");
             let pane_id = harness
                 .app
-                .launch_app_by_path_with_layout_no_review_modal(
-                    &app_dir.to_string_lossy(),
+                .launch_view_by_path_with_layout_no_review_modal(
+                    &plugin_dir.to_string_lossy(),
                     None,
                     Some(root_a.path().to_path_buf()),
                     &[],
                 )
-                .expect("launch the app")
+                .expect("launch the plugin")
                 .expect("a Python launch returns a pane id");
             let at_launch = live_state_address(&harness, pane_id);
             assert_eq!(
                 at_launch,
                 python_state_path_for_config(&state_test_config(root_a.path(), "todo")),
-                "precondition: the running app is addressed under the context root"
+                "precondition: the running plugin is addressed under the context root"
             );
             seed_items(&at_launch, &serde_json::json!(["buy milk"]));
 
@@ -6509,12 +7283,12 @@ mod tests {
             assert_eq!(
                 live_state_address(&harness, pane_id),
                 at_launch,
-                "the running app still writes its launch-time address"
+                "the running plugin still writes its launch-time address"
             );
             assert_state_address_lost(
                 &at_launch,
                 &python_state_path_for_config(&state_test_config(root_b.path(), "todo")),
-                "set_context_root while the app is running",
+                "set_context_root while the plugin is running",
             );
         }
 
@@ -6524,7 +7298,7 @@ mod tests {
         // bytes a later write would never touch. Stints 0651/0652 replaced
         // that implicit fallback with explicit `[state] scopes`: the state
         // module's design principle is "fail loud, no silent fallback" (see
-        // `state_scope::parse_scopes`) — an app that wants both a global and a
+        // `state_scope::parse_scopes`) — a plugin that wants both a global and a
         // context copy declares both scopes and the host never guesses which
         // one it meant. There is no implicit second candidate left to
         // reproduce this shape against.
@@ -6608,7 +7382,10 @@ mod tests {
         let chunk = vec![b'a'; STDIN_BUFFER_HARD_CAP_BYTES - 1];
         stdin.push(&chunk).expect("push under the cap");
         let err = stdin.push(&[b'b', b'c']).expect_err("cap breach must fail");
-        assert!(matches!(err, WasmPythonError::StdinBufferFull { .. }), "{err}");
+        assert!(
+            matches!(err, WasmPythonError::StdinBufferFull { .. }),
+            "{err}"
+        );
         assert_eq!(
             stdin.buffered_bytes(),
             STDIN_BUFFER_HARD_CAP_BYTES - 1,
@@ -6623,7 +7400,10 @@ mod tests {
         let mut reader = stdin.clone();
         let polled = Pin::new(&mut reader).poll_read(&mut cx, &mut read_buf);
         assert!(matches!(polled, Poll::Ready(Ok(()))), "{polled:?}");
-        assert_eq!(stdin.buffered_bytes(), STDIN_BUFFER_HARD_CAP_BYTES - 1 - 4096);
+        assert_eq!(
+            stdin.buffered_bytes(),
+            STDIN_BUFFER_HARD_CAP_BYTES - 1 - 4096
+        );
         stdin
             .push(&vec![b'x'; 4096])
             .expect("freed capacity must accept new bytes");
@@ -6867,12 +7647,12 @@ mod tests {
 
     #[test]
     fn mcp_held_line_rearms_against_relaunched_runtime_stdin() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view(): return None\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let mut pane =
             LivePythonPane::launch(state_test_config(app.path(), "test.mcp-relaunch-held-line"))
                 .expect("launch pane");
@@ -6927,7 +7707,7 @@ mod tests {
         );
 
         let backlogged = pump_mcp_inbound(
-            &pane.app_id,
+            &pane.plugin_id,
             &pane.mcp_rx,
             &pane.runtime.stdin,
             &mut pane.mcp_connections,
@@ -7013,11 +7793,7 @@ mod tests {
         // Nothing was armed and nothing may ever fire: the guest is gone, so
         // a wake here would wait on a read that will never happen.
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::Closed
         ));
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -7030,11 +7806,7 @@ mod tests {
     fn appendable_stdin_rejects_push_after_close() {
         let stdin = AppendableStdin::default();
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::BelowThreshold
         ));
 
@@ -7081,11 +7853,7 @@ mod tests {
         // The real interleaving, step by step: the pump's arm observes an
         // open, below-watermark stdin...
         assert!(matches!(
-            fresh_low_water_arm(
-                &stdin,
-                MCP_STDIN_HIGH_WATER,
-                Arc::new(|_| {}),
-            ),
+            fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::new(|_| {}),),
             LowWaterArm::BelowThreshold
         ));
         // ...teardown closes it before the pump's push runs...
@@ -7168,11 +7936,7 @@ mod tests {
         });
 
         // Arm A, then identify the SAME logical arming by its token: no fire.
-        let token_a = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake_a),
-        ) {
+        let token_a = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake_a)) {
             LowWaterArm::Armed { token } => token,
             outcome => panic!("fresh arm must install A, got {outcome:?}"),
         };
@@ -7183,11 +7947,7 @@ mod tests {
         assert_eq!(a_fired.load(std::sync::atomic::Ordering::SeqCst), 0);
 
         // Fresh work supersedes A even though callback identity is irrelevant.
-        let token_b = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake_b),
-        ) {
+        let token_b = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake_b)) {
             LowWaterArm::Superseded { token, superseded } => {
                 assert_eq!(superseded, token_a);
                 token
@@ -7236,26 +7996,21 @@ mod tests {
                 .push(token);
         });
 
-        let token_a = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake),
-        ) {
+        let token_a = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake)) {
             LowWaterArm::Armed { token } => token,
             outcome => panic!("fresh arm must install A, got {outcome:?}"),
         };
-        let token_b = match fresh_low_water_arm(
-            &stdin,
-            MCP_STDIN_HIGH_WATER,
-            Arc::clone(&wake),
-        ) {
+        let token_b = match fresh_low_water_arm(&stdin, MCP_STDIN_HIGH_WATER, Arc::clone(&wake)) {
             LowWaterArm::Superseded { token, superseded } => {
                 assert_eq!(superseded, token_a);
                 token
             }
             outcome => panic!("fresh B must supersede A, got {outcome:?}"),
         };
-        assert_eq!(*fired.lock().unwrap_or_else(|e| e.into_inner()), vec![token_a]);
+        assert_eq!(
+            *fired.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![token_a]
+        );
 
         stdin.close();
         assert_eq!(
@@ -7269,7 +8024,10 @@ mod tests {
     fn stdin_low_water_rejects_zero_threshold_instead_of_stranding_a_waiter() {
         let stdin = AppendableStdin::default();
         assert!(LowWaterThreshold::new(0).is_none());
-        let state = stdin.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = stdin
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let InputLifecycle::Open(open) = &state.lifecycle else {
             panic!("new stdin must be open");
         };
@@ -7411,19 +8169,12 @@ mod tests {
             for action in sequence {
                 match action {
                     Action::ArmFresh => {
-                        let outcome = fresh_low_water_arm(
-                            &stdin,
-                            THRESHOLD,
-                            Arc::clone(&shared_wake),
-                        );
+                        let outcome =
+                            fresh_low_water_arm(&stdin, THRESHOLD, Arc::clone(&shared_wake));
                         if !open {
                             assert_eq!(outcome, LowWaterArm::Closed, "{sequence:?}");
                         } else if buffered < THRESHOLD.get() {
-                            assert_eq!(
-                                outcome,
-                                LowWaterArm::BelowThreshold,
-                                "{sequence:?}"
-                            );
+                            assert_eq!(outcome, LowWaterArm::BelowThreshold, "{sequence:?}");
                         } else if let Some(previous) = current {
                             let LowWaterArm::Superseded { token, superseded } = outcome else {
                                 panic!("{sequence:?}: expected supersession, got {outcome:?}");
@@ -7443,8 +8194,8 @@ mod tests {
                     }
                     Action::CheckLatest => {
                         if let Some(token) = latest {
-                            let outcome = stdin
-                                .arm_low_water_wake(LowWaterArmRequest::Existing(token));
+                            let outcome =
+                                stdin.arm_low_water_wake(LowWaterArmRequest::Existing(token));
                             let expected = if !open {
                                 LowWaterArm::Closed
                             } else if current == Some(token) {
@@ -7464,9 +8215,8 @@ mod tests {
                             "{sequence:?}"
                         );
                         assert_eq!(
-                            foreign_stdin.arm_low_water_wake(LowWaterArmRequest::Existing(
-                                foreign_token,
-                            )),
+                            foreign_stdin
+                                .arm_low_water_wake(LowWaterArmRequest::Existing(foreign_token,)),
                             LowWaterArm::StillArmed {
                                 token: foreign_token,
                             },
@@ -7510,9 +8260,15 @@ mod tests {
 
                 let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 for token in &observed {
-                    assert!(accepted.contains(token), "{sequence:?}: unknown token fired");
+                    assert!(
+                        accepted.contains(token),
+                        "{sequence:?}: unknown token fired"
+                    );
                     assert_eq!(
-                        observed.iter().filter(|candidate| *candidate == token).count(),
+                        observed
+                            .iter()
+                            .filter(|candidate| *candidate == token)
+                            .count(),
                         1,
                         "{sequence:?}: token {token:?} resolved more than once"
                     );
@@ -7529,7 +8285,10 @@ mod tests {
             let observed = fired.lock().unwrap_or_else(|e| e.into_inner()).clone();
             for token in accepted {
                 assert_eq!(
-                    observed.iter().filter(|candidate| **candidate == token).count(),
+                    observed
+                        .iter()
+                        .filter(|candidate| **candidate == token)
+                        .count(),
                     1,
                     "{sequence:?}: accepted token {token:?} was stranded or double-resolved"
                 );
@@ -7584,43 +8343,46 @@ mod tests {
             LowWaterArm::Stale { token }
         );
         callback_release.wait();
-        assert!(matches!(read.join().expect("join reader"), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            read.join().expect("join reader"),
+            Poll::Ready(Ok(()))
+        ));
     }
 
-    // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
+    // ── resolve_plugin_fs_path (stint 0508: workspace jail + picker grants) ──
 
     /// Relative paths keep the exact pre-grant jail behavior.
     #[test]
-    fn resolve_app_fs_path_keeps_relative_workspace_jail() {
+    fn resolve_plugin_fs_path_keeps_relative_workspace_jail() {
         let workspace = tempdir().expect("workspace");
         std::fs::write(workspace.path().join("note.txt"), "hi").expect("seed");
 
-        let resolved = resolve_app_fs_path(workspace.path(), &[], "note.txt", false)
+        let resolved = resolve_plugin_fs_path(workspace.path(), &[], "note.txt", false)
             .expect("workspace-relative read resolves");
         assert_eq!(
             resolved,
             workspace.path().canonicalize().unwrap().join("note.txt")
         );
-        let escape = resolve_app_fs_path(workspace.path(), &[], "../outside.txt", false);
+        let escape = resolve_plugin_fs_path(workspace.path(), &[], "../outside.txt", false);
         assert!(escape.is_err(), "parent-dir escape must stay rejected");
     }
 
     /// Absolute paths are rejected outright when no grant covers them — even
     /// paths inside the workspace itself must go through the relative jail.
     #[test]
-    fn resolve_app_fs_path_rejects_absolute_paths_without_grants() {
+    fn resolve_plugin_fs_path_rejects_absolute_paths_without_grants() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let secret = outside.path().join("secret.txt");
         std::fs::write(&secret, "secret").expect("seed");
 
         let denied =
-            resolve_app_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
+            resolve_plugin_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
         assert!(denied.is_err(), "ungranted absolute path must be rejected");
 
         let workspace_file = workspace.path().join("inside.txt");
         std::fs::write(&workspace_file, "inside").expect("seed inside");
-        let denied = resolve_app_fs_path(
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &[],
             &workspace_file.to_string_lossy(),
@@ -7635,7 +8397,7 @@ mod tests {
     /// A file grant covers exactly that file; a sibling in the same directory
     /// stays rejected.
     #[test]
-    fn resolve_app_fs_path_accepts_granted_file_only() {
+    fn resolve_plugin_fs_path_accepts_granted_file_only() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let picked = outside.path().join("picked.txt");
@@ -7645,18 +8407,18 @@ mod tests {
         let grants = vec![canonicalize_picked_path(&picked).expect("grant")];
 
         let allowed =
-            resolve_app_fs_path(workspace.path(), &grants, &picked.to_string_lossy(), false)
+            resolve_plugin_fs_path(workspace.path(), &grants, &picked.to_string_lossy(), false)
                 .expect("granted file readable");
         assert_eq!(allowed, picked.canonicalize().unwrap());
         let denied =
-            resolve_app_fs_path(workspace.path(), &grants, &sibling.to_string_lossy(), false);
+            resolve_plugin_fs_path(workspace.path(), &grants, &sibling.to_string_lossy(), false);
         assert!(denied.is_err(), "sibling of granted file must be rejected");
     }
 
     /// A folder grant covers the subtree, including new write targets, while
     /// paths outside the folder stay rejected.
     #[test]
-    fn resolve_app_fs_path_folder_grant_covers_subtree() {
+    fn resolve_plugin_fs_path_folder_grant_covers_subtree() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let folder = outside.path().join("project");
@@ -7664,45 +8426,51 @@ mod tests {
         std::fs::write(folder.join("inner.txt"), "inner").expect("seed");
         let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
 
-        let read = resolve_app_fs_path(
+        let read = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("inner.txt").to_string_lossy(),
             false,
         );
         assert!(read.is_ok(), "file under granted folder readable: {read:?}");
-        let write = resolve_app_fs_path(
+        let write = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("new.txt").to_string_lossy(),
             true,
         );
-        assert!(write.is_ok(), "new file under granted folder writable: {write:?}");
-        let denied = resolve_app_fs_path(
+        assert!(
+            write.is_ok(),
+            "new file under granted folder writable: {write:?}"
+        );
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &outside.path().join("evil.txt").to_string_lossy(),
             true,
         );
-        assert!(denied.is_err(), "outside the granted folder must be rejected");
+        assert!(
+            denied.is_err(),
+            "outside the granted folder must be rejected"
+        );
     }
 
     /// A save-as grant targets a file that does not exist yet: the write
     /// resolves through the canonicalized parent, and reading it back after
     /// the write succeeds through the same grant.
     #[test]
-    fn resolve_app_fs_path_save_grant_round_trips_new_file() {
+    fn resolve_plugin_fs_path_save_grant_round_trips_new_file() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let target = outside.path().join("exported.txt");
         let grants = vec![canonicalize_picked_path(&target).expect("grant")];
 
         let write =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
+            resolve_plugin_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
                 .expect("save-as target writable before it exists");
         std::fs::write(&write, "exported").expect("write");
         let read =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
+            resolve_plugin_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
                 .expect("granted save-as target readable after write");
         assert_eq!(std::fs::read_to_string(read).unwrap(), "exported");
     }
@@ -7710,7 +8478,7 @@ mod tests {
     /// A symlink under a granted folder that points outside the grant is
     /// rejected: canonicalization resolves the target before the scope check.
     #[test]
-    fn resolve_app_fs_path_symlink_cannot_escape_grant() {
+    fn resolve_plugin_fs_path_symlink_cannot_escape_grant() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let folder = outside.path().join("granted");
@@ -7720,7 +8488,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, folder.join("link.txt")).expect("symlink");
         let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
 
-        let denied = resolve_app_fs_path(
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("link.txt").to_string_lossy(),
@@ -7992,10 +8760,7 @@ mod tests {
     fn pending_traceback_exception_ignores_a_partial_line_while_the_guest_lives() {
         let buffer = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\nImportErr";
         assert_eq!(pending_traceback_exception(buffer, false), None);
-        assert_eq!(
-            pending_traceback_exception(buffer, true),
-            Some("ImportErr")
-        );
+        assert_eq!(pending_traceback_exception(buffer, true), Some("ImportErr"));
         let completed = format!("{buffer}or: fixture import failure\n");
         assert_eq!(
             pending_traceback_exception(&completed, false),
@@ -8039,24 +8804,90 @@ mod tests {
     }
 
     #[test]
-    fn python_key_name_fallback_matches_documented_punctuation_names() {
-        assert_eq!(python_key_name(egui::Key::Plus), "plus");
-    }
-
-    /// Stint 0462: punctuation keys must map to their literal characters, matching
-    /// `canonical_key_name()` in wasm_pane.rs, so PGAP apps comparing `key == "/"`
-    /// (e.g. logs.py's search shortcut) actually match.
-    #[test]
-    fn python_key_name_maps_punctuation_keys_to_literal_characters() {
+    fn python_key_name_maps_plus_and_punctuation_to_literal_glyphs() {
+        assert_eq!(python_key_name(egui::Key::Plus), "+");
         assert_eq!(python_key_name(egui::Key::Slash), "/");
         assert_eq!(python_key_name(egui::Key::Minus), "-");
         assert_eq!(python_key_name(egui::Key::Equals), "=");
         assert_eq!(python_key_name(egui::Key::Backslash), "\\");
         assert_eq!(python_key_name(egui::Key::Semicolon), ";");
+        assert_eq!(python_key_name(egui::Key::Colon), ":");
         assert_eq!(python_key_name(egui::Key::Quote), "'");
         assert_eq!(python_key_name(egui::Key::Backtick), "`");
         assert_eq!(python_key_name(egui::Key::Comma), ",");
         assert_eq!(python_key_name(egui::Key::Period), ".");
+        assert_eq!(python_key_name(egui::Key::OpenBracket), "[");
+        assert_eq!(python_key_name(egui::Key::CloseBracket), "]");
+    }
+
+    #[test]
+    fn authoring_key_table_round_trips_through_python_and_wasm_translators() {
+        let cases: &[(&str, &str)] = &[
+            ("enter", "enter"),
+            ("return", "enter"),
+            ("backspace", "backspace"),
+            ("delete", "delete"),
+            ("space", "space"),
+            ("tab", "tab"),
+            ("up", "up"),
+            ("down", "down"),
+            ("left", "left"),
+            ("right", "right"),
+            ("home", "home"),
+            ("end", "end"),
+            ("pageup", "pageup"),
+            ("pagedown", "pagedown"),
+            ("insert", "insert"),
+            ("+", "+"),
+            ("plus", "+"),
+            ("-", "-"),
+            ("minus", "-"),
+            ("*", "*"),
+            ("asterisk", "*"),
+            ("/", "/"),
+            ("slash", "/"),
+            ("=", "="),
+            ("equals", "="),
+            ("0", "0"),
+            ("5", "5"),
+            ("9", "9"),
+            ("a", "a"),
+            ("z", "z"),
+            ("f1", "f1"),
+            ("f12", "f12"),
+        ];
+        for &(input, expected) in cases {
+            let raw = crate::app::key_str_to_egui_raw_input(input)
+                .unwrap_or_else(|| panic!("key_str_to_egui_raw_input({input:?}) must succeed"));
+            let py_events = python_key_events(&raw.events);
+            assert_eq!(
+                py_events.len(),
+                2,
+                "python_key_events for {input:?} must emit press + release"
+            );
+            assert_eq!(py_events[0]["key"], expected, "python press for {input:?}");
+            assert_eq!(py_events[0]["pressed"], true);
+            assert_eq!(
+                py_events[1]["key"], expected,
+                "python release for {input:?}"
+            );
+            assert_eq!(py_events[1]["pressed"], false);
+
+            let wasm_events: Vec<_> = raw
+                .events
+                .iter()
+                .filter_map(crate::host::wasm_pane::translate_key_event)
+                .collect();
+            assert_eq!(
+                wasm_events.len(),
+                2,
+                "translate_key_event for {input:?} must emit press + release"
+            );
+            assert_eq!(wasm_events[0].key, expected, "wasm press for {input:?}");
+            assert!(wasm_events[0].pressed);
+            assert_eq!(wasm_events[1].key, expected, "wasm release for {input:?}");
+            assert!(!wasm_events[1].pressed);
+        }
     }
 
     #[test]
@@ -8072,8 +8903,8 @@ mod tests {
         assert_eq!(events[1]["pressed"], false);
     }
 
-    /// Bare Escape drives CloseApp, and every command chord belongs to the host.
-    /// Python and component-WASM apps must enforce the same boundary.
+    /// Bare Escape drives CloseView, and every command chord belongs to the host.
+    /// Python and component-WASM plugins must enforce the same boundary.
     #[test]
     fn python_key_events_reserves_all_command_chords_for_the_host() {
         let bare_escape = [egui::Event::Key {
@@ -8085,7 +8916,7 @@ mod tests {
         }];
         assert!(
             python_key_events(&bare_escape).is_empty(),
-            "bare Escape must not reach the guest — it drives host CloseApp"
+            "bare Escape must not reach the guest — it drives host CloseView"
         );
 
         let cmd_escape = [egui::Event::Key {
@@ -8109,7 +8940,7 @@ mod tests {
         }];
         assert!(
             python_key_events(&cmd_d).is_empty(),
-            "Cmd+D must never arrive at a Python app as bare delete input"
+            "Cmd+D must never arrive at a Python plugin as bare delete input"
         );
     }
 
@@ -8142,10 +8973,10 @@ mod tests {
     }
 
     #[test]
-    fn python_host_event_wire_delivers_cross_runtime_app_events() {
-        let wire = encode_python_host_event(crate::protocol::PlexiEvent::AppEvent {
+    fn python_host_event_wire_delivers_cross_runtime_plugin_events() {
+        let wire = encode_python_host_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
-            app_id: "wasm-counter".to_string(),
+            plugin_id: "wasm-counter".to_string(),
             event: "count.changed".to_string(),
             event_id: 7,
             resource_id: "counter-1".to_string(),
@@ -8157,54 +8988,56 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(wire["type"], "app_event");
-        assert_eq!(wire["app_id"], "wasm-counter");
+        assert_eq!(wire["type"], "plugin_event");
+        assert_eq!(wire["plugin_id"], "wasm-counter");
         assert_eq!(wire["event"], "count.changed");
         assert_eq!(wire["payload"]["count"], 2);
     }
 
     #[test]
     fn python_event_effects_use_shared_host_requests() {
-        let subscribe = app_command_from_python_message(&json!({
+        let subscribe = plugin_command_from_python_message(&json!({
             "type": "subscribe_event_streams",
             "request_id": "subscribe-1",
-            "app_id": "wasm-counter",
+            "plugin_id": "wasm-counter",
             "event_names": ["count.changed"],
             "payload_mode": "full",
             "trigger_mode": "conversation",
             "resource_id": null,
         }))
+        .expect("subscribe decoding")
         .expect("subscribe command");
         assert!(matches!(
             subscribe,
-            crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::SubscribeAppEvents {
+            crate::app::view_trait::ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::SubscribePluginEvents {
                     request_id,
-                    app_id,
+                    plugin_id,
                     event_names,
                     ..
                 },
                 ..
             } if request_id == "subscribe-1"
-                && app_id == "wasm-counter"
+                && plugin_id == "wasm-counter"
                 && event_names == vec!["count.changed".to_string()]
         ));
 
-        let emit = app_command_from_python_message(&json!({
+        let emit = plugin_command_from_python_message(&json!({
             "type": "emit_event",
             "event": "note.saved",
-            "actor": "app",
+            "actor": "plugin",
             "summary": "Saved note",
             "resource_id": "note-1",
             "revision_after": "rev-2",
             "payload_json": "{\"title\":\"Hello\"}",
             "changed_resources": ["note-1"],
         }))
+        .expect("emit decoding")
         .expect("emit command");
         assert!(matches!(
             emit,
-            crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::EmitEvent {
+            crate::app::view_trait::ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::EmitEvent {
                     event,
                     payload: Some(payload),
                     ..
@@ -8222,7 +9055,7 @@ mod tests {
             .contains("unsupported CPython-WASM UINode type: Accordion"));
     }
 
-    // Stint 0445: good-by-default inter-child spacing. When an app declares no
+    // Stint 0445: good-by-default inter-child spacing. When a plugin declares no
     // `gap`, the decoder fills in the design-token default; an explicit value
     // (including `0.0`, meaning "pack flush") always wins over the default.
     #[test]
@@ -8431,9 +9264,12 @@ mod tests {
 
     #[test]
     fn external_io_installs_a_wake_target_before_any_paint() {
-        let app = tempdir().expect("app dir");
-        std::fs::write(app.path().join("main.py"), "def init(size, args): return []\n")
-            .expect("write app");
+        let app = tempdir().expect("plugin dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\n",
+        )
+        .expect("write plugin");
         let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
             .expect("launch pane");
         pane.service_external_io(&egui::Context::default());
@@ -8511,27 +9347,25 @@ mod tests {
 
     #[test]
     fn state_persist_resolves_against_live_context_root_and_rejects_undeclared_scope() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let root_a = tempdir().expect("root a");
         let root_b = tempdir().expect("root b");
         let config = PythonLaunchConfig {
-            app_id: "test.state-scope".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.state-scope".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: vec![
                 crate::host::state_scope::StateScope::Global,
                 crate::host::state_scope::StateScope::Context,
@@ -8542,7 +9376,7 @@ mod tests {
         let mut pane = LivePythonPane::launch(config).expect("launch pane");
 
         // Context-scoped persist lands inside the launching context root and
-        // ensures the app_states gitignore so the state cannot be committed.
+        // ensures the plugin_states gitignore so the state cannot be committed.
         pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
         let file_a = root_a
             .path()
@@ -8572,24 +9406,26 @@ mod tests {
         let stale_a: Value =
             serde_json::from_slice(&std::fs::read(&file_a).expect("root A file untouched"))
                 .expect("valid JSON");
-        assert_eq!(stale_a, json!({"k": 1}), "old root's file must not be rewritten");
+        assert_eq!(
+            stale_a,
+            json!({"k": 1}),
+            "old root's file must not be rewritten"
+        );
 
-        // A scope the app did not declare is an error at persist time, never
+        // A scope the plugin did not declare is an error at persist time, never
         // a silent fallback to another scope's file.
         let undeclared_root = tempdir().expect("undeclared root");
         let global_only = PythonLaunchConfig {
-            app_id: "test.global-only".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.global-only".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: undeclared_root.path().to_path_buf(),
@@ -8606,25 +9442,25 @@ mod tests {
     }
 
     /// Shared scaffolding for the file-backed state tests (stint 0644):
-    /// a trivial app + a context-scoped launch config against a fresh root.
+    /// a trivial plugin + a context-scoped launch config against a fresh root.
     fn file_state_config(
-        app_dir: &Path,
-        app_id: &str,
+        plugin_dir: &Path,
+        plugin_id: &str,
         context_root: &Path,
         format: crate::host::state_scope::StateFormat,
     ) -> PythonLaunchConfig {
         std::fs::write(
-            app_dir.join("main.py"),
+            plugin_dir.join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         PythonLaunchConfig {
-            app_id: app_id.to_string(),
-            app_dir: app_dir.to_path_buf(),
-            entry: app_dir.join("main.py"),
+            plugin_id: plugin_id.to_string(),
+            plugin_dir: plugin_dir.to_path_buf(),
+            entry: plugin_dir.join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
-            workspace_root: app_dir.to_path_buf(),
+            workspace_root: plugin_dir.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             state_scopes: vec![crate::host::state_scope::StateScope::Context],
@@ -8635,14 +9471,14 @@ mod tests {
         }
     }
 
-    fn context_state_file(root: &Path, app_id: &str, ext: &str) -> PathBuf {
+    fn context_state_file(root: &Path, plugin_id: &str, ext: &str) -> PathBuf {
         root.join(".plexi/app_states")
-            .join(format!("{app_id}.{ext}"))
+            .join(format!("{plugin_id}.{ext}"))
     }
 
     #[test]
     fn persist_does_not_clobber_a_file_changed_since_load() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.no-clobber", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -8657,8 +9493,7 @@ mod tests {
         );
         let mut pane = LivePythonPane::launch(config).expect("launch pane");
 
-        // External writer lands after load. Different byte length guarantees
-        // the (mtime, len) pair differs even at 1s mtime granularity.
+        // External writer lands after load.
         std::fs::write(
             &file,
             serde_json::to_vec_pretty(&json!({"external": "winner", "padding": 12345})).unwrap(),
@@ -8675,7 +9510,7 @@ mod tests {
         assert_eq!(
             on_disk,
             json!({"external": "winner", "padding": 12345}),
-            "disk wins: the app's persist must be dropped, not overwrite the external write"
+            "disk wins: the plugin's persist must be dropped, not overwrite the external write"
         );
         let scope_state = pane
             .persisted_states
@@ -8694,9 +9529,96 @@ mod tests {
         assert_eq!(retried, json!({"app": "retry"}));
     }
 
+    /// Stint 0681: two live panes of one plugin share one state file. The pane
+    /// that persists second must not erase the first pane's item — it is
+    /// dropped, reloaded from disk, and notified (disk wins).
+    #[test]
+    fn second_pane_persist_does_not_erase_the_first_panes_items() {
+        let app = tempdir().expect("plugin dir");
+        let root = tempdir().expect("context root");
+        let scope = crate::host::state_scope::StateScope::Context;
+        let config = || {
+            file_state_config(
+                app.path(),
+                "test.two-panes",
+                root.path(),
+                crate::host::state_scope::StateFormat::Json,
+            )
+        };
+        let mut first = LivePythonPane::launch(config()).expect("launch first");
+        let mut second = LivePythonPane::launch(config()).expect("launch second");
+
+        first.save_state(
+            Some(&json!("context")),
+            Some(&json!({"items": ["buy milk"]})),
+        );
+        // The second pane still holds its empty launch-time map and persists.
+        second.save_state(Some(&json!("context")), Some(&json!({"draft": "typing"})));
+
+        let file = context_state_file(root.path(), "test.two-panes", "json");
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(
+            on_disk,
+            json!({"items": ["buy milk"]}),
+            "the first pane's item must survive the second pane's persist"
+        );
+        let reloaded = second.persisted_states.get(&scope).expect("scope state");
+        assert_eq!(
+            Value::Object(reloaded.values.clone()),
+            json!({"items": ["buy milk"]}),
+            "the second pane must be reloaded from disk"
+        );
+
+        // Reloaded, the second pane can now persist on top of what it saw.
+        second.save_state(
+            Some(&json!("context")),
+            Some(&json!({"items": ["buy milk", "eggs"]})),
+        );
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read state")).expect("json");
+        assert_eq!(on_disk, json!({"items": ["buy milk", "eggs"]}));
+    }
+
+    /// Stint 0681: foreign-write detection is by content, not `(mtime, len)`.
+    /// A same-length write that restores the old mtime is the case a stat
+    /// identity cannot see.
+    #[test]
+    fn same_length_foreign_write_inside_the_mtime_window_is_detected() {
+        let app = tempdir().expect("plugin dir");
+        let root = tempdir().expect("context root");
+        let file = context_state_file(root.path(), "test.same-len", "json");
+        std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
+        std::fs::write(&file, br#"{"a":"1111"}"#).expect("seed state");
+        let config = file_state_config(
+            app.path(),
+            "test.same-len",
+            root.path(),
+            crate::host::state_scope::StateFormat::Json,
+        );
+        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+
+        let mtime = std::fs::metadata(&file)
+            .and_then(|m| m.modified())
+            .expect("mtime");
+        std::fs::write(&file, br#"{"a":"2222"}"#).expect("same-length foreign write");
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|f| f.set_modified(mtime))
+            .expect("restore mtime");
+
+        pane.save_state(Some(&json!("context")), Some(&json!({"app": "clobber"})));
+        assert_eq!(
+            std::fs::read(&file).expect("read state"),
+            br#"{"a":"2222"}"#,
+            "a same-length write with an unchanged mtime must still win over the persist"
+        );
+    }
+
     #[test]
     fn persist_is_atomic_and_leaves_no_partial_file() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -8722,7 +9644,7 @@ mod tests {
 
     #[test]
     fn malformed_state_file_surfaces_error_and_does_not_reset() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.malformed", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -8745,7 +9667,7 @@ mod tests {
         );
 
         // Persists are refused while the error stands — the corrupt file is
-        // never silently replaced with `{}` or the app's payload.
+        // never silently replaced with `{}` or the plugin's payload.
         pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
         assert_eq!(
             std::fs::read(&file).expect("read state"),
@@ -8781,7 +9703,7 @@ mod tests {
 
     #[test]
     fn apply_external_state_replaces_rather_than_merges() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.replace", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -8819,7 +9741,7 @@ mod tests {
 
     #[test]
     fn markdown_format_writes_document_verbatim() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -8859,7 +9781,7 @@ mod tests {
 
     #[test]
     fn markdown_format_rejects_non_string_document() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -8880,26 +9802,124 @@ mod tests {
     }
 
     #[test]
+    fn python_state_traces_resolved_path_scope_bytes_and_replacement() {
+        let app = tempdir().expect("plugin dir");
+        let root = tempdir().expect("context root");
+        let scope = crate::host::state_scope::StateScope::Context;
+        let format = crate::host::state_scope::StateFormat::Json;
+        let file = context_state_file(root.path(), "test.trace", "json");
+
+        assert_eq!(
+            format_python_state_load_trace("test.trace", scope, format, &file, None),
+            format!(
+                "plugin::test.trace: no state found for scope=context format=json at {} (fallback=none)",
+                file.display()
+            )
+        );
+        assert!(
+            !format_python_state_load_trace("test.trace", scope, format, &file, None)
+                .contains('\n'),
+            "load miss trace must be one line"
+        );
+
+        let config = file_state_config(app.path(), "test.trace", root.path(), format);
+        let mut pane = LivePythonPane::launch(config.clone()).expect("launch pane");
+        assert!(
+            pane.persisted_states
+                .get(&scope)
+                .is_some_and(|s| s.values.is_empty() && s.digest.is_none()),
+            "miss load starts with empty state and no digest"
+        );
+
+        pane.save_state(Some(&json!("context")), Some(&json!({"items": ["a"]})));
+        let first_bytes = std::fs::read(&file).expect("first persist bytes");
+        assert_eq!(
+            format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                first_bytes.len(),
+                false,
+            ),
+            format!(
+                "plugin::test.trace: persisted state scope=context format=json bytes={} replaced=false to {}",
+                first_bytes.len(),
+                file.display()
+            )
+        );
+
+        pane.save_state(
+            Some(&json!("context")),
+            Some(&json!({"items": ["a", "b"], "count": 2})),
+        );
+        let second_bytes = std::fs::read(&file).expect("second persist bytes");
+        assert_eq!(
+            format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                second_bytes.len(),
+                true,
+            ),
+            format!(
+                "plugin::test.trace: persisted state scope=context format=json bytes={} replaced=true to {}",
+                second_bytes.len(),
+                file.display()
+            )
+        );
+        assert!(
+            !format_python_state_persist_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                second_bytes.len(),
+                true,
+            )
+            .contains('\n'),
+            "persist trace must be one line"
+        );
+
+        let loaded = load_python_states(&config);
+        let loaded_state = loaded.get(&scope).expect("loaded context scope");
+        assert_eq!(loaded_state.values.len(), 2);
+        assert_eq!(
+            format_python_state_load_trace(
+                "test.trace",
+                scope,
+                format,
+                &file,
+                Some((second_bytes.len(), loaded_state.values.len())),
+            ),
+            format!(
+                "plugin::test.trace: loaded state scope=context format=json bytes={} keys=2 from {}",
+                second_bytes.len(),
+                file.display()
+            )
+        );
+    }
+
+    #[test]
     fn persistent_cpython_runtime_handles_lifecycle_without_native_python() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "from plexi_sdk.ui import Canvas, CanvasCircle, Column, Text\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return Column([Text('wasm-python-live'), Canvas([CanvasCircle(41.0, 42.0, 8.0, '#abcdef')])])\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
-            app_id: "test.wasm-python".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.wasm-python".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
@@ -8950,11 +9970,14 @@ mod tests {
     }
 
     /// Run one visible egui pass over the pane, the way `tiling.rs` does for a
-    /// pane the user can see. Used only to get the app past `init` — after
+    /// pane the user can see. Used only to get the plugin past `init` — after
     /// this the test never renders again, standing in for a pane that scrolled
     /// off screen, moved to an inactive context, or sits under an occluded
     /// window.
-    fn visible_pass(runtime: &mut crate::host::pane::AppRuntime, colors: &crate::ui::theme::Colors) {
+    fn visible_pass(
+        runtime: &mut crate::host::pane::ViewRuntime,
+        colors: &crate::ui::theme::Colors,
+    ) {
         let ctx = egui::Context::default();
         let _ = ctx.run_ui(
             egui::RawInput {
@@ -8968,10 +9991,7 @@ mod tests {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     runtime.ui(
                         ui,
-                        &crate::app::app_trait::AppRenderContext {
-                            colors,
-                            pane_id: 1,
-                        },
+                        &crate::app::view_trait::ViewRenderContext { colors, pane_id: 1 },
                         None,
                     );
                 });
@@ -8979,7 +9999,7 @@ mod tests {
         );
     }
 
-    /// Stint 0684: an assistant tool call to an app pane that is *not*
+    /// Stint 0684: an assistant tool call to a view pane that is *not*
     /// rendering must still be answered. `tool_dispatch` writes the `ToolCall`
     /// straight into the guest's stdin and blocks on the reply, so the guest
     /// runs and answers regardless of what the host is painting — but the host
@@ -8988,11 +10008,11 @@ mod tests {
     /// window, or otherwise off screen therefore never surfaced its
     /// `ToolResult` and every call to it timed out.
     ///
-    /// The contract this pins: after one visible pass to get the app running,
+    /// The contract this pins: after one visible pass to get the plugin running,
     /// `background_tick` alone must carry a tool call to its result.
     #[test]
     fn python_tool_result_reaches_the_host_without_a_ui_pass() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "from plexi_sdk.effects import AiTool, ExposeTools, ToolResult\n\
@@ -9012,30 +10032,28 @@ mod tests {
              def view():\n\
              \x20   return Column([Text('probe')])\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
-            app_id: "test.tool-offscreen".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.tool-offscreen".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-        let mut runtime = crate::host::pane::AppRuntime::Python(Box::new(
+        let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
             LivePythonPane::launch(config).expect("launch CPython WASM"),
         ));
 
-        // The pane was on screen once: render until the app has declared its
+        // The pane was on screen once: render until the plugin has declared its
         // tools, which is how `tool_dispatch` learns to reach it at all.
         let deadline = std::time::Instant::now()
             + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
@@ -9045,14 +10063,14 @@ mod tests {
             exposed = runtime
                 .take_pending_commands()
                 .iter()
-                .any(|cmd| matches!(cmd, crate::app::app_trait::AppCommand::ExposeTools { .. }));
+                .any(|cmd| matches!(cmd, crate::app::view_trait::ViewCommand::ExposeTools { .. }));
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(exposed, "app never exposed its tools on a visible pass");
+        assert!(exposed, "plugin never exposed its tools on a visible pass");
 
         // Now the pane goes off screen. `tool_dispatch` still reaches the
         // guest — it writes to stdin, which is independent of rendering.
-        let crate::host::pane::AppRuntime::Python(pane) = &runtime else {
+        let crate::host::pane::ViewRuntime::Python(pane) = &runtime else {
             panic!("python runtime");
         };
         pane.tool_event_sender()
@@ -9073,16 +10091,17 @@ mod tests {
             if runtime.needs_background_tick() {
                 runtime.background_tick();
             }
-            result = runtime.take_pending_commands().into_iter().find_map(|cmd| {
-                match cmd {
-                    crate::app::app_trait::AppCommand::ToolResult {
+            result = runtime
+                .take_pending_commands()
+                .into_iter()
+                .find_map(|cmd| match cmd {
+                    crate::app::view_trait::ViewCommand::ToolResult {
                         call_id,
                         output_json,
                         ..
                     } if call_id == "call-offscreen" => Some(output_json),
                     _ => None,
-                }
-            });
+                });
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
@@ -9097,25 +10116,23 @@ mod tests {
 
     #[test]
     fn headless_frame_fails_fast_when_the_guest_dies_at_import() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "raise RuntimeError('broken on purpose')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
-            app_id: "test.broken-guest".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.broken-guest".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
-            theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::default(),
-            )
-            .to_theme_map(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
             state_scopes: crate::host::state_scope::default_scopes(),
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: app.path().to_path_buf(),
@@ -9124,7 +10141,7 @@ mod tests {
             .expect_err("an entry that raises at import must fail the headless probe");
         // The invariant is the *cause*, not the wall clock: a guest that raises
         // at import is detected via its process-exit signal and reported as a
-        // death, never mistaken for a live app or a poll timeout. Asserting on
+        // death, never mistaken for a live plugin or a poll timeout. Asserting on
         // elapsed time flakes under parallel-test CPU contention (the crash can
         // legitimately take longer than the poll budget to surface), so this
         // checks the error path itself.
@@ -9132,7 +10149,7 @@ mod tests {
             panic!("guest death must surface as a BridgeJson error, got {err:?}");
         };
         assert!(
-            message.contains("app exited before responding"),
+            message.contains("plugin exited before responding"),
             "broken guest must take the process-exit death path, not the timeout backstop: {message}"
         );
     }
@@ -9141,14 +10158,14 @@ mod tests {
     fn headless_response_clock_does_not_start_until_the_guest_runs_python() {
         // The whole point of the split: a cold Wasmtime compile of the CPython
         // module happens on the guest thread after `launch` returns, so time
-        // spent there must not be charged to the app. Well past the response
+        // spent there must not be charged to the plugin. Well past the response
         // budget, an unstarted guest is still waiting, not timed out.
         let base = std::time::Instant::now();
         let mut deadline = HeadlessDeadline::new(base);
         assert_eq!(
             deadline.poll(base + HEADLESS_DEFAULT_TIMEOUT * 4, false),
             PollVerdict::KeepWaiting,
-            "a guest that has not begun executing Python cannot be an unresponsive app"
+            "a guest that has not begun executing Python cannot be an unresponsive plugin"
         );
         // And the clock starts when it starts, not retroactively.
         let started_at = base + HEADLESS_DEFAULT_TIMEOUT * 4;
@@ -9167,12 +10184,12 @@ mod tests {
                 true
             ),
             PollVerdict::ResponseTimedOut,
-            "once running, the app owns the response budget"
+            "once running, the plugin owns the response budget"
         );
     }
 
     #[test]
-    fn headless_boot_timeout_is_reported_separately_from_an_unresponsive_app() {
+    fn headless_boot_timeout_is_reported_separately_from_an_unresponsive_plugin() {
         let base = std::time::Instant::now();
         let mut deadline = HeadlessDeadline::new(base);
         assert_eq!(
@@ -9181,7 +10198,7 @@ mod tests {
                 false
             ),
             PollVerdict::BootTimedOut,
-            "a guest that never reaches _start is a host-side boot failure, not a slow app"
+            "a guest that never reaches _start is a host-side boot failure, not a slow plugin"
         );
     }
 
@@ -9245,17 +10262,22 @@ mod tests {
         std::fs::write(
             dir.path().join("manifest.toml"),
             r#"
-schema_version = 1
-
-[app]
-id = "hello-py"
-type = "app"
-name = "Hello Python"
-entry = "main.py"
-version = "0.1.0"
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "main.py"
+
+
+[plugin]
+id = "hello-py"
+name = "Hello Python"
+version = "0.1.0"
+
+[[contributes.views]]
+id = "hello-py.main"
+default = true
 "#,
         )
         .expect("manifest");
@@ -9266,7 +10288,7 @@ python_compat = true
             .expect("python compat config");
 
         assert_eq!(config.module_name, "main");
-        assert_eq!(config.app_id, "hello-py");
+        assert_eq!(config.plugin_id, "hello-py");
     }
 
     #[test]
@@ -9274,23 +10296,28 @@ python_compat = true
         // Cloud/remote execution (stints 0286/0287) is future work with no
         // launch path yet — a manifest declaring it must fail loudly rather
         // than silently launching locally. Mirrors the WASM launch-path guard
-        // in `open_installed_wasm_app_pane`.
+        // in `open_installed_wasm_view_pane`.
         let dir = tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("manifest.toml"),
             r#"
-schema_version = 1
-
-[app]
-id = "cloud-py"
-type = "app"
-name = "Cloud Python"
-entry = "main.py"
-version = "0.1.0"
+schema_version = 2
 
 [runtime]
 python_compat = true
 execution = "cloud"
+kind = "python"
+entry = "main.py"
+
+
+[plugin]
+id = "cloud-py"
+name = "Cloud Python"
+version = "0.1.0"
+
+[[contributes.views]]
+id = "cloud-py.main"
+default = true
 "#,
         )
         .expect("manifest");
@@ -9345,20 +10372,206 @@ execution = "cloud"
     }
 
     #[test]
+    fn read_permission_decisions_is_a_permission_bridge_message() {
+        let read = json!({"type": "read_permission_decisions"});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&read)),
+            Some(PermissionBridgeKind::Read)
+        );
+        let padded = json!({"type": " permission_decision "});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&padded)),
+            Some(PermissionBridgeKind::Decide)
+        );
+        let bom = json!({"type": "\u{feff}read_permission_decisions"});
+        assert_eq!(
+            permission_bridge_kind(bridge_message_type(&bom)),
+            Some(PermissionBridgeKind::Read)
+        );
+        let typo = json!({"type": "read_permission_decision"});
+        assert_eq!(permission_bridge_kind(bridge_message_type(&typo)), None);
+    }
+
+    /// Stint 1238 characterisation matrix, Python rows (see
+    /// `crate::broker::admission_matrix`). Builds the launch set exactly as
+    /// `gate_plugin_permissions_in_profile` and `build_python_runtime` do
+    /// (`materialize_plugin_permissions`, then capability strings), then asks
+    /// `manifest_declares`, the check behind `LivePythonPane::has_capability`.
+    /// Typed CLI operations add the monitor's per-invocation admission.
+    #[test]
+    fn python_runtime_admission_matrix() {
+        use crate::app::permissions::Capability;
+        use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
+        use crate::broker::gate::{AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        const PLUGIN: &str = "matrix.python";
+        let profile = tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempdir().unwrap();
+        let ws = ws.path();
+        let families = [
+            Family::FsRead,
+            Family::FsWrite,
+            Family::Network,
+            Family::CliExec,
+            Family::Panes,
+            Family::Notify,
+            Family::HostRead,
+        ];
+        let checked = matrix::verify(Runtime::Python, &families, ws, |family, id, state| {
+            let monitor = PermissionMonitor::ephemeral();
+            let declared: std::collections::HashSet<Capability> = if matrix::plugin_declares(state)
+            {
+                Capability::try_from(id).into_iter().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            if family != Family::CliExec {
+                matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
+            }
+            let permissions =
+                monitor.materialize_plugin_permissions(PLUGIN, ws, &declared, Vec::new());
+            let launch_set: Vec<String> = permissions
+                .capabilities
+                .iter()
+                .map(|capability| capability.as_str().to_string())
+                .collect();
+            let in_launch_set = manifest_declares(&launch_set, id);
+            if family == Family::CliExec {
+                if !in_launch_set {
+                    return (Outcome::Deny, Mech::PythonLaunchSet);
+                }
+                let input = r#"{"cli_operation_id":"task.set","binding":"task.set#bind-1","values":{"priority":"p1"}}"#;
+                let outcome = matrix::drive_exact(&monitor, state, "cli.op.mutate", &|_posture| {
+                    monitor.admit_cli_operation(
+                        AdmitRequest {
+                            call_id: "call-1",
+                            tool: "cli.op.mutate",
+                            input_json: input,
+                            actor_type: ActorType::Plugin,
+                            actor_id: PLUGIN,
+                            actor_scope: ActorScope::User,
+                            trust_origin: "host",
+                            workspace_root: ws,
+                            context_id: 9,
+                            package_id: "pkg-a",
+                            instance_id: 4,
+                            target_type: TargetType::CliOperation,
+                        },
+                        "matrix.python wants to run task.set",
+                    )
+                });
+                return (outcome, Mech::MonitorAdmit);
+            }
+            if in_launch_set {
+                let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
+                    Mech::ManifestAsGrant
+                } else {
+                    Mech::LaunchRow
+                };
+                (Outcome::Admit, mech)
+            } else if permissions
+                .blocked
+                .iter()
+                .any(|capability| capability.as_str() == id)
+            {
+                (Outcome::Deny, Mech::LaunchRow)
+            } else {
+                (Outcome::Deny, Mech::PythonLaunchSet)
+            }
+        });
+        assert_eq!(checked, 14 * matrix::STATES.len());
+    }
+
+    /// CUTOVER: expected to change to deny (no human approval). Every Python
+    /// guest can send `permission_decision`; `handle_permission_decision`
+    /// forwards it to `PermissionMonitor::mutate_entry` with this exact caller,
+    /// `human: true`, and checks neither `permissions.manage` nor the plugin id.
+    /// `allow` on a pending id approves it as Always. Pinned at the monitor seam
+    /// because launching a CPython guest is not needed to show the decision.
+    #[test]
+    fn python_permission_bridge_caller_approves_a_pending_ask_as_human() {
+        use crate::broker::gate::{
+            Admission, AdmitRequest, PermissionCaller, PermissionMonitor, PermissionMutation,
+        };
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempdir().unwrap();
+        let admit = || {
+            monitor.admit(AdmitRequest {
+                call_id: "call-1",
+                tool: "probe.add",
+                input_json: "{}",
+                actor_type: ActorType::Agent,
+                actor_id: "agent:caller",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: ws.path(),
+                context_id: 1,
+                package_id: "probe",
+                instance_id: 0,
+                target_type: TargetType::PluginConnector,
+            })
+        };
+        let Admission::Required { pending_request_id } = admit() else {
+            panic!("an unapproved connector call must ask");
+        };
+        let bridge_caller = PermissionCaller {
+            human: true,
+            actor_id: format!("app:{}", "any.python.plugin"),
+        };
+        let outcome = monitor.mutate_entry(&pending_request_id, "allow", &bridge_caller);
+        // CUTOVER: expected to change to deny.
+        assert!(
+            matches!(outcome, PermissionMutation::Applied { .. }),
+            "today a guest-built human caller approves the pending ask"
+        );
+        assert!(matches!(admit(), Admission::Proceed { .. }));
+    }
+
+    #[test]
+    fn guest_log_level_honors_sdk_levels() {
+        assert_eq!(guest_log_level(Some("debug")), log::Level::Debug);
+        assert_eq!(guest_log_level(Some(" warn ")), log::Level::Warn);
+        assert_eq!(guest_log_level(Some("warning")), log::Level::Warn);
+        assert_eq!(guest_log_level(Some("error")), log::Level::Error);
+        assert_eq!(guest_log_level(Some("trace")), log::Level::Trace);
+        assert_eq!(guest_log_level(Some("info")), log::Level::Info);
+        assert_eq!(guest_log_level(Some("nope")), log::Level::Info);
+        assert_eq!(guest_log_level(None), log::Level::Info);
+    }
+
+    #[test]
+    fn unhandled_warn_repeats_are_suppressed_for_thirty_seconds() {
+        let now = std::time::Instant::now();
+        assert!(unhandled_warn_is_due(None, now));
+        assert!(!unhandled_warn_is_due(
+            Some(now),
+            now + std::time::Duration::from_secs(1)
+        ));
+        assert!(unhandled_warn_is_due(
+            Some(now),
+            now + UNHANDLED_WARN_REPEAT
+        ));
+    }
+
+    #[test]
     fn read_host_log_tail_returns_whole_small_log() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("plexi.log");
         std::fs::write(
             &path,
             "[2026-07-18 01:00:00] [INFO] [plexi::boot] up\n\
-             [2026-07-18 01:00:01] [ERROR] [app::todo] boom\n",
+             [2026-07-18 01:00:01] [ERROR] [plugin::todo] boom\n",
         )
         .expect("write log");
 
         let text = read_host_log_tail(&path, DEFAULT_HOST_LOG_TAIL_BYTES).expect("read tail");
 
         assert!(text.contains("[plexi::boot] up"));
-        assert!(text.contains("[app::todo] boom"));
+        assert!(text.contains("[plugin::todo] boom"));
     }
 
     #[test]
@@ -9409,7 +10622,7 @@ execution = "cloud"
 
     #[test]
     fn python_shim_fixture_executes_lifecycle_json_bridge() {
-        let mut app = WasmApp::load_with_grants(
+        let mut app = WasmView::load_with_grants(
             "python-shim-test",
             &python_shim_fixture(),
             StateStore::ephemeral(),
@@ -9611,7 +10824,7 @@ execution = "cloud"
     }
 
     /// Stint 0674: a field declares itself the pane's default text surface with
-    /// `autofocus`. Absent, it must decode false — an app that never asked for
+    /// `autofocus`. Absent, it must decode false — a plugin that never asked for
     /// focus must never steal it.
     #[test]
     fn ui_tree_decodes_text_input_autofocus() {
@@ -9706,7 +10919,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}"#,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply delta");
 
         let UiNodeData::Text(text) = &patched.tree.nodes[1].data else {
             panic!("expected text node");
@@ -9726,7 +10939,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r##"{"id":2,"key":"0/1","commands_changed":[[1,{"type":"rect","x":120.0,"y":100.0,"w":20.0,"h":20.0,"fill":"#ff0000","radius":0.0}]]}"##,
         )];
-        let patched = apply_tree_delta(&base, &changed).expect("apply canvas delta");
+        let patched = apply_tree_delta(&base, &changed, None, None).expect("apply canvas delta");
 
         let UiNodeData::Canvas(canvas) = &patched.tree.nodes[2].data else {
             panic!("expected canvas node");
@@ -9747,7 +10960,94 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":99,"key":"x","data":{"type":"Empty"}}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_adds_removes_and_reorders_stable_nodes() {
+        let base = decode_python_ui_tree_value(&encoded_value(r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"align":"start","grow":false}},
+              {"id":1,"key":"0/@a","data":{"type":"Text","text":"a"}},
+              {"id":2,"key":"0/@b","data":{"type":"Text","text":"b"}}
+            ]
+        }"#)).expect("base");
+        let changed = [encoded_value(
+            r#"{"id":0,"key":"0","data":{"type":"Column","children":[3,1],"align":"start","grow":false}}"#,
+        )];
+        let added = vec![encoded_value(
+            r#"{"id":3,"key":"0/@new","data":{"type":"Text","text":"new"}}"#,
+        )];
+        let removed = vec![json!(2)];
+        let patched = apply_tree_delta(&base, &changed, Some(&added), Some(&removed))
+            .expect("keyed delta applies");
+        let UiNodeData::Column(root) = &patched.tree.nodes[0].data else {
+            panic!("expected root column");
+        };
+        assert_eq!(root.children, vec![3, 1]);
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 1));
+        assert!(patched.tree.nodes.iter().any(|node| node.id == 3));
+        assert!(!patched.tree.nodes.iter().any(|node| node.id == 2));
+    }
+
+    #[test]
+    fn keyed_delta_duplicate_added_id_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let added = vec![encoded_value(
+            r#"{"id":1,"key":"duplicate","data":{"type":"Text","text":"x"}}"#,
+        )];
+        assert!(apply_tree_delta(&base, &[], Some(&added), None).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_with_dangling_child_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Column","children":[1],"align":"start","grow":false}},
+              {"id":1,"key":"0/0","data":{"type":"Text","text":"a"}}
+            ]
+        }"#)).expect("base");
+        let changed = [encoded_value(
+            r#"{"id":0,"key":"0","data":{"type":"Column","children":[1],"align":"start","grow":false}}"#,
+        )];
+        let removed = vec![json!(1)];
+        assert!(apply_tree_delta(&base, &changed, None, Some(&removed)).is_err());
+    }
+
+    #[test]
+    fn keyed_delta_that_removes_root_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let removed = vec![json!(0)];
+        assert!(apply_tree_delta(&base, &[], None, Some(&removed)).is_err());
+    }
+
+    #[test]
+    fn full_tree_with_duplicate_ids_is_a_desync_error() {
+        assert!(decode_python_ui_tree_value(&encoded_value(
+            r#"{
+            "root":0,"nodes":[
+              {"id":0,"key":"0","data":{"type":"Empty"}},
+              {"id":0,"key":"1","data":{"type":"Empty"}}
+            ]
+        }"#
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn data_table_key_keeps_raw_identity_when_contents_change() {
+        let first = json!({
+            "columns": ["name"], "rows": [["a"]], "selected": 0
+        });
+        let second = json!({
+            "columns": ["name"], "rows": [["b"]], "selected": 0
+        });
+        let first = encode_table_node_key(&first, "0/@table".to_string()).expect("first key");
+        let second = encode_table_node_key(&second, "0/@table".to_string()).expect("second key");
+        let first = super::super::wasm_render::parse_table_node_key(&first).expect("first meta");
+        let second = super::super::wasm_render::parse_table_node_key(&second).expect("second meta");
+        assert_eq!(first.identity_key, second.identity_key);
+        assert_ne!(first.rows, second.rows);
     }
 
     fn continuous_wake(
@@ -9769,8 +11069,8 @@ execution = "cloud"
     }
 
     #[test]
-    fn decoder_always_wakes_for_a_scheduled_mode_app() {
-        // An input-driven app's frame is the response to input; no cadence is
+    fn decoder_always_wakes_for_a_scheduled_mode_plugin() {
+        // An input-driven plugin's frame is the response to input; no cadence is
         // scheduled to present it, so latency here would be perceptible.
         let now = std::time::Instant::now();
         for ahead in [
@@ -9784,7 +11084,7 @@ execution = "cloud"
             });
             assert!(
                 decoder_wake_needed(scheduled, now),
-                "scheduled-mode app must wake for a frame {ahead:?} before its next paint"
+                "scheduled-mode plugin must wake for a frame {ahead:?} before its next paint"
             );
         }
     }
@@ -9889,7 +11189,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":1,"key":"0/0","commands_changed":[[0,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
@@ -9898,7 +11198,7 @@ execution = "cloud"
         let changed = [encoded_value(
             r#"{"id":2,"key":"0/1","commands_changed":[[9,{"type":"rect"}]]}"#,
         )];
-        assert!(apply_tree_delta(&base, &changed).is_err());
+        assert!(apply_tree_delta(&base, &changed, None, None).is_err());
     }
 
     #[test]
@@ -10007,6 +11307,47 @@ execution = "cloud"
         handle.join().expect("decoder thread");
     }
 
+    #[test]
+    fn decoder_thread_surfaces_invalid_full_tree_without_requesting_resync() {
+        let stdout = DrainableOutput::default();
+        let stdin = AppendableStdin::default();
+        let stdin_probe = stdin.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let reader = stdout.clone();
+        let handle = std::thread::spawn(move || {
+            decode_loop(
+                reader,
+                stdin,
+                "test".to_string(),
+                tx,
+                repaint,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(Mutex::new(WakeScheduleState::default())),
+            );
+        });
+
+        // A full tree with no tree payload cannot be repaired by asking the
+        // guest for another full tree: surface the guest error to the pane.
+        stdout.push_bytes(b"{\"type\":\"component_tree\",\"frame_id\":1}\n");
+
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("full-tree decode error");
+        assert!(matches!(
+            output,
+            DecodedOutput::DecodeError(reason) if reason == "component_tree message missing 'tree'"
+        ));
+        let request = drain_appendable_stdin(&stdin_probe, std::time::Duration::from_millis(100));
+        assert!(
+            request.is_empty(),
+            "invalid full trees must not request a resync, got {request:?}"
+        );
+
+        stdout.close();
+        handle.join().expect("decoder thread");
+    }
+
     // Poll the guest stdin the decoder writes into until a full line arrives.
     fn drain_appendable_stdin(stdin: &AppendableStdin, timeout: std::time::Duration) -> String {
         let waker = Waker::from(Arc::new(NoopWake));
@@ -10092,7 +11433,7 @@ execution = "cloud"
     fn native_python_bridge_runs_calc_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let app_dir = root.join("apps/calc");
+        let plugin_dir = root.join("apps/calc");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -10109,7 +11450,7 @@ execution = "cloud"
 
         let output = run_native_python_lifecycle_probe(
             &sdk_dir,
-            &app_dir,
+            &plugin_dir,
             "calc",
             &init_bridge_arg(&snapshot, (320.0, 240.0), &[]),
             &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
@@ -10129,10 +11470,9 @@ execution = "cloud"
             &update[0],
             PythonBridgeEffect::SetState(entries) if entries.iter().any(|(key, value)| key == "display" && value == b"\"7\"")
         ));
-        assert!(view
-            .nodes
-            .iter()
-            .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text == "Calculator")));
+        assert!(view.nodes.iter().any(
+            |node| matches!(&node.data, UiNodeData::SurfaceHeader(bar) if bar.title == "Calculator")
+        ));
 
         // Calc declares its connector tools on init; the bridge must carry the
         // whole set across with schemas re-serialized into the WIT string fields.
@@ -10201,7 +11541,7 @@ execution = "cloud"
     fn native_python_bridge_runs_stats_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let app_dir = root.join("apps/stats");
+        let plugin_dir = root.join("apps/stats");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -10209,7 +11549,7 @@ execution = "cloud"
 
         let output = run_native_python_lifecycle_probe(
             &sdk_dir,
-            &app_dir,
+            &plugin_dir,
             "stats",
             &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
             &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
@@ -10233,7 +11573,7 @@ execution = "cloud"
             .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("No focus events"))));
     }
 
-    fn native_python_app_view(app_name: &str, module_name: &str) -> UiTree {
+    fn native_python_plugin_view(app_name: &str, module_name: &str) -> UiTree {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let snapshot = StateSnapshot {
             entries: Vec::new(),
@@ -10253,18 +11593,18 @@ execution = "cloud"
 
     #[test]
     fn native_python_bridge_decodes_kraken_view() {
-        // Stint 0389: `AppBar` decodes to its own live `UiNodeData::AppBar`
+        // Stint 0389: `SurfaceHeader` decodes to its own live `UiNodeData::SurfaceHeader`
         // node now, not a downgraded `Text` node containing the title.
-        let view = native_python_app_view("kraken", "main");
+        let view = native_python_plugin_view("kraken", "main");
 
         assert!(view.nodes.iter().any(
-            |node| matches!(&node.data, UiNodeData::AppBar(bar) if bar.title.contains("Kraken"))
+            |node| matches!(&node.data, UiNodeData::SurfaceHeader(bar) if bar.title.contains("Kraken"))
         ));
     }
 
     #[test]
     fn native_python_bridge_decodes_logs_scroll_view() {
-        let view = native_python_app_view("logs", "logs");
+        let view = native_python_plugin_view("logs", "logs");
 
         assert!(view
             .nodes
@@ -10354,7 +11694,10 @@ execution = "cloud"
     fn file_write_rejects_missing_both_and_ambiguous_content() {
         let neither = json!({"type": "file_write", "path": "out.bin"});
         let err = decode_file_write_content(&neither).expect_err("no payload must fail");
-        assert!(err.contains("content"), "error names the missing field: {err}");
+        assert!(
+            err.contains("content"),
+            "error names the missing field: {err}"
+        );
 
         let both = json!({
             "type": "file_write",
@@ -10425,5 +11768,168 @@ execution = "cloud"
             .expect("new file under existing subdir resolves");
         assert!(resolved.ends_with("media/out.wav"));
         assert!(resolved.starts_with(root.path().canonicalize().expect("canonical root")));
+    }
+
+    #[test]
+    fn decode_text_node_preserves_color_truncate_align_and_hint_tone() {
+        let hex_node = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Alert",
+            "size": 16.0,
+            "bold": true,
+            "color": "#f38ba8",
+            "truncate": true,
+            "align": "end",
+        }))
+        .expect("hex Text decodes");
+        match hex_node {
+            UiNodeData::Text(t) => {
+                assert_eq!(t.text, "Alert");
+                assert_eq!(t.size, Some(16.0));
+                assert!(t.bold);
+                let c = t.color.expect("hex color");
+                assert_eq!((c.r, c.g, c.b, c.a), (0xf3, 0x8b, 0xa8, 0xff));
+                assert!(t.truncate);
+                assert!(matches!(t.align, Alignment::End));
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let role_node = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Accent role",
+            "color": "accent",
+            "align": "center",
+        }))
+        .expect("role Text decodes");
+        match role_node {
+            UiNodeData::Text(t) => {
+                assert!(
+                    t.color.is_none(),
+                    "semantic role must not bake in a literal color"
+                );
+                assert!(matches!(t.align, Alignment::Center));
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let hint_node = decode_node_data(&json!({
+            "type": "text",
+            "text": "Subtle caption",
+            "tone": "hint",
+        }))
+        .expect("hint tone Text decodes");
+        match hint_node {
+            UiNodeData::Text(t) => {
+                assert!(t.color.is_none(), "hint tone must retain semantic intent");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        let err = decode_node_data(&json!({
+            "type": "Text",
+            "text": "Bad color",
+            "color": "chartreuse",
+        }))
+        .expect_err("unknown color role must fail");
+        assert!(err.to_string().contains("chartreuse"));
+    }
+
+    #[test]
+    fn decode_card_and_data_table_preserve_surface_and_table_metadata() {
+        let tree = decode_ui_tree(
+            &json!({
+                "root": 0,
+                "nodes": [
+                    {
+                        "id": 0,
+                        "key": "root-card",
+                        "data": {
+                            "type": "Padding",
+                            "card": true,
+                            "top": 12.0,
+                            "right": 12.0,
+                            "bottom": 12.0,
+                            "left": 12.0,
+                            "child": 1
+                        }
+                    },
+                    {
+                        "id": 1,
+                        "key": "tbl",
+                        "data": {
+                            "type": "DataTable",
+                            "columns": ["Host", "State"],
+                            "rows": [["alpha", "up"], ["beta", "idle"]],
+                            "selected": 1,
+                            "on_select": "pick_host",
+                            "children": []
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("card + data table tree decodes");
+
+        assert!(
+            tree.nodes[0]
+                .key
+                .starts_with(crate::host::wasm_render::CARD_NODE_KEY_PREFIX),
+            "Card node must carry CARD_NODE_KEY_PREFIX"
+        );
+        let table_meta = crate::host::wasm_render::parse_table_node_key(&tree.nodes[1].key)
+            .expect("DataTable node must carry encoded TableNodeMeta");
+        assert_eq!(table_meta.columns, vec!["Host", "State"]);
+        assert_eq!(table_meta.rows.len(), 2);
+        assert_eq!(table_meta.selected, Some(1));
+        assert_eq!(table_meta.on_select.as_deref(), Some("pick_host"));
+    }
+}
+
+#[cfg(test)]
+mod text_role_tests {
+    use super::*;
+
+    #[test]
+    fn semantic_text_roles_survive_full_and_delta_frames() {
+        let base = serde_json::json!({"root":0,"nodes":[
+            {"id":0,"key":"stable-label","data":{"type":"Text","text":"Description","tone":"hint"}}
+        ]});
+        let decoded = decode_python_ui_tree_value(&base).unwrap();
+        assert_eq!(
+            super::super::wasm_render::TextRole::from_key(&decoded.tree.nodes[0].key),
+            Some(super::super::wasm_render::TextRole::Muted)
+        );
+        for color in [
+            "accent",
+            "fg",
+            "success",
+            "warning",
+            "danger",
+            "text_section",
+            "#eeeeee",
+        ] {
+            let changed = serde_json::json!({"id":0,"key":"stable-label",
+                "data":{"type":"Text","text":"Description","color":color}});
+            let patched =
+                apply_tree_delta(&decoded, std::slice::from_ref(&changed), None, None).unwrap();
+            let full =
+                decode_python_ui_tree_value(&serde_json::json!({"root":0,"nodes":[changed]}))
+                    .unwrap();
+            assert_eq!(format!("{:?}", patched.tree), format!("{:?}", full.tree));
+            let node = &patched.tree.nodes[0];
+            let UiNodeData::Text(text) = &node.data else {
+                panic!("text node");
+            };
+            if color.starts_with('#') {
+                assert_eq!(node.key, "stable-label");
+                assert!(text.color.is_some());
+            } else {
+                assert!(node.key.ends_with(":stable-label"));
+                assert!(text.color.is_none());
+                assert!(super::super::wasm_render::TextRole::from_key(&node.key).is_some());
+            }
+        }
     }
 }

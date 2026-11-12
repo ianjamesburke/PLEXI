@@ -60,6 +60,13 @@ gh issue view <number> --json title --jq '.title'
 
 ## Step 2 — Create PR
 
+Apply [TESTING.md — Draft PR and candidate qualification](../../../src/testing/TESTING.md#draft-pr-and-candidate-qualification).
+When acquiring a PR number before the final release gate, add `--draft`, return
+the number to implementation, and do not advance validation labels or invoke
+validation yet. Run `just pr-candidate <PR>` and all other applicable checks;
+only current passing evidence permits `gh pr ready <PR>` and the steps below.
+An existing draft must finish this same gate before advancing.
+
 **Idempotency guard — check for existing PR first:**
 ```bash
 EXISTING_PR=$(gh pr list --head <branch> --state open --json number,url --jq '.[0] // empty')
@@ -180,6 +187,6 @@ Invoke `/validate-pr <pr-number>` inline in the same pane — **unless the calle
 - PR always targets `alpha` — never `beta` or `main`
 - Never push to `alpha`, `beta`, or `main` directly
 - Idempotency: re-running on an already-open PR advances labels, never errors
-- open-pr runs no review. AI diff review is owned solely by `/implement-stint` Phase 4 (pre-push) — see "Who reviews what" there. `/validate-pr` does not review either.
+- open-pr runs no review. AI diff review is owned solely by `/implement-stint-v2` (pre-push). `/validate-pr` does not review either.
 
 

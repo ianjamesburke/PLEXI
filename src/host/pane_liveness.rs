@@ -34,8 +34,39 @@ fn claimed_state(pane: &Pane) -> Option<serde_json::Value> {
 /// fails with `EPERM` (process exists, no permission) would misreport, but
 /// every pid this module checks is a host-spawned child, so permission is
 /// never the failure mode in practice.
-fn pid_is_alive(pid: u32) -> bool {
+#[cfg(unix)]
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Windows has no signal-0 probe. `OpenProcess` for the query-limited right
+/// succeeds for a live process and for a zombie one whose handle is still
+/// held, so the exit code is checked too: `STILL_ACTIVE` is the only answer
+/// that counts as alive.
+#[cfg(windows)]
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: plain scalar arguments; a null return is the documented failure
+    // signal and is checked before any use.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut exit_code: u32 = 0;
+    // SAFETY: `handle` is live until the CloseHandle below; `exit_code` is a
+    // local out-param.
+    unsafe {
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE as u32
+    }
 }
 
 /// Direct children of `pid`, via `pgrep -P` — never `proc_listchildpids`,
@@ -84,8 +115,8 @@ fn observed_state(pane: &Pane) -> serde_json::Value {
                 "foreground_command": foreground_command,
             })
         }
-        Pane::App(app_pane) => {
-            let (lifecycle, _) = app_pane.runtime.lifecycle();
+        Pane::View(view_pane) => {
+            let (lifecycle, _) = view_pane.runtime.lifecycle();
             let process_alive = !matches!(lifecycle, "exited" | "failed" | "crashed");
             // App runtimes (in-process WASM/Python) have no OS child of their
             // own to inventory and no PTY output stream to time-stamp; a

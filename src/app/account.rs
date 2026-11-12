@@ -3,16 +3,14 @@
 //!
 //! # What an account is for
 //!
-//! Per `docs/marketplace-hosted.md`, an account is **never** required to
-//! install a free app, run an installed app, or browse the public catalog. It
-//! is required only to:
+//! An account is optional. Local use — installing and running plugins, the
+//! assistant, the ledger, retention — never reads one and never creates one.
+//! A session only links this desktop to cloud features: publishing,
+//! buying a paid plugin, and the Plexi AI subscription. See
+//! `docs/marketplace-hosted.md`.
 //!
-//! - **publish** an app,
-//! - **buy** a paid app, or
-//! - use the **Plexi AI subscription**.
-//!
-//! So this module is the identity seam those three flows hang off. Two
-//! providers exist, chosen by `[marketplace].account_backend`:
+//! This module is that link. Two providers exist, chosen by
+//! `[marketplace].account_backend`:
 //! [`StubAccountProvider`] (default) fails closed on every network operation,
 //! and [`PlexiAccountProvider`] (`"plexi"`) talks to plexiapp.com. Because
 //! plexiapp.com auth is interactive (a browser magic link, or the device-code
@@ -132,7 +130,7 @@ pub enum AccountError {
     /// accounts with `[marketplace].account_backend = "plexi"`.
     #[error(
         "account_backend_disabled: marketplace accounts are off in this profile — set \
-         [marketplace].account_backend = \"plexi\" to enable them. Free apps install without an \
+         [marketplace].account_backend = \"plexi\" to enable them. Free plugins install without an \
          account. See https://plexiapp.com/docs/marketplace"
     )]
     NotConfigured,

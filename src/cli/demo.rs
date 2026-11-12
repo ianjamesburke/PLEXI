@@ -1,9 +1,16 @@
+use super::install_hint::InstallPlatform;
 use super::notes::{print_step_complete, print_step_header};
 
 const TOTAL_STEPS: u8 = 11;
 const CMD: &str = "\u{2318}";
 
 pub fn demo_cli() -> i32 {
+    if !demo_supported_on(InstallPlatform::current()) {
+        eprintln!("error: `plexi demo` is not supported on this OS until its keymap is set");
+        log::info!("demo_cli: refused because this OS has no supported demo keymap");
+        return 1;
+    }
+
     let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
         Ok(v) => v,
         Err(_) => {
@@ -96,32 +103,27 @@ pub fn demo_cli() -> i32 {
     };
     done(4);
 
-    step(5, "Open an app from the palette");
+    step(5, "Open a plugin from the palette");
     explain(&[
-        "Split to a fresh terminal, open the command palette, type Balls, and choose the Balls app.",
-        "The app should take over that pane. This demo waits for the Balls app to spawn.",
+        "Split to a fresh terminal, open the command palette, type Balls, and choose the Balls plugin.",
+        "The plugin should take over that pane. This demo waits for the Balls plugin to spawn.",
     ]);
     key(&format!("{CMD}D"), "open a new terminal pane");
     key(&format!("{CMD}P"), "open the command palette");
-    eprintln!("    Type Balls, choose the Balls app, and press Enter.");
+    eprintln!("    Type Balls, choose the Balls plugin, and press Enter.");
     eprintln!();
     let mut balls_pane_id = 0;
-    let after_app_split = match poll_event(&events_path, after_close, |kind, obj| {
+    let after_plugin_split = match poll_event(&events_path, after_close, |kind, obj| {
         capture_pane_split(kind, obj, "horizontal", &mut balls_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
-    let after_balls = match poll_event(&events_path, after_app_split, |kind, obj| {
-        if kind != "app_spawned"
-            || !obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "balls")
-        {
+    let after_balls = match poll_event(&events_path, after_plugin_split, |kind, obj| {
+        if !matches_catalog_plugin(kind, obj, "view_opened", "balls") {
             return false;
         }
-        // Capture from app_spawned so the pane_id is always the pane Balls actually ran in,
+        // Capture from view_opened so the pane_id is always the pane Balls actually ran in,
         // regardless of which split the user had focused when they opened the palette.
         if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
             balls_pane_id = id;
@@ -137,17 +139,9 @@ pub fn demo_cli() -> i32 {
     explain(&[
         "Congrats, you can press Escape or Command-W to exit and return back to the regular terminal pane.",
     ]);
-    key("Esc", "exit the app");
+    key("Esc", "exit the plugin");
     let after_balls_close = match poll_event(&events_path, after_balls, |kind, obj| {
-        kind == "app_closed"
-            && obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "balls")
-            && obj
-                .get("pane_id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|id| id == balls_pane_id)
+        matches_catalog_view_on_pane(kind, obj, "view_closed", "balls", balls_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -161,7 +155,7 @@ pub fn demo_cli() -> i32 {
         "Use the rename shortcut, enter Demo, and confirm it.",
     ]);
     key(&format!("{CMD}R"), "rename the pane to the right");
-    let after_app_rename = match poll_event(&events_path, after_balls_close, |kind, obj| {
+    let after_plugin_rename = match poll_event(&events_path, after_balls_close, |kind, obj| {
         kind == "pane_renamed"
             && obj
                 .get("pane_id")
@@ -183,12 +177,8 @@ pub fn demo_cli() -> i32 {
         "Use H J K L, or the arrow keys, to move through the file tree and view files.",
     ]);
     key(&format!("{CMD}E"), "open File Browser");
-    let after_file = match poll_event(&events_path, after_app_rename, |kind, obj| {
-        kind == "app_spawned"
-            && obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "file_browser")
+    let after_file = match poll_event(&events_path, after_plugin_rename, |kind, obj| {
+        matches_catalog_plugin(kind, obj, "view_opened", "file_browser")
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -269,10 +259,14 @@ pub fn demo_cli() -> i32 {
     0
 }
 
+fn demo_supported_on(platform: InstallPlatform) -> bool {
+    platform == InstallPlatform::Macos
+}
+
 fn print_intro() {
     eprintln!("\x1b[1;36mPlexi - Quick Tutorial\x1b[0m");
     explain(&[
-        "Plexi is a local app workspace for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
+        "Plexi is a local plugin workspace for terminals, view panes, notes, contexts, notifications, and agent-driven work.",
         "This demo watches Plexi events and advances as you try the core host controls. Keep this terminal visible when you can.",
     ]);
 }
@@ -395,6 +389,36 @@ fn file_offset(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path).map(|m| m.len()).ok()
 }
 
+/// `plugin_id` is the catalog id (`balls`, `file_browser`). `type_id` is the
+/// runtime (`python-wasm`, `wasm`) or, for builtins, often the same catalog
+/// id. A `type_id == "balls"` check never sees a WASM spawn.
+fn matches_catalog_plugin(
+    kind: &str,
+    obj: &serde_json::Value,
+    expected_kind: &str,
+    plugin_id: &str,
+) -> bool {
+    kind == expected_kind
+        && obj
+            .get("plugin_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == plugin_id)
+}
+
+fn matches_catalog_view_on_pane(
+    kind: &str,
+    obj: &serde_json::Value,
+    expected_kind: &str,
+    plugin_id: &str,
+    pane_id: u64,
+) -> bool {
+    matches_catalog_plugin(kind, obj, expected_kind, plugin_id)
+        && obj
+            .get("pane_id")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|id| id == pane_id)
+}
+
 fn capture_pane_split(kind: &str, obj: &serde_json::Value, direction: &str, out: &mut u64) -> bool {
     if kind != "pane_split" {
         return false;
@@ -416,6 +440,89 @@ fn capture_pane_split(kind: &str, obj: &serde_json::Value, direction: &str, out:
 fn watch_error(path: &std::path::Path, error: std::io::Error) -> i32 {
     eprintln!("error watching {}: {error}", path.display());
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{demo_supported_on, matches_catalog_plugin, matches_catalog_view_on_pane};
+    use crate::cli::install_hint::InstallPlatform;
+
+    #[test]
+    fn demo_requires_the_macos_keymap() {
+        assert!(demo_supported_on(InstallPlatform::Macos));
+        assert!(!demo_supported_on(InstallPlatform::Linux));
+        assert!(!demo_supported_on(InstallPlatform::Windows));
+        assert!(!demo_supported_on(InstallPlatform::Other));
+    }
+
+    /// Live Balls spawn from alpha 2026-10-06:
+    /// `{"kind":"view_opened","plugin_id":"balls","type_id":"python-wasm","pane_id":178}`.
+    /// Matching `type_id == "balls"` never advances the demo.
+    #[test]
+    fn wasm_lifecycle_events_match_catalog_plugin_id() {
+        let spawned = serde_json::json!({
+            "kind": "view_opened",
+            "plugin_id": "balls",
+            "type_id": "python-wasm",
+            "pane_id": 178
+        });
+        assert!(matches_catalog_plugin(
+            "view_opened",
+            &spawned,
+            "view_opened",
+            "balls"
+        ));
+        assert!(
+            !matches_catalog_plugin("view_opened", &spawned, "view_opened", "python-wasm"),
+            "the runtime kind is not the catalog id"
+        );
+        assert_ne!(
+            spawned.get("type_id").and_then(|v| v.as_str()),
+            Some("balls"),
+            "type_id is the runtime, so a type_id == balls check misses WASM plugins"
+        );
+
+        let closed = serde_json::json!({
+            "kind": "view_closed",
+            "plugin_id": "balls",
+            "type_id": "python-wasm",
+            "pane_id": 178
+        });
+        assert!(matches_catalog_view_on_pane(
+            "view_closed",
+            &closed,
+            "view_closed",
+            "balls",
+            178
+        ));
+        assert!(!matches_catalog_view_on_pane(
+            "view_closed",
+            &closed,
+            "view_closed",
+            "balls",
+            99
+        ));
+        assert!(!matches_catalog_view_on_pane(
+            "view_closed",
+            &closed,
+            "view_closed",
+            "python-wasm",
+            178
+        ));
+
+        let file_browser = serde_json::json!({
+            "kind": "view_opened",
+            "plugin_id": "file_browser",
+            "type_id": "file_browser",
+            "pane_id": 12
+        });
+        assert!(matches_catalog_plugin(
+            "view_opened",
+            &file_browser,
+            "view_opened",
+            "file_browser"
+        ));
+    }
 }
 
 /// Tails `path` from `offset`, advancing the cursor as lines are consumed.

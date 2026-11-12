@@ -1,11 +1,14 @@
 import importlib.util
 from pathlib import Path
 
+from plexi_sdk import tools
+
 ROOT = Path(__file__).resolve().parents[3]
 APP = ROOT / "apps" / "logs" / "logs.py"
 
 
 def _load_app_module():
+    tools._reset_for_tests()
     spec = importlib.util.spec_from_file_location("logs_app", APP)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

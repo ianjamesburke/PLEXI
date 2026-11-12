@@ -19,12 +19,22 @@ static HANDLER: OnceLock<JsonHandler> = OnceLock::new();
 /// `PlexiApp::update()`.
 static RELOAD_CONFIG_FLAG: AtomicBool = AtomicBool::new(false);
 
-/// Check and clear the reload flag. Called from the main app loop.
+/// Set by the "Open Config" menu item; polled each frame in
+/// `PlexiApp::update()` so the config opens through the host's editor-split path
+/// (the menu callback has no access to the plugin).
+static OPEN_CONFIG_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// Check and clear the open-config flag. Called from the main plugin loop.
+pub fn take_open_config_flag() -> bool {
+    OPEN_CONFIG_FLAG.swap(false, Ordering::SeqCst)
+}
+
+/// Check and clear the reload flag. Called from the main plugin loop.
 pub fn take_reload_config_flag() -> bool {
     RELOAD_CONFIG_FLAG.swap(false, Ordering::SeqCst)
 }
 
-/// Guards the one-shot version title application. winit resets the app menu
+/// Guards the one-shot version title application. winit resets the plugin menu
 /// item title during activation (after `PlexiApp::new`), so we defer the write
 /// to the first `update()` frame instead.
 static VERSION_TITLE_APPLIED: AtomicBool = AtomicBool::new(false);
@@ -59,7 +69,7 @@ fn register_handler_class() -> &'static objc2::runtime::AnyClass {
             ClassBuilder::new(c"PlexiMenuHandler", superclass).expect("class already registered");
 
         unsafe extern "C" fn open_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
-            crate::config::open_config_file();
+            OPEN_CONFIG_FLAG.store(true, Ordering::SeqCst);
         }
 
         unsafe extern "C" fn reload_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
@@ -95,7 +105,7 @@ fn get_handler() -> *const AnyObject {
 }
 
 /// Remove intercepted menu items (Hide, Hide Others, Quit) from the default
-/// macOS app menu so our app can use Cmd+H and Cmd+Q directly, then add
+/// macOS plugin menu so our plugin can use Cmd+H and Cmd+Q directly, then add
 /// "Open Config" item.
 pub fn customize_app_menu() {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -108,7 +118,7 @@ pub fn customize_app_menu() {
         return;
     };
 
-    // First submenu (index 0) is the app menu containing Hide/Quit/etc.
+    // First submenu (index 0) is the plugin menu containing Hide/Quit/etc.
     let Some(app_menu_item) = main_menu.itemAtIndex(0) else {
         return;
     };
@@ -122,7 +132,7 @@ pub fn customize_app_menu() {
     // Remove "Quit" (Cmd+Q) so it reaches egui's consume_key for proper save-on-quit
     remove_items_with_action(&app_menu, sel!(terminate:));
 
-    // Add "Reload Config" and "Open Config" items at the top of the app menu
+    // Add "Reload Config" and "Open Config" items at the top of the plugin menu
     let handler = get_handler();
 
     let reload_title = NSString::from_str("Reload Configuration");
@@ -172,7 +182,11 @@ fn menu_bar_title() -> Option<String> {
             .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
             .unwrap_or_default()
     };
-    Some(format!("Plexi {} {}", channel, env!("CARGO_PKG_VERSION")))
+    Some(format!(
+        "Plexi {} {}",
+        channel,
+        crate::distribution::version_text()
+    ))
 }
 
 fn remove_items_with_action(menu: &NSMenu, action: objc2::runtime::Sel) {

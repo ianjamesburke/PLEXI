@@ -1,12 +1,4 @@
-use std::{
-    fs::OpenOptions,
-    path::Path,
-    process::{Command, Stdio},
-    time::Duration,
-};
-
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
+use std::{path::Path, time::Duration};
 
 use crate::app::ui_mailbox::UiMailbox;
 use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
@@ -14,7 +6,7 @@ use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
 /// Spawns a background thread that checks for updates, and if a newer version
-/// is found, builds and installs it silently. Only sends on `mailbox` when the
+/// is found, downloads and installs it silently. Only sends on `mailbox` when the
 /// new binary is ready - the UI badge means "restart to apply", not
 /// "downloading". The mailbox wakes the UI thread so the badge appears even on
 /// an idle host.
@@ -22,9 +14,17 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, mailbox: UiMailbox<Stri
     std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
+            if let Ok(Some(receipt)) = crate::distribution::installed() {
+                if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
+                    log::info!("update check: running and installed builds differ; restart available");
+                    let _ = mailbox.send(receipt.active.tag.trim_start_matches('v').to_string());
+                    return;
+                }
+            }
+            if crate::config::build_channel().is_some_and(|c| c != "alpha" && c != "beta") { return; }
             let channel = detect_channel();
             let cache_path = cache_dir.join("update_cache.json");
-            let current_raw = installed_tag_or_cargo_version(&cache_dir);
+            let current_raw = installed_version();
             match cached_or_fetch(&cache_path, channel, &current_raw) {
                 Some(latest) => {
                     let current = ReleaseTag::parse(&current_raw);
@@ -66,21 +66,12 @@ pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
     )
 }
 
-/// Read the installed release tag from `<profile>/installed_tag`, falling back
-/// to `CARGO_PKG_VERSION` for source builds that don't write the tag file.
-fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
-    let tag_path = cache_dir.join("installed_tag");
-    if let Ok(tag) = std::fs::read_to_string(&tag_path) {
-        let trimmed = tag.trim().to_string();
-        if ReleaseTag::parse(&trimmed).is_some() {
-            log::info!(
-                "update check: using installed tag from {}",
-                tag_path.display()
-            );
-            return trimmed;
-        }
+fn installed_version() -> String {
+    match crate::distribution::installed() {
+        Ok(Some(receipt)) => receipt.active.tag,
+        Ok(None) => crate::distribution::build_tag(),
+        Err(error) => { log::warn!("update check: read installation identity: {error}"); crate::distribution::build_tag() }
     }
-    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn detect_channel() -> UpdateChannel {
@@ -104,9 +95,7 @@ fn update_cache_fresh_for_channel(cache_path: &Path, channel: UpdateChannel, now
     std::fs::read(cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|json| {
-            cached_json_fresh_for_channel(&json, channel, now)
-        })
+        .is_some_and(|json| cached_json_fresh_for_channel(&json, channel, now))
 }
 
 fn cached_json_fresh_for_channel(
@@ -171,26 +160,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn background_child_stdio_is_captured_and_session_is_detached() {
-        let dir =
-            std::env::temp_dir().join(format!("plexi-updater-stdio-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create updater test dir");
-        let log_path = dir.join("update.log");
-        let mut command = Command::new("/bin/sh");
-        command.args([
-            "-c",
-            "read ignored || true; printf 'child-out\\n'; printf 'child-err\\n' >&2; if test -t 0 || test -t 1 || test -t 2; then exit 9; fi; if printf tty >/dev/tty 2>/dev/null; then exit 10; fi",
-        ]);
 
-        let status = run_logged_command(&mut command, &log_path, "stdio-test").expect("run child");
-        assert!(status.success(), "child inherited a terminal: {status}");
-        let log = std::fs::read_to_string(&log_path).expect("read update log");
-        assert!(log.contains("child-out"), "stdout missing from log: {log}");
-        assert!(log.contains("child-err"), "stderr missing from log: {log}");
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }
 
 fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
@@ -220,107 +190,11 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
     latest_raw
 }
 
-/// Clone/fetch the source repo, check out the target tag, and run the install
-/// script. This builds the binary and copies it into /Applications/ while the
-/// current instance keeps running. The running binary is not affected because
-/// macOS loads it into memory at launch.
+/// Foreground and background updates run the same native transaction.
 fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
-    let repo = "https://github.com/ianjamesburke/PLEXI.git";
-
-    let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
-
-    let log_path = profile_dir.join("update.log");
-    std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
-
-    log::info!("background_build: fetching source for {tag}");
-    if src_dir.join(".git").is_dir() {
-        let mut command = Command::new("git");
-        command.args([
-            "-C",
-            &src_dir.to_string_lossy(),
-            "fetch",
-            "origin",
-            "--tags",
-            "--force",
-        ]);
-        let status = run_logged_command(&mut command, &log_path, "git fetch")?;
-        if !status.success() {
-            return Err("git fetch failed".to_string());
-        }
-    } else {
-        let mut command = Command::new("git");
-        command.args(["clone", repo, &src_dir.to_string_lossy()]);
-        let status = run_logged_command(&mut command, &log_path, "git clone")?;
-        if !status.success() {
-            return Err("git clone failed".to_string());
-        }
-    }
-
-    let mut checkout = Command::new("git");
-    checkout.args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", tag]);
-    let status = run_logged_command(&mut checkout, &log_path, "git checkout")?;
-    if !status.success() {
-        return Err(format!("git checkout {tag} failed"));
-    }
-
-    log::info!("background_build: running install.sh for {tag} channel={channel}; sudo/bin install skipped because PLEXI_SKIP_BIN_INSTALL=1 and the updater has no TTY");
-
-    let install_cmd = format!(
-        "PLEXI_INSTALL_TAG='{}' PLEXI_SKIP_BIN_INSTALL=1 bash '{}' '{}'",
-        tag,
-        src_dir.join("scripts/install.sh").display(),
-        channel,
-    );
-    let mut install = Command::new("bash");
-    install
-        .args(["-l", "-c", &install_cmd])
-        .current_dir(&src_dir);
-    let status = run_logged_command(&mut install, &log_path, "install.sh")?;
-
-    if !status.success() {
-        return Err(format!(
-            "install.sh exited {status} — see {}",
-            log_path.display()
-        ));
-    }
-
-    log::info!("background_build: install complete for {tag}");
-    Ok(())
-}
-
-fn run_logged_command(
-    command: &mut Command,
-    log_path: &Path,
-    stage: &str,
-) -> Result<std::process::ExitStatus, String> {
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|error| format!("open update log for {stage}: {error}"))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|error| format!("clone update log for {stage}: {error}"))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    #[cfg(unix)]
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    log::info!(
-        "background_build: starting {stage}; stdin=/dev/null stdout/stderr={} session=isolated",
-        log_path.display()
-    );
-    command
-        .status()
-        .map_err(|error| format!("{stage}: {error}"))
+    let channel = crate::config::build_channel().unwrap_or_else(|| "stable".into());
+    let result = super::install::run_binary_asset_install(&channel, tag);
+    let text = match &result { Ok(()) => format!("Installed and verified {tag}\n"), Err(error) => format!("Update {tag} failed: {error}\n") };
+    std::fs::write(profile_dir.join("update.log"), text).map_err(|e| format!("write update log: {e}"))?;
+    result
 }

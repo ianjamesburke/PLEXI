@@ -1,15 +1,6 @@
 use super::*;
 
 impl PlexiApp {
-    pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
-        self.draw_triple_tap_overlay(
-            ctx,
-            "welcome_delete_overlay",
-            self.welcome_delete_press_count,
-            "⌫ pressed",
-        );
-    }
-
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
         crate::ui::toast::ToastShell::bottom("quit_confirm_overlay").show(
@@ -17,22 +8,86 @@ impl PlexiApp {
             &self.colors,
             |ui| {
                 ui.horizontal(|ui| {
-                    crate::ui::toast::toast_caption(
-                        ui,
-                        format!("\u{2318}Q pressed {} of 3 — press again to quit", count),
-                        &self.colors,
-                    );
-                    crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
+                    let dots = crate::ui::toast::ProgressDots::new(count, 3);
+                    ui.scope(|ui| {
+                        ui.set_max_width(
+                            (ui.available_width() - dots.width() - ui.spacing().item_spacing.x)
+                                .max(0.0),
+                        );
+                        crate::ui::toast::toast_caption(
+                            ui,
+                            format!(
+                                "{} pressed {} of 3 — press again to quit",
+                                crate::ui::shortcuts::key_text(&["cmd", "Q"]),
+                                count
+                            ),
+                            &self.colors,
+                        );
+                    });
+                    dots.show(ui, &self.colors);
                 });
             },
         );
     }
 
+    /// Shown when the final quit save failed `MAX_QUIT_SAVE_ATTEMPTS` times.
+    fn draw_quit_save_failure(&mut self, ctx: &egui::Context, cause: &str) {
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "quit_without_saving",
+                "Quit without saving",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Q"],
+                egui::Modifiers::NONE,
+                egui::Key::Q,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "cancel",
+                "Cancel",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response = crate::ui::dialog::ActionModal::new(
+            "confirm_close_overlay",
+            "Workspace could not be saved",
+            &actions,
+        )
+        .width(super::MODAL_WIDTH)
+        .show(ctx, &self.colors, |ui| {
+            crate::ui::typography::caption(ui, cause, &self.colors);
+            crate::ui::typography::caption(
+                ui,
+                "Quitting now leaves the saved workspace file as it is.",
+                &self.colors,
+            );
+        });
+        if response.selected == Some("quit_without_saving") {
+            self.resolve_quit_save_failure(true);
+        } else if response.dismissed || response.selected == Some("cancel") {
+            self.resolve_quit_save_failure(false);
+        }
+    }
+
     pub(crate) fn draw_confirm_close(&mut self, ctx: &egui::Context) {
+        if let Some(cause) = self.quit_coordinator.save_failure().map(str::to_owned) {
+            self.draw_quit_save_failure(ctx, &cause);
+            return;
+        }
         let actions = [
             crate::ui::dialog::DialogAction::new(
                 "close",
-                "Close",
+                if self.pending_quit {
+                    "Quit Plexi and stop them"
+                } else {
+                    "Close"
+                },
                 crate::ui::button::ButtonKind::Danger,
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
@@ -51,13 +106,27 @@ impl PlexiApp {
                 egui::Key::Escape,
             )),
         ];
+        let title = if self.pending_quit {
+            let count = self.working_agent_count();
+            if count == 1 {
+                "1 agent is working. Quit Plexi and stop them?".to_string()
+            } else {
+                format!("{count} agents are working. Quit Plexi and stop them?")
+            }
+        } else {
+            "Close pane?".to_string()
+        };
         let response =
-            crate::ui::dialog::ActionModal::new("confirm_close_overlay", "Close pane?", &actions)
+            crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
                         ui,
-                        "The running process will be terminated.",
+                        if self.pending_quit {
+                            "Every pane process in this Plexi instance will be stopped."
+                        } else {
+                            "The running process will be terminated."
+                        },
                         &self.colors,
                     );
                 });
@@ -65,21 +134,20 @@ impl PlexiApp {
         let confirmed = response.selected == Some("close");
         let cancelled = response.dismissed || response.selected == Some("cancel");
 
-        if confirmed {
+        if self.pending_quit && (confirmed || cancelled) {
+            self.resolve_quit_confirmation(confirmed);
+        } else if confirmed {
             self.pending_close = false;
-            if self.execute_close_pane() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.mark_workspace_dirty();
-            }
+            self.execute_close_pane();
+            self.mark_workspace_dirty();
         } else if cancelled {
             self.pending_close = false;
         }
     }
 
-    /// Capability / secret consent modal for the focused app pane.
+    /// Capability / secret consent modal for the focused view pane.
     /// Called from step 2 of `update()` so it holds exclusive keyboard
-    /// ownership before `dispatch_app_key_events` runs.
+    /// ownership before `dispatch_plugin_key_events` runs.
     pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
         let active = self.active_window;
         let pane_id = self.windows[active].focused_pane.and_then(|tile| {
@@ -89,9 +157,9 @@ impl PlexiApp {
             if let Some(app) = self.windows[active]
                 .panes
                 .get_mut(&pane_id)
-                .and_then(|pane| pane.as_app_mut())
+                .and_then(|pane| pane.as_view_mut())
             {
-                if let crate::host::pane::AppRuntime::Wasm(runtime) = &mut app.runtime {
+                if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
                     runtime.draw_capability_modal(ctx, &self.colors);
                 }
             }
@@ -207,7 +275,7 @@ impl PlexiApp {
     /// `DeliverNotifyAction` and removes the notification from the queue.
     /// Esc defers: the modal closes but the notification stays in the
     /// queue (reopen with Cmd+Shift+A to come back to it). No
-    /// NotifyAction is dispatched on Esc — the app hasn't been answered.
+    /// NotifyAction is dispatched on Esc — the plugin hasn't been answered.
     /// Required notifications reject Esc.
     ///
     /// Input map (all kinds):
@@ -228,22 +296,22 @@ impl PlexiApp {
     pub(crate) fn confirm_close_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_close_confirm_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn capability_modal_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     /// Host event-bus consent modal. Surfaces the front parked
@@ -324,8 +392,8 @@ impl PlexiApp {
     pub(crate) fn event_consent_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn draw_raw_wasm_review_modal(&mut self, ctx: &egui::Context) {
@@ -364,7 +432,7 @@ impl PlexiApp {
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(
                 ui,
-                format!("{} requests host imports:", review.app_id),
+                format!("{} requests host imports:", review.plugin_id),
                 &colors,
             );
             for capability in &review.missing_capabilities {
@@ -386,36 +454,47 @@ impl PlexiApp {
             );
             for capability in &review.missing_capabilities {
                 store.set_wasm(
-                    &review.app_id,
+                    &review.plugin_id,
                     &review.workspace_root,
                     capability,
                     crate::app::permissions::PermissionState::Green,
                 );
             }
             store.save();
+            let monitor =
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            for capability in &review.missing_capabilities {
+                monitor.grant_capability_id(
+                    &review.plugin_id,
+                    &review.workspace_root,
+                    capability,
+                    crate::broker::Decision::Allow,
+                    crate::broker::GrantSource::User,
+                );
+            }
             log::info!(
-                "raw_wasm_review: approved {} imports for app_id={} path={}",
+                "raw_wasm_review: approved {} imports for plugin_id={} path={}",
                 review.missing_capabilities.len(),
-                review.app_id,
+                review.plugin_id,
                 review.wasm_path.display()
             );
-            if let Err(err) = self.open_wasm_app_pane(
-                &review.app_id,
+            if let Err(err) = self.open_wasm_view_pane(
+                &review.plugin_id,
                 &review.wasm_path,
                 review.workspace_root,
                 review.launch_args,
             ) {
                 log::warn!(
-                    "raw_wasm_review: approved launch failed for app_id={} path={}: {err}",
-                    review.app_id,
+                    "raw_wasm_review: approved launch failed for plugin_id={} path={}: {err}",
+                    review.plugin_id,
                     review.wasm_path.display()
                 );
             }
         } else if response.dismissed || response.selected == Some("deny") {
             if let Some(review) = self.pending_raw_wasm_launches.pop_front() {
                 log::info!(
-                    "raw_wasm_review: denied app_id={} path={}",
-                    review.app_id,
+                    "raw_wasm_review: denied plugin_id={} path={}",
+                    review.plugin_id,
                     review.wasm_path.display()
                 );
             }
@@ -425,20 +504,7 @@ impl PlexiApp {
     pub(crate) fn raw_wasm_review_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
-    }
-
-    fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
-        crate::ui::toast::ToastShell::bottom(id).show(ctx, &self.colors, |ui| {
-            ui.horizontal(|ui| {
-                crate::ui::toast::toast_caption(
-                    ui,
-                    format!("{label} {} of 3 -- press again to delete context", count),
-                    &self.colors,
-                );
-                crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
-            });
-        });
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 }

@@ -1,6 +1,6 @@
 //! DAW release gate, host side (stint 0519): the same tiers the notes editor
 //! gate runs (`src/editor/gate.rs`, `src/testing/harness_tests.rs`), cloned
-//! onto the DAW so the whole app is agent-validatable under one command,
+//! onto the DAW so the whole plugin is agent-validatable under one command,
 //! `cargo test --bin plexi`.
 //!
 //! The DAW's pure model lives in a sibling crate (`plexi-daw-model`), unlike
@@ -32,8 +32,8 @@ use plexi_daw_model::{
     TICKS_PER_BEAT,
 };
 
-use crate::host::wasm_app::{
-    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
+use crate::host::wasm_view::{
+    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView,
 };
 
 // ─── Tier 1: pure-model fuzz, wired under `cargo test --bin plexi` ────────────
@@ -182,7 +182,7 @@ fn named_key(k: &str) -> InputEvent {
 #[test]
 fn daw_gate_pane_drive() -> wasmtime::Result<()> {
     let mut app =
-        WasmApp::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
+        WasmView::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
     app.init(&StateSnapshot { entries: vec![] }, (1280.0, 800.0), &[])?;
 
     // The seeded demo project renders both tracks, transport, and readout.
@@ -304,7 +304,10 @@ fn daw_gate_mixdown_determinism() {
         pcm_hash(&b),
         "independent mixdowns of one fixture must hash identically"
     );
-    assert_eq!(a, b, "PCM samples must be byte-identical, not just hash-equal");
+    assert_eq!(
+        a, b,
+        "PCM samples must be byte-identical, not just hash-equal"
+    );
 }
 
 /// Block-size independence: rendering the whole span at once equals rendering
@@ -350,7 +353,10 @@ fn daw_gate_wav_export_is_byte_identical() {
     let mix = engine.mixdown(0, end).expect("mixdown");
     let a = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode a");
     let b = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode b");
-    assert_eq!(a, b, "WAV export must be byte-identical for identical samples");
+    assert_eq!(
+        a, b,
+        "WAV export must be byte-identical for identical samples"
+    );
     assert_eq!(
         pcm_hash_bytes(&a),
         pcm_hash_bytes(&b),

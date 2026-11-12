@@ -32,7 +32,7 @@ else
   suffix="-$channel"
 fi
 
-BINARY="/usr/local/bin/plexi${suffix}"
+BINARY="$(bash "$REPO_ROOT/scripts/distribution-tool.sh" locate --channel "$channel")" || exit 1
 LOG_FILE="${HOME}/.plexi${suffix}/plexi.log"
 EFFECTS_FILE="${HOME}/.plexi${suffix}/effects.jsonl"
 FAIL=0

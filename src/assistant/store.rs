@@ -330,9 +330,10 @@ impl AssistantStore {
             {
                 continue;
             }
+            let title = history.name.unwrap_or(title);
             items.push(ConversationSummary {
                 id: id.to_string(),
-                title: history.name.unwrap_or(title),
+                title,
                 turn_count: turns.len(),
                 active: active.as_deref() == Some(id),
                 updated_at: history.updated_at,

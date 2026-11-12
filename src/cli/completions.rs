@@ -1,12 +1,12 @@
-/// Output completion candidates for `plexi app open <prefix>`.
+/// Output completion candidates for `plexi view open <prefix>`.
 ///
 /// Called by the hidden `_complete-open` subcommand. Outputs one candidate
 /// per line, ready for shell consumption.
 ///
 /// - `"cli:"` -> embedded + cached CLI names, prefixed with `cli:`
 /// - `"mcp:"` -> embedded + user MCP names, prefixed with `mcp:`
-/// - `"app:"` -> installed app IDs, prefixed with `app:`
-/// - `""` or anything else -> all three categories plus bare app IDs
+/// - `"plugin:"` -> installed plugin IDs, prefixed with `plugin:`
+/// - `""` or anything else -> all three categories plus bare plugin IDs
 pub fn complete_open_cli(prefix: &str) -> i32 {
     match prefix {
         "cli:" | "cli" => {
@@ -26,14 +26,14 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
                 println!("mcp:{name}");
             }
         }
-        "app:" | "app" => {
-            for name in crate::app::registry::installed_app_ids() {
-                println!("app:{name}");
+        "view:" | "view" => {
+            for name in crate::app::registry::installed_plugin_ids() {
+                println!("view:{name}");
             }
         }
         _ => {
-            // All categories: bare app IDs + prefixed variants
-            for name in crate::app::registry::installed_app_ids() {
+            // All categories: bare plugin IDs + prefixed variants
+            for name in crate::app::registry::installed_plugin_ids() {
                 println!("{name}");
             }
             // CLI names
@@ -59,54 +59,39 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
 
 /// Output completion candidates for `plexi run <TAB>`.
 ///
-/// Called by the hidden `_complete-run` subcommand. Emits one name per line.
-/// Sources (in order):
-///  1. Commands from the workspace's channel-scoped `commands.toml` when the current
-///     directory contains one.
-///  2. Global scripts from `config_dir()/scripts/` as a fallback.
+/// Called by the hidden `_complete-run` subcommand. Emits one name per line,
+/// merging global (`config_dir()/commands.toml` + `config_dir()/scripts/`) and
+/// workspace (`.plexi[-channel]/commands.toml`) commands with workspace winning
+/// on name collisions.
 pub fn complete_run_cli() -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(_) => return 1,
     };
-    let commands_file = super::commands_file();
-    let config_path = cwd.join(&commands_file);
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = toml::from_str::<super::PlexiCommands>(&contents) {
-            let mut names: Vec<&String> = config.commands.keys().collect();
-            names.sort();
-            for name in names {
-                let entry = &config.commands[name];
-                if let Some(desc) = entry.description() {
-                    println!("{name}:{desc}");
-                } else {
-                    println!("{name}");
-                }
-            }
-            return 0;
+    let ws_root = super::resolve_commands_workspace_root(&cwd);
+    for cmd in super::resolve_user_commands(ws_root.as_deref()) {
+        if let Some(desc) = cmd.description.as_deref() {
+            println!("{}:{desc}", cmd.name);
+        } else {
+            println!("{}", cmd.name);
         }
-    }
-    // Fallback: global scripts
-    let scripts_dir = crate::config::config_dir().join("scripts");
-    for name in super::list_global_scripts(&scripts_dir) {
-        println!("{name}");
     }
     0
 }
 
-pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
-    use clap::CommandFactory;
+pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, String> {
     use clap_complete::{generate, Shell};
     let Ok(shell_variant) = shell.parse::<Shell>() else {
-        eprintln!("error: unsupported shell {shell:?} — supported: bash, zsh, fish");
-        return 1;
+        return Err(format!(
+            "unsupported shell {shell:?} — supported: bash, zsh, fish"
+        ));
     };
     log::info!(
         "completions: generating {:?} completions for binary {:?}",
         shell,
         binary_name
     );
-    let mut cmd = crate::cli::args::Cli::command();
+    let mut cmd = crate::cli::help::gated_command();
     if shell_variant == Shell::Zsh {
         // Generate to a buffer so we can post-process the zsh script.
         let mut buf = Vec::new();
@@ -115,16 +100,31 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         let script = fix_zsh_workspace_path_conflict(&script);
         let script = inject_zsh_open_completions(&script, binary_name);
         let script = inject_zsh_run_completions(&script, binary_name);
-        print!("{script}");
+        Ok(script.into_bytes())
     } else {
-        generate(shell_variant, &mut cmd, binary_name, &mut std::io::stdout());
+        let mut buf = Vec::new();
+        generate(shell_variant, &mut cmd, binary_name, &mut buf);
+        Ok(buf)
     }
-    0
 }
 
-/// Inject a dynamic completion function for `plexi app open <TAB>` into the
+pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
+    match render_completions(shell, binary_name) {
+        Ok(bytes) => {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&bytes);
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// Inject a dynamic completion function for `plexi view open <TAB>` into the
 /// zsh completion script. Replaces the static `type_id` spec with a call to
-/// the hidden `_complete-open` subcommand, which enumerates app IDs, CLI
+/// the hidden `_complete-open` subcommand, which enumerates plugin IDs, CLI
 /// registry names, MCP registry names, and cached descriptors at runtime.
 fn inject_zsh_open_completions(script: &str, binary_name: &str) -> String {
     // The generated script has a line like:
@@ -136,7 +136,7 @@ fn inject_zsh_open_completions(script: &str, binary_name: &str) -> String {
         if line.contains("::type_id") && line.contains("App id to open") {
             // Replace static spec with dynamic completion
             result.push_str(&format!(
-                "':type_id -- App, CLI, or MCP name (app:, cli:, mcp: prefix):__{binary_name}_open_completions' \\",
+                "':type_id -- App, CLI, or MCP name (plugin:, cli:, mcp: prefix):__{binary_name}_open_completions' \\",
             ));
             result.push('\n');
             if !injected_helper {

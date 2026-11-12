@@ -5,7 +5,7 @@ effect type emitted back to the host, state management, frame timing, and
 all Core 9 apps booting correctly.
 
 These tests serve as the safety net during the runtime refactor
-(ProtocolTransport extraction + V3AppRuntime rewrite).
+(ProtocolTransport extraction + PluginRuntime rewrite).
 """
 
 import json
@@ -41,11 +41,11 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/4"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
-        "app_id": "regression-test",
+        "plugin_id": "regression-test",
         "workspace_root": "/tmp",
         "capabilities": capabilities or [],
         "feature_flags": [],
@@ -390,7 +390,7 @@ class TestEffects:
             assert subscriptions == [{
                 "type": "subscribe_event_streams",
                 "request_id": "subscribe-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event_names": ["count.changed"],
                 "payload_mode": "full",
                 "trigger_mode": "conversation",
@@ -478,9 +478,9 @@ class TestEventDispatch:
         try:
             _init_app(proc)
             _send_event(proc, {
-                "type": "app_event",
+                "type": "plugin_event",
                 "subscription_id": "sub-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event": "count.changed",
                 "event_id": 7,
                 "resource_id": "counter-1",
@@ -491,7 +491,7 @@ class TestEventDispatch:
             })
             events = _render(proc)
             trees = _find_events(events, "component_tree")
-            assert any("events=AppEvent" in json.dumps(tree) for tree in trees)
+            assert any("events=PluginEvent" in json.dumps(tree) for tree in trees)
         finally:
             proc.kill()
 
@@ -834,6 +834,49 @@ class TestState:
         finally:
             proc.kill()
 
+    def test_component_setters_merge_seeded_state_within_one_update(self, tmp_path):
+        """Several setters preserve existing component values in one update."""
+        app = tmp_path / "component_state_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk import component
+            from plexi_sdk.events import UiAction
+            from plexi_sdk.ui import Text
+
+            LEFT = component("left")
+            RIGHT = component("right")
+
+            def init(size, args):
+                return []
+
+            def update(event):
+                if isinstance(event, UiAction) and event.handler_id == "reset-all":
+                    return [
+                        LEFT.set("count", 6),
+                        RIGHT.set("count", 6),
+                    ]
+                return []
+
+            def view():
+                return Text(
+                    f"left={LEFT.get('count', 0)} "
+                    f"right={RIGHT.get('count', 0)}"
+                )
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc, state={
+                "__plexi_component_state__": {
+                    "left": {"count": 5},
+                    "right": {"count": 5},
+                },
+            })
+            _render(proc, frame_id=1)
+            _send_event(proc, {"type": "ui_action", "handler_id": "reset-all"})
+            events = _render(proc, frame_id=2)
+            assert "left=6 right=6" in json.dumps(events)
+        finally:
+            proc.kill()
+
 
 class TestWireFormat:
     def _text_app(self, tmp_path: Path) -> Path:
@@ -932,9 +975,9 @@ class TestFrameTiming:
 
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
-        from plexi_sdk.testing import AppHarness
+        from plexi_sdk.testing import PluginHarness
         balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
-        with AppHarness(balls_path, timeout=3.0) as h:
+        with PluginHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
             cmds2 = h.run(1)
@@ -1025,11 +1068,11 @@ class TestTimers:
 ])
 def test_core_app_boots_and_renders(relative_path: str) -> None:
     """Every Core app must satisfy Init -> Ready -> Render -> FrameDone."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert cmds, f"{relative_path} should emit draw/control commands"
     trees = [c for c in cmds if c.get("type") == "component_tree"]
@@ -1046,11 +1089,11 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 ])
 def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str) -> None:
     """Apps that need timers/schedulers must emit them during boot."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert any(c.get("type") == expected_effect for c in cmds), (
         f"{relative_path} should emit {expected_effect}"
@@ -1063,11 +1106,11 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds_before = h.run(1)
         h.key(key)
         cmds_after = h.run(1)
@@ -1077,3 +1120,89 @@ def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     assert tree_before != tree_after, (
         f"{relative_path} component tree should change after key '{key}'"
     )
+
+
+def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
+    app = tmp_path / "pipe_sender.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return [
+                PipeOpenDirected("duplex.demo", 7),
+                PipeSend("duplex.demo", {"hello": "world"}),
+            ]
+
+        def update(event):
+            return []
+
+        def view():
+            return Text("sender")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        events = _init_and_render(proc)
+        opens = _find_events(events, "pipe_open_directed")
+        sends = _find_events(events, "pipe_send")
+        assert opens == [{
+            "type": "pipe_open_directed",
+            "pipe_id": "duplex.demo",
+            "target_pane_id": 7,
+        }]
+        assert sends == [{
+            "type": "pipe_send",
+            "pipe_id": "duplex.demo",
+            "payload": {"hello": "world"},
+        }]
+    finally:
+        proc.kill()
+
+
+def test_pipe_message_event_dispatched_and_replies(tmp_path):
+    app = tmp_path / "pipe_receiver.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk import state
+        from plexi_sdk.effects import PipeSend, SetState
+        from plexi_sdk.events import PipeMessage
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return []
+
+        def update(event):
+            if isinstance(event, PipeMessage):
+                return [
+                    SetState({
+                        "pipe_id": event.pipe_id,
+                        "count": event.data["count"],
+                        "handle": event.handle,
+                    }),
+                    PipeSend(event.pipe_id, {"ack": event.data["count"]}),
+                ]
+            return []
+
+        def view():
+            return Text(
+                f"{state.get('pipe_id', '')}:{state.get('count', 0)}:{state.get('handle', 0)}"
+            )
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc, frame_id=1)
+        _send_event(proc, {
+            "type": "pipe_message",
+            "pipe_id": "duplex.demo",
+            "payload": {"count": 3},
+        })
+        events = _render(proc, frame_id=2)
+        sends = _find_events(events, "pipe_send")
+        assert sends == [{
+            "type": "pipe_send",
+            "pipe_id": "duplex.demo",
+            "payload": {"ack": 3},
+        }]
+        assert "duplex.demo:3:1" in json.dumps(events)
+    finally:
+        proc.kill()
+

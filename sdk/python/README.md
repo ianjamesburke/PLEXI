@@ -28,7 +28,7 @@ def init(size, args):
 
 
 def update(event):
-    if isinstance(event, KeyEvent) and event.key == "plus" and event.pressed:
+    if isinstance(event, KeyEvent) and event.key == "+" and event.pressed:
         return [SetState({"count": state.get("count", 0) + 1})]
     return []
 
@@ -51,11 +51,12 @@ Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonica
 
 | Physical key | `event.key` |
 |---|---|
-| Enter / Return | `"return"` |
+| Enter / Return | `"enter"` |
 | Escape | `"escape"` |
 | Backspace | `"backspace"` |
 | Space | `"space"` |
 | Arrow keys | `"up"` / `"down"` / `"left"` / `"right"` |
+| Operators / Punctuation | `"+"` / `"-"` / `"*"` / `"/"` / `"="` |
 
 ## New App
 

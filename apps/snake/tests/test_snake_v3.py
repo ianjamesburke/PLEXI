@@ -33,15 +33,22 @@ def test_timer_advances_snake() -> None:
 
 
 def test_key_changes_direction_and_view_has_canvas() -> None:
+    from plexi_sdk import theme
+
     _with_state(snake._initial())
 
     changed = _state_effect(snake.update(KeyEvent("down")))
     _with_state(changed)
 
     assert changed["next_direction"] == [0, 1]
+    view_node = snake.view().to_node()
+    assert view_node.get("padding") is None
     canvas = snake.view().children[1].to_node()
     assert canvas["type"] == "canvas"
-    assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
+    assert any(cmd["type"] == "rect" and cmd["fill"] == theme.bg_darkest for cmd in canvas["commands"])
+    assert any(cmd["type"] == "rect" and cmd["fill"] == theme.danger for cmd in canvas["commands"])
+    assert any(cmd["type"] == "rect" and cmd["fill"] == theme.accent for cmd in canvas["commands"])
+    assert any(cmd["type"] == "rect" and cmd["fill"] == theme.success for cmd in canvas["commands"])
 
 
 def test_next_food_is_random_and_lands_on_free_cell() -> None:

@@ -2,7 +2,139 @@ use super::super::*;
 use crate::host::context::Window;
 
 #[test]
+fn failed_workspace_save_remains_dirty_for_retry() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    let path = crate::workspace::workspace_path_in(h.profile_dir());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"invalid workspace").unwrap();
+    h.app.workspace_dirty = true;
+    h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.hidden_frame();
+    assert!(h.app.workspace_dirty, "a failed save must remain pending");
+    assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+    assert!(h.app.workspace_save_retry_at.is_some());
+
+    std::fs::remove_file(&path).unwrap();
+    h.app.last_notify_poll = std::time::Instant::now();
+    h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.workspace_save_retry_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    h.hidden_frame();
+    assert!(
+        !h.app.workspace_dirty,
+        "a successful retry clears the dirty flag"
+    );
+    assert!(h.app.workspace_save_retry_at.is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+}
+
+#[test]
+fn deleting_context_preserves_workspace_save_and_restore() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.set_context_columns(root, vec![vec![pane]]);
+    let child = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    let window = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    let root_path = h.app.router.active().root.clone();
+    h.app.router.push(crate::host::context::Context {
+        name: "Disposable".to_string().into(),
+        root: root_path.clone(),
+        description: None,
+        context_id: child,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(Window {
+        name: String::new(),
+        path: root_path,
+        tree: egui_tiles::Tree::empty("disposable"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: window,
+        context_id: child,
+    });
+    h.app.context_active_window.insert(child, window);
+    let index = h
+        .app
+        .router
+        .position(|context| context.context_id == child)
+        .unwrap();
+    h.app.delete_context(index);
+    h.app.save_workspace_now();
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace must remain saveable after deleting a context");
+    assert!(!saved.context_active_window.contains_key(&child));
+    assert!(saved.windows.iter().any(|window| {
+        window.context_id == root && window.panes.iter().any(|saved_pane| saved_pane.id == pane)
+    }));
+}
+
+#[test]
 fn workspace_config_applies_when_switching_contexts() {
+    let profile = tempfile::tempdir().expect("isolated config profile");
+    let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+    assert_workspace_config_applies_when_switching_contexts();
+}
+
+/// Regression for the process-shared fallback profile: a concurrent test can
+/// make that fallback malformed while this test reloads workspace config. The
+/// target profile guard must make both root-A and root-B workspace accents
+/// independent of that concurrent fallback activity.
+#[test]
+fn workspace_config_context_switch_isolated_from_parallel_fallback_activity() {
+    let fallback_base = tempfile::tempdir().expect("controlled fallback base");
+    let target_profile = tempfile::tempdir().expect("target config profile");
+    let writer_fallback_base = fallback_base.path().to_path_buf();
+    let target_fallback_base = writer_fallback_base.clone();
+    let target_profile_path = target_profile.path().to_path_buf();
+    let (start_write_tx, start_write_rx) = std::sync::mpsc::sync_channel(0);
+    let (fallback_written_tx, fallback_written_rx) = std::sync::mpsc::sync_channel(0);
+    let (target_done_tx, target_done_rx) = std::sync::mpsc::sync_channel(0);
+
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let _fallback_guard =
+                crate::config::set_test_profile_fallback_base(writer_fallback_base);
+            start_write_rx
+                .recv()
+                .expect("target starts concurrent write");
+            let fallback_path = crate::config::config_path();
+            std::fs::write(&fallback_path, "font_size = not_a_number\n")
+                .expect("write malformed fallback config");
+            fallback_written_tx
+                .send(())
+                .expect("tell target fallback write completed");
+            let _ = target_done_rx.recv();
+        });
+
+        scope.spawn(move || {
+            let _fallback_guard =
+                crate::config::set_test_profile_fallback_base(target_fallback_base);
+            let _profile_guard = crate::config::set_test_profile_dir(target_profile_path);
+            start_write_tx
+                .send(())
+                .expect("ask concurrent test to write fallback config");
+            fallback_written_rx
+                .recv()
+                .expect("wait for concurrent fallback activity");
+            assert_workspace_config_applies_when_switching_contexts();
+            target_done_tx.send(()).expect("release fallback writer");
+        });
+    });
+}
+
+fn assert_workspace_config_applies_when_switching_contexts() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -55,7 +187,7 @@ fn workspace_config_applies_when_switching_contexts() {
 }
 
 #[test]
-fn switching_contexts_refreshes_workspace_app_registry() {
+fn switching_contexts_refreshes_workspace_plugin_registry() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -64,7 +196,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     let root_b = tempfile::tempdir().expect("root b");
     std::fs::create_dir_all(root_a.path().join(crate::config::workspace_channel_dir()))
         .expect("create root a workspace dir");
-    write_registry_app(root_b.path(), "local-tool", "Local Tool");
+    write_registry_plugin(root_b.path(), "local-tool", "Local Tool");
 
     app.router.get_mut(0).root = root_a.path().to_path_buf();
     app.windows[0].path = root_a.path().to_path_buf();
@@ -75,7 +207,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
             .view_for_context(ctx_a_id, &app.router)
             .get("local-tool")
             .is_none(),
-        "root B app must not leak into root A registry"
+        "root B plugin must not leak into root A registry"
     );
 
     let ctx_b_id = 2;
@@ -92,7 +224,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
     app.windows.push(Window {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
-        tree: egui_tiles::Tree::empty("workspace_app_registry_b"),
+        tree: egui_tiles::Tree::empty("workspace_plugin_registry_b"),
         panes: HashMap::new(),
         focused_pane: None,
         zoomed_pane: None,
@@ -113,7 +245,7 @@ fn switching_contexts_refreshes_workspace_app_registry() {
             .view_for_context(ctx_b_id, &app.router)
             .get("local-tool")
             .is_some(),
-        "switching into a workspace should refresh palette-visible local apps immediately"
+        "switching into a workspace should refresh palette-visible local plugins immediately"
     );
 }
 
@@ -127,20 +259,20 @@ fn write_workspace_config(root: &std::path::Path, accent: &str) {
     .expect("write workspace config");
 }
 
-fn write_registry_app(root: &std::path::Path, id: &str, name: &str) {
-    let app_dir = root
+fn write_registry_plugin(root: &std::path::Path, id: &str, name: &str) {
+    let plugin_dir = root
         .join(crate::config::workspace_channel_dir())
-        .join("apps")
+        .join("plugins")
         .join(id);
-    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
     std::fs::write(
-        app_dir.join("manifest.toml"),
+        plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n"
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         ),
     )
     .expect("write manifest");
-    std::fs::write(app_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("write entry");
+    std::fs::write(plugin_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("write entry");
 }
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
@@ -313,7 +445,7 @@ fn new_child_context_anchor_pane_overrides_focused() {
 }
 
 /// End-to-end over the real IPC path: the exact JSON `plexi context new --parent`
-/// sends (including `anchor_pane`) deserializes into `AppRequest::CreateContext`
+/// sends (including `anchor_pane`) deserializes into `HostRequest::CreateContext`
 /// and the handler anchors the portal at that pane, not the focused one.
 #[test]
 fn create_context_ipc_anchor_pane_places_portal() {
@@ -333,7 +465,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
         "anchor_pane": pane_b,
         "portal_direction": "down",
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -683,6 +815,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -771,7 +904,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         let mut tiles_a = egui_tiles::Tiles::default();
         let r_a = tiles_a.insert_pane(a_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(a_pane_id, test_app_pane(a_pane_id));
+        panes.insert(a_pane_id, test_view_pane(a_pane_id));
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
@@ -789,7 +922,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         let mut tiles_b = egui_tiles::Tiles::default();
         let r_b = tiles_b.insert_pane(b_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(b_pane_id, test_app_pane(b_pane_id));
+        panes.insert(b_pane_id, test_view_pane(b_pane_id));
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
@@ -812,6 +945,9 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     // Delete A (find it by id).
     let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
     app.delete_context(a_idx_now);
+
+    assert!(!app.context_active_window.contains_key(&a_id));
+    assert!(!app.context_active_window.contains_key(&b_id));
 
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&a_token),
@@ -877,7 +1013,7 @@ fn delete_window_revokes_removed_pane_credentials() {
     let mut tiles = egui_tiles::Tiles::default();
     let root = tiles.insert_pane(removed_pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(removed_pane_id, test_app_pane(removed_pane_id));
+    panes.insert(removed_pane_id, test_view_pane(removed_pane_id));
     app.windows.push(Window {
         name: "removed".to_string(),
         path: std::path::PathBuf::from("/tmp/removed"),
@@ -1028,16 +1164,16 @@ fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
 
 /// Issue #1801: context transition must rescan the registry and restart the watcher.
 ///
-/// Creates two temp roots each with a distinct workspace-local app, switches the
+/// Creates two temp roots each with a distinct workspace-local plugin, switches the
 /// active context between them, and asserts that the registry always reflects the
-/// current root — no stale apps from the previous root survive the switch.
+/// current root — no stale plugins from the previous root survive the switch.
 #[test]
 fn context_transition_rescans_registry() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-    // Two isolated temp roots with different workspace-local apps.
+    // Two isolated temp roots with different workspace-local plugins.
     let dir_a = std::env::temp_dir().join("plexi_test_1801_ctx_a");
     let dir_b = std::env::temp_dir().join("plexi_test_1801_ctx_b");
     // Clean up from any prior failed run before creating fixtures.
@@ -1045,41 +1181,37 @@ fn context_transition_rescans_registry() {
     let _ = std::fs::remove_dir_all(&dir_b);
 
     let manifest_a = concat!(
-        "schema_version = 1\n",
-        "[app]\n",
-        "id = \"test-1801-app-a\"\n",
-        "name = \"Test App A\"\n",
-        "entry = \"app.py\"\n",
-        "type = \"app\"\n",
+        "schema_version = 2\n[plugin]\n",
+        "id = \"test-1801-plugin-a\"\nname = \"Test Plugin A\"\n",
+        "[runtime]\nkind = \"python\"\nentry = \"app.py\"\n",
+        "[[contributes.views]]\nid = \"test-1801-plugin-a.main\"\ndefault = true\n",
     );
     let manifest_b = concat!(
-        "schema_version = 1\n",
-        "[app]\n",
-        "id = \"test-1801-app-b\"\n",
-        "name = \"Test App B\"\n",
-        "entry = \"app.py\"\n",
-        "type = \"app\"\n",
+        "schema_version = 2\n[plugin]\n",
+        "id = \"test-1801-plugin-b\"\nname = \"Test Plugin B\"\n",
+        "[runtime]\nkind = \"python\"\nentry = \"app.py\"\n",
+        "[[contributes.views]]\nid = \"test-1801-plugin-b.main\"\ndefault = true\n",
     );
 
-    let apps_a = crate::app::registry::workspace_apps_dir(&dir_a);
-    std::fs::create_dir_all(apps_a.join("test-1801-app-a")).unwrap();
+    let apps_a = crate::app::registry::workspace_plugins_dir(&dir_a);
+    std::fs::create_dir_all(apps_a.join("test-1801-plugin-a")).unwrap();
     std::fs::write(
-        apps_a.join("test-1801-app-a").join("manifest.toml"),
+        apps_a.join("test-1801-plugin-a").join("manifest.toml"),
         manifest_a,
     )
     .unwrap();
-    std::fs::write(apps_a.join("test-1801-app-a").join("app.py"), b"").unwrap();
+    std::fs::write(apps_a.join("test-1801-plugin-a").join("app.py"), b"").unwrap();
 
-    let apps_b = crate::app::registry::workspace_apps_dir(&dir_b);
-    std::fs::create_dir_all(apps_b.join("test-1801-app-b")).unwrap();
+    let apps_b = crate::app::registry::workspace_plugins_dir(&dir_b);
+    std::fs::create_dir_all(apps_b.join("test-1801-plugin-b")).unwrap();
     std::fs::write(
-        apps_b.join("test-1801-app-b").join("manifest.toml"),
+        apps_b.join("test-1801-plugin-b").join("manifest.toml"),
         manifest_b,
     )
     .unwrap();
-    std::fs::write(apps_b.join("test-1801-app-b").join("app.py"), b"").unwrap();
+    std::fs::write(apps_b.join("test-1801-plugin-b").join("app.py"), b"").unwrap();
 
-    // Switch context 0 to root A and verify registry picks up app-a.
+    // Switch context 0 to root A and verify registry picks up plugin-a.
     let idx0 = app.router.active_idx();
     app.router.get_mut(idx0).root = dir_a.clone();
     app.apply_context_transition_effects();
@@ -1096,12 +1228,12 @@ fn context_transition_rescans_registry() {
         .map(|a| a.manifest.id.clone())
         .collect();
     assert!(
-        ids.contains(&"test-1801-app-a".to_string()),
-        "registry should contain test-1801-app-a after setting root A, got: {ids:?}"
+        ids.contains(&"test-1801-plugin-a".to_string()),
+        "registry should contain test-1801-plugin-a after setting root A, got: {ids:?}"
     );
     assert!(
-        !ids.contains(&"test-1801-app-b".to_string()),
-        "registry should not contain test-1801-app-b while on root A, got: {ids:?}"
+        !ids.contains(&"test-1801-plugin-b".to_string()),
+        "registry should not contain test-1801-plugin-b while on root A, got: {ids:?}"
     );
 
     // Add a second context pointing at root B and switch to it.
@@ -1141,12 +1273,12 @@ fn context_transition_rescans_registry() {
         .map(|a| a.manifest.id.clone())
         .collect();
     assert!(
-        ids.contains(&"test-1801-app-b".to_string()),
-        "registry should contain test-1801-app-b after switching to root B, got: {ids:?}"
+        ids.contains(&"test-1801-plugin-b".to_string()),
+        "registry should contain test-1801-plugin-b after switching to root B, got: {ids:?}"
     );
     assert!(
-        !ids.contains(&"test-1801-app-a".to_string()),
-        "registry should not contain test-1801-app-a while on root B, got: {ids:?}"
+        !ids.contains(&"test-1801-plugin-a".to_string()),
+        "registry should not contain test-1801-plugin-a while on root B, got: {ids:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir_a);
@@ -1214,7 +1346,7 @@ fn new_context_creates_top_level_empty_context() {
     // New contexts are immediately usable; the rename overlay is strictly
     // user-initiated now.
     assert_eq!(
-        app.renaming_window, None,
+        app.context_rename, None,
         "new context must not open a rename overlay"
     );
     assert!(matches!(
@@ -1259,8 +1391,8 @@ fn unresolved_auto_name_uses_first_focused_pane_cwd_then_freezes() {
         .expect("active context window");
     let tile_id = window.tree.tiles.insert_pane(pane_id);
     window.focused_pane = Some(tile_id);
-    let mut pane = test_app_pane(pane_id);
-    pane.as_app_mut().expect("app pane").workspace_root =
+    let mut pane = test_view_pane(pane_id);
+    pane.as_view_mut().expect("view pane").workspace_root =
         std::path::PathBuf::from("/projects/first-project");
     window.panes.insert(pane_id, pane);
 
@@ -1271,8 +1403,8 @@ fn unresolved_auto_name_uses_first_focused_pane_cwd_then_freezes() {
         .iter_mut()
         .find(|window| window.context_id == context_id)
         .and_then(|window| window.panes.get_mut(&pane_id))
-        .and_then(|pane| pane.as_app_mut())
-        .expect("focused app pane")
+        .and_then(|pane| pane.as_view_mut())
+        .expect("focused view pane")
         .workspace_root = std::path::PathBuf::from("/projects/later-project");
     app.resolve_auto_context_names();
 
@@ -1426,6 +1558,7 @@ fn delete_context_collapses_empty_portal_window() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -1543,6 +1676,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -1578,14 +1712,14 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     );
 }
 
-fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
-    use crate::app::permissions::AppPermissions;
-    use crate::host::pane::{AppPane, AppRuntime};
-    let permissions = AppPermissions::builtin();
-    crate::host::pane::Pane::App(Box::new(AppPane {
+fn test_view_pane(pane_id: u64) -> crate::host::pane::Pane {
+    use crate::app::permissions::PluginPermissions;
+    use crate::host::pane::{ViewPane, ViewRuntime};
+    let permissions = PluginPermissions::builtin();
+    crate::host::pane::Pane::View(Box::new(ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+        runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
             std::env::temp_dir(),
         ))),
         workspace_root: crate::testing::scratch_context_root("context"),
@@ -1644,14 +1778,15 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     let right_col = parent_tiles.insert_vertical_tile(vec![parent_top_right_tile, portal_tile]);
     let parent_root = parent_tiles.insert_horizontal_tile(vec![parent_left_tile, right_col]);
     let mut parent_panes = HashMap::new();
-    parent_panes.insert(parent_left, test_app_pane(parent_left));
-    parent_panes.insert(parent_top_right, test_app_pane(parent_top_right));
+    parent_panes.insert(parent_left, test_view_pane(parent_left));
+    parent_panes.insert(parent_top_right, test_view_pane(parent_top_right));
     parent_panes.insert(
         portal_pane_id,
         crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
@@ -1673,8 +1808,8 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     let child_right_tile = child_tiles.insert_pane(child_right);
     let child_root = child_tiles.insert_horizontal_tile(vec![child_left_tile, child_right_tile]);
     let mut child_panes = HashMap::new();
-    child_panes.insert(child_left, test_app_pane(child_left));
-    child_panes.insert(child_right, test_app_pane(child_right));
+    child_panes.insert(child_left, test_view_pane(child_left));
+    child_panes.insert(child_right, test_view_pane(child_right));
     app.windows.push(Window {
         name: "child".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_single_child"),
@@ -1830,13 +1965,14 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
     let portal_tile = parent_tiles.insert_pane(portal_pane_id);
     let parent_root = parent_tiles.insert_horizontal_tile(vec![parent_tile, portal_tile]);
     let mut parent_panes = HashMap::new();
-    parent_panes.insert(parent_pane, test_app_pane(parent_pane));
+    parent_panes.insert(parent_pane, test_view_pane(parent_pane));
     parent_panes.insert(
         portal_pane_id,
         crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
@@ -1857,7 +1993,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
     let mut tiles_a = egui_tiles::Tiles::default();
     let tile_a = tiles_a.insert_pane(secondary_a_pane);
     let mut panes_a = HashMap::new();
-    panes_a.insert(secondary_a_pane, test_app_pane(secondary_a_pane));
+    panes_a.insert(secondary_a_pane, test_view_pane(secondary_a_pane));
     app.windows.push(Window {
         name: "secondary-a".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_a"),
@@ -1877,8 +2013,8 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
     let primary_root =
         tiles_primary.insert_horizontal_tile(vec![primary_left_tile, primary_right_tile]);
     let mut panes_primary = HashMap::new();
-    panes_primary.insert(primary_left, test_app_pane(primary_left));
-    panes_primary.insert(primary_right, test_app_pane(primary_right));
+    panes_primary.insert(primary_left, test_view_pane(primary_left));
+    panes_primary.insert(primary_right, test_view_pane(primary_right));
     app.windows.push(Window {
         name: "primary".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_primary"),
@@ -1895,7 +2031,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
     let mut tiles_c = egui_tiles::Tiles::default();
     let tile_c = tiles_c.insert_pane(secondary_c_pane);
     let mut panes_c = HashMap::new();
-    panes_c.insert(secondary_c_pane, test_app_pane(secondary_c_pane));
+    panes_c.insert(secondary_c_pane, test_view_pane(secondary_c_pane));
     app.windows.push(Window {
         name: "secondary-c".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_c"),
@@ -2070,7 +2206,15 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None);
+        app.create_page_at(
+            new_x,
+            active_y,
+            ctx_id,
+            crate::pane_ops::create::TerminalSpawnOptions {
+                initial_cmd: Some(cmd.as_str()),
+                ..Default::default()
+            },
+        );
         new_x += 1;
     }
 
@@ -2118,6 +2262,7 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -2126,17 +2271,16 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
 
     app.open_rename_for_focused();
 
-    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
     assert_eq!(
-        app.renaming_window,
-        Some(child_idx),
+        app.context_rename.as_ref().map(|edit| edit.target_id),
+        Some(child_id),
         "portal Cmd+R must open the context rename targeting the child"
     );
     assert_eq!(
         app.renaming_pane, None,
         "portal Cmd+R must not open the pane rename modal"
     );
-    assert_eq!(app.rename_buffer, "Child");
+    assert_eq!(app.context_rename.as_ref().unwrap().buffer, "Child");
 }
 
 /// Cmd+R on a non-portal pane still opens the pane rename modal.
@@ -2152,7 +2296,7 @@ fn rename_on_focused_pane_opens_pane_rename() {
     app.open_rename_for_focused();
 
     assert_eq!(app.renaming_pane, Some(pane_id));
-    assert_eq!(app.renaming_window, None);
+    assert_eq!(app.context_rename, None);
 }
 
 /// Closing the last pane in a subcontext must delete the subcontext and zoom
@@ -2182,7 +2326,7 @@ fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
     let mut child_tiles = egui_tiles::Tiles::default();
     let child_tile = child_tiles.insert_pane(child_pane);
     let mut child_panes = HashMap::new();
-    child_panes.insert(child_pane, test_app_pane(child_pane));
+    child_panes.insert(child_pane, test_view_pane(child_pane));
     app.windows.push(Window {
         name: "collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/collapse_child"),
@@ -2284,7 +2428,7 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
     let mut child_tiles = egui_tiles::Tiles::default();
     let child_tile = child_tiles.insert_pane(child_pane);
     let mut child_panes = HashMap::new();
-    child_panes.insert(child_pane, test_app_pane(child_pane));
+    child_panes.insert(child_pane, test_view_pane(child_pane));
     app.windows.push(Window {
         name: "bg_collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/bg_collapse_child"),
@@ -2330,7 +2474,7 @@ fn push_pane_ipc_targets_caller_pane_not_focused() {
         "name": "pushed",
         "pane_id": pane_b,
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2371,6 +2515,7 @@ fn push_pane_ipc_targets_caller_pane_not_focused() {
 fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
     let mut h = crate::testing::HostHarness::new();
     let pane_a = h.add_test_pane();
+    let _outside = h.add_test_pane();
     let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
     h.app.windows[0].focused_pane = Some(tile_a);
     let parent_id = h.app.router.active().context_id;
@@ -2379,7 +2524,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
         "type": "push_pane_to_subcontext",
         "pane_id": 999_999u64,
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2402,7 +2547,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
-        let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+        let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
         }))
@@ -2419,6 +2564,15 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     // Push pane_a from root -> child1(d1). Router: [root, child1]. Active: child1.
     push_ipc(&mut h, pane_a);
     let child1_id = h.app.router.active().context_id;
+    // Keep a pane outside the grandchild, as required by the wrap contract.
+    let child1_window = h.app.active_window;
+    let old_root = h.app.windows[child1_window].tree.root.unwrap();
+    let (outside, _) = h.app.add_view_pane_in_window(child1_window, "outside");
+    let root = h.app.windows[child1_window]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![old_root, outside]);
+    h.app.windows[child1_window].tree.root = Some(root);
 
     // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
     // With insert_after_subtree(root), child2 lands after child1: [root, child1, child2].
@@ -2483,7 +2637,7 @@ fn set_context_description_ipc_targets_caller_context() {
         "description": "set from a background pane",
         "context_id": other_id,
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2521,7 +2675,7 @@ fn set_context_root_ipc_targets_caller_context() {
     let mut tiles = egui_tiles::Tiles::default();
     let pane_tile = tiles.insert_pane(pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(pane_id, test_app_pane(pane_id));
+    panes.insert(pane_id, test_view_pane(pane_id));
     h.app.windows.push(Window {
         name: "background".to_string(),
         path: std::path::PathBuf::from("/tmp/background"),
@@ -2551,7 +2705,7 @@ fn set_context_root_ipc_targets_caller_context() {
         "root": tmp.path(),
         "context_id": other_id,
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2581,10 +2735,10 @@ fn set_context_root_ipc_targets_caller_context() {
 }
 
 /// Setting a context root must ensure `<root>/.plexi/.gitignore` covers
-/// `app_states/` so a user can never accidentally commit their app state
-/// (standing ruling: app state is personal, single-user, local data).
+/// `app_states/` so a user can never accidentally commit their plugin state
+/// (standing ruling: plugin state is personal, single-user, local data).
 #[test]
-fn set_context_root_ensures_app_state_gitignore() {
+fn set_context_root_ensures_plugin_state_gitignore() {
     let mut h = crate::testing::HostHarness::new();
     let fresh_root = tempfile::tempdir().expect("fresh context root");
 
@@ -2719,6 +2873,7 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
@@ -2760,7 +2915,7 @@ fn context_sub_creates_exactly_n_panes() {
         "panes": ["echo pane-a", "echo pane-b", "echo pane-c"],
         "anchor_pane": anchor,
     });
-    let req: crate::protocol::AppRequest =
+    let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2807,7 +2962,7 @@ fn context_sub_panes_share_one_tiled_window() {
     let parent_id = h.app.router.active().context_id;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "tiled",
         "root": root.path(),
@@ -2912,7 +3067,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
     let parent_depth = h.app.router.active().depth;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "envcheck",
         "root": root.path(),
@@ -2948,15 +3103,19 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let context_env = crate::pane_ops::create::PaneContextEnv {
+        context_id: 4242,
+        name: "agentsquad".to_string(),
+        description: String::new(),
+        root: Some(std::path::PathBuf::from("/tmp/squad")),
+        depth: 3,
+    };
     let (settings, _pending_credential) = PlexiApp::make_backend_settings(
         7,
         Some(std::path::PathBuf::from("/tmp")),
         &app.colors,
-        4242,
-        "agentsquad",
-        "",
-        Some(&std::path::PathBuf::from("/tmp/squad")),
-        3,
+        &context_env,
+        false,
     );
     assert_eq!(
         settings.env.get("PLEXI_CONTEXT_ID"),
@@ -2981,7 +3140,7 @@ fn context_sub_unknown_parent_creates_nothing() {
     let contexts_before = h.app.router.len();
     let windows_before = h.app.windows.len();
 
-    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "orphan",
         "root": "/tmp",
@@ -3109,7 +3268,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     );
 
     let root = tempfile::tempdir().expect("squad root");
-    let req: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "bgsquad",
         "root": root.path(),
@@ -3133,6 +3292,151 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     assert_eq!(
         depth_win, caller_win_id,
         "return window must be the caller's, not the globally active one"
+    );
+}
+
+/// Stint 0581: when `layout` is omitted in `create_sub_context`, `--agents 3`
+/// (and 5, 6, 7) builds a horizontal `Linear` container (three full-height
+/// columns with no empty quadrant), while `--agents 4` builds a 2×2 `Grid`.
+#[test]
+fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+
+    for count in [3usize, 5, 6, 7] {
+        let name = format!("squad-{count}");
+        let panes = vec![serde_json::Value::Null; count];
+        let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+            "type": "create_sub_context",
+            "name": name,
+            "root": root.path(),
+            "parent_context_id": parent_id,
+            "panes": panes,
+        }))
+        .expect("payload must deserialize");
+        h.inject_ipc(req);
+        h.app.drain_pane_cmd_channel();
+
+        let child_ctx = h
+            .app
+            .router
+            .iter()
+            .find(|c| c.name == name.as_str())
+            .expect("sub-context must exist")
+            .context_id;
+        let win = h
+            .app
+            .windows
+            .iter()
+            .find(|w| w.context_id == child_ctx)
+            .expect("child window");
+        let root_tile = win.tree.root.expect("child tree must have a root");
+        match win.tree.tiles.get(root_tile) {
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) => {
+                assert_eq!(
+                    linear.dir,
+                    egui_tiles::LinearDir::Horizontal,
+                    "count={count} must default to horizontal columns"
+                );
+                assert_eq!(linear.children.len(), count);
+            }
+            other => panic!("count={count} must default to Linear(Horizontal), got {other:?}"),
+        }
+    }
+
+    let req4: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "squad-4",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null, null, null],
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req4);
+    h.app.drain_pane_cmd_channel();
+
+    let child4 = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.name == "squad-4")
+        .expect("4-pane sub-context must exist")
+        .context_id;
+    let win4 = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == child4)
+        .expect("4-pane child window");
+    let root4 = win4.tree.root.expect("4-pane child tree root");
+    assert!(
+        matches!(
+            win4.tree.tiles.get(root4),
+            Some(egui_tiles::Tile::Container(egui_tiles::Container::Grid(_)))
+        ),
+        "4 panes fill a 2×2 grid cleanly and must default to Grid"
+    );
+}
+
+/// Stint 0581: squad panes receive distinct locked default names derived from
+/// the sub-context name and 1-based index (`<name>-1`, `<name>-2`, …).
+#[test]
+fn context_sub_assigns_distinct_default_pane_names() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent_id = h.app.router.active().context_id;
+    let root = tempfile::tempdir().expect("squad root");
+    let resp_path = root.path().join("sub-resp.json");
+
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "create_sub_context",
+        "name": "agentsquad",
+        "root": root.path(),
+        "parent_context_id": parent_id,
+        "panes": [null, null, null],
+        "response_file": resp_path.to_string_lossy(),
+    }))
+    .expect("payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let resp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&resp_path).expect("response file"))
+            .expect("valid json");
+    let child_ctx_id = resp["context_id"].as_u64().expect("context_id");
+    let pane_ids: Vec<u64> = resp["panes"]
+        .as_array()
+        .expect("panes array")
+        .iter()
+        .map(|v| v.as_u64().expect("pane id"))
+        .collect();
+    assert_eq!(pane_ids.len(), 3);
+
+    let win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == child_ctx_id)
+        .expect("child window");
+    let names: Vec<(Option<String>, bool)> = pane_ids
+        .iter()
+        .map(|id| {
+            let term = win
+                .panes
+                .get(id)
+                .and_then(|p| p.as_terminal())
+                .expect("terminal pane");
+            (term.name.clone(), term.name_locked)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (Some("agentsquad-1".to_string()), true),
+            (Some("agentsquad-2".to_string()), true),
+            (Some("agentsquad-3".to_string()), true),
+        ],
+        "squad panes must be named <name>-1, <name>-2, <name>-3 with name_locked=true"
     );
 }
 
@@ -3224,7 +3528,7 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
         let mut tiles = egui_tiles::Tiles::default();
         let root_tile = tiles.insert_pane(pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(pane_id, test_app_pane(pane_id));
+        panes.insert(pane_id, test_view_pane(pane_id));
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
@@ -3267,60 +3571,49 @@ fn counter_wasm_fixture() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/counter.wasm")
 }
 
-/// Install a WASM-manifest app (a copy of the `counter.wasm` POC fixture,
+/// Install a WASM-manifest plugin (a copy of the `counter.wasm` POC fixture,
 /// which needs no external process and is already exercised elsewhere in the
-/// suite) under `root`'s workspace-local apps dir.
-fn write_registry_wasm_app(root: &std::path::Path, id: &str) {
-    let app_dir = root
+/// suite) under `root`'s workspace-local plugins dir.
+fn write_registry_wasm_view(root: &std::path::Path, id: &str) {
+    let plugin_dir = root
         .join(crate::config::workspace_channel_dir())
-        .join("apps")
+        .join("plugins")
         .join(id);
-    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
     std::fs::write(
-        app_dir.join("manifest.toml"),
+        plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"wasm\"\nname = \"{id}\"\n\
-             version = \"0.0.1\"\nentry = \"counter.wasm\"\n\n[app.capabilities]\n\
-             capabilities = []\n"
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[runtime]\nkind = \"wasm\"\nentry = \"counter.wasm\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         ),
     )
     .expect("write manifest");
-    std::fs::copy(counter_wasm_fixture(), app_dir.join("counter.wasm")).expect("copy fixture");
+    std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).expect("copy fixture");
 }
 
-/// The falsifying regression test for the stint 0724 bug: before Phase B,
-/// `PlexiApp` held exactly one `AppRegistry`, refreshed only when the
-/// *active* context transitioned (`apply_context_transition_effects`). A
-/// launch redirected at a DIFFERENT context — via the sanctioned
-/// `active_window`-redirect convention `pane_ops::dispatch` already uses for
-/// an explicit target (never by mutating `router.active()`) — never
-/// triggered that refresh, so it resolved against whichever registry the
-/// last real transition happened to load. An app installed only in another
-/// context's root was invisible there no matter how the launch was routed.
-///
-/// `RegistryViews::view_for_context` fixes this structurally: every launch
-/// resolves its OWN target context's root at the point of use, independent
-/// of transition history.
+/// A launch into an inactive context must resolve its own registry without
+/// changing active state or depending on a context transition.
 #[test]
 fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
-    let app_id = "com.plexi.counter-cross-context-test";
+    let plugin_id = "com.plexi.counter-cross-context-test";
 
-    // Context A (the harness default, active) has no such app installed.
+    // Context A (the harness default, active) has no such plugin installed.
     let ctx_a_id = app.router.active().context_id;
     assert!(
         app.registries
             .view_for_context(ctx_a_id, &app.router)
-            .get(app_id)
+            .get(plugin_id)
             .is_none(),
-        "setup: context A must not have the app installed"
+        "setup: context A must not have the plugin installed"
     );
 
-    // Context B, NOT active, with the app installed only in its own root.
+    // Context B, NOT active, with the plugin installed only in its own root.
     let root_b = tempfile::tempdir().expect("root b");
-    write_registry_wasm_app(root_b.path(), app_id);
+    write_registry_wasm_view(root_b.path(), plugin_id);
     let ctx_b_id = 2;
     let win_b_id = 2;
     app.router.push(crate::host::context::Context {
@@ -3348,26 +3641,34 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
 
     // Context A is still active — no `switch_workspace`/context transition
     // has happened. Launching by id while active_window targets A must fail:
-    // the app genuinely isn't installed there.
+    // the plugin genuinely isn't installed there.
     assert_eq!(app.active_window, 0, "context A must still be active");
-    let result_from_a = app.launch_app_by_id_with_layout(app_id, None, &[], None);
-    let err_from_a =
-        result_from_a.expect_err("the app is not installed in context A's root — launch must fail");
+    let result_from_a = app.launch_view_by_id_with_layout(plugin_id, None, &[], None);
+    let err_from_a = result_from_a
+        .expect_err("the plugin is not installed in context A's root — launch must fail");
     assert!(
         !err_from_a.contains("WASM"),
-        "a not-found app must not be misreported as a runtime problem, got {err_from_a:?}"
+        "a not-found plugin must not be misreported as a runtime problem, got {err_from_a:?}"
     );
     assert!(
         err_from_a.contains("not found") || err_from_a.contains("this context"),
-        "a not-found app's error must say so, got {err_from_a:?}"
+        "a not-found plugin's error must say so, got {err_from_a:?}"
     );
 
-    // Redirect `active_window` to context B's window — the sanctioned
-    // explicit-target convention (mirrors `pane_ops::dispatch`'s spawn_pane
-    // handling of `from_pane_id`), never a real context switch. Context A
-    // remains the router's active context throughout.
-    app.active_window = win_b_idx;
-    let result_from_b = app.launch_app_by_id_with_layout(app_id, None, &[], None);
+    // Resolve ownership explicitly while context A stays active.
+    let result_from_b = app.launch_view_by_id_with_layout_at(
+        crate::pane_ops::create::IdViewLaunchOptions {
+            target_win: win_b_idx,
+            bypass_on_launch: false,
+            follow_file_browser_cwd: false,
+        },
+        plugin_id,
+        None,
+        &[],
+        None,
+    );
+    assert_eq!(app.active_window, 0);
+    assert_eq!(app.router.active().context_id, ctx_a_id);
     assert!(
         result_from_b.is_ok(),
         "launching into context B's window must resolve context B's OWN \
@@ -3376,15 +3677,15 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
     assert_eq!(
         app.windows[win_b_idx].panes.len(),
         1,
-        "the app must have spawned a pane in context B's window"
+        "the plugin must have spawned a pane in context B's window"
     );
     let spawned = app.windows[win_b_idx]
         .panes
         .values()
         .next()
-        .and_then(|p| p.as_app())
-        .expect("spawned pane must be an app pane");
-    assert_eq!(spawned.manifest_id, app_id);
+        .and_then(|p| p.as_view())
+        .expect("spawned pane must be a view pane");
+    assert_eq!(spawned.manifest_id, plugin_id);
 }
 
 /// `PlexiApp::set_context_root` on a context that is NOT the active one used
@@ -3397,7 +3698,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
-    let app_id = "com.plexi.inactive-set-root-test";
+    let plugin_id = "com.plexi.inactive-set-root-test";
 
     // A second, inactive context.
     let ctx_b_id = 2;
@@ -3429,7 +3730,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
     );
 
     let new_root = tempfile::tempdir().expect("new root");
-    write_registry_wasm_app(new_root.path(), app_id);
+    write_registry_wasm_view(new_root.path(), plugin_id);
 
     app.set_context_root(new_root.path().to_path_buf(), Some(ctx_b_id));
 
@@ -3441,7 +3742,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
     assert!(
         app.registries
             .view_for_context(ctx_b_id, &app.router)
-            .get(app_id)
+            .get(plugin_id)
             .is_some(),
         "setting an INACTIVE context's root must rescan its registry view immediately, \
          not leave it stale until the user happens to navigate there"
@@ -3464,7 +3765,7 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     // `PlexiApp::new_for_test`'s isolated workspace has no channel dir of
     // its own either — same reasoning as root_b below applies symmetrically,
     // so create it here too rather than let this assertion depend on the
-    // ambient global apps dir.
+    // ambient global plugins dir.
     std::fs::create_dir_all(root_a.join(crate::config::workspace_channel_dir()))
         .expect("create root_a channel dir");
 
@@ -3472,7 +3773,7 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     // up front so `registry_watch_dirs` recognizes root_b as a real
     // workspace root via `resolve_workspace_root_with_channel` (which walks
     // up looking for `<root>/<channel>/`) — otherwise this assertion would
-    // pass or fail purely based on whether the *ambient global* apps dir
+    // pass or fail purely based on whether the *ambient global* plugins dir
     // happens to exist on the machine running the test (it does on a dev
     // box with real Plexi usage history, it does not on a clean CI runner),
     // rather than testing what it claims to: that root_b's OWN root gets
@@ -3527,8 +3828,8 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     // Simulate the inactive root's watcher firing (exactly what the per-root
     // drain loop in `PlexiApp::logic` does when THAT root's receiver has a
     // signal) and confirm only root B gets rescanned.
-    let app_id = "com.plexi.watcher-inactive-test";
-    write_registry_wasm_app(root_b.path(), app_id);
+    let plugin_id = "com.plexi.watcher-inactive-test";
+    write_registry_wasm_view(root_b.path(), plugin_id);
     app.emit_scope_invalidation(
         crate::host::scope::ScopeInvalidation::SourceGenerationChanged {
             source_path: root_b.path().to_path_buf(),
@@ -3538,15 +3839,791 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
     assert!(
         app.registries
             .view_for_context(ctx_b_id, &app.router)
-            .get(app_id)
+            .get(plugin_id)
             .is_some(),
-        "firing the inactive root's own invalidation must rescan it and pick up the new app"
+        "firing the inactive root's own invalidation must rescan it and pick up the new plugin"
     );
     assert!(
         app.registries
             .view_for_context(ctx_a_id, &app.router)
-            .get(app_id)
+            .get(plugin_id)
             .is_none(),
         "root A must be untouched by root B's invalidation"
     );
+}
+
+/// Send `request` through the real IPC channel and return the JSON the host
+/// wrote to its `response_file`.
+fn ipc_json_reply(
+    h: &mut crate::testing::HostHarness,
+    dir: &std::path::Path,
+    make: impl FnOnce(String) -> crate::protocol::HostRequest,
+) -> serde_json::Value {
+    let response_file = dir
+        .join(format!("reply-{}.json", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned();
+    h.inject_ipc(make(response_file.clone()));
+    h.app.drain_pane_cmd_channel();
+    let content = std::fs::read_to_string(&response_file).expect("host must write a reply");
+    serde_json::from_str(&content).expect("reply must be JSON")
+}
+
+/// CLI-07 / #2622: after `context push`, the pushed pane's spawn-time
+/// `PLEXI_CONTEXT_ID` is stale forever, so `context current` must not read it.
+/// `get_pane_info` — the request `context current` now sends — has to report the
+/// context that owns the pane *now*, with that context's name and description.
+#[test]
+fn get_pane_info_reports_host_context_after_push() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _anchor = h.add_test_pane();
+    let pushed = h.add_test_pane();
+    let parent_id = h.app.router.active().context_id;
+
+    let before = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::HostRequest::GetPaneInfo {
+            pane_id: pushed,
+            response_file: rf,
+        }
+    });
+    assert_eq!(before["context_id"].as_u64(), Some(parent_id));
+
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "name": "pushed-child",
+        "pane_id": pushed,
+    }))
+    .expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("push must create a child context")
+        .clone();
+    h.app
+        .router
+        .get_mut(
+            h.app
+                .router
+                .position(|c| c.context_id == child.context_id)
+                .unwrap(),
+        )
+        .description = Some("probe".to_string());
+
+    let after = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::HostRequest::GetPaneInfo {
+            pane_id: pushed,
+            response_file: rf,
+        }
+    });
+    assert_eq!(
+        after["context_id"].as_u64(),
+        Some(child.context_id),
+        "pane info must follow the push into the child context"
+    );
+    assert_ne!(after["context_id"].as_u64(), Some(parent_id));
+    assert_eq!(after["context_name"].as_str(), Some("pushed-child"));
+    assert_eq!(after["context_description"].as_str(), Some("probe"));
+}
+
+/// CLI-07 / #2622: `context zoom <unknown>` used to exit 0 silently. The host
+/// now answers with a typed error and leaves the active context untouched.
+#[test]
+fn zoom_into_unknown_context_replies_error_and_does_not_move() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let active_before = h.app.router.active().context_id;
+    let depth_before = h.app.router.current_depth();
+
+    let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::HostRequest::ZoomIntoContext {
+            context_id: 999_999,
+            response_file: Some(rf),
+        }
+    });
+    let err = reply["error"]
+        .as_str()
+        .expect("unknown id must be an error");
+    assert!(err.contains("999999"), "error must name the id: {err}");
+    assert_eq!(h.app.router.active().context_id, active_before);
+    assert_eq!(h.app.router.current_depth(), depth_before);
+}
+
+/// The success side of the same reply contract: a live id zooms and the host
+/// says so, so the CLI can tell success from a bad id.
+#[test]
+fn zoom_into_live_context_replies_context_id() {
+    let mut h = crate::testing::HostHarness::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _anchor = h.add_test_pane();
+    let pushed = h.add_test_pane();
+    let parent_id = h.app.router.active().context_id;
+    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "pane_id": pushed,
+    }))
+    .expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+    // Push already zooms in; return to the parent so the explicit zoom is a real move.
+    h.app.router.set_active(
+        h.app
+            .router
+            .position(|c| c.context_id == parent_id)
+            .unwrap(),
+    );
+    let child_id = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent_id))
+        .expect("child context")
+        .context_id;
+
+    let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
+        crate::protocol::HostRequest::ZoomIntoContext {
+            context_id: child_id,
+            response_file: Some(rf),
+        }
+    });
+    assert!(
+        reply.get("error").is_none(),
+        "live id must not error: {reply}"
+    );
+    assert_eq!(reply["context_id"].as_u64(), Some(child_id));
+    assert_eq!(h.app.router.active().context_id, child_id);
+}
+
+/// Wire compat: the CLI payload (with `response_file`) and the legacy
+/// fire-and-forget payload (without) both deserialize.
+#[test]
+fn zoom_into_context_payload_deserializes_with_and_without_reply() {
+    let with: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "zoom_into_context", "context_id": 4, "response_file": "/tmp/x.json",
+    }))
+    .expect("with response_file");
+    assert!(matches!(
+        with,
+        crate::protocol::HostRequest::ZoomIntoContext {
+            context_id: 4,
+            response_file: Some(_)
+        }
+    ));
+    let without: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "zoom_into_context", "context_id": 4,
+    }))
+    .expect("without response_file");
+    assert!(matches!(
+        without,
+        crate::protocol::HostRequest::ZoomIntoContext {
+            context_id: 4,
+            response_file: None
+        }
+    ));
+}
+
+/// CLI-07 / #2622: every terminal a spawn path creates must carry, in
+/// `PLEXI_CONTEXT_ID`, the context of the window it was placed in — including
+/// when the caller lives in a context that is not the active one.
+#[test]
+fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx, ft);
+    let (tile, caller) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile);
+    let caller_ctx = app.windows[0].context_id;
+
+    let other_ctx: u64 = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context 2".into(),
+        root: crate::testing::scratch_context_root("context-2"),
+        description: None,
+        context_id: other_ctx,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context 2".into(),
+        path: crate::testing::scratch_context_root("context-2"),
+        tree: egui_tiles::Tree::empty("ctx2_tree"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 10,
+        context_id: other_ctx,
+    });
+    app.active_window = 1;
+    app.router.set_active(1);
+
+    let mut spawned_any = false;
+    for layout in ["split_h", "tab", "new_window"] {
+        let total_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some(layout.to_string()),
+            args: vec![],
+            from_pane_id: Some(caller),
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: None,
+            result_schema: None,
+            peer_ancestry: None,
+        });
+        app.drain_pane_cmd_channel();
+        let total_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        spawned_any |= total_after > total_before;
+    }
+    if !spawned_any {
+        return; // PTY unavailable in this test environment.
+    }
+
+    let mut checked = 0;
+    for win in &app.windows {
+        for pane in win.panes.values() {
+            let Some(terminal) = pane.as_terminal() else {
+                continue;
+            };
+            assert_eq!(
+                terminal.spawn_env.get("PLEXI_CONTEXT_ID"),
+                Some(&win.context_id.to_string()),
+                "pane {} lives in context {} but was stamped with another",
+                terminal.id,
+                win.context_id
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+    assert!(
+        app.windows
+            .iter()
+            .filter(|w| w.context_id == caller_ctx)
+            .flat_map(|w| w.panes.values())
+            .any(|p| p.as_terminal().is_some()),
+        "spawns must land in the caller's context, not the active one"
+    );
+}
+
+#[test]
+fn cmd_1_2_3_switches_numbered_contexts() {
+    let mut h = crate::testing::HostHarness::new();
+    h.app.sidebar_visible = true;
+    let cmd = || {
+        if cfg!(target_os = "macos") {
+            egui::Modifiers {
+                command: true,
+                mac_cmd: true,
+                ..egui::Modifiers::NONE
+            }
+        } else {
+            egui::Modifiers::COMMAND
+        }
+    };
+    let assert_sidebar_highlight = |app: &crate::app::PlexiApp, expected_display_idx: usize| {
+        let active_order: Vec<usize> = app
+            .router
+            .top_level_order()
+            .into_iter()
+            .filter(|&i| !app.router.get(i).parked)
+            .collect();
+        let active_idx = app.router.active_idx();
+        assert_eq!(
+            active_order.get(expected_display_idx),
+            Some(&active_idx),
+            "sidebar highlight must follow the numbered active row"
+        );
+        for (display_idx, &router_idx) in active_order.iter().enumerate() {
+            assert_eq!(
+                router_idx == active_idx,
+                display_idx == expected_display_idx,
+                "sidebar row highlight disagrees at display position {}",
+                display_idx + 1
+            );
+        }
+    };
+    let (t1, p1) = h.app.add_view_pane_in_window(0, "p1");
+    h.app.windows[0].navigate_to(t1);
+    let ctx1_id = h.app.router.get(0).context_id;
+
+    let ctx2_id = h.app.create_context_without_pty("ctx-2", None);
+    let win2_idx = h.app.windows.len() - 1;
+    let (t2, p2) = h.app.add_view_pane_in_window(win2_idx, "p2");
+    h.app.windows[win2_idx].navigate_to(t2);
+
+    let ctx3_id = h.app.create_context_without_pty("ctx-3", None);
+    let win3_idx = h.app.windows.len() - 1;
+    let (t3, p3) = h.app.add_view_pane_in_window(win3_idx, "p3");
+    h.app.windows[win3_idx].navigate_to(t3);
+
+    // Switch back to context 1 to start
+    h.app.switch_workspace(0);
+    h.frame(egui::RawInput::default());
+
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p1)
+    );
+    assert_eq!(h.app.router.active_idx(), 0);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Press Cmd+2 -> switches to context 2
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx2_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p2));
+    assert_eq!(h.app.visual_owner_pane(), Some(p2));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p2)
+    );
+    assert_eq!(h.app.router.active_idx(), 1);
+    assert_sidebar_highlight(&h.app, 1);
+
+    // Press Cmd+3 -> switches to context 3
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_eq!(h.app.visual_owner_pane(), Some(p3));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p3)
+    );
+    assert_eq!(h.app.router.active_idx(), 2);
+    assert_sidebar_highlight(&h.app, 2);
+
+    // Press Cmd+1 -> switches back to context 1
+    h.press_key(egui::Key::Num1, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p1)
+    );
+    assert_eq!(h.app.router.active_idx(), 0);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Absent context chord: Cmd+4 does not switch, does not panic, and does not leak
+    h.press_key(egui::Key::Num4, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+    assert_eq!(h.app.visual_owner_pane(), Some(p1));
+
+    // Exact matching: Cmd+Shift+2 does NOT switch to context 2
+    h.press_key(egui::Key::Num2, cmd() | egui::Modifiers::SHIFT);
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p1));
+
+    // Park context 2 (router idx 1)
+    h.app.park_context(1);
+    // Now visible top-level unparked order is [context 1, context 3]
+    // Cmd+2 must switch to visible row 2, which is context 3!
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_eq!(h.app.visual_owner_pane(), Some(p3));
+    assert_sidebar_highlight(&h.app, 1);
+
+    // Cmd+3 is now out of range because only 2 contexts are active
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+
+    // Return to context 1
+    h.press_key(egui::Key::Num1, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx1_id);
+    assert_sidebar_highlight(&h.app, 0);
+
+    // Unpark context 2 so we have 3 top-level contexts again
+    h.app.unpark_context(1);
+    // Add a child context under context 1
+    let _child_id = h.app.create_context_without_pty("child", Some(ctx1_id));
+    let win_child_idx = h.app.windows.len() - 1;
+    let (t_child, _p_child) = h.app.add_view_pane_in_window(win_child_idx, "child-p");
+    h.app.windows[win_child_idx].navigate_to(t_child);
+
+    // Subcontext is excluded from top_level_order; numbered slots remain pinned to masters
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx2_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p2));
+    assert_sidebar_highlight(&h.app, 1);
+
+    h.press_key(egui::Key::Num3, cmd());
+    assert_eq!(h.app.router.active().context_id, ctx3_id);
+    assert_eq!(h.app.active_focused_pane_id(), Some(p3));
+    assert_sidebar_highlight(&h.app, 2);
+
+    // Overlay active (e.g. TreeAtlas): Cmd+1..9 does not trigger ghost switches
+    h.app.zoom.level = crate::app::zoom::ZoomLevel::TreeAtlas;
+    h.press_key(egui::Key::Num2, cmd());
+    assert_eq!(
+        h.app.router.active().context_id,
+        ctx3_id,
+        "no ghost context switch in TreeAtlas"
+    );
+}
+
+#[test]
+fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
+    let mut h = crate::testing::HostHarness::new();
+    let (tile, pane) = h.app.add_view_pane_in_window(0, "ctx-1-pane");
+    h.app.windows[0].navigate_to(tile);
+    let first = h.app.router.get(0).context_id;
+    let second = h.app.create_context_without_pty("ctx-2", None);
+    let second_window = h.app.windows.len() - 1;
+    let (second_tile, _second_pane) = h.app.add_view_pane_in_window(second_window, "ctx-2-pane");
+    h.app.windows[second_window].navigate_to(second_tile);
+    h.app.switch_workspace(0);
+
+    let response_dir = tempfile::tempdir().expect("response directory");
+    let response_file = response_dir.path().join("host-key.json");
+    h.inject_ipc(crate::protocol::HostRequest::HostKey {
+        key: "cmd+2".to_string(),
+        response_file: response_file.to_string_lossy().into_owned(),
+    });
+    h.frame(egui::RawInput::default());
+
+    assert_eq!(h.app.router.active().context_id, second);
+    assert_eq!(h.app.active_focused_pane_id(), Some(_second_pane));
+    assert_ne!(h.app.router.active().context_id, first);
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(_second_pane)
+    );
+    assert_ne!(h.app.active_focused_pane_id(), Some(pane));
+    let response = std::fs::read_to_string(response_file).expect("host key response");
+    assert_eq!(response, r#"{"ok":true}"#);
+}
+
+#[test]
+fn breadcrumb_navigation_rejects_stale_source_and_nonancestor() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.app.router.active().context_id;
+    let before = h.app.active_window;
+    assert!(!h.app.navigate_context_ancestor(root + 1, root));
+    assert!(!h.app.navigate_context_ancestor(root, u64::MAX));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.active_window, before);
+}
+
+#[test]
+fn breadcrumb_navigation_restores_parent_chain_and_rejects_stale_source() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app
+        .push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let child = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
+    let child_id = h.app.router.get(child).context_id;
+    h.app.switch_workspace(child);
+    h.add_assistant_pane_in_window(h.app.active_window);
+    h.app
+        .push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let grandchild = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(child_id))
+        .unwrap();
+    let source = h.app.router.get(grandchild).context_id;
+    h.app.switch_workspace(grandchild);
+    h.app.router.depth_stack.clear();
+    h.app.router.depth_stack.push((source, u64::MAX, None));
+    let windows = h
+        .app
+        .windows
+        .iter()
+        .map(|w| (w.window_id, w.context_id))
+        .collect::<Vec<_>>();
+    assert!(h.app.navigate_context_ancestor(source, root));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert!(h.app.router.depth_stack.is_empty());
+    assert_eq!(
+        windows,
+        h.app
+            .windows
+            .iter()
+            .map(|w| (w.window_id, w.context_id))
+            .collect::<Vec<_>>()
+    );
+    assert!(!h.app.navigate_context_ancestor(source, child_id));
+    assert_eq!(h.app.router.active().context_id, root);
+}
+
+#[test]
+fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app
+        .push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
+    let child_index = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
+    let child = h.app.router.get(child_index).context_id;
+    let root_window = h
+        .app
+        .windows
+        .iter()
+        .position(|w| w.context_id == root)
+        .unwrap();
+    let win = &mut h.app.windows[root_window];
+    let portal_id = *win
+        .panes
+        .iter()
+        .find(|(_, p)| p.as_portal().is_some())
+        .unwrap()
+        .0;
+    win.panes.retain(|id, _| *id == portal_id);
+    win.tree.root = win.tree.tiles.find_pane(&portal_id);
+    win.panes
+        .get_mut(&portal_id)
+        .unwrap()
+        .as_portal_mut()
+        .unwrap()
+        .reveal_after_close = true;
+    h.app.switch_workspace(child_index);
+    assert_eq!(h.app.revealed_child(root), Some(child));
+    assert!(h.app.navigate_context_ancestor(child, root));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.revealed_child(root), Some(child));
+    let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
+    h.app.switch_workspace(root_index);
+    assert_eq!(
+        h.app.router.active().context_id,
+        child,
+        "ordinary navigation retains reveal behavior"
+    );
+}
+
+#[test]
+fn breadcrumb_deleted_ancestor_rejects_without_focus_or_history_changes() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app
+        .push_pane_to_subcontext(Some("child".into()), Some(pane));
+    let child_index = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
+    let child = h.app.router.get(child_index).context_id;
+    h.app.switch_workspace(child_index);
+    let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
+    h.app.router.remove_at(root_index);
+    let before = (h.app.active_window, h.app.router.depth_stack.clone());
+    assert!(!h.app.navigate_context_ancestor(child, root));
+    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(
+        before,
+        (h.app.active_window, h.app.router.depth_stack.clone())
+    );
+}
+
+// Explicit CLI operations must acknowledge the context they actually targeted.
+fn context_target_request(
+    h: &mut crate::testing::HostHarness,
+    mut payload: serde_json::Value,
+) -> Option<serde_json::Value> {
+    let file = h.profile_dir().join("context-target-reply.json");
+    let _ = std::fs::remove_file(&file);
+    payload["response_file"] = serde_json::json!(file);
+    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+        payload.as_object_mut().unwrap().remove("response_file");
+        serde_json::from_value(payload).unwrap()
+    });
+    h.inject_ipc(request);
+    h.app.drain_pane_cmd_channel();
+    std::fs::read_to_string(file)
+        .ok()
+        .map(|s| serde_json::from_str(&s).unwrap())
+}
+
+#[test]
+fn context_targets_open_existing_acknowledges_and_selects_requested_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    for (root, id) in [(b.path(), b_id), (a.as_path(), a_id)] {
+        let reply = context_target_request(
+            &mut h,
+            serde_json::json!({"type":"focus_context", "root":root}),
+        );
+        assert_eq!(h.app.router.active().context_id, id);
+        assert_eq!(reply.unwrap()["context_id"], id);
+        assert_eq!(h.app.router.len(), 2);
+    }
+}
+
+#[test]
+#[ignore = "requires-pty: context open seeds a terminal"]
+fn context_targets_open_new_acknowledges_created_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"focus_context", "root":root.path()}),
+    );
+    assert_eq!(
+        h.app.router.active().root,
+        root.path().canonicalize().unwrap()
+    );
+    assert_eq!(
+        reply.unwrap()["context_id"],
+        h.app.router.active().context_id
+    );
+    assert_eq!(h.app.router.len(), 2);
+}
+
+#[test]
+fn context_targets_invalid_id_never_changes_active_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().root.clone();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"set_context_root", "root":root.path(), "context_id":u64::MAX}),
+    );
+    assert_eq!(h.app.router.active().root, before);
+    assert!(reply.unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+    assert!(!root.path().join(".plexi").exists());
+}
+
+#[test]
+fn context_targets_background_id_open_uses_owning_root() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let caller_a = h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    let caller_b = h.app.host.alloc_pane_id();
+    let mut tiles = egui_tiles::Tiles::default();
+    let tile = tiles.insert_pane(caller_b);
+    h.app.windows.push(Window {
+        name: "B".into(),
+        path: b.path().to_path_buf(),
+        tree: egui_tiles::Tree::new("B", tile, tiles),
+        panes: [(caller_b, test_view_pane(caller_b))].into_iter().collect(),
+        focused_pane: Some(tile),
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: b_id + 1,
+        context_id: b_id,
+    });
+    // Install a global runtime fixture, with no workspace_root to mask the default.
+    let global = tempfile::tempdir().unwrap();
+    let id = "context-target-runtime";
+    let plugin_dir = global.path().join(id);
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("manifest.toml"), format!(
+        "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"Scope fixture\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"wasm\"\nentry = \"counter.wasm\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+    )).unwrap();
+    std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).unwrap();
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(global.path());
+    for (owner, visible, caller, expected, wrong) in [
+        (0, 1, caller_a, a.as_path(), b.path()),
+        (1, 0, caller_b, b.path(), a.as_path()),
+    ] {
+        h.app.router.set_active(visible);
+        h.app.active_window = visible;
+        let visible_focus = h.app.windows[visible].focused_pane;
+        for app in ["agents", id] {
+            let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":app, "from_pane_id":caller, "no_focus":true, "args":[]})).unwrap();
+            assert!(reply.get("error").is_none(), "{reply}");
+            let pane = h.app.windows[owner]
+                .panes
+                .get(&reply["pane_id"].as_u64().unwrap())
+                .unwrap()
+                .as_view()
+                .unwrap();
+            assert_eq!(pane.workspace_root, expected);
+            assert_ne!(pane.workspace_root, wrong);
+            assert_eq!(h.app.active_window, visible);
+            assert_eq!(h.app.router.active_idx(), visible);
+            assert_eq!(h.app.windows[visible].focused_pane, visible_focus);
+        }
+        // Explicit cwd remains an override of the owning context default.
+        let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "from_pane_id":caller, "cwd":wrong, "no_focus":true, "args":[]})).unwrap();
+        assert_eq!(
+            h.app.windows[owner]
+                .panes
+                .get(&reply["pane_id"].as_u64().unwrap())
+                .unwrap()
+                .as_view()
+                .unwrap()
+                .workspace_root,
+            wrong
+        );
+    }
+}
+
+#[test]
+fn context_targets_invalid_description_id_is_acknowledged_without_fallback() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().description.clone();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"set_context_description", "description":"wrong target", "context_id":u64::MAX}),
+    );
+    assert_eq!(h.app.router.active().description, before);
+    assert!(reply.unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+}
+
+#[test]
+fn context_targets_invalid_view_context_never_spawns_in_active() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let count = h.app.windows[0].panes.len();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
+    assert_eq!(h.app.windows[0].panes.len(), count);
+    assert!(reply["error"].as_str().unwrap().contains("not found"));
 }

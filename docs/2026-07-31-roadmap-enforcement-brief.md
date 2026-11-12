@@ -14,7 +14,7 @@ One node per feature or concept:
 id       = "capability-broker"
 title    = "Capability broker — manifest declaration, scoped consent, precedence"
 status   = "green"          # green | yellow | red
-deps     = ["app-protocol"] # node ids
+deps     = ["plugin-protocol"] # node ids
 evidence = ["deny_beats_ask_beats_allow", "workspace_scoping_respected"]
 stints   = []               # .stint task ids owning open work
 ```
@@ -48,7 +48,7 @@ On merge to alpha, a job renders `deps` to a Mermaid graph colored by status and
 
 - **63 nodes: 41 green, 8 yellow, 14 red.** The green set is genuinely well covered — 2,213 test functions on alpha and the CI gate landed in #2529.
 - **The honest yellows**: WASM runtime (a guest dying at import is only caught by a 15s timeout, and that test is explicitly skipped in CI — 0638/0663); frame pacing (Python and WASM paths still not unified, 0553 blocked); media-io (mock round-trips and no-panic smoke, no real decode proof); secrets (`src/secrets` has zero unit tests of its own); the CI gate itself (one documented skip, one undeleted bundle-strategy branch).
-- **The reds that are pure spec**: browser surface (eleven stints, all blocked on an unstarted spike), marketplace + monetization, video editor, agent run orchestration, app state scopes, MCP tool sources.
+- **The reds that are pure spec**: browser surface (eleven stints, all blocked on an unstarted spike), marketplace + monetization, video editor, agent run orchestration, plugin state scopes, MCP tool sources.
 
 ## Open questions for you
 

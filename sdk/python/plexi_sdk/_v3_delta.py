@@ -14,6 +14,22 @@ key. This module owns both halves of that contract:
 
 from __future__ import annotations
 
+# Wire type aliases map to their child field and whether it contains a list.
+# Keep this aligned with decode_node_data and validate_python_ui_tree in the host.
+CONTAINER_FIELDS = {
+    **dict.fromkeys(("column", "row", "datatable", "data_table", "table"), ("children", True)),
+    **dict.fromkeys(("listview", "list_view", "list-view"), ("items", True)),
+    **dict.fromkeys(("scroll", "padding", "card", "pinned"), ("child", False)),
+}
+
+
+def child_refs(data: dict) -> list:
+    spec = CONTAINER_FIELDS.get(data.get("type", "").lower())
+    if spec is None:
+        return []
+    field, many = spec
+    return data.get(field, []) if many else [data.get(field)]
+
 
 class DeltaApplyError(Exception):
     """A ``tree_delta`` could not be applied to the previous tree.
@@ -57,7 +73,32 @@ def node_patch(node: dict, old: dict) -> dict:
     return node
 
 
-def apply_delta(prev: dict, changed: list) -> dict:
+def _node_index(nodes: list[dict], node_id: int) -> int:
+    for index, node in enumerate(nodes):
+        if node.get("id") == node_id:
+            return index
+    raise DeltaApplyError(f"delta patch id {node_id} is not present in the arena")
+
+
+def validate_tree(tree: dict) -> None:
+    """Reject a tree whose ids or child references cannot be rendered."""
+    nodes = tree.get("nodes")
+    if not isinstance(nodes, list):
+        raise DeltaApplyError("tree is missing its nodes array")
+    ids = [node.get("id") for node in nodes]
+    if len(ids) != len(set(ids)):
+        raise DeltaApplyError("tree contains duplicate node ids")
+    known_ids = set(ids)
+    if tree.get("root") not in known_ids:
+        raise DeltaApplyError("tree root is not present in its arena")
+    for node in nodes:
+        data = node.get("data", {})
+        if any(ref not in known_ids for ref in child_refs(data)):
+            raise DeltaApplyError(f"tree node {node.get('id')} references a missing child")
+
+
+def apply_delta(prev: dict, changed: list, *, added: list | None = None,
+                removed: list | None = None) -> dict:
     """Rebuild the full encoded arena from ``prev`` plus a ``changed`` list.
 
     ``prev`` is the previously emitted encoded tree (``{"root", "nodes"}``).
@@ -69,10 +110,12 @@ def apply_delta(prev: dict, changed: list) -> dict:
     nodes = list(prev["nodes"])
     for patch in changed:
         index = patch["id"]
-        if not 0 <= index < len(nodes):
+        try:
+            index = _node_index(nodes, index)
+        except DeltaApplyError as error:
             raise DeltaApplyError(
-                f"delta patch id {index} out of range (arena has {len(nodes)} nodes)"
-            )
+                f"delta patch id {patch['id']} out of range (arena has {len(nodes)} nodes)"
+            ) from error
         if "commands_changed" in patch:
             base_node = nodes[index]
             data = dict(base_node["data"])
@@ -88,7 +131,21 @@ def apply_delta(prev: dict, changed: list) -> dict:
             nodes[index] = {**base_node, "data": data}
         else:
             nodes[index] = patch
-    return {"root": prev["root"], "nodes": nodes}
+    removed_ids = removed or []
+    if len(set(removed_ids)) != len(removed_ids):
+        raise DeltaApplyError("keyed delta removes an id more than once")
+    known_ids = {node["id"] for node in nodes}
+    if any(node_id not in known_ids for node_id in removed_ids):
+        raise DeltaApplyError("keyed delta removes an unknown id")
+    nodes = [node for node in nodes if node["id"] not in set(removed_ids)]
+    for node in added or []:
+        node_id = node.get("id")
+        if not isinstance(node_id, int) or node_id in {n["id"] for n in nodes}:
+            raise DeltaApplyError("keyed delta adds a missing or duplicate id")
+        nodes.append(node)
+    rebuilt = {"root": prev["root"], "nodes": nodes}
+    validate_tree(rebuilt)
+    return rebuilt
 
 
 class TreeReconstructor:
@@ -106,12 +163,18 @@ class TreeReconstructor:
     def ingest(self, event: dict) -> dict:
         event_type = event.get("type")
         if event_type == "component_tree":
+            validate_tree(event.get("tree") or {})
             self._last_tree = event.get("tree")
             return event
         if event_type == "tree_delta":
             if self._last_tree is None:
                 raise DeltaApplyError("tree_delta received before any full tree")
-            rebuilt = apply_delta(self._last_tree, event.get("changed", []))
+            rebuilt = apply_delta(
+                self._last_tree,
+                event.get("changed", []),
+                added=event.get("added"),
+                removed=event.get("removed"),
+            )
             self._last_tree = rebuilt
             return {
                 "type": "component_tree",

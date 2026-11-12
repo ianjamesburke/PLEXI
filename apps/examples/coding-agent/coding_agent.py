@@ -3,7 +3,7 @@
 from plexi_sdk import state
 from plexi_sdk.effects import AiMessage, AiQuery, SetState, SetTitle
 from plexi_sdk.events import AiResponse, UiAction, UiValueChange
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, Label, TextEdit
+from plexi_sdk.ui import SurfaceHeader, Button, Column, FooterKeys, Label, TextEdit
 
 SYSTEM_PROMPT = "You are a concise coding assistant. Explain fixes and tradeoffs clearly."
 
@@ -27,7 +27,7 @@ def update(event):
 
 def view():
     return Column([
-        AppBar("Coding Agent", subtitle="V3 AI-query example"),
+        SurfaceHeader("Coding Agent", subtitle="V3 AI-query example"),
         TextEdit("prompt", value=state.get("prompt", ""),
                  placeholder="Paste code or describe the problem...", multiline=True),
         Button("Ask", on_click="ask", style="primary"),

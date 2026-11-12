@@ -1,71 +1,108 @@
-name: Create GitHub Release
-
+name: Build and publish Plexi release
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
-
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag (or source ref for verification only)
+        required: true
+        type: string
+      verify_only:
+        description: Run package/signing acceptance without publishing a release
+        type: boolean
+        default: false
+      verify_stable:
+        description: Exercise the stable package path when verify_only is true
+        type: boolean
+        default: false
+      signing_only:
+        description: Check only signing credentials on a disposable Mac runner; never publish
+        type: boolean
+        default: false
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 jobs:
-  release:
+  signing:
+    if: ${{ inputs.signing_only }}
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Import the persistent signing identity
+        timeout-minutes: 2
+        env:
+          PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+        run: bash scripts/setup-release-signing.sh
+      - name: Sign and verify a changed executable
+        run: |
+          cp /usr/bin/true "$RUNNER_TEMP/signing-probe"
+          codesign --force --sign "$PLEXI_SIGN_IDENTITY" --keychain "$PLEXI_SIGNING_KEYCHAIN" --identifier com.ianjamesburke.plexi-alpha "$RUNNER_TEMP/signing-probe"
+          codesign --verify --strict "$RUNNER_TEMP/signing-probe"
+          uv run --no-project python - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.package import macos_signature
+          actual = macos_signature(Path(os.environ['RUNNER_TEMP']) / 'signing-probe')
+          assert actual['authorities'][0] == 'Plexi Dev', actual
+          assert actual['certificate_sha1'] == os.environ['PLEXI_SIGNING_CERT_SHA1'], actual
+          print('PASS: protected identity imported and signed executable verified')
+          PY
+      - name: Remove temporary signing trust and Keychain
+        if: always()
+        run: |
+          bash scripts/setup-release-signing.sh --cleanup
+  packages:
+    if: ${{ !inputs.signing_only }}
+    uses: ./.github/workflows/distribution.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || inputs.tag || github.ref_name }}
+    secrets:
+      PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+      PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+      PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+  verify-evidence:
+    name: verify-only evidence ${{ inputs.tag }}
+    if: ${{ inputs.verify_only && !inputs.signing_only }}
+    needs: packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dispatch source to equal the run commit
+        env:
+          SOURCE: ${{ inputs.tag }}
+          HEAD: ${{ github.sha }}
+        run: test "$SOURCE" = "$HEAD"
+  publish:
+    if: ${{ !inputs.verify_only && !inputs.signing_only }}
+    needs: packages
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Classify tag
-        id: classify
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "make_latest=true" >> "$GITHUB_OUTPUT"
-            echo "title=v${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
-            PREV=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1)
-          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "make_latest=false" >> "$GITHUB_OUTPUT"
-            echo "title=${TAG} (beta)" >> "$GITHUB_OUTPUT"
-            PREV=$(git tag -l 'v*-beta.*' --sort=-v:refname | grep -v "^${TAG}$" | head -1)
-          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "make_latest=false" >> "$GITHUB_OUTPUT"
-            echo "title=${TAG} (alpha)" >> "$GITHUB_OUTPUT"
-            PREV=$(git tag -l 'v*-alpha.*' --sort=-v:refname | grep -v "^${TAG}$" | head -1)
-          else
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "make_latest=false" >> "$GITHUB_OUTPUT"
-            echo "title=${TAG}" >> "$GITHUB_OUTPUT"
-            PREV=""
-          fi
-          if [[ -n "${PREV:-}" ]]; then
-            echo "notes_start_tag=$PREV" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create release
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Publish only the complete verified asset set
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          ARGS=(
-            --title "${{ steps.classify.outputs.title }}"
-            --generate-notes
-          )
-          if [[ "${{ steps.classify.outputs.prerelease }}" == "true" ]]; then
-            ARGS+=(--prerelease)
-          fi
-          ARGS+=(--latest=${{ steps.classify.outputs.make_latest }})
-          if [[ -n "${{ steps.classify.outputs.notes_start_tag }}" ]]; then
-            ARGS+=(--notes-start-tag "${{ steps.classify.outputs.notes_start_tag }}")
-          fi
-          if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
-            echo "Release $GITHUB_REF_NAME already exists, skipping."
-            exit 0
-          fi
-          gh release create "$GITHUB_REF_NAME" "${ARGS[@]}"
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: bash scripts/publish-release.sh "$TAG" dist

@@ -10,7 +10,7 @@ from plexi_sdk import log
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Canvas,
     CanvasCircle,
     CanvasRect,
@@ -85,9 +85,9 @@ def init(size, args) -> list:
 
 def update(event) -> list:
     if isinstance(event, KeyEvent):
-        if event.key in ("+", "plus", "equals"):
+        if event.key in ("+", "="):
             _sim()["balls"].extend(_initial(1)["balls"])
-        elif event.key in ("-", "minus") and len(_sim()["balls"]) > 1:
+        elif event.key == "-" and len(_sim()["balls"]) > 1:
             _sim()["balls"].pop()
         return []
     if not isinstance(event, RenderFrame):
@@ -167,7 +167,7 @@ def view():
     count = len(data["balls"])
     return Column(
         [
-            AppBar("Balls", f"{count} balls"),
+            SurfaceHeader("Balls", f"{count} balls"),
             Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
             FooterKeys([("+", "add"), ("-", "remove")]),
         ],

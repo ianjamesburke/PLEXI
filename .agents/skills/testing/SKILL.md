@@ -1,26 +1,28 @@
 ---
 name: testing
-description: "Agent self-validation before push. Classifies the diff (host logic / host UI / PGAP app), runs the matching harness tests, generates headless render screenshots as evidence, and writes a Test Evidence block for the Ship Log that validate-pr uses to decide whether binary install can be skipped. Invoked inline by implement-issue and implement-stint after cargo build passes, before git push."
+description: "Agent self-validation before push. Classifies the diff (host logic / host UI / PGAP app), runs the matching harness tests, generates headless render screenshots as evidence, and writes a Test Evidence block for the Ship Log that validate-pr uses to decide whether binary install can be skipped. Invoked inline by implement-issue and implement-stint-v2 after cargo build passes, before git push."
 ---
 
 # Testing — Self-Validation Evidence
 
-Run this after implementation compiles, before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
+Use [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) to select phase- and risk-appropriate checks before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
 
 All commands run from the feature worktree.
 
 ## Step 0 — Installable build
 
+For the proven unembedded markdown-only local exemption, see TESTING.md; aggregate evidence requirements are separate. For a PR candidate, use the draft/candidate sequence in TESTING.md; its exact-head release and Clippy satisfy this step without duplicate compilation. Outside that flow run:
+
 ```bash
 just build
 ```
 
-Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` and bare `cargo build` do not catch dead code left behind by removed callers or broken `cfg(not(test))` paths (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
+Release build under `-D warnings`, the same path `just pr-install` takes. Complete it before ready status; focused checks may precede a draft push as TESTING.md specifies. `cargo test` omits `cfg(not(test))` paths; bare `cargo build` includes them but does not reject dead-code warnings under the justfile's `-D warnings` (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
 
-Then the CI lint job, verbatim:
+Then the strict lint gate through the managed Cargo recipe:
 
 ```bash
-cargo clippy --bin plexi -- -D warnings
+just clippy
 ```
 
 `just build` does not run clippy; this is the only step that catches what CI's `clippy` job will reject (`too_many_arguments`, `type_complexity`, `needless_borrow`, ...). Fix the code, never `#[allow]`. Second line of the evidence block: `clippy: ok`.
@@ -56,25 +58,36 @@ when implementation is still uncommitted.
 |---|---|---|
 | `src/` host logic (commands, effects, pane ops, CLI) | host | scoped `cargo test --bin plexi` |
 | `src/` egui layer (overlays, widgets, render, style) | host-ui | PlexiUiHarness test + screenshot |
-| `apps/`, `sdk/python/` | pgap | real-process headless screenshot |
-| docs, skills, scripts, config only | none | no evidence block needed — state "docs-only" |
+| `apps/`, `sdk/python/` | pgap | relevant app/SDK checks; inspected render for visible changes |
+| docs or skills | docs | path-specific gate classification and relevant documentation checks |
+| scripts or config | infrastructure | focused checks and other gates required by TESTING.md |
 
 A diff can hit multiple layers; produce evidence for each.
 
-## Step 2 — Host Logic Evidence
-
-Run the test modules nearest the touched code, then the full bin suite:
+**The docs-only classification is path-specific, because some markdown is code.**
+Markdown reachable from `include_str!` anywhere under `src/` — shipped *or*
+`#[cfg(test)]` — is compiled into the artifact or asserted on by a doc-sync
+test, so it takes the layer of its including module and needs that layer's
+evidence. Decide with the selector, never by eye:
 
 ```bash
-bash scripts/cargo-with-lease.sh cargo test --bin plexi <module_filter>
-bash scripts/cargo-with-lease.sh cargo test --bin plexi
+bash scripts/scoped-tests.sh --gate $(git diff --name-only <base>...HEAD)
 ```
 
-Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
-Use `-- --exact` only with the fully-qualified test name; a basename plus
-`--exact` can succeed after running zero tests. The full bin suite must be green
-in the current attempt; do not substitute an earlier run without recording when
-and against which diff it ran.
+Exit 0 prints `docs-only, no build` only when every changed path is markdown
+that is provably not embedded; exit 1 prints one reason per path (`embedded in
+shipped code`, `embedded in a #[cfg(test)] doc-sync assertion`, or `not
+markdown`). The embedded set is computed from `include_str!` in `src/` on every
+call — never listed by hand — so a new include moves its target into the
+required-gate set automatically.
+
+## Step 2 — Host Logic Evidence
+
+Run the PR-push filters from `scripts/scoped-tests.sh` using the `just test-host` array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), which shares test-profile flags with `just scene`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `just clippy` apply unless the documented local markdown-only exemption is proven.
+
+Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
+
+Record pass/fail counts and the selected filters. Verify each selected surface has actual matches; zero tests is not evidence. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test written first. Use `-- --exact` only with the fully-qualified test name. Evidence must identify the current attempt and diff; do not silently reuse an earlier full-suite run.
 
 ## Step 3 — UI & App Evidence: Scenes and AppHarness
 
@@ -87,6 +100,8 @@ just scene tests/scenes/<name>.toml              # run one scene; PNGs + SceneRe
 just scene <file> /tmp/out 0                     # state-only: skip screenshot steps
 bash scripts/cargo-with-lease.sh cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
 ```
+
+For affected observable behavior, select and run relevant scenes individually; justify when none applies. Escalate to the suite for broadly shared changes as described in TESTING.md.
 
 For a new or changed overlay/widget/pane type: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.
 
@@ -108,7 +123,7 @@ format, see `src/testing/TESTING.md`.
 
 ### Python PGAP apps — AppHarness PNG renders
 
-**For `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
+**For visible `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
 
 ```python
 from plexi_sdk.testing import AppHarness, render_draw_commands
@@ -139,9 +154,7 @@ zero-turn assistant pane cannot show the bug you fixed. `screenshot_assistant_co
 in `src/ui_tests.rs` is the pattern: build real model state, open through the
 real pane path (`open_assistant_built` / equivalent), screenshot, inspect.
 
-Once inspected, delete the PNG (`rm /tmp/plexi_*.png`). The screenshot is a
-review artifact, not evidence to keep — the passing test is what future runs
-re-check, and `/tmp` is not the durable record (see Guards).
+After inspection, follow [TESTING.md — Pre-Push Evidence](../../../src/testing/TESTING.md#pre-push-evidence) to publish required images after opening the PR. Keep local PNGs until publication succeeds; never treat their temporary paths as durable evidence.
 
 ## Step 5 — Write the Evidence Block
 
@@ -149,19 +162,19 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 
 ```markdown
 **Test evidence (attempt <N>):**
-- just build: ok
-- clippy: ok
-- cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
-- PlexiUiHarness render: /tmp/plexi-render-<issue>-<name>.png — <one line: what it shows>
-- Conclusion: install skippable — full coverage | binary install required — <why>
+- just build / clippy: <pass, or proven markdown-only exemption with reason>
+- Head: <full commit>; phase: <feature / batch / final>; affected behavior and risk: <summary>
+- Checks: <commands and pass / fail counts, including actual Rust filters and matched counts; skipped or not applicable checks with reasons>
+- Visual evidence: <durable link, source, capture context and exact head, or not applicable with reason>
+- Conclusion: install skippable — full coverage | binary install required — <why> | docs-only, no build — no test evidence required
 ```
 
-**These conclusion rules are the single source of truth for install-skip.** `/implement-stint` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
+**These conclusion rules are the single source of truth for install-skip.** `/implement-stint-v2` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
 
 Conclusion rules:
-- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes pure-logic and docs-only changes with direct `HostHarness`/`PlexiUiHarness`/scene coverage of the full user-visible behavior — coverage is the test, not cosmetic-ness.
+- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes repository-only scripts whose actual behavior is fully covered at the exact source head and has no installed execution boundary; the independent tester must exercise the changed script, not rely only on the worker. For other logic, direct harness or scene coverage must cover the full user-visible behavior. A script that changes installation, packaging, runtime, PTY, or another installed boundary still requires installed validation.
 - `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations). This is the default for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
-- `docs-only — no test evidence required`: markdown, comments, or skill/doc text with no code path touched.
+- `docs-only, no build — no test evidence required`: markdown, comments, or skill/doc text that `scripts/scoped-tests.sh --gate` proves is not embedded via `include_str!` and not under a `#[cfg(test)]` doc-sync assertion's directory. Embedded markdown is code and follows the rules for its including module.
 - A `LiveBackend` change always requires `just scene-live` against the installed
   PR channel. Headless parity proves schema semantics, not CLI execution or
   eventual polling against a real host.
@@ -171,4 +184,4 @@ Conclusion rules:
 
 - `git status --short` must show no unintended test scaffolding before commit. Committed scene files are the norm; a one-off you don't want to keep belongs outside the repo (`just scene /tmp/<file>.toml` works on absolute paths).
 - Never claim `install skippable` for a layer you didn't actually test.
-- Screenshot PNGs live in `/tmp` and die with the machine — the evidence block's one-line description is the durable record; keep it specific.
+- Temporary screenshot paths are not durable evidence; see TESTING.md for publication and failure handling.

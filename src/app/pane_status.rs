@@ -29,19 +29,22 @@ pub(crate) fn composite_status(
         })
         .cloned();
 
-    let agent_state = agent.map(|state| match state.state {
-        AgentState::Working => "working",
-        AgentState::Idle => "idle",
-        AgentState::Blocked => "blocked",
-    });
+    let agent_state = agent.map(|state| state.state.as_str());
     let detail = agent.and_then(|state| state.detail.clone());
 
-    let (verdict, confidence) = if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
+    let (verdict, confidence) = if agent.is_some_and(|a| a.state == AgentState::Failed) {
+        ("failed", "high")
+    } else if agent.is_some_and(|a| matches!(a.state, AgentState::Working | AgentState::Idle))
+        && last_buffer_line.as_deref().is_some_and(is_tool_call_tail)
+    {
         ("working", "high")
     } else {
         match agent.map(|state| &state.state) {
             Some(AgentState::Working) => ("working", "high"),
-            Some(AgentState::Blocked)
+            Some(AgentState::Interrupted) => ("interrupted", "high"),
+            Some(AgentState::ExitedUnreported) => ("exited_unreported", "high"),
+            Some(AgentState::Completed) => ("completed", "high"),
+            Some(AgentState::Blocked | AgentState::NeedsYou)
                 if detail
                     .as_deref()
                     .is_some_and(|detail| !detail.trim().is_empty()) =>
@@ -70,6 +73,26 @@ pub(crate) fn composite_status(
         "status_bar_truncated": status_bar_truncated,
         "last_buffer_line": last_buffer_line,
     })
+}
+
+/// Overlay OSC 7501 records onto a composite status: the program said its own
+/// state, so the screen-text verdict is replaced and confidence is high.
+/// No-op when the pane has no records.
+pub(crate) fn apply_program_status(
+    status: &mut serde_json::Value,
+    store: &crate::program_status::ProgramStatusStore,
+) {
+    let Some(best) = crate::program_status::root_or_best_agent_state(store, 0) else {
+        return;
+    };
+    let verdict = match best.state {
+        AgentState::NeedsYou | AgentState::Blocked => "blocked",
+        other => other.as_str(),
+    };
+    status["verdict"] = verdict.into();
+    status["confidence"] = "high".into();
+    status["source"] = "osc7501".into();
+    status["program_status"] = crate::program_status::records_json(store);
 }
 
 fn is_status_bar(line: &str) -> bool {
@@ -134,6 +157,47 @@ mod tests {
         }
     }
 
+    fn store_with(reports: &[&str]) -> crate::program_status::ProgramStatusStore {
+        let mut store = crate::program_status::ProgramStatusStore::default();
+        for r in reports {
+            store.apply(crate::program_status::parse_report(r.as_bytes()).expect("report"));
+        }
+        store
+    }
+
+    #[test]
+    fn ps7501_status_json_uses_records_when_present() {
+        let mut status = composite_status(None, &["$ ".to_string()]);
+        let store = store_with(&[
+            "state=working:app=claude",
+            "state=blocked:kind=permission:id=sub:msg=cnVuIHJt",
+        ]);
+        apply_program_status(&mut status, &store);
+        assert_eq!(status["verdict"], "blocked");
+        assert_eq!(status["confidence"], "high");
+        assert_eq!(status["source"], "osc7501");
+        let ps = &status["program_status"];
+        assert_eq!(ps["source"], "osc7501");
+        let records = ps["records"].as_array().expect("records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["id"], "");
+        assert_eq!(records[0]["state"], "working");
+        assert_eq!(records[1]["id"], "sub");
+        assert_eq!(records[1]["kind"], "permission");
+        assert_eq!(records[1]["msg"], "run rm");
+        assert_eq!(records[1]["app"], "claude");
+    }
+
+    #[test]
+    fn ps7501_status_json_unchanged_without_records() {
+        let mut status = composite_status(None, &["$ ".to_string()]);
+        let before = status.clone();
+        apply_program_status(&mut status, &Default::default());
+        assert_eq!(status, before);
+        assert!(status.get("program_status").is_none());
+        assert!(status.get("source").is_none());
+    }
+
     #[test]
     fn working_agent_is_believed_even_when_tail_looks_idle() {
         let state = agent(AgentState::Working, None);
@@ -168,6 +232,23 @@ mod tests {
         assert_eq!(truncated["verdict"], "unknown");
         assert_eq!(truncated["confidence"], "low");
         assert_eq!(truncated["status_bar_truncated"], true);
+    }
+
+    #[test]
+    fn unidentified_program_output_does_not_prove_agent_work() {
+        let result = composite_status(None, &["⏺ Bash(cargo test)".into()]);
+        assert_eq!(result["verdict"], "unknown");
+        assert_eq!(result["confidence"], "low");
+        assert!(result["agent_state"].is_null());
+    }
+
+    #[test]
+    fn terminal_agent_result_beats_stale_tool_output() {
+        for state in [AgentState::Interrupted, AgentState::Completed, AgentState::Failed, AgentState::ExitedUnreported] {
+            let report = agent(state.clone(), None);
+            let result = composite_status(Some(&report), &["⏺ Bash(cargo test)".into()]);
+            assert_eq!(result["verdict"], state.as_str());
+        }
     }
 
     #[test]

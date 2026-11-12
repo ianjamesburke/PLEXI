@@ -1,12 +1,13 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-pub(super) const APP_ID: &str = "plexi-run";
+pub(super) const PLUGIN_ID: &str = "plexi-run";
 pub(super) fn commands_file() -> String {
     format!("{}/commands.toml", crate::config::workspace_channel_dir())
 }
 
-/// Parsed .plexi/commands.toml
+/// Parsed workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) commands file.
 #[derive(Deserialize)]
 pub struct PlexiCommands {
     #[serde(default)]
@@ -21,12 +22,12 @@ pub struct SecretsConfig {
     pub required: Vec<String>,
 }
 
-/// A command entry: either a bare string (`build = "cargo build"`) or an inline table
-/// (`build = { run = "cargo build", description = "..." }`).
-/// The old nested-section form (`[commands.build]\nrun = "..."`) is TOML-equivalent to the
-/// inline-table form and parses identically — no migration needed.
-#[derive(Deserialize)]
-#[serde(untagged)]
+/// A command entry: a bare string (`build = "cargo build"`), an inline table
+/// (`build = { run = "cargo build", description = "..." }`), or a multi-step
+/// workflow (`[commands.play]\nsteps = ["pane new --right -- mixer", ...]`).
+/// The nested-section form (`[commands.build]\nrun = "..."`) is TOML-equivalent to the
+/// inline-table form and parses identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandEntry {
     Simple(String),
     Full(CommandDef),
@@ -37,6 +38,20 @@ impl CommandEntry {
         match self {
             CommandEntry::Simple(s) => s,
             CommandEntry::Full(d) => &d.run,
+        }
+    }
+
+    pub fn steps(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Full(d) => &d.steps,
+        }
+    }
+
+    pub fn on_load(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Full(d) => &d.on_load,
         }
     }
 
@@ -53,14 +68,111 @@ impl CommandEntry {
             CommandEntry::Full(d) => &d.secrets,
         }
     }
+
+    pub fn split(&self) -> bool {
+        match self {
+            CommandEntry::Simple(_) => false,
+            CommandEntry::Full(d) => d.split,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDef {
+    pub run: String,
+    pub steps: Vec<String>,
+    pub on_load: Vec<String>,
+    pub description: Option<String>,
+    pub secrets: Vec<String>,
+    pub split: bool,
 }
 
 #[derive(Deserialize)]
-pub struct CommandDef {
-    pub run: String,
-    pub description: Option<String>,
+#[serde(untagged)]
+enum StringOrVec {
+    Single(String),
+    Many(Vec<String>),
+}
+
+impl StringOrVec {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::Single(s) => vec![s],
+            Self::Many(v) => v,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCommandDef {
+    run: Option<String>,
+    steps: Option<Vec<String>>,
+    on_load: Option<StringOrVec>,
+    description: Option<String>,
     #[serde(default)]
-    pub secrets: Vec<String>,
+    secrets: Vec<String>,
+    #[serde(default)]
+    split: bool,
+}
+
+impl<'de> Deserialize<'de> for CommandEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::String(s) => Ok(CommandEntry::Simple(s)),
+            toml::Value::Table(_) => {
+                let raw: RawCommandDef = value.try_into().map_err(serde::de::Error::custom)?;
+                let on_load = raw.on_load.map(StringOrVec::into_vec).unwrap_or_default();
+                if on_load.iter().any(|step| step.trim().is_empty()) {
+                    return Err(serde::de::Error::custom(
+                        "`on_load` cannot contain an empty step",
+                    ));
+                }
+                match (raw.run, raw.steps) {
+                    (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                        "command entry cannot specify both `run` and `steps`",
+                    )),
+                    (None, None) => Err(serde::de::Error::custom(
+                        "command entry must specify `run` or `steps`",
+                    )),
+                    (Some(run), None) => Ok(CommandEntry::Full(CommandDef {
+                        run,
+                        steps: Vec::new(),
+                        on_load,
+                        description: raw.description,
+                        secrets: raw.secrets,
+                        split: raw.split,
+                    })),
+                    (None, Some(steps)) => {
+                        if steps.is_empty() {
+                            return Err(serde::de::Error::custom("`steps` cannot be empty"));
+                        }
+                        if steps.iter().any(|step| step.trim().is_empty()) {
+                            return Err(serde::de::Error::custom(
+                                "`steps` cannot contain an empty step",
+                            ));
+                        }
+                        let run = steps.join(" && ");
+                        Ok(CommandEntry::Full(CommandDef {
+                            run,
+                            steps,
+                            on_load,
+                            description: raw.description,
+                            secrets: raw.secrets,
+                            split: raw.split,
+                        }))
+                    }
+                }
+            }
+            _ => Err(serde::de::Error::custom(
+                "command entry must be a string or a table with `run` or `steps`",
+            )),
+        }
+    }
 }
 
 /// List executable files in a scripts directory.
@@ -94,140 +206,449 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
     }
 }
 
-/// Scope of a user-authored command surfaced in the command palette.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Default starter template written when `Edit commands` creates a missing
+/// workspace (`<repo>/.plexi-<channel>/commands.toml`, or `<repo>/.plexi/commands.toml` on stable)
+/// or global (`~/.plexi-<channel>/commands.toml`, or `~/.plexi/commands.toml` on stable) `commands.toml`.
+pub const COMMANDS_TEMPLATE: &str = "\
+# Plexi Commands
+#
+# Define named shell commands for this channel scope (global: ~/.plexi-<channel>/commands.toml,
+# or ~/.plexi/commands.toml on stable; workspace: <repo>/.plexi-<channel>/commands.toml,
+# or <repo>/.plexi/commands.toml on stable). Run them from the command palette (Cmd+P)
+# or the terminal (`plexi run <name>`, `plexi run --json`).
+# Workspace commands override global commands of the same name.
+#
+# [commands]
+# hello = \"echo hi\"
+# dev = { run = \"npm run dev\", description = \"Start the dev server\" }
+# deploy = { run = \"./deploy.sh\", description = \"Deploy\", secrets = [\"API_KEY\"] }
+#
+# Multi-step workflow (`steps` run in order and stop at the first failure;
+# bind to a shortcut in config.toml with `[keys]` `\"cmd+shift+p\" = \"run:play\"`):
+# [commands.play]
+# description = \"Start mixer + muted nooise\"
+# steps = [
+#   \"pane new --right -- mixer\",
+#   \"pane new --down -- nooise --mute\",
+# ]
+
+[commands]
+";
+
+/// Path to the channel-global `commands.toml` (`~/.plexi[-<channel>]/commands.toml`).
+pub fn global_commands_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("commands.toml")
+}
+
+/// Ensure the effective `commands.toml` exists on disk, creating it from
+/// [`COMMANDS_TEMPLATE`] when missing, and return its path.
+///
+/// When `workspace_root` is `Some(root)`, targets `<root>/<workspace_channel_dir()>/commands.toml`.
+/// When `None`, targets `<config_dir()>/commands.toml`.
+pub fn ensure_commands_file(workspace_root: Option<&std::path::Path>) -> std::path::PathBuf {
+    let path = match workspace_root {
+        Some(root) => root.join(commands_file()),
+        None => global_commands_path(),
+    };
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!(
+                    "commands: failed to create directory {}: {e}",
+                    parent.display()
+                );
+                return path;
+            }
+        }
+        match std::fs::write(&path, COMMANDS_TEMPLATE) {
+            Ok(()) => log::info!("commands: created template at {}", path.display()),
+            Err(e) => log::warn!("commands: failed to write {}: {e}", path.display()),
+        }
+    }
+    path
+}
+
+/// Resolve the workspace root for `commands.toml` lookup from `cwd`.
+///
+/// Walks up via [`crate::view::registry::resolve_workspace_root`]; if that
+/// returns `None` (for example in a scratch directory under `$HOME`), falls
+/// back to `cwd` itself when `cwd/<workspace_channel_dir()>/commands.toml`
+/// exists and is distinct from [`global_commands_path`].
+pub fn resolve_commands_workspace_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    if let Some(root) = crate::app::registry::resolve_workspace_root(cwd) {
+        return Some(root);
+    }
+    let candidate = cwd.join(commands_file());
+    if candidate.is_file() && candidate != global_commands_path() {
+        return Some(cwd.to_path_buf());
+    }
+    None
+}
+
+pub(super) fn merged_secret_names(config: &PlexiCommands, entry: &CommandEntry) -> Vec<String> {
+    let mut keys: Vec<String> = config.secrets.required.clone();
+    for k in entry.secrets() {
+        if !keys.contains(k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// Scope of a user-authored command surfaced in the command palette and `plexi run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum UserCommandScope {
     /// Defined in the focused workspace's channel-scoped `commands.toml`.
     Workspace,
-    /// A global profile script under `config_dir()/scripts/`.
+    /// Defined in the global profile (`config_dir()/commands.toml` or `config_dir()/scripts/`).
     Global,
 }
 
-/// A user-authored command resolved for the command palette.
-///
-/// Mirrors exactly what `plexi run <name>` would resolve from the given
-/// workspace cwd, so the palette never lists a command `plexi run` cannot
-/// execute.
-#[derive(Debug, Clone)]
-pub struct ResolvedUserCommand {
-    pub name: String,
-    /// Shell snippet for `commands.toml` entries (shown as preview text).
-    /// `None` for global scripts — the run target is the script file itself.
-    pub run: Option<String>,
-    pub description: Option<String>,
-    pub scope: UserCommandScope,
+impl UserCommandScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UserCommandScope::Workspace => "workspace",
+            UserCommandScope::Global => "global",
+        }
+    }
 }
 
-/// Resolve user commands for the command palette, mirroring `plexi run`
-/// precedence: a workspace `commands.toml` shadows global scripts entirely
-/// (same fallback chain as [`run::run_command`]). A present-but-unparseable
-/// `commands.toml` yields no commands rather than silently falling back to
-/// global scripts, because `plexi run` would error in that state.
+/// A user-authored command resolved for the command palette and `plexi run`.
 ///
-/// Reads the file fresh on every call, so the palette hot-reloads on the next
-/// open with no mtime bookkeeping — same pattern as palette note loading.
-pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<ResolvedUserCommand> {
+/// Mirrors what `plexi run <name>` resolves from the given workspace cwd:
+/// global commands (`config_dir()/commands.toml` and executable scripts in
+/// `config_dir()/scripts/`) merge with workspace commands
+/// (`<workspace>/.plexi[-channel]/commands.toml`), with workspace winning on
+/// name collisions. `secrets` lists required secret names only — never values.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ResolvedUserCommand {
+    pub name: String,
+    pub scope: UserCommandScope,
+    pub description: Option<String>,
+    /// Shell snippet or joined step preview for `commands.toml` entries (shown as preview text).
+    /// `None` for global scripts — the run target is the script file itself.
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_load: Vec<String>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub split: bool,
+}
+
+/// Resolve merged global + workspace user commands, returning an error string if
+/// a present `commands.toml` cannot be read or parsed.
+///
+/// Precedence (highest wins per command `name`):
+/// 1. Workspace `<workspace_root>/<workspace_channel_dir()>/commands.toml` (`scope = workspace`)
+/// 2. Global `<config_dir()>/commands.toml` (`scope = global`)
+/// 3. Executable scripts in `<config_dir()>/scripts/` (`scope = global`)
+pub fn resolve_user_commands_checked(
+    workspace_root: Option<&std::path::Path>,
+) -> Result<Vec<ResolvedUserCommand>, String> {
+    let mut merged: std::collections::BTreeMap<String, ResolvedUserCommand> =
+        std::collections::BTreeMap::new();
+
+    // 1. Global scripts (`config_dir()/scripts/`).
+    let scripts_dir = crate::config::config_dir().join("scripts");
+    for name in list_global_scripts(&scripts_dir) {
+        merged.insert(
+            name.clone(),
+            ResolvedUserCommand {
+                name,
+                scope: UserCommandScope::Global,
+                description: None,
+                run: None,
+                steps: Vec::new(),
+                on_load: Vec::new(),
+                secrets: Vec::new(),
+                split: false,
+            },
+        );
+    }
+
+    // 2. Global `config_dir()/commands.toml` (overrides same-named global scripts).
+    let global_path = global_commands_path();
+    match std::fs::read_to_string(&global_path) {
+        Ok(contents) => {
+            let config: PlexiCommands = toml::from_str(&contents)
+                .map_err(|e| format!("failed to parse {}: {e}", global_path.display()))?;
+            for (name, entry) in &config.commands {
+                merged.insert(
+                    name.clone(),
+                    ResolvedUserCommand {
+                        name: name.clone(),
+                        scope: UserCommandScope::Global,
+                        description: entry.description().map(|s| s.to_string()),
+                        run: Some(entry.run().to_string()),
+                        steps: entry.steps().to_vec(),
+                        on_load: entry.on_load().to_vec(),
+                        secrets: merged_secret_names(&config, entry),
+                        split: entry.split(),
+                    },
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!("could not read {}: {e}", global_path.display()));
+        }
+    }
+
+    // 3. Workspace `<workspace_root>/.plexi[-channel]/commands.toml` (overrides global per name).
     if let Some(root) = workspace_root {
-        let config_path = root.join(commands_file());
-        match std::fs::read_to_string(&config_path) {
-            Ok(contents) => {
-                // commands.toml present — its commands are the entire set; global
-                // scripts are NOT consulted (mirrors run_command's fallback chain).
-                match toml::from_str::<PlexiCommands>(&contents) {
-                    Ok(config) => {
-                        let mut cmds: Vec<ResolvedUserCommand> = config
-                            .commands
-                            .iter()
-                            .map(|(name, entry)| ResolvedUserCommand {
+        let rel_file = commands_file();
+        let config_path = root.join(&rel_file);
+        if config_path != global_path {
+            match std::fs::read_to_string(&config_path) {
+                Ok(contents) => {
+                    let config: PlexiCommands = toml::from_str(&contents)
+                        .map_err(|e| format!("failed to parse {rel_file}: {e}"))?;
+                    for (name, entry) in &config.commands {
+                        merged.insert(
+                            name.clone(),
+                            ResolvedUserCommand {
                                 name: name.clone(),
-                                run: Some(entry.run().to_string()),
-                                description: entry.description().map(|s| s.to_string()),
                                 scope: UserCommandScope::Workspace,
-                            })
-                            .collect();
-                        cmds.sort_by(|a, b| a.name.cmp(&b.name));
-                        log::info!(
-                            "palette: resolved {} workspace command(s) from {}",
-                            cmds.len(),
-                            config_path.display()
+                                description: entry.description().map(|s| s.to_string()),
+                                run: Some(entry.run().to_string()),
+                                steps: entry.steps().to_vec(),
+                                on_load: entry.on_load().to_vec(),
+                                secrets: merged_secret_names(&config, entry),
+                                split: entry.split(),
+                            },
                         );
-                        return cmds;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "palette: failed to parse {}: {e}; no workspace commands surfaced",
-                            config_path.display()
-                        );
-                        return Vec::new();
                     }
                 }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // No workspace commands.toml — fall through to global scripts.
-            }
-            Err(e) => {
-                log::warn!(
-                    "palette: could not read {}: {e}; no workspace commands surfaced",
-                    config_path.display()
-                );
-                return Vec::new();
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!("could not read {}: {e}", config_path.display()));
+                }
             }
         }
     }
 
-    // Global fallback: scripts dir, same as `plexi run` with no commands.toml.
-    let scripts_dir = crate::config::config_dir().join("scripts");
-    let mut cmds: Vec<ResolvedUserCommand> = list_global_scripts(&scripts_dir)
-        .into_iter()
-        .map(|name| ResolvedUserCommand {
-            name,
-            run: None,
-            description: None,
-            scope: UserCommandScope::Global,
-        })
-        .collect();
-    cmds.sort_by(|a, b| a.name.cmp(&b.name));
+    let cmds: Vec<ResolvedUserCommand> = merged.into_values().collect();
     log::info!(
-        "palette: resolved {} global script(s) from {}",
+        "commands: resolved {} merged command(s) (workspace_root={:?})",
         cmds.len(),
-        scripts_dir.display()
+        workspace_root
     );
-    cmds
+    Ok(cmds)
+}
+
+/// Resolve user commands for the command palette, mirroring `plexi run`
+/// per-name layering: global commands (`config_dir()/commands.toml` and
+/// `config_dir()/scripts/`) merge with workspace commands
+/// (`<workspace>/.plexi[-channel]/commands.toml`), and workspace entries win on
+/// name collisions. A present-but-unparseable `commands.toml` yields no
+/// commands rather than silently masking the parse error, because `plexi run`
+/// errors in that state.
+///
+/// Reads the files fresh on every call, so the palette hot-reloads on the next
+/// open with no mtime bookkeeping — same pattern as palette note loading.
+pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<ResolvedUserCommand> {
+    match resolve_user_commands_checked(workspace_root) {
+        Ok(cmds) => cmds,
+        Err(err) => {
+            log::warn!("palette: {err}; no commands surfaced");
+            Vec::new()
+        }
+    }
 }
 
 pub mod args;
+pub use args::{resolve_target_from_candidates, ContextTarget, PaneTarget};
+
+fn extract_context_name(entry: &serde_json::Value) -> String {
+    let Some(name_val) = entry.get("name") else {
+        return String::new();
+    };
+    if let Ok(cn) = serde_json::from_value::<crate::host::context::ContextName>(name_val.clone()) {
+        return cn.displayed().to_string();
+    }
+    if let Some(s) = name_val.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = name_val.as_object() {
+        for key in ["custom", "auto"] {
+            if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+impl ContextTarget {
+    /// Resolve this target to a numeric context ID:
+    /// 1. Numeric ID -> returns immediately without a socket round-trip.
+    /// 2. Queries the host's context list (`list_contexts`) over the command socket,
+    ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
+    pub fn resolve(&self) -> Result<u64, i32> {
+        let q = self.as_str().trim();
+        if let Some(id) = self.numeric_id() {
+            log::info!("cli:target: context target {q:?} resolved directly as numeric id={id}");
+            return Ok(id);
+        }
+        let content = request(
+            serde_json::json!({ "type": "list_contexts" }),
+            "list-contexts-target-resolve",
+            "context target lookup",
+        )?;
+        check_reply_error(&content)?;
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
+            log::warn!("cli:target: failed to parse list_contexts response: {e}");
+            eprintln!("error: failed to parse context list from host: {e}");
+            1
+        })?;
+        let candidates: Vec<(u64, String)> = entries
+            .iter()
+            .filter_map(|v| {
+                let id = v.get("context_id")?.as_u64()?;
+                let name = extract_context_name(v);
+                Some((id, name))
+            })
+            .collect();
+        match resolve_target_from_candidates("context", q, &candidates) {
+            Ok(id) => {
+                log::info!("cli:target: context target {q:?} resolved to context_id={id}");
+                Ok(id)
+            }
+            Err(msg) => {
+                log::warn!("cli:target: context target {q:?} failed: {msg}");
+                eprintln!("error: {msg}");
+                Err(1)
+            }
+        }
+    }
+}
+
+impl PaneTarget {
+    /// Resolve this target to a numeric pane ID:
+    /// 1. Numeric ID -> returns immediately without a socket round-trip.
+    /// 2. Queries the host's pane list (`list_panes`) over the command socket,
+    ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
+    pub fn resolve(&self) -> Result<u64, i32> {
+        let q = self.as_str().trim();
+        if let Some(id) = self.numeric_id() {
+            log::info!("cli:target: pane target {q:?} resolved directly as numeric id={id}");
+            return Ok(id);
+        }
+        let content = request(
+            serde_json::json!({ "type": "list_panes" }),
+            "list-panes-target-resolve",
+            "pane target lookup",
+        )?;
+        check_reply_error(&content)?;
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
+            log::warn!("cli:target: failed to parse list_panes response: {e}");
+            eprintln!("error: failed to parse pane list from host: {e}");
+            1
+        })?;
+        let candidates: Vec<(u64, String)> = entries
+            .iter()
+            .filter_map(|v| {
+                let id = v.get("id")?.as_u64()?;
+                let title = v.get("title").and_then(|n| n.as_str()).unwrap_or("");
+                Some((id, title.to_string()))
+            })
+            .collect();
+        match resolve_target_from_candidates("pane", q, &candidates) {
+            Ok(id) => {
+                log::info!("cli:target: pane target {q:?} resolved to pane_id={id}");
+                Ok(id)
+            }
+            Err(msg) => {
+                let role_candidates: Vec<(u64, String)> = entries
+                    .iter()
+                    .filter_map(|v| {
+                        let id = v.get("id")?.as_u64()?;
+                        let role = v
+                            .get("agent_role")
+                            .and_then(|n| n.as_str())
+                            .filter(|s| !s.is_empty())?;
+                        Some((id, role.to_string()))
+                    })
+                    .collect();
+                if let Ok(id) = resolve_target_from_candidates("pane", q, &role_candidates) {
+                    log::info!(
+                        "cli:target: pane target {q:?} resolved via agent_role to pane_id={id}"
+                    );
+                    return Ok(id);
+                }
+                log::warn!("cli:target: pane target {q:?} failed: {msg}");
+                eprintln!("error: {msg}");
+                Err(1)
+            }
+        }
+    }
+}
+
+pub fn resolve_opt_context_target(target: Option<&ContextTarget>) -> Result<Option<u64>, i32> {
+    match target {
+        Some(t) => t.resolve().map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64>, i32> {
+    match target {
+        Some(t) => t.resolve().map(Some),
+        None => Ok(None),
+    }
+}
 pub mod crawl;
+pub mod experiments;
 pub mod help;
+pub mod introspect;
+mod pane_caller;
+mod queued_spawn;
 pub mod registry;
 pub mod setup;
+pub mod skill_draft;
+pub mod skill_install;
 #[cfg(test)]
 mod skill_surface;
 pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;
+pub mod trace;
+#[cfg(test)]
+mod v1_surface;
 
 pub mod account;
 pub mod agent;
+pub mod agents_api;
 pub mod ai;
-pub mod app;
-pub mod app_check;
-pub mod app_state;
+pub mod changes;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;
+pub mod debug;
 pub mod demo;
 pub mod descriptor;
 pub mod doctor;
 pub mod events;
 pub mod host;
 pub mod install;
+mod install_hint;
 pub mod install_host;
+pub(crate) mod lease;
+pub mod ledger;
 pub mod list;
 pub mod marketplace;
 pub mod notes;
 pub mod notify;
 pub mod open;
 pub mod pane;
+pub mod permissions;
+pub mod plugin;
+pub mod plugin_check;
+pub mod plugin_state;
 pub mod registry_watch;
 pub mod release_resolver;
 pub mod routine;
@@ -284,7 +705,9 @@ pub(super) fn print_json_output(json_str: &str) -> i32 {
                         log::warn!("print_json_output: jq exited non-zero ({status}), falling back to serde");
                     }
                     Err(e) => {
-                        log::warn!("print_json_output: jq wait failed ({e}), falling back to serde");
+                        log::warn!(
+                            "print_json_output: jq wait failed ({e}), falling back to serde"
+                        );
                     }
                 }
             }
@@ -350,22 +773,24 @@ mod socket_resolution_tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn pr_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+    fn binary_channel_wins_over_ambient_socket() {
         let actual = resolve_command_socket_from(
             None,
-            Some("pr-2384"),
-            Some(OsStr::new("/tmp/alpha.sock")),
+            Some("pr-2765"),
+            Some(OsStr::new("/Users/test/.plexi-beta/notify.sock")),
             Path::new("/Users/test"),
         );
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-pr-2384/notify.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-pr-2765"
+            )))
         );
     }
 
     #[test]
-    fn alpha_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+    fn alpha_binary_ignores_ambient_beta_socket() {
         let actual = resolve_command_socket_from(
             None,
             Some("alpha"),
@@ -375,22 +800,9 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
-        );
-    }
-
-    #[test]
-    fn beta_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
-        let actual = resolve_command_socket_from(
-            None,
-            Some("beta"),
-            Some(OsStr::new("/tmp/alpha.sock")),
-            Path::new("/Users/test"),
-        );
-
-        assert_eq!(
-            actual,
-            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-alpha"
+            )))
         );
     }
 
@@ -407,7 +819,7 @@ mod socket_resolution_tests {
     }
 
     #[test]
-    fn suffixed_binary_accepts_matching_channel_socket() {
+    fn suffixed_binary_matching_ambient_socket_resolves_same_endpoint() {
         let actual = resolve_command_socket_from(
             None,
             Some("alpha"),
@@ -417,7 +829,9 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
+            Some(crate::platform::ipc::endpoint_in(Path::new(
+                "/Users/test/.plexi-alpha"
+            )))
         );
     }
 
@@ -451,8 +865,90 @@ mod socket_resolution_tests {
             )
         );
     }
+
+    #[test]
+    fn nested_channel_matrix_routes_without_env_stripping() {
+        let home = Path::new("/Users/test");
+        let inherited_env = [
+            ("PLEXI_CHANNEL", "beta"),
+            ("PLEXI_SOCKET", "/Users/test/.plexi-beta/notify.sock"),
+            ("PLEXI_PANE_ID", "42"),
+            ("PLEXI_CONTEXT_ID", "7"),
+            ("PLEXI_CONTEXT_ROOT", "/Users/test/workspace"),
+            ("PLEXI_RUNNING", "1"),
+        ];
+        let env_get = |key: &str| -> Option<&str> {
+            inherited_env
+                .iter()
+                .find_map(|(k, v)| (*k == key).then_some(*v))
+        };
+
+        // Self-identity vars stay intact for default resolution (e.g. pane slot write).
+        assert_eq!(env_get("PLEXI_PANE_ID"), Some("42"));
+        assert_eq!(env_get("PLEXI_CONTEXT_ID"), Some("7"));
+        assert_eq!(env_get("PLEXI_CONTEXT_ROOT"), Some("/Users/test/workspace"));
+        assert_eq!(env_get("PLEXI_RUNNING"), Some("1"));
+
+        // (1) Channel-named shim with inherited beta routing + self-identity env
+        // resolves both profile dir and command socket to the shim's channel.
+        let shim_basename = "plexi-pr-2765";
+        let shim_channel = crate::config::channel_from_basename(shim_basename);
+        assert_eq!(shim_channel, Some("pr-2765"));
+        let shim_profile_dir =
+            crate::config::resolve_channel_dir(shim_basename, env_get("PLEXI_CHANNEL"));
+        let shim_socket = resolve_command_socket_from(
+            None,
+            shim_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(shim_profile_dir, ".plexi-pr-2765");
+        assert_eq!(
+            shim_socket,
+            Some(crate::platform::ipc::endpoint_in(
+                &home.join(".plexi-pr-2765")
+            ))
+        );
+
+        // (2) Explicit `--socket` overrides the shim's channel and ambient env.
+        let explicit_socket = Path::new("/tmp/custom-override.sock");
+        let overridden_socket = resolve_command_socket_from(
+            Some(explicit_socket),
+            shim_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(overridden_socket, Some(explicit_socket.to_path_buf()));
+
+        // (3) Bare `plexi` adopts inherited `PLEXI_CHANNEL` and `PLEXI_SOCKET`.
+        let bare_basename = "plexi";
+        let bare_channel = crate::config::channel_from_basename(bare_basename);
+        assert_eq!(bare_channel, None);
+        let bare_profile_dir =
+            crate::config::resolve_channel_dir(bare_basename, env_get("PLEXI_CHANNEL"));
+        let bare_socket = resolve_command_socket_from(
+            None,
+            bare_channel,
+            env_get("PLEXI_SOCKET").map(OsStr::new),
+            home,
+        );
+        assert_eq!(bare_profile_dir, ".plexi-beta");
+        assert_eq!(
+            bare_socket,
+            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+        );
+    }
 }
 
+/// Resolve the command socket endpoint from target-routing inputs.
+///
+/// Precedence: explicit `--socket` > binary channel identity (`plexi-<channel>`)
+/// > ambient `PLEXI_SOCKET` (bare `plexi` only) > `None`.
+///
+/// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
+/// `target-routing`)") for the canonical precedence table. Self-identity env
+/// vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_ID`, `PLEXI_CONTEXT_ROOT`,
+/// `PLEXI_RUNNING`) are never consulted for socket routing.
 fn resolve_command_socket_from(
     explicit_socket: Option<&std::path::Path>,
     binary_channel: Option<&str>,
@@ -462,24 +958,66 @@ fn resolve_command_socket_from(
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
     }
+    // Binary identity outranks inherited routing env: a channel-named shim
+    // self-binds to its own profile endpoint and ignores an ambient
+    // PLEXI_SOCKET stamped by whichever host spawned the pane.
     if let Some(channel) = binary_channel {
-        return Some(
-            home_dir
-                .join(format!(".plexi-{channel}"))
-                .join("notify.sock"),
-        );
+        return Some(crate::platform::ipc::endpoint_in(
+            &home_dir.join(format!(".plexi-{channel}")),
+        ));
     }
     ambient_socket.map(std::path::PathBuf::from)
 }
 
-static COMMAND_SOCKET_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> =
-    std::sync::OnceLock::new();
+/// Remove self-identity stamped by another host before CLI defaults are read.
+/// An explicit socket is outside this rule: it chooses routing independently.
+pub(crate) fn drop_foreign_channel_identity(explicit_socket: bool) -> Vec<String> {
+    let Some(channel) = command_binary_channel() else {
+        return Vec::new();
+    };
+    let Some(ambient) = std::env::var_os("PLEXI_SOCKET") else {
+        return Vec::new();
+    };
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let target = resolve_command_socket_from(None, Some(&channel), None, &home);
+    if explicit_socket || target.as_deref() == Some(std::path::Path::new(&ambient)) {
+        return Vec::new();
+    }
+    const IDENTITY: &[&str] = &[
+        "PLEXI_PANE_ID",
+        "PLEXI_CONTEXT_ID",
+        "PLEXI_CONTEXT_ROOT",
+        "PLEXI_CONTEXT_NAME",
+        "PLEXI_CONTEXT_DESCRIPTION",
+        "PLEXI_CONTEXT_DEPTH",
+        "PLEXI_RUNNING",
+        "PLEXI_CALL_CREDENTIAL",
+        "PLEXI_HOST_SESSION",
+    ];
+    let mut dropped = Vec::new();
+    for key in IDENTITY {
+        if std::env::var_os(key).is_some() {
+            std::env::remove_var(key);
+            dropped.push((*key).to_string());
+        }
+    }
+    dropped
+}
+
+static COMMAND_SOCKET_OVERRIDE: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
 
 pub fn set_command_socket_override(path: std::path::PathBuf) {
-    if COMMAND_SOCKET_OVERRIDE.set(path.clone()).is_err() {
-        log::warn!("cli: command socket override was already set; keeping the first path");
-    } else {
+    if let Ok(mut guard) = COMMAND_SOCKET_OVERRIDE.lock() {
         log::info!("cli: set explicit command socket override path={path:?}");
+        *guard = Some(path);
+    }
+}
+
+#[cfg(test)]
+pub fn clear_command_socket_override() {
+    if let Ok(mut guard) = COMMAND_SOCKET_OVERRIDE.lock() {
+        *guard = None;
     }
 }
 
@@ -488,10 +1026,11 @@ fn command_socket_available_from(explicit_override: bool, ambient_socket: bool) 
 }
 
 pub(super) fn command_socket_available() -> bool {
-    command_socket_available_from(
-        COMMAND_SOCKET_OVERRIDE.get().is_some(),
-        std::env::var_os("PLEXI_SOCKET").is_some(),
-    )
+    let has_override = COMMAND_SOCKET_OVERRIDE
+        .lock()
+        .ok()
+        .is_some_and(|g| g.is_some());
+    command_socket_available_from(has_override, std::env::var_os("PLEXI_SOCKET").is_some())
 }
 
 /// Poll an RPC response file with the standard CLI error reporting: timeout
@@ -529,10 +1068,18 @@ pub(super) fn poll_rpc_with(
 /// non-standard poll (raw bytes, slot replies) sends here and polls itself;
 /// everything else uses [`request`].
 pub(super) fn send_request(
-    mut payload: serde_json::Value,
+    payload: serde_json::Value,
     prefix: &str,
     label: &str,
 ) -> Result<String, i32> {
+    send_request_connected(payload, prefix, label).map(|(path, _stream)| path)
+}
+
+fn send_request_connected(
+    mut payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+) -> Result<(String, crate::platform::ipc::IpcStream), i32> {
     let response_file = crate::rpc::response_file(prefix, "json");
     let Some(fields) = payload.as_object_mut() else {
         log::error!("{label}:cli: request payload is not a JSON object");
@@ -544,11 +1091,8 @@ pub(super) fn send_request(
         serde_json::Value::String(response_file.clone()),
     );
     log::info!("{label}:cli: request response_file={response_file:?}");
-    let code = send_to_socket(payload);
-    if code != 0 {
-        return Err(code);
-    }
-    Ok(response_file)
+    let stream = send_to_socket_connected(payload)?;
+    Ok((response_file, stream))
 }
 
 /// Send a request and wait for the host's reply: the standard CLI round trip.
@@ -569,7 +1113,9 @@ pub(super) fn request_with(
     label: &str,
     timeout: std::time::Duration,
 ) -> Result<String, i32> {
-    let response_file = send_request(payload, prefix, label)?;
+    // macOS cannot recover LOCAL_PEERPID after the client disconnects, even
+    // while this CLI process is alive. Hold the connection through the reply.
+    let (response_file, _stream) = send_request_connected(payload, prefix, label)?;
     poll_rpc_with(&response_file, label, timeout)
 }
 
@@ -606,7 +1152,7 @@ pub(super) fn check_reply_error(content: &str) -> Result<(), i32> {
 /// seeds the queue explicitly and launches the draining host itself in the
 /// same command.
 pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
-    let socket = crate::config::config_dir().join("notify.sock");
+    let socket = crate::platform::ipc::endpoint_path();
     if spawn_socket_accepting(&socket) {
         return Ok(());
     }
@@ -624,8 +1170,8 @@ pub(super) fn require_spawn_servicing_host(intent: &str) -> Result<(), i32> {
     Err(1)
 }
 
-fn spawn_socket_accepting(socket: &std::path::Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
+pub(super) fn spawn_socket_accepting(socket: &std::path::Path) -> bool {
+    crate::platform::ipc::IpcStream::connect(socket).is_ok()
 }
 
 /// Human channel name from a profile dir basename: `.plexi-alpha` → `alpha`,
@@ -668,9 +1214,9 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     let channel = command_binary_channel();
     let ambient = std::env::var_os("PLEXI_SOCKET");
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let explicit = COMMAND_SOCKET_OVERRIDE.get();
+    let explicit = COMMAND_SOCKET_OVERRIDE.lock().ok().and_then(|g| g.clone());
     let socket = resolve_command_socket_from(
-        explicit.map(std::path::PathBuf::as_path),
+        explicit.as_deref(),
         channel.as_deref(),
         ambient.as_deref(),
         &home,
@@ -683,6 +1229,15 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
         } else {
             "PLEXI_SOCKET"
         };
+        if explicit.is_none() && channel.is_some() {
+            if let Some(ignored) = ambient.as_ref() {
+                if ignored.as_os_str() != path.as_os_str() {
+                    log::info!(
+                        "cli: ignored ambient PLEXI_SOCKET={ignored:?} because binary identity names channel {channel:?}"
+                    );
+                }
+            }
+        }
         log::info!(
             "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"
         );
@@ -696,6 +1251,10 @@ const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from
 enum SocketTransportError {
     ConnectTimeout,
     Connect(std::io::Error),
+    /// Only the Unix raw-fd transport can stop part-way through a frame and
+    /// report how far it got; the Windows path hands the whole line to the
+    /// pipe buffer in one call.
+    #[cfg(unix)]
     WriteTimeout {
         bytes_written: usize,
     },
@@ -705,6 +1264,14 @@ enum SocketTransportError {
     },
 }
 
+/// Bounded connect + write for a fire-and-forget CLI request.
+///
+/// Unix takes the raw-fd path below rather than `UnixStream`: std offers no
+/// `connect_timeout` for `AF_UNIX`, and a plain `connect` against a listener
+/// with a full backlog blocks forever — a hung terminal for the caller. A
+/// non-blocking socket driven by `poll` is the only way to hold a deadline
+/// across both the connect and the write.
+#[cfg(unix)]
 fn wait_for_socket(
     fd: std::os::fd::RawFd,
     events: libc::c_short,
@@ -736,6 +1303,7 @@ fn wait_for_socket(
     }
 }
 
+#[cfg(unix)]
 fn classify_connect_wait(result: std::io::Result<bool>) -> Result<(), SocketTransportError> {
     match result {
         Ok(true) => Ok(()),
@@ -744,6 +1312,7 @@ fn classify_connect_wait(result: std::io::Result<bool>) -> Result<(), SocketTran
     }
 }
 
+#[cfg(unix)]
 fn connect_unix_deadline(
     socket_path: &std::path::Path,
     deadline: std::time::Instant,
@@ -859,11 +1428,12 @@ fn connect_unix_deadline(
     }
 }
 
+#[cfg(unix)]
 fn send_line_to_socket(
     socket_path: &std::path::Path,
     line: &[u8],
     timeout: std::time::Duration,
-) -> Result<(), SocketTransportError> {
+) -> Result<crate::platform::ipc::IpcStream, SocketTransportError> {
     use std::os::fd::AsRawFd as _;
 
     let deadline = std::time::Instant::now() + timeout;
@@ -924,34 +1494,105 @@ fn send_line_to_socket(
             bytes_written: written,
         });
     }
-    Ok(())
+    let stream: crate::platform::ipc::IpcStream = fd.into();
+    let _ = stream.set_nonblocking(false);
+    if let Ok(text) = std::str::from_utf8(line) {
+        if let Some(token) = crate::rpc::extract_response_file_token(text) {
+            if let Ok(cloned) = stream.try_clone() {
+                crate::rpc::register_client_stream(token, cloned);
+            }
+        }
+    }
+    Ok(stream)
+}
+
+/// Windows counterpart of the raw-fd path above.
+///
+/// `ipc::connect_timeout` already bounds the connect (`WaitNamedPipeW` with
+/// the remaining budget), so only the write needs covering here. A request is
+/// one JSON line — far under the pipe's 64 KiB buffer — so the write lands in
+/// the kernel buffer and returns without waiting for the host to read it.
+/// There is therefore no blocking window for a write deadline to police, and
+/// `WriteTimeout` is unreachable on this path.
+#[cfg(windows)]
+fn send_line_to_socket(
+    socket_path: &std::path::Path,
+    line: &[u8],
+    timeout: std::time::Duration,
+) -> Result<crate::platform::ipc::IpcStream, SocketTransportError> {
+    use std::io::Write as _;
+
+    let mut stream = crate::platform::ipc::connect_timeout(socket_path, timeout).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            SocketTransportError::ConnectTimeout
+        } else {
+            SocketTransportError::Connect(e)
+        }
+    })?;
+    stream
+        .write_all(line)
+        .and_then(|()| stream.flush())
+        .map_err(|source| SocketTransportError::Write {
+            source,
+            // `write_all` does not report a partial count; the frame either
+            // landed whole or the caller must retry the whole thing.
+            bytes_written: 0,
+        })?;
+    if let Ok(text) = std::str::from_utf8(line) {
+        if let Some(token) = crate::rpc::extract_response_file_token(text) {
+            if let Ok(cloned) = stream.try_clone() {
+                crate::rpc::register_client_stream(token, cloned);
+            }
+        }
+    }
+    Ok(stream)
 }
 
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
+    match send_to_socket_connected(payload) {
+        Ok(_) => 0,
+        Err(code) => code,
+    }
+}
+
+pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
+    if let Some(socket_path) = resolve_command_socket() {
+        let line = format!("{payload}\n");
+        let _ = send_line_to_socket(
+            &socket_path,
+            line.as_bytes(),
+            std::time::Duration::from_millis(250),
+        );
+    }
+}
+
+fn send_to_socket_connected(
+    payload: serde_json::Value,
+) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
         None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
-            return 1;
+            return Err(1);
         }
     };
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
     match send_line_to_socket(&socket_path, line.as_bytes(), SOCKET_TRANSPORT_DEADLINE) {
-        Ok(()) => {
+        Ok(stream) => {
             log::info!(
                 "cli: socket transport complete path={socket_path:?} bytes={} elapsed_ms={}",
                 line.len(),
                 started.elapsed().as_millis()
             );
-            0
+            Ok(stream)
         }
         Err(SocketTransportError::Connect(e))
             if e.kind() == std::io::ErrorKind::ConnectionRefused =>
         {
-            let _ = std::fs::remove_file(&socket_path);
+            crate::platform::ipc::remove_stale_endpoint(&socket_path);
             eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
-            1
+            Err(1)
         }
         Err(SocketTransportError::ConnectTimeout) => {
             log::warn!(
@@ -961,13 +1602,14 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
             eprintln!(
                 "error: timed out connecting to PLEXI_SOCKET {socket_path:?}; request was not delivered"
             );
-            1
+            Err(1)
         }
         Err(SocketTransportError::Connect(e)) => {
             log::warn!("cli: socket connect failed path={socket_path:?}: {e}");
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            1
+            Err(1)
         }
+        #[cfg(unix)]
         Err(SocketTransportError::WriteTimeout { bytes_written }) => {
             log::warn!(
                 "cli: socket write timed out path={socket_path:?} bytes_written={bytes_written} payload_bytes={} deadline_ms={}",
@@ -984,7 +1626,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
                     line.len()
                 );
             }
-            1
+            Err(1)
         }
         Err(SocketTransportError::Write {
             source,
@@ -1002,7 +1644,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
                     line.len()
                 );
             }
-            1
+            Err(1)
         }
     }
 }
@@ -1115,6 +1757,33 @@ mod transport_deadline_tests {
             String::from_utf8_lossy(payload)
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn connected_request_preserves_peer_pid_until_reply() {
+        use std::os::fd::AsRawFd;
+        let dir = unique_socket_dir("peer-pid");
+        let socket = dir.join("notify.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let client = send_line_to_socket(&socket, b"{}\n", Duration::from_secs(1)).unwrap();
+        // Deliberately accept after the complete frame has been sent: this was
+        // ENOTCONN when the sender dropped its descriptor before reply polling.
+        let (server, _) = listener.accept().unwrap();
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                server.as_raw_fd(),
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                &mut pid as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(pid as u32, std::process::id());
+        drop(client);
+    }
 }
 
 /// Best-effort wake of a running instance after a spawn-queue file write.
@@ -1122,19 +1791,19 @@ mod transport_deadline_tests {
 /// A fully idle Plexi produces zero frames and only drains the spawn-queue
 /// during a frame, so without this nudge an outside-shell `plexi pane new`
 /// hangs until the user touches the window. Connects to the channel
-/// profile's `notify.sock` and sends a no-op `AppRequest::Wake`; the socket
+/// profile's `notify.sock` and sends a no-op `HostRequest::Wake`; the socket
 /// listener requests a repaint, the resulting frame drains the queue.
 ///
 /// All errors are ignored silently and intentionally: no instance running
 /// means the queue is drained at next startup — the designed fallback.
 pub(super) fn nudge_running_instance() {
+    use crate::platform::ipc::{self, IpcStream};
     use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let path = crate::config::config_dir().join("notify.sock");
-    let Ok(mut stream) = UnixStream::connect(&path) else {
+    let path = ipc::endpoint_path();
+    let Ok(mut stream) = IpcStream::connect(&path) else {
         return;
     };
-    let Ok(payload) = serde_json::to_string(&crate::protocol::AppRequest::Wake) else {
+    let Ok(payload) = serde_json::to_string(&crate::protocol::HostRequest::Wake) else {
         return;
     };
     if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {
@@ -1155,7 +1824,7 @@ pub(super) fn queue_spawn(
     mut payload: serde_json::Value,
     intent: &str,
     summary: &str,
-) -> Result<(), i32> {
+) -> Result<std::path::PathBuf, i32> {
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         log::warn!("queue_spawn: could not create {queue_dir:?}: {e}");
@@ -1178,7 +1847,7 @@ pub(super) fn queue_spawn(
     // instant, so every record carries a uuid as well.
     let nanos = crate::platform::clock::now_nanos();
     let file = queue_dir.join(format!("{nanos}-{}.json", uuid::Uuid::new_v4()));
-    if let Err(e) = std::fs::write(&file, payload.to_string()) {
+    if let Err(e) = crate::platform::fs::atomic_write(&file, payload.to_string().as_bytes()) {
         log::warn!("queue_spawn: could not write {file:?}: {e}");
         eprintln!("error: could not write spawn request: {e}");
         return Err(1);
@@ -1187,7 +1856,70 @@ pub(super) fn queue_spawn(
     log::info!("queue_spawn: queued '{intent}' as {file:?}");
     println!("queued: {summary}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
-    Ok(())
+    Ok(file)
+}
+
+/// Queue a spawn for a running host and wait for the host's launch result.
+///
+/// An outside-Plexi CLI has no command socket in its environment, but it can
+/// still prove a host is servicing this channel and wake it through the notify
+/// socket.  Giving that queued request a response file makes this path observe
+/// the same typed launch error as an in-pane spawn instead of reporting a
+/// misleading successful queue write.
+pub(super) fn queue_spawn_and_wait(
+    mut payload: serde_json::Value,
+    intent: &str,
+    summary: &str,
+) -> Result<Option<String>, i32> {
+    let response_file = crate::rpc::response_file("queued-spawn-response", "json");
+    let Some(fields) = payload.as_object_mut() else {
+        log::error!("queue_spawn_and_wait: '{intent}' payload is not a JSON object");
+        eprintln!("error: could not write spawn request: payload is not a JSON object");
+        return Err(1);
+    };
+    fields.insert(
+        "response_file".to_string(),
+        serde_json::Value::String(response_file.clone()),
+    );
+    let queue_file = queue_spawn(payload, intent, summary)?;
+    queued_spawn::wait(
+        &queue_file,
+        std::path::Path::new(&response_file),
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|error| {
+        log::warn!("queued spawn: {error}");
+        eprintln!("error: {error}");
+        1
+    })
+}
+
+/// Decode the definitive reply to an outside-pane queued spawn.
+///
+/// This is deliberately shared with the queue caller instead of treating a
+/// queue-file write as success: the host may reject the plugin after it drains
+/// the file (for example when the CPython bundle is unavailable).
+pub(super) fn queued_spawn_pane_id(content: &str) -> Result<u64, String> {
+    if let Some(error) = reply_error(content) {
+        return Err(error);
+    }
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|reply| reply.get("pane_id").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| format!("spawn response carried no pane id: {content}"))
+}
+
+#[cfg(test)]
+mod queued_spawn_tests {
+    use super::queued_spawn_pane_id;
+
+    #[test]
+    fn queued_spawn_surfaces_host_launch_error() {
+        assert_eq!(
+            queued_spawn_pane_id(r#"{"error":"CPython WASM bundle unavailable"}"#),
+            Err("CPython WASM bundle unavailable".to_string())
+        );
+    }
 }
 
 pub(super) fn binary_in_path(name: &str) -> bool {
@@ -1199,16 +1931,21 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
-    agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
-    agent_report_cli, agent_status_cli, agent_update,
+    agent_ask_cli, agent_create_cli, agent_done_cli, agent_flags_cli, agent_fleet_cli,
+    agent_fleet_dismiss_cli, agent_history_cli, agent_hook_event_cli, agent_hook_install_cli,
+    agent_hook_uninstall_cli, agent_list_cli, agent_next_cli, agent_reopen_cli, agent_report_cli,
+    agent_result_cli, agent_show_cli, agent_spawn_cli, agent_start_cli, agent_status_cli,
+    agent_tool_cli, agent_wait_cli, AgentHarness,
+};
+pub use agents_api::{
+    agent_team_dispatch, command_view_cancel_cli, command_view_cli, command_view_follow_cli,
+    command_view_refused,
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
-pub use app::{
-    app_action_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
-    app_list, app_package_cli, app_prune_cli, app_render, app_test_cli, app_uninstall,
-    app_update_cli, InstallConfirm,
+pub use changes::{
+    changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_profile_cli,
+    changes_propose_cli, changes_refresh_cli, changes_revert_cli,
 };
-pub use app_check::app_check_cli;
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
@@ -1222,38 +1959,59 @@ pub use demo::demo_cli;
 pub use doctor::doctor_cli;
 pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
-    events_subscribe_cli, pane_lifecycle_wait_cli, pane_lifecycle_follow_cli, EmitArgs,
+    events_subscribe_cli, pane_lifecycle_follow_cli, pane_lifecycle_wait_cli, EmitArgs,
 };
-pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
+pub use host::{
+    host_key_cli, host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli,
+    host_stop_cli, host_workspace_rollback_cli,
+};
 pub use install::{
-    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
-    self_update_cli, update_cli,
+    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, self_update_cli,
 };
+pub use ledger::ledger_summary_cli;
 pub use list::{freeze_cli, parse_notify_choice};
-pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
-pub use notes::{notes_list_cli, notes_open_cli};
-pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope};
+pub use marketplace::{plugin_browse_cli, plugin_publish_cli, plugin_search_cli};
+pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope, NotifyCliArgs};
 pub use open::{
-    app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
-    parse_prefix, AgentBootRequest, OpenPrefix,
+    mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli, parse_prefix,
+    AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
-    pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
-    pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli,
-    pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli, pane_state_cli, pane_status_cli,
+    pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli,
+    pane_layout_cli, pane_list_cli, pane_message_recv_cli, pane_message_send_cli,
+    pane_result_read_cli, pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
+    pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,
+    current_pane_id, pane_state_cli, pane_status_cli, pane_tree_cli,
 };
+pub use permissions::permissions_cli;
+pub use plugin::{
+    assistant_permission_cli, assistant_send_cli, assistant_tool_cli, needs_you_api_cli,
+    needs_you_cli, pane_action_cli, plugin_adopt, plugin_call_cli, plugin_info, plugin_init,
+    plugin_inspect_cli, plugin_install_package, plugin_install_with_pin, plugin_list,
+    plugin_package_cli, plugin_prune_cli, plugin_test_cli, plugin_tools_cli, plugin_uninstall,
+    plugin_update_cli, view_list, view_render, InstallConfirm,
+};
+pub use plugin_check::plugin_check_cli;
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
-pub use run::{run_command, run_list_commands};
+#[cfg(test)]
+pub(crate) use run::format_list_commands_for_root;
+pub use run::{
+    parse_step, run_command, run_list_commands, run_steps_with, substitute_step_args, ParsedStep,
+    StepRunReport,
+};
+#[cfg(test)]
+pub use run::{run_command_for_root, run_command_for_root_from_pane};
 pub use validate::validate_cli;
 pub use workspace::{
-    workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,
-    workspace_secret_list, workspace_secret_set,
+    folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,
+    folder_secret_set, workspace_clean_cli, workspace_init, workspace_secret_delete,
+    workspace_secret_get, workspace_secret_list, workspace_secret_set,
 };
 
 #[cfg(test)]
 mod resolve_user_commands_tests {
-    use super::{resolve_user_commands, UserCommandScope};
+    use super::{ensure_commands_file, resolve_user_commands, UserCommandScope, COMMANDS_TEMPLATE};
 
     /// Build a workspace tempdir whose channel-scoped commands.toml holds `body`.
     fn workspace_with_commands(body: &str) -> (tempfile::TempDir, crate::config::TestChannelGuard) {
@@ -1269,39 +2027,103 @@ mod resolve_user_commands_tests {
     fn workspace_commands_resolve_sorted_with_scope() {
         let (tmp, _g) = workspace_with_commands(
             r#"
+[secrets]
+required = ["GLOBAL_SECRET"]
+
 [commands]
 zeta = "echo z"
-build = { run = "cargo build", description = "Build it" }
+build = { run = "cargo build", description = "Build it", secrets = ["API_KEY"] }
 "#,
         );
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let cmds = resolve_user_commands(Some(tmp.path()));
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].name, "build");
         assert_eq!(cmds[0].description.as_deref(), Some("Build it"));
         assert_eq!(cmds[0].run.as_deref(), Some("cargo build"));
         assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+        assert_eq!(cmds[0].secrets, vec!["GLOBAL_SECRET", "API_KEY"]);
         assert_eq!(cmds[1].name, "zeta");
+        assert_eq!(cmds[1].secrets, vec!["GLOBAL_SECRET"]);
     }
 
     #[test]
-    fn workspace_commands_shadow_global_scripts() {
-        // commands.toml present → global scripts must NOT appear (mirrors `plexi run`).
-        let (tmp, _g) = workspace_with_commands("[commands]\nonly = \"echo hi\"\n");
+    fn workspace_and_global_commands_merge_with_workspace_override() {
+        // Done-When: global `foo` and workspace `bar` are both listed;
+        // workspace `foo` overrides global `foo`.
+        let (tmp, _g) = workspace_with_commands(
+            r#"
+[commands]
+bar = { run = "echo ws-bar", description = "Workspace bar" }
+foo = { run = "echo ws-foo", description = "Workspace foo override" }
+"#,
+        );
         let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("commands.toml"),
+            r#"
+[commands]
+foo = { run = "echo global-foo", description = "Global foo" }
+global_cmd = "echo global-toml"
+"#,
+        )
+        .unwrap();
         let scripts = profile.path().join("scripts");
         std::fs::create_dir_all(&scripts).unwrap();
-        write_executable(&scripts.join("global-only"));
+        write_executable(&scripts.join("global-script"));
         let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
 
         let cmds = resolve_user_commands(Some(tmp.path()));
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].name, "only");
-        assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+        let names: Vec<(&str, UserCommandScope, Option<&str>)> = cmds
+            .iter()
+            .map(|c| (c.name.as_str(), c.scope, c.run.as_deref()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("bar", UserCommandScope::Workspace, Some("echo ws-bar")),
+                ("foo", UserCommandScope::Workspace, Some("echo ws-foo")),
+                ("global-script", UserCommandScope::Global, None),
+                (
+                    "global_cmd",
+                    UserCommandScope::Global,
+                    Some("echo global-toml")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_commands_file_creates_template_when_missing() {
+        let _g = crate::config::set_test_channel("test");
+        let ws = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let ws_path = ensure_commands_file(Some(ws.path()));
+        assert_eq!(ws_path, ws.path().join(".plexi-test").join("commands.toml"));
+        assert!(ws_path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&ws_path).unwrap(),
+            COMMANDS_TEMPLATE
+        );
+        assert!(resolve_user_commands(Some(ws.path())).is_empty());
+
+        let global_path = ensure_commands_file(None);
+        assert_eq!(global_path, profile.path().join("commands.toml"));
+        assert!(global_path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&global_path).unwrap(),
+            COMMANDS_TEMPLATE
+        );
     }
 
     #[test]
     fn hot_reload_rereads_file_each_call() {
         let (tmp, _g) = workspace_with_commands("[commands]\nfirst = \"echo 1\"\n");
+        let profile = tempfile::tempdir().unwrap();
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let first = resolve_user_commands(Some(tmp.path()));
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].name, "first");
@@ -1393,3 +2215,38 @@ mod spawn_gate_tests {
         assert_eq!(channel_label_from(""), "default");
     }
 }
+
+/// Run a host action and return its acknowledged result, including host errors.
+pub fn host_action_cli(
+    mut payload: serde_json::Value,
+    identity: Option<(&str, Option<u64>, &str)>,
+) -> i32 {
+    if let Some((field, explicit, env)) = identity {
+        let id = explicit.or_else(|| std::env::var(env).ok()?.parse().ok());
+        let Some(id) = id else {
+            eprintln!("error: supply {field} explicitly outside a Plexi pane");
+            return 1;
+        };
+        payload[field] = id.into();
+    }
+    match request(payload, "host-action", "host action") {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(reply) if reply.get("error").is_some() => {
+                eprintln!("error: {}", reply["error"].as_str().unwrap_or(&content));
+                1
+            }
+            Ok(_) => {
+                println!("{content}");
+                0
+            }
+            Err(error) => {
+                eprintln!("error: invalid host response: {error}");
+                1
+            }
+        },
+        Err(code) => code,
+    }
+}
+
+#[cfg(test)]
+mod parity_tests;

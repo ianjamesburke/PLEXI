@@ -1,28 +1,28 @@
-//! Per-root `AppRegistry` views (stint 0724, Phase B).
+//! Per-root `PluginRegistry` views (stint 0724, Phase B).
 //!
-//! Before this module, `PlexiApp` held exactly one `AppRegistry`, rescanned
+//! Before this module, `PlexiApp` held exactly one `PluginRegistry`, rescanned
 //! only when the *active* context transitioned (`apply_context_transition_effects`
-//! in `pane_ops::workspace`). Any call site that resolved an app id against a
+//! in `pane_ops::workspace`). Any call site that resolved a plugin id against a
 //! context other than whichever one happened to be active last — a launch
 //! targeting an explicit `context_id`, the registry watcher for a background
-//! context, app-state routing for a parked pane — got whatever the active
+//! context, plugin-state routing for a parked pane — got whatever the active
 //! context's registry happened to contain, which is either stale or simply
-//! the wrong workspace's apps.
+//! the wrong workspace's plugins.
 //!
 //! `RegistryViews` fixes this by keying the cache on the canonical root
-//! itself (the host's source-address for "which app definitions apply here"),
+//! itself (the host's source-address for "which plugin definitions apply here"),
 //! not on which context is active. Two contexts whose `Context.root` is the
 //! same path share one scan and one cache entry; two contexts with different
 //! roots always get independently correct views, no matter which one is
 //! active. This is the "shared root ⇒ shared root-backed definitions,
 //! distinct runtime ownership" rule from the stint.
 //!
-//! Every view is produced by [`crate::app::registry::AppRegistry::load`] (or
+//! Every view is produced by [`crate::app::registry::PluginRegistry::load`] (or
 //! `load_with_global` for the global-dir override tests need) — this module
 //! never reimplements discovery, shadowing, or conflict handling; it only
 //! decides which root to scan and when to rescan it.
 
-use crate::app::registry::AppRegistry;
+use crate::app::registry::PluginRegistry;
 use crate::host::scope::ScopeInvalidation;
 use crate::workspace::router::WorkspaceRouter;
 use std::collections::HashMap;
@@ -33,40 +33,51 @@ use std::path::{Path, PathBuf};
 /// it cheaply; Phase B has no such caller yet, but it costs nothing to track
 /// and later phases (or a future palette optimization) can read it.
 pub(crate) struct RegistryViews {
-    views: HashMap<PathBuf, (AppRegistry, u64)>,
-    /// Global apps dir override. Defaults to the real `~/.plexi-<channel>/apps/`;
+    views: HashMap<PathBuf, (PluginRegistry, u64)>,
+    /// Global plugins dir override. Defaults to the real `~/.plexi-<channel>/plugins/`;
     /// tests substitute a tempdir so they never touch the user's real profile
-    /// (mirrors `AppRegistry::load_with_global`'s existing test seam).
+    /// (mirrors `PluginRegistry::load_with_global`'s existing test seam).
     global_dir: PathBuf,
+    core_only: bool,
 }
 
 impl RegistryViews {
     pub(crate) fn new() -> Self {
         Self {
             views: HashMap::new(),
-            global_dir: crate::app::registry::apps_dir(),
+            global_dir: crate::app::registry::plugins_dir(),
+            core_only: false,
         }
     }
 
-    /// Test-only constructor mirroring `AppRegistry::load_with_global` — lets
-    /// tests stage a fake global apps dir instead of the real profile.
+    /// Test-only constructor mirroring `PluginRegistry::load_with_global` — lets
+    /// tests stage a fake global plugins dir instead of the real profile.
     #[cfg(test)]
     pub(crate) fn new_with_global(global_dir: &Path) -> Self {
         Self {
             views: HashMap::new(),
             global_dir: global_dir.to_path_buf(),
+            core_only: false,
         }
     }
 
-    fn load_for(&self, root: &Path) -> AppRegistry {
-        AppRegistry::load_with_global(root, &self.global_dir)
+    pub(crate) fn set_core_only(&mut self, core_only: bool) {
+        self.core_only = core_only;
+        self.views.clear();
+    }
+
+    fn load_for(&self, root: &Path) -> PluginRegistry {
+        if self.core_only {
+            return PluginRegistry::empty();
+        }
+        PluginRegistry::load_with_global(root, &self.global_dir)
     }
 
     /// The view for `root`, loading it on first access. Cheap on every
     /// subsequent call for the same canonical root (`HashMap` lookup only —
     /// no rescan) until an explicit [`Self::rescan_root`] or an invalidation
     /// event forces a fresh scan.
-    pub(crate) fn view_for_root(&mut self, root: &Path) -> &AppRegistry {
+    pub(crate) fn view_for_root(&mut self, root: &Path) -> &PluginRegistry {
         let key = crate::platform::path::canonical_or_self(root);
         if !self.views.contains_key(&key) {
             log::info!("registry_views: loading view for root={}", key.display());
@@ -84,7 +95,7 @@ impl RegistryViews {
         &mut self,
         context_id: u64,
         router: &WorkspaceRouter,
-    ) -> &AppRegistry {
+    ) -> &PluginRegistry {
         let root = router
             .iter()
             .find(|c| c.context_id == context_id)
@@ -102,9 +113,9 @@ impl RegistryViews {
 
     /// Force a fresh scan of `root` regardless of cache state — used for an
     /// explicit "rescan now" (a watched source changed, a root was just
-    /// (re)assigned to a context, or a caller couldn't find an app id and
+    /// (re)assigned to a context, or a caller couldn't find a plugin id and
     /// wants to check disk for a just-installed one).
-    pub(crate) fn rescan_root(&mut self, root: &Path) -> &AppRegistry {
+    pub(crate) fn rescan_root(&mut self, root: &Path) -> &PluginRegistry {
         let key = crate::platform::path::canonical_or_self(root);
         log::info!("registry_views: rescanning root={}", key.display());
         let generation = self.views.get(&key).map_or(0, |(_, gen)| gen + 1);
@@ -120,7 +131,9 @@ impl RegistryViews {
         if !self.views.contains_key(&key) {
             return;
         }
-        let still_referenced = router.iter().any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
+        let still_referenced = router
+            .iter()
+            .any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
         if !still_referenced {
             log::info!(
                 "registry_views: dropping orphaned root={} (no live context references it)",
@@ -175,7 +188,7 @@ impl RegistryViews {
             }
             ScopeInvalidation::PaneClosed { .. } => {
                 // Not a registry-shaped event: a pane closing doesn't change
-                // which apps are installed.
+                // which plugins are installed.
             }
         }
     }
@@ -183,16 +196,20 @@ impl RegistryViews {
     /// Every canonical root currently cached — what the watcher (or any other
     /// caller enumerating "what's live") should be watching / aware of.
     pub(crate) fn roots(&self) -> Vec<PathBuf> {
+        // Disabled plugin views never need filesystem watchers.
+        if self.core_only {
+            return Vec::new();
+        }
         self.views.keys().cloned().collect()
     }
 
     /// Test-only direct injection: install `registry` as the view for `root`,
     /// bypassing a disk scan entirely. Lets tests stage a hand-built
-    /// `AppRegistry` (e.g. one app with a specific `[launch] on_launch`
+    /// `PluginRegistry` (e.g. one plugin with a specific `[launch] on_launch`
     /// policy) for a specific context's root without writing manifest.toml
     /// fixtures to disk for every case.
     #[cfg(test)]
-    pub(crate) fn set_view_for_test(&mut self, root: &Path, registry: AppRegistry) {
+    pub(crate) fn set_view_for_test(&mut self, root: &Path, registry: PluginRegistry) {
         let key = crate::platform::path::canonical_or_self(root);
         self.views.insert(key, (registry, 0));
     }
@@ -215,18 +232,17 @@ mod tests {
         }
     }
 
-    fn write_app(dir: &Path, id: &str) {
-        let app_dir = dir.join(id);
-        std::fs::create_dir_all(&app_dir).unwrap();
+    fn write_plugin(dir: &Path, id: &str) {
+        let plugin_dir = dir.join(id);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
-            app_dir.join("manifest.toml"),
+            plugin_dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\n\
-                 version = \"0.0.1\"\nentry = \"run.sh\"\n"
+                "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
             ),
         )
         .unwrap();
-        std::fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     }
 
     #[test]
@@ -238,8 +254,8 @@ mod tests {
         // Install after the first load; without a rescan the cached view must
         // not pick it up (proves it's actually caching, not reloading).
         let channel_dir = crate::config::workspace_channel_dir();
-        let apps = root.path().join(&channel_dir).join("apps");
-        write_app(&apps, "late-app");
+        let plugins = root.path().join(&channel_dir).join("plugins");
+        write_plugin(&plugins, "late-app");
         assert!(
             views.view_for_root(root.path()).get("late-app").is_none(),
             "cached view must not silently re-scan on every access"
@@ -247,7 +263,7 @@ mod tests {
         views.rescan_root(root.path());
         assert!(
             views.view_for_root(root.path()).get("late-app").is_some(),
-            "explicit rescan must pick up the new app"
+            "explicit rescan must pick up the new plugin"
         );
     }
 
@@ -256,7 +272,10 @@ mod tests {
         let global = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        write_app(&root.path().join(&channel_dir).join("apps"), "shared-app");
+        write_plugin(
+            &root.path().join(&channel_dir).join("plugins"),
+            "shared-app",
+        );
 
         let router = WorkspaceRouter::new(vec![ctx(1, root.path()), ctx(2, root.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
@@ -277,8 +296,8 @@ mod tests {
         let root_a = tempfile::tempdir().unwrap();
         let root_b = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        write_app(&root_a.path().join(&channel_dir).join("apps"), "app-a");
-        write_app(&root_b.path().join(&channel_dir).join("apps"), "app-b");
+        write_plugin(&root_a.path().join(&channel_dir).join("plugins"), "app-a");
+        write_plugin(&root_b.path().join(&channel_dir).join("plugins"), "app-b");
 
         let router = WorkspaceRouter::new(vec![ctx(1, root_a.path()), ctx(2, root_b.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
@@ -288,30 +307,28 @@ mod tests {
         assert!(views.view_for_context(2, &router).get("app-a").is_none());
     }
 
-    /// Same app id installed in two different roots: each view must resolve
+    /// Same plugin id installed in two different roots: each view must resolve
     /// its own root's copy, never the other's.
     #[test]
-    fn duplicate_app_id_in_two_roots_resolves_per_view() {
+    fn duplicate_plugin_id_in_two_roots_resolves_per_view() {
         let global = tempfile::tempdir().unwrap();
         let root_a = tempfile::tempdir().unwrap();
         let root_b = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let dir_a = root_a.path().join(&channel_dir).join("apps").join("dup");
+        let dir_a = root_a.path().join(&channel_dir).join("plugins").join("dup");
         std::fs::create_dir_all(&dir_a).unwrap();
         std::fs::write(
             dir_a.join("manifest.toml"),
-            "schema_version = 1\n\n[app]\nid = \"dup\"\ntype = \"app\"\nname = \"A copy\"\n\
-             version = \"0.0.1\"\nentry = \"run.sh\"\n",
+            "schema_version = 2\n\n[plugin]\nid = \"dup\"\nname = \"A copy\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"dup.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(dir_a.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
-        let dir_b = root_b.path().join(&channel_dir).join("apps").join("dup");
+        let dir_b = root_b.path().join(&channel_dir).join("plugins").join("dup");
         std::fs::create_dir_all(&dir_b).unwrap();
         std::fs::write(
             dir_b.join("manifest.toml"),
-            "schema_version = 1\n\n[app]\nid = \"dup\"\ntype = \"app\"\nname = \"B copy\"\n\
-             version = \"0.0.1\"\nentry = \"run.sh\"\n",
+            "schema_version = 2\n\n[plugin]\nid = \"dup\"\nname = \"B copy\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"dup.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(dir_b.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
@@ -344,7 +361,10 @@ mod tests {
         let old_root = tempfile::tempdir().unwrap();
         let new_root = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        write_app(&new_root.path().join(&channel_dir).join("apps"), "new-app");
+        write_plugin(
+            &new_root.path().join(&channel_dir).join("plugins"),
+            "new-app",
+        );
 
         let mut views = RegistryViews::new_with_global(global.path());
         // Prime the old root's view before the "move".
@@ -433,7 +453,7 @@ mod tests {
         views.view_for_root(root.path());
         assert!(views.view_for_root(root.path()).get("fresh").is_none());
 
-        write_app(&root.path().join(&channel_dir).join("apps"), "fresh");
+        write_plugin(&root.path().join(&channel_dir).join("plugins"), "fresh");
         let router = WorkspaceRouter::new(vec![ctx(1, root.path())], 0);
         views.invalidate(
             &ScopeInvalidation::SourceGenerationChanged {

@@ -1,15 +1,21 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "key-event-probe"
-type = "app"
 name = "Key Event Probe"
-entry = "main.py"
 version = "0.1.0"
 description = "POC: HostHarness KeyPane fixture (stint 0426) — a `+`/`-`/`r` keyboard-only counter; a passing `plexi pane key` proves KeyEvent dispatch reaches a WASM Python pane end to end."
 watch = true
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
-[launch]
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "key-event-probe.main"
+default = true

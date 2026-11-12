@@ -10,7 +10,7 @@ re-rendered `Text`.
 from plexi_sdk import state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, Text
 
 
 def init(size, args):
@@ -22,9 +22,9 @@ def init(size, args):
 
 def update(event):
     if isinstance(event, KeyEvent) and event.pressed:
-        if event.key in ("equals", "plus"):
+        if event.key in ("=", "+"):
             return [SetState({"count": state.get("count", 0) + 1})]
-        if event.key == "minus":
+        if event.key == "-":
             return [SetState({"count": state.get("count", 0) - 1})]
         if event.key == "r":
             return [SetState({"count": 0})]
@@ -34,7 +34,7 @@ def update(event):
 def view():
     count = state.get("count", 0)
     return Column([
-        AppBar("Key Event Probe"),
+        SurfaceHeader("Key Event Probe"),
         Text(str(count), bold=True),
         FooterKeys([
             ("+", "increment"),

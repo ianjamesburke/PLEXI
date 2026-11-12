@@ -9,6 +9,12 @@ open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 run_steps = 2
 
 [[steps]]
+key = { target = "host", value = "cmd+d" }
+
+[[steps]]
+focus = "files"
+
+[[steps]]
 push_to_subcontext = "Subcontext"
 
 [[steps]]

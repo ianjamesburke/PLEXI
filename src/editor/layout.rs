@@ -91,9 +91,19 @@ impl LineLayout {
     /// chooses the first boundary at or after the source column.
     #[must_use]
     pub fn display_column_for_source(&self, source_column: usize) -> usize {
-        self.display_to_source
-            .partition_point(|mapped| *mapped < source_column)
-            .min(self.display_to_source.len() - 1)
+        let first = self
+            .display_to_source
+            .partition_point(|mapped| *mapped < source_column);
+        if self.display_to_source.get(first) == Some(&source_column) {
+            // Synthetic wrap opportunities have repeated source boundaries.
+            // Resolve after them, on the same visual row as the source text,
+            // rather than drifting back onto the previous row on each frame.
+            self.display_to_source
+                .partition_point(|mapped| *mapped <= source_column)
+                - 1
+        } else {
+            first.min(self.display_to_source.len() - 1)
+        }
     }
 
     #[must_use]

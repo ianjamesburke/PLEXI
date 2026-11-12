@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --.
+# Taxonomy and scene selection: src/testing/TESTING.md — The Gate.
+# Unknown src/ module relationships report ::, never no tests. Batch callers
+# must replace that broad fallback with reviewed relevant filters; only the final
+# combined candidate runs the full host suite (src/testing/TESTING.md).
+# scripts/** selects no Rust filters: the table assigns no evidence block.
+# Run script-specific checks separately. Hosted Rust verification is deferred
+# until after Alpha landing; test selection does not change hosted CI rules.
+# With no arguments, detect branch + staged + unstaged + untracked paths against
+# SCOPED_TEST_BASE (default origin/alpha), using the merge base. Set this to the
+# actual PR base for aggregate lanes. Detection failure conservatively selects ::.
+# Selection always exits 0. --selftest is a diagnostic and exits 1 on failure.
+# --gate delegates to the sibling docs-gate-scope.py: a markdown-only diff may
+# skip the gate only when every path is provably not embedded via include_str!
+# and not under a #[cfg(test)] doc-sync assertion's directory. The embedded set
+# is computed from src/ on every call, never listed. Exits 0 for skip, 1 for
+# required, and prints the reason.
+
+select_filters() {
+    local path
+    for path in "$@"; do
+        path=${path#./}
+        case "$path" in
+            *.md)
+                # Embedded markdown is compiled in or asserted on by a test.
+                # Treat it as code and force a reviewed filter selection.
+                if python3 "$(dirname "$0")/docs_gate_scope.py" --is-embedded "$path" 2>/dev/null; then
+                    printf '%s\n' ::
+                fi
+                ;;
+            docs/*|.agents/*|.claude/*) ;;
+            src/overlays/*) printf '%s\n' overlays:: testing:: ;;
+            src/testing/harness_tests.rs) printf '%s\n' testing::harness_tests:: ;;
+            src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
+            src/scenes.rs) printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
+            src/ui/*|src/render/*|src/ui_tests.rs|tests/scenes/*)
+                printf '%s\n' ui:: render:: ui_tests:: testing:: ;;
+            src/cli/*) printf '%s\n' cli:: cli_tests:: testing:: ;;
+            src/editor/*|src/app/text_editor_app.rs)
+                printf '%s\n' editor:: editor_gate ui_tests:: ;;
+            src/config/*|src/workspace/*)
+                printf '%s\n' config:: workspace:: testing:: ;;
+            src/*) printf '%s\n' :: ;;
+            apps/*|sdk/python/*) ;; # PGAP evidence is separate, not libtest.
+            scripts/*) ;; # Deliberate decision documented above.
+            *) ;; # docs/skills/config-only: no host evidence per classification.
+        esac
+    done | LC_ALL=C sort -u
+}
+
+selftest() {
+    local got first second
+    got=$(select_filters notes/guide.md AGENTS.md .agents/skills/testing/SKILL.md)
+    [[ -z "$got" ]] || { printf 'FAIL docs-only selected: %s\n' "$got"; return 1; }
+    printf 'PASS non-embedded docs-only: <empty>\n'
+    got=$(select_filters docs/CONFIG.md)
+    [[ "$got" == :: ]] || { printf 'FAIL embedded markdown: %s\n' "$got"; return 1; }
+    printf 'PASS embedded markdown -> :: (code)\n'
+    got=$(select_filters src/host/model.rs)
+    [[ "$got" == *host::* && "$got" == *testing::* ]] || { printf 'FAIL host: %s\n' "$got"; return 1; }
+    printf 'PASS host:\n%s\n' "$got"
+    got=$(select_filters src/ui/widgets.rs)
+    [[ "$got" == *ui_tests::* && "$got" != *scene_suite* ]] || { printf 'FAIL UI: %s\n' "$got"; return 1; }
+    [[ "$(select_filters src/scenes.rs)" == *scene_suite* ]] || { printf 'FAIL shared scene runner requires suite\n'; return 1; }
+    [[ "$(select_filters tests/scenes/example.toml)" != *scene_suite* ]] || { printf 'FAIL individual scene selected entire suite\n'; return 1; }
+    [[ "$(select_filters src/editor/example.rs)" != *scene_suite* ]] || { printf 'FAIL editor selected entire suite\n'; return 1; }
+    printf 'PASS targeted UI and editor; shared scene runner selects suite\n'
+    printf 'PASS UI:\n%s\n' "$got"
+    first=$(select_filters src/ui/widgets.rs src/host/model.rs src/host/model.rs)
+    second=$(select_filters src/ui/widgets.rs src/host/model.rs src/host/model.rs)
+    [[ "$first" == "$second" ]] || { printf 'FAIL determinism\n'; return 1; }
+    [[ "$first" == "$(select_filters src/host/model.rs src/ui/widgets.rs)" ]] || return 1
+    printf 'PASS determinism: byte-identical, sorted and deduplicated\n'
+    [[ "$(select_filters src/future/module.rs)" == :: ]] || return 1
+    [[ -z "$(select_filters scripts/example.sh apps/example/app.py sdk/python/example.py)" ]] || return 1
+    printf 'PASS unknown src: ::; scripts/PGAP: <empty>\n'
+}
+
+if [[ "${1:-}" == --gate ]]; then
+    shift
+    exec python3 "$(dirname "$0")/docs_gate_scope.py" "$@"
+fi
+if [[ "${1:-}" == --selftest ]]; then
+    selftest
+    exit $?
+fi
+if [[ $# -gt 0 ]]; then
+    select_filters "$@"
+else
+    root=$(git rev-parse --show-toplevel) &&
+        base=$(git merge-base "${SCOPED_TEST_BASE:-origin/alpha}" HEAD)
+    if [[ $? -ne 0 ]]; then
+        printf 'scoped-tests: cannot detect base; selecting all test paths\n' >&2
+        printf '%s\n' ::
+    else
+        paths=()
+        # NUL delimiters preserve spaces, Unicode, newlines and Git-quoted names.
+        # A failed producer emits an unknown src path, forcing the broad fallback.
+        while IFS= read -r -d '' path; do
+            paths+=("$path")
+        done < <(
+            git -C "$root" diff --name-only --no-renames -z "$base" -- ||
+                printf 'src/__detection_failed__\0'
+            git -C "$root" ls-files --others --exclude-standard -z ||
+                printf 'src/__detection_failed__\0'
+        )
+        select_filters "${paths[@]}"
+    fi
+
+fi
+exit 0

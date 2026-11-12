@@ -1,5 +1,14 @@
 use serde::Serialize;
 
+use crate::cli::install_hint::{install_hint, InstallTarget};
+
+const OLLAMA_INSTALL: InstallTarget = InstallTarget {
+    brew: Some("ollama"),
+    apt: None,
+    winget: Some("Ollama.Ollama"),
+    url: "https://ollama.com/download",
+};
+
 // ── Hardware detection ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -159,6 +168,7 @@ fn detect_disk_free() -> Option<f64> {
     }
 }
 
+#[cfg(unix)]
 fn detect_disk_free_via_df(path: &str) -> Option<f64> {
     let out = std::process::Command::new("df")
         .arg("-k")
@@ -239,15 +249,15 @@ fn probe_ollama() -> (bool, Vec<String>) {
 }
 
 fn check_openrouter_configured() -> bool {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         use crate::workspace::secrets::{keychain_user_name, system_store};
-        let store = system_store();
-        ["OPENROUTER_API_KEY", "openrouter-api-key"]
-            .iter()
-            .any(|name| store.get(&keychain_user_name(name)).is_some())
+        super::workspace::reconcile_secrets_before_read("ai:doctor");
+        system_store()
+            .get(&keychain_user_name("OPENROUTER_API_KEY"))
+            .is_some()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         false
     }
@@ -357,7 +367,10 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     } else if integrations.ollama_installed {
         format!("{warn} Ollama installed but not running")
     } else {
-        format!("{no} Ollama not installed  {dim}(brew install ollama){reset}")
+        format!(
+            "{no} Ollama not installed  {dim}({}){reset}",
+            install_hint(OLLAMA_INSTALL)
+        )
     };
     println!("  {ollama_status}");
 
@@ -430,13 +443,13 @@ fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommen
     out.push_str("   You can use non-AI apps immediately. Come back with `plexi ai onboard`.\n");
 
     out.push_str("\n3. Install an app\n");
-    out.push_str("   Try the built-in starter pack: `plexi app install --pack core`.\n");
-    out.push_str("   Install a reviewed app: `plexi app install <id>`.\n");
-    out.push_str("   Install from GitHub: `plexi app install github:owner/repo`.\n");
+    out.push_str("   Try the built-in starter pack: `plexi plugin install --pack core`.\n");
+    out.push_str("   Install a reviewed app: `plexi plugin install <id>`.\n");
+    out.push_str("   Install from GitHub: `plexi plugin install github:owner/repo`.\n");
 
     out.push_str("\nUseful checks\n");
     out.push_str("   `plexi ai doctor` shows hardware, Ollama, and OpenRouter status.\n");
-    out.push_str("   `plexi app list` shows installed apps.\n");
+    out.push_str("   `plexi plugin list` shows installed plugins.\n");
 
     out
 }
@@ -451,64 +464,53 @@ fn ollama_setup_model(rec: &ModelRecommendation) -> &'static str {
 
 // ── Setup wizard ─────────────────────────────────────────────────────────────
 
-/// Write or update the `[ai]` + `[ai.ollama]` section in config.toml.
-///
-/// Strategy: read the existing file as raw text, then:
-/// - If an `[ai]` block already exists, replace it.
-/// - Otherwise, append the block at the end.
-///
-/// This preserves all other sections and comments.
-fn write_ollama_config(model: &str) -> std::io::Result<()> {
+/// Write or update the `[ai.ollama]` table in config.toml via the shared
+/// comment-preserving editor. Returns whether `ai.backend` now selects Ollama.
+fn write_ollama_config(model: &str) -> Result<bool, String> {
     let path = crate::config::config_path();
-
-    // Ensure parent dir exists.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let snippet = format!(
-        "\n[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\nhost         = \"http://localhost:11434\"\nmodel_low    = \"{model}\"\nmodel_medium = \"{model}\"\nmodel_high   = \"{model}\"\n"
+    let mut backend_selected = false;
+    crate::config::edit::edit_config_file(&path, |doc| {
+        backend_selected = apply_ollama_config(doc, model)?;
+        Ok(())
+    })?;
+    log::info!(
+        "cli:ai:setup: wrote [ai.ollama] model={model} to {} (backend_selected={backend_selected})",
+        path.display()
     );
-
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path)?;
-
-        // Check if [ai] block already present — strip it out, then append.
-        let stripped = strip_ai_section(&existing);
-        let new_content = format!("{}\n{}", stripped.trim_end(), snippet);
-        std::fs::write(&path, new_content)?;
-    } else {
-        // Config doesn't exist — seed from template, then append.
-        let mut content = crate::config::CONFIG_TEMPLATE.to_string();
-        content.push_str(&snippet);
-        std::fs::write(&path, content)?;
-    }
-
-    Ok(())
+    Ok(backend_selected)
 }
 
-/// Remove any existing `[ai]` and `[ai.*]` sections from raw TOML text.
-/// Returns the text with those sections stripped so we can append fresh ones.
-fn strip_ai_section(text: &str) -> String {
-    let mut result = Vec::new();
-    let mut skipping = false;
+/// Owned keys: `ai.ollama.{model_low,model_medium,model_high}`, `ai.ollama.host`
+/// when absent, and `ai.backend` only when unset or already `"ollama"`.
+/// Everything else, including `[ai.local]`, budget caps, and comments, is untouched.
+fn apply_ollama_config(doc: &mut toml_edit::DocumentMut, model: &str) -> Result<bool, String> {
+    use crate::config::edit::set_value;
+    use toml_edit::Value;
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[ai]" || trimmed.starts_with("[ai.") {
-            skipping = true;
-            continue;
+    let ai = doc.get("ai");
+    let backend_selected = match ai.and_then(|a| a.get("backend")).and_then(|b| b.as_str()) {
+        None | Some("ollama") => {
+            set_value(doc, &["ai", "backend"], Value::from("ollama"))?;
+            true
         }
-        // A new top-level section (not ai) ends the skip.
-        if skipping && trimmed.starts_with('[') && !trimmed.starts_with("[ai") {
-            skipping = false;
-        }
-        if !skipping {
-            result.push(line);
-        }
+        Some(_) => false,
+    };
+    if doc
+        .get("ai")
+        .and_then(|a| a.get("ollama"))
+        .and_then(|o| o.get("host"))
+        .is_none()
+    {
+        set_value(
+            doc,
+            &["ai", "ollama", "host"],
+            Value::from("http://localhost:11434"),
+        )?;
     }
-
-    result.join("\n")
+    for key in ["model_low", "model_medium", "model_high"] {
+        set_value(doc, &["ai", "ollama", key], Value::from(model))?;
+    }
+    Ok(backend_selected)
 }
 
 pub fn ai_setup_cli() -> i32 {
@@ -580,14 +582,14 @@ pub fn ai_setup_cli() -> i32 {
         println!("{bold}Step 1/3: Install Ollama{reset}");
         println!("  Ollama is not installed.");
         println!();
-        println!("  Install with Homebrew:");
-        println!("    {dim}brew install ollama{reset}");
-        println!();
-        println!("  Or with the official installer:");
-        println!("    {dim}curl -fsSL https://ollama.com/install.sh | sh{reset}");
+        println!("  Install Ollama:");
+        println!("    {dim}{}{reset}", install_hint(OLLAMA_INSTALL));
         println!();
         println!("{yellow}Re-run `plexi ai setup` after installing Ollama.{reset}");
-        crate::cli::print_tip("After `brew install ollama`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.");
+        crate::cli::print_tip(&format!(
+            "After `{}`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.",
+            install_hint(OLLAMA_INSTALL)
+        ));
         return 0;
     }
 
@@ -609,7 +611,7 @@ pub fn ai_setup_cli() -> i32 {
         println!("    {dim}ollama serve{reset}");
         println!();
         println!("{yellow}Re-run `plexi ai setup` after starting Ollama.{reset}");
-        crate::cli::print_tip("Open a new Plexi pane with Cmd+D, run `ollama serve`, then come back and re-run `plexi ai setup`.");
+        crate::cli::print_tip("Run `ollama serve` in another terminal pane, then come back and re-run `plexi ai setup`.");
         return 0;
     }
 
@@ -670,12 +672,13 @@ pub fn ai_setup_cli() -> i32 {
         config_path.display()
     );
 
-    match write_ollama_config(recommended_model) {
-        Ok(()) => {
+    let backend_selected = match write_ollama_config(recommended_model) {
+        Ok(backend_selected) => {
             println!(
                 "{green}\u{2713}{reset} Config updated: {}",
                 config_path.display()
             );
+            backend_selected
         }
         Err(e) => {
             log::warn!("cli:ai:setup: failed to write config: {e}");
@@ -698,11 +701,16 @@ pub fn ai_setup_cli() -> i32 {
             eprintln!("model_high   = \"{recommended_model}\"");
             return 1;
         }
-    }
+    };
 
     println!();
     println!("{bold}Setup complete!{reset}");
-    println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+    if backend_selected {
+        println!("  Plexi plugins using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+    } else {
+        println!("  [ai.ollama] is configured with {green}{recommended_model}{reset}; your existing `ai.backend` was left unchanged.");
+        println!("  Set `backend = \"ollama\"` under [ai] to switch to it.");
+    }
     println!();
     println!("Next steps:");
     println!("  {dim}plexi ai doctor{reset}    — verify your full AI configuration");
@@ -783,7 +791,10 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
         }
     } else {
         print_report(&hw, &integrations, &recommendation);
-        crate::cli::print_tip("Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `brew install ollama && ollama pull llama3.2:3b` for local AI.");
+        crate::cli::print_tip(&format!(
+            "Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `{}` then `ollama pull llama3.2:3b` for local AI.",
+            install_hint(OLLAMA_INSTALL)
+        ));
     }
 
     0
@@ -824,8 +835,8 @@ mod tests {
         assert!(guide.contains("install Ollama"));
         assert!(guide.contains("plexi ai setup"));
         assert!(guide.contains("plexi secret set OPENROUTER_API_KEY --global"));
-        assert!(guide.contains("plexi app install --pack core"));
-        assert!(guide.contains("plexi app install <id>"));
+        assert!(guide.contains("plexi plugin install --pack core"));
+        assert!(guide.contains("plexi plugin install <id>"));
     }
 
     #[test]
@@ -841,7 +852,7 @@ mod tests {
 
         assert!(guide.contains("Cloud AI is ready"));
         assert!(guide.contains("plexi ai doctor"));
-        assert!(guide.contains("plexi app install --pack core"));
+        assert!(guide.contains("plexi plugin install --pack core"));
     }
 
     #[test]
@@ -872,5 +883,87 @@ mod tests {
 
         assert!(guide.contains("ollama pull llama3.2:3b"));
         assert!(!guide.contains("ollama pull openrouter/"));
+    }
+
+    const SEEDED: &str = r#"# top comment
+[general]
+theme = "dark" # inline
+
+[ai]
+# which provider answers ai.query
+backend = "local"
+# budget caps
+per_app_daily_usd = 0.50
+global_daily_usd = 5.00
+
+[ai.local]
+# Meridian proxy
+base_url = "http://127.0.0.1:3456"
+model_low = "haiku"
+model_medium = "sonnet"
+model_high = "opus"
+
+[marketplace]
+submit_url = "https://example.test"
+"#;
+
+    fn apply(src: &str, model: &str) -> (String, bool) {
+        let mut doc: toml_edit::DocumentMut = src.parse().unwrap();
+        let selected = super::apply_ollama_config(&mut doc, model).unwrap();
+        (doc.to_string(), selected)
+    }
+
+    #[test]
+    fn setup_preserves_unowned_ai_config_and_comments() {
+        let (out, selected) = apply(SEEDED, "llama3.2:3b");
+        assert!(!selected, "explicit backend = local must not be switched");
+        let before: toml::Table = SEEDED.parse().unwrap();
+        let after: toml::Table = out.parse().expect("output must stay valid TOML");
+
+        let mut expected = before.clone();
+        let ai = expected["ai"].as_table_mut().unwrap();
+        ai.insert(
+            "ollama".into(),
+            toml::Value::Table(
+                [
+                    ("host", "http://localhost:11434"),
+                    ("model_low", "llama3.2:3b"),
+                    ("model_medium", "llama3.2:3b"),
+                    ("model_high", "llama3.2:3b"),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), toml::Value::String(v.to_string())))
+                .collect(),
+            ),
+        );
+        assert_eq!(after, expected, "only [ai.ollama] may be added");
+        for comment in [
+            "# top comment",
+            "# inline",
+            "# which provider answers ai.query",
+            "# budget caps",
+            "# Meridian proxy",
+        ] {
+            assert!(out.contains(comment), "lost comment {comment:?}");
+        }
+        assert!(out.contains("[ai.local]\n# Meridian proxy"));
+    }
+
+    #[test]
+    fn setup_activates_ollama_when_no_backend_chosen() {
+        let out = apply("[general]\ntheme = \"dark\"\n", "m").0;
+        let t: toml::Table = out.parse().unwrap();
+        assert_eq!(t["ai"]["backend"].as_str(), Some("ollama"));
+        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("m"));
+    }
+
+    #[test]
+    fn setup_rewrites_existing_ollama_table_in_place() {
+        let src = "[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\n# mine\nhost = \"http://x:1\"\nmodel_low = \"old\"\n";
+        let out = apply(src, "new").0;
+        let t: toml::Table = out.parse().unwrap();
+        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("new"));
+        assert_eq!(t["ai"]["ollama"]["model_high"].as_str(), Some("new"));
+        assert!(out.contains("# mine"));
     }
 }

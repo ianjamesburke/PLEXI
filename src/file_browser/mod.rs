@@ -1,18 +1,24 @@
 mod helpers;
 mod icons;
+pub mod intent;
 
-/// Re-exported so the host open resolver (`app::canvas_bindings`) can use the
+/// Re-exported so the host open resolver (`plugin::canvas_bindings`) can use the
 /// same media classification the File Explorer does (#2283).
 pub(crate) use helpers::MediaKind;
+pub use helpers::{ColumnId, Entry, SortDirection};
+pub use intent::{
+    parse_file_explorer_intent, rank_file_explorer_candidates, CandidateResolution,
+    FileExplorerContext, FileExplorerIntent, PaletteCandidate,
+};
 
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
-use crate::ui::list::{self, ListRow};
+use crate::ui::list;
 use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::text_field::TextField;
 use crate::ui::theme::Colors;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind};
+use egui::{Color32, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use helpers::{
     format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
-    ColumnConfig, ColumnId, ColumnModel, DirStats, Entry, SortDirection, TextPreview,
+    ColumnConfig, ColumnModel, DirStats, TextPreview,
 };
 use icons::paint_entry_icon;
 
@@ -29,6 +35,9 @@ const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = style::TABLE_HEADER_H;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_DENSE_H;
+const FONT_SIZE_DEFAULT: f32 = style::TEXT_HINT;
+const FONT_SIZE_MIN: f32 = 9.0;
+const FONT_SIZE_MAX: f32 = 32.0;
 // Total footer reservation subtracted from the body scroll area: SPACE_XS
 // gap + separator + the status row + item spacing. Must cover everything
 // draw_status_bar allocates or the footer collides with the list rows.
@@ -39,32 +48,13 @@ const INSPECTOR_DEFAULT_WIDTH: f32 = 280.0;
 const INSPECTOR_MIN_PANEL_WIDTH: f32 = 220.0;
 const INSPECTOR_SPLITTER_W: f32 = 7.0;
 const QUICK_LOOK_TEXT_LINES: usize = 24;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileBrowserLayout {
-    CompactList,
-    DetailsTable,
-}
-
-impl FileBrowserLayout {
-    fn for_width(width: f32) -> Self {
-        if width >= DETAILS_TABLE_MIN_WIDTH {
-            Self::DetailsTable
-        } else {
-            Self::CompactList
-        }
-    }
-
-    fn shows_details(self) -> bool {
-        matches!(self, Self::DetailsTable)
-    }
-}
+const PALETTE_MAX_VISIBLE_CANDIDATES: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Normal,
     Search,
-    Empty,
+    Palette,
 }
 
 #[derive(Debug)]
@@ -80,15 +70,21 @@ enum FileBrowserAction {
     Backspace,
     Escape,
     EnterSearch,
+    EnterPaletteSlash,
+    EnterPaletteCommand,
+    TabComplete,
     ToggleSort,
     ToggleInspector,
     ToggleQuickLook,
+    ToggleHidden,
     Refresh,
     CdTerminalAndClose,
     SelectAll,
+    NewFile,
     NewFolder,
     Rename,
     Copy,
+    CopyPath,
     Cut,
     Paste,
     MoveToTrash,
@@ -112,11 +108,7 @@ struct FileOperationClipboard {
 /// Paint `texture` centered in `slot`, scaled down to fit without cropping or
 /// distortion. Never scales up: a small image sits at its native size in the
 /// middle of the slot rather than turning into a blurry stretch.
-fn paint_fitted_texture(
-    painter: &egui::Painter,
-    slot: egui::Rect,
-    texture: &egui::TextureHandle,
-) {
+fn paint_fitted_texture(painter: &egui::Painter, slot: egui::Rect, texture: &egui::TextureHandle) {
     let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
     let scale = (slot.width() / tex_size.x)
         .min(slot.height() / tex_size.y)
@@ -135,66 +127,133 @@ enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
 }
 
-
 fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
     input.events().iter().any(
         |e| matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key),
     )
 }
 
-// in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
-// to AppendText instead of firing navigation/action commands while the user
-// is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
+fn cmd_key_pressed_no_repeat(
+    input: &crate::app::input_router::PlexiInput,
+    key: egui::Key,
+    shift: bool,
+) -> bool {
+    input.events().iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key {
+                key: k,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if *k == key
+                && (modifiers.command || input.modifiers().command)
+                && (modifiers.shift || input.modifiers().shift) == shift
+        )
+    })
+}
+
+// text_entry_active (search or palette) gates all letter keys so that
+// j/k/h/l/s/r/slash fall through to AppendText instead of firing navigation or
+// action commands while the user is typing a query. Arrow keys, Enter, Escape,
+// and Backspace always work.
 fn classify_key(
     input: &crate::app::input_router::PlexiInput,
-    in_search: bool,
+    text_entry_active: bool,
 ) -> Option<FileBrowserAction> {
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::A) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Period, true) {
+        return Some(FileBrowserAction::ToggleHidden);
+    }
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::R, true) {
+        return Some(FileBrowserAction::Refresh);
+    }
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::C, true) {
+        return Some(FileBrowserAction::CopyPath);
+    }
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::A, false) {
         return Some(FileBrowserAction::SelectAll);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::N) {
+    if cmd_key_pressed_no_repeat(input, egui::Key::N, false) {
+        return Some(FileBrowserAction::NewFile);
+    }
+    if cmd_key_pressed_no_repeat(input, egui::Key::N, true) {
         return Some(FileBrowserAction::NewFolder);
     }
-    // Command chords belong to the host shortcut router. F2 is the
-    // platform-neutral file-manager rename key and cannot collide with pane
-    // rename (Cmd+R).
-    if !in_search && key_pressed_no_repeat(input, egui::Key::F2) && !input.modifiers().any() {
+    if cmd_key_pressed_no_repeat(input, egui::Key::K, false) {
+        return Some(FileBrowserAction::EnterPaletteCommand);
+    }
+    if cmd_key_pressed_no_repeat(input, egui::Key::F, false) {
+        return Some(FileBrowserAction::EnterSearch);
+    }
+    // Command chords belong to the host shortcut router. F2 and bare `r` are
+    // the file-manager rename keys and cannot collide with pane rename (Cmd+R).
+    if !text_entry_active
+        && !input.modifiers().any()
+        && (key_pressed_no_repeat(input, egui::Key::F2)
+            || key_pressed_no_repeat(input, egui::Key::R))
+    {
         return Some(FileBrowserAction::Rename);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C) {
+    if !text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Y)
+    {
+        return Some(FileBrowserAction::CopyPath);
+    }
+    if !text_entry_active
+        && !input.modifiers().shift
+        && (cmd_key_pressed_no_repeat(input, egui::Key::C, false)
+            || input
+                .events()
+                .iter()
+                .any(|e| matches!(e, egui::Event::Copy)))
+    {
         return Some(FileBrowserAction::Copy);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::X) {
+    if !text_entry_active
+        && !input.modifiers().shift
+        && (cmd_key_pressed_no_repeat(input, egui::Key::X, false)
+            || input.events().iter().any(|e| matches!(e, egui::Event::Cut)))
+    {
         return Some(FileBrowserAction::Cut);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::V) {
+    if !text_entry_active
+        && !input.modifiers().shift
+        && (cmd_key_pressed_no_repeat(input, egui::Key::V, false)
+            || input
+                .events()
+                .iter()
+                .any(|e| matches!(e, egui::Event::Paste(_))))
+    {
         return Some(FileBrowserAction::Paste);
     }
     // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
     // File Browser unless the full shortcut map is reviewed.
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Backspace)
-    {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Backspace, false) {
         return Some(FileBrowserAction::MoveToTrash);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::O) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::O, false) {
         return Some(FileBrowserAction::OpenWithDefault);
     }
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Enter) {
+    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Enter, false) {
         return Some(FileBrowserAction::Reveal);
     }
     if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
+    if text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Tab)
+    {
+        return Some(FileBrowserAction::TabComplete);
+    }
     if key_pressed_no_repeat(input, egui::Key::Backspace) {
         return Some(FileBrowserAction::Backspace);
     }
     if input.key_pressed(egui::Key::ArrowDown)
-        || (!in_search && input.key_pressed(egui::Key::J) && !input.modifiers().any())
+        || (!text_entry_active && input.key_pressed(egui::Key::J) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectNext);
     }
     if input.key_pressed(egui::Key::ArrowUp)
-        || (!in_search && input.key_pressed(egui::Key::K) && !input.modifiers().any())
+        || (!text_entry_active && input.key_pressed(egui::Key::K) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectPrev);
     }
@@ -212,39 +271,47 @@ fn classify_key(
     }
     if !input.modifiers().command
         && (key_pressed_no_repeat(input, egui::Key::Enter)
-            || key_pressed_no_repeat(input, egui::Key::ArrowRight)
-            || (!in_search && key_pressed_no_repeat(input, egui::Key::L)))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowRight))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::L)))
     {
         return Some(FileBrowserAction::Activate);
     }
     if !input.modifiers().command
-        && (key_pressed_no_repeat(input, egui::Key::ArrowLeft)
-            || (!in_search && key_pressed_no_repeat(input, egui::Key::H)))
+        && ((!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowLeft))
+            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::H)))
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers().command {
-        return Some(FileBrowserAction::EnterSearch);
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::Slash)
+        && !input.modifiers().command
+    {
+        return Some(FileBrowserAction::EnterPaletteSlash);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any() {
+    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any() {
+    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleInspector);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers().any() {
+    if !text_entry_active
+        && key_pressed_no_repeat(input, egui::Key::Space)
+        && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::ToggleQuickLook);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers().any() {
-        return Some(FileBrowserAction::Refresh);
-    }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any() {
+    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any()
+    {
         return Some(FileBrowserAction::CdTerminalAndClose);
     }
     let mut text = String::new();
     for event in input.events() {
-        if let egui::Event::Text(t) = event {
-            text.push_str(t);
+        match event {
+            egui::Event::Text(t) => text.push_str(t),
+            egui::Event::Paste(p) if text_entry_active => text.push_str(p),
+            _ => {}
         }
     }
     if !text.is_empty() {
@@ -253,13 +320,14 @@ fn classify_key(
     None
 }
 
-pub struct FileBrowserApp {
+pub struct FileBrowserView {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
     multi_selected: BTreeSet<PathBuf>,
     selection_anchor: Option<usize>,
     columns: ColumnModel,
+    font_size: f32,
     error: Option<String>,
     // Image preview
     preview_texture: Option<egui::TextureHandle>,
@@ -277,27 +345,76 @@ pub struct FileBrowserApp {
     inspector_width: f32,
     quick_look_open: bool,
     operation_clipboard: Option<FileOperationClipboard>,
+    pending_clipboard_text: Option<String>,
     pending_operation: Option<PendingFileOperation>,
     rename_path: Option<PathBuf>,
     rename_buffer: String,
-    pending_cmds: Vec<AppCommand>,
+    pending_cmds: Vec<ViewCommand>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
     /// Remembers which entry was selected when leaving a directory,
     /// so navigating back restores the selection.
     directory_selection_memory: std::collections::HashMap<PathBuf, String>,
-    // Fuzzy search
+    // Fuzzy + deep search (stint 0814)
     in_search: bool,
     search_query: String,
     search_indices: Vec<usize>, // indices into `entries` that match the query
+    search_session: crate::search::SearchSession,
+    search_focus_pending: bool,
+    // Action palette (`/` and `Cmd+K`, stint 0813)
+    in_palette: bool,
+    palette_query: String,
+    palette_selected: usize,
+    palette_focus_pending: bool,
+    palette_cursor_to_end: bool,
+    palette_suppress_initial_slash: bool,
     should_close: bool,
+    /// Watch on `cwd`, armed lazily from `service_external` and re-armed when
+    /// `cwd` moves, so files an agent creates, deletes or renames show up.
+    watch: Option<(PathBuf, crate::host::path_watch::PathWatch)>,
     /// In tests: collects paths passed to open_file instead of spawning the system opener.
     #[cfg(test)]
     pub(crate) opened_files: Vec<PathBuf>,
+    /// In tests: records the most recent path string copied via `CopyPath`.
+    #[cfg(test)]
+    pub(crate) last_copied_path: Option<String>,
+    /// In tests: captures the last rendered status-bar geometry for alignment assertions.
+    #[cfg(test)]
+    pub(crate) last_status_bar_layout: Option<StatusBarLayout>,
 }
 
-impl FileBrowserApp {
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct StatusBarLayout {
+    pub(crate) row_rect: egui::Rect,
+    pub(crate) item_count_rect: egui::Rect,
+    pub(crate) chip_rects: Vec<egui::Rect>,
+    pub(crate) label_rects: Vec<egui::Rect>,
+}
+
+/// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
+/// Trash see them. `NSFileManager` is chosen over the crate's Finder default
+/// because it needs no Automation permission prompt.
+fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let context = {
+        let mut context = trash::TrashContext::default();
+        trash::macos::TrashContextExtMacos::set_delete_method(
+            &mut context,
+            trash::macos::DeleteMethod::NsFileManager,
+        );
+        context
+    };
+    #[cfg(not(target_os = "macos"))]
+    let context = trash::TrashContext::default();
+    context
+        .delete_all(paths)
+        .map_err(|err| format!("Unable to move {} item(s) to the Trash: {err}", paths.len()))
+}
+
+impl FileBrowserView {
     pub fn new(cwd: PathBuf) -> Self {
+        log::info!("file_browser: opened with middle-elided filenames and tabular counts");
         let mut app = Self {
             cwd,
             entries: Vec::new(),
@@ -305,6 +422,7 @@ impl FileBrowserApp {
             multi_selected: BTreeSet::new(),
             selection_anchor: None,
             columns: ColumnModel::default(),
+            font_size: FONT_SIZE_DEFAULT,
             error: None,
             preview_texture: None,
             preview_texture_path: None,
@@ -319,6 +437,7 @@ impl FileBrowserApp {
             inspector_width: INSPECTOR_DEFAULT_WIDTH,
             quick_look_open: false,
             operation_clipboard: None,
+            pending_clipboard_text: None,
             pending_operation: None,
             rename_path: None,
             rename_buffer: String::new(),
@@ -328,12 +447,42 @@ impl FileBrowserApp {
             in_search: false,
             search_query: String::new(),
             search_indices: Vec::new(),
+            search_session: crate::search::SearchSession::new(),
+            search_focus_pending: false,
+            in_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            palette_focus_pending: false,
+            palette_cursor_to_end: false,
+            palette_suppress_initial_slash: false,
             should_close: false,
+            watch: None,
             #[cfg(test)]
             opened_files: Vec::new(),
+            #[cfg(test)]
+            last_copied_path: None,
+            #[cfg(test)]
+            last_status_bar_layout: None,
         };
         app.refresh();
+        log::info!(
+            "file_browser: initial listing populated cwd={} entries={}",
+            app.cwd.display(),
+            app.entries.len()
+        );
         app
+    }
+
+    fn font_scale(&self) -> f32 {
+        self.font_size / FONT_SIZE_DEFAULT
+    }
+
+    fn row_height(&self) -> f32 {
+        (DETAILS_ROW_H * self.font_scale()).round()
+    }
+
+    fn header_height(&self) -> f32 {
+        (DETAILS_HEADER_H * self.font_scale()).round()
     }
 
     fn refresh(&mut self) {
@@ -347,7 +496,7 @@ impl FileBrowserApp {
                         let name = e.file_name().to_string_lossy().to_string();
                         let path = e.path();
                         let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                        if name.starts_with('.') && !is_dir && !self.columns.show_hidden {
+                        if name.starts_with('.') && !self.columns.show_hidden {
                             return None;
                         }
                         let meta = e.metadata().ok();
@@ -389,7 +538,6 @@ impl FileBrowserApp {
                             created,
                             extension: ext,
                             permissions: permissions.to_string(),
-                            tags: Vec::new(),
                         })
                     })
                     .collect();
@@ -405,16 +553,69 @@ impl FileBrowserApp {
                 self.multi_selected.retain(|path| live_paths.contains(path));
             }
             Err(e) => {
+                log::info!(
+                    "file_browser: listing failed to read directory cwd={}: {e}",
+                    self.cwd.display()
+                );
                 self.error = Some(format!("Cannot read directory: {e}"));
             }
         }
     }
 
+    fn shallow_walk_entries(&self) -> Vec<crate::search::WalkEntry> {
+        self.entries
+            .iter()
+            .map(|e| crate::search::WalkEntry {
+                path: e.path.clone(),
+                rel_path: e.name.clone(),
+                file_name: e.name.clone(),
+                is_dir: e.is_dir,
+                size_bytes: e.size_bytes,
+                modified: e.modified,
+                depth: 1,
+            })
+            .collect()
+    }
+
+    fn sync_search_indices(&mut self) {
+        self.search_indices = self
+            .search_session
+            .hits()
+            .iter()
+            .filter_map(|hit| self.entries.iter().position(|e| e.path == hit.path))
+            .collect();
+    }
+
     fn refresh_preserving_filter(&mut self) {
         self.refresh();
         if self.in_search {
-            self.refilter();
+            let shallow = self.shallow_walk_entries();
+            let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
+            self.search_session
+                .update_query(&self.cwd, hidden, &self.search_query, &shallow, true);
+            self.sync_search_indices();
+            self.selected = self
+                .selected
+                .min(self.search_session.hits().len().saturating_sub(1));
         }
+    }
+
+    /// Refresh after an external change, keeping the selected path selected
+    /// (the index alone would drift when a file lands above it) and the filter
+    /// intact. Does not scroll: the user may be looking elsewhere.
+    fn refresh_after_external_change(&mut self) {
+        let selected_path = self.selected_entry_or_hit().map(|entry| entry.path);
+        let scroll = self.pending_scroll;
+        self.refresh_preserving_filter();
+        if let Some(path) = selected_path {
+            self.select_path(&path);
+        }
+        self.pending_scroll = scroll;
+        log::info!(
+            "file_browser: listing refreshed after external change cwd={} entries={}",
+            self.cwd.display(),
+            self.entries.len()
+        );
     }
 
     fn navigate_into(&mut self, path: PathBuf) {
@@ -445,7 +646,7 @@ impl FileBrowserApp {
                 path.display()
             );
         }
-        self.pending_cmds.push(AppCommand::OpenArtifact {
+        self.pending_cmds.push(ViewCommand::OpenArtifact {
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
             path: path.to_string_lossy().to_string(),
             mode: crate::protocol::ArtifactOpenMode::OpenInPane,
@@ -460,7 +661,7 @@ impl FileBrowserApp {
             "file_browser: explicit cd handoff to linked terminal: '{}'",
             self.cwd.display()
         );
-        self.pending_cmds.push(AppCommand::CdRequest {
+        self.pending_cmds.push(ViewCommand::CdRequest {
             cwd: self.cwd.to_string_lossy().to_string(),
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
         });
@@ -468,6 +669,10 @@ impl FileBrowserApp {
     }
 
     fn navigate_up(&mut self) {
+        if self.in_search {
+            self.exit_search();
+            return;
+        }
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
             let leaving_name = self
                 .cwd
@@ -489,11 +694,58 @@ impl FileBrowserApp {
         }
     }
 
+    fn selected_search_hit(&self) -> Option<&crate::search::SearchHit> {
+        if self.in_search {
+            self.search_session.hits().get(self.selected)
+        } else {
+            None
+        }
+    }
+
+    fn entry_from_search_hit(hit: &crate::search::SearchHit) -> Entry {
+        let ext = hit
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let is_image = ext
+            .as_deref()
+            .map(|e| matches!(e, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"))
+            .unwrap_or(false);
+        Entry {
+            name: hit.file_name.clone(),
+            path: hit.path.clone(),
+            is_dir: hit.is_dir,
+            is_image,
+            size_bytes: hit.size_bytes,
+            modified: hit.modified,
+            created: None,
+            extension: ext,
+            permissions: "rw".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn search_result_count(&self) -> usize {
+        self.search_session.hits().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_in_search(&self) -> bool {
+        self.in_search
+    }
+
+    fn selected_entry_or_hit(&self) -> Option<Entry> {
+        if let Some(entry) = self.selected_entry() {
+            return Some(entry.clone());
+        }
+        self.selected_search_hit().map(Self::entry_from_search_hit)
+    }
+
     fn selected_entry(&self) -> Option<&Entry> {
         if self.in_search {
-            self.search_indices
-                .get(self.selected)
-                .and_then(|&i| self.entries.get(i))
+            let hit = self.search_session.hits().get(self.selected)?;
+            self.entries.iter().find(|e| e.path == hit.path)
         } else {
             self.entries.get(self.selected)
         }
@@ -519,14 +771,22 @@ impl FileBrowserApp {
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
-        self.selected_visible_entry_indices()
-            .into_iter()
-            .filter_map(|idx| self.entries.get(idx).map(|entry| entry.path.clone()))
-            .collect()
+        if self.in_search {
+            self.selected_search_hit()
+                .map(|hit| vec![hit.path.clone()])
+                .unwrap_or_default()
+        } else {
+            self.selected_visible_entry_indices()
+                .into_iter()
+                .filter_map(|idx| self.entries.get(idx).map(|entry| entry.path.clone()))
+                .collect()
+        }
     }
 
     fn selected_count(&self) -> usize {
-        if self.multi_selected.is_empty() {
+        if self.in_search {
+            usize::from(self.selected_search_hit().is_some())
+        } else if self.multi_selected.is_empty() {
             usize::from(self.selected_entry().is_some())
         } else {
             self.multi_selected.len()
@@ -607,32 +867,255 @@ impl FileBrowserApp {
     }
 
     fn refilter(&mut self) {
-        let q = self.search_query.to_lowercase();
-        self.search_indices = (0..self.entries.len())
-            .filter(|&i| {
-                if q.is_empty() {
-                    return true;
-                }
-                let name = self.entries[i].name.to_lowercase();
-                let mut qi = q.chars().peekable();
-                for c in name.chars() {
-                    if qi.peek() == Some(&c) {
-                        qi.next();
-                    }
-                }
-                qi.peek().is_none()
-            })
-            .collect();
+        let shallow = self.shallow_walk_entries();
+        let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
+        self.search_session
+            .update_query(&self.cwd, hidden, &self.search_query, &shallow, false);
+        self.sync_search_indices();
         self.selected = 0;
         self.pending_scroll = true;
     }
 
+    fn enter_search(&mut self) {
+        if !self.in_search {
+            self.in_search = true;
+            self.search_focus_pending = true;
+            log::info!("file_browser: entering search mode");
+        }
+    }
+
     fn exit_search(&mut self) {
-        self.in_search = false;
-        self.search_query.clear();
-        self.search_indices.clear();
-        self.selected = 0;
-        self.pending_scroll = true;
+        if self.in_search {
+            self.in_search = false;
+            self.search_focus_pending = false;
+            self.search_query.clear();
+            self.search_indices.clear();
+            self.search_session.clear();
+            self.selected = 0;
+            self.pending_scroll = true;
+            log::info!("file_browser: exiting search mode");
+        }
+    }
+
+    pub fn open_palette(&mut self, initial_query: &str) {
+        if self.in_search {
+            self.exit_search();
+        }
+        self.in_palette = true;
+        self.palette_query = initial_query.to_string();
+        self.palette_selected = 0;
+        self.palette_focus_pending = true;
+        self.palette_cursor_to_end = true;
+        self.palette_suppress_initial_slash = initial_query == "/";
+        log::info!(
+            "file_browser: entering action palette initial_query={:?}",
+            initial_query
+        );
+    }
+
+    pub fn exit_palette(&mut self) {
+        self.in_palette = false;
+        self.palette_focus_pending = false;
+        self.palette_cursor_to_end = false;
+        self.palette_suppress_initial_slash = false;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+    }
+
+    pub fn intent_context<'a>(&'a self, selected_paths: &'a [PathBuf]) -> FileExplorerContext<'a> {
+        FileExplorerContext::new(
+            &self.cwd,
+            self.selected_entry(),
+            selected_paths,
+            &self.entries,
+            self.columns.show_hidden,
+            self.columns.folders_on_top,
+        )
+    }
+
+    pub fn parse_intent(&self, input: &str) -> Option<FileExplorerIntent> {
+        let selected_paths = self.selected_paths();
+        let ctx = self.intent_context(&selected_paths);
+        parse_file_explorer_intent(input, &ctx)
+    }
+
+    pub fn rank_palette_candidates(&self) -> Vec<PaletteCandidate> {
+        let selected_paths = self.selected_paths();
+        let ctx = self.intent_context(&selected_paths);
+        rank_file_explorer_candidates(&self.palette_query, &ctx)
+    }
+
+    fn tab_complete_palette(&mut self) {
+        let candidates = self.rank_palette_candidates();
+        let Some(chosen) = candidates
+            .get(self.palette_selected)
+            .or_else(|| candidates.first())
+        else {
+            return;
+        };
+        match &chosen.resolution {
+            CandidateResolution::NeedsSlot { prompt_prefix, .. } => {
+                self.palette_query = (*prompt_prefix).to_string();
+                self.palette_selected = 0;
+                self.palette_focus_pending = true;
+                self.palette_cursor_to_end = true;
+            }
+            CandidateResolution::Ready(_) => {
+                let cmd = chosen
+                    .slash_syntax
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(chosen.slash_syntax);
+                self.palette_query = cmd.to_string();
+                self.palette_selected = 0;
+                self.palette_focus_pending = true;
+                self.palette_cursor_to_end = true;
+            }
+        }
+    }
+
+    fn submit_palette(&mut self) {
+        let candidates = self.rank_palette_candidates();
+        if let Some(chosen) = candidates
+            .get(self.palette_selected)
+            .or_else(|| candidates.first())
+            .cloned()
+        {
+            match chosen.resolution {
+                CandidateResolution::Ready(intent) => {
+                    self.exit_palette();
+                    if let Err(err) = self.execute_intent(intent) {
+                        self.error = Some(err);
+                    }
+                }
+                CandidateResolution::NeedsSlot { prompt_prefix, .. } => {
+                    self.palette_query = prompt_prefix.to_string();
+                    self.palette_selected = 0;
+                    self.palette_focus_pending = true;
+                    self.palette_cursor_to_end = true;
+                    log::info!(
+                        "file_browser: palette prompting for slot prefix={:?}",
+                        prompt_prefix
+                    );
+                }
+            }
+            return;
+        }
+
+        if let Some(intent) = self.parse_intent(&self.palette_query) {
+            self.exit_palette();
+            if let Err(err) = self.execute_intent(intent) {
+                self.error = Some(err);
+            }
+        }
+    }
+
+    pub fn execute_intent(&mut self, intent: FileExplorerIntent) -> Result<(), String> {
+        log::info!("file_browser: palette intent={:?}", intent);
+        match intent {
+            FileExplorerIntent::CreateFile {
+                name,
+                open_in_editor,
+            } => {
+                self.create_named_file(&name, open_in_editor)?;
+                Ok(())
+            }
+            FileExplorerIntent::CreateFolder { name } => {
+                self.create_named_folder(&name)?;
+                Ok(())
+            }
+            FileExplorerIntent::Rename { target, new_name } => {
+                self.rename_path = Some(target);
+                let result = self.rename_selected(&new_name);
+                self.rename_path = None;
+                self.rename_buffer.clear();
+                result.map(|_| ())
+            }
+            FileExplorerIntent::MoveToTrash { targets } => {
+                if targets.is_empty() {
+                    return Err("No items selected to move to Trash".to_string());
+                }
+                log::info!(
+                    "file_browser: requested move to trash confirmation count={}",
+                    targets.len()
+                );
+                self.pending_operation = Some(PendingFileOperation::MoveToTrash { paths: targets });
+                Ok(())
+            }
+            FileExplorerIntent::OpenInEditor { path } => {
+                if path.is_dir() {
+                    self.navigate_into(path);
+                } else {
+                    self.open_file(&path);
+                }
+                Ok(())
+            }
+            FileExplorerIntent::OpenWithDefault { path } => {
+                log::info!("file_browser: open with default '{}'", path.display());
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                });
+                Ok(())
+            }
+            FileExplorerIntent::Reveal { path } => {
+                log::info!("file_browser: reveal '{}'", path.display());
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                });
+                Ok(())
+            }
+            FileExplorerIntent::CdTerminal { path } => {
+                let target_dir = if path.is_dir() {
+                    path
+                } else {
+                    path.parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| self.cwd.clone())
+                };
+                log::info!(
+                    "file_browser: explicit cd handoff to linked terminal: '{}'",
+                    target_dir.display()
+                );
+                self.pending_cmds.push(ViewCommand::CdRequest {
+                    cwd: target_dir.to_string_lossy().to_string(),
+                    sender_pane_id: 0,
+                });
+                self.should_close = true;
+                Ok(())
+            }
+            FileExplorerIntent::SortBy { column, direction } => {
+                self.columns.sort = helpers::SortDescriptor { column, direction };
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: sort changed to {} {}",
+                    column.key(),
+                    direction.key()
+                );
+                Ok(())
+            }
+            FileExplorerIntent::ToggleHidden { enabled } => {
+                self.columns.show_hidden = enabled.unwrap_or(!self.columns.show_hidden);
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: show_hidden toggled to {}",
+                    self.columns.show_hidden
+                );
+                Ok(())
+            }
+            FileExplorerIntent::ToggleFoldersFirst { enabled } => {
+                self.columns.folders_on_top = enabled.unwrap_or(!self.columns.folders_on_top);
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: folders_on_top changed to {}",
+                    self.columns.folders_on_top
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Called by the host when the linked terminal's CWD changes.
@@ -802,8 +1285,15 @@ impl FileBrowserApp {
         }
     }
 
-    fn create_new_folder(&mut self) -> Result<PathBuf, String> {
-        let path = Self::unique_child_path(&self.cwd, "Untitled Folder", None);
+    fn create_named_folder(&mut self, name: &str) -> Result<PathBuf, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') {
+            return Err("Folder name must be a non-empty single name".to_string());
+        }
+        if trimmed.starts_with('.') && !self.columns.show_hidden {
+            self.columns.show_hidden = true;
+        }
+        let path = self.cwd.join(trimmed);
         fs::create_dir(&path).map_err(|err| {
             let msg = format!("Unable to create folder '{}': {err}", path.display());
             log::warn!("file_browser: {msg}");
@@ -812,6 +1302,43 @@ impl FileBrowserApp {
         log::info!("file_browser: created folder '{}'", path.display());
         self.refresh_preserving_filter();
         self.select_path(&path);
+        Ok(path)
+    }
+
+    fn create_named_file(&mut self, name: &str, open_in_editor: bool) -> Result<PathBuf, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') {
+            return Err("File name must be a non-empty single name".to_string());
+        }
+        if trimmed.starts_with('.') && !self.columns.show_hidden {
+            self.columns.show_hidden = true;
+        }
+        let path = self.cwd.join(trimmed);
+        if path.is_dir() {
+            let msg = format!(
+                "Unable to create file '{}': a folder with that name already exists",
+                path.display()
+            );
+            log::warn!("file_browser: {msg}");
+            return Err(msg);
+        }
+        if !path.exists() {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|err| {
+                    let msg = format!("Unable to create file '{}': {err}", path.display());
+                    log::warn!("file_browser: {msg}");
+                    msg
+                })?;
+        }
+        log::info!("file_browser: created file '{}'", path.display());
+        self.refresh_preserving_filter();
+        self.select_path(&path);
+        if open_in_editor {
+            self.open_file(&path);
+        }
         Ok(path)
     }
 
@@ -932,7 +1459,18 @@ impl FileBrowserApp {
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let target = Self::unique_child_path(&self.cwd, file_name, None);
+            let (stem, ext) = if source.is_dir() {
+                (file_name, None)
+            } else {
+                match (
+                    source.file_stem().and_then(|s| s.to_str()),
+                    source.extension().and_then(|e| e.to_str()),
+                ) {
+                    (Some(s), Some(e)) if !s.is_empty() => (s, Some(e)),
+                    _ => (file_name, None),
+                }
+            };
+            let target = Self::unique_child_path(&self.cwd, stem, ext);
             match clipboard.operation {
                 FileOperation::Copy => Self::copy_path_recursive(source, &target)?,
                 FileOperation::Cut => fs::rename(source, &target).map_err(|err| {
@@ -978,29 +1516,11 @@ impl FileBrowserApp {
         };
         match operation {
             PendingFileOperation::MoveToTrash { paths } => {
-                let trash_dir = self.cwd.join(".Trash");
-                fs::create_dir_all(&trash_dir).map_err(|err| {
-                    format!(
-                        "Unable to create trash folder '{}': {err}",
-                        trash_dir.display()
-                    )
-                })?;
-                for source in paths {
-                    let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
-                        continue;
-                    };
-                    let target = Self::unique_child_path(&trash_dir, file_name, None);
-                    fs::rename(&source, &target).map_err(|err| {
-                        format!(
-                            "Unable to move '{}' to trash '{}': {err}",
-                            source.display(),
-                            target.display()
-                        )
-                    })?;
+                move_to_system_trash(&paths)?;
+                for source in &paths {
                     log::info!(
-                        "file_browser: moved '{}' to trash '{}'",
-                        source.display(),
-                        target.display()
+                        "file_browser: moved '{}' to the system Trash",
+                        source.display()
                     );
                 }
             }
@@ -1020,13 +1540,46 @@ impl FileBrowserApp {
     fn reveal_selected(&mut self) {
         for path in self.selected_paths() {
             log::info!("file_browser: reveal '{}'", path.display());
-            self.open_file(&path);
+            self.pending_cmds.push(ViewCommand::OpenArtifact {
+                sender_pane_id: 0,
+                path: path.to_string_lossy().to_string(),
+                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+            });
         }
     }
 
     fn open_selected_with_default(&mut self) {
         for path in self.selected_paths() {
-            self.open_file(&path);
+            log::info!("file_browser: open with default '{}'", path.display());
+            self.pending_cmds.push(ViewCommand::OpenArtifact {
+                sender_pane_id: 0,
+                path: path.to_string_lossy().to_string(),
+                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+            });
+        }
+    }
+
+    fn copy_selected_path(&mut self) {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let text = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        log::info!("file_browser: copied path '{}' to clipboard", text);
+        self.pending_clipboard_text = Some(text.clone());
+        #[cfg(test)]
+        {
+            self.last_copied_path = Some(text);
+        }
+        #[cfg(not(test))]
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Err(err) = clipboard.set_text(&text) {
+                log::warn!("file_browser: clipboard write failed: {err}");
+            }
         }
     }
 
@@ -1051,7 +1604,7 @@ impl FileBrowserApp {
 
     fn visible_entry_count(&self) -> usize {
         if self.in_search {
-            self.search_indices.len()
+            self.search_session.hits().len()
         } else {
             self.entries.len()
         }
@@ -1095,28 +1648,11 @@ impl FileBrowserApp {
                 .clone()
                 .unwrap_or_else(|| "\u{2014}".to_string()),
             ColumnId::Permissions => entry.permissions.clone(),
-            ColumnId::Tags => {
-                if entry.tags.is_empty() {
-                    "\u{2014}".to_string()
-                } else {
-                    entry.tags.join(", ")
-                }
-            }
         }
     }
 
-    fn entry_chip(entry: &Entry) -> &'static str {
-        if entry.is_dir {
-            "dir"
-        } else {
-            "file"
-        }
-    }
-
-    /// Apply one row's click and double-click to the selection. Shared by both
-    /// list views, which differ only in where their response comes from —
-    /// `ListRow::show` in the compact list, `allocate_exact_size` in the
-    /// details table. Returns the navigation target when the row was opened.
+    /// Apply one row's click and double-click to the selection. Returns the
+    /// navigation target when the row was opened.
     fn apply_row_click(
         &mut self,
         ui: &egui::Ui,
@@ -1142,38 +1678,6 @@ impl FileBrowserApp {
         None
     }
 
-    fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
-        let mut navigate_to: Option<(PathBuf, bool)> = None;
-        let should_scroll = self.pending_scroll;
-        self.pending_scroll = false;
-        for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
-            let entry = self.entries[actual_idx].clone();
-            let is_selected = self.is_entry_selected(idx, &entry);
-            // Compact rows are single-line per the file-explorer PRD —
-            // metadata lives in the details table and the status bar, not
-            // in a second line that doubles every row's height.
-            let title = Self::entry_title(&entry);
-            let response = ListRow::new(&title)
-                .chip(Self::entry_chip(&entry))
-                .dense()
-                .selected(is_selected)
-                .show(ui, colors);
-            if is_selected {
-                response.scroll_into_view(ui, should_scroll);
-            }
-            if let Some(target) = self.apply_row_click(
-                ui,
-                idx,
-                &entry,
-                response.row_clicked(),
-                response.row_double_clicked(),
-            ) {
-                navigate_to = Some(target);
-            }
-        }
-        navigate_to
-    }
-
     fn draw_details_table(
         &mut self,
         ui: &mut egui::Ui,
@@ -1183,11 +1687,51 @@ impl FileBrowserApp {
         self.pending_scroll = false;
         self.draw_details_header(ui, colors);
 
+        let row_h = self.row_height();
         let mut navigate_to = None;
+        if self.in_search {
+            let hits = self.search_session.hits().to_vec();
+            if hits.is_empty() {
+                let empty_msg = if self.search_session.is_scanning() {
+                    "Scanning workspace\u{2026}"
+                } else {
+                    "No matching files or contents"
+                };
+                ui.add_space(style::SPACE_SM);
+                ui.colored_label(
+                    colors.text_dim,
+                    egui::RichText::new(empty_msg).size(self.font_size),
+                );
+                return None;
+            }
+            for (idx, hit) in hits.iter().enumerate() {
+                let entry = Self::entry_from_search_hit(hit);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Sense::click(),
+                );
+                let selected = self.selected == idx;
+                if selected {
+                    crate::ui::list::scroll_row_into_view(ui, &response, should_scroll);
+                }
+                list::paint_table_row_background(ui, rect, selected, response.hovered(), colors);
+
+                self.paint_search_hit_cells(ui, colors, rect, hit, &entry, selected);
+
+                if response.clicked() {
+                    self.set_single_selection(idx);
+                }
+                if response.double_clicked() {
+                    self.set_single_selection(idx);
+                    navigate_to = Some((hit.path.clone(), hit.is_dir));
+                }
+            }
+            return navigate_to;
+        }
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
             let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), DETAILS_ROW_H),
+                egui::vec2(ui.available_width(), row_h),
                 egui::Sense::click(),
             );
             let selected = self.is_entry_selected(idx, &entry);
@@ -1213,10 +1757,11 @@ impl FileBrowserApp {
 
     fn draw_details_header(&mut self, ui: &mut egui::Ui, colors: &Colors) {
         let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), DETAILS_HEADER_H),
+            egui::vec2(ui.available_width(), self.header_height()),
             egui::Sense::hover(),
         );
         list::paint_table_header_background(ui, rect, colors);
+        let header_font = egui::FontId::proportional(self.font_size);
         for (column, cell) in self.details_columns(rect) {
             let handle_rect = egui::Rect::from_min_max(
                 egui::pos2(cell.right() - 5.0, cell.top()),
@@ -1286,6 +1831,7 @@ impl FileBrowserApp {
                 ui,
                 cell,
                 format!("{}{}", column.id.label(), sort_suffix),
+                header_font.clone(),
                 colors,
             );
             ui.painter().line_segment(
@@ -1306,54 +1852,154 @@ impl FileBrowserApp {
         entry: &Entry,
         selected: bool,
     ) {
-        let primary = if selected {
+        let is_hidden_entry = entry.name.starts_with('.');
+        let name_color = if selected || !is_hidden_entry {
             colors.text_primary
         } else {
             colors.text_dim
         };
-        let font = egui::FontId::proportional(style::TEXT_HINT);
+        let font = egui::FontId::proportional(self.font_size);
+        let icon_size = (18.0 * self.font_scale()).round();
         for (column, mut cell) in self.details_columns(rect) {
             if column.id == ColumnId::Name {
                 let icon_rect = egui::Rect::from_min_size(
-                    egui::pos2(cell.left() + style::SPACE_SM, cell.center().y - 9.0),
-                    egui::vec2(18.0, 18.0),
+                    egui::pos2(
+                        cell.left() + style::SPACE_SM,
+                        cell.center().y - icon_size * 0.5,
+                    ),
+                    egui::vec2(icon_size, icon_size),
                 );
                 paint_entry_icon(ui.painter(), icon_rect, entry, colors);
-                cell = cell.shrink2(egui::vec2(28.0, 0.0));
+                cell.min.x = (icon_rect.right() + 2.0).min(cell.right());
             }
-            list::paint_table_cell_text(
+            list::paint_table_cell_text_elided(
                 ui,
                 cell,
                 Self::entry_cell_text(entry, column.id),
                 font.clone(),
                 if column.id == ColumnId::Name {
-                    primary
+                    name_color
                 } else {
                     colors.text_dim
+                },
+                if column.id == ColumnId::Name {
+                    crate::ui::text::Side::Middle
+                } else {
+                    crate::ui::text::Side::Trailing
                 },
             );
         }
     }
 
-    fn details_columns(&self, rect: egui::Rect) -> Vec<(ColumnConfig, egui::Rect)> {
-        let mut x = rect.left();
-        let visible = self.columns.visible_columns().copied().collect::<Vec<_>>();
-        let total_config_width = visible
-            .iter()
-            .map(|column| column.width.max(column.id.min_width()))
-            .sum::<f32>()
-            .max(1.0);
-        let scale = if total_config_width > rect.width() {
-            rect.width() / total_config_width
+    fn paint_search_hit_cells(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        rect: egui::Rect,
+        hit: &crate::search::SearchHit,
+        entry: &Entry,
+        selected: bool,
+    ) {
+        let is_hidden_entry = hit.file_name.starts_with('.');
+        let name_color = if selected || !is_hidden_entry {
+            colors.text_primary
         } else {
-            1.0
+            colors.text_dim
         };
+        let font = egui::FontId::proportional(self.font_size);
+        let icon_size = (18.0 * self.font_scale()).round();
+        for (column, mut cell) in self.details_columns(rect) {
+            if column.id == ColumnId::Name {
+                let icon_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        cell.left() + style::SPACE_SM,
+                        cell.center().y - icon_size * 0.5,
+                    ),
+                    egui::vec2(icon_size, icon_size),
+                );
+                paint_entry_icon(ui.painter(), icon_rect, entry, colors);
+                cell.min.x = (icon_rect.right() + 2.0).min(cell.right());
+                let text_rect = cell.shrink2(egui::vec2(6.0, 0.0));
+                if text_rect.width() > 4.0 {
+                    let job = crate::ui::search_bar::build_search_hit_job(
+                        hit,
+                        font.clone(),
+                        name_color,
+                        colors,
+                    );
+                    let galley = ui.fonts_mut(|f| f.layout_job(job));
+                    let pos = egui::pos2(
+                        text_rect.left(),
+                        text_rect.center().y - galley.size().y * 0.5,
+                    );
+                    ui.painter()
+                        .with_clip_rect(text_rect)
+                        .galley(pos, galley, name_color);
+                }
+            } else {
+                list::paint_table_cell_text(
+                    ui,
+                    cell,
+                    Self::entry_cell_text(entry, column.id),
+                    font.clone(),
+                    colors.text_dim,
+                );
+            }
+        }
+    }
+
+    fn details_columns(&self, rect: egui::Rect) -> Vec<(ColumnConfig, egui::Rect)> {
+        let enabled = self.columns.visible_columns().copied().collect::<Vec<_>>();
+        let name_min = ColumnId::Name.min_width();
+        let mut admitted_secondary = Vec::new();
+        let mut used_width = name_min;
+
+        // Progressively admit secondary columns alongside Name in priority order:
+        // Modified, then Size, then any extra user-enabled columns.
+        let priority_order = [
+            ColumnId::Modified,
+            ColumnId::Size,
+            ColumnId::Kind,
+            ColumnId::Created,
+            ColumnId::Extension,
+            ColumnId::Permissions,
+        ];
+        for id in priority_order {
+            if let Some(col) = enabled.iter().find(|c| c.id == id).copied() {
+                let col_w = col.width.max(col.id.min_width());
+                if used_width + col_w <= rect.width() {
+                    used_width += col_w;
+                    admitted_secondary.push(col.id);
+                }
+            }
+        }
+
+        let visible: Vec<ColumnConfig> = enabled
+            .into_iter()
+            .filter(|c| c.id == ColumnId::Name || admitted_secondary.contains(&c.id))
+            .collect();
+
+        let secondary_widths: f32 = visible
+            .iter()
+            .filter(|c| c.id != ColumnId::Name)
+            .map(|c| c.width.max(c.id.min_width()))
+            .sum();
+        let name_width = (rect.width() - secondary_widths)
+            .max(name_min)
+            .min(rect.width());
+
+        let mut x = rect.left();
         let mut columns = Vec::with_capacity(visible.len());
         for (idx, column) in visible.iter().enumerate() {
+            let col_w = if column.id == ColumnId::Name {
+                name_width
+            } else {
+                column.width.max(column.id.min_width())
+            };
             let right = if idx + 1 == visible.len() {
                 rect.right()
             } else {
-                (x + column.width * scale).min(rect.right())
+                (x + col_w).min(rect.right())
             };
             columns.push((
                 *column,
@@ -1368,7 +2014,7 @@ impl FileBrowserApp {
     }
 
     fn draw_sidebar_preview(&mut self, ui: &mut egui::Ui, colors: &Colors) {
-        let entry = match self.selected_entry().cloned() {
+        let entry = match self.selected_entry_or_hit() {
             Some(e) => e,
             None => return,
         };
@@ -1391,7 +2037,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -1459,7 +2105,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -1503,7 +2149,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -1528,7 +2174,7 @@ impl FileBrowserApp {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
             .stroke(Stroke::new(1.0_f32, colors.border))
-            .corner_radius(CornerRadius::same(6))
+            .corner_radius(crate::ui::style::RADIUS_SMALL)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.label(
@@ -1587,7 +2233,7 @@ impl FileBrowserApp {
                         egui::Label::new(
                             egui::RichText::new(text)
                                 .monospace()
-                                .size(style::TEXT_HINT)
+                                .size(self.font_size)
                                 .color(colors.text_primary),
                         )
                         .wrap(),
@@ -1596,13 +2242,13 @@ impl FileBrowserApp {
         } else if let Some(err) = &self.text_preview_error {
             ui.label(
                 egui::RichText::new(err)
-                    .size(style::TEXT_HINT)
+                    .size(self.font_size)
                     .color(colors.text_dim),
             );
         } else {
             ui.label(
                 egui::RichText::new("Loading\u{2026}")
-                    .size(style::TEXT_HINT)
+                    .size(self.font_size)
                     .color(colors.text_dim),
             );
         }
@@ -1659,7 +2305,7 @@ impl FileBrowserApp {
             .show(ctx, colors, |ui| {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Move {count} selected item{} to this folder's .Trash?",
+                        "Move {count} selected item{} to the Trash?",
                         if count == 1 { "" } else { "s" }
                     ))
                     .size(style::TEXT_BODY)
@@ -1667,25 +2313,23 @@ impl FileBrowserApp {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_pending_operation();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Move to Trash",
-                        crate::ui::button::ButtonKind::Danger,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Move to Trash", colors)
+                                .kind(crate::ui::button::ButtonKind::Danger)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         if let Err(err) = self.confirm_pending_operation() {
                             self.error = Some(err);
@@ -1734,24 +2378,17 @@ impl FileBrowserApp {
                 }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_rename_modal();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Rename",
-                        crate::ui::button::ButtonKind::Primary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
+                    if ui.add(crate::ui::button::KitButton::new("Rename", colors).min_width(style::BUTTON_MIN_W_MODAL))
                     .clicked()
                     {
                         self.confirm_rename_modal();
@@ -1871,7 +2508,10 @@ impl FileBrowserApp {
                     .color(colors.text_dim),
             );
         }
-        if MediaKind::for_path(&entry.path).player_app_id().is_some() {
+        if MediaKind::for_path(&entry.path)
+            .player_plugin_id()
+            .is_some()
+        {
             ui.add_space(style::SPACE_SM);
             ui.label(
                 egui::RichText::new("Press Enter to open with the existing Plexi media player.")
@@ -1881,66 +2521,134 @@ impl FileBrowserApp {
         }
     }
 
+    fn breadcrumb_segments(path: &Path) -> Vec<(String, PathBuf)> {
+        let mut ancestors: Vec<&Path> = path.ancestors().collect();
+        ancestors.reverse();
+        ancestors
+            .into_iter()
+            .map(|ancestor| {
+                let label = if ancestor.parent().is_none() {
+                    ancestor.to_string_lossy().into_owned()
+                } else {
+                    ancestor
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| ancestor.display().to_string())
+                };
+                (label, ancestor.to_path_buf())
+            })
+            .collect()
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn draw_toolbar(
         &mut self,
         ui: &mut egui::Ui,
         colors: &Colors,
-        layout: FileBrowserLayout,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
-        // Path gets its own full-width row, elided from the left so the
-        // leaf directory always stays visible. The old single-row layout
-        // (path left, chips right) collided at narrow widths: the chips
-        // wrapped under the path and the toolbar grew unpredictably.
+        let mut navigate_target: Option<PathBuf> = None;
+        let font_size = self.font_size;
+        let font_id = egui::FontId::monospace(font_size);
+
         ui.horizontal(|ui| {
-            // Elided from the left so the leaf directory always stays visible —
-            // `…/projects/plexi/src` reads better than `/Users/ian/Documen…`.
-            let elided = crate::ui::text::elide(
-                ui,
-                &self.cwd.display().to_string(),
-                egui::FontId::monospace(style::TEXT_HINT),
-                ui.available_width(),
-                crate::ui::text::Side::Leading,
-            );
-            ui.colored_label(
-                colors.accent,
-                egui::RichText::new(elided)
-                    .size(style::TEXT_HINT)
-                    .monospace(),
-            );
-        });
-        ui.add_space(style::SPACE_XS);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(match layout {
-                    FileBrowserLayout::CompactList => "compact",
-                    FileBrowserLayout::DetailsTable => "details",
+            let view_reserve = 72.0 * self.font_scale();
+            let max_breadcrumb_w = (ui.available_width() - view_reserve).max(48.0);
+            let segments = Self::breadcrumb_segments(&self.cwd);
+
+            let measure = |ui: &egui::Ui, s: &str| -> f32 {
+                ui.fonts_mut(|f| {
+                    f.layout_no_wrap(s.to_owned(), font_id.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
                 })
-                .size(style::TEXT_HINT)
-                .color(colors.text_dim),
-            );
+            };
+            let sep_w = measure(ui, "/") + style::SPACE_XS * 2.0;
+            let ellipsis_w = measure(ui, "\u{2026}") + sep_w;
+
+            let mut start = 0usize;
+            while start + 1 < segments.len() {
+                let prefix_w = if start > 0 { ellipsis_w } else { 0.0 };
+                let segs_w: f32 = segments[start..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (label, _))| {
+                        let w = measure(ui, label) + style::SPACE_XS * 2.0;
+                        if i > 0 && segments[start + i - 1].0 != "/" {
+                            w + sep_w
+                        } else {
+                            w
+                        }
+                    })
+                    .sum();
+                if prefix_w + segs_w <= max_breadcrumb_w {
+                    break;
+                }
+                start += 1;
+            }
+
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if start > 0 {
+                ui.label(
+                    egui::RichText::new("\u{2026}")
+                        .size(font_size)
+                        .monospace()
+                        .color(colors.text_dim),
+                );
+                ui.label(
+                    egui::RichText::new("/")
+                        .size(font_size)
+                        .monospace()
+                        .color(colors.text_dim),
+                );
+            }
+
+            let visible_slice = &segments[start..];
+            for (idx, (label, seg_path)) in visible_slice.iter().enumerate() {
+                let is_last = idx + 1 == visible_slice.len();
+                if idx > 0 && visible_slice[idx - 1].0 != "/" {
+                    ui.label(
+                        egui::RichText::new("/")
+                            .size(font_size)
+                            .monospace()
+                            .color(colors.text_dim),
+                    );
+                }
+                let display_label = if visible_slice.len() == 1 {
+                    crate::ui::text::elide(
+                        ui,
+                        label,
+                        font_id.clone(),
+                        max_breadcrumb_w,
+                        crate::ui::text::Side::Leading,
+                    )
+                } else {
+                    label.clone()
+                };
+                let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
+                let synthetic_click =
+                    pending_click.is_some_and(|click| click.targets_id(btn.id));
+                if btn.clicked() || synthetic_click {
+                    navigate_target = Some(seg_path.clone());
+                }
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // A single menu button instead of a strip of toggle chips.
-                // The chip strip needed ~750px and, being right-to-left,
-                // overflowed past the pane's LEFT edge when it didn't fit —
-                // egui then extended every sibling row's left boundary, which
-                // shoved the whole table off-screen at middle widths. A menu
-                // is one fixed-width control: it fits at every pane size.
-                //
                 // Hand-rolled expansion of `ui.menu_button` (egui's
                 // `stationary_menu_impl`) so a queued node click can open the
                 // popup. `menu_button` flips its open state only from a real
                 // click resolved inside `Context::begin_pass`, which
                 // `plexi pane click --node` / `PendingPaneClick` bypasses
-                // (stint 0469). When a pending click targets this button we
-                // open the menu directly through egui's popup state so it
-                // renders this frame and exposes its items — including the
-                // Show hidden files checkbox — to the semantic tree and to a
-                // follow-up node click.
+                // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
-                let menu_button = ui.add(egui::Button::new(
-                    egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
-                ));
+                let menu_button = ui.add(
+                    crate::ui::button::KitButton::new("View \u{2304}", colors)
+                        .kind(crate::ui::button::ButtonKind::Secondary)
+                        .size(crate::ui::button::ButtonSize::Sm),
+                );
                 let synthetic_open =
                     pending_click.is_some_and(|click| click.targets_id(menu_button.id));
                 if synthetic_open {
@@ -1955,6 +2663,7 @@ impl FileBrowserApp {
                 };
                 egui::Popup::menu(&menu_button)
                     .id(bar_id)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .open_memory(set_open)
                     .show(|ui| {
                         let mut folders_on_top = self.columns.folders_on_top;
@@ -1986,97 +2695,415 @@ impl FileBrowserApp {
                         if ui.checkbox(&mut inspector, "Inspector").changed() {
                             self.toggle_inspector();
                         }
-                        // Column toggles only exist in the details table — in
-                        // the compact list they would be seven dead entries.
-                        if layout.shows_details() {
-                            ui.separator();
-                            for id in [
-                                ColumnId::Kind,
-                                ColumnId::Size,
-                                ColumnId::Modified,
-                                ColumnId::Created,
-                                ColumnId::Extension,
-                                ColumnId::Permissions,
-                                ColumnId::Tags,
-                            ] {
-                                let mut visible = self
-                                    .columns
-                                    .columns
-                                    .iter()
-                                    .find(|column| column.id == id)
-                                    .map(|column| column.visible)
-                                    .unwrap_or(false);
-                                if ui.checkbox(&mut visible, id.label()).changed() {
-                                    self.columns.set_column_visible(id, visible);
-                                    log::info!(
-                                        "file_browser: column {} visibility changed to {}",
-                                        id.key(),
-                                        visible
-                                    );
-                                }
+                        ui.separator();
+                        for id in [
+                            ColumnId::Kind,
+                            ColumnId::Size,
+                            ColumnId::Modified,
+                            ColumnId::Created,
+                            ColumnId::Extension,
+                            ColumnId::Permissions,
+                        ] {
+                            let mut visible = self
+                                .columns
+                                .columns
+                                .iter()
+                                .find(|column| column.id == id)
+                                .map(|column| column.visible)
+                                .unwrap_or(false);
+                            if ui.checkbox(&mut visible, id.label()).changed() {
+                                self.columns.set_column_visible(id, visible);
+                                log::info!(
+                                    "file_browser: column {} visibility changed to {}",
+                                    id.key(),
+                                    visible
+                                );
                             }
                         }
                     });
             });
         });
+
+        if let Some(target) = navigate_target {
+            if self.in_search {
+                self.exit_search();
+            }
+            self.navigate_into(target);
+        }
     }
 
-    fn draw_search_bar(&self, ui: &mut egui::Ui, colors: &Colors) {
-        ui.horizontal(|ui| {
-            ui.colored_label(colors.accent, "/");
-            ui.colored_label(
-                colors.text_primary,
-                if self.search_query.is_empty() {
-                    "type to filter\u{2026}"
-                } else {
-                    &self.search_query
-                },
-            );
-            let count = self.search_indices.len();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.colored_label(
-                    colors.text_dim,
-                    format!("{count} match{}", if count == 1 { "" } else { "es" }),
-                );
-            });
+    fn draw_search_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        pane_id: u64,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let claim = std::mem::take(&mut self.search_focus_pending);
+        let hit_count = self.search_session.hits().len();
+        let scanning = self.search_session.is_scanning();
+        let mut bar = crate::ui::search_bar::SearchBar::new(
+            ("file_browser_search", pane_id),
+            "Search files and contents\u{2026}",
+        )
+        .claim_focus(claim)
+        .font_size(self.font_size)
+        .pending_click(pending_click)
+        .shortcut(if self.in_search {
+            None
+        } else {
+            Some(&["cmd", "F"])
         });
+        if self.in_search {
+            bar = bar.status(hit_count, scanning);
+            if self.rename_path.is_none() {
+                bar = bar.surface(crate::ui::focus::SurfaceKey::Pane(pane_id));
+            }
+        }
+        let out = bar.show(ui, &mut self.search_query, colors);
+        if out.changed {
+            if !self.in_search {
+                self.enter_search();
+            }
+            self.refilter();
+        } else if (out.clicked || out.gained_focus) && !self.in_search {
+            self.enter_search();
+        }
     }
 
-    fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
+    fn draw_action_palette(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        pane_id: u64,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let claim = std::mem::take(&mut self.palette_focus_pending);
+        let cursor_to_end = std::mem::take(&mut self.palette_cursor_to_end);
+        let suppress_slash = std::mem::take(&mut self.palette_suppress_initial_slash);
+        let input_id = ui.make_persistent_id(("file_browser_palette", pane_id));
+
+        let set_cursor_end = |ctx: &egui::Context, text: &str| {
+            let mut state = egui::TextEdit::load_state(ctx, input_id).unwrap_or_default();
+            let end = egui::text::CCursor::new(text.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+            state.store(ctx, input_id);
+        };
+
+        let mut clicked_candidate: Option<usize> = None;
+        let mut close_clicked = false;
+        let mut submitted_from_widget = false;
+
+        ui.add_space(style::SPACE_XS);
+        egui::Frame::new()
+            .fill(colors.bg_toolbar)
+            .stroke(Stroke::new(1.0_f32, colors.accent.gamma_multiply(0.65)))
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    crate::ui::badge::badge(ui, "ACTION", colors.accent, colors);
+
+                    if self.rename_path.is_none() {
+                        crate::ui::focus::register_default_text_surface(
+                            ui.ctx(),
+                            crate::ui::focus::SurfaceKey::Pane(pane_id),
+                            input_id,
+                        );
+                        if claim {
+                            crate::ui::focus::claim_text_surface(
+                                ui.ctx(),
+                                crate::ui::focus::SurfaceKey::Pane(pane_id),
+                                input_id,
+                            );
+                        }
+                    }
+                    if cursor_to_end {
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    }
+
+                    let before = self.palette_query.clone();
+                    let clear_reserve = 28.0;
+                    let field_w = (ui.available_width() - clear_reserve).max(80.0);
+                    let resp = ui
+                        .allocate_ui(egui::vec2(field_w, 28.0), |ui| {
+                            TextField::singleline(
+                                input_id,
+                                "Type a /command or intent (e.g. /new file notes.md, /hidden, rename to \u{2026})",
+                            )
+                            .log_name("file_browser_palette")
+                            .show(ui, &mut self.palette_query, colors)
+                        })
+                        .inner;
+
+                    if suppress_slash && self.palette_query.starts_with("//") {
+                        self.palette_query =
+                            format!("/{}", self.palette_query.trim_start_matches('/'));
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    } else if cursor_to_end {
+                        set_cursor_end(ui.ctx(), &self.palette_query);
+                    }
+
+                    if self.palette_query != before {
+                        self.palette_selected = 0;
+                    }
+
+                    let enter_event = ui.input(|i| {
+                        i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Enter,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        })
+                    });
+                    if resp.lost_focus() && enter_event {
+                        submitted_from_widget = true;
+                    }
+
+                    let close_btn = ui.add(
+                        crate::ui::button::KitButton::new("\u{00d7}", colors)
+                            .kind(crate::ui::button::ButtonKind::Ghost)
+                            .compact()
+                            .text_size(self.font_size)
+                            .text_color(colors.text_dim),
+                    );
+                    let synthetic_close =
+                        pending_click.is_some_and(|c| c.targets_id(close_btn.id));
+                    if close_btn.clicked() || synthetic_close {
+                        close_clicked = true;
+                    }
+                });
+
+                let candidates = self.rank_palette_candidates();
+                if !candidates.is_empty() {
+                    self.palette_selected =
+                        self.palette_selected.min(candidates.len().saturating_sub(1));
+                }
+
+                // Structured intent preview chip
+                ui.add_space(style::SPACE_XS);
+                if let Some((badge_label, chip_text, is_ready)) =
+                    self.palette_preview_chip(&candidates)
+                {
+                    let chip_bg = if is_ready {
+                        colors.accent.gamma_multiply(0.14)
+                    } else {
+                        colors.bg_sidebar
+                    };
+                    let chip_border = if is_ready {
+                        colors.accent.gamma_multiply(0.55)
+                    } else {
+                        colors.border
+                    };
+                    egui::Frame::new()
+                        .fill(chip_bg)
+                        .stroke(Stroke::new(1.0_f32, chip_border))
+                        .corner_radius(style::RADIUS_SM)
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let badge_fill = if is_ready {
+                                    colors.accent
+                                } else {
+                                    colors.bg_hover
+                                };
+                                crate::ui::badge::badge(ui, badge_label, badge_fill, colors);
+                                ui.label(
+                                    egui::RichText::new(chip_text)
+                                        .size(style::TEXT_META)
+                                        .monospace()
+                                        .color(colors.text_primary),
+                                );
+                            });
+                        });
+                }
+
+                // Ranked candidate list
+                ui.add_space(style::SPACE_XS);
+                let row_h = (22.0 * self.font_scale()).round().max(20.0);
+                for (idx, candidate) in candidates
+                    .iter()
+                    .take(PALETTE_MAX_VISIBLE_CANDIDATES)
+                    .enumerate()
+                {
+                    let (row_rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_h),
+                        egui::Sense::click(),
+                    );
+                    let selected = idx == self.palette_selected;
+                    list::paint_table_row_background(
+                        ui,
+                        row_rect,
+                        selected,
+                        resp.hovered(),
+                        colors,
+                    );
+                    let inner = row_rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
+                    let cmd_font = egui::FontId::monospace(style::TEXT_META);
+                    let cmd_color = colors.accent;
+                    let cmd_galley = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(
+                            candidate.slash_syntax.to_string(),
+                            cmd_font.clone(),
+                            cmd_color,
+                        )
+                    });
+                    let cmd_pos = egui::pos2(
+                        inner.left(),
+                        inner.center().y - cmd_galley.size().y * 0.5,
+                    );
+                    let cmd_w = cmd_galley.size().x;
+                    ui.painter()
+                        .with_clip_rect(inner)
+                        .galley(cmd_pos, cmd_galley, cmd_color);
+
+                    let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
+                    let title_font = egui::FontId::proportional(style::TEXT_META);
+                    let title_color = colors.text_primary;
+                    let title_galley = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(
+                            candidate.title.to_string(),
+                            title_font.clone(),
+                            title_color,
+                        )
+                    });
+                    let title_pos = egui::pos2(
+                        title_left,
+                        inner.center().y - title_galley.size().y * 0.5,
+                    );
+                    let title_w = title_galley.size().x;
+                    ui.painter()
+                        .with_clip_rect(inner)
+                        .galley(title_pos, title_galley, title_color);
+
+                    let subtitle_left = (title_left + title_w).min(inner.right());
+                    if subtitle_left < inner.right() {
+                        let subtitle_rect = egui::Rect::from_min_max(
+                            egui::pos2(subtitle_left, inner.top()),
+                            inner.max,
+                        );
+                        list::paint_table_cell_text(
+                            ui,
+                            subtitle_rect,
+                            format!(" \u{2014} {}", candidate.subtitle),
+                            title_font,
+                            colors.text_secondary(colors.bg_toolbar),
+                        );
+                    }
+
+                    if resp.clicked() {
+                        clicked_candidate = Some(idx);
+                    }
+                }
+            });
+
+        if close_clicked {
+            self.exit_palette();
+        } else if let Some(idx) = clicked_candidate {
+            self.palette_selected = idx;
+            self.submit_palette();
+        } else if submitted_from_widget && self.in_palette {
+            self.submit_palette();
+        }
+    }
+
+    pub(crate) fn palette_preview_chip<'a>(
+        &self,
+        candidates: &'a [PaletteCandidate],
+    ) -> Option<(&'static str, &'a str, bool)> {
+        if self.palette_query.trim() == "/" && self.palette_selected == 0 {
+            return Some((
+                "CMD",
+                "Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run",
+                false,
+            ));
+        }
+        let active = candidates.get(self.palette_selected)?;
+        let is_ready = matches!(active.resolution, CandidateResolution::Ready(_));
+        let badge_label = if is_ready { "INTENT" } else { "SLOT" };
+        Some((badge_label, active.preview_chip.as_str(), is_ready))
+    }
+
+    fn draw_status_bar(&mut self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
         ui.add_space(style::SPACE_XS);
         ui.separator();
-        // Single non-wrapping row. The old `horizontal_wrapped` let the hint
-        // bar wrap to a second line at narrow widths, overflowing the
-        // STATUS_BAR_H reservation and colliding with the list rows above it.
-        ui.horizontal(|ui| {
-            ui.set_min_height(STATUS_BAR_ROW_H);
-            let selected_label = self.selected_count().to_string();
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} items \u{00b7} selected: {}",
-                    self.visible_entry_count(),
-                    selected_label
-                ))
-                .size(style::TEXT_HINT)
-                .color(colors.text_dim),
-            );
-            if show_inspector {
-                ui.label(
-                    egui::RichText::new("\u{00b7} inspector visible")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
+        // Single non-wrapping row. Allocate a fixed STATUS_BAR_ROW_H rect so
+        // both the left item-count label and the right-aligned inline hint bar
+        // share the exact same vertical center and baseline without nested
+        // modal top spacing or horizontal centering.
+        let row_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), STATUS_BAR_ROW_H),
+        );
+        ui.allocate_rect(row_rect, egui::Sense::hover());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(row_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                let selected_label =
+                    crate::ui::text::tabular_count(self.selected_count(), 3, style::TEXT_HINT);
+                let mut count_job = egui::text::LayoutJob::default();
+                let count_noun = if self.in_search {
+                    ("result", "results")
+                } else {
+                    ("item", "items")
+                };
+                count_job.append(
+                    &format!(
+                        "{} · selected: ",
+                        crate::ui::text::format_count_plural(
+                            self.visible_entry_count(),
+                            count_noun.0,
+                            count_noun.1,
+                        )
+                    ),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::proportional(style::TEXT_HINT),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
                 );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                count_job.append(
+                    selected_label.text(),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::monospace(style::TEXT_HINT),
+                        // Keep the footer's established line box when mixing
+                        // the counter font with proportional labels and hints.
+                        line_height: Some(ui.fonts_mut(|fonts| {
+                            fonts.row_height(&egui::FontId::proportional(style::TEXT_HINT))
+                        })),
+                        color: colors.text_dim,
+                        ..Default::default()
+                    },
+                );
+                let item_count_resp = ui.label(count_job);
+                if show_inspector {
+                    ui.label(
+                        egui::RichText::new("\u{00b7} inspector visible")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
                 // Hints are measured, not breakpointed: drop the least
                 // important groups (front of the list) until the rest fit in
-                // the width left over after the item-count label. Guessed
-                // width tiers kept landing wrong, and a right-to-left layout
-                // that overflows extends past the pane's LEFT edge — egui
-                // then shifts every sibling row off-screen with it.
+                // the width left over after the item-count label.
                 let rem = ui.available_width();
-                let all = [
-                    HintGroup::new(&["/"], "search"),
+                let all_search = [
+                    HintGroup::new(&["Esc"], "browse"),
+                    HintGroup::new(&["Enter"], "open"),
+                    HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
+                ];
+                let all_normal = [
+                    HintGroup::new(&["/"], "actions"),
                     HintGroup::new(&["s"], "sort"),
                     HintGroup::new(&["i"], "inspector"),
                     HintGroup::new(&["Space"], "quick look"),
@@ -2084,6 +3111,11 @@ impl FileBrowserApp {
                     HintGroup::new(&["t"], "cd terminal"),
                     HintGroup::new(&["Esc"], "close"),
                 ];
+                let all: &[HintGroup] = if self.in_search {
+                    &all_search
+                } else {
+                    &all_normal
+                };
                 let fits = |groups: &[HintGroup]| {
                     let total = groups.iter().map(|g| g.width(ui)).sum::<f32>()
                         + style::SPACE_MD * groups.len().saturating_sub(1) as f32;
@@ -2093,21 +3125,82 @@ impl FileBrowserApp {
                 while start < all.len() - 1 && !fits(&all[start..]) {
                     start += 1;
                 }
-                HintBar::new(&all[start..]).show(ui, colors);
-            });
-        });
+                let hint_resp = HintBar::new(&all[start..])
+                    .inline_status_bar()
+                    .show_measured(ui, colors);
+                #[cfg(test)]
+                {
+                    self.last_status_bar_layout = Some(StatusBarLayout {
+                        row_rect,
+                        item_count_rect: item_count_resp.rect,
+                        chip_rects: hint_resp.chip_rects,
+                        label_rects: hint_resp.label_rects,
+                    });
+                }
+                #[cfg(not(test))]
+                let _ = (item_count_resp, hint_resp);
+            },
+        );
     }
 
     /// Read `show_hidden` from outside the module (cross-module host tests
-    /// reach `FileBrowserApp` through `AppRuntime::Builtin` + `as_any_mut`,
+    /// reach `FileBrowserView` through `ViewRuntime::Builtin` + `as_any_mut`,
     /// where the private `columns` field is unreachable).
     #[cfg(test)]
     pub(crate) fn show_hidden(&self) -> bool {
         self.columns.show_hidden
     }
+
+    /// Queue the same `OpenArtifact` a user activation (Enter / double-click)
+    /// queues. The host stamps `sender_pane_id` when it drains the command.
+    #[cfg(test)]
+    pub(crate) fn request_open_for_test(&mut self, path: &Path) {
+        self.open_file(path);
+    }
 }
 
-impl App for FileBrowserApp {
+impl View for FileBrowserView {
+    fn service_external(
+        &mut self,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+    ) -> bool {
+        let mut changed = self.search_session.service_external(wake);
+        if changed && self.in_search {
+            self.sync_search_indices();
+            self.selected = self
+                .selected
+                .min(self.search_session.hits().len().saturating_sub(1));
+        }
+        if self.watch.as_ref().map(|(dir, _)| dir) != Some(&self.cwd) {
+            self.watch = None;
+            match crate::host::path_watch::PathWatch::new(
+                &self.cwd,
+                None,
+                std::sync::Arc::clone(wake),
+                "file_browser",
+            ) {
+                Ok(watch) => {
+                    log::info!("file_browser: watcher armed for cwd={}", self.cwd.display());
+                    self.watch = Some((self.cwd.clone(), watch));
+                }
+                Err(e) => {
+                    log::warn!("file_browser: cannot watch {}: {e}", self.cwd.display());
+                    return changed;
+                }
+            }
+            return changed;
+        }
+        match &self.watch {
+            Some((_, watch)) if watch.take_changed() => {
+                self.search_session.invalidate_cache();
+                self.refresh_after_external_change();
+                changed = true;
+            }
+            _ => {}
+        }
+        changed
+    }
+
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -2124,42 +3217,79 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
+    #[cfg(test)]
+    fn font_size(&self) -> Option<f32> {
+        Some(self.font_size)
+    }
+
+    fn adjust_font_size(&mut self, delta: f32) {
+        self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        log::info!("file_browser: font_size -> {}", self.font_size);
+    }
+
+    fn reset_font_size(&mut self) {
+        self.font_size = FONT_SIZE_DEFAULT;
+        log::info!("file_browser: font_size reset -> {}", self.font_size);
+    }
+
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
+        if let Some(text) = self.pending_clipboard_text.take() {
+            ui.ctx().copy_text(text);
+        }
+        if self.in_search && self.search_session.poll() {
+            self.sync_search_indices();
+            self.selected = self
+                .selected
+                .min(self.search_session.hits().len().saturating_sub(1));
+        }
 
         egui::Frame::new()
             .fill(colors.terminal_bg)
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-                let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout, pending_click);
+                self.draw_toolbar(ui, colors, pending_click);
 
-                if self.in_search {
-                    self.draw_search_bar(ui, colors);
+                if self.in_palette {
+                    self.draw_action_palette(ui, colors, ctx.pane_id, pending_click);
+                } else {
+                    self.draw_search_bar(ui, colors, ctx.pane_id, pending_click);
                 }
 
                 ui.add_space(style::SPACE_XS);
 
-                if let Some(err) = &self.error.clone() {
-                    ui.colored_label(colors.text_dim, err);
-                    return;
-                }
-
-                if self.entries.is_empty() {
-                    ui.colored_label(colors.text_dim, "Empty directory");
-                    return;
-                }
-
                 let mut navigate_to: Option<(PathBuf, bool)> = None;
                 let body_height = (ui.available_height() - STATUS_BAR_H).max(0.0);
 
-                if show_inspector {
+                if let Some(err) = &self.error.clone() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.colored_label(
+                                colors.text_dim,
+                                egui::RichText::new(err).size(self.font_size),
+                            );
+                        },
+                    );
+                } else if self.entries.is_empty() && !self.in_search {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.colored_label(
+                                colors.text_dim,
+                                egui::RichText::new("Empty directory").size(self.font_size),
+                            );
+                        },
+                    );
+                } else if show_inspector {
                     let total_width = ui.available_width();
                     let max_inspector_width =
                         (total_width - DETAILS_TABLE_MIN_WIDTH - INSPECTOR_SPLITTER_W)
@@ -2219,27 +3349,24 @@ impl App for FileBrowserApp {
                         );
                     });
                 } else {
-                    {
-                        egui::ScrollArea::vertical()
-                            // animated(false): required by scroll_row_into_view —
-                            // see src/ui/list.rs.
-                            .animated(false)
-                            .id_salt("fb_list")
-                            .auto_shrink([false, false])
-                            .max_height(body_height)
-                            .show(ui, |ui| {
-                                navigate_to = if layout.shows_details() {
-                                    self.draw_details_table(ui, colors)
-                                } else {
-                                    self.draw_compact_list(ui, colors)
-                                };
-                            });
-                    }
+                    egui::ScrollArea::vertical()
+                        // animated(false): required by scroll_row_into_view —
+                        // see src/ui/list.rs.
+                        .animated(false)
+                        .id_salt("fb_list")
+                        .auto_shrink([false, false])
+                        .max_height(body_height)
+                        .show(ui, |ui| {
+                            navigate_to = self.draw_details_table(ui, colors);
+                        });
                 }
 
                 self.draw_status_bar(ui, colors, show_inspector);
 
                 if let Some((path, is_dir)) = navigate_to {
+                    if self.in_search {
+                        self.exit_search();
+                    }
                     if is_dir {
                         self.navigate_into(path);
                     } else {
@@ -2256,16 +3383,16 @@ impl App for FileBrowserApp {
     fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        use crate::app::app_trait::KeyDisposition;
-        let mode = if self.in_search {
+    ) -> crate::app::view_trait::KeyDisposition {
+        use crate::app::view_trait::KeyDisposition;
+        let mode = if self.in_palette {
+            Mode::Palette
+        } else if self.in_search {
             Mode::Search
-        } else if self.entries.is_empty() {
-            Mode::Empty
         } else {
             Mode::Normal
         };
-        let action = classify_key(input, self.in_search);
+        let action = classify_key(input, self.in_search || self.in_palette);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
 
         if self.pending_operation.is_some() {
@@ -2305,7 +3432,7 @@ impl App for FileBrowserApp {
                     return KeyDisposition::Consumed;
                 }
                 Some(FileBrowserAction::Activate) => {
-                    if let Some(entry) = self.selected_entry().cloned() {
+                    if let Some(entry) = self.selected_entry_or_hit() {
                         self.dismiss_quick_look();
                         if entry.is_dir {
                             self.navigate_into(entry.path);
@@ -2320,24 +3447,89 @@ impl App for FileBrowserApp {
         }
 
         match (mode, action) {
-            // Escape: closes browser in normal/empty, exits search in search mode
+            // Palette mode actions
+            (Mode::Palette, Some(FileBrowserAction::Escape)) => {
+                self.exit_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::Activate)) => {
+                for event in input.events() {
+                    match event {
+                        egui::Event::Text(t) => self.palette_query.push_str(t),
+                        egui::Event::Paste(p) => self.palette_query.push_str(p),
+                        _ => {}
+                    }
+                }
+                self.submit_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::TabComplete)) => {
+                self.tab_complete_palette();
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::SelectNext)) => {
+                let count = self
+                    .rank_palette_candidates()
+                    .len()
+                    .min(PALETTE_MAX_VISIBLE_CANDIDATES);
+                if count > 0 {
+                    self.palette_selected = (self.palette_selected + 1).min(count - 1);
+                }
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::SelectPrev)) => {
+                self.palette_selected = self.palette_selected.saturating_sub(1);
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::Backspace)) => {
+                self.palette_query.pop();
+                self.palette_selected = 0;
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::AppendText(text))) => {
+                if std::mem::take(&mut self.palette_suppress_initial_slash) && text == "/" {
+                    return KeyDisposition::Consumed;
+                }
+                self.palette_query.push_str(&text);
+                if self.palette_query.starts_with("//") {
+                    self.palette_query = format!("/{}", self.palette_query.trim_start_matches('/'));
+                }
+                self.palette_selected = 0;
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::EnterSearch)) => {
+                self.exit_palette();
+                self.in_search = true;
+                self.search_focus_pending = true;
+                self.search_query.clear();
+                self.refilter();
+                log::info!("file_browser: entering search mode");
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, Some(FileBrowserAction::NewFolder)) => {
+                self.open_palette("/new folder ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Palette, _) => KeyDisposition::Consumed,
+            // Escape: closes browser in normal mode, exits search in search mode
             (Mode::Search, Some(FileBrowserAction::Escape)) => {
                 self.exit_search();
                 KeyDisposition::Consumed
             }
-            (_, Some(FileBrowserAction::Escape)) => {
+            (Mode::Normal, Some(FileBrowserAction::Escape)) => {
                 self.should_close = true;
                 KeyDisposition::Consumed
             }
-            // Works in Normal and Empty mode alike — an empty directory is
-            // still a valid handoff target. Search mode never produces this
-            // action (classify_key gates on !in_search).
-            (_, Some(FileBrowserAction::CdTerminalAndClose)) => {
+            (Mode::Normal, Some(FileBrowserAction::CdTerminalAndClose)) => {
                 self.cd_terminal_and_close();
                 KeyDisposition::Consumed
             }
             // NavigateUp (← / H): global — no modal conflict
-            (_, Some(FileBrowserAction::NavigateUp)) => {
+            (Mode::Normal, Some(FileBrowserAction::NavigateUp)) => {
                 self.navigate_up();
                 KeyDisposition::Consumed
             }
@@ -2347,26 +3539,25 @@ impl App for FileBrowserApp {
                 self.refilter();
                 KeyDisposition::Consumed
             }
-            (_, Some(FileBrowserAction::Backspace)) => {
+            (Mode::Normal, Some(FileBrowserAction::Backspace)) => {
                 self.navigate_up();
                 KeyDisposition::Consumed
             }
             // Search mode actions
             (Mode::Search, Some(FileBrowserAction::Activate)) => {
-                if let Some(&entry_idx) = self.search_indices.get(self.selected) {
-                    let entry = self.entries[entry_idx].clone();
-                    if entry.is_dir {
+                if let Some(hit) = self.search_session.hits().get(self.selected).cloned() {
+                    if hit.is_dir {
                         self.exit_search();
-                        self.navigate_into(entry.path);
+                        self.navigate_into(hit.path);
                     } else {
-                        self.open_file(&entry.path);
+                        self.open_file(&hit.path);
                         self.exit_search();
                     }
                 }
                 KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::SelectNext)) => {
-                let last = self.search_indices.len().saturating_sub(1);
+                let last = self.search_session.hits().len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(last);
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
@@ -2381,19 +3572,46 @@ impl App for FileBrowserApp {
                 self.refilter();
                 KeyDisposition::Consumed
             }
-            // Search mode consumes all unhandled input
-            (Mode::Search, _) => KeyDisposition::Consumed,
-            // Empty mode: no further keys handled
-            (Mode::Empty, _) => KeyDisposition::Passthrough,
-            // Normal mode actions
-            (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
-                self.in_search = true;
-                self.search_query.clear();
-                self.refilter();
-                log::info!("file_browser: entering search mode");
+            (Mode::Search, Some(FileBrowserAction::EnterPaletteCommand)) => {
+                self.open_palette("");
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
+            (Mode::Search, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Search, Some(FileBrowserAction::NewFolder)) => {
+                self.open_palette("/new folder ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Search, Some(FileBrowserAction::EnterSearch)) => {
+                self.search_focus_pending = true;
+                KeyDisposition::Consumed
+            }
+            // Search mode consumes all unhandled input
+            (Mode::Search, _) => KeyDisposition::Consumed,
+            // Normal mode actions
+            (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
+                self.enter_search();
+                self.search_query.clear();
+                self.refilter();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::AppendText(text))) => {
+                self.enter_search();
+                self.search_query.push_str(&text);
+                self.refilter();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::EnterPaletteSlash)) => {
+                self.open_palette("/");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::EnterPaletteCommand)) => {
+                self.open_palette("");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::SelectNext)) if !self.entries.is_empty() => {
                 let last = self.entries.len().saturating_sub(1);
                 let next = (self.selected + 1).min(last);
                 if input.modifiers().shift {
@@ -2404,7 +3622,7 @@ impl App for FileBrowserApp {
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectPrev)) if !self.entries.is_empty() => {
                 let prev = self.selected.saturating_sub(1);
                 if input.modifiers().shift {
                     self.extend_selection_to(prev);
@@ -2414,28 +3632,28 @@ impl App for FileBrowserApp {
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectFirst)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectFirst)) if !self.entries.is_empty() => {
                 self.set_single_selection(0);
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectLast)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectLast)) if !self.entries.is_empty() => {
                 self.set_single_selection(self.entries.len().saturating_sub(1));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::PageDown)) => {
+            (Mode::Normal, Some(FileBrowserAction::PageDown)) if !self.entries.is_empty() => {
                 let last = self.entries.len().saturating_sub(1);
                 self.set_single_selection((self.selected + 10).min(last));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::PageUp)) => {
+            (Mode::Normal, Some(FileBrowserAction::PageUp)) if !self.entries.is_empty() => {
                 self.set_single_selection(self.selected.saturating_sub(10));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Activate)) => {
+            (Mode::Normal, Some(FileBrowserAction::Activate)) if !self.entries.is_empty() => {
                 if let Some(entry) = self.selected_entry().cloned() {
                     if entry.is_dir {
                         self.navigate_into(entry.path);
@@ -2459,33 +3677,46 @@ impl App for FileBrowserApp {
                 self.toggle_inspector();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::ToggleQuickLook)) => {
+            (Mode::Normal, Some(FileBrowserAction::ToggleQuickLook))
+                if !self.entries.is_empty() =>
+            {
                 self.toggle_quick_look();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::ToggleHidden)) => {
+                self.columns.show_hidden = !self.columns.show_hidden;
+                self.refresh_preserving_filter();
+                log::info!(
+                    "file_browser: show_hidden toggled to {}",
+                    self.columns.show_hidden
+                );
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
                 self.refresh();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::SelectAll)) => {
+            (Mode::Normal, Some(FileBrowserAction::SelectAll)) if !self.entries.is_empty() => {
                 self.select_all_visible();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
-                if let Err(err) = self.create_new_folder() {
-                    self.error = Some(err);
-                }
+            (Mode::Normal, Some(FileBrowserAction::NewFile)) => {
+                self.open_palette("/new file ");
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Rename)) => {
+            (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
+                self.open_palette("/new folder ");
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Rename)) if !self.entries.is_empty() => {
                 self.open_rename_modal();
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Copy)) => {
+            (Mode::Normal, Some(FileBrowserAction::Copy)) if !self.entries.is_empty() => {
                 self.copy_selected(FileOperation::Copy);
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Cut)) => {
+            (Mode::Normal, Some(FileBrowserAction::Cut)) if !self.entries.is_empty() => {
                 self.copy_selected(FileOperation::Cut);
                 KeyDisposition::Consumed
             }
@@ -2495,7 +3726,7 @@ impl App for FileBrowserApp {
                 }
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) => {
+            (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) if !self.entries.is_empty() => {
                 self.request_move_selected_to_trash();
                 KeyDisposition::Consumed
             }
@@ -2507,16 +3738,26 @@ impl App for FileBrowserApp {
                 self.open_selected_with_default();
                 KeyDisposition::Consumed
             }
+            (Mode::Normal, Some(FileBrowserAction::CopyPath)) => {
+                self.copy_selected_path();
+                KeyDisposition::Consumed
+            }
             _ => KeyDisposition::Passthrough,
         }
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.pending_cmds)
     }
 
     fn keyboard_capture(&self) -> bool {
         self.quick_look_open || self.pending_operation.is_some() || self.rename_path.is_some()
+    }
+
+    fn submit_on_focused_text_input_enter(&self) -> bool {
+        (self.in_search || self.in_palette)
+            && self.rename_path.is_none()
+            && self.pending_operation.is_none()
     }
 
     fn wants_close(&self) -> bool {
@@ -2532,6 +3773,7 @@ impl App for FileBrowserApp {
             "cwd": self.cwd.display().to_string(),
             "selected": self.selected,
             "columns": self.columns.to_json(),
+            "font_size": self.font_size,
         }))
     }
 
@@ -2550,12 +3792,84 @@ impl App for FileBrowserApp {
             self.columns = ColumnModel::from_json(&state["columns"]);
             self.refresh();
         }
+        if let Some(size) = state["font_size"].as_f64() {
+            self.font_size = (size as f32).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        }
     }
+}
+
+/// One breadcrumb segment: a compact Ghost kit button in monospace at the
+/// browser font size. The current (last) segment is emphasised with the accent
+/// colour, the others use the primary text colour.
+fn breadcrumb_segment(
+    ui: &mut egui::Ui,
+    label: &str,
+    is_last: bool,
+    font_size: f32,
+    colors: &crate::ui::theme::Colors,
+) -> egui::Response {
+    let text_color = if is_last {
+        colors.accent
+    } else {
+        colors.text_primary
+    };
+    ui.add(
+        crate::ui::button::KitButton::new(label, colors)
+            .kind(crate::ui::button::ButtonKind::Ghost)
+            .compact()
+            .text_size(font_size)
+            .monospace()
+            .text_color(text_color),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Breadcrumb segments keep monospace, the browser font size and the
+    /// current-segment emphasis that the raw button used to paint.
+    #[test]
+    fn breadcrumb_segment_keeps_monospace_size_and_current_emphasis() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let paint = |label: &str, is_last: bool| {
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            breadcrumb_segment(ui, label, is_last, 19.0, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .find_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == label => {
+                        let section = &t.galley.job.sections[0];
+                        Some((
+                            section.format.font_id.clone(),
+                            t.override_text_color.unwrap_or(section.format.color),
+                        ))
+                    }
+                    _ => None,
+                })
+                .expect("segment label")
+        };
+        let (font, current) = paint("src", true);
+        let (_, parent) = paint("src", false);
+        assert_eq!(font.size, 19.0, "browser font size");
+        assert_eq!(font.family, egui::FontFamily::Monospace, "monospace");
+        assert_ne!(current, parent, "current segment is emphasised");
+    }
     use egui::{Event, Key, Modifiers, RawInput};
     use helpers::SortDescriptor;
 
@@ -2569,8 +3883,8 @@ mod tests {
         }
     }
 
-    fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
-        use crate::app::app_trait::KeyDisposition;
+    fn run_handle_key(app: &mut FileBrowserView, events: Vec<Event>) -> bool {
+        use crate::app::view_trait::KeyDisposition;
         let ctx = egui::Context::default();
         let modifiers = events
             .iter()
@@ -2593,44 +3907,42 @@ mod tests {
         consumed
     }
 
-    fn make_empty_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_empty_dir_plugin() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_populated_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_populated_dir_plugin() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("file.txt"), b"hi").expect("write");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
     #[test]
-    fn layout_policy_keeps_narrow_panes_compact() {
+    fn details_table_flexes_name_and_progressively_hides_trailing_columns_when_narrow() {
+        let (app, _dir) = make_populated_dir_plugin();
+        let wide_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(720.0, 24.0));
+        let wide_cols = app.details_columns(wide_rect);
+        let wide_ids: Vec<ColumnId> = wide_cols.iter().map(|(c, _)| c.id).collect();
         assert_eq!(
-            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH - 1.0),
-            FileBrowserLayout::CompactList
+            wide_ids,
+            vec![ColumnId::Name, ColumnId::Size, ColumnId::Modified]
         );
-        assert_eq!(
-            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH),
-            FileBrowserLayout::DetailsTable
-        );
-        assert_eq!(
-            FileBrowserLayout::for_width(INSPECTOR_MIN_WIDTH),
-            FileBrowserLayout::DetailsTable
-        );
-    }
+        let total_wide_w: f32 = wide_cols.iter().map(|(_, r)| r.width()).sum();
+        assert!((total_wide_w - 720.0).abs() < 1.0);
 
-    #[test]
-    fn layout_policy_exposes_details_and_inspector_separately() {
-        assert!(!FileBrowserLayout::CompactList.shows_details());
-        assert!(FileBrowserLayout::DetailsTable.shows_details());
+        let narrow_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 24.0));
+        let narrow_cols = app.details_columns(narrow_rect);
+        let narrow_ids: Vec<ColumnId> = narrow_cols.iter().map(|(c, _)| c.id).collect();
+        assert_eq!(narrow_ids, vec![ColumnId::Name]);
+        assert!((narrow_cols[0].1.width() - 200.0).abs() < 1.0);
     }
 
     #[test]
     fn inspector_is_explicit_not_width_triggered() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         assert!(!app.inspector_open);
         assert!(!app.should_show_inspector(INSPECTOR_MIN_WIDTH));
 
@@ -2643,7 +3955,7 @@ mod tests {
 
     #[test]
     fn i_toggles_inspector_in_normal_mode() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::I, Modifiers::default())]);
         assert!(consumed);
         assert!(app.inspector_open);
@@ -2656,7 +3968,7 @@ mod tests {
     fn browsing_never_queues_cd_request() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.take_pending_commands();
 
         app.navigate_into(dir.path().join("sub"));
@@ -2666,7 +3978,7 @@ mod tests {
         assert!(
             !cmds
                 .iter()
-                .any(|c| matches!(c, AppCommand::CdRequest { .. })),
+                .any(|c| matches!(c, ViewCommand::CdRequest { .. })),
             "browsing must not write cd into the linked terminal"
         );
         assert!(!app.should_close);
@@ -2674,7 +3986,7 @@ mod tests {
 
     #[test]
     fn t_hands_off_cwd_and_closes() {
-        let (mut app, dir) = make_populated_dir_app();
+        let (mut app, dir) = make_populated_dir_plugin();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::T, Modifiers::default())]);
 
         assert!(consumed);
@@ -2683,7 +3995,7 @@ mod tests {
             .take_pending_commands()
             .into_iter()
             .find_map(|c| match c {
-                AppCommand::CdRequest { cwd, .. } => Some(cwd),
+                ViewCommand::CdRequest { cwd, .. } => Some(cwd),
                 _ => None,
             });
         assert_eq!(
@@ -2694,8 +4006,17 @@ mod tests {
 
     #[test]
     fn t_in_search_mode_is_not_a_handoff() {
-        let (mut app, _dir) = make_populated_dir_app();
-        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        let (mut app, _dir) = make_populated_dir_plugin();
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
         assert!(app.in_search);
 
         let consumed = run_handle_key(&mut app, vec![key_event(Key::T, Modifiers::default())]);
@@ -2705,12 +4026,12 @@ mod tests {
         assert!(!app
             .take_pending_commands()
             .iter()
-            .any(|c| matches!(c, AppCommand::CdRequest { .. })));
+            .any(|c| matches!(c, ViewCommand::CdRequest { .. })));
     }
 
     #[test]
     fn space_opens_quick_look_without_opening_file() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
 
         assert!(consumed);
@@ -2720,7 +4041,7 @@ mod tests {
 
     #[test]
     fn escape_dismisses_quick_look_before_closing_browser() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
         assert!(app.quick_look_open);
 
@@ -2732,8 +4053,8 @@ mod tests {
     }
 
     #[test]
-    fn quick_look_captures_host_app_shortcuts() {
-        let (mut app, _dir) = make_file_only_dir_app();
+    fn quick_look_captures_host_plugin_shortcuts() {
+        let (mut app, _dir) = make_file_only_dir_plugin();
         assert!(!app.keyboard_capture());
 
         run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
@@ -2747,7 +4068,7 @@ mod tests {
 
     #[test]
     fn empty_dir_escape_closes() {
-        let (mut app, _dir) = make_empty_dir_app();
+        let (mut app, _dir) = make_empty_dir_plugin();
         assert!(app.entries.is_empty());
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
         assert!(consumed, "Escape must be consumed in empty dir");
@@ -2759,7 +4080,7 @@ mod tests {
 
     #[test]
     fn empty_dir_arrow_left_navigates_up() {
-        let (mut app, _dir) = make_empty_dir_app();
+        let (mut app, _dir) = make_empty_dir_plugin();
         let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
         let consumed = run_handle_key(
             &mut app,
@@ -2771,7 +4092,7 @@ mod tests {
 
     #[test]
     fn empty_dir_h_navigates_up() {
-        let (mut app, _dir) = make_empty_dir_app();
+        let (mut app, _dir) = make_empty_dir_plugin();
         let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::H, Modifiers::default())]);
         assert!(consumed, "H must be consumed in empty dir");
@@ -2780,7 +4101,7 @@ mod tests {
 
     #[test]
     fn empty_dir_backspace_navigates_up() {
-        let (mut app, _dir) = make_empty_dir_app();
+        let (mut app, _dir) = make_empty_dir_plugin();
         let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
         let consumed = run_handle_key(
             &mut app,
@@ -2792,7 +4113,7 @@ mod tests {
 
     #[test]
     fn empty_dir_other_keys_not_consumed() {
-        let (mut app, _dir) = make_empty_dir_app();
+        let (mut app, _dir) = make_empty_dir_plugin();
         let consumed = run_handle_key(
             &mut app,
             vec![key_event(Key::ArrowDown, Modifiers::default())],
@@ -2804,15 +4125,30 @@ mod tests {
 
     #[test]
     fn normal_mode_escape_closes() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
         assert!(app.should_close);
     }
 
     #[test]
-    fn normal_mode_slash_enters_search() {
-        let (mut app, _dir) = make_populated_dir_app();
+    fn normal_mode_slash_enters_palette_and_cmd_f_enters_search() {
+        let (mut app, _dir) = make_populated_dir_plugin();
         run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(!app.in_palette);
+
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
         assert!(app.in_search);
     }
 
@@ -2820,7 +4156,7 @@ mod tests {
 
     #[test]
     fn search_escape_exits_search() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.search_query = "abc".to_string();
         run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
@@ -2895,27 +4231,27 @@ mod tests {
 
     // ── Enter / l / → open non-directory files (#138) ──────────────────────
 
-    fn make_file_only_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_file_only_dir_plugin() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("readme.txt"), b"hi").expect("write file");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_mixed_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_mixed_dir_plugin() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("subdir")).expect("create subdir");
         std::fs::write(dir.path().join("notes.txt"), b"hi").expect("write file");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_three_file_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_three_file_plugin() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("alpha.txt"), b"a").expect("write alpha");
         std::fs::write(dir.path().join("bravo.txt"), b"b").expect("write bravo");
         std::fs::write(dir.path().join("charlie.txt"), b"c").expect("write charlie");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.columns.sort = SortDescriptor {
             column: ColumnId::Name,
             direction: SortDirection::Asc,
@@ -2926,7 +4262,7 @@ mod tests {
 
     #[test]
     fn shift_arrow_extends_selection_range() {
-        let (mut app, _dir) = make_three_file_app();
+        let (mut app, _dir) = make_three_file_plugin();
 
         let consumed = run_handle_key(
             &mut app,
@@ -2953,7 +4289,7 @@ mod tests {
 
     #[test]
     fn command_a_selects_all_visible_entries() {
-        let (mut app, _dir) = make_three_file_app();
+        let (mut app, _dir) = make_three_file_plugin();
 
         let consumed = run_handle_key(
             &mut app,
@@ -2972,7 +4308,7 @@ mod tests {
 
     #[test]
     fn command_d_does_not_duplicate_selected_file() {
-        let (mut app, dir) = make_three_file_app();
+        let (mut app, dir) = make_three_file_plugin();
 
         let consumed = run_handle_key(
             &mut app,
@@ -2991,7 +4327,7 @@ mod tests {
 
     #[test]
     fn rename_prompt_confirms_selected_file_rename() {
-        let (mut app, dir) = make_three_file_app();
+        let (mut app, dir) = make_three_file_plugin();
 
         app.open_rename_modal();
         app.rename_buffer = "renamed.txt".to_string();
@@ -3008,7 +4344,7 @@ mod tests {
 
     #[test]
     fn copy_and_paste_selected_file_creates_unique_copy() {
-        let (mut app, dir) = make_three_file_app();
+        let (mut app, dir) = make_three_file_plugin();
 
         app.copy_selected(FileOperation::Copy);
         let created = app.paste_into_current_dir().expect("paste");
@@ -3019,21 +4355,671 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_trash_moves_selected_file_into_local_trash() {
-        let (mut app, dir) = make_three_file_app();
+    fn confirmed_trash_moves_selected_file_to_the_system_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unique name so a leftover in the real Trash can never be mistaken
+        // for this run, and so it can be cleared afterwards.
+        let name = format!(
+            "plexi-0786-trash-{}.txt",
+            crate::platform::clock::now_nanos()
+        );
+        fs::write(dir.path().join(&name), "x").unwrap();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        app.select_path(&dir.path().join(&name));
 
         app.request_move_selected_to_trash();
         assert!(app.pending_operation.is_some());
         app.confirm_pending_operation().expect("confirm trash");
 
-        assert!(!dir.path().join("alpha.txt").exists());
-        assert!(dir.path().join(".Trash").join("alpha.txt").exists());
+        assert!(
+            !dir.path().join(&name).exists(),
+            "the item left the directory"
+        );
+        assert!(
+            !dir.path().join(".Trash").exists(),
+            "no in-project .Trash folder is created"
+        );
         assert!(app.pending_operation.is_none());
+        #[cfg(target_os = "macos")]
+        if let Some(home) = dirs::home_dir() {
+            let _ = fs::remove_file(home.join(".Trash").join(&name));
+        }
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_with_experiments_off() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_plugin();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let before = app.entries.len();
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_view_pane(
+            Box::new(app),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::ViewRuntime::Builtin(app) =
+                        &mut pane.as_view_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
+                })
+                .unwrap()
+        }
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        fs::write(dir.path().join("0-from-agent.txt"), "hi").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            if browser(&mut harness).entries.len() != before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), before + 1);
+        assert!(app.entries.iter().any(|e| e.name == "0-from-agent.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+    }
+
+    #[test]
+    fn listing_picks_up_files_created_externally() {
+        let (mut app, dir) = make_three_file_plugin();
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        assert!(!app.service_external(&wake), "arming changes nothing");
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        let before = app.entries.len();
+        app.select_path(&dir.path().join("bravo.txt"));
+        fs::write(dir.path().join("0-from-agent.txt"), "hi").unwrap();
+
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline && app.entries.len() == before {
+            app.service_external(&wake);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.entries.len(), before + 1);
+        assert!(app.entries.iter().any(|e| e.name == "0-from-agent.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt"),
+            "selection follows the path, not the index"
+        );
+    }
+
+    #[test]
+    fn file_explorer_initial_population_qualifies_entries_and_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("subfolder")).expect("create subfolder");
+        std::fs::write(dir.path().join("alpha.txt"), b"hello alpha").expect("write alpha");
+        std::fs::write(dir.path().join("bravo.png"), b"fake png bytes").expect("write bravo");
+        std::fs::write(dir.path().join(".hidden.txt"), b"hidden").expect("write hidden");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        assert!(app.error.is_none());
+        assert_eq!(app.selected, 0);
+
+        // Hidden files skipped by default.
+        assert_eq!(app.entries.len(), 3);
+
+        // Enable folders_on_top and name ascending to test deterministic ordering & metadata
+        app.columns.folders_on_top = true;
+        app.columns.sort = SortDescriptor {
+            column: ColumnId::Name,
+            direction: SortDirection::Asc,
+        };
+        app.refresh();
+
+        assert_eq!(app.entries.len(), 3);
+        assert!(
+            app.entries[0].is_dir,
+            "first entry should be subfolder when folders_on_top is true"
+        );
+        assert_eq!(app.entries[0].name, "subfolder");
+        assert!(app.entries[0].size_bytes.is_none());
+
+        assert!(!app.entries[1].is_dir);
+        assert_eq!(app.entries[1].name, "alpha.txt");
+        assert_eq!(app.entries[1].size_bytes, Some(11));
+        assert_eq!(app.entries[1].extension.as_deref(), Some("txt"));
+        assert!(!app.entries[1].is_image);
+
+        assert!(!app.entries[2].is_dir);
+        assert_eq!(app.entries[2].name, "bravo.png");
+        assert!(app.entries[2].is_image);
+        assert_eq!(app.entries[2].extension.as_deref(), Some("png"));
+
+        // Toggle show_hidden
+        app.columns.show_hidden = true;
+        app.refresh();
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == ".hidden.txt"));
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_in_visible_pass() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_plugin();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_view_pane(
+            Box::new(app),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::ViewRuntime::Builtin(app) =
+                        &mut pane.as_view_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
+                })
+                .unwrap()
+        }
+
+        harness.run_frames(1);
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // 1. Create delta.txt
+        std::fs::write(dir.path().join("delta.txt"), b"d").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            if browser(&mut harness).entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == "delta.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+
+        // 2. Rename charlie.txt -> echo.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::rename(dir.path().join("charlie.txt"), dir.path().join("echo.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            let b = browser(&mut harness);
+            if b.entries.iter().any(|e| e.name == "echo.txt")
+                && !b.entries.iter().any(|e| e.name == "charlie.txt")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert!(app.entries.iter().any(|e| e.name == "echo.txt"));
+        assert!(!app.entries.iter().any(|e| e.name == "charlie.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+
+        // 3. Delete alpha.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            let b = browser(&mut harness);
+            if b.entries.len() == 3 && !b.entries.iter().any(|e| e.name == "alpha.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 3);
+        assert!(!app.entries.iter().any(|e| e.name == "alpha.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_through_create_rename_delete_in_hidden_pass() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_plugin();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_view_pane(
+            Box::new(app),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::ViewRuntime::Builtin(app) =
+                        &mut pane.as_view_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
+                })
+                .unwrap()
+        }
+
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // 1. Create 0-hidden-agent.txt
+        std::fs::write(dir.path().join("0-hidden-agent.txt"), "hi").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            if browser(&mut harness).entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == "0-hidden-agent.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+
+        // 2. Rename charlie.txt -> renamed-hidden.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::rename(
+            dir.path().join("charlie.txt"),
+            dir.path().join("renamed-hidden.txt"),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = browser(&mut harness);
+            if b.entries.iter().any(|e| e.name == "renamed-hidden.txt")
+                && !b.entries.iter().any(|e| e.name == "charlie.txt")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert!(app.entries.iter().any(|e| e.name == "renamed-hidden.txt"));
+        assert!(!app.entries.iter().any(|e| e.name == "charlie.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+
+        // 3. Delete alpha.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = browser(&mut harness);
+            if b.entries.len() == 3 && !b.entries.iter().any(|e| e.name == "alpha.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 3);
+        assert!(!app.entries.iter().any(|e| e.name == "alpha.txt"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("bravo.txt")
+        );
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_in_inactive_context() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (plugin_b, dir_b) = make_three_file_plugin();
+        let mut harness = crate::testing::HostHarness::new();
+
+        let ctx_b_id = 2;
+        harness.app.router.push(crate::host::context::Context {
+            name: "Context B".into(),
+            root: dir_b.path().to_path_buf(),
+            description: None,
+            context_id: ctx_b_id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+        let mut win_b = crate::host::context::Window {
+            name: "Context B".into(),
+            path: dir_b.path().to_path_buf(),
+            tree: egui_tiles::Tree::empty("inactive_context_browser_test"),
+            panes: std::collections::HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 1,
+            grid_y: 0,
+            window_id: 2,
+            context_id: ctx_b_id,
+        };
+        let pane_id = harness.app.host.alloc_pane_id();
+        let view_pane = crate::host::pane::ViewPane {
+            pip_status: None,
+            id: pane_id,
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(plugin_b)),
+            workspace_root: dir_b.path().to_path_buf(),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
+            manifest_id: "file-browser".to_string(),
+            name: "Files".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        };
+        let tile_id = win_b.tree.tiles.insert_pane(pane_id);
+        win_b.tree.root = Some(tile_id);
+        win_b
+            .panes
+            .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
+        harness.app.windows.push(win_b);
+
+        // Active context remains Window 0 / Context A
+        assert_eq!(harness.app.active_window, 0);
+
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // External mutation in Context B's directory
+        std::fs::write(dir_b.path().join("0-inactive.txt"), "hello").unwrap();
+
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = harness.app.windows[1]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_view_mut())
+                .and_then(|a| match &mut a.runtime {
+                    crate::host::pane::ViewRuntime::Builtin(app) => {
+                        app.as_any_mut().downcast_mut::<FileBrowserView>()
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            if b.entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let b = harness.app.windows[1]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .and_then(|a| match &mut a.runtime {
+                crate::host::pane::ViewRuntime::Builtin(app) => {
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(b.entries.len(), 4);
+        assert!(b.entries.iter().any(|e| e.name == "0-inactive.txt"));
+    }
+
+    #[test]
+    fn file_explorer_filter_and_selection_retention_through_mutations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("apple.txt"), b"apple").unwrap();
+        std::fs::write(dir.path().join("banana.txt"), b"banana").unwrap();
+        std::fs::write(dir.path().join("cherry.txt"), b"cherry").unwrap();
+        std::fs::write(dir.path().join("date.txt"), b"date").unwrap();
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        app.service_external(&wake);
+
+        // Enter search mode with query "an" -> matches banana.txt
+        app.enter_search();
+        app.search_query = "an".to_string();
+        app.refilter();
+        assert_eq!(app.search_session.hits().len(), 1);
+        assert_eq!(app.search_session.hits()[0].file_name, "banana.txt");
+        assert_eq!(
+            app.selected_entry_or_hit().map(|e| e.name),
+            Some("banana.txt".to_string())
+        );
+
+        // 1. Create cantaloupe.txt -> also matches "an"
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        std::fs::write(dir.path().join("cantaloupe.txt"), b"cantaloupe").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.search_session.hits().len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.search_session.hits().len(), 2);
+        assert_eq!(
+            app.selected_entry_or_hit().map(|e| e.name),
+            Some("banana.txt".to_string())
+        );
+
+        // 2. Create fig.txt -> does NOT match "an"
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::write(dir.path().join("fig.txt"), b"fig").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.entries.len() == 6 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.entries.len(), 6);
+        assert_eq!(
+            app.search_session.hits().len(),
+            2,
+            "fig.txt must not match 'an'"
+        );
+        assert_eq!(
+            app.selected_entry_or_hit().map(|e| e.name),
+            Some("banana.txt".to_string())
+        );
+
+        // 3. Delete banana.txt (the currently selected hit)
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::remove_file(dir.path().join("banana.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.search_session.hits().len() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.search_session.hits().len(), 1);
+        assert_eq!(app.search_session.hits()[0].file_name, "cantaloupe.txt");
+        assert_eq!(
+            app.selected_entry_or_hit().map(|e| e.name),
+            Some("cantaloupe.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn file_explorer_handles_watcher_failure_and_deleted_directory_gracefully() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let deleted_sub = temp.path().join("sub_to_delete");
+        std::fs::create_dir(&deleted_sub).unwrap();
+        std::fs::write(deleted_sub.join("file.txt"), b"hello").unwrap();
+
+        let mut app = FileBrowserView::new(deleted_sub.clone());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        app.service_external(&wake);
+        assert_eq!(app.entries.len(), 1);
+        assert!(app.error.is_none());
+
+        // Delete the directory while the explorer is open
+        std::fs::remove_dir_all(&deleted_sub).unwrap();
+
+        // Trigger refresh
+        app.refresh_after_external_change();
+        assert!(
+            app.entries.is_empty(),
+            "entries must be cleared when directory is deleted"
+        );
+        assert!(
+            app.error.is_some(),
+            "error message must be set for deleted directory"
+        );
+
+        // Subsequent service_external calls must not panic
+        let _ = app.service_external(&wake);
+
+        // Nonexistent path on startup
+        let nonexistent = temp.path().join("does_not_exist");
+        let mut app2 = FileBrowserView::new(nonexistent);
+        assert!(app2.error.is_some());
+        assert!(app2.entries.is_empty());
+        let _ = app2.service_external(&wake);
+    }
+
+    #[test]
+    fn file_explorer_cli_key_drives_selection_and_navigation() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (app, dir) = make_three_file_plugin();
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_view_pane(
+            Box::new(app),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        let pane_id = *harness.app.windows[harness.app.active_window]
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+
+        fn browser_selected(harness: &mut crate::testing::HostHarness) -> usize {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::ViewRuntime::Builtin(app) =
+                        &mut pane.as_view_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    let b = app.as_any_mut().downcast_mut::<FileBrowserView>()?;
+                    Some(b.selected)
+                })
+                .unwrap()
+        }
+
+        harness.run_frames(1);
+        assert_eq!(browser_selected(&mut harness), 0);
+
+        // Drive Down arrow via HostRequest::KeyPane (the socket IPC for `plexi pane key <id> down`)
+        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
+            pane_id,
+            key: "down".into(),
+            response_file: None,
+        });
+        harness.run_frames(2);
+        assert_eq!(browser_selected(&mut harness), 1);
+
+        // Drive Up arrow via KeyPane
+        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
+            pane_id,
+            key: "up".into(),
+            response_file: None,
+        });
+        harness.run_frames(2);
+        assert_eq!(browser_selected(&mut harness), 0);
     }
 
     #[test]
     fn enter_on_file_opens_file_and_browser_stays_open() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         assert!(
             !app.entries.is_empty(),
             "entries must be populated after new()"
@@ -3062,14 +5048,14 @@ mod tests {
     /// Regression for stint 0351: `plexi pane key <id> enter` must drive the
     /// same `handle_key` → `open_file` path a physical Enter press takes. In
     /// prod, `open_file` hands the path to the host's `OpenArtifact` resolver
-    /// (`open_file_in_app`, #2283) — that resolver has its own coverage; this
+    /// (`open_file_in_view`, #2283) — that resolver has its own coverage; this
     /// test proves the CLI key-string vocabulary reaches it for a selected
     /// media file.
     #[test]
     fn cli_key_string_enter_opens_selected_media_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("clip.mp4"), b"not a real video").expect("write");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         assert!(!app.entries[0].is_dir, "fixture must select the media file");
 
         let raw = crate::app::key_str_to_egui_raw_input("enter")
@@ -3079,10 +5065,10 @@ mod tests {
         let _ = ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             let input = crate::app::input_router::PlexiInput::take_from(ctx);
-            consumed = app.handle_key(&input) == crate::app::app_trait::KeyDisposition::Consumed;
+            consumed = app.handle_key(&input) == crate::app::view_trait::KeyDisposition::Consumed;
         });
 
-        assert!(consumed, "injected Enter must be consumed by the app");
+        assert!(consumed, "injected Enter must be consumed by the plugin");
         assert_eq!(
             app.opened_files.len(),
             1,
@@ -3093,7 +5079,7 @@ mod tests {
 
     #[test]
     fn l_key_on_file_opens_file() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
         assert!(consumed);
         assert_eq!(app.opened_files.len(), 1, "l on a file must call open_file");
@@ -3101,7 +5087,7 @@ mod tests {
 
     #[test]
     fn arrow_right_on_file_opens_file() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         let consumed = run_handle_key(
             &mut app,
             vec![key_event(Key::ArrowRight, Modifiers::default())],
@@ -3112,11 +5098,11 @@ mod tests {
 
     #[test]
     fn enter_on_dir_navigates_not_opens() {
-        let (mut app, _dir) = make_mixed_dir_app();
-        // dirs sort first — selected=0 is the subdir
+        let (mut app, dir) = make_mixed_dir_plugin();
+        app.select_path(&dir.path().join("subdir"));
         assert!(
-            app.entries[0].is_dir,
-            "first entry must be the subdirectory"
+            app.selected_entry().is_some_and(|e| e.is_dir),
+            "selected entry must be the subdirectory"
         );
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
@@ -3128,10 +5114,19 @@ mod tests {
 
     #[test]
     fn search_enter_on_file_opens_and_exits_search() {
-        let (mut app, _dir) = make_file_only_dir_app();
-        // enter search mode
-        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
-        assert!(app.in_search, "slash must enter search mode");
+        let (mut app, _dir) = make_file_only_dir_plugin();
+        // enter search mode via Cmd+F
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(app.in_search, "Cmd+F must enter search mode");
         // press Enter to open the (only) filtered result
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
@@ -3148,7 +5143,7 @@ mod tests {
 
     #[test]
     fn search_mode_h_does_not_navigate_up() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         let original_cwd = app.cwd.clone();
         app.in_search = true;
         app.refilter();
@@ -3161,7 +5156,7 @@ mod tests {
 
     #[test]
     fn search_mode_h_appends_to_query() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -3179,7 +5174,7 @@ mod tests {
 
     #[test]
     fn search_mode_l_does_not_activate() {
-        let (mut app, _dir) = make_file_only_dir_app();
+        let (mut app, _dir) = make_file_only_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
@@ -3191,7 +5186,7 @@ mod tests {
 
     #[test]
     fn search_mode_l_appends_to_query() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -3209,7 +5204,7 @@ mod tests {
 
     #[test]
     fn search_mode_j_appends_to_query() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -3227,7 +5222,7 @@ mod tests {
 
     #[test]
     fn search_mode_k_appends_to_query() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -3245,7 +5240,7 @@ mod tests {
 
     #[test]
     fn search_mode_s_does_not_toggle_sort() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         let original_sort = app.columns.sort;
         app.in_search = true;
         app.refilter();
@@ -3268,7 +5263,7 @@ mod tests {
 
     #[test]
     fn serialized_state_persists_column_preferences() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.columns.toggle_sort(ColumnId::Size);
         app.columns.resize_column(ColumnId::Name, 344.0);
         app.columns.set_column_visible(ColumnId::Created, true);
@@ -3277,7 +5272,7 @@ mod tests {
         app.columns.show_hidden = true;
 
         let state = app.serialize_state().expect("state");
-        let mut restored = FileBrowserApp::new(app.cwd.clone());
+        let mut restored = FileBrowserView::new(app.cwd.clone());
         restored.restore_state(&state);
 
         assert_eq!(restored.columns.sort.column, ColumnId::Size);
@@ -3317,15 +5312,14 @@ mod tests {
         assert!(created_index < modified_index);
     }
 
-    /// Dot directories remain navigable by default, while dotfiles stay hidden
-    /// until `show_hidden` is enabled.
+    /// Both dotfiles and dot-directories stay hidden until `show_hidden` is enabled.
     #[test]
-    fn show_hidden_toggle_filters_dotfiles_but_not_dot_directories() {
+    fn show_hidden_toggle_filters_all_dot_entries_including_dot_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("visible.txt"), b"v").expect("write visible");
         std::fs::write(dir.path().join(".hidden"), b"h").expect("write hidden");
         std::fs::create_dir(dir.path().join(".config")).expect("create dot directory");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
 
         assert!(!app.columns.show_hidden, "hidden files are off by default");
         assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
@@ -3334,13 +5328,23 @@ mod tests {
             "dotfile must be filtered out while show_hidden is off"
         );
         assert!(
-            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible while show_hidden is off"
+            !app.entries.iter().any(|e| e.name == ".config"),
+            "dot directory must also be filtered out while show_hidden is off"
         );
 
-        app.columns.show_hidden = true;
-        app.refresh_preserving_filter();
-
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Period,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed, "Cmd+Shift+. must toggle show_hidden");
+        assert!(app.columns.show_hidden);
         assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
         assert!(
             app.entries.iter().any(|e| e.name == ".hidden"),
@@ -3348,19 +5352,28 @@ mod tests {
         );
         assert!(
             app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible once show_hidden is on"
+            "dot directory must appear once show_hidden is on"
         );
 
-        app.columns.show_hidden = false;
-        app.refresh_preserving_filter();
-
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Period,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(!app.columns.show_hidden);
         assert!(
             !app.entries.iter().any(|e| e.name == ".hidden"),
             "dotfile must be filtered again once show_hidden is toggled back off"
         );
         assert!(
-            app.entries.iter().any(|e| e.name == ".config" && e.is_dir),
-            "dot directory must remain visible when show_hidden is toggled back off"
+            !app.entries.iter().any(|e| e.name == ".config"),
+            "dot directory must be filtered again when show_hidden is toggled back off"
         );
     }
 
@@ -3369,7 +5382,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("aaa.txt"), b"a").expect("write a");
         std::fs::write(dir.path().join("bbb.txt"), b"b").expect("write b");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.columns.sort = SortDescriptor {
             column: ColumnId::Name,
             direction: SortDirection::Asc,
@@ -3397,15 +5410,12 @@ mod tests {
     }
 
     #[test]
-    fn details_columns_keep_enabled_columns_reachable_at_breakpoint_width() {
-        let (mut app, _dir) = make_populated_dir_app();
+    fn details_columns_keep_enabled_columns_reachable_when_wide() {
+        let (mut app, _dir) = make_populated_dir_plugin();
         for id in ColumnId::ALL {
             app.columns.set_column_visible(id, true);
         }
-        let rect = egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(DETAILS_TABLE_MIN_WIDTH, DETAILS_HEADER_H),
-        );
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, DETAILS_HEADER_H));
         let columns = app.details_columns(rect);
 
         assert_eq!(columns.len(), ColumnId::ALL.len());
@@ -3420,7 +5430,7 @@ mod tests {
 
     #[test]
     fn search_mode_r_appends_to_query() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -3438,7 +5448,7 @@ mod tests {
 
     #[test]
     fn arrow_down_still_selects_next_in_search() {
-        let (mut app, _dir) = make_populated_dir_app();
+        let (mut app, _dir) = make_populated_dir_plugin();
         // add a second file so there's something to move to
         std::fs::write(app.cwd.join("other.txt"), b"x").expect("write");
         app.refresh();
@@ -3459,5 +5469,1178 @@ mod tests {
             "↓ must still move selection in search mode"
         );
         assert_eq!(app.search_query, "", "↓ must not append to query");
+    }
+
+    #[test]
+    fn adjust_font_size_scales_metrics_clamps_and_persists_in_state() {
+        let (mut app, _dir) = make_populated_dir_plugin();
+        let default_row_h = app.row_height();
+        let default_header_h = app.header_height();
+        assert_eq!(app.font_size, style::TEXT_HINT);
+
+        app.adjust_font_size(4.0);
+        assert_eq!(app.font_size, style::TEXT_HINT + 4.0);
+        assert!(app.row_height() > default_row_h);
+        assert!(app.header_height() > default_header_h);
+
+        let state = app.serialize_state().expect("serialize");
+        let mut restored = FileBrowserView::new(app.cwd.clone());
+        restored.restore_state(&state);
+        assert_eq!(restored.font_size, style::TEXT_HINT + 4.0);
+
+        app.adjust_font_size(-100.0);
+        assert_eq!(app.font_size, FONT_SIZE_MIN);
+        app.adjust_font_size(100.0);
+        assert_eq!(app.font_size, FONT_SIZE_MAX);
+    }
+
+    #[test]
+    fn empty_dir_supports_new_folder_and_paste() {
+        let (mut src_plugin, _src_dir) = make_three_file_plugin();
+        src_plugin.copy_selected(FileOperation::Copy);
+        let clipboard = src_plugin.operation_clipboard.clone();
+
+        let (mut empty_plugin, empty_dir) = make_empty_dir_plugin();
+        empty_plugin.operation_clipboard = clipboard;
+        assert!(empty_plugin.entries.is_empty());
+
+        let consumed_paste = run_handle_key(
+            &mut empty_plugin,
+            vec![key_event(
+                Key::V,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_paste, "Cmd+V must work in an empty directory");
+        assert!(empty_dir.path().join("alpha.txt").exists());
+
+        let (mut empty_app2, empty_dir2) = make_empty_dir_plugin();
+        let consumed_mkdir = run_handle_key(
+            &mut empty_app2,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(
+            consumed_mkdir,
+            "Cmd+Shift+N must work in an empty directory"
+        );
+        assert!(empty_app2.in_palette);
+        assert_eq!(empty_app2.palette_query, "/new folder ");
+        assert!(
+            !empty_dir2.path().join("Untitled Folder").exists(),
+            "Cmd+Shift+N must prompt for folder name without creating Untitled Folder on disk first"
+        );
+        run_handle_key(
+            &mut empty_app2,
+            vec![
+                Event::Text("created_dir".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(empty_dir2.path().join("created_dir").is_dir());
+    }
+
+    #[test]
+    fn reveal_and_open_with_default_emit_os_modes_not_open_in_pane() {
+        let (mut app, dir) = make_file_only_dir_plugin();
+        app.take_pending_commands();
+
+        let consumed_reveal = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::Enter,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_reveal);
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            ViewCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                ..
+            } if path == &dir.path().join("readme.txt").display().to_string()
+        ));
+
+        let consumed_open = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::O,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_open);
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            ViewCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                ..
+            } if path == &dir.path().join("readme.txt").display().to_string()
+        ));
+    }
+
+    #[test]
+    fn copy_and_paste_preserves_extension_before_copy_suffix() {
+        let (mut app, dir) = make_three_file_plugin();
+        app.copy_selected(FileOperation::Copy);
+
+        let first = app.paste_into_current_dir().expect("first paste");
+        assert_eq!(first, vec![dir.path().join("alpha 1.txt")]);
+
+        let second = app.paste_into_current_dir().expect("second paste");
+        assert_eq!(second, vec![dir.path().join("alpha 2.txt")]);
+    }
+
+    #[test]
+    fn r_and_f2_open_rename_modal_and_cmd_shift_r_refreshes() {
+        let (mut app, dir) = make_three_file_plugin();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::R, Modifiers::default())]);
+        assert!(consumed);
+        assert_eq!(app.rename_path, Some(dir.path().join("alpha.txt")));
+        app.cancel_rename_modal();
+
+        let consumed_f2 = run_handle_key(&mut app, vec![key_event(Key::F2, Modifiers::default())]);
+        assert!(consumed_f2);
+        assert_eq!(app.rename_path, Some(dir.path().join("alpha.txt")));
+        app.cancel_rename_modal();
+
+        std::fs::write(dir.path().join("delta.txt"), b"d").expect("write delta");
+        let consumed_refresh = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::R,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_refresh);
+        assert!(app.entries.iter().any(|e| e.name == "delta.txt"));
+    }
+
+    #[test]
+    fn y_and_cmd_shift_c_copy_selected_path() {
+        let (mut app, dir) = make_three_file_plugin();
+        let expected = dir.path().join("alpha.txt").display().to_string();
+
+        let consumed_y = run_handle_key(&mut app, vec![key_event(Key::Y, Modifiers::default())]);
+        assert!(consumed_y);
+        assert_eq!(app.pending_clipboard_text.take(), Some(expected.clone()));
+
+        let consumed_cmd_shift_c = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::C,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_cmd_shift_c);
+        assert_eq!(app.pending_clipboard_text.take(), Some(expected));
+    }
+
+    #[test]
+    fn breadcrumb_segments_split_ancestors_in_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("alpha").join("beta");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let segments = FileBrowserView::breadcrumb_segments(&nested);
+        assert!(segments.len() >= 3);
+        assert_eq!(segments.last().unwrap().0, "beta");
+        assert_eq!(segments.last().unwrap().1, nested);
+        assert_eq!(segments[segments.len() - 2].0, "alpha");
+        assert_eq!(segments[segments.len() - 2].1, dir.path().join("alpha"));
+    }
+
+    #[test]
+    fn cmd_f_and_slash_enter_search_and_claim_pane_text_surface() {
+        let (mut app, _dir) = make_three_file_plugin();
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed, "Cmd+F must enter search mode");
+        assert!(app.in_search);
+        assert!(app.search_focus_pending);
+        assert!(app.submit_on_focused_text_input_enter());
+
+        // Render one UI pass with a bound pane_id and verify SurfaceKey::Pane(pane_id) is registered
+        // as default and claimed in the frame's SurfaceRegistry.
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            app.draw_search_bar(ui, &colors, 42, None);
+        });
+        let registry = crate::ui::focus::drain_text_surfaces(&ctx);
+        let key = crate::ui::focus::SurfaceKey::Pane(42);
+        assert!(
+            registry.default_for(key).is_some() && registry.claim_for(key).is_some(),
+            "SearchBar must register its TextInput under SurfaceKey::Pane(pane_id) and claim focus"
+        );
+    }
+
+    #[test]
+    fn search_mode_supports_paste_and_backspace_without_parent_navigation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("child");
+        std::fs::create_dir_all(&sub).expect("mkdir child");
+        std::fs::write(sub.join("alpha.txt"), b"hello").expect("write alpha");
+        std::fs::write(dir.path().join("parent_file.txt"), b"parent").expect("write parent");
+
+        let mut app = FileBrowserView::new(sub.clone());
+        // Seed file operation clipboard to verify Cmd+V / Paste in search mode does NOT paste files.
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![dir.path().join("parent_file.txt")],
+        });
+
+        run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::F,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(app.in_search);
+
+        let pasted = run_handle_key(&mut app, vec![Event::Paste("alp".to_string())]);
+        assert!(
+            pasted,
+            "Event::Paste in search mode must append to search_query"
+        );
+        assert_eq!(app.search_query, "alp");
+        assert!(
+            !sub.join("parent_file.txt").exists(),
+            "pasting into search query must not trigger file paste_into_current_dir"
+        );
+
+        // Backspace while search_query is non-empty deletes the trailing character and stays in sub.
+        let backspaced = run_handle_key(
+            &mut app,
+            vec![key_event(Key::Backspace, Modifiers::default())],
+        );
+        assert!(backspaced);
+        assert_eq!(app.search_query, "al");
+        assert_eq!(
+            app.cwd, sub,
+            "Backspace in search mode must not navigate to parent directory"
+        );
+
+        // Even when search_query is emptied, Backspace in search mode must not navigate to parent.
+        app.search_query.clear();
+        app.refilter();
+        let backspaced_empty = run_handle_key(
+            &mut app,
+            vec![key_event(Key::Backspace, Modifiers::default())],
+        );
+        assert!(backspaced_empty);
+        assert_eq!(
+            app.cwd, sub,
+            "Backspace on empty search query must stay in search mode and never navigate up"
+        );
+    }
+
+    #[test]
+    fn deep_search_discovers_subdirectory_paths_and_file_contents_and_activates_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested_dir = dir.path().join("sub").join("nested_target");
+        std::fs::create_dir_all(&nested_dir).expect("mkdir nested");
+        let nested_file = nested_dir.join("deep_widget.rs");
+        std::fs::write(&nested_file, b"pub struct DeepWidget;\n").expect("write nested_file");
+        let docs_dir = dir.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).expect("mkdir docs");
+        let content_file = docs_dir.join("architecture.md");
+        std::fs::write(
+            &content_file,
+            b"# Architecture\nUniqueNeedleToken lives inside this markdown body.\n",
+        )
+        .expect("write content_file");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+
+        // 1. Enter search and query a nested directory ("nested_target").
+        app.in_search = true;
+        app.search_query = "nested_target".to_string();
+        app.refilter();
+
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            let _ = app.service_external(&wake);
+            if app
+                .search_session
+                .hits()
+                .iter()
+                .any(|h| h.path == nested_dir)
+                && !app.search_session.is_scanning()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let dir_idx = app
+            .search_session
+            .hits()
+            .iter()
+            .position(|h| h.path == nested_dir && h.is_dir)
+            .expect("deep search must find nested_target directory");
+        app.selected = dir_idx;
+
+        // Pressing Enter on a directory search hit navigates cwd into that directory and exits search.
+        let entered_dir =
+            run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(entered_dir);
+        assert!(
+            !app.in_search,
+            "activating directory result must exit search mode"
+        );
+        assert_eq!(
+            app.cwd, nested_dir,
+            "activating directory result must navigate cwd into that directory"
+        );
+
+        // Navigate back to root and test deep content search ("UniqueNeedleToken").
+        app.navigate_into(dir.path().to_path_buf());
+        app.in_search = true;
+        app.search_query = "UniqueNeedleToken".to_string();
+        app.refilter();
+
+        let deadline2 = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline2 {
+            let _ = app.service_external(&wake);
+            if app
+                .search_session
+                .hits()
+                .iter()
+                .any(|h| h.path == content_file && h.kind.content_snippet().is_some())
+                && !app.search_session.is_scanning()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let hit_idx = app
+            .search_session
+            .hits()
+            .iter()
+            .position(|h| h.path == content_file)
+            .expect("deep content search must find UniqueNeedleToken inside docs/architecture.md");
+        let snippet = app.search_session.hits()[hit_idx]
+            .kind
+            .content_snippet()
+            .expect("content hit must include line snippet");
+        assert_eq!(snippet.line_number, 2);
+        assert!(snippet.line_preview.contains("UniqueNeedleToken"));
+
+        app.selected = hit_idx;
+        let entered_file =
+            run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(entered_file);
+        assert!(
+            !app.in_search,
+            "activating file/content result must exit search mode"
+        );
+        assert_eq!(app.opened_files.last(), Some(&content_file));
+    }
+
+    #[test]
+    fn status_bar_hints_align_on_item_count_baseline_at_wide_and_narrow_widths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("alpha.rs"), b"fn main() {}\n").expect("write alpha.rs");
+        std::fs::write(dir.path().join("beta.toml"), b"[package]\n").expect("write beta.toml");
+
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+
+        for (w, h) in [(1100.0_f32, 720.0_f32), (640.0_f32, 520.0_f32)] {
+            let mut app = FileBrowserView::new(dir.path().to_path_buf());
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(w, h),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let render_ctx = ViewRenderContext {
+                        colors: &colors,
+                        pane_id: 1,
+                    };
+                    app.ui(ui, &render_ctx, None);
+                });
+            });
+
+            let layout = app
+                .last_status_bar_layout
+                .as_ref()
+                .expect("status bar layout recorded");
+            assert!(
+                !layout.chip_rects.is_empty() && !layout.label_rects.is_empty(),
+                "status bar must render key chips and labels at {w}x{h}"
+            );
+            for label_rect in &layout.label_rects {
+                assert!(
+                    (label_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "hint label center y ({}) must align with item count center y ({}) at {w}x{h}",
+                    label_rect.center().y,
+                    layout.item_count_rect.center().y,
+                );
+                assert!(
+                    (label_rect.max.y - layout.item_count_rect.max.y).abs() <= 0.5,
+                    "hint label baseline ({}) must align with item count baseline ({}) at {w}x{h}",
+                    label_rect.max.y,
+                    layout.item_count_rect.max.y,
+                );
+            }
+            for chip_rect in &layout.chip_rects {
+                assert!(
+                    (chip_rect.center().y - layout.item_count_rect.center().y).abs() <= 0.5,
+                    "key chip center y ({}) must align with item count center y ({}) at {w}x{h}",
+                    chip_rect.center().y,
+                    layout.item_count_rect.center().y,
+                );
+            }
+            let first_chip = layout.chip_rects.first().unwrap();
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                first_chip.min.x >= layout.item_count_rect.max.x + style::SPACE_MD,
+                "first hint chip ({}) must not collide with item count label ({}) at {w}x{h}",
+                first_chip.min.x,
+                layout.item_count_rect.max.x,
+            );
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "rightmost hint label ({}) must sit flush with status bar right edge ({}) at {w}x{h}",
+                last_label.max.x,
+                layout.row_rect.max.x,
+            );
+        }
+    }
+
+    #[test]
+    fn parse_file_explorer_intent_resolves_slash_and_natural_language_phrases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main_rs = dir.path().join("main.rs");
+        let docs_dir = dir.path().join("docs");
+        std::fs::write(&main_rs, b"fn main() {}\n").expect("write main.rs");
+        std::fs::create_dir(&docs_dir).expect("mkdir docs");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        // Select main.rs explicitly for selection-contextual phrases like "rename to main_v2.rs".
+        let main_idx = app
+            .entries
+            .iter()
+            .position(|e| e.path == main_rs)
+            .expect("main.rs entry");
+        app.selected = main_idx;
+
+        let selected_paths = app.selected_paths();
+        let ctx = app.intent_context(&selected_paths);
+
+        assert_eq!(
+            parse_file_explorer_intent("/hidden", &ctx),
+            Some(FileExplorerIntent::ToggleHidden { enabled: None })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/new file notes.md", &ctx),
+            Some(FileExplorerIntent::CreateFile {
+                name: "notes.md".to_string(),
+                open_in_editor: true,
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/new folder specs", &ctx),
+            Some(FileExplorerIntent::CreateFolder {
+                name: "specs".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("rename to main_v2.rs", &ctx),
+            Some(FileExplorerIntent::Rename {
+                target: main_rs.clone(),
+                new_name: "main_v2.rs".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/sort size asc", &ctx),
+            Some(FileExplorerIntent::SortBy {
+                column: ColumnId::Size,
+                direction: SortDirection::Asc,
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("show hidden files", &ctx),
+            Some(FileExplorerIntent::ToggleHidden {
+                enabled: Some(true),
+            })
+        );
+
+        // Verify additional variants and serde round-trip on FileExplorerIntent.
+        assert_eq!(
+            parse_file_explorer_intent("/trash", &ctx),
+            Some(FileExplorerIntent::MoveToTrash {
+                targets: vec![main_rs.clone()],
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/open", &ctx),
+            Some(FileExplorerIntent::OpenInEditor {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/default", &ctx),
+            Some(FileExplorerIntent::OpenWithDefault {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/reveal", &ctx),
+            Some(FileExplorerIntent::Reveal {
+                path: main_rs.clone(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/cd", &ctx),
+            Some(FileExplorerIntent::CdTerminal {
+                path: dir.path().to_path_buf(),
+            })
+        );
+        assert_eq!(
+            parse_file_explorer_intent("/folders-first", &ctx),
+            Some(FileExplorerIntent::ToggleFoldersFirst { enabled: None })
+        );
+
+        let intent = FileExplorerIntent::CreateFile {
+            name: "hello.rs".to_string(),
+            open_in_editor: true,
+        };
+        let encoded = serde_json::to_string(&intent).expect("serialize intent");
+        let decoded: FileExplorerIntent =
+            serde_json::from_str(&encoded).expect("deserialize intent");
+        assert_eq!(decoded, intent);
+    }
+
+    #[test]
+    fn execute_create_file_intent_creates_selects_and_queues_open_artifact() {
+        let (mut app, dir) = make_three_file_plugin();
+        app.take_pending_commands();
+
+        app.execute_intent(FileExplorerIntent::CreateFile {
+            name: "hello.rs".to_string(),
+            open_in_editor: true,
+        })
+        .expect("CreateFile intent must execute cleanly");
+
+        let expected_path = dir.path().join("hello.rs");
+        assert!(expected_path.is_file(), "hello.rs must be created in cwd");
+        assert_eq!(
+            app.selected_entry().map(|e| &e.path),
+            Some(&expected_path),
+            "created file must be selected in FileBrowserView"
+        );
+        assert_eq!(app.opened_files.last(), Some(&expected_path));
+
+        let cmds = app.take_pending_commands();
+        assert_eq!(
+            cmds.len(),
+            1,
+            "CreateFile with open_in_editor must queue OpenArtifact"
+        );
+        assert!(matches!(
+            &cmds[0],
+            ViewCommand::OpenArtifact {
+                path,
+                mode: crate::protocol::ArtifactOpenMode::OpenInPane,
+                ..
+            } if path == &expected_path.display().to_string()
+        ));
+    }
+
+    #[test]
+    fn palette_slash_hidden_toggles_show_hidden_and_claims_text_surface() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("visible.rs"), b"fn main() {}\n").expect("write visible");
+        std::fs::write(dir.path().join(".env"), b"SECRET=1\n").expect("write hidden");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        assert!(!app.columns.show_hidden);
+
+        // Press `/` to open the action palette pre-filled with `/`.
+        let entered = run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(entered);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert!(app.submit_on_focused_text_input_enter());
+
+        // Render one UI pass of the action palette and verify SurfaceKey::Pane(pane_id) is claimed.
+        let ctx = egui::Context::default();
+        // Kit buttons label in the medium UI family, which a bare context does not bind.
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            app.draw_action_palette(ui, &colors, 77, None);
+        });
+        let registry = crate::ui::focus::drain_text_surfaces(&ctx);
+        let key = crate::ui::focus::SurfaceKey::Pane(77);
+        assert!(
+            registry.default_for(key).is_some() && registry.claim_for(key).is_some(),
+            "Action palette must register its TextInput under SurfaceKey::Pane(pane_id) and claim focus"
+        );
+
+        // Type `hidden` (completing `/hidden`) and press Enter.
+        let toggled = run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("hidden".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(toggled);
+        assert!(
+            !app.in_palette,
+            "palette must close after executing /hidden"
+        );
+        assert!(
+            app.columns.show_hidden,
+            "/hidden + Enter must toggle columns.show_hidden on"
+        );
+        assert!(
+            app.entries.iter().any(|e| e.name == ".env"),
+            "hidden file must appear in entries after /hidden executes"
+        );
+    }
+
+    #[test]
+    fn cmd_n_and_palette_new_folder_slot_prompt_do_not_create_untitled_folder_first() {
+        let (mut app, dir) = make_three_file_plugin();
+
+        // 1. Pressing Cmd+Shift+N opens the palette pre-filled with `/new folder ` without touching disk.
+        let opened = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new folder ");
+        assert!(
+            !dir.path().join("Untitled Folder").exists(),
+            "Cmd+Shift+N must not create Untitled Folder on disk before user enters a name"
+        );
+
+        // User types `specs` and presses Enter.
+        let created = run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("specs".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(created);
+        assert!(!app.in_palette);
+        assert!(dir.path().join("specs").is_dir());
+        assert!(!dir.path().join("Untitled Folder").exists());
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("specs"));
+
+        // 2. Selecting `/new folder` without a name argument and pressing Enter pre-fills `/new folder `.
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert_eq!(app.palette_query, "/");
+        run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("new folder".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(
+            app.in_palette,
+            "selecting /new folder without an argument must stay in palette for slot entry"
+        );
+        assert_eq!(app.palette_query, "/new folder ");
+        assert!(!dir.path().join("Untitled Folder").exists());
+
+        run_handle_key(
+            &mut app,
+            vec![
+                Event::Text("design_docs".to_string()),
+                key_event(Key::Enter, Modifiers::default()),
+            ],
+        );
+        assert!(!app.in_palette);
+        assert!(dir.path().join("design_docs").is_dir());
+    }
+
+    #[test]
+    fn bare_slash_palette_query_shows_neutral_command_mode_hint_chip() {
+        let (mut app, _dir) = make_three_file_plugin();
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert_eq!(app.palette_selected, 0);
+
+        let candidates = app.rank_palette_candidates();
+        let (badge_label, chip_text, is_ready) = app
+            .palette_preview_chip(&candidates)
+            .expect("palette preview chip");
+        assert_eq!(badge_label, "CMD");
+        assert!(
+            chip_text.contains("Type a command"),
+            "bare `/` at index 0 must show neutral command-mode hint instead of SLOT prompt, got: {chip_text}"
+        );
+        assert!(!is_ready);
+
+        // Moving down with ↓ switches the preview chip to the selected candidate's SLOT/INTENT preview.
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(app.palette_selected, 1);
+        let (moved_badge, _moved_text, _moved_ready) = app
+            .palette_preview_chip(&candidates)
+            .expect("palette preview chip after arrow down");
+        assert!(matches!(moved_badge, "INTENT" | "SLOT"));
+    }
+
+    #[test]
+    fn sort_candidates_have_concrete_slash_syntax_and_human_readable_subtitles() {
+        let (_plugin, dir) = make_three_file_plugin();
+        let ctx = intent::FileExplorerContext::new(dir.path(), None, &[], &[], false, true);
+        let candidates = intent::rank_file_explorer_candidates("/sort", &ctx);
+        assert!(!candidates.is_empty());
+
+        let size_desc = candidates
+            .iter()
+            .find(|c| c.slash_syntax == "/sort size desc")
+            .expect("expected `/sort size desc` candidate");
+        assert_eq!(size_desc.subtitle, "Largest files first");
+        assert_ne!(size_desc.subtitle, size_desc.slash_syntax);
+
+        for candidate in candidates
+            .iter()
+            .filter(|c| c.slash_syntax.starts_with("/sort"))
+        {
+            assert_ne!(
+                candidate.slash_syntax, "/sort <column> [asc|desc]",
+                "sort candidate must have concrete slash_syntax, not template placeholder"
+            );
+            assert_ne!(
+                candidate.subtitle, candidate.slash_syntax,
+                "sort candidate subtitle must be human-readable, not identical to slash_syntax"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_n_opens_new_file_prompt_and_cmd_shift_n_opens_new_folder_prompt() {
+        let (mut app, _dir) = make_three_file_plugin();
+
+        let opened_file = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: false,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened_file);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new file ");
+
+        app.exit_palette();
+        assert!(!app.in_palette);
+
+        let opened_folder = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::N,
+                Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(opened_folder);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/new folder ");
+    }
+
+    #[test]
+    fn host_harness_file_browser_palette_executes_hidden_and_create_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("existing.rs"), b"pub fn existing() {}\n")
+            .expect("write existing.rs");
+        std::fs::write(dir.path().join(".secret"), b"hidden\n").expect("write .secret");
+
+        let mut h = crate::testing::HostHarness::new();
+        h.app.open_builtin_view_pane(
+            Box::new(FileBrowserView::new(dir.path().to_path_buf())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            None,
+            None,
+        );
+        h.run_frames(2);
+
+        let tap_key = |h: &mut crate::testing::HostHarness, key: Key, modifiers: Modifiers| {
+            h.frame(RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                modifiers,
+                events: vec![
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            });
+        };
+
+        // 1. Press `/` in the File Explorer pane, type `hidden`, and press Enter.
+        tap_key(&mut h, Key::Slash, Modifiers::NONE);
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text("hidden".to_string())],
+            ..Default::default()
+        });
+        tap_key(&mut h, Key::Enter, Modifiers::NONE);
+        h.run_frames(1);
+
+        let show_hidden = h.app.windows[0]
+            .panes
+            .values_mut()
+            .find_map(|p| {
+                let crate::host::pane::ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime
+                else {
+                    return None;
+                };
+                b.as_any_mut().downcast_ref::<FileBrowserView>()
+            })
+            .map(|fb| fb.columns.show_hidden)
+            .expect("file_browser runtime");
+        assert!(
+            show_hidden,
+            "HostHarness `/` -> `hidden` -> `Enter` must toggle columns.show_hidden"
+        );
+
+        // 2. Press `/` again, type `new file hello.rs`, and press Enter: creates hello.rs, selects it, and opens in editor.
+        tap_key(&mut h, Key::Slash, Modifiers::NONE);
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text("new file hello.rs".to_string())],
+            ..Default::default()
+        });
+        tap_key(&mut h, Key::Enter, Modifiers::NONE);
+        h.run_frames(2);
+
+        let hello_path = dir.path().join("hello.rs");
+        assert!(hello_path.is_file(), "hello.rs must exist on disk");
+        assert!(
+            h.pane_count() >= 2,
+            "CreateFile with open_in_editor must open hello.rs in a sibling editor pane"
+        );
+    }
+
+    #[test]
+    fn plain_text_search_discoverable_and_interactive_on_initial_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
+        std::fs::write(dir.path().join("beta.txt"), b"beta content\n").expect("write beta");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        assert!(
+            !app.in_search,
+            "initial Explorer open must start in browsing mode"
+        );
+
+        // 1. Initial UI pass renders the SearchBar affordance
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| {
+            let render_ctx = ViewRenderContext {
+                pane_id: 100,
+                colors: &colors,
+            };
+            app.ui(ui, &render_ctx, None);
+        });
+        assert!(
+            !app.in_search,
+            "rendering idle search bar must keep browsing mode"
+        );
+
+        // 2. Typing ordinary text ("alp") enters search mode, populates query, and filters entries
+        let consumed_text = run_handle_key(&mut app, vec![Event::Text("alp".to_string())]);
+        assert!(
+            consumed_text,
+            "typing ordinary text must be consumed by search entry"
+        );
+        assert!(app.in_search, "typing ordinary text must enter search mode");
+        assert_eq!(app.search_query, "alp");
+        assert!(
+            app.search_focus_pending,
+            "search focus must be pending on keyboard entry"
+        );
+        assert_eq!(
+            app.search_session.hits().len(),
+            1,
+            "filtered hits must contain alpha.rs"
+        );
+        assert_eq!(
+            app.search_session.hits()[0].path,
+            dir.path().join("alpha.rs")
+        );
+
+        // 3. Activating (Enter) opens alpha.rs and returns to browsing mode
+        let consumed_enter =
+            run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
+        assert!(consumed_enter);
+        assert_eq!(app.opened_files.last(), Some(&dir.path().join("alpha.rs")));
+        assert!(
+            !app.in_search,
+            "activating file result must exit search mode and return to browsing"
+        );
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn slash_and_cmd_k_enter_action_palette_not_search() {
+        let (mut app, _dir) = make_three_file_plugin();
+
+        // 1. Slash in normal mode opens action palette with "/"
+        let consumed_slash =
+            run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(consumed_slash);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "/");
+        assert!(!app.in_search, "/ must enter palette, not search");
+        app.exit_palette();
+
+        // 2. Cmd+K in normal mode opens action palette with ""
+        let consumed_cmd_k = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::K,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(consumed_cmd_k);
+        assert!(app.in_palette);
+        assert_eq!(app.palette_query, "");
+        assert!(!app.in_search, "Cmd+K must enter palette, not search");
+    }
+
+    #[test]
+    fn search_escape_returns_to_browsing() {
+        let (mut app, _dir) = make_populated_dir_plugin();
+        run_handle_key(&mut app, vec![Event::Text("file".to_string())]);
+        assert!(app.in_search);
+        assert_eq!(app.search_query, "file");
+
+        let consumed_esc =
+            run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+        assert!(consumed_esc);
+        assert!(!app.in_search, "Escape must exit search mode");
+        assert_eq!(app.search_query, "", "search query must be cleared on exit");
+        assert!(
+            !app.should_close,
+            "Escape from search mode must not close the browser"
+        );
+    }
+
+    #[test]
+    fn empty_search_result_state_and_lifecycle_trace() {
+        use std::sync::{LazyLock, Mutex, Once};
+
+        static TEST_LOGS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+        struct TestLogger;
+        impl log::Log for TestLogger {
+            fn enabled(&self, m: &log::Metadata) -> bool {
+                m.level() <= log::Level::Info
+            }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    if let Ok(mut list) = TEST_LOGS.lock() {
+                        list.push(record.args().to_string());
+                    }
+                }
+            }
+            fn flush(&self) {}
+        }
+        static INIT_LOGGER: Once = Once::new();
+        INIT_LOGGER.call_once(|| {
+            let _ = log::set_boxed_logger(Box::new(TestLogger));
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        if let Ok(mut list) = TEST_LOGS.lock() {
+            list.clear();
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file.txt"), b"content").expect("write");
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+
+        // Enter search with query that has no matches
+        run_handle_key(
+            &mut app,
+            vec![Event::Text("nonexistent_needle".to_string())],
+        );
+        assert!(app.in_search);
+        assert_eq!(app.search_result_count(), 0);
+
+        // Verify lifecycle trace was emitted and that raw query was NOT logged
+        let logs_after_entry = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_entry
+                .iter()
+                .any(|line| line.contains("file_browser: entering search mode")),
+            "entering search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_entry
+                .iter()
+                .any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text"
+        );
+
+        // Render UI and verify empty state message is shown
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        crate::ui::theme::setup_fonts(&ctx);
+        let raw = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(raw, |ui| {
+            let render_ctx = ViewRenderContext {
+                pane_id: 200,
+                colors: &colors,
+            };
+            app.ui(ui, &render_ctx, None);
+        });
+
+        let mut found_empty_state = false;
+        for s in &output.shapes {
+            match &s.shape {
+                egui::Shape::Text(t) => {
+                    if t.galley.job.text.contains("No matching files or contents") {
+                        found_empty_state = true;
+                    }
+                }
+                egui::Shape::Vec(v) => {
+                    for inner in v {
+                        if let egui::Shape::Text(t) = inner {
+                            if t.galley.job.text.contains("No matching files or contents") {
+                                found_empty_state = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            found_empty_state,
+            "rendered shapes must contain 'No matching files or contents'"
+        );
+
+        // Exiting search returns to browsing and logs exit trace
+        app.exit_search();
+        assert!(!app.in_search);
+        let logs_after_exit = TEST_LOGS.lock().unwrap().clone();
+        assert!(
+            logs_after_exit
+                .iter()
+                .any(|line| line.contains("file_browser: exiting search mode")),
+            "exiting search mode must emit an info lifecycle trace"
+        );
+        assert!(
+            !logs_after_exit
+                .iter()
+                .any(|line| line.contains("nonexistent_needle")),
+            "search lifecycle traces must never log the raw query text on exit"
+        );
     }
 }

@@ -1,33 +1,61 @@
-# CLI-Backed App Contract (`plexi app open --cli`)
+# UI upcycle: CLI plugin contract (`plexi view open --cli`)
 
-Plexi can turn any command-line tool into a GUI without an SDK. You point it at a
-binary, Plexi resolves a UI descriptor for that binary, and a native host app —
+UI upcycle turns a command-line interface into a keyboard-native, clickable Plexi plugin without an SDK. You point it at a
+binary, Plexi resolves a UI descriptor for that binary, and a native host plugin —
 the **`cli-renderer`** — draws a navigable command list, per-command forms, and
 runs the assembled command in a linked terminal pane.
 
-This document is the **runtime contract** for those apps: how a CLI-backed pane
+This document is the **runtime contract** for those plugins: how a CLI-backed pane
 launches, becomes ready, runs commands, crashes, and is inspected. It does *not*
 re-document the descriptor schema — for that, read the
 [CLI Descriptor Authoring Guide](../../registry/CLI_DESCRIPTOR_GUIDE.md) and the canonical
 schema at `schemas/plexi-descriptor-schema.json`.
 
 - **What the descriptor looks like** → [`CLI_DESCRIPTOR_GUIDE.md`](../../registry/CLI_DESCRIPTOR_GUIDE.md)
-- **The host/app wire protocol for SDK apps** → [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) (WIT component model — current runtime)
+- **The host/plugin wire protocol for SDK plugins** → [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) (WIT component model — current runtime)
 - **The capability/permission model** → [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md)'s "Security Model" section.
 
 The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path is
 `src/cli/open.rs` and `src/cli/descriptor.rs`. The linked-terminal dispatch is
 `src/app/canvas_bindings.rs`.
 
+## Shared list and form API
+
+`src/render/descriptor_widgets.rs` owns the reusable UI upcycle widgets for CLI
+and MCP visualizers. Both consume `Command` and `ArgSpec` from
+`plugin::plexi_descriptor`; an MCP adapter can build a `PlexiDescriptor` in memory.
+
+- `command_list` paints one command level and returns a clicked index. The owner
+  supplies the selected index, handles arrows/Enter, and chooses when to scroll.
+- `form_fields` paints arguments in caller-provided order and edits a
+  `HashMap<String, String>` keyed by field name. Seed defaults before opening a
+  form. Bools use `"true"` or an empty value; other fields retain literal strings.
+  Supply the pane ID and set `focus_first` when opening a form to claim its first
+  text field through the host focus registry.
+
+The caller owns breadcrumbs, validation, submit/back actions, preview, result
+presentation and transport. CLI submission assembles shell arguments and sends
+them to the linked terminal. MCP submission must convert the named values to
+its tool's JSON schema and call the MCP transport. The widgets issue no commands
+and request no terminal. Use unique field names within a form and a pane-scoped
+egui UI. `CliRendererApp::from_descriptor` is the in-memory CLI adapter; it still
+uses terminal execution and is not an MCP transport.
+
+The Command Palette exposes `UI upcycle: git`, `UI upcycle: cargo`, and
+`UI upcycle: gh`. These open the curated registry descriptor (including any
+channel-local override) without probing a binary on the UI thread. The CLI
+launch path below supports arbitrary binaries and the full resolution chain.
+The corresponding binaries must be available in the linked terminal's PATH.
+
 ---
 
-## 1. What a CLI-backed app is (and is not)
+## 1. What a CLI-backed plugin is (and is not)
 
-A CLI-backed app is **not** a PGAP subprocess. There is no Python, no manifest,
-no `Init` handshake, and no per-app capability set. It is a single compiled-in
-host app — `CliRendererApp`, registered as the builtin id `"cli-renderer"` in
-`builtin_factory` (`src/pane_ops/create.rs`) — parameterized by one argument:
-the path to a resolved descriptor JSON file.
+A CLI-backed plugin is **not** a PGAP subprocess. There is no Python, no manifest,
+no `Init` handshake, and no per-plugin capability set. It is a single compiled-in
+host plugin — `CliRendererApp`, registered as the builtin id `"cli-renderer"` in
+`builtin_factory` (`src/pane_ops/create.rs`) — parameterized by a resolved descriptor. The CLI launch passes its JSON file
+path; the curated palette launch passes the descriptor in memory.
 
 Because it is a native builtin, the renderer runs on the host UI thread with the
 host's privileges. It is a *UI generator over a descriptor*, not a sandbox. The
@@ -41,10 +69,10 @@ Two distinct things share the word "CLI":
 | Concept | Where it lives | Lifetime |
 |---|---|---|
 | **Descriptor resolution** (Tier 1/2/3) | `src/cli/descriptor.rs`, run by the `plexi` CLI process at open time | One-shot, before the pane exists |
-| **The renderer pane** (`cli-renderer`) | `src/render/cli_renderer_app.rs`, a host app | Lives as long as the pane is open |
+| **The renderer pane** (`cli-renderer`) | `src/render/cli_renderer_app.rs`, a host plugin | Lives as long as the pane is open |
 
-The descriptor is resolved *once*, frozen to a temp file, and handed to the
-renderer. The renderer never re-resolves. This is load-bearing for
+The descriptor is resolved once and handed to the renderer. CLI launches
+freeze it to a temp file; palette launches pass it in memory. The renderer never re-resolves. This is load-bearing for
 [§4 Descriptor caching and invalidation](#4-descriptor-caching-and-invalidation).
 
 ---
@@ -52,7 +80,7 @@ renderer. The renderer never re-resolves. This is load-bearing for
 ## 2. Launch sequence
 
 ### 2.1 From CLI to pane
-`plexi app open --cli <binary>` (or the `cli:<binary>` prefix) routes through
+`plexi view open --cli <binary>` (or the `cli:<binary>` prefix) routes through
 `open_cli_by_name` (`src/cli/open.rs`):
 
 1. **Resolve** the descriptor through the full tier chain —
@@ -71,7 +99,7 @@ non-zero — no pane is created. If the temp write fails, it prints
 
 ### 2.2 Inside the renderer: load
 `CliRendererApp::new(descriptor_path)` (`src/render/cli_renderer_app.rs`) is
-the only constructor. On construction it reads and parses the descriptor file
+the file-backed constructor; `from_descriptor` accepts an already resolved descriptor. On construction it reads and parses the descriptor file
 and sets the initial `View`:
 
 | Outcome | View | Logged |
@@ -120,13 +148,22 @@ The renderer receives that event in `queue_outbound_event`. If the
 
 ### 3.2 Run
 
-A command runs when the user presses **Enter** in a leaf form (`handle_key`) or clicks the Run button . Both call `execute`:
+A leaf with flags or positional arguments runs when the user presses **Enter** in
+its form (`handle_key`) or clicks the Run button. An argless leaf runs as soon
+as it is selected from the command list: the renderer temporarily includes its
+name while assembling and queuing the command, then returns to the parent list
+with the last-run hint updated. This avoids a form whose only control is Run.
+If the linked terminal is still connecting, the assembled argless command is
+held and queued when its matching `LinkedTerminalReady` event arrives.
 
-- If `terminal_pane_id == 0`, `execute` logs `no linked terminal, cannot run`
- and returns — **nothing is sent**.
+All run paths call `execute` or its shared command-queue helper:
+
+- A form run with `terminal_pane_id == 0` logs `no linked terminal, cannot run`
+ and returns — **nothing is sent**. An argless-list selection instead retains
+ its assembled command for the matching terminal-ready event.
 - Otherwise it assembles the command string with `build_command_string`
  — binary name + breadcrumb path + flags + positional args, with
- space-containing values single-quoted and bool flags rendered bare — and
+ shell metacharacters quoted as literal arguments and bool flags rendered bare — and
  enqueues `AppCommand::RunInLinkedTerminal { terminal_pane_id, command, echo: true }`.
 
 The host drains it (`src/app/mod.rs`) into
@@ -150,7 +187,7 @@ file written at open time is a frozen snapshot; `CliRendererApp` reads it once i
 `new` and never touches it again. `serialize_state` returns `None` and
 `restore_state` is a no-op (–), so a CLI-backed pane has **no
 persisted state** and does not survive a layout restore the way a stateful PGAP
-app does.
+plugin does.
 
 To pick up a changed descriptor (e.g. the CLI shipped a new version, or you
 edited a registry file), **close the pane and re-open it** — re-resolution
@@ -162,11 +199,11 @@ where the durable cache (and its invalidation) actually lives.
 ## 4. Descriptor caching and invalidation
 
 There are two caches in this system, at two layers. The renderer pane itself
-holds neither — it only ever sees a finished temp file.
+holds neither; it keeps the resolved descriptor supplied at launch.
 
 ### 4.1 The temp snapshot (per-open, ephemeral)
 
-Every `plexi app open --cli` writes a fresh
+Every `plexi view open --cli` writes a fresh
 `$TMPDIR/plexi-descriptor-<uuid>.json` (`src/cli/open.rs`). It is unique per
 open (UUID-named), never reused, and never invalidated — a new one is written on
 the next open. It is the immutable input to one renderer instance.
@@ -208,9 +245,9 @@ is a separate authoring concern documented in `CLI_DESCRIPTOR_GUIDE.md` §6.)
 
 ## 5. Permissions and the trust boundary
 
-**A CLI-backed app prompts for nothing.** Unlike a PGAP app — whose
+**A CLI-backed plugin prompts for nothing.** Unlike a PGAP plugin — whose
 `terminal.bindings`, `fs.read`, `net.http`, etc. capabilities are gated by the
-app runtime's capability layer and surfaced as grant modals (see
+plugin runtime's capability layer and surfaced as grant modals (see
 `src/app/permissions.rs`) — the `cli-renderer` is a native builtin and its
 linked-terminal commands are dispatched **directly** by `PlexiApp` with no
 capability check (`canvas_bindings.rs`). There are zero permission or
@@ -231,7 +268,7 @@ descriptor:
  and future trust gating. The shipped renderer does **not** consult them to
  prompt before a command runs. See [GAPS](#gaps-tracked-separately).
 
-The practical contract: **a CLI-backed app is exactly as trusted as the binary
+The practical contract: **a CLI-backed plugin is exactly as trusted as the binary
 it wraps.** Resolving a descriptor (running `<cli> --plexi`, `--help`, or
 `--version`) only invokes those introspection flags — never the command itself
 (`crawl.rs` module doc, "only `--help` is ever invoked"). But once a form is
@@ -242,7 +279,7 @@ as equivalent to trusting `<binary>` on your shell.
 
 ## 6. Channel-agnostic behavior
 
-A CLI-backed app behaves **identically** on `main`, `rc-*`, `beta`, `alpha`,
+A CLI-backed plugin behaves **identically** on `main`, `rc-*`, `beta`, `alpha`,
 and `plexi-pr-<N>` builds. The channel is an implementation detail; nothing in
 the contract above is channel-specific.
 
@@ -260,14 +297,13 @@ the contract above is channel-specific.
 
 Per the Channel-Agnostic CLI Rule (root `CLAUDE.md`): to target a specific
 channel's running instance, invoke the full binary name
-(`plexi-alpha app open --cli git`, `plexi-pr-817 app open --cli git`). The bare
-`plexi` name routes to the `main` channel binary.
+(`plexi-alpha view open --cli git`, `plexi-pr-817 view open --cli git`). See `src/cli/AGENTS.md` for the bare binary and channel routing rules.
 
 ---
 
 ## 7. Logging and inspection
 
-CLI-backed apps are instrumented at every state transition. Check the
+CLI-backed plugins are instrumented at every state transition. Check the
 channel-specific log first when debugging (`~/.plexi-<channel>/plexi.log`).
 
 ### 7.1 Host log traces
@@ -294,7 +330,7 @@ Warn-level lines flag the degraded paths: `no linked terminal, cannot run`, `bad
 A CLI-backed pane is an **App pane**, so the standard inspection commands apply
 (all over `PLEXI_SOCKET`, see `src/cli/pane.rs`):
 ```bash
-plexi pane list # the cli-renderer pane appears as an app pane
+plexi pane list # the cli-renderer pane appears as an plugin pane
 plexi pane info # metadata for the current pane
 plexi pane state <id> # the renderer's current UI snapshot
 ```
@@ -302,17 +338,17 @@ plexi pane state <id> # the renderer's current UI snapshot
 On macOS, bare `plexi` is a contextual shim. Inside a Plexi PTY it delegates to
 the binary named by `PLEXI_CHANNEL` when that channel binary is installed, so
 the examples above inspect the current channel. Outside Plexi, bare `plexi`
-falls back to the stable app-bundle binary.
+falls back to the stable plugin-bundle binary.
 
 - The pane's display name comes from `App::display_name`
  (`cli_renderer_app.rs`): the descriptor's `name`, or `"CLI Renderer"` if
  the descriptor failed to load.
-- The pane's app type id is `"cli-renderer"` (`App::type_id`).
+- The pane's plugin type id is `"cli-renderer"` (`App::type_id`).
 - The linked terminal it spawns is a separate **Terminal** pane and lists
  independently; the two are associated by the renderer's `linked_pane_id`, not
  by a shared pane entry.
 
-To drive a CLI-backed pane like any other app for testing, use the
+To drive a CLI-backed pane like any other plugin for testing, use the
 render → inspect → act loop from
 [`AUTHORING.md`](../../sdk/python/AUTHORING.md) § Dev / Test Loop: `plexi pane key <id> down`,
 `plexi pane key <id> enter`, then `plexi pane state <id>` to confirm.
@@ -327,13 +363,14 @@ render → inspect → act loop from
 | **Error** | Bad/missing descriptor | Render error message; pane stays alive; no terminal requested |
 | **Loading → List** | First `ui` frame, descriptor OK | Request linked terminal, show command list |
 | **Ready** | `LinkedTerminalReady` event matches `request_id` | Store `terminal_pane_id`; Run button enabled |
-| **Run** | Enter in a form / Run click, terminal ready | Write assembled command to the linked terminal PTY |
-| **Run blocked** | Same, but `terminal_pane_id == 0` | No-op; warn `no linked terminal, cannot run` |
+| **Run** | Select argless leaf, or Enter in a form / Run click, terminal ready | Write assembled command to the linked terminal PTY; argless leaves remain in their parent command list |
+| **Run pending** | Select argless leaf while terminal is connecting | Queue the assembled command after matching `LinkedTerminalReady` |
+| **Run blocked** | Form run, but `terminal_pane_id == 0` | No-op; warn `no linked terminal, cannot run` |
 | **Reload** | (none) | No watch/reload; close and re-open to refresh |
 | **Close** | Pane closed by user/host | `wants_close` is always `false` — the renderer never self-closes; the host owns close |
 | **Crash / restore** | — | `serialize_state` is `None`; the pane is not restored with state on layout reload |
 `wants_close` returning `false` means a CLI-backed pane is closed only
-by an explicit host/user action (e.g. closing the pane), never by the app
+by an explicit host/user action (e.g. closing the pane), never by the plugin
 deciding it is done.
 
 ---
@@ -350,7 +387,7 @@ not fix them.
  (`serialize_state`/`restore_state` are no-ops) and the fact that `new` reads
  the descriptor once mean there is no way to refresh a descriptor without
  closing and re-opening the pane. A `watch`/reload binding or a
-`plexi app reload` for cli-renderer panes is absent.
+`plexi plugin reload` for cli-renderer panes is absent.
 
 2. **No manual crawl-cache invalidation.** `src/cli/crawl.rs` invalidates
  only on a CLI version delta. There is no TTL, no `--refresh`/`--no-cache`
@@ -370,7 +407,7 @@ not fix them.
 
 5. **No command-execution confirmation.** `cli_renderer_app.rs` →
 `canvas_bindings.rs`: submitting a form writes straight to the PTY with no
- user confirmation, even for destructive commands. A CLI-backed app is exactly
+ user confirmation, even for destructive commands. A CLI-backed plugin is exactly
  as trusted as the wrapped binary, with no per-run gate.
 
 6. **Stale temp files accumulate.** `src/cli/open.rs` writes

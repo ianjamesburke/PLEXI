@@ -1,0 +1,21 @@
+schema_version = 2
+
+[launch]
+
+[plugin]
+id = "focus-visibility-probe"
+name = "Focus Visibility Probe"
+version = "0.1.0"
+description = "POC: shows this pane's live focus and visibility state from host FocusGained/FocusLost/PaneShown/PaneHidden events (stint 1180)."
+watch = true
+
+[plugin.capabilities]
+capabilities = []
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "focus-visibility-probe.main"
+default = true

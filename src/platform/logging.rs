@@ -4,10 +4,15 @@
 //! also mirrors output to stderr so `cargo run` / CLI invocations stay usable.
 //!
 //! Date-based rotation on startup: if `plexi.log` exists and is non-empty and
-//! was last written on a previous calendar day, it is renamed to
-//! `plexi-YYYY-MM-DD.log` (the modification date). Same-day restarts continue
+//! its first line was written on a previous calendar day, it is renamed to
+//! `plexi-YYYY-MM-DD.log` (that first-line date; mtime is only the fallback,
+//! because a shutdown write bumps mtime to today). Same-day restarts continue
 //! appending to `plexi.log`. Files older than `retention_days` (default 30)
 //! are pruned automatically on each startup.
+//!
+//! While the host stays open the live file also rolls at a line boundary when
+//! the segment passes 10 MB or the calendar day changes
+//! (`platform::rolling::RollingFile`).
 //!
 //! Third-party crates (egui, wgpu, winit, etc.) are clamped to `warn` to avoid
 //! noise; everything under `plexi::` logs at the caller-supplied level.
@@ -45,7 +50,7 @@ pub fn set_level(level: log::LevelFilter) -> bool {
 
 /// Targets that follow the user-configured level: `plexi::*` (the crate is
 /// named `plexi` on every channel — channels only rename the binary) and
-/// `app::<id>` targets emitted by the SDK log bridge. Everything else is
+/// `plugin::<id>` targets emitted by the SDK log bridge. Everything else is
 /// third-party.
 fn is_plexi_target(target: &str) -> bool {
     ["plexi", "app"].iter().any(|prefix| {
@@ -63,6 +68,13 @@ fn log_allowed(target: &str, level: log::Level, plexi_level: log::LevelFilter) -
     } else {
         level <= log::Level::Warn
     }
+}
+
+/// CLI commands write their user-facing diagnostics explicitly as `error:` lines.
+/// Their structured records remain in the profile log, but must not be mirrored
+/// to stderr where they would corrupt machine-facing command output.
+fn stderr_log_allowed(cli_mode: bool, target: &str) -> bool {
+    !cli_mode || !(target == "plexi::cli" || target.starts_with("plexi::cli::"))
 }
 
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
@@ -91,10 +103,9 @@ fn rotate_and_prune(
     // Rotation: rename plexi.log → plexi-PREV-DATE.log if modified on a prior day.
     if let Ok(meta) = std::fs::metadata(log_path) {
         if meta.len() > 0 {
-            let prev_date = meta
-                .modified()
-                .ok()
-                .map(|mtime| chrono::DateTime::<chrono::Local>::from(mtime).date_naive());
+            // The segment's first line names the day it began. mtime would be
+            // today after any shutdown write, hiding a multi-day segment.
+            let prev_date = super::rolling::segment_start_day(log_path, &meta);
 
             if let Some(prev_date) = prev_date {
                 if prev_date < today {
@@ -135,50 +146,97 @@ fn rotate_and_prune(
         }
     }
 
-    // Pruning: delete dated files whose name-date is before the cutoff.
-    let cutoff = today - chrono::Duration::days(retention_days as i64);
-    if let Ok(entries) = std::fs::read_dir(config_dir) {
-        let mut pruned = 0u32;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if let Some(date_str) = name_str
-                .strip_prefix("plexi-")
-                .and_then(|s| s.strip_suffix(".log"))
-            {
-                if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    if date < cutoff {
-                        if let Err(e) = std::fs::remove_file(entry.path()) {
-                            eprintln!("[plexi::logging] could not prune {name_str}: {e}");
-                        } else {
-                            pruned += 1;
-                        }
-                    }
-                }
-            }
-        }
-        if pruned > 0 {
-            messages.push(format!(
-                "pruned {pruned} log file(s) older than {retention_days} days"
-            ));
-        }
+    let pruned = prune_controlled_logs(config_dir, today, retention_days);
+    if pruned > 0 {
+        messages.push(format!(
+            "pruned {pruned} log file(s) older than {retention_days} days"
+        ));
     }
 
     messages
 }
 
+/// Total size cap for archived session traces under `sessions/`.
+pub(crate) const SESSION_TRACE_DIR_CAP_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Delete dated archives whose date is strictly older than `retention_days`
+/// before `today`: `plexi-*.log`, `events-*.jsonl`, `effects-*.jsonl` (named
+/// `<stem>-<date>[.<n>].<ext>`), and `sessions/*.jsonl` traces by mtime date.
+/// Live files (`plexi.log`, `events.jsonl`, `effects.jsonl`, `sessions/latest.jsonl`)
+/// are never dated archives and are left in place. Afterwards the session trace
+/// directory is trimmed oldest-first to [`SESSION_TRACE_DIR_CAP_BYTES`].
+/// This is the log half of cloud retention.
+pub(crate) fn prune_controlled_logs(
+    config_dir: &Path,
+    today: chrono::NaiveDate,
+    retention_days: u32,
+) -> u32 {
+    let cutoff = today - chrono::Duration::days(retention_days as i64);
+    let mut pruned = 0u32;
+    let mut remove = |path: &Path| match std::fs::remove_file(path) {
+        Ok(()) => {
+            pruned += 1;
+        }
+        Err(e) => eprintln!("[plexi::logging] could not prune {}: {e}", path.display()),
+    };
+    if let Ok(entries) = std::fs::read_dir(config_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let dated = super::rolling::archive_date(&name_str, "plexi", "log")
+                .or_else(|| super::rolling::archive_date(&name_str, "events", "jsonl"))
+                .or_else(|| super::rolling::archive_date(&name_str, "effects", "jsonl"));
+            if dated.is_some_and(|date| date < cutoff) {
+                remove(&entry.path());
+            }
+        }
+    }
+    let sessions = config_dir.join("sessions");
+    let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&sessions) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".jsonl") || name == "latest.jsonl" {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            let day = chrono::DateTime::<chrono::Local>::from(modified).date_naive();
+            if day < cutoff {
+                remove(&entry.path());
+            } else {
+                kept.push((modified, meta.len(), entry.path()));
+            }
+        }
+    }
+    let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+    kept.sort_by_key(|(modified, _, _)| *modified);
+    // Oldest first, but never the newest trace (the live session's).
+    while total > SESSION_TRACE_DIR_CAP_BYTES && kept.len() > 1 {
+        let (_, len, path) = kept.remove(0);
+        remove(&path);
+        total = total.saturating_sub(len);
+    }
+    pruned
+}
+
 /// Initialise the logger. Must be called before any `log::` macro is used.
 /// If the log file cannot be opened, falls back to stderr-only and logs a warning.
-/// When `cli_mode` is true, INFO/DEBUG logs are suppressed on stderr (file-only)
-/// so CLI callers (especially agents) don't see noisy socket-level trace lines.
+/// When `cli_mode` is true, CLI-targeted logs are file-only so command output
+/// remains a clean stdout payload plus explicit stderr diagnostics.
 pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
+    crate::platform::log_export::mark_session_start();
     let log_file_path = log_path();
     let config_dir = crate::config::config_dir();
 
+    let mut setup_errors = Vec::new();
     // Ensure the config directory exists.
     if let Some(parent) = log_file_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("[plexi::logging] could not create config dir {parent:?}: {e}");
+            setup_errors.push(format!("could not create config dir {parent:?}: {e}"));
         }
     }
 
@@ -198,8 +256,10 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             ))
         };
 
-    // Try to open the log file; if it fails, use stderr only.
-    let file_result = fern::log_file(&log_file_path);
+    // Try to open the log file; if it fails, use stderr only. The rolling
+    // writer archives the live file at 10 MB or a day change while open.
+    let file_result = super::rolling::RollingFile::open(&log_file_path)
+        .map(|rolling| fern::Output::writer(Box::new(rolling.quiet()), "\n"));
 
     PLEXI_LEVEL.store(level as usize, Ordering::Relaxed);
 
@@ -216,6 +276,7 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             if cli_mode {
                 let stderr_dispatch = fern::Dispatch::new()
                     .level(log::LevelFilter::Warn)
+                    .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
                     .chain(std::io::stderr());
                 dispatch.chain(stderr_dispatch).chain(file)
             } else {
@@ -223,8 +284,19 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             }
         }
         Err(e) => {
-            eprintln!("[plexi::logging] could not open log file {log_file_path:?}: {e}; falling back to stderr only");
-            dispatch.chain(std::io::stderr())
+            setup_errors.push(format!(
+                "could not open log file {log_file_path:?}: {e}; falling back to stderr only"
+            ));
+            if cli_mode {
+                dispatch.chain(
+                    fern::Dispatch::new()
+                        .level(log::LevelFilter::Warn)
+                        .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
+                        .chain(std::io::stderr()),
+                )
+            } else {
+                dispatch.chain(std::io::stderr())
+            }
         }
     };
 
@@ -236,6 +308,13 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
         log::set_max_level(level.max(log::LevelFilter::Warn));
     }
 
+    for error in setup_errors {
+        if cli_mode {
+            log::debug!(target: "plexi::logging", "{error}");
+        } else {
+            log::warn!(target: "plexi::logging", "{error}");
+        }
+    }
     // Emit rotation/pruning messages now that the logger is running.
     for msg in deferred {
         log::info!(target: "plexi::logging", "{msg}");
@@ -245,8 +324,8 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
 /// Shared counter bumped by the UI thread each frame so the heartbeat can detect freezes.
 pub type FrameTick = Arc<AtomicU64>;
 
-/// Last host phase reached by the UI thread. The phase and its monotonic
-/// timestamp are packed into one atomic word so the heartbeat can take a
+/// Last host phase reached by the UI thread. The phase, expected-shutdown flag
+/// and monotonic timestamp are packed into one atomic word so the heartbeat can take a
 /// coherent snapshot without contending with the UI thread.
 pub type UiPhaseTracker = Arc<AtomicU64>;
 
@@ -284,7 +363,8 @@ pub(crate) enum UiPhase {
     EventDeliveries = 26,
     PythonRuntimes = 27,
     AgentTick = 28,
-    AppCommands = 29,
+    ViewCommands = 29,
+    ShutdownCleanup = 30,
 }
 
 impl UiPhase {
@@ -319,7 +399,8 @@ impl UiPhase {
             Self::EventDeliveries => "event_deliveries",
             Self::PythonRuntimes => "python_runtimes",
             Self::AgentTick => "agent_tick",
-            Self::AppCommands => "app_commands",
+            Self::ViewCommands => "view_commands",
+            Self::ShutdownCleanup => "shutdown_cleanup",
         }
     }
 
@@ -353,7 +434,8 @@ impl UiPhase {
             26 => Self::EventDeliveries,
             27 => Self::PythonRuntimes,
             28 => Self::AgentTick,
-            29 => Self::AppCommands,
+            29 => Self::ViewCommands,
+            30 => Self::ShutdownCleanup,
             _ => Self::Startup,
         }
     }
@@ -361,6 +443,7 @@ impl UiPhase {
 
 #[derive(Clone, Copy, Debug)]
 struct UiPhaseSnapshot {
+    expected_shutdown_wait: bool,
     name: &'static str,
     age: Duration,
 }
@@ -374,6 +457,10 @@ fn ui_phase_millis() -> u64 {
         .try_into()
         .unwrap_or(u64::MAX >> 8)
 }
+
+// The high bit of the phase byte records accepted, hidden shutdown atomically
+// with the phase and timestamp; ordinary phase writes clear this exception.
+const EXPECTED_SHUTDOWN_WAIT: u8 = 0x80;
 
 fn pack_ui_phase(phase: UiPhase, millis: u64) -> u64 {
     (millis.min(u64::MAX >> 8) << 8) | phase as u64
@@ -390,15 +477,33 @@ pub(crate) fn mark_ui_phase(tracker: &UiPhaseTracker, phase: UiPhase) {
     tracker.store(pack_ui_phase(phase, ui_phase_millis()), Ordering::Release);
 }
 
+pub(crate) fn mark_shutdown_cleanup(
+    tracker: &UiPhaseTracker,
+    quit_accepted: bool,
+    window_hidden: bool,
+) {
+    let flag = if quit_accepted && window_hidden {
+        u64::from(EXPECTED_SHUTDOWN_WAIT)
+    } else {
+        0
+    };
+    tracker.store(
+        pack_ui_phase(UiPhase::ShutdownCleanup, ui_phase_millis()) | flag,
+        Ordering::Release,
+    );
+}
+
 fn ui_phase_snapshot(tracker: &UiPhaseTracker) -> UiPhaseSnapshot {
     let packed = tracker.load(Ordering::Acquire);
     unpack_ui_phase(packed, ui_phase_millis())
 }
 
 fn unpack_ui_phase(packed: u64, now_ms: u64) -> UiPhaseSnapshot {
-    let phase = UiPhase::from_byte(packed as u8);
+    let phase = UiPhase::from_byte(packed as u8 & !EXPECTED_SHUTDOWN_WAIT);
     let marked_at_ms = packed >> 8;
     UiPhaseSnapshot {
+        expected_shutdown_wait: phase == UiPhase::ShutdownCleanup
+            && packed as u8 & EXPECTED_SHUTDOWN_WAIT != 0,
         name: phase.name(),
         age: Duration::from_millis(now_ms.saturating_sub(marked_at_ms)),
     }
@@ -464,8 +569,23 @@ pub(crate) fn freeze_verdict(counter_stalled: bool, repaint_pending: Option<bool
     counter_stalled && repaint_pending == Some(true)
 }
 
+fn heartbeat_stall_line(now: &str, frozen_secs: u64, phase: UiPhaseSnapshot) -> String {
+    let phase_age_ms = phase.age.as_millis();
+    if phase.expected_shutdown_wait {
+        return format!(
+            "[{now}] [INFO] [plexi::heartbeat] [SHUTDOWN_WAIT] shutdown cleanup waiting for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+            phase.name
+        );
+    }
+    format!(
+        "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+        phase.name
+    )
+}
+
 /// Spawn a background thread that detects UI-thread freezes via `frame_tick`
-/// and logs `[FREEZE]` / `[THAW]` lines.
+/// and logs `[FREEZE]` / `[THAW]` lines. Accepted, hidden shutdown instead
+/// reports an info-level `[SHUTDOWN_WAIT]` with its cleanup phase and age.
 ///
 /// `egui_ctx` gates the verdict: with zero-frame idle, a stalled counter only
 /// counts as frozen while egui has a repaint request pending (see
@@ -486,6 +606,7 @@ pub fn spawn_heartbeat(
             // Track when we last saw the frame counter advance so freeze duration is accurate.
             let mut last_tick_seen_at = Instant::now();
             let mut freeze_reported = false;
+            let mut shutdown_wait_reported = false;
 
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
@@ -499,20 +620,24 @@ pub fn spawn_heartbeat(
                     // Frame counter stalled — frozen only if egui has a
                     // repaint pending that the UI thread isn't servicing.
                     // Zero frames with nothing pending is healthy idle.
-                    let repaint_pending = egui_ctx
-                        .lock()
-                        .ok()
-                        .and_then(|slot| slot.as_ref().map(|c| c.has_requested_repaint()));
-                    if freeze_verdict(true, repaint_pending) {
-                        let frozen_secs = last_tick_seen_at.elapsed().as_secs();
-                        if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
-                            freeze_reported = true;
-                            let phase = ui_phase_snapshot(&ui_phase);
-                            let phase_age_ms = phase.age.as_millis();
-                            lines.push_str(&format!(
-                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
-                                phase.name
-                            ));
+                    let phase = ui_phase_snapshot(&ui_phase);
+                    let repaint_pending = if phase.expected_shutdown_wait {
+                        // Accepted, hidden cleanup intentionally runs on this
+                        // thread. Its observability must not depend on egui.
+                        None
+                    } else {
+                        egui_ctx.lock().ok()
+                            .and_then(|slot| slot.as_ref().map(|c| c.has_requested_repaint()))
+                    };
+                    if phase.expected_shutdown_wait || freeze_verdict(true, repaint_pending) {
+                        let (stalled_secs, reported) = if phase.expected_shutdown_wait {
+                            (phase.age.as_secs(), &mut shutdown_wait_reported)
+                        } else {
+                            (last_tick_seen_at.elapsed().as_secs(), &mut freeze_reported)
+                        };
+                        if stalled_secs >= FREEZE_THRESHOLD_SECS && !*reported {
+                            *reported = true;
+                            lines.push_str(&heartbeat_stall_line(&now.to_string(), stalled_secs, phase));
                         }
                     } else if !freeze_reported {
                         // Healthy idle: keep the freeze clock pinned to now so
@@ -532,6 +657,7 @@ pub fn spawn_heartbeat(
                         ));
                         freeze_reported = false;
                     }
+                    shutdown_wait_reported = false;
                     last_tick = now_tick;
                     last_tick_seen_at = Instant::now();
                 }
@@ -556,6 +682,50 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use std::fs;
+
+    #[test]
+    fn shutdown_watchdog_distinguishes_hidden_wait_from_visible_freeze() {
+        for expected_shutdown_wait in [false, true] {
+            let line = heartbeat_stall_line(
+                "fixture",
+                2,
+                UiPhaseSnapshot {
+                    expected_shutdown_wait,
+                    name: "shutdown_cleanup",
+                    age: Duration::from_secs(2),
+                },
+            );
+            assert!(line.contains("phase=shutdown_cleanup"));
+            if expected_shutdown_wait {
+                assert!(line.contains("[INFO]"), "{line}");
+                assert!(line.contains("[SHUTDOWN_WAIT]"), "{line}");
+                assert!(!line.contains("[FREEZE]"), "{line}");
+            } else {
+                assert!(line.contains("[WARN]"), "{line}");
+                assert!(line.contains("[FREEZE]"), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_watchdog_requires_acceptance_and_hide_and_resets_on_normal_phase() {
+        let tracker = new_ui_phase_tracker();
+        for (accepted, hidden) in [(false, false), (false, true), (true, false), (true, true)] {
+            mark_shutdown_cleanup(&tracker, accepted, hidden);
+            let phase = ui_phase_snapshot(&tracker);
+            assert_eq!(phase.name, "shutdown_cleanup");
+            assert_eq!(phase.expected_shutdown_wait, accepted && hidden);
+            let line = heartbeat_stall_line("fixture", 2, phase);
+            assert_eq!(line.contains("[WARN]"), !(accepted && hidden), "{line}");
+        }
+        mark_ui_phase(&tracker, UiPhase::WorkspaceSave);
+        let phase = ui_phase_snapshot(&tracker);
+        assert!(!phase.expected_shutdown_wait);
+        let line = heartbeat_stall_line("fixture", 2, phase);
+        assert!(line.contains("[WARN]"));
+        assert!(line.contains("[FREEZE]"));
+        assert!(line.contains("phase=workspace_save"));
+    }
 
     #[test]
     fn ui_phase_snapshot_tracks_last_phase_without_locking() {
@@ -601,7 +771,8 @@ mod tests {
             UiPhase::EventDeliveries,
             UiPhase::PythonRuntimes,
             UiPhase::AgentTick,
-            UiPhase::AppCommands,
+            UiPhase::ViewCommands,
+            UiPhase::ShutdownCleanup,
         ];
         for variant in variants {
             let round_tripped = UiPhase::from_byte(variant as u8);
@@ -676,7 +847,15 @@ mod tests {
         ));
     }
 
-    /// SDK log-bridge targets (`app::<id>`) follow the dynamic level too.
+    #[test]
+    fn cli_records_are_file_only_in_cli_mode() {
+        assert!(!stderr_log_allowed(true, "plexi::cli::pane"));
+        assert!(stderr_log_allowed(true, "plexi::host"));
+        assert!(stderr_log_allowed(true, "plexi::client"));
+        assert!(stderr_log_allowed(false, "plexi::cli::pane"));
+    }
+
+    /// SDK log-bridge targets (`plugin::<id>`) follow the dynamic level too.
     #[test]
     fn log_allowed_app_bridge_targets_follow_dynamic_level() {
         assert!(log_allowed(
@@ -854,6 +1033,91 @@ mod tests {
         assert!(
             !dir.path().join("plexi-2026-05-02.log").exists(),
             "8-day-old file should be pruned with 7-day retention"
+        );
+    }
+
+    /// The bug: after a multi-day run, shutdown writes bump mtime to today, so
+    /// an mtime-only check skipped rotation on a same-day restart and the old
+    /// days stayed inside `plexi.log`. The first line names the real start day.
+    #[test]
+    fn rotates_multi_day_log_on_same_day_restart_despite_fresh_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("plexi.log");
+        let today = today_plus(0);
+        let started = today - chrono::Duration::days(3);
+        fs::write(
+            &log_path,
+            format!(
+                "[{} 09:00:00] [INFO] [plexi::x] first day\n[{} 23:59:59] [INFO] [plexi::x] shutdown\n",
+                started.format("%Y-%m-%d"),
+                today.format("%Y-%m-%d")
+            ),
+        )
+        .unwrap();
+        // mtime is "now" == today, exactly as after a shutdown write.
+        let msgs = rotate_and_prune(&log_path, dir.path(), today, 30);
+        let expected = format!("plexi-{}.log", started.format("%Y-%m-%d"));
+        assert!(
+            dir.path().join(&expected).exists(),
+            "should rotate to {expected}"
+        );
+        assert!(!log_path.exists());
+        assert!(msgs.iter().any(|m| m.contains("rotated")));
+    }
+
+    #[test]
+    fn prunes_archived_jsonl_traces_and_numbered_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+        for name in [
+            "events-2026-03-01.jsonl",
+            "events-2026-03-01.2.jsonl",
+            "effects-2026-03-01.jsonl",
+            "plexi-2026-03-01.1.log",
+            "events-2026-05-09.jsonl",
+            "events.jsonl",
+            "effects.jsonl",
+        ] {
+            fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let pruned = prune_controlled_logs(dir.path(), today, 30);
+        assert_eq!(pruned, 4);
+        for kept in ["events-2026-05-09.jsonl", "events.jsonl", "effects.jsonl"] {
+            assert!(dir.path().join(kept).exists(), "{kept} must stay");
+        }
+    }
+
+    #[test]
+    fn prunes_old_session_traces_but_never_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let old = sessions.join("sess-old.jsonl");
+        let fresh = sessions.join("sess-fresh.jsonl");
+        let latest = sessions.join("latest.jsonl");
+        for path in [&old, &fresh, &latest] {
+            fs::write(path, b"{}\n").unwrap();
+        }
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&latest)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        let pruned = prune_controlled_logs(dir.path(), today_plus(0), 30);
+        assert_eq!(pruned, 1);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(
+            latest.exists(),
+            "latest.jsonl is a pointer, never pruned by age"
         );
     }
 }

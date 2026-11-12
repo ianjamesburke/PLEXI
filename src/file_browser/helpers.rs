@@ -6,7 +6,7 @@ use std::time::SystemTime;
 const TEXT_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 
 /// Routing classification for a file the user wants to open. Drives the
-/// GUI↔terminal media bridge (#79): video/audio files spawn the in-app
+/// GUI↔terminal media bridge (#79): video/audio files spawn the in-plugin
 /// player examples; everything else falls through to the system default
 /// (`open` / `xdg-open`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl MediaKind {
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp" => Self::Image,
             // Common video container formats. AVFoundation handles the
             // big three on macOS (#346); the rest still route to the
-            // in-app player so it can surface a decoder error rather
+            // in-plugin player so it can surface a decoder error rather
             // than the user double-clicking into QuickTime.
             "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" => Self::Video,
             // Common audio formats. v3.4 audio-player is a
@@ -44,9 +44,9 @@ impl MediaKind {
         }
     }
 
-    /// Manifest id of the in-app player for this media kind. `None`
+    /// Manifest id of the in-plugin player for this media kind. `None`
     /// means "fall through to the system default opener".
-    pub(crate) fn player_app_id(self) -> Option<&'static str> {
+    pub(crate) fn player_plugin_id(self) -> Option<&'static str> {
         match self {
             Self::Image => Some("image-viewer"),
             Self::Video => Some("video-player"),
@@ -56,8 +56,8 @@ impl MediaKind {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct Entry {
+#[derive(Debug, Clone)]
+pub struct Entry {
     pub name: String,
     pub path: std::path::PathBuf,
     pub is_dir: bool,
@@ -67,11 +67,10 @@ pub(crate) struct Entry {
     pub created: Option<SystemTime>,
     pub extension: Option<String>,
     pub permissions: String,
-    pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ColumnId {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ColumnId {
     Name,
     Kind,
     Size,
@@ -79,11 +78,10 @@ pub(crate) enum ColumnId {
     Created,
     Extension,
     Permissions,
-    Tags,
 }
 
 impl ColumnId {
-    pub(crate) const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Name,
         Self::Kind,
         Self::Size,
@@ -91,10 +89,9 @@ impl ColumnId {
         Self::Created,
         Self::Extension,
         Self::Permissions,
-        Self::Tags,
     ];
 
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Name => "name",
             Self::Kind => "kind",
@@ -103,11 +100,10 @@ impl ColumnId {
             Self::Created => "created",
             Self::Extension => "extension",
             Self::Permissions => "permissions",
-            Self::Tags => "tags",
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
             Self::Kind => "Kind",
@@ -116,7 +112,6 @@ impl ColumnId {
             Self::Created => "Created",
             Self::Extension => "Ext",
             Self::Permissions => "Perms",
-            Self::Tags => "Tags",
         }
     }
 
@@ -129,7 +124,6 @@ impl ColumnId {
             Self::Created => 116.0,
             Self::Extension => 72.0,
             Self::Permissions => 76.0,
-            Self::Tags => 120.0,
         }
     }
 
@@ -140,11 +134,10 @@ impl ColumnId {
             Self::Size => 72.0,
             Self::Modified | Self::Created => 92.0,
             Self::Extension | Self::Permissions => 60.0,
-            Self::Tags => 88.0,
         }
     }
 
-    pub(crate) fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "name" => Some(Self::Name),
             "kind" => Some(Self::Kind),
@@ -153,34 +146,33 @@ impl ColumnId {
             "created" => Some(Self::Created),
             "extension" => Some(Self::Extension),
             "permissions" => Some(Self::Permissions),
-            "tags" => Some(Self::Tags),
             _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SortDirection {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SortDirection {
     Asc,
     Desc,
 }
 
 impl SortDirection {
-    pub(crate) fn toggled(self) -> Self {
+    pub fn toggled(self) -> Self {
         match self {
             Self::Asc => Self::Desc,
             Self::Desc => Self::Asc,
         }
     }
 
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
         }
     }
 
-    pub(crate) fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "asc" => Some(Self::Asc),
             "desc" => Some(Self::Desc),
@@ -234,16 +226,15 @@ impl Default for ColumnModel {
         Self {
             columns: vec![
                 ColumnConfig::new(ColumnId::Name, true),
-                ColumnConfig::new(ColumnId::Kind, true),
+                ColumnConfig::new(ColumnId::Kind, false),
                 ColumnConfig::new(ColumnId::Size, true),
                 ColumnConfig::new(ColumnId::Modified, true),
                 ColumnConfig::new(ColumnId::Created, false),
                 ColumnConfig::new(ColumnId::Extension, false),
                 ColumnConfig::new(ColumnId::Permissions, false),
-                ColumnConfig::new(ColumnId::Tags, false),
             ],
             sort: SortDescriptor::default(),
-            folders_on_top: true,
+            folders_on_top: false,
             show_hidden: false,
         }
     }
@@ -471,13 +462,11 @@ pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, String> {
     })
 }
 
-fn default_direction_for(column: ColumnId) -> SortDirection {
+pub(crate) fn default_direction_for(column: ColumnId) -> SortDirection {
     match column {
-        ColumnId::Name
-        | ColumnId::Kind
-        | ColumnId::Extension
-        | ColumnId::Permissions
-        | ColumnId::Tags => SortDirection::Asc,
+        ColumnId::Name | ColumnId::Kind | ColumnId::Extension | ColumnId::Permissions => {
+            SortDirection::Asc
+        }
         ColumnId::Size | ColumnId::Modified | ColumnId::Created => SortDirection::Desc,
     }
 }
@@ -518,7 +507,6 @@ fn compare_entry_column(a: &Entry, b: &Entry, column: ColumnId) -> Ordering {
         ColumnId::Created => a.created.cmp(&b.created),
         ColumnId::Extension => a.extension.cmp(&b.extension),
         ColumnId::Permissions => a.permissions.cmp(&b.permissions),
-        ColumnId::Tags => a.tags.join(",").cmp(&b.tags.join(",")),
     }
 }
 
@@ -557,7 +545,7 @@ pub(crate) fn format_modified(modified: Option<SystemTime>) -> String {
 #[cfg(test)]
 mod media_bridge_tests {
     //! GUI↔Terminal media bridge routing (#79). The file browser opens
-    //! recognised media in the in-app players instead of shelling out to
+    //! recognised media in the in-plugin players instead of shelling out to
     //! the system default — these tests pin the classifier so a renamed
     //! manifest id or a dropped extension surfaces here, not in a smoke
     //! test halfway through release.
@@ -565,7 +553,7 @@ mod media_bridge_tests {
     use std::path::PathBuf;
 
     #[test]
-    fn open_image_file_routes_to_image_viewer_app() {
+    fn open_image_file_routes_to_image_viewer_view() {
         for ext in &["png", "PNG", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"] {
             let p = PathBuf::from(format!("/tmp/photo.{ext}"));
             assert_eq!(
@@ -574,15 +562,15 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Image"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("image-viewer"),
-                "image routes to image-viewer app"
+                "image routes to image-viewer plugin"
             );
         }
     }
 
     #[test]
-    fn open_video_file_routes_to_video_player_app() {
+    fn open_video_file_routes_to_video_player_view() {
         for ext in &["mp4", "MP4", "mov", "mkv", "webm", "m4v", "avi"] {
             let p = PathBuf::from(format!("/tmp/clip.{ext}"));
             assert_eq!(
@@ -591,15 +579,15 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Video"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("video-player"),
-                "video routes to video-player app"
+                "video routes to video-player plugin"
             );
         }
     }
 
     #[test]
-    fn open_audio_file_routes_to_audio_player_app() {
+    fn open_audio_file_routes_to_audio_player_view() {
         for ext in &["mp3", "MP3", "wav", "flac", "m4a", "aac", "ogg", "opus"] {
             let p = PathBuf::from(format!("/tmp/song.{ext}"));
             assert_eq!(
@@ -608,9 +596,9 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Audio"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("audio-player"),
-                "audio routes to audio-player app"
+                "audio routes to audio-player plugin"
             );
         }
     }
@@ -631,9 +619,9 @@ mod media_bridge_tests {
                 "{path} should fall through to system default"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 None,
-                "{path} should not route to an in-app player"
+                "{path} should not route to an in-plugin player"
             );
         }
     }
@@ -660,8 +648,27 @@ mod column_model_tests {
             modified: Some(UNIX_EPOCH + Duration::from_secs(modified_secs)),
             created: None,
             permissions: "rw".to_string(),
-            tags: Vec::new(),
         }
+    }
+
+    #[test]
+    fn column_model_defaults_sort_by_modified_desc_without_folders_on_top() {
+        let model = ColumnModel::default();
+        assert!(!model.folders_on_top);
+        assert!(!model.show_hidden);
+        assert_eq!(
+            model.sort,
+            SortDescriptor {
+                column: ColumnId::Modified,
+                direction: SortDirection::Desc,
+            }
+        );
+        let visible_ids: Vec<ColumnId> = model.visible_columns().map(|c| c.id).collect();
+        assert_eq!(
+            visible_ids,
+            vec![ColumnId::Name, ColumnId::Size, ColumnId::Modified]
+        );
+        assert!(ColumnId::from_key("tags").is_none());
     }
 
     #[test]
