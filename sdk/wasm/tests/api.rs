@@ -1,6 +1,6 @@
 use plexi_wasm_sdk::{
-    effects, ui, Alignment, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl, UiNodeData,
-    View,
+    effects, ui, Alignment, Effect, InputEvent, Justify, SubscribeEventStreamsEffect, ToolDecl,
+    UiNodeData, View,
 };
 
 #[test]
@@ -58,6 +58,17 @@ fn row_builder_centers_and_column_builder_starts() {
     };
     assert!(matches!(align_of(row), Some(Alignment::Center)));
     assert!(matches!(align_of(column), Some(Alignment::Start)));
+    // `justify` is the main axis; both builders place children from the start.
+    for id in [row, column] {
+        let justify = tree.nodes.iter().find(|node| node.id == id).and_then(|node| {
+            match &node.data {
+                UiNodeData::Row(r) => Some(r.justify),
+                UiNodeData::Column(c) => Some(c.justify),
+                _ => None,
+            }
+        });
+        assert!(matches!(justify, Some(Justify::Start)), "node {id}");
+    }
 }
 
 #[test]

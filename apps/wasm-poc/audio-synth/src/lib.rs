@@ -26,7 +26,7 @@ use plexi::platform::host_log;
 use plexi::platform::host_state;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
 use plexi::platform::types::{
-    Alignment, BadgeColor, BadgeNode, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
+    Alignment, Justify, BadgeColor, BadgeNode, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
     RowNode, StateSnapshot, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
@@ -240,6 +240,7 @@ impl Synth {
                 children: vec![note_badge.id, freq_label.id],
                 gap: 8.0,
                 align: Alignment::Center,
+                justify: Justify::Start,
                 grow: false,
             }),
         );
@@ -321,6 +322,7 @@ impl Synth {
                 children: vec![title_id, note_row_id, wave_id, pipe_id, div_id, hint_id],
                 gap: 10.0,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: true,
             }),
         );

@@ -40,7 +40,7 @@ use super::wasm_view::bindings::plexi::platform::types::{
     DeclareToolsEffect, FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent,
     StateSnapshot, TimerEffect, ToolDecl, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
 };
-use super::wasm_view::Alignment;
+use super::wasm_view::{Alignment, Justify};
 #[cfg(test)]
 use super::wasm_view::{Effect, Grants, StateStore, WasmView};
 
@@ -6600,6 +6600,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .and_then(Value::as_str)
                     .unwrap_or("start"),
             )?,
+            justify: decode_justify(value)?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "DataTable" | "data_table" | "table" | "Table" => {
@@ -6612,6 +6613,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 children,
                 gap: optional_f32(value, "gap")?.unwrap_or(4.0),
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
             }))
         }
@@ -6675,6 +6677,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .and_then(Value::as_str)
                     .unwrap_or("center"),
             )?,
+            justify: decode_justify(value)?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "Divider" | "divider" => Ok(UiNodeData::Divider),
@@ -7053,6 +7056,27 @@ fn decode_alignment(value: &str) -> Result<Alignment, WasmPythonError> {
         "stretch" => Ok(Alignment::Stretch),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown alignment: {other}"
+        ))),
+    }
+}
+
+/// A row's or column's `justify`: main-axis placement. Absent is `start`,
+/// which places children as rows and columns always have.
+fn decode_justify(node: &Value) -> Result<Justify, WasmPythonError> {
+    const ACCEPTED: &str = "start, center, end, space-between";
+    match node.get("justify") {
+        None | Some(Value::Null) => Ok(Justify::Start),
+        Some(Value::String(value)) => match value.as_str() {
+            "start" => Ok(Justify::Start),
+            "center" => Ok(Justify::Center),
+            "end" => Ok(Justify::End),
+            "space-between" => Ok(Justify::SpaceBetween),
+            other => Err(WasmPythonError::BridgeJson(format!(
+                "unknown justify {other:?}; accepted: {ACCEPTED}"
+            ))),
+        },
+        Some(other) => Err(WasmPythonError::BridgeJson(format!(
+            "justify must be a string ({ACCEPTED}), got {other}"
         ))),
     }
 }

@@ -32,7 +32,7 @@ use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::audio_rt_control::{self, AudioConfig, AudioFormat};
 use plexi::platform::host_log;
 use plexi::platform::types::{
-    Alignment, BadgeColor, BadgeNode, ColumnNode, DeclareToolsEffect, Effect, FilePickerMode,
+    Alignment, Justify, BadgeColor, BadgeNode, ColumnNode, DeclareToolsEffect, Effect, FilePickerMode,
     FileReadEffect, IndexedNode, InputEvent, KeyEvent, OpenFilePickerEffect, StateSnapshot,
     TextNode, TimerEffect, ToolCallEvent, ToolDecl, ToolResultEffect, UiNodeData, UiTree,
 };
@@ -345,6 +345,7 @@ impl View {
                 children,
                 gap: 6.0,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: true,
             }),
         );

@@ -388,6 +388,7 @@ pub mod ui {
                     // `align` is the cross axis. A row centers its children
                     // vertically unless the guest says otherwise.
                     align: Alignment::Center,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             )
@@ -403,6 +404,7 @@ pub mod ui {
                     children: children.into_iter().collect(),
                     gap: 8.0,
                     align: Alignment::Start,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             )

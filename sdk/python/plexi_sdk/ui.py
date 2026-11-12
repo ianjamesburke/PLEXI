@@ -187,6 +187,17 @@ def _validate_component_list(items: Any, container_name: str) -> None:
 
 # ── Layout Containers ─────────────────────────────────────────────────────────
 
+_JUSTIFY_VALUES = ("start", "center", "end", "space-between")
+
+
+def _validate_justify(justify: Any, container_name: str) -> str:
+    if justify not in _JUSTIFY_VALUES:
+        raise ValueError(
+            f"{container_name} justify must be one of "
+            f"{', '.join(repr(v) for v in _JUSTIFY_VALUES)}, got {justify!r}"
+        )
+    return str(justify)
+
 
 class Column(Component):
     """Vertical stack of child components.
@@ -195,7 +206,9 @@ class Column(Component):
     default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
     child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
     ``child`` vertically and a single grow spacer pins what follows it to the
-    bottom.
+    bottom. ``justify`` places children down a column without grow spacers:
+    ``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``;
+    the column then fills the height it is given.
     """
 
     def __init__(
@@ -205,6 +218,7 @@ class Column(Component):
         padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0,
         *,
         align: str = "start",
+        justify: str = "start",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -213,6 +227,7 @@ class Column(Component):
         self.gap: float | None = float(gap) if gap is not None else None
         self.padding = padding
         self.align = align
+        self.justify = _validate_justify(justify, "Column")
         self.grow = bool(grow)
 
     def to_node(self) -> dict | None:
@@ -226,6 +241,7 @@ class Column(Component):
             "type": "column",
             "children": children,
             "align": self.align,
+            "justify": self.justify,
             "grow": self.grow,
         }
         if self.gap is not None:
@@ -238,8 +254,13 @@ class HStack(Component):
 
     ``align`` is the cross axis, as on ``Column``: it places children at the
     top (``"start"``), the middle (``"center"``, the default) or the bottom
-    (``"end"``) of the row. A ``Text`` child too long for the row wraps in the
-    width its later siblings leave.
+    (``"end"``) of the row. ``justify`` places them along the row:
+    ``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``.
+    Leftover width is shared equally by every ``Spacer(grow=True)``,
+    ``Column(grow=True)`` and ``Row(grow=True)`` child, which then takes
+    precedence over ``justify``; a ``Column`` that does not grow is as wide as
+    its content. A ``Text`` child too long for the row wraps in the width its
+    later siblings leave.
     """
 
     def __init__(
@@ -248,6 +269,7 @@ class HStack(Component):
         gap: float | None = None,
         *,
         align: str = "center",
+        justify: str = "start",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -255,6 +277,7 @@ class HStack(Component):
         self.children = items
         self.gap: float | None = float(gap) if gap is not None else None
         self.align = align
+        self.justify = _validate_justify(justify, "HStack")
         self.grow = bool(grow)
 
     def to_node(self) -> dict | None:
@@ -268,6 +291,7 @@ class HStack(Component):
             "type": "row",
             "children": children,
             "align": self.align,
+            "justify": self.justify,
             "grow": self.grow,
         }
         if self.gap is not None:

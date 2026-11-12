@@ -16,7 +16,7 @@ use super::wasm_view::bindings::plexi::platform::types::{
     CanvasCommand, FooterKeysNode, PinnedEdge, RowNode, TextNode,
 };
 use super::wasm_view::{
-    Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree,
+    Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, Justify, UiNodeData, UiTree,
 };
 
 use crate::render::view_chrome::{self, ViewChrome};
@@ -477,6 +477,7 @@ fn render_root_with_chrome_bands(
                 &c.children[leading..body_end],
                 c.gap,
                 c.align,
+                c.justify,
                 out,
                 0,
             );
@@ -852,6 +853,116 @@ fn grow_spacer_indices(nodes: &[IndexedNode], children: &[u32]) -> Vec<usize> {
         .collect()
 }
 
+/// Where a column hands out its leftover height (stints 1327, 1358). Each
+/// range is a flex gap: the grow `Space` child it covers, or an empty range
+/// for a gap `justify` places before `children[range.start]`. Grow spacers
+/// take all the leftover height, so `justify` only places children of a
+/// column that has none.
+fn column_flex_gaps(
+    nodes: &[IndexedNode],
+    children: &[u32],
+    justify: Justify,
+) -> Vec<std::ops::Range<usize>> {
+    let spacers = grow_spacer_indices(nodes, children);
+    if !spacers.is_empty() {
+        return spacers.into_iter().map(|at| at..at + 1).collect();
+    }
+    let n = children.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    match justify {
+        Justify::Start => Vec::new(),
+        Justify::Center => vec![0..0, n..n],
+        Justify::End => vec![0..0],
+        Justify::SpaceBetween => (1..n).map(|at| at..at).collect(),
+    }
+}
+
+/// A row child that takes a share of the row's leftover width instead of
+/// its content's width: a grow `Space`, or a `Column` or `Row` declared
+/// `grow` (stint 1363).
+fn grows_along_row(node: &IndexedNode) -> bool {
+    match &node.data {
+        UiNodeData::Space(s) => s.grow,
+        UiNodeData::Column(c) => c.grow,
+        UiNodeData::Row(r) => r.grow,
+        _ => false,
+    }
+}
+
+/// A row child that, laid out directly in the row, would take more width
+/// than its content: a `Column` that centers or ends its children spreads
+/// over all the width the row has left (stint 1363).
+fn fills_row_width(node: &IndexedNode) -> bool {
+    matches!(&node.data, UiNodeData::Column(c) if cross_align(c.align) != egui::Align::Min)
+}
+
+/// The widest gap a row or column honors. Gaps are guest input; a gap past
+/// any pane width only pushes children out of sight.
+const MAX_GAP: f32 = 4096.0;
+
+/// A guest gap made safe for layout arithmetic: non-finite is zero, and
+/// negative or huge values are clamped.
+fn sanitized_gap(gap: f32) -> f32 {
+    if gap.is_finite() {
+        gap.clamp(0.0, MAX_GAP)
+    } else {
+        0.0
+    }
+}
+
+/// How a row places its children along its width (stints 1358, 1363).
+#[derive(Debug, PartialEq)]
+struct RowPlacement {
+    /// Space before the first child.
+    lead: f32,
+    /// Space between children.
+    gap: f32,
+    /// Slot width of each child.
+    widths: Vec<f32>,
+}
+
+/// Place children of the given natural widths along a row `available`
+/// wide; `None` is a grow child. Grow children share the leftover width
+/// equally, whatever their content; without any, `justify` places the
+/// children. `None` when the children do not fit, so the row lays them out
+/// as it always has and wraps its text.
+fn place_along_row(
+    natural: &[Option<f32>],
+    gap: f32,
+    available: f32,
+    justify: Justify,
+) -> Option<RowPlacement> {
+    let n = natural.len();
+    if n == 0 || !available.is_finite() {
+        return None;
+    }
+    let fixed = natural.iter().flatten().sum::<f32>() + gap * (n - 1) as f32;
+    let leftover = available - fixed;
+    if !(leftover >= 0.0) {
+        return None;
+    }
+    let growers = natural.iter().filter(|w| w.is_none()).count();
+    if growers > 0 {
+        let share = leftover / growers as f32;
+        return Some(RowPlacement {
+            lead: 0.0,
+            gap,
+            widths: natural.iter().map(|w| w.unwrap_or(share)).collect(),
+        });
+    }
+    let widths: Vec<f32> = natural.iter().flatten().copied().collect();
+    let (lead, gap) = match justify {
+        Justify::Start => (0.0, gap),
+        Justify::Center => (leftover / 2.0, gap),
+        Justify::End => (leftover, gap),
+        Justify::SpaceBetween if n > 1 => (0.0, gap + leftover / (n - 1) as f32),
+        Justify::SpaceBetween => (0.0, gap),
+    };
+    Some(RowPlacement { lead, gap, widths })
+}
+
 /// One info line the first time a layout rule applies at this place in the
 /// tree, so the log shows which rule shaped a pane without a line per frame.
 /// Measuring passes stay silent: they repeat the pass that paints.
@@ -1064,12 +1175,19 @@ fn render_button_node(
 /// bottom edge, so one spacer is a bottom pin and `[spacer, child, spacer]`
 /// centers the child. When the spans are taller than the column the spacers
 /// collapse to zero and the last span still holds the bottom edge.
+///
+/// `justify` (stint 1358) places the children of a column without grow
+/// spacers the same way, as if it held spacers: `center` one before and one
+/// after the children, `end` one before them, `space-between` one between
+/// each pair. `start` places them top-down, as columns always have.
+#[allow(clippy::too_many_arguments)]
 fn render_column_children(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
     children: &[u32],
     gap: f32,
     align: Alignment,
+    justify: Justify,
     out: &mut RenderResult,
     depth: u32,
 ) {
@@ -1080,13 +1198,25 @@ fn render_column_children(
         }
     };
 
-    let spacers = grow_spacer_indices(env.nodes, children);
-    let Some(&first_spacer) = spacers.first() else {
+    let gaps = column_flex_gaps(env.nodes, children, justify);
+    let has_spacer = gaps.iter().any(|gap| !gap.is_empty());
+    // A justified column fills the height it is offered; a column of
+    // unbounded height (inside a vertical `Scrollable`) has none to place
+    // its children in, so it stacks them from the top.
+    let Some(first_gap) = gaps
+        .first()
+        .filter(|_| has_spacer || ui.available_height().is_finite())
+    else {
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
             render_span(ui, children, out)
         });
         return;
     };
+    if !has_spacer {
+        trace_layout_once(ui, "column justify places children down the column", || {
+            format!("justify={justify:?} children={}", children.len())
+        });
+    }
 
     let stack_size = egui::vec2(ui.available_width(), ui.available_height());
     let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
@@ -1098,7 +1228,7 @@ fn render_column_children(
         return;
     }
 
-    let head = &children[..first_spacer];
+    let head = &children[..first_gap.start];
     ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
         ui.set_clip_rect(stack_rect);
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
@@ -1106,13 +1236,13 @@ fn render_column_children(
         });
     });
 
-    // The spans that follow each grow spacer.
-    let spans: Vec<&[u32]> = spacers
+    // The spans that follow each flex gap.
+    let spans: Vec<&[u32]> = gaps
         .iter()
         .enumerate()
-        .map(|(n, &at)| {
-            let end = spacers.get(n + 1).copied().unwrap_or(children.len());
-            &children[at + 1..end]
+        .map(|(n, gap)| {
+            let end = gaps.get(n + 1).map_or(children.len(), |next| next.start);
+            &children[gap.end..end]
         })
         .collect();
     if spans.iter().all(|span| span.is_empty()) {
@@ -1293,6 +1423,25 @@ struct RowMeasure {
 }
 
 impl RowMeasure {
+    /// A row measurement from each child's natural size, the children laid
+    /// side by side `gap` apart; a grow child (`None`) takes no width.
+    fn from_sizes(sizes: &[Option<egui::Vec2>], gap: f32, height: f32) -> Self {
+        let mut x = 0.0;
+        let child_rects = sizes
+            .iter()
+            .map(|size| {
+                let size = size.unwrap_or(egui::vec2(0.0, height));
+                let rect = egui::Rect::from_min_size(egui::pos2(x, 0.0), size);
+                x += size.x + gap;
+                rect
+            })
+            .collect();
+        Self {
+            height,
+            child_rects,
+        }
+    }
+
     /// Width the children after `idx` need, including the gap before them.
     fn reserved_after(&self, idx: usize, gap: f32) -> f32 {
         match (self.child_rects.get(idx + 1), self.child_rects.last()) {
@@ -1373,6 +1522,47 @@ fn measure_row(
     }
 }
 
+/// Natural size of each child of a row that hands out its leftover width
+/// (stint 1363). Each child is laid out alone, without painting, in a
+/// measuring pass as wide as the row, so its width is its content's whatever
+/// its siblings take: a centered `Column` measures as wide as its widest
+/// child, not as the row. Grow children are `None` and not laid out: their
+/// width is a share of the leftover. Like `measure_row`, rows inside this
+/// pass do not measure and flex columns are not laid out, so it visits each
+/// node of the row's subtree at most once.
+fn measure_row_children(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    r: &RowNode,
+    grid_cols: Option<usize>,
+    depth: u32,
+) -> Vec<Option<egui::Vec2>> {
+    let env = TreeRenderEnv {
+        in_row_measure: true,
+        ..env
+    };
+    let rect = ui.available_rect_before_wrap();
+    let mut sizing_out = RenderResult::default();
+    r.children
+        .iter()
+        .enumerate()
+        .map(|(idx, child)| {
+            if find_node(env.nodes, *child).is_some_and(grows_along_row) {
+                return None;
+            }
+            let mut sizing = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .sizing_pass()
+                    .invisible()
+                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
+            );
+            render_row_child(&mut sizing, env, r, idx, grid_cols, &mut sizing_out, depth);
+            Some(sizing.min_rect().size())
+        })
+        .collect()
+}
+
 /// A horizontal run of a row. `egui` aligns each child against the height the
 /// run has when the child is added, so a run that places its children at the
 /// top or bottom is given the measured row height to place them in.
@@ -1441,10 +1631,21 @@ fn render_row_node(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = r.gap;
                 for line in lines {
+                    // Each line is placed along the row by `justify`.
+                    let natural: Vec<Option<f32>> =
+                        widths[line.clone()].iter().copied().map(Some).collect();
+                    let placement =
+                        place_along_row(&natural, sanitized_gap(r.gap), available, r.justify);
                     // Buttons on a line share one height, so `align` has
                     // nothing to place.
                     row_line(ui, egui::Align::Center, None, |ui| {
-                        ui.spacing_mut().item_spacing.x = r.gap;
+                        match &placement {
+                            Some(placement) => {
+                                ui.spacing_mut().item_spacing.x = placement.gap;
+                                ui.add_space(placement.lead);
+                            }
+                            None => ui.spacing_mut().item_spacing.x = r.gap,
+                        }
                         for child in &r.children[line] {
                             render_node(ui, env, *child, out, depth + 1);
                         }
@@ -1456,11 +1657,61 @@ fn render_row_node(
     }
 
     // One measuring pass per row at most, and only when the row needs it: to
-    // place children at its top or bottom edge, or to wrap a long text. A row
-    // that may not measure centers its children, as rows always have.
+    // hand out its leftover width, to place children at its top or bottom
+    // edge, or to wrap a long text. A row that may not measure centers its
+    // children, as rows always have.
     let mut measure: Option<RowMeasure> = None;
     let placed = may_measure && valign != egui::Align::Center;
-    if placed {
+    let along = may_measure
+        && available.is_finite()
+        && (r.justify != Justify::Start
+            || r.children.iter().any(|child| {
+                find_node(nodes, *child).is_some_and(|n| grows_along_row(n) || fills_row_width(n))
+            }));
+    if along {
+        let natural = measure_row_children(ui, env, r, grid_cols, depth);
+        let widths: Vec<Option<f32>> = natural.iter().map(|size| size.map(|s| s.x)).collect();
+        let row_h = natural.iter().flatten().map(|s| s.y).fold(0.0, f32::max);
+        if let Some(placement) =
+            place_along_row(&widths, sanitized_gap(r.gap), available, r.justify)
+        {
+            trace_layout_once(ui, "row places children along the row", || {
+                format!(
+                    "row={id} justify={:?} lead={:.0} gap={:.0} widths={:?}",
+                    r.justify, placement.lead, placement.gap, placement.widths
+                )
+            });
+            let line_align = if placed { valign } else { egui::Align::Center };
+            row_line(ui, line_align, placed.then_some(row_h), |ui| {
+                ui.spacing_mut().item_spacing.x = placement.gap;
+                ui.add_space(placement.lead);
+                for (idx, (child, &width)) in r.children.iter().zip(&placement.widths).enumerate() {
+                    let spacer = matches!(
+                        find_node(nodes, *child).map(|n| &n.data),
+                        Some(UiNodeData::Space(_))
+                    );
+                    // Each child gets a slot exactly its share wide; it lays
+                    // itself out centered inside, as in a measured slot.
+                    let height = natural[idx].map_or(row_h, |s| s.y);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(width);
+                            if !spacer {
+                                render_row_child(ui, env, r, idx, grid_cols, out, depth);
+                            }
+                        },
+                    );
+                }
+            });
+            return;
+        }
+        // The children do not fit: lay the row out as rows always have, from
+        // this measurement, so it is still measured once.
+        measure = Some(RowMeasure::from_sizes(&natural, r.gap, row_h));
+    }
+    if placed && measure.is_none() {
         let measured = measure_row(ui, env, r, grid_cols, depth);
         trace_layout_once(ui, "row align places children across the row", || {
             format!("row={id} align={:?} row_h={:.0}", r.align, measured.height)
@@ -1503,9 +1754,11 @@ fn render_row_node(
                     }
                 }
             }
+            // A grow child that did not fit has no measured slot.
+            let grows = find_node(nodes, *child).is_some_and(grows_along_row);
             let slot = measure
                 .as_ref()
-                .filter(|_| placed)
+                .filter(|_| placed && !grows)
                 .and_then(|m| m.child_rects.get(idx))
                 .map(|rect| rect.size());
             match slot {
@@ -1757,6 +2010,7 @@ fn render_node_inner(
                         &c.children[..c.children.len() - 1],
                         c.gap,
                         c.align,
+                        c.justify,
                         out,
                         depth,
                     );
@@ -1773,7 +2027,7 @@ fn render_node_inner(
                     render_node(ui, env, footer_id, out, depth + 1);
                 });
             } else {
-                render_column_children(ui, env, &c.children, c.gap, c.align, out, depth);
+                render_column_children(ui, env, &c.children, c.gap, c.align, c.justify, out, depth);
             }
         }
 
@@ -2058,12 +2312,18 @@ fn render_node_inner(
         }
 
         // A grow `Space` directly inside a `Column` never reaches this arm:
-        // `render_column_children` treats it as a flex gap.
+        // `render_column_children` treats it as a flex gap. Inside a row it
+        // reaches here only when the row does not hand out its leftover
+        // width (it is too deep to measure, or its children do not fit), and
+        // then it takes none: its share is the row's to give, and the row's
+        // height is no measure of width (stint 1363).
         UiNodeData::Space(s) => {
-            let amount = if s.grow {
-                ui.available_height().max(0.0)
-            } else {
+            let amount = if !s.grow {
                 s.size
+            } else if ui.layout().is_horizontal() {
+                0.0
+            } else {
+                ui.available_height().max(0.0)
             };
             ui.add_space(amount);
         }
@@ -2368,6 +2628,7 @@ mod tests {
                         children: vec![1, 2],
                         gap: 8.0,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 ),
@@ -2434,6 +2695,7 @@ mod tests {
                         children: vec![1, 2, 3],
                         gap: 8.0,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 ),
@@ -2508,6 +2770,7 @@ mod tests {
                         children: vec![1, 2],
                         gap: style::SPACE_MD,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: false,
                     }),
                 ),
@@ -2517,6 +2780,7 @@ mod tests {
                         children: vec![3, 4, 5, 6, 7],
                         gap: style::SPACE_SM,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: false,
                     }),
                 ),
@@ -2528,6 +2792,7 @@ mod tests {
                         children: vec![8, 9],
                         gap: style::SPACE_SM,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: false,
                     }),
                 ),
@@ -2816,6 +3081,7 @@ mod tests {
                         children: vec![1],
                         gap: 0.0,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 ),
@@ -2896,6 +3162,7 @@ mod tests {
                     children: vec![1],
                     gap: 0.0,
                     align: Alignment::Start,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             ),
@@ -2981,6 +3248,7 @@ mod tests {
                         children: vec![1, 2, 3, 4, 7],
                         gap: style::SPACE_MD,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 ),
@@ -3017,6 +3285,7 @@ mod tests {
                         children: vec![5, 6],
                         gap: style::SPACE_SM,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: false,
                     }),
                 ),
@@ -3244,6 +3513,7 @@ mod tests {
                 children,
                 gap: style::SPACE_MD,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: true,
             }),
         )
@@ -3256,6 +3526,7 @@ mod tests {
                 children,
                 gap,
                 align,
+                justify: Justify::Start,
                 grow: false,
             }),
         )
@@ -3509,6 +3780,322 @@ mod tests {
         );
     }
 
+    /// A tree from `(id, data)` pairs through the bridge decoder, as a Python
+    /// plugin's view arrives; node 0 is the root.
+    fn wire_tree(nodes: &[(u32, serde_json::Value)]) -> UiTree {
+        let nodes: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|(id, data)| serde_json::json!({"id": id, "key": id.to_string(), "data": data}))
+            .collect();
+        crate::host::wasm_python::decode_ui_tree(
+            &serde_json::json!({"root": 0, "nodes": nodes}).to_string(),
+        )
+        .expect("test tree decodes")
+    }
+
+    fn wire_button(label: &str) -> serde_json::Value {
+        serde_json::json!({"type": "button", "label": label, "on_click": label})
+    }
+
+    fn wire_grow_spacer() -> serde_json::Value {
+        serde_json::json!({"type": "spacer", "grow": true})
+    }
+
+    /// The rect each node painted in one headless layout pass.
+    fn laid_out(tree: &UiTree, pane: egui::Vec2) -> HashMap<u32, egui::Rect> {
+        render_ui_tree_layout(tree, pane.x, pane.y)
+            .into_iter()
+            .filter_map(|fact| fact.rect.map(|rect| (fact.id, rect)))
+            .collect()
+    }
+
+    fn rect_of(rects: &HashMap<u32, egui::Rect>, id: u32) -> egui::Rect {
+        *rects
+            .get(&id)
+            .unwrap_or_else(|| panic!("node {id} painted nothing: {rects:?}"))
+    }
+
+    /// The margin egui's default `CentralPanel` frame (`Frame::central_panel`)
+    /// adds around the ui that `egui_kittest`'s `build_ui` hands the headless
+    /// layout pass.
+    const LAYOUT_HARNESS_MARGIN: f32 = 8.0;
+
+    /// Left and right edges of the content inside the default root inset.
+    fn content_x(pane: egui::Vec2) -> (f32, f32) {
+        let inset = style::SPACE_XL + LAYOUT_HARNESS_MARGIN;
+        (inset, pane.x - inset)
+    }
+
+    /// Top and bottom edges of the content inside the default root inset.
+    fn content_y(pane: egui::Vec2) -> (f32, f32) {
+        let inset = style::SPACE_MD + LAYOUT_HARNESS_MARGIN;
+        (inset, pane.y - inset)
+    }
+
+    const ROW_PANES: [egui::Vec2; 2] = [egui::vec2(320.0, 240.0), egui::vec2(800.0, 600.0)];
+
+    /// Stint 1363: a grow `Spacer` in a row added the row's height as
+    /// horizontal space. It takes the width the other children leave, so the
+    /// child after it sits at the row's right edge.
+    #[test]
+    fn row_grow_spacer_pins_the_last_child_to_the_right_edge() {
+        let tree = wire_tree(&[
+            (0, serde_json::json!({"type": "row", "children": [1, 2, 3]})),
+            (1, wire_button("Back")),
+            (2, wire_grow_spacer()),
+            (3, wire_button("Next")),
+        ]);
+        for pane in ROW_PANES {
+            let rects = laid_out(&tree, pane);
+            let (left, right) = content_x(pane);
+            let back = rect_of(&rects, 1);
+            let next = rect_of(&rects, 3);
+            assert!(
+                (back.min.x - left).abs() <= 1.5,
+                "{pane:?}: Back starts the row at {left}, got {back:?}"
+            );
+            assert!(
+                (next.max.x - right).abs() <= 1.5,
+                "{pane:?}: Next ends at the row's right edge {right}, got {next:?}"
+            );
+            assert!(
+                (back.center().y - next.center().y).abs() <= 1.0,
+                "{pane:?}: both sit on one line: {back:?} vs {next:?}"
+            );
+        }
+    }
+
+    /// Stint 1363: two grow spacers share the leftover width, which centers
+    /// the child between them.
+    #[test]
+    fn row_two_grow_spacers_center_the_child_between_them() {
+        let tree = wire_tree(&[
+            (0, serde_json::json!({"type": "row", "children": [1, 2, 3]})),
+            (1, wire_grow_spacer()),
+            (2, wire_button("Start")),
+            (3, wire_grow_spacer()),
+        ]);
+        for pane in ROW_PANES {
+            let start = rect_of(&laid_out(&tree, pane), 2);
+            let (left, right) = content_x(pane);
+            let middle = (left + right) / 2.0;
+            assert!(
+                (start.center().x - middle).abs() <= 1.5,
+                "{pane:?}: Start is centered at {middle}, got {start:?}"
+            );
+        }
+    }
+
+    /// Stint 1363, gauntlet card 07: `HStack([Column(grow=True),
+    /// Column(grow=True)])`. The first column took the whole row and pushed
+    /// the second out of the pane. Grow children share the row's width.
+    #[test]
+    fn row_grow_columns_share_the_width() {
+        let gap = style::SPACE_SM;
+        let tree = wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "row", "children": [1, 2], "gap": gap, "align": "start"}),
+            ),
+            (
+                1,
+                serde_json::json!({"type": "column", "children": [3, 4], "grow": true}),
+            ),
+            (
+                2,
+                serde_json::json!({"type": "column", "children": [5], "grow": true}),
+            ),
+            (3, wire_button("Convert")),
+            (
+                4,
+                serde_json::json!({"type": "text", "text": "Amount and unit"}),
+            ),
+            (5, wire_button("Result")),
+        ]);
+        for pane in ROW_PANES {
+            let rects = laid_out(&tree, pane);
+            let (left, right) = content_x(pane);
+            let half = (right - left - gap) / 2.0;
+            let convert = rect_of(&rects, 3);
+            let result = rect_of(&rects, 5);
+            assert!(
+                (convert.min.x - left).abs() <= 1.5,
+                "{pane:?}: the first column starts the row: {convert:?}"
+            );
+            assert!(
+                (result.min.x - (left + half + gap)).abs() <= 1.5,
+                "{pane:?}: the second column starts halfway, at {}, got {result:?}",
+                left + half + gap
+            );
+            assert!(
+                result.max.x <= right + 0.5,
+                "{pane:?}: {result:?} is past the row"
+            );
+        }
+    }
+
+    /// Stint 1363, gauntlet card 10: centered `Column` cells in a row each
+    /// took the full row width, so the second and third cell were pushed out
+    /// of the pane. A column that does not grow takes its content's width.
+    #[test]
+    fn row_column_children_take_their_content_width() {
+        let gap = 12.0;
+        let cell = |badge: u32, button: u32| serde_json::json!({"type": "column", "children": [badge, button], "align": "center"});
+        let tree = wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "row", "children": [1, 2, 3], "gap": gap}),
+            ),
+            (1, cell(4, 5)),
+            (2, cell(6, 7)),
+            (3, cell(8, 9)),
+            (4, serde_json::json!({"type": "badge", "text": "Happy"})),
+            (5, wire_button("Happy")),
+            (6, serde_json::json!({"type": "badge", "text": "Meh"})),
+            (7, wire_button("Meh")),
+            (8, serde_json::json!({"type": "badge", "text": "Sad"})),
+            (9, wire_button("Sad")),
+        ]);
+        for pane in ROW_PANES {
+            let rects = laid_out(&tree, pane);
+            let (left, right) = content_x(pane);
+            let buttons = [rect_of(&rects, 5), rect_of(&rects, 7), rect_of(&rects, 9)];
+            assert!(
+                (buttons[0].min.x - left).abs() <= 1.5,
+                "{pane:?}: the first cell starts the row: {buttons:?}"
+            );
+            for pair in buttons.windows(2) {
+                assert!(
+                    pair[1].min.x - pair[0].max.x <= gap + 1.5,
+                    "{pane:?}: cells sit side by side, {gap}px apart: {buttons:?}"
+                );
+            }
+            assert!(buttons[2].max.x <= right + 0.5, "{pane:?}: {buttons:?}");
+        }
+    }
+
+    /// Main-axis placement of three buttons in a row by `justify`.
+    fn justified_row(justify: &str) -> UiTree {
+        wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "row", "children": [1, 2, 3], "justify": justify}),
+            ),
+            (1, wire_button("One")),
+            (2, wire_button("Two")),
+            (3, wire_button("Three")),
+        ])
+    }
+
+    /// Stint 1358: `justify` places a row's children along the row.
+    #[test]
+    fn row_justify_places_children_along_the_row() {
+        for pane in ROW_PANES {
+            let (left, right) = content_x(pane);
+            let buttons = |justify: &str| {
+                let rects = laid_out(&justified_row(justify), pane);
+                [rect_of(&rects, 1), rect_of(&rects, 2), rect_of(&rects, 3)]
+            };
+
+            let start = buttons("start");
+            assert!(
+                (start[0].min.x - left).abs() <= 1.5,
+                "{pane:?} start: {start:?}"
+            );
+            assert!(start[2].max.x < right - 10.0, "{pane:?} start: {start:?}");
+
+            let center = buttons("center");
+            assert!(
+                ((center[0].min.x - left) - (right - center[2].max.x)).abs() <= 1.5,
+                "{pane:?} center leaves equal room on both sides: {center:?}"
+            );
+
+            let end = buttons("end");
+            assert!((end[2].max.x - right).abs() <= 1.5, "{pane:?} end: {end:?}");
+            assert!(end[0].min.x > left + 10.0, "{pane:?} end: {end:?}");
+
+            let between = buttons("space-between");
+            assert!(
+                (between[0].min.x - left).abs() <= 1.5,
+                "{pane:?}: {between:?}"
+            );
+            assert!(
+                (between[2].max.x - right).abs() <= 1.5,
+                "{pane:?}: {between:?}"
+            );
+            let first_gap = between[1].min.x - between[0].max.x;
+            let second_gap = between[2].min.x - between[1].max.x;
+            assert!(
+                (first_gap - second_gap).abs() <= 1.5 && first_gap > style::SPACE_SM,
+                "{pane:?} space-between spreads the gaps evenly: {between:?}"
+            );
+        }
+    }
+
+    /// Stint 1358: the bridge rejects a `justify` it does not know and names
+    /// the values it accepts.
+    #[test]
+    fn wire_justify_rejects_an_unknown_value() {
+        for kind in ["row", "column"] {
+            let json = serde_json::json!({"root": 0, "nodes": [
+                {"id": 0, "key": "0", "data": {"type": kind, "children": [], "justify": "sideways"}}
+            ]});
+            let err = crate::host::wasm_python::decode_ui_tree(&json.to_string())
+                .expect_err("an unknown justify must not decode")
+                .to_string();
+            assert!(
+                err.contains("sideways") && err.contains("space-between"),
+                "{kind}: the error names the value and the accepted set: {err}"
+            );
+        }
+    }
+
+    /// Stint 1358: `justify` places a column's children down the column.
+    #[test]
+    fn column_justify_places_children_down_the_column() {
+        let column = |justify: &str| {
+            wire_tree(&[
+                (
+                    0,
+                    serde_json::json!({"type": "column", "children": [1, 2], "justify": justify}),
+                ),
+                (1, wire_button("Top")),
+                (2, wire_button("Bottom")),
+            ])
+        };
+        for pane in ROW_PANES {
+            let (top, bottom) = content_y(pane);
+            let buttons = |justify: &str| {
+                let rects = laid_out(&column(justify), pane);
+                (rect_of(&rects, 1), rect_of(&rects, 2))
+            };
+
+            let (first, second) = buttons("start");
+            assert!(
+                (first.min.y - top).abs() <= 1.5,
+                "{pane:?} start: {first:?}"
+            );
+            assert!(second.max.y < bottom - 10.0, "{pane:?} start: {second:?}");
+
+            let (first, second) = buttons("center");
+            assert!(
+                ((first.min.y - top) - (bottom - second.max.y)).abs() <= 1.5,
+                "{pane:?} center leaves equal room above and below: {first:?} {second:?}"
+            );
+
+            let (first, second) = buttons("end");
+            assert!(
+                (second.max.y - bottom).abs() <= 1.5,
+                "{pane:?} end: {second:?}"
+            );
+            assert!(first.min.y > top + 10.0, "{pane:?} end: {first:?}");
+
+            let (first, second) = buttons("space-between");
+            assert!((first.min.y - top).abs() <= 1.5, "{pane:?}: {first:?}");
+            assert!((second.max.y - bottom).abs() <= 1.5, "{pane:?}: {second:?}");
+        }
+    }
+
     /// Run `render` and return how many `render_node` calls it made.
     fn render_node_calls(render: impl FnOnce()) -> usize {
         RENDER_NODE_CALLS.with(|calls| calls.set(0));
@@ -3600,6 +4187,249 @@ mod tests {
             calls <= count * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
             "{calls} render_node calls for {count} nodes"
         );
+    }
+
+    fn flex_column(id: u32, children: Vec<u32>, align: Alignment, justify: Justify) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Column(ColumnNode {
+                children,
+                gap: style::SPACE_SM,
+                align,
+                justify,
+                grow: false,
+            }),
+        )
+    }
+
+    fn justified_row_node(id: u32, children: Vec<u32>, justify: Justify) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Row(RowNode {
+                children,
+                gap: style::SPACE_SM,
+                align: Alignment::Center,
+                justify,
+                grow: false,
+            }),
+        )
+    }
+
+    /// Stint 1363: a row that hands out its leftover width measures each of
+    /// its children once, however many grow spacers and centered columns it
+    /// holds.
+    #[test]
+    fn row_with_grow_children_is_measured_once() {
+        const CELLS: u32 = 40;
+        let mut nodes = vec![row_node(
+            0,
+            (0..CELLS).flat_map(|c| [1 + c * 4, 2 + c * 4]).collect(),
+            style::SPACE_SM,
+            Alignment::End,
+        )];
+        for c in 0..CELLS {
+            let base = 1 + c * 4;
+            nodes.push(flex_column(
+                base,
+                vec![base + 2, base + 3],
+                Alignment::Center,
+                Justify::Start,
+            ));
+            nodes.push(grow_node(base + 1));
+            nodes.push(text_node(base + 2, "cell"));
+            nodes.push(button_node(base + 3, "Go"));
+        }
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(800.0, 600.0));
+        });
+        assert!(
+            calls <= count * 3,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// Justified rows nested sixty deep, each holding a centered column and
+    /// the next row: only the outermost `MAX_MEASURED_ROW_DEPTH` rows measure.
+    #[test]
+    fn nested_justified_rows_stop_measuring_past_the_depth_limit() {
+        const DEPTH: u32 = 60;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 3;
+            nodes.push(justified_row_node(
+                base,
+                vec![base + 1, base + 3],
+                Justify::SpaceBetween,
+            ));
+            nodes.push(flex_column(
+                base + 1,
+                vec![base + 2],
+                Alignment::Center,
+                Justify::Start,
+            ));
+            nodes.push(text_node(base + 2, "level"));
+        }
+        nodes.push(text_node(DEPTH * 3, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(320.0, 240.0));
+        });
+        assert!(
+            calls <= count * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// Stint 1358: a justified column is a flex column, so a measuring pass
+    /// never lays it out. Forty nested centered columns, each inside a
+    /// grow-spacer column, stay linear in the node count.
+    #[test]
+    fn nested_justified_columns_visit_each_node_a_bounded_number_of_times() {
+        const DEPTH: u32 = 40;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 3;
+            let justify = if level % 2 == 0 {
+                Justify::Center
+            } else {
+                Justify::SpaceBetween
+            };
+            nodes.push(flex_column(
+                base,
+                vec![base + 1, base + 2, base + 3],
+                Alignment::Center,
+                justify,
+            ));
+            nodes.push(text_node(base + 1, "level"));
+            nodes.push(button_node(base + 2, "Go"));
+        }
+        nodes.push(text_node(DEPTH * 3, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(800.0, 600.0));
+        });
+        assert!(
+            calls <= count * 3,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// Centered columns inside justified rows inside centered columns, thirty
+    /// levels: each row measures its column once, and rows inside that
+    /// measurement do not measure, so the visits stay within the frame bound.
+    #[test]
+    fn rows_of_columns_nested_deep_stay_within_the_visit_bound() {
+        const DEPTH: u32 = 30;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 4;
+            nodes.push(justified_row_node(
+                base,
+                vec![base + 1, base + 2],
+                Justify::Center,
+            ));
+            nodes.push(text_node(base + 1, BANNER_TEXT));
+            nodes.push(flex_column(
+                base + 2,
+                vec![base + 3, base + 4],
+                Alignment::End,
+                Justify::Start,
+            ));
+            nodes.push(button_node(base + 3, "Go"));
+        }
+        nodes.push(text_node(DEPTH * 4, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(320.0, 240.0));
+        });
+        assert!(
+            calls <= count * 2 * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// The arithmetic of a row's main axis: grow children share the leftover
+    /// width, `justify` places fixed children, children that do not fit and
+    /// hostile widths fall back to the row's usual layout.
+    #[test]
+    fn place_along_row_hands_out_the_leftover_width() {
+        let fixed = [Some(40.0), Some(60.0)];
+        let place =
+            |natural: &[Option<f32>], justify| place_along_row(natural, 10.0, 210.0, justify);
+        assert_eq!(
+            place(&fixed, Justify::Start),
+            Some(RowPlacement {
+                lead: 0.0,
+                gap: 10.0,
+                widths: vec![40.0, 60.0]
+            })
+        );
+        assert_eq!(place(&fixed, Justify::Center).map(|p| p.lead), Some(50.0));
+        assert_eq!(place(&fixed, Justify::End).map(|p| p.lead), Some(100.0));
+        assert_eq!(
+            place(&fixed, Justify::SpaceBetween).map(|p| p.gap),
+            Some(110.0)
+        );
+        assert_eq!(
+            place(&[Some(40.0)], Justify::SpaceBetween).map(|p| p.lead),
+            Some(0.0)
+        );
+        // Grow children share the leftover equally and override `justify`.
+        assert_eq!(
+            place(&[Some(40.0), None, Some(60.0), None], Justify::End),
+            Some(RowPlacement {
+                lead: 0.0,
+                gap: 10.0,
+                widths: vec![40.0, 40.0, 60.0, 40.0]
+            })
+        );
+        assert_eq!(place(&[Some(400.0), None], Justify::Start), None);
+        assert_eq!(
+            place_along_row(&fixed, 10.0, f32::INFINITY, Justify::Center),
+            None
+        );
+        assert_eq!(
+            place_along_row(&fixed, 10.0, f32::NAN, Justify::Center),
+            None
+        );
+        assert_eq!(place_along_row(&[], 10.0, 100.0, Justify::Center), None);
+        for hostile in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -50.0, 1.0e12] {
+            let gap = sanitized_gap(hostile);
+            assert!((0.0..=MAX_GAP).contains(&gap), "{hostile} -> {gap}");
+        }
+    }
+
+    /// Stint 1358: an absent `justify` decodes to `start`, which places
+    /// children as rows and columns always have; every value round-trips.
+    #[test]
+    fn wire_justify_defaults_to_start_and_decodes_every_value() {
+        let justify_of = |data: serde_json::Value| match wire_tree(&[(0, data)]).nodes[0].data {
+            UiNodeData::Row(ref r) => r.justify,
+            UiNodeData::Column(ref c) => c.justify,
+            ref other => panic!("not a container: {other:?}"),
+        };
+        for kind in ["row", "column"] {
+            assert_eq!(
+                justify_of(serde_json::json!({"type": kind, "children": []})),
+                Justify::Start
+            );
+            for (wire, justify) in [
+                ("start", Justify::Start),
+                ("center", Justify::Center),
+                ("end", Justify::End),
+                ("space-between", Justify::SpaceBetween),
+            ] {
+                assert_eq!(
+                    justify_of(serde_json::json!({"type": kind, "children": [], "justify": wire})),
+                    justify
+                );
+            }
+        }
     }
 
     /// The two measurements together: a flex column measures its spans, and
@@ -4110,6 +4940,117 @@ mod tests {
         for (name, nodes) in [("flex", flex), ("rows", rows)] {
             let tree = UiTree { root: 0, nodes };
             for pane in CHECK_SIZES {
+                let png = render_ui_tree_to_png(&tree, pane.x, pane.y, 2.0).expect("render tree");
+                let path = crate::ui_tests::evidence_png!(format!("_{name}_{}x{}", pane.x, pane.y));
+                std::fs::write(&path, png).expect("write screenshot for visual review");
+            }
+        }
+    }
+
+    /// The rows stints 1358 and 1363 fix, in one plugin view: a grow spacer
+    /// between two buttons, a centered pair, `space-between`, two growing
+    /// columns (gauntlet card 07) and centered column cells (card 10).
+    fn rows_along_the_main_axis_tree() -> UiTree {
+        wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "column", "children": [1, 2, 3, 4, 5]}),
+            ),
+            (
+                1,
+                serde_json::json!({"type": "row", "children": [10, 11, 12]}),
+            ),
+            (10, wire_button("Back")),
+            (11, wire_grow_spacer()),
+            (12, wire_button("Next")),
+            (
+                2,
+                serde_json::json!({"type": "row", "children": [20, 21], "justify": "center"}),
+            ),
+            (20, wire_button("Pause")),
+            (21, wire_button("Reset")),
+            (
+                3,
+                serde_json::json!({"type": "row", "children": [22, 23, 24], "justify": "space-between"}),
+            ),
+            (22, wire_button("1 min")),
+            (23, wire_button("5 min")),
+            (24, wire_button("10 min")),
+            (
+                4,
+                serde_json::json!({"type": "row", "children": [30, 31], "align": "start"}),
+            ),
+            (
+                30,
+                serde_json::json!({"type": "column", "children": [32, 33], "grow": true}),
+            ),
+            (
+                31,
+                serde_json::json!({"type": "column", "children": [34, 35], "grow": true}),
+            ),
+            (32, wire_button("Convert")),
+            (33, serde_json::json!({"type": "text", "text": "12 in"})),
+            (34, wire_button("Copy")),
+            (35, serde_json::json!({"type": "text", "text": "30.48 cm"})),
+            (
+                5,
+                serde_json::json!({"type": "row", "children": [40, 41, 42], "gap": 12.0}),
+            ),
+            (
+                40,
+                serde_json::json!({"type": "column", "children": [43, 44], "align": "center"}),
+            ),
+            (
+                41,
+                serde_json::json!({"type": "column", "children": [45, 46], "align": "center"}),
+            ),
+            (
+                42,
+                serde_json::json!({"type": "column", "children": [47, 48], "align": "center"}),
+            ),
+            (
+                43,
+                serde_json::json!({"type": "badge", "text": "good", "color": "success"}),
+            ),
+            (44, wire_button("Happy")),
+            (
+                45,
+                serde_json::json!({"type": "badge", "text": "fine", "color": "warning"}),
+            ),
+            (46, wire_button("Meh")),
+            (
+                47,
+                serde_json::json!({"type": "badge", "text": "low", "color": "danger"}),
+            ),
+            (48, wire_button("Sad")),
+        ])
+    }
+
+    /// Visual evidence for stints 1358 and 1363 at the smallest check size
+    /// and a normal one, plus a column centered by `justify`.
+    #[test]
+    fn screenshot_rows_along_the_main_axis() {
+        let centered = wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "column", "children": [1, 2], "align": "center", "justify": "center"}),
+            ),
+            (
+                1,
+                serde_json::json!({"type": "text", "text": "04:32", "size": 28.0, "bold": true}),
+            ),
+            (
+                2,
+                serde_json::json!({"type": "row", "children": [3, 4], "justify": "center"}),
+            ),
+            (3, wire_button("Start")),
+            (4, wire_button("Reset")),
+        ]);
+        for (name, tree) in [
+            ("rows", rows_along_the_main_axis_tree()),
+            ("centered", centered),
+        ] {
+            for pane in ROW_PANES {
                 let png = render_ui_tree_to_png(&tree, pane.x, pane.y, 2.0).expect("render tree");
                 let path = crate::ui_tests::evidence_png!(format!("_{name}_{}x{}", pane.x, pane.y));
                 std::fs::write(&path, png).expect("write screenshot for visual review");

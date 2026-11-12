@@ -8,7 +8,7 @@ wit_bindgen::generate!({
 use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::host_log;
 use plexi::platform::types::{
-    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, StateSnapshot,
+    Alignment, Justify, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, StateSnapshot,
     TextNode, UiNodeData, UiTree,
 };
 
@@ -97,6 +97,7 @@ impl Counter {
                 children: vec![title_id, count_id, button_id],
                 gap: 10.0,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: true,
             }),
         );
