@@ -518,11 +518,6 @@ trim-targets:
 channel-list:
     bash scripts/channel-list.sh
 
-# Remove ALL Plexi channels plus shell integration and completions.
-# Same as: just uninstall all
-channel-uninstall channel="all":
-    bash scripts/uninstall.sh {{channel}}
-
 # Preview what the next changelog would look like without committing anything.
 changelog:
     git cliff --unreleased --bump --tag-pattern 'v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -652,16 +647,6 @@ bs-merge pr *flags:
 #   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
 bs-integrate pr record manifest:
     bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
-
-# Dispatch Claude agents at one or more issues. Labels each "in progress" first
-# to prevent double-claiming when multiple dispatches run close together.
-# TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
-# is validated — if this comment still exists, that replacement never happened.
-ship +issues:
-    for issue in {{issues}}; do \
-        gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
-        plexi pane new "c '/ship-issue $issue'" --window; \
-    done
 
 # Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to
 # the out dir. shots="0" skips screenshot steps (state-only, faster).
