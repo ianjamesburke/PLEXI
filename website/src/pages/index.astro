@@ -10,15 +10,15 @@ import { release } from '../lib/release';
   description="Plexi is an agent operating system for developers who work with coding agents. Terminals, agents and plugins in one tiled window, driven by one CLI. Beta for Apple Silicon Mac."
 >
   <header class="hero wrap" aria-labelledby="hero-title">
-    <h1 id="hero-title"><span>The last</span><span class="accent">app you'll</span><span>ever need.</span></h1>
+    <h1 id="hero-title"><span>Run your agents in one window.</span> <span class="accent">See which one needs you.</span></h1>
     <div class="hero-bottom">
-      <p class="lead">Plexi is an agent operating system for developers who work with coding agents. Your terminals, your agents and the plugins they build share one tiled window, and one CLI drives all of it.</p>
+      <p class="lead">Plexi is an agent operating system for the Mac. Terminals, coding agents and small local tools sit side by side in one tiled window, and one CLI drives all of it.</p>
       <div class="hero-actions">
         <a class="btn lg" href="/download">Download for Mac <Arrow dir="down" /></a>
-        <a class="link-arrow" href="/product">Take the tour <Arrow /></a>
+        <a class="link-arrow" href="/product">See how it works <Arrow /></a>
       </div>
     </div>
-    <p class="platform-note">Beta {release.beta.version} for Apple Silicon. Windows and Linux are coming soon.</p>
+    <p class="platform-note">Apple Silicon. Beta {release.beta.version}. Windows and Linux are coming soon.</p>
   </header>
 
   <div class="wrap hero-figure"><WindowDiagram /></div>
@@ -41,7 +41,7 @@ import { release } from '../lib/release';
       </article>
       <article>
         <h3 class="title">Plugins your agent can write.</h3>
-        <p>A plugin is a small Python package that draws a view in a pane. Scaffold one with <code class="inline">plexi plugin init</code>. It runs sandboxed in WebAssembly and gets a capability only after you approve it.</p>
+        <p>A plugin is a small Python package that draws a view in a pane. Scaffold one with <code class="inline">plexi plugin init</code>. It runs sandboxed in WebAssembly. Listing a capability in its manifest is a request, not a grant.</p>
         <a class="link-arrow" href="/plugins">How plugins and views work <Arrow /></a>
       </article>
     </div>
@@ -107,9 +107,7 @@ import { release } from '../lib/release';
 
 <style>
   .hero { padding-top: clamp(40px, 5vw, 82px); padding-bottom: 28px; }
-  .hero::before { content: ''; position: absolute; right: 6%; top: 5%; width: min(40vw, 590px); aspect-ratio: 1; border: 1px solid var(--border); transform: rotate(14deg); pointer-events: none; }
-  .hero h1 { position: relative; padding: clamp(28px, 4vw, 56px) 0 clamp(36px, 4vw, 52px); font: 900 clamp(3.1rem, 12.3vw, 12.5rem)/.82 var(--display); letter-spacing: -.04em; text-transform: uppercase; }
-  .hero h1 span { display: block; }
+  .hero h1 { padding: clamp(20px, 3vw, 44px) 0 clamp(32px, 4vw, 52px); font: 900 clamp(2.5rem, 7.4vw, 7.25rem)/.88 var(--display); letter-spacing: -.04em; text-transform: uppercase; max-width: 15ch; }
   .hero h1 .accent { color: var(--accent-light); }
   .hero-bottom { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 40px; border-top: 1px solid var(--border); padding-top: 24px; }
   .hero-bottom .lead { max-width: 46ch; font-weight: 600; }
@@ -121,7 +119,7 @@ import { release } from '../lib/release';
 
   .sticky-head { display: grid; gap: 28px; justify-items: start; }
   @media (min-width: 861px) { .sticky-head { position: sticky; top: calc(var(--nav-h) + 40px); } }
-  .h2 { max-width: 11ch; }
+  .h2 { max-width: 14ch; }
 
   .rows article { padding: 30px 0 34px; border-top: 1px solid var(--border); }
   .rows article:last-child { border-bottom: 1px solid var(--border); }
@@ -130,7 +128,7 @@ import { release } from '../lib/release';
   .rows kbd { margin-inline: 1px; }
 
   .statement { background: var(--accent-light); color: var(--bg); border-top: 0; }
-  .statement .display { font-size: clamp(44px, 9.6vw, 156px); }
+  .statement .display { font-size: clamp(2.5rem, 8.4vw, 8.5rem); }
   .statement-bottom { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(28px, 6vw, 96px); align-items: start; margin-top: clamp(36px, 5vw, 64px); padding-top: 28px; border-top: 1px solid currentColor; }
   .statement-bottom > * { min-width: 0; }
   .statement-bottom p { font-size: 20px; line-height: 1.45; max-width: 40ch; margin-bottom: 20px; }
@@ -149,7 +147,6 @@ import { release } from '../lib/release';
   @media (max-width: 950px) { .hero-bottom { grid-template-columns: 1fr; gap: 26px; } }
   @media (max-width: 860px) { .statement-bottom { grid-template-columns: minmax(0, 1fr); } }
   @media (max-width: 700px) {
-    .hero::before { width: 80vw; right: -25%; }
     .statement-bottom p { font-size: 18px; }
   }
 </style>

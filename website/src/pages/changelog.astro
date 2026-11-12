@@ -1,0 +1,81 @@
+---
+import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import Arrow from '../components/Arrow.astro';
+import { changelog } from '../lib/changelog';
+import { release } from '../lib/release';
+
+const { versions, footnote } = changelog;
+const RECENT = 12;
+const recent = versions.slice(0, RECENT);
+const older = versions.slice(RECENT);
+const prUrl = (n: number) => `${release.repo}/pull/${n}`;
+---
+<Layout title="Changelog | Plexi" description="What changed in each Plexi version, newest first. Generated from the commit history.">
+  <PageHead title="Changelog." lede="What changed in each version, newest first. Generated from the commit history, so the entries read like commits.">
+    <a class="link-arrow" href={release.releases}>Releases on GitHub <Arrow dir="ne" /></a>
+  </PageHead>
+
+  <div class="wrap log">
+    {recent.map(v => (
+      <article class="version" id={`v${v.version}`} aria-labelledby={`v${v.version}-title`}>
+        <header>
+          <h2 id={`v${v.version}-title`}><a href={`#v${v.version}`}>{v.version}</a></h2>
+          <time datetime={v.date}>{v.date}</time>
+        </header>
+        <div>
+          {v.groups.map(g => (
+            <>
+              {v.groups.length > 1 && <h3>{g.name}</h3>}
+              <ul>{g.items.map(item => <li>{item.text}{item.pr && <> <a href={prUrl(item.pr)}>#{item.pr}</a></>}</li>)}</ul>
+            </>
+          ))}
+        </div>
+      </article>
+    ))}
+
+    {older.length > 0 && (
+      <details class="older">
+        <summary>Older versions, {older[0].version} back to {older[older.length - 1].version}</summary>
+        {older.map(v => (
+          <article class="version" id={`v${v.version}`}>
+            <header><h2><a href={`#v${v.version}`}>{v.version}</a></h2><time datetime={v.date}>{v.date}</time></header>
+            <div>{v.groups.map(g => <ul>{g.items.map(item => <li>{item.text}{item.pr && <> <a href={prUrl(item.pr)}>#{item.pr}</a></>}</li>)}</ul>)}</div>
+          </article>
+        ))}
+      </details>
+    )}
+    {footnote && <p class="footnote">{footnote}</p>}
+  </div>
+</Layout>
+
+<script>
+  // A link to an older version opens the collapsed list so the anchor is reachable.
+  const openTarget = () => {
+    const id = decodeURIComponent(location.hash.slice(1));
+    const target = id ? document.getElementById(id) : null;
+    const details = target?.closest('details');
+    if (details && !details.open) { details.open = true; target?.scrollIntoView(); }
+  };
+  openTarget();
+  window.addEventListener('hashchange', openTarget);
+</script>
+
+<style>
+  .log { padding-block: clamp(32px, 4vw, 64px) var(--space-section); }
+  .version { display: grid; grid-template-columns: minmax(140px, 240px) minmax(0, 1fr); gap: 12px 40px; padding: 32px 0; border-bottom: 1px solid var(--border); scroll-margin-top: calc(var(--nav-h) + 16px); }
+  .version header { align-self: start; }
+  @media (min-width: 761px) { .version header { position: sticky; top: calc(var(--nav-h) + 24px); } }
+  .version h2 { font: 900 clamp(28px, 3vw, 40px)/1 var(--display); letter-spacing: -.03em; }
+  .version h2 a:hover { color: var(--accent-light); }
+  .version time { display: block; margin-top: 8px; font: 13px/1.4 var(--mono); color: var(--fg-3); }
+  .version h3 { font: 700 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-2); margin: 16px 0 8px; }
+  .version ul { list-style: none; max-width: 86ch; }
+  .version li { padding: 7px 0; color: var(--fg-2); font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+  .version li a { font: 13px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .version li a:hover { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
+  .older summary { cursor: pointer; padding: 24px 0; font-weight: 700; border-bottom: 1px solid var(--border); }
+  .older summary:hover { color: var(--accent-light); }
+  .footnote { margin-top: 28px; color: var(--fg-3); font-size: 14px; max-width: 78ch; }
+  @media (max-width: 760px) { .version { grid-template-columns: minmax(0, 1fr); } }
+</style>
