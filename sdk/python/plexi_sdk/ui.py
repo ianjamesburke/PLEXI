@@ -187,7 +187,14 @@ def _validate_component_list(items: Any, container_name: str) -> None:
 
 
 class Column(Component):
-    """Vertical stack of child components."""
+    """Vertical stack of child components.
+
+    ``align`` places children across the column: ``"start"``, ``"center"`` or
+    ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+    child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+    ``child`` vertically and a single grow spacer pins what follows it to the
+    bottom.
+    """
 
     def __init__(
         self,
@@ -225,7 +232,13 @@ class Column(Component):
 
 
 class HStack(Component):
-    """Horizontal stack of child components (`Row` alias)."""
+    """Horizontal stack of child components (`Row` alias).
+
+    ``align`` places the children along the row: ``"start"`` (left),
+    ``"center"`` or ``"end"`` (right). Children are always centered vertically
+    on the row. A ``Text`` child too long for the row wraps in the width its
+    later siblings leave.
+    """
 
     def __init__(
         self,
@@ -546,7 +559,11 @@ class Text(Component):
 
 @dataclass
 class Spacer(Component):
-    """Fixed or flex gap. ``grow=True`` expands to consume remaining space."""
+    """Fixed or flex gap.
+
+    ``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+    height with every other grow spacer in it.
+    """
 
     size: float = SPACE_MD
     grow: bool = False
@@ -644,7 +661,12 @@ class Button(Component):
 
 
 class Actions(Component):
-    """Horizontal row of ``Button`` components (`ActionBar` alias)."""
+    """Horizontal row of ``Button`` components (`ActionBar` alias).
+
+    ``align`` places the buttons along the row: ``"start"``, ``"center"`` or
+    ``"end"``. Buttons that do not fit the pane width wrap onto further lines
+    as whole buttons; a label never breaks inside a word.
+    """
 
     def __init__(
         self,

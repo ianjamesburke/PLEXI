@@ -822,6 +822,12 @@ Column(children: list[Component] | None = None, gap: float | None = None, paddin
 
 Vertical stack of child components.
 
+``align`` places children across the column: ``"start"``, ``"center"`` or
+``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+``child`` vertically and a single grow spacer pins what follows it to the
+bottom.
+
 ### `HStack`
 
 ```python
@@ -829,6 +835,11 @@ HStack(children: list[Component] | None = None, gap: float | None = None, align:
 ```
 
 Horizontal stack of child components (`Row` alias).
+
+``align`` places the children along the row: ``"start"`` (left),
+``"center"`` or ``"end"`` (right). Children are always centered vertically
+on the row. A ``Text`` child too long for the row wraps in the width its
+later siblings leave.
 
 ### `Card`
 
@@ -900,7 +911,10 @@ Declarative text primitive with font size, styling, color, truncation, and align
 Spacer(size: float = SPACE_MD, grow: bool = False, flex: bool = False)
 ```
 
-Fixed or flex gap. ``grow=True`` expands to consume remaining space.
+Fixed or flex gap.
+
+``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+height with every other grow spacer in it.
 
 ### `Divider`
 
@@ -941,6 +955,10 @@ Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None
 ```
 
 Horizontal row of ``Button`` components (`ActionBar` alias).
+
+``align`` places the buttons along the row: ``"start"``, ``"center"`` or
+``"end"``. Buttons that do not fit the pane width wrap onto further lines
+as whole buttons; a label never breaks inside a word.
 
 ### `TextInput`
 

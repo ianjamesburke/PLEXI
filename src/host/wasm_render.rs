@@ -13,7 +13,7 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 
 use super::wasm_view::bindings::plexi::platform::types::{
-    CanvasCommand, FooterKeysNode, PinnedEdge,
+    CanvasCommand, FooterKeysNode, PinnedEdge, RowNode, TextNode,
 };
 use super::wasm_view::{
     Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree,
@@ -622,12 +622,69 @@ fn column_bottom_pin(nodes: &[IndexedNode], child_id: u32) -> Option<(u32, &Foot
     }
 }
 
-/// Index of the first child that is a grow `Space` node — the "push everything
-/// after me to the bottom" marker `Spacer(grow=True)` compiles to.
-fn grow_spacer_index(nodes: &[IndexedNode], children: &[u32]) -> Option<usize> {
-    children.iter().position(
-        |id| matches!(find_node(nodes, *id).map(|n| &n.data), Some(UiNodeData::Space(s)) if s.grow),
-    )
+/// Indices of the children that are grow `Space` nodes, the flex gaps
+/// `Spacer(grow=True)` compiles to.
+fn grow_spacer_indices(nodes: &[IndexedNode], children: &[u32]) -> Vec<usize> {
+    children
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| {
+            matches!(find_node(nodes, **id).map(|n| &n.data), Some(UiNodeData::Space(s)) if s.grow)
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// One info line the first time a layout rule applies at this place in the
+/// tree, so the log shows which rule shaped a pane without a line per frame.
+/// Measuring passes stay silent: they repeat the pass that paints.
+fn trace_layout_once(ui: &egui::Ui, rule: &'static str, detail: impl FnOnce() -> String) {
+    if ui.is_sizing_pass() {
+        return;
+    }
+    let seen_id = ui.id().with(("plexi_layout_trace", rule));
+    let seen = ui.ctx().memory_mut(|m| {
+        let seen = m.data.get_temp::<bool>(seen_id).unwrap_or(false);
+        m.data.insert_temp(seen_id, true);
+        seen
+    });
+    if !seen {
+        log::info!("wasm_render: {rule}: {}", detail());
+    }
+}
+
+/// Distance to shift a row's content along the row for its `align`.
+fn row_lead(align: Alignment, available: f32, content: f32) -> f32 {
+    if !available.is_finite() {
+        return 0.0;
+    }
+    let free = (available - content).max(0.0);
+    match align {
+        Alignment::Start | Alignment::Stretch => 0.0,
+        Alignment::Center => free / 2.0,
+        Alignment::End => free,
+    }
+}
+
+/// Greedy line breaking for a row that wraps whole children (stint 1333):
+/// each line takes children until the next one, plus the gap before it, would
+/// pass `available`. A child wider than the row still gets a line of its own.
+fn pack_row_lines(widths: &[f32], gap: f32, available: f32) -> Vec<std::ops::Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut used = 0.0;
+    for (idx, width) in widths.iter().enumerate() {
+        if idx > start && used + gap + width > available {
+            lines.push(start..idx);
+            start = idx;
+            used = 0.0;
+        }
+        used += if idx > start { gap + width } else { *width };
+    }
+    if start < widths.len() {
+        lines.push(start..widths.len());
+    }
+    lines
 }
 
 const KEYPAD_BUTTON_W: f32 = 64.0;
@@ -730,6 +787,17 @@ fn is_nested_card(nodes: &[IndexedNode], card_id: u32) -> bool {
     })
 }
 
+/// Width a plugin button needs to paint `label` on one line. `KitButton`
+/// frames carry a 1px stroke on each side that `natural_width` leaves out, and
+/// a wrapping label given exactly `natural_width` breaks its last letter off.
+fn button_one_line_width(ui: &egui::Ui, label: &str, min_size: egui::Vec2, colors: &Colors) -> f32 {
+    const FRAME_STROKE: f32 = 1.0;
+    crate::ui::button::KitButton::new(label, colors)
+        .min_size(min_size)
+        .natural_width(ui)
+        + 2.0 * FRAME_STROKE
+}
+
 fn render_button_node(
     ui: &mut egui::Ui,
     id: u32,
@@ -750,28 +818,52 @@ fn render_button_node(
         ButtonStyle::Ghost => ButtonKind::Ghost,
     };
     let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
-    let response = ui.add_enabled(
-        !b.disabled,
-        KitButton::new(&b.label, colors)
-            .kind(kind)
-            .min_size(min_size)
-            .wrap_mode(egui::TextWrapMode::Wrap),
-    );
+    let add_button = |ui: &mut egui::Ui| {
+        ui.add_enabled(
+            !b.disabled,
+            KitButton::new(&b.label, colors)
+                .kind(kind)
+                .min_size(min_size)
+                .wrap_mode(egui::TextWrapMode::Wrap),
+        )
+    };
+    // A label may wrap between words, never inside one (stint 1333): egui
+    // breaks a word that is wider than the space it is given, so a button
+    // squeezed by its row siblings painted one letter per line. Give the
+    // button the width of its longest word and let it overflow the row.
+    let available = ui.available_width();
+    let one_line_width = |label: &str| button_one_line_width(ui, label, min_size, colors);
+    let word_width = if one_line_width(&b.label) <= available {
+        0.0
+    } else {
+        b.label
+            .split_whitespace()
+            .map(one_line_width)
+            .fold(0.0, f32::max)
+    };
+    let response = if word_width > available {
+        ui.allocate_ui_with_layout(egui::vec2(word_width, min_size.y), *ui.layout(), add_button)
+            .inner
+    } else {
+        add_button(ui)
+    };
     if response.clicked() || synthetic_click {
         out.actions.push(b.on_click.clone());
     }
 }
 
-/// Lay out a column's children, honoring a grow spacer as a bottom-pin split
-/// (stint 0674).
+/// Lay out a column's children, sharing the leftover height between its grow
+/// spacers (stints 0674 and 1327).
 ///
-/// A grow `Space` renders as `ui.add_space(available_height())`, which consumes
-/// every remaining pixel — so before this split, *every* child declared after a
-/// `Spacer(grow=True)` was pushed past the clip edge and silently vanished (the
-/// todo plugin's Add/Toggle/Delete controls). Splitting at the spacer and running
-/// the tail bottom-up puts those children flush against the bottom with no
-/// measurement pass, and they can never overlap the head: the two layouts grow
-/// toward each other and stop.
+/// A grow `Space` is a flex gap, not a widget. Rendered in flow it would be
+/// `ui.add_space(available_height())`, which consumes every remaining pixel and
+/// pushes each later child past the clip edge. The column is split at its grow
+/// spacers instead: every span after the first is measured with a sizing pass,
+/// the height left over is divided equally between the spacers, and each span
+/// is rendered top-down in its own rect. The last span is anchored to the
+/// bottom edge, so one spacer is a bottom pin and `[spacer, child, spacer]`
+/// centers the child. When the spans are taller than the column the spacers
+/// collapse to zero and the last span still holds the bottom edge.
 fn render_column_children(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
@@ -788,7 +880,8 @@ fn render_column_children(
         }
     };
 
-    let Some(split) = grow_spacer_index(env.nodes, children) else {
+    let spacers = grow_spacer_indices(env.nodes, children);
+    let Some(&first_spacer) = spacers.first() else {
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
             render_span(ui, children, out)
         });
@@ -798,44 +891,327 @@ fn render_column_children(
     let stack_size = egui::vec2(ui.available_width(), ui.available_height());
     let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
 
+    let head = &children[..first_spacer];
     ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
         ui.set_clip_rect(stack_rect);
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
-            render_span(ui, &children[..split], out)
+            render_span(ui, head, out)
         });
     });
 
-    let tail = &children[split + 1..];
-    if tail.is_empty() {
+    // The spans that follow each grow spacer.
+    let spans: Vec<&[u32]> = spacers
+        .iter()
+        .enumerate()
+        .map(|(n, &at)| {
+            let end = spacers.get(n + 1).copied().unwrap_or(children.len());
+            &children[at + 1..end]
+        })
+        .collect();
+    if spans.iter().all(|span| span.is_empty()) {
         return;
     }
 
-    // Measure the tail, then render it top-down in a bottom-anchored rect.
-    // A `bottom_up` layout cannot be used directly: a `Row` child is an
-    // `ui.horizontal`, whose own ui grows *downward* from wherever bottom-up
-    // seated it, so the row overflows the column's bottom edge and its lower
-    // half is clipped away. The sizing pass lays the tail out without painting,
-    // which gives an exact height with no frame of lag.
-    let mut sizing = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(stack_rect)
-            .sizing_pass()
-            .invisible()
-            .layout(egui::Layout::top_down(cross_align(align))),
-    );
-    let mut sizing_out = RenderResult::default();
-    render_span(&mut sizing, tail, &mut sizing_out);
-    let tail_h = sizing.min_rect().height().min(stack_rect.height());
+    // Measure, then render top-down in a placed rect. A `bottom_up` layout
+    // cannot be used directly: a `Row` child is an `ui.horizontal`, whose own
+    // ui grows *downward* from wherever bottom-up seated it, so the row
+    // overflows the column's bottom edge and its lower half is clipped away.
+    // The sizing pass lays a span out without painting, which gives an exact
+    // height with no frame of lag.
+    let measure = |ui: &mut egui::Ui, span: &[u32]| {
+        if span.is_empty() {
+            return 0.0;
+        }
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(stack_rect)
+                .sizing_pass()
+                .invisible()
+                .layout(egui::Layout::top_down(cross_align(align))),
+        );
+        let mut sizing_out = RenderResult::default();
+        render_span(&mut sizing, span, &mut sizing_out);
+        sizing.min_rect().height()
+    };
+    // With one spacer the tail is anchored to the bottom edge and the head's
+    // height is never needed, so the head is not laid out a second time.
+    let head_h = if spans.len() > 1 {
+        measure(ui, head)
+    } else {
+        0.0
+    };
+    let heights: Vec<f32> = spans.iter().map(|span| measure(ui, span)).collect();
+    let leftover = stack_rect.height() - head_h - heights.iter().sum::<f32>();
+    let share = (leftover / spans.len() as f32).max(0.0);
+    if spans.len() > 1 {
+        trace_layout_once(
+            ui,
+            "column shares leftover height between grow spacers",
+            || {
+                format!(
+                    "spacers={} column_h={:.0} leftover={leftover:.0} share={share:.0}",
+                    spans.len(),
+                    stack_rect.height()
+                )
+            },
+        );
+    }
 
-    let tail_rect = egui::Rect::from_min_max(
-        egui::pos2(stack_rect.min.x, stack_rect.max.y - tail_h),
-        stack_rect.max,
-    );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(tail_rect), |ui| {
-        ui.set_clip_rect(tail_rect);
-        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
-            render_span(ui, tail, out)
+    let mut cursor = stack_rect.min.y + head_h;
+    for (n, (span, &measured)) in spans.iter().zip(&heights).enumerate() {
+        cursor += share;
+        let top = cursor;
+        cursor += measured;
+        if span.is_empty() {
+            continue;
+        }
+        let height = measured.min(stack_rect.height());
+        let top = if n + 1 == spans.len() {
+            stack_rect.max.y - height
+        } else {
+            top
+        };
+        let span_rect = egui::Rect::from_min_max(
+            egui::pos2(stack_rect.min.x, top),
+            egui::pos2(stack_rect.max.x, top + height),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(span_rect), |ui| {
+            ui.set_clip_rect(span_rect.intersect(stack_rect));
+            ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+                render_span(ui, span, out)
+            });
         });
+    }
+}
+
+/// The styled text of a `Text` node. `text` is the node's own text, or one
+/// word of it when a caller measures how narrow the node can wrap.
+fn text_rich(
+    ui: &egui::Ui,
+    node: &IndexedNode,
+    t: &TextNode,
+    text: &str,
+    colors: &Colors,
+) -> RichText {
+    let default_color = TextRole::from_key(&node.key)
+        .map(|role| role.preferred(colors))
+        .or(ui.visuals().override_text_color)
+        .unwrap_or(colors.text_primary);
+    let mut rich = RichText::new(text)
+        .size(t.size.unwrap_or(style::TEXT_BODY))
+        .color(default_color);
+    if t.bold {
+        rich = rich.strong();
+    }
+    if let Some(c) = &t.color {
+        rich = rich.color(rgba(c));
+    }
+    rich
+}
+
+/// Wrap a row's `Text` child that would run past the row's edge (stint 1333).
+///
+/// A label in a horizontal layout never wraps, so a long `Banner` message was
+/// cut at the pane edge. The text takes the width left after the siblings that
+/// follow it and wraps there. Returns false, leaving the caller to render the
+/// node as usual, when the text already fits on one line or the width left is
+/// narrower than its longest word.
+#[allow(clippy::too_many_arguments)]
+fn render_row_text_wrapped(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    node: &IndexedNode,
+    t: &TextNode,
+    trailing: &[u32],
+    gap: f32,
+    out: &mut RenderResult,
+    depth: u32,
+) -> bool {
+    let available = ui.available_width();
+    if t.truncate || !available.is_finite() {
+        return false;
+    }
+    let one_line_width = |ui: &egui::Ui, text: &str| {
+        egui::WidgetText::from(text_rich(ui, node, t, text, env.colors))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::FontSelection::Default,
+            )
+            .size()
+            .x
+    };
+    if one_line_width(ui, &t.text) <= available {
+        return false;
+    }
+    let reserved = if trailing.is_empty() {
+        0.0
+    } else {
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .sizing_pass()
+                .invisible()
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        sizing.spacing_mut().item_spacing.x = gap;
+        let mut sizing_out = RenderResult::default();
+        for &sibling in trailing {
+            render_node(&mut sizing, env, sibling, &mut sizing_out, depth + 1);
+        }
+        sizing.min_rect().width() + gap
+    };
+    let wrap_width = available - reserved;
+    let longest_word = t
+        .text
+        .split_whitespace()
+        .map(|word| one_line_width(ui, word))
+        .fold(0.0, f32::max);
+    if wrap_width < longest_word {
+        return false;
+    }
+    trace_layout_once(ui, "row text wraps at the row edge", || {
+        format!(
+            "node={} wrap_width={wrap_width:.0} reserved={reserved:.0}",
+            node.id
+        )
+    });
+    let galley = egui::WidgetText::from(text_rich(ui, node, t, &t.text, env.colors)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        wrap_width,
+        egui::FontSelection::Default,
+    );
+    let authored_start = t.color.is_some().then(|| paint_len(ui));
+    ui.add(egui::Label::new(galley));
+    if let Some(start) = authored_start {
+        out.authored_paint.push(start..paint_len(ui));
+    }
+    true
+}
+
+/// Lay out a `Row` (stints 1327 and 1333).
+///
+/// `align` places the children along the row: start, center or end. Children
+/// stay vertically centered on the row. A row made only of buttons (`Actions`,
+/// `Select`, `Tabs`) wraps whole buttons onto further lines when they do not
+/// fit; keypad grids keep their fixed cells.
+fn render_row_node(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    id: u32,
+    r: &RowNode,
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    let nodes = env.nodes;
+    let grid_cols = row_parent_button_grid_cols(nodes, id);
+    let available = ui.available_width();
+
+    if grid_cols.is_none() && is_button_row(nodes, id).is_some() {
+        let widths: Vec<f32> = r
+            .children
+            .iter()
+            .map(|child| match find_node(nodes, *child).map(|n| &n.data) {
+                Some(UiNodeData::Button(b)) => button_one_line_width(
+                    ui,
+                    &b.label,
+                    egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
+                    env.colors,
+                ),
+                _ => 0.0,
+            })
+            .collect();
+        let lines = pack_row_lines(&widths, r.gap, available);
+        if lines.len() > 1 {
+            trace_layout_once(ui, "button row wraps whole buttons", || {
+                format!(
+                    "row={id} buttons={} lines={} available={available:.0}",
+                    widths.len(),
+                    lines.len()
+                )
+            });
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = r.gap;
+                for line in lines {
+                    let line_width = widths[line.clone()].iter().sum::<f32>()
+                        + r.gap * line.len().saturating_sub(1) as f32;
+                    let lead = row_lead(r.align, available, line_width);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = r.gap;
+                        if lead > 0.0 {
+                            ui.add_space(lead);
+                        }
+                        for child in &r.children[line] {
+                            render_node(ui, env, *child, out, depth + 1);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+    }
+
+    let render_children = |ui: &mut egui::Ui, out: &mut RenderResult| {
+        ui.spacing_mut().item_spacing.x = r.gap;
+        for (idx, child) in r.children.iter().enumerate() {
+            let child_node = find_node(nodes, *child);
+            if let Some(cols) = grid_cols {
+                if let Some(UiNodeData::Button(b)) = child_node.map(|n| &n.data) {
+                    let span = if idx == 0 && r.children.len() < cols {
+                        cols - r.children.len() + 1
+                    } else {
+                        1
+                    };
+                    let btn_w =
+                        span as f32 * KEYPAD_BUTTON_W + (span.saturating_sub(1)) as f32 * r.gap;
+                    render_button_node(
+                        ui,
+                        *child,
+                        b,
+                        egui::vec2(btn_w, KEYPAD_BUTTON_H),
+                        env.colors,
+                        out,
+                        env.pending_click,
+                    );
+                    continue;
+                }
+            }
+            if let Some(text_node) = child_node {
+                if let UiNodeData::Text(t) = &text_node.data {
+                    let trailing = &r.children[idx + 1..];
+                    if render_row_text_wrapped(ui, env, text_node, t, trailing, r.gap, out, depth) {
+                        continue;
+                    }
+                }
+            }
+            render_node(ui, env, *child, out, depth + 1);
+        }
+    };
+
+    let lead = match r.align {
+        Alignment::Start | Alignment::Stretch => 0.0,
+        Alignment::Center | Alignment::End => {
+            let mut sizing = ui.new_child(
+                egui::UiBuilder::new()
+                    .sizing_pass()
+                    .invisible()
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let mut sizing_out = RenderResult::default();
+            render_children(&mut sizing, &mut sizing_out);
+            let lead = row_lead(r.align, available, sizing.min_rect().width());
+            trace_layout_once(ui, "row align places children along the row", || {
+                format!("row={id} align={:?} lead={lead:.0}", r.align)
+            });
+            lead
+        }
+    };
+    ui.horizontal(|ui| {
+        if lead > 0.0 {
+            ui.add_space(lead);
+        }
+        render_children(ui, out);
     });
 }
 
@@ -872,19 +1248,7 @@ fn render_node(
         UiNodeData::Empty => {}
 
         UiNodeData::Text(t) => {
-            let default_color = TextRole::from_key(&node.key)
-                .map(|role| role.preferred(colors))
-                .or(ui.visuals().override_text_color)
-                .unwrap_or(colors.text_primary);
-            let mut rich = RichText::new(&t.text)
-                .size(t.size.unwrap_or(style::TEXT_BODY))
-                .color(default_color);
-            if t.bold {
-                rich = rich.strong();
-            }
-            if let Some(c) = &t.color {
-                rich = rich.color(rgba(c));
-            }
+            let rich = text_rich(ui, node, t, &t.text, colors);
             let add_label = |ui: &mut egui::Ui| {
                 let mut label = egui::Label::new(rich);
                 if t.truncate {
@@ -1018,38 +1382,7 @@ fn render_node(
             ui.ctx().memory_mut(|m| m.data.insert_temp(state_id, state));
         }
 
-        UiNodeData::Row(r) => {
-            let grid_cols = row_parent_button_grid_cols(nodes, id);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = r.gap;
-                for (idx, child) in r.children.iter().enumerate() {
-                    if let Some(cols) = grid_cols {
-                        if let Some(UiNodeData::Button(b)) =
-                            find_node(nodes, *child).map(|n| &n.data)
-                        {
-                            let span = if idx == 0 && r.children.len() < cols {
-                                cols - r.children.len() + 1
-                            } else {
-                                1
-                            };
-                            let btn_w = span as f32 * KEYPAD_BUTTON_W
-                                + (span.saturating_sub(1)) as f32 * r.gap;
-                            render_button_node(
-                                ui,
-                                *child,
-                                b,
-                                egui::vec2(btn_w, KEYPAD_BUTTON_H),
-                                colors,
-                                out,
-                                pending_click,
-                            );
-                            continue;
-                        }
-                    }
-                    render_node(ui, env, *child, out, depth + 1);
-                }
-            });
-        }
+        UiNodeData::Row(r) => render_row_node(ui, env, id, r, out, depth),
 
         UiNodeData::Column(c) => {
             if let Some(table) = parse_table_node_key(&node.key) {
@@ -1382,6 +1715,8 @@ fn render_node(
             ui.separator();
         }
 
+        // A grow `Space` directly inside a `Column` never reaches this arm:
+        // `render_column_children` treats it as a flex gap.
         UiNodeData::Space(s) => {
             let amount = if s.grow {
                 ui.available_height().max(0.0)
@@ -2022,6 +2357,15 @@ mod tests {
     /// `pane`-sized screen (the host panel is `Frame::NONE`, so shapes are
     /// exactly what the tree render draws).
     fn painted_shapes(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::Rect> {
+        paint(tree, pane)
+            .into_iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .filter(|r| r.is_finite() && r.is_positive())
+            .collect()
+    }
+
+    /// One frame of `tree` in a `pane`-sized screen, as clipped shapes.
+    fn paint(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::epaint::ClippedShape> {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(
@@ -2038,12 +2382,7 @@ mod tests {
                     let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None, 0);
                 });
         });
-        output
-            .shapes
-            .into_iter()
-            .map(|clipped| clipped.shape.visual_bounding_rect())
-            .filter(|r| r.is_finite() && r.is_positive())
-            .collect()
+        output.shapes
     }
 
     /// Split painted shapes into the pane-filling background surface (any shape
@@ -2448,6 +2787,562 @@ mod tests {
              body ends at {} with the footer at {footer_top}",
             body.max.y
         );
+    }
+
+    // ── Stints 1327 and 1333: column flex, row align, narrow-pane rows ──────
+
+    /// One painted text run: its content, the rows it was laid out in, where
+    /// it landed and the clip it was painted under.
+    struct PaintedText {
+        text: String,
+        rows: Vec<String>,
+        rect: egui::Rect,
+        clip: egui::Rect,
+    }
+
+    impl PaintedText {
+        /// Fully inside both its clip rect and the pane.
+        fn visible_in(&self, pane: egui::Vec2) -> bool {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, pane);
+            self.clip
+                .intersect(screen)
+                .expand(0.5)
+                .contains_rect(self.rect)
+        }
+
+        /// Every laid-out row holds only whole words of the source text.
+        fn breaks_only_between_words(&self) -> bool {
+            let words: Vec<&str> = self.text.split_whitespace().collect();
+            self.rows
+                .iter()
+                .all(|row| row.split_whitespace().all(|w| words.contains(&w)))
+        }
+    }
+
+    fn painted_texts(tree: &UiTree, pane: egui::Vec2) -> Vec<PaintedText> {
+        fn collect(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<PaintedText>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, out);
+                    }
+                }
+                egui::Shape::Text(text) if !text.galley.job.text.is_empty() => {
+                    out.push(PaintedText {
+                        text: text.galley.job.text.clone(),
+                        rows: text.galley.rows.iter().map(|r| r.row.text()).collect(),
+                        rect: text.galley.rect.translate(text.pos.to_vec2()),
+                        clip,
+                    });
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in paint(tree, pane) {
+            collect(&clipped.shape, clipped.clip_rect, &mut out);
+        }
+        out
+    }
+
+    fn painted_text<'a>(texts: &'a [PaintedText], text: &str) -> &'a PaintedText {
+        texts.iter().find(|t| t.text == text).unwrap_or_else(|| {
+            panic!(
+                "{text:?} was not painted; painted {:?}",
+                texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    fn text_node(id: u32, text: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Text(TextNode {
+                text: text.to_string(),
+                size: None,
+                bold: false,
+                color: None,
+                truncate: false,
+                align: Alignment::Start,
+            }),
+        )
+    }
+
+    fn button_node(id: u32, label: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Button(ButtonNode {
+                label: label.to_string(),
+                on_click: label.to_string(),
+                style: ButtonStyle::Secondary,
+                disabled: false,
+            }),
+        )
+    }
+
+    fn grow_node(id: u32) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Space(SpaceNode {
+                size: 0.0,
+                grow: true,
+            }),
+        )
+    }
+
+    fn column_node(id: u32, children: Vec<u32>) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Column(ColumnNode {
+                children,
+                gap: style::SPACE_MD,
+                align: Alignment::Start,
+                grow: true,
+            }),
+        )
+    }
+
+    fn row_node(id: u32, children: Vec<u32>, gap: f32, align: Alignment) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Row(RowNode {
+                children,
+                gap,
+                align,
+                grow: false,
+            }),
+        )
+    }
+
+    fn badge_node(id: u32, text: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Badge(
+                crate::host::wasm_view::bindings::plexi::platform::types::BadgeNode {
+                    text: text.to_string(),
+                    color: BadgeColor::Warning,
+                },
+            ),
+        )
+    }
+
+    /// The sizes `plexi plugin check` renders by default.
+    const CHECK_SIZES: [egui::Vec2; 3] = [
+        egui::vec2(320.0, 240.0),
+        egui::vec2(800.0, 600.0),
+        egui::vec2(300.0, 900.0),
+    ];
+
+    /// `Column([SurfaceHeader, Spacer(grow), Text, Spacer(grow), FooterKeys])`.
+    fn centered_tree() -> UiTree {
+        UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 2, 3, 4, 5]),
+                node(
+                    1,
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
+                        title: "Timer".to_string(),
+                        subtitle: "running".to_string(),
+                    }),
+                ),
+                grow_node(2),
+                text_node(3, "CENTER"),
+                grow_node(4),
+                node(
+                    5,
+                    UiNodeData::FooterKeys(FooterKeysNode {
+                        entries: vec![FooterKeyEntry {
+                            keys: vec!["s".to_string()],
+                            description: "start".to_string(),
+                        }],
+                        divider: true,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    /// Stint 1327: only the first grow `Space` split a column, so a second one
+    /// landed in the bottom-pinned tail and the child between them sat at the
+    /// top. Leftover height is shared by every grow spacer, which centres it.
+    #[test]
+    fn column_two_grow_spacers_center_the_child_between_them() {
+        let tree = centered_tree();
+        for pane in CHECK_SIZES {
+            let shapes = painted_shapes(&tree, pane);
+            let full_width = |r: &egui::Rect| r.min.x <= 0.5 && r.max.x >= pane.x - 0.5;
+            let header_bottom = shapes
+                .iter()
+                .filter(|r| full_width(r) && r.min.y <= 0.5 && r.max.y < pane.y / 2.0)
+                .map(|r| r.max.y)
+                .fold(0.0, f32::max);
+            let footer_top = shapes
+                .iter()
+                .filter(|r| full_width(r) && r.min.y > pane.y / 2.0 && r.max.y < pane.y + 0.5)
+                .map(|r| r.min.y)
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                header_bottom > 0.0 && footer_top.is_finite(),
+                "{pane:?}: header and footer bands should both paint; painted {shapes:?}"
+            );
+            let texts = painted_texts(&tree, pane);
+            let text = painted_text(&texts, "CENTER");
+            let body_center = (header_bottom + footer_top) / 2.0;
+            assert!(
+                (text.rect.center().y - body_center).abs() <= 2.0,
+                "{pane:?}: text centre y {} should be within 2px of the body centre {body_center} \
+                 (body {header_bottom}..{footer_top})",
+                text.rect.center().y
+            );
+        }
+    }
+
+    /// Stint 1327: with two grow spacers the tail was measured at the full
+    /// stack height, laid out from the top over the head, and everything after
+    /// the second spacer was pushed past the clip edge.
+    #[test]
+    fn column_children_after_a_second_grow_spacer_are_painted_without_overlap() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 2, 3, 4, 5]),
+                text_node(1, "HEAD"),
+                grow_node(2),
+                text_node(3, "MIDDLE"),
+                grow_node(4),
+                row_node(5, vec![6, 7], style::SPACE_SM, Alignment::Start),
+                button_node(6, "Add item"),
+                button_node(7, "Delete"),
+            ],
+        };
+        for pane in CHECK_SIZES {
+            let texts = painted_texts(&tree, pane);
+            let head = painted_text(&texts, "HEAD");
+            let middle = painted_text(&texts, "MIDDLE");
+            let add = painted_text(&texts, "Add item");
+            let delete = painted_text(&texts, "Delete");
+            for t in [head, middle, add, delete] {
+                assert!(
+                    t.visible_in(pane),
+                    "{pane:?}: {:?} at {:?} is outside its clip {:?}",
+                    t.text,
+                    t.rect,
+                    t.clip
+                );
+            }
+            assert!(
+                head.rect.max.y <= middle.rect.min.y && middle.rect.max.y <= add.rect.min.y,
+                "{pane:?}: head {:?}, middle {:?} and actions {:?} must stack without overlap",
+                head.rect,
+                middle.rect,
+                add.rect
+            );
+            let above = middle.rect.min.y - head.rect.max.y;
+            let below = add.rect.min.y - middle.rect.max.y;
+            assert!(
+                (above - below).abs() <= style::BUTTON_H_MD,
+                "{pane:?}: the two spacers should share the leftover height, got {above} and {below}"
+            );
+        }
+    }
+
+    /// Stint 1327: the Row arm never read `align`. It now places the row's
+    /// children along the row: start, center or end.
+    #[test]
+    fn row_align_places_children_along_the_row() {
+        let pane = egui::vec2(400.0, 200.0);
+        let label_rect = |align: Alignment| {
+            let tree = UiTree {
+                root: 0,
+                nodes: vec![
+                    row_node(0, vec![1, 2], style::SPACE_SM, align),
+                    button_node(1, "One"),
+                    button_node(2, "Two"),
+                ],
+            };
+            let texts = painted_texts(&tree, pane);
+            painted_text(&texts, "One")
+                .rect
+                .union(painted_text(&texts, "Two").rect)
+        };
+        let start = label_rect(Alignment::Start);
+        let center = label_rect(Alignment::Center);
+        let end = label_rect(Alignment::End);
+        assert!(
+            start.min.x < pane.x / 4.0,
+            "start keeps the row at the left edge, got {start:?}"
+        );
+        assert!(
+            (center.center().x - pane.x / 2.0).abs() <= 2.0,
+            "center puts the row's middle at the pane's middle, got {center:?}"
+        );
+        assert!(
+            end.max.x > pane.x * 0.75 && end.max.x <= pane.x - style::SPACE_XL + 0.5,
+            "end pushes the row to the right inset, got {end:?}"
+        );
+        assert!(
+            (start.width() - center.width()).abs() <= 0.5
+                && (start.width() - end.width()).abs() <= 0.5,
+            "alignment must move the row, not resize it: {start:?} {center:?} {end:?}"
+        );
+    }
+
+    fn button_row_tree(labels: &[&str], gap: f32) -> UiTree {
+        let ids: Vec<u32> = (2..2 + labels.len() as u32).collect();
+        let mut nodes = vec![
+            column_node(0, vec![1]),
+            row_node(1, ids.clone(), gap, Alignment::Start),
+        ];
+        for (id, label) in ids.iter().zip(labels) {
+            nodes.push(button_node(*id, label));
+        }
+        UiTree { root: 0, nodes }
+    }
+
+    /// Every label is painted whole, on one line, inside the pane; returns the
+    /// number of distinct lines the buttons landed on.
+    fn assert_whole_buttons(tree: &UiTree, labels: &[&str], pane: egui::Vec2) -> usize {
+        let texts = painted_texts(tree, pane);
+        let mut lines: Vec<i32> = Vec::new();
+        for label in labels {
+            let t = painted_text(&texts, label);
+            assert_eq!(
+                t.rows.len(),
+                1,
+                "{pane:?}: button label {label:?} wrapped into {:?}",
+                t.rows
+            );
+            assert!(
+                t.visible_in(pane),
+                "{pane:?}: button {label:?} at {:?} is cut off (clip {:?})",
+                t.rect,
+                t.clip
+            );
+            let y = t.rect.center().y.round() as i32;
+            if !lines.contains(&y) {
+                lines.push(y);
+            }
+        }
+        lines.len()
+    }
+
+    /// Stint 1333: a button row was one `ui.horizontal`, so in a narrow pane the
+    /// last button wrapped its label mid-word and later buttons were cut off.
+    #[test]
+    fn button_row_wraps_whole_buttons_in_a_narrow_pane() {
+        let labels = ["Start timer", "Pause", "Reset", "Add a lap", "Settings"];
+        let tree = button_row_tree(&labels, style::SPACE_SM);
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            let lines = assert_whole_buttons(&tree, &labels, pane);
+            assert!(
+                lines >= 2,
+                "{pane:?}: five buttons cannot fit one line, yet they landed on {lines}"
+            );
+        }
+        // Wide enough for one line: the row must not wrap.
+        let lines = assert_whole_buttons(&tree, &labels, egui::vec2(800.0, 600.0));
+        assert_eq!(lines, 1, "a row that fits stays on one line");
+    }
+
+    /// Stint 1333: a seven-option `Select` lost its last option at 320px.
+    #[test]
+    fn seven_option_select_shows_every_option_in_a_narrow_pane() {
+        let labels = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
+        let tree = button_row_tree(&labels, 4.0);
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            assert_whole_buttons(&tree, &labels, pane);
+        }
+    }
+
+    const BANNER_TEXT: &str =
+        "Sync paused: the remote copy changed while you were offline, review before saving";
+
+    fn banner_tree(dismissible: bool) -> UiTree {
+        let mut children = vec![2, 3];
+        let mut nodes = vec![badge_node(2, "warning"), text_node(3, BANNER_TEXT)];
+        if dismissible {
+            children.push(4);
+            nodes.push(button_node(4, "×"));
+        }
+        let mut all = vec![
+            column_node(0, vec![1]),
+            row_node(1, children, 8.0, Alignment::Start),
+        ];
+        all.append(&mut nodes);
+        UiTree {
+            root: 0,
+            nodes: all,
+        }
+    }
+
+    /// Stint 1333: a `Banner` is a row of badge, text and an optional dismiss
+    /// button; its text ran past the pane edge instead of wrapping.
+    #[test]
+    fn banner_text_wraps_inside_a_narrow_pane() {
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            for dismissible in [false, true] {
+                let texts = painted_texts(&banner_tree(dismissible), pane);
+                let text = painted_text(&texts, BANNER_TEXT);
+                assert!(
+                    text.visible_in(pane),
+                    "{pane:?} dismissible={dismissible}: banner text at {:?} is cut off (clip {:?})",
+                    text.rect,
+                    text.clip
+                );
+                assert!(
+                    text.rows.len() > 1 && text.breaks_only_between_words(),
+                    "{pane:?}: banner text should wrap between words, got rows {:?}",
+                    text.rows
+                );
+                if dismissible {
+                    let dismiss = painted_text(&texts, "×");
+                    assert!(
+                        dismiss.visible_in(pane),
+                        "{pane:?}: dismiss button at {:?} must stay in the pane",
+                        dismiss.rect
+                    );
+                    assert!(
+                        dismiss.rect.min.x >= text.rect.max.x,
+                        "{pane:?}: the text must leave room for the dismiss button"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A banner that fits is laid out exactly as before: one unwrapped line.
+    #[test]
+    fn banner_text_that_fits_stays_on_one_line() {
+        let texts = painted_texts(&banner_tree(true), egui::vec2(1200.0, 300.0));
+        assert_eq!(painted_text(&texts, BANNER_TEXT).rows.len(), 1);
+    }
+
+    /// Stint 1333: a button squeezed by its row siblings broke its label one
+    /// letter per line. A button is never narrower than its longest word.
+    #[test]
+    fn button_label_never_breaks_mid_word() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                row_node(0, vec![1, 2], style::SPACE_SM, Alignment::Start),
+                badge_node(1, "live"),
+                button_node(2, "Recalibrate sensors"),
+            ],
+        };
+        let texts = painted_texts(&tree, egui::vec2(130.0, 240.0));
+        let label = painted_text(&texts, "Recalibrate sensors");
+        assert!(
+            label.breaks_only_between_words(),
+            "label broke inside a word: {:?}",
+            label.rows
+        );
+    }
+
+    #[test]
+    fn pack_row_lines_breaks_before_the_child_that_does_not_fit() {
+        assert_eq!(pack_row_lines(&[40.0, 40.0, 40.0], 10.0, 200.0), vec![0..3]);
+        assert_eq!(
+            pack_row_lines(&[40.0, 40.0, 40.0], 10.0, 100.0),
+            vec![0..2, 2..3]
+        );
+        // A child wider than the row still gets a line of its own.
+        assert_eq!(
+            pack_row_lines(&[40.0, 300.0, 40.0], 10.0, 100.0),
+            vec![0..1, 1..2, 2..3]
+        );
+        assert_eq!(
+            pack_row_lines(&[40.0, 40.0], 10.0, f32::INFINITY),
+            vec![0..2]
+        );
+        assert!(pack_row_lines(&[], 10.0, 100.0).is_empty());
+    }
+
+    /// Visual evidence for stints 1327 and 1333 at the check matrix sizes: a
+    /// value centered between two grow spacers above a centered `Actions` row,
+    /// and a banner, a seven-option select and an action row in flow.
+    #[test]
+    fn screenshot_column_flex_and_narrow_rows() {
+        let labels = ["Start timer", "Pause", "Reset", "Add a lap", "Settings"];
+        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let header = |title: &str| {
+            node(
+                1,
+                UiNodeData::SurfaceHeader(SurfaceHeaderNode {
+                    title: title.to_string(),
+                    subtitle: "paused".to_string(),
+                }),
+            )
+        };
+        let footer = node(
+            9,
+            UiNodeData::FooterKeys(FooterKeysNode {
+                entries: vec![FooterKeyEntry {
+                    keys: vec!["s".to_string()],
+                    description: "start".to_string(),
+                }],
+                divider: true,
+            }),
+        );
+        let buttons = |first: u32, labels: &[&str]| -> Vec<IndexedNode> {
+            labels
+                .iter()
+                .enumerate()
+                .map(|(i, label)| button_node(first + i as u32, label))
+                .collect()
+        };
+
+        let mut flex = vec![
+            column_node(0, vec![1, 2, 3, 4, 5, 9]),
+            header("Sand timer"),
+            grow_node(2),
+            node(
+                3,
+                UiNodeData::Text(TextNode {
+                    text: "04:32".to_string(),
+                    size: Some(28.0),
+                    bold: true,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Center,
+                }),
+            ),
+            grow_node(4),
+            row_node(5, (30..35).collect(), style::SPACE_SM, Alignment::Center),
+            footer.clone(),
+        ];
+        flex.extend(buttons(30, &labels));
+
+        let mut rows = vec![
+            column_node(0, vec![1, 2, 3, 4, 9]),
+            header("Narrow rows"),
+            row_node(2, vec![10, 11, 12], 8.0, Alignment::Start),
+            row_node(3, (20..27).collect(), 4.0, Alignment::Start),
+            row_node(4, (30..35).collect(), style::SPACE_SM, Alignment::Start),
+            footer,
+            badge_node(10, "warning"),
+            text_node(11, BANNER_TEXT),
+            button_node(12, "×"),
+        ];
+        rows.extend(buttons(20, &days));
+        rows.extend(buttons(30, &labels));
+
+        for (name, nodes) in [("flex", flex), ("rows", rows)] {
+            let tree = UiTree { root: 0, nodes };
+            for pane in CHECK_SIZES {
+                let png = render_ui_tree_to_png(&tree, pane.x, pane.y, 2.0).expect("render tree");
+                let path = crate::ui_tests::evidence_png!(format!("_{name}_{}x{}", pane.x, pane.y));
+                std::fs::write(&path, png).expect("write screenshot for visual review");
+            }
+        }
     }
 
     /// Stint 0674: `autofocus` makes a field its pane's *default* text surface,
