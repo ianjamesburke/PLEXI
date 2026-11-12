@@ -407,7 +407,10 @@ pub struct PlexiApp {
     pub(crate) notes_picker_preview: Option<crate::overlays::notes_picker::NotePreview>,
     /// Last recoverable notes picker deletion.
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
-    pub(crate) notes_trash: Box<dyn crate::overlays::notes_picker::NotesTrash>,
+    pub(crate) notes_trash: std::sync::Arc<dyn crate::overlays::notes_picker::NotesTrash>,
+    /// Notes picker Cmd+C / Cmd+X still finishing off the UI thread. Drained
+    /// from `App::logic`.
+    pub(crate) notes_clip_jobs: Vec<crate::overlays::notes_picker::NotesClipJob>,
     pub(crate) notes_picker_notice: Option<(String, std::time::Instant)>,
     pub(crate) config_notice: Option<(String, std::time::Instant)>,
     /// Notes picker: inline status/error message shown in the fixed status slot.
@@ -1863,6 +1866,7 @@ impl PlexiApp {
                     notes_picker_preview: None,
                     notes_picker_undo: None,
                     notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+                    notes_clip_jobs: Vec::new(),
                     notes_picker_notice: None,
                     config_notice: None,
                     notes_picker_status: None,
@@ -2151,6 +2155,7 @@ impl PlexiApp {
             notes_picker_preview: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+            notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
             config_notice: None,
             notes_picker_status: None,
@@ -3137,6 +3142,7 @@ impl PlexiApp {
             notes_picker_preview: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+            notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
             config_notice: None,
             notes_picker_status: None,
@@ -3777,8 +3783,10 @@ impl eframe::App for PlexiApp {
         // started, and the open path only reads the in-memory cache.
         self.ensure_notes_index_loaded();
         self.drain_notes_index_refresh();
-        // Undo and notice toasts expire here, not in the draw, so Cmd+Z in a
+        // Notes picker copy/cut results from their worker threads; then the
+        // undo and notice toasts expire here, not in the draw, so Cmd+Z in a
         // reopened picker cannot undo a delete whose toast is already gone.
+        self.drain_notes_clip_jobs(ctx);
         self.expire_notes_toasts();
 
         // Expired needs-you items auto-deny even while the window is hidden.
