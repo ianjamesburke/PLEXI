@@ -1577,6 +1577,40 @@ mod tests {
         }
     }
 
+    /// Stint 1270: the preview cache is validated against the file, so an
+    /// edit made between two opens shows on the next open without moving the
+    /// selection away and back.
+    #[test]
+    fn notes_picker_preview_follows_an_edit_made_between_opens() {
+        let (mut app, _ctx, paths) = picker_with_notes("preview-edit", &["top note", "other"]);
+        assert_eq!(app.notes_picker_preview_text().as_deref(), Some("top note"));
+        app.close_notes_picker();
+        std::fs::write(&paths[0], "top note, edited in its editor pane").expect("edit note");
+        app.push_focus_layer(FocusKind::NotesPicker);
+        assert_eq!(
+            app.notes_picker_preview_text().as_deref(),
+            Some("top note, edited in its editor pane"),
+            "a reopened picker must preview the edited body"
+        );
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn notes_picker_preview_keeps_the_cached_text_when_the_note_is_unchanged() {
+        let (mut app, _ctx, paths) = picker_with_notes("preview-same", &["unchanged body"]);
+        let first = app.notes_picker_preview_text().expect("preview");
+        app.close_notes_picker();
+        app.push_focus_layer(FocusKind::NotesPicker);
+        let again = app.notes_picker_preview_text().expect("preview");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &again),
+            "an unchanged note must reuse the cached text, not re-read it"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
     /// Baseline regression: a real saved capture's clipboard payload is exactly
     /// its parsed body. The assertion reads the egui clipboard command, and
     /// reverting the body projection in `notes_picker_copy_selected` makes it
