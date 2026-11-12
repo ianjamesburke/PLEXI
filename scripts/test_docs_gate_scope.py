@@ -5,6 +5,8 @@ Wired into `just test-infra-scripts`.
 """
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -184,6 +186,70 @@ class DecisionTests(unittest.TestCase):
         })
         self.assert_required(["docs/cli/PARITY.md"], root, "path-literal")
 
+    def test_include_dir_binds_even_when_its_directory_is_empty(self):
+        root = make_root({"Cargo.toml": "[package]\n",
+                          "src/lib.rs": 'static D: Dir = include_dir!("$CARGO_MANIFEST_DIR/apps");\n'})
+        self.assert_required(["apps/README.md"], root, "apps/ is bound by include_dir")
+
+    def test_raw_strings_do_not_desync_the_scanner(self):
+        root = make_root({
+            "src/lib.rs": (
+                'const SCHEMA: &str = r#"{"tools": "x", "odd": "\""}"#;\n'
+                'const B: &[u8] = br#"a"b"#;\n'
+                'const DOC: &str = include_str!(r"../guides/raw.md");\n'
+                "#[test]\nfn walks() {\n"
+                '    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));\n'
+                '    read_dir(root.join("guides"));\n'
+                "}\n"
+            ),
+            "guides/raw.md": "x", "guides/other.md": "x", "tools/T.md": "x",
+        })
+        bindings = scope.binding_paths(root)
+        self.assertEqual(bindings["guides/raw.md"]["how"], "include_str")
+        self.assertEqual(bindings["guides"]["how"], "manifest-read")
+        self.assertNotIn("tools", bindings)
+
+    def test_unterminated_raw_string_fails_closed(self):
+        root = make_root({"src/lib.rs": 'const S: &str = r#"never closed;\n'})
+        self.assert_required(["notes/guide.md"], root, "binding set unavailable")
+
+    def test_std_env_var_manifest_dir_roots_reads(self):
+        root = make_root({
+            "build.rs": ('fn main() { let d = std::env::var_os("CARGO_MANIFEST_DIR").unwrap();'
+                         ' read_dir(Path::new(&d).join("guides")); }\n'),
+            "guides/a.md": "x",
+        })
+        self.assert_required(["guides/a.md"], root, "manifest-read")
+
+    def test_templated_markdown_in_a_manifest_item_binds_or_fails_closed(self):
+        files = {"guides/a.md": "x"}
+        bound = make_root({**files, "src/lib.rs": (
+            'fn f(n: &str) { let r = env!("CARGO_MANIFEST_DIR");'
+            ' read(Path::new(r).join(format!("guides/{n}.md"))); }\n')})
+        self.assert_required(["guides/a.md"], bound, "guides/ is bound by manifest-read")
+        opaque = make_root({**files, "src/lib.rs": (
+            'fn f(d: &str) { let r = env!("CARGO_MANIFEST_DIR"); read(format!("{d}/{n}.md")); }\n')})
+        self.assert_required(["notes/x.md"], opaque, "cannot resolve templated markdown path")
+
+    def test_unresolvable_include_argument_fails_closed(self):
+        root = make_root({"src/lib.rs": "const A: &str = include_str!(PATH);\n"})
+        self.assert_required(["notes/guide.md"], root, "cannot resolve include_str! argument")
+
+    def test_concat_manifest_dir_include_resolves(self):
+        root = make_root({"Cargo.toml": "[package]\n", "guides/a.md": "x", "src/lib.rs": (
+            'const A: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/guides/a.md"));\n')})
+        self.assert_required(["guides/a.md"], root, "include_str")
+
+    def test_includes_resolve_through_tracked_symlinks(self):
+        root = make_root({"real/a.md": "x", "other/b.md": "x", "Cargo.toml": "[package]\n", "src/lib.rs": (
+            'const A: &str = include_str!("../linked/a.md");\n'
+            'static D: Dir = include_dir!("$CARGO_MANIFEST_DIR/bundle");\n')})
+        os.symlink("real", root / "linked")
+        (root / "bundle").mkdir()
+        os.symlink("../other", root / "bundle/other")
+        self.assert_required(["real/a.md"], root, "include_str")
+        self.assert_required(["other/b.md"], root, "include_dir")
+
     def test_paths_in_comments_do_not_bind(self):
         root = make_root({"src/lib.rs": '// see include_dir!("$CARGO_MANIFEST_DIR/x") "docs/a/B.md"\n'
                                         "pub fn f() {}\n",
@@ -198,28 +264,76 @@ class DecisionTests(unittest.TestCase):
 
 
 class ProofTests(unittest.TestCase):
-    def test_proof_reads_the_named_commit_not_the_work_tree(self):
+    def test_proof_reads_the_named_commits_not_the_work_tree(self):
         root = make_root({"src/lib.rs": "pub fn f() {}\n", "docs/A.md": "x"})
         clean = commit(root)
         write(root, {"src/lib.rs": 'const A: &str = include_str!("../docs/A.md");\n'})
         embedded = commit(root)
         write(root, {"src/lib.rs": "pub fn g() {}\n"})  # uncommitted noise must not matter
-        first = scope.proof(["docs/A.md"], root, clean)
+        first = scope.proof(["docs/A.md"], root, clean, clean)
         self.assertTrue(first["skip"], first)
-        self.assertEqual(first, scope.proof(["docs/A.md"], root, clean))
-        second = scope.proof(["docs/A.md"], root, embedded)
+        self.assertEqual(first, scope.proof(["docs/A.md"], root, "HEAD~1", "HEAD~1"))
+        self.assertEqual(first["head"], clean)
+        second = scope.proof(["docs/A.md"], root, embedded, embedded)
         self.assertFalse(second["skip"], second)
-        self.assertNotEqual(first["binding_digest"], second["binding_digest"])
+        self.assertNotEqual(first["digests"], second["digests"])
+
+    def test_proof_requires_skip_against_the_base_the_squash_lands_on(self):
+        # The base gained an include_str! after the branch forked; the head tree lacks it.
+        root = make_root({"src/lib.rs": "pub fn f() {}\n", "docs/A.md": "old"})
+        fork = commit(root)
+        write(root, {"src/lib.rs": 'const A: &str = include_str!("../docs/A.md");\n'})
+        base = commit(root)
+        git(root, "checkout", "-q", "-b", "branch", fork)
+        write(root, {"docs/A.md": "new"})
+        head = commit(root)
+        result = scope.proof(["docs/A.md"], root, head, base)
+        self.assertFalse(result["skip"], result)
+        self.assertTrue(any(reason.startswith("at base:") for reason in result["reasons"]), result)
 
     def test_proof_of_unknown_commit_raises(self):
         root = make_root({"src/lib.rs": "pub fn f() {}\n"})
         commit(root)
         with self.assertRaises(scope.ScopeError):
-            scope.proof(["docs/A.md"], root, "f" * 40)
+            scope.proof(["docs/A.md"], root, "f" * 40, "HEAD")
+
+
+class ScopedTestsShellTests(unittest.TestCase):
+    """scoped-tests.sh selects no filters for markdown only on a positive skip."""
+
+    def select(self, classifier):
+        root = Path(tempfile.mkdtemp(prefix="scoped-tests-"))
+        self.addCleanup(shutil.rmtree, root)
+        (root / "scripts").mkdir()
+        for name in ("scoped-tests.sh", "scoped-tests.table"):
+            shutil.copy(SCRIPT.with_name(name), root / "scripts" / name)
+        (root / "scripts/docs_gate_scope.py").write_text(classifier)
+        return subprocess.run(("bash", str(root / "scripts/scoped-tests.sh"), "notes/guide.md"),
+                              capture_output=True, text=True, cwd=root).stdout.strip()
+
+    def test_markdown_selects_nothing_only_when_the_classifier_says_skip(self):
+        self.assertEqual(self.select("raise SystemExit(0)\n"), "")
+        for classifier in ("raise SystemExit(1)\n", "raise SystemExit(2)\n",
+                           "raise ValueError('crash')\n", "this is not python\n"):
+            with self.subTest(classifier=classifier):
+                self.assertEqual(self.select(classifier), "::")
 
 
 class RealRepoSanityTests(unittest.TestCase):
     """The real tree must classify its known-compiled or test-read markdown as required."""
+
+    def test_real_repo_scanner_sees_every_manifest_dir_literal(self):
+        root = Path(__file__).resolve().parent.parent
+        _, sources, _ = scope.tree(root)
+        for path, text in sources.items():
+            if '"CARGO_MANIFEST_DIR"' not in text:
+                continue
+            blanked, literals, comments = scope._scan(text)
+            quoted = text.count('"CARGO_MANIFEST_DIR"')
+            seen = sum(value == "CARGO_MANIFEST_DIR" for value in literals.values())
+            commented = sum(text[start:end].count('"CARGO_MANIFEST_DIR"') for start, end in comments)
+            with self.subTest(path=path):
+                self.assertEqual(seen + commented, quoted)
 
     def test_real_repo_binding_markdown_is_required(self):
         root = Path(__file__).resolve().parent.parent

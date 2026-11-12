@@ -97,11 +97,14 @@ def check_docs_only(record, paths):
     if code:
         raise PolicyError(f"docs-only scope contains a non-markdown path: {', '.join(code)}")
     proof = record["local"].get("docs_proof")
-    if (not isinstance(proof, dict) or proof.get("rev") != record.get("head")
+    digests = proof.get("digests") if isinstance(proof, dict) else None
+    if (not isinstance(proof, dict) or proof.get("head") != record.get("head")
+            or proof.get("base") != record.get("base_head")
             or proof.get("paths") != sorted(paths) or proof.get("skip") is not True
-            or proof.get("reasons") != []
-            or not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("binding_digest")))):
-        raise PolicyError("docs-only scope requires the computed docs_gate_scope proof for the PR head")
+            or proof.get("reasons") != [] or not isinstance(digests, dict)
+            or sorted(digests) != ["base", "head"]
+            or not all(re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in digests.values())):
+        raise PolicyError("docs-only scope requires the computed docs_gate_scope proof for the PR head and base")
 
 
 def check_test_scope(record, phase):
@@ -162,14 +165,15 @@ def verify_changed_paths(record, worktree):
         raise PolicyError("scoped evidence differs from the actual PR diff")
     if scope == "docs-only":
         try:
-            actual = docs_gate_scope.proof(record["local"]["test_paths"], Path(worktree), record["head"])
+            actual = docs_gate_scope.proof(record["local"]["test_paths"], Path(worktree),
+                                           record["head"], record["base_head"])
         except docs_gate_scope.ScopeError as error:
             raise PolicyError(f"cannot recompute docs-only proof: {error}") from error
         if not actual["skip"]:
             raise PolicyError("docs-only scope includes a path Rust source can observe: "
                               + "; ".join(actual["reasons"]))
         if actual != record["local"]["docs_proof"]:
-            raise PolicyError("docs-only proof differs from the proof recomputed at the PR head")
+            raise PolicyError("docs-only proof differs from the proof recomputed at the PR head and base")
 
 
 def check_gate(settings, record, pr, checks, base_head, phase):

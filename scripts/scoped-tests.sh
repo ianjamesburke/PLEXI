@@ -31,10 +31,10 @@ select_filters() {
     fi
     for path in "$@"; do
         path=${path#./}
-        # Embedded markdown is compiled in or asserted on by a test.
-        # Treat it as code and force a reviewed filter selection.
+        # Markdown is docs only when the classifier positively says skip (exit 0).
+        # Binding markdown, a classifier crash or a missing python3 all select ::.
         if [[ "$path" == *.md ]]; then
-            if python3 "$(dirname "$0")/docs_gate_scope.py" --is-embedded "$path" 2>/dev/null; then
+            if ! python3 "$(dirname "$0")/docs_gate_scope.py" "$path" >/dev/null 2>&1; then
                 printf '%s\n' ::
             fi
             continue
@@ -56,7 +56,7 @@ select_filters() {
 
 selftest() {
     local got first second
-    got=$(select_filters notes/guide.md AGENTS.md)
+    got=$(select_filters notes/guide.md scripts/AGENTS.md)
     [[ -z "$got" ]] || { printf 'FAIL docs-only selected: %s\n' "$got"; return 1; }
     printf 'PASS non-embedded docs-only: <empty>\n'
     got=$(select_filters docs/CONFIG.md)

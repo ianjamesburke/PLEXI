@@ -9,17 +9,28 @@ markdown that no Rust source in the tree can observe. A path is *binding*
   * names it with `include_str!` or `include_bytes!` (shipped or test);
   * embeds a directory containing it with `include_dir!` (so `apps/**` and
     `sdk/python/plexi_sdk/**` are compiled into the binary);
-  * names it, or a directory containing it, as a string literal inside an
-    item that roots a path at `env!("CARGO_MANIFEST_DIR")`, which is how
-    tests read and walk repository files at runtime;
+  * names it, or a directory containing it, as a string literal inside the
+    `fn` (or statement) that names `"CARGO_MANIFEST_DIR"` (`env!`,
+    `std::env::var`, `var_os`), which is how tests and `build.rs` read and
+    walk repository files at runtime;
   * names it by its exact repository path as a string literal anywhere; or
   * it sits under a directory that a `#[cfg(test)]` `include_str!`
     doc-sync assertion covers.
 
-The binding set is recomputed from the tree on every call, so a new
-`include_str!`, `include_dir!` or manifest-rooted read moves a path into the
-required set with no list to edit. A hand-maintained list is a bug. Anything
-that cannot be resolved fails closed.
+Paths resolve through tracked symlinks, and a symlink inside a bound
+directory binds its target. The binding set is recomputed from the tree on
+every call, so a new reference moves a path into the required set with no
+list to edit. A hand-maintained list is a bug.
+
+These fail closed (the gate is required): an `include_*!` argument that is
+neither a literal nor `concat!(env!("CARGO_MANIFEST_DIR"), "...")`, an
+`include_dir!` with another variable, a reference that escapes the
+repository, a templated `.md` literal with no static directory in a
+manifest-rooted item, a scanner that loses literal sync, and any git error.
+
+Known limits (not detected): a helper that returns the manifest root while
+its caller names the path (`fn root()` then `read_dir(root().join("x"))`),
+and cwd-relative reads (`read_to_string("NORTH_STAR.md")`).
 
 `build.rs` hashes every tracked file into the build identity; that is not
 behaviour, and installed validation still builds the exact head, so it does
@@ -27,12 +38,12 @@ not make markdown binding.
 
 Usage:
   scripts/docs_gate_scope.py [--root DIR] [--show-embedded] [<changed path>...]
-  scripts/docs_gate_scope.py [--root DIR] --is-embedded PATH
-  scripts/docs_gate_scope.py [--root DIR] --proof REV <changed path>...
+  scripts/docs_gate_scope.py [--root DIR] --proof HEAD --base BASE <changed path>...
 
-Prints a verdict and the reason for it, exits 0 when the gate may be skipped
-and 1 when it must run. `--proof REV` prints the JSON proof an aggregate batch
-record carries as `local.docs_proof`; `babysitter-policy.py` recomputes it.
+Prints a verdict and the reason for it, exits 0 only when the gate may be
+skipped; any other exit, including a crash, means it must run. `--proof`
+prints the JSON proof an aggregate batch record carries as
+`local.docs_proof`; `babysitter-policy.py` recomputes it.
 """
 
 from __future__ import annotations
@@ -40,45 +51,70 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-INCLUDE_FILE_RE = re.compile(r'\binclude_(?:str|bytes)!\s*\(\s*"([^"]+)"\s*\)')
-INCLUDE_DIR_RE = re.compile(r'\binclude_dir!\s*\(\s*"([^"]+)"\s*\)')
-MANIFEST_DIR_RE = re.compile(r'\benv!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)')
+INCLUDE_RE = re.compile(r"\binclude_(str|bytes|dir)!\s*\(")
+CONCAT_RE = re.compile(r"concat!\s*\(")
+RAW_RE = re.compile(r'[bc]?r(#*)"')
 CFG_TEST_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 FN_RE = re.compile(r"\bfn\s+[A-Za-z_]\w*")
+MANIFEST = "CARGO_MANIFEST_DIR"
 
 
 class ScopeError(RuntimeError):
     pass
 
 
-def _scan(text: str) -> tuple[str, list[tuple[int, str]]]:
-    """Blank Rust string/char literal and comment contents, preserving offsets.
+def _scan(text: str) -> tuple[str, dict[int, str], list[tuple[int, int]]]:
+    """Blank Rust literal and comment contents, preserving offsets.
 
-    Also returns each string literal as (offset, contents); literals inside
-    comments are not code and are not returned.
+    Returns (blanked, {literal start offset: contents}, comment spans). Raw
+    strings (`r"…"`, `r#"…"#`, `br#"…"#`) are literals; a literal's offset is
+    its first character, prefix included.
     """
     out = list(text)
-    literals: list[tuple[int, str]] = []
+    literals: dict[int, str] = {}
+    comments: list[tuple[int, int]] = []
     i, n = 0, len(text)
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, end):
+            if text[k] != "\n":
+                out[k] = " "
+
     while i < n:
         c = text[i]
-        if c == "/" and i + 1 < n and text[i + 1] == "/":
+        raw = RAW_RE.match(text, i) if c in "bcr" and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")) else None
+        if c == "/" and text.startswith("//", i):
             j = text.find("\n", i)
             j = n if j == -1 else j
-            out[i:j] = [" "] * (j - i)
+            comments.append((i, j))
+            blank(i, j)
             i = j
-        elif c == "/" and i + 1 < n and text[i + 1] == "*":
-            j = text.find("*/", i + 2)
-            j = n if j == -1 else j + 2
-            for k in range(i, j):
-                if text[k] != "\n":
-                    out[k] = " "
+        elif c == "/" and text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            comments.append((i, j))
+            blank(i, j)
             i = j
+        elif raw:
+            close = '"' + raw.group(1)
+            end = text.find(close, raw.end())
+            if end == -1:
+                raise ScopeError("unterminated raw string literal")
+            literals[i] = text[raw.end():end]
+            blank(i, end + len(close))
+            i = end + len(close)
         elif c == '"':
             j = i + 1
             while j < n:
@@ -89,10 +125,8 @@ def _scan(text: str) -> tuple[str, list[tuple[int, str]]]:
                     j += 1
                     break
                 j += 1
-            literals.append((i, text[i + 1:j - 1]))
-            for k in range(i, j):
-                if text[k] != "\n":
-                    out[k] = " "
+            literals[i] = text[i + 1:j - 1]
+            blank(i, j)
             i = j
         elif c == "'":
             j = i + 1
@@ -102,21 +136,19 @@ def _scan(text: str) -> tuple[str, list[tuple[int, str]]]:
                 j += 1
             if j < n and text[j] == "'":
                 j += 1
-            for k in range(i, j):
-                if text[k] != "\n":
-                    out[k] = " "
+            blank(i, j)
             i = j
         else:
             i += 1
-    return "".join(out), literals
+    return "".join(out), literals, comments
 
 
-def _closing_brace(blanked: str, open_index: int) -> int:
+def _closing(blanked: str, open_index: int, pair: str = "{}") -> int:
     depth = 0
     for i in range(open_index, len(blanked)):
-        if blanked[i] == "{":
+        if blanked[i] == pair[0]:
             depth += 1
-        elif blanked[i] == "}":
+        elif blanked[i] == pair[1]:
             depth -= 1
             if depth == 0:
                 return i + 1
@@ -128,27 +160,8 @@ def _item_span(blanked: str, start: int) -> tuple[int, int]:
     brace = blanked.find("{", start)
     semi = blanked.find(";", start)
     if brace != -1 and (semi == -1 or brace < semi):
-        return start, _closing_brace(blanked, brace)
+        return start, _closing(blanked, brace)
     return start, (semi + 1 if semi != -1 else len(blanked))
-
-
-def _test_regions(blanked: str) -> list[tuple[int, int]]:
-    """Character spans of items annotated `#[cfg(test)]`."""
-    return [_item_span(blanked, match.start()) for match in CFG_TEST_RE.finditer(blanked)]
-
-
-def _manifest_regions(blanked: str, text: str) -> list[tuple[int, int]]:
-    """Spans of the innermost `fn` (or statement) using `env!("CARGO_MANIFEST_DIR")`."""
-    fns = [_item_span(blanked, match.start()) for match in FN_RE.finditer(blanked)]
-    regions = []
-    for match in MANIFEST_DIR_RE.finditer(text):
-        enclosing = [span for span in fns if span[0] <= match.start() < span[1]]
-        if enclosing:
-            regions.append(max(enclosing, key=lambda span: span[0]))
-        else:
-            start = max(blanked.rfind(";", 0, match.start()), blanked.rfind("}", 0, match.start())) + 1
-            regions.append(_item_span(blanked, start))
-    return regions
 
 
 def _git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
@@ -161,37 +174,53 @@ def _git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
                          f"{detail.decode(errors='replace').strip() or error}") from error
 
 
-def tree(root: Path | str, rev: str | None = None) -> tuple[set[str], dict[str, str]]:
-    """(tracked paths, {.rs path: text}) for the working tree or commit `rev`."""
+def _cat(root: Path, rev: str, paths: list[str]) -> dict[str, bytes]:
+    if not paths:
+        return {}
+    batch = _git(root, "cat-file", "--batch", stdin="".join(f"{rev}:{p}\n" for p in paths).encode())
+    blobs, offset = {}, 0
+    for path in paths:
+        header_end = batch.find(b"\n", offset)
+        header = batch[offset:header_end].split() if header_end != -1 else []
+        if len(header) != 3 or header[1] != b"blob":
+            raise ScopeError(f"cannot read {rev}:{path} in {root}")
+        size = int(header[2])
+        blobs[path] = batch[header_end + 1:header_end + 1 + size]
+        offset = header_end + 1 + size + 1
+    return blobs
+
+
+def tree(root: Path | str, rev: str | None = None):
+    """(tracked paths, {.rs path: text}, {symlink path: target}) for the work tree or `rev`."""
     root = Path(root)
     if rev is None:
         listing = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    else:
-        listing = _git(root, "ls-tree", "-r", "-z", "--name-only", rev)
-    tracked = {path for path in listing.decode().split("\0") if path}
-    rust = sorted(path for path in tracked if path.endswith(".rs"))
-    sources: dict[str, str] = {}
-    if rev is None:
-        for path in rust:
+        tracked = {path for path in listing.decode().split("\0") if path}
+        links, sources = {}, {}
+        for path in sorted(tracked):
+            full = root / path
             try:
-                sources[path] = (root / path).read_text(encoding="utf-8", errors="replace")
+                if full.is_symlink():
+                    links[path] = os.readlink(full)
+                elif path.endswith(".rs"):
+                    sources[path] = full.read_text(encoding="utf-8", errors="replace")
             except FileNotFoundError:
-                continue  # deleted in the working tree but still in the index
+                continue  # deleted in the work tree but still in the index
             except OSError as error:
-                raise ScopeError(f"cannot read {root / path}: {error}") from error
-    elif rust:
-        batch = _git(root, "cat-file", "--batch",
-                     stdin="".join(f"{rev}:{path}\n" for path in rust).encode())
-        offset = 0
-        for path in rust:
-            header_end = batch.index(b"\n", offset)
-            header = batch[offset:header_end].split()
-            if len(header) != 3 or header[1] != b"blob":
-                raise ScopeError(f"cannot read {rev}:{path} in {root}")
-            size = int(header[2])
-            sources[path] = batch[header_end + 1:header_end + 1 + size].decode("utf-8", errors="replace")
-            offset = header_end + 1 + size + 1
-    return tracked, sources
+                raise ScopeError(f"cannot read {full}: {error}") from error
+        return tracked, sources, links
+    tracked, link_paths = set(), []
+    for entry in _git(root, "ls-tree", "-r", "-z", rev).decode().split("\0"):
+        if not entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        tracked.add(path)
+        if meta.split()[0] == "120000":
+            link_paths.append(path)
+    rust = sorted(path for path in tracked if path.endswith(".rs") and path not in link_paths)
+    sources = {path: blob.decode("utf-8", errors="replace") for path, blob in _cat(root, rev, rust).items()}
+    links = {path: blob.decode() for path, blob in _cat(root, rev, sorted(link_paths)).items()}
+    return tracked, sources, links
 
 
 def _crate_root(path: str, tracked: set[str]) -> PurePosixPath:
@@ -217,6 +246,25 @@ def _normalize(path: PurePosixPath) -> str | None:
     return "/".join(parts) if parts else "."
 
 
+def _resolve(path: str | None, links: dict[str, str]) -> str | None:
+    """Follow tracked symlinks in any prefix of `path`."""
+    for _ in range(40):
+        if path is None or path == ".":
+            return path
+        parts = path.split("/")
+        for index in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:index])
+            if prefix in links:
+                target = links[prefix]
+                if target.startswith("/"):
+                    return None
+                path = _normalize(PurePosixPath(prefix).parent / target / "/".join(parts[index:]))
+                break
+        else:
+            return path
+    raise ScopeError(f"symlink loop resolving {path}")
+
+
 def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict[str, str]]:
     """Map each binding repo path (file or directory) to {"mode", "how"}.
 
@@ -224,58 +272,113 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict[st
     otherwise "test". Markdown files and directories only: a docs-only diff
     contains nothing else.
     """
-    tracked, sources = tree(root, rev)
+    tracked, sources, links = tree(root, rev)
     dirs = {parent.as_posix() for path in tracked for parent in PurePosixPath(path).parents}
     dirs.discard(".")
     bindings: dict[str, dict[str, str]] = {}
 
     def bind(path: str | None, mode: str, how: str, origin: str) -> None:
-        if path is None or path == ".":
-            raise ScopeError(f"{origin}: {how} reference resolves outside the repository or to its root")
-        if not (path.lower().endswith(".md") or path in dirs):
+        resolved = _resolve(path, links)
+        if resolved is None or resolved == ".":
+            raise ScopeError(f"{origin}: {how} reference {path!r} resolves outside the repository or to its root")
+        # An include_dir! target binds even when empty: deleting its last file breaks the build.
+        if how != "include_dir" and not (resolved.lower().endswith(".md") or resolved in dirs):
             return
-        current = bindings.get(path)
+        current = bindings.get(resolved)
         if current is None or (current["mode"] == "test" and mode == "shipped"):
-            bindings[path] = {"mode": mode, "how": how}
+            bindings[resolved] = {"mode": mode, "how": how}
 
     for source, text in sources.items():
-        blanked, literals = _scan(text)
-        tests = _test_regions(blanked)
+        blanked, literals, comments = _scan(text)
         crate = _crate_root(source, tracked)
+        tests = [_item_span(blanked, m.start()) for m in CFG_TEST_RE.finditer(blanked)]
+        fns = [_item_span(blanked, m.start()) for m in FN_RE.finditer(blanked)]
 
         def mode_at(index: int) -> str:
             return "test" if any(start <= index < end for start, end in tests) else "shipped"
 
-        for match in INCLUDE_FILE_RE.finditer(text):
-            target = _normalize(PurePosixPath(source).parent / match.group(1))
-            if match.group(1).lower().endswith(".md"):
-                bind(target, mode_at(match.start()), "include_str", source)
-        for match in INCLUDE_DIR_RE.finditer(text):
-            raw = match.group(1)
-            if raw.startswith("$CARGO_MANIFEST_DIR"):
-                bind(_normalize(crate / raw[len("$CARGO_MANIFEST_DIR"):].lstrip("/")),
-                     mode_at(match.start()), "include_dir", source)
-            elif "$" in raw or raw.startswith("/"):
-                raise ScopeError(f"{source}: cannot resolve include_dir!(\"{raw}\")")
-            else:
-                for base in {crate, PurePosixPath(".")}:
-                    bind(_normalize(base / raw), mode_at(match.start()), "include_dir", source)
-        manifest = _manifest_regions(blanked, text)
-        for offset, literal in literals:
-            literal = literal.strip()
-            if not literal or "\\" in literal or "{" in literal:
+        def literal_after(index: int) -> tuple[int, str] | None:
+            while index < len(text) and text[index].isspace():
+                index += 1
+            return (index, literals[index]) if index in literals else None
+
+        for match in INCLUDE_RE.finditer(blanked):
+            kind, mode = match.group(1), mode_at(match.start())
+            found = literal_after(match.end())
+            if found is not None:
+                raw = found[1]
+                if kind == "dir":
+                    if raw.startswith("$" + MANIFEST):
+                        bind(_normalize(crate / raw[len(MANIFEST) + 1:].lstrip("/")), mode, "include_dir", source)
+                    elif "$" in raw or raw.startswith("/"):
+                        raise ScopeError(f"{source}: cannot resolve include_dir!(\"{raw}\")")
+                    else:
+                        for base in {crate, PurePosixPath(".")}:
+                            bind(_normalize(base / raw), mode, "include_dir", source)
+                elif raw.lower().endswith(".md"):
+                    bind(_normalize(PurePosixPath(source).parent / raw), mode, "include_str", source)
+                continue
+            rest = match.end()
+            while rest < len(blanked) and blanked[rest].isspace():
+                rest += 1
+            concat = CONCAT_RE.match(blanked, rest)
+            if concat:
+                end = _closing(blanked, concat.end() - 1, "()")
+                parts = [value for offset, value in sorted(literals.items()) if concat.end() <= offset < end]
+                if len(parts) == 2 and parts[0] == MANIFEST:
+                    target = _normalize(crate / parts[1].lstrip("/"))
+                    if kind == "dir" or parts[1].lower().endswith(".md"):
+                        bind(target, mode, "include_dir" if kind == "dir" else "include_str", source)
+                    continue
+            raise ScopeError(f"{source}: cannot resolve include_{kind}! argument")
+
+        manifest = []
+        for offset, value in literals.items():
+            if value == MANIFEST:
+                enclosing = [span for span in fns if span[0] <= offset < span[1]]
+                manifest.append(max(enclosing, key=lambda span: span[0]) if enclosing else _item_span(
+                    blanked, max(blanked.rfind(";", 0, offset), blanked.rfind("}", 0, offset)) + 1))
+        # Every quoted CARGO_MANIFEST_DIR in code must be a literal the scanner saw;
+        # otherwise it lost string/code sync and the manifest rule would be blind.
+        for match in re.finditer(f'"{MANIFEST}"', text):
+            if blanked[match.start() + 1] != " ":
+                raise ScopeError(f"{source}: scanner lost literal sync near offset {match.start()}")
+
+        for offset, value in literals.items():
+            literal = value.strip()
+            if not literal:
+                continue
+            in_manifest = any(start <= offset < end for start, end in manifest)
+            if "{" in literal or "\\" in literal:
+                if in_manifest and ".md" in literal.lower():
+                    prefix = literal[:min(i for i in (literal.find("{"), literal.find("\\")) if i != -1)]
+                    static = prefix.lstrip("/").rpartition("/")[0]
+                    if not static:
+                        raise ScopeError(f"{source}: cannot resolve templated markdown path {literal!r}")
+                    for base in {crate, PurePosixPath(".")}:
+                        candidate = _normalize(base / static)
+                        if candidate not in (None, ".") and candidate in dirs:
+                            bind(candidate, mode_at(offset), "manifest-read", source)
                 continue
             rel = literal.lstrip("/")
-            in_manifest_item = any(start <= offset < end for start, end in manifest)
             for base in {crate, PurePosixPath(".")}:
                 candidate = _normalize(base / rel)
                 if candidate in (None, "."):
                     continue
-                if in_manifest_item and (candidate in tracked or candidate in dirs):
+                if in_manifest and (candidate in tracked or candidate in dirs):
                     bind(candidate, mode_at(offset), "manifest-read", source)
                 elif "/" in rel and candidate in tracked and candidate.lower().endswith(".md"):
                     bind(candidate, mode_at(offset), "path-literal", source)
-    return bindings
+
+    # A symlink inside a bound directory embeds or exposes its target too.
+    while True:
+        before = len(bindings)
+        for link in sorted(links):
+            hit = _binding_for(link, bindings)
+            if hit:
+                bind(link, hit[1]["mode"], hit[1]["how"], f"symlink {link}")
+        if len(bindings) == before:
+            return bindings
 
 
 def asserted_dirs(bindings: dict[str, dict[str, str]]) -> set[str]:
@@ -321,14 +424,26 @@ def decide(paths, root: Path | str, rev: str | None = None) -> tuple[bool, list[
     return decide_with(paths, bindings)
 
 
-def proof(paths, root: Path | str, rev: str) -> dict:
-    """The record-carried proof: verdict plus a digest of the binding set at commit `rev`."""
-    rev = _git(Path(root), "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}").decode().strip()
-    bindings = binding_paths(root, rev)
-    skip, reasons = decide_with(paths, bindings)
+def _commit(root: Path, rev: str) -> str:
+    return _git(root, "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}").decode().strip()
+
+
+def _digest(bindings: dict[str, dict[str, str]]) -> str:
     lines = "".join(f"{info['mode']}\t{info['how']}\t{path}\n" for path, info in sorted(bindings.items()))
-    return {"rev": rev, "paths": sorted(paths), "skip": skip, "reasons": reasons,
-            "binding_digest": hashlib.sha256(lines.encode()).hexdigest()}
+    return hashlib.sha256(lines.encode()).hexdigest()
+
+
+def proof(paths, root: Path | str, head: str, base: str) -> dict:
+    """The record-carried proof. The squash lands on `base`, so the paths must be
+    skippable against the binding set of both trees."""
+    root = Path(root)
+    head, base = _commit(root, head), _commit(root, base)
+    at_head, at_base = binding_paths(root, head), binding_paths(root, base)
+    head_skip, head_reasons = decide_with(paths, at_head)
+    base_skip, base_reasons = decide_with(paths, at_base)
+    return {"head": head, "base": base, "paths": sorted(paths), "skip": head_skip and base_skip,
+            "reasons": head_reasons + [f"at base: {reason}" for reason in base_reasons],
+            "digests": {"head": _digest(at_head), "base": _digest(at_base)}}
 
 
 def main(argv=None) -> int:
@@ -336,19 +451,17 @@ def main(argv=None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default=None)
     parser.add_argument("--show-embedded", action="store_true")
-    parser.add_argument("--is-embedded", metavar="PATH",
-                        help="exit 0 when PATH is binding (not skippable as docs), else 1")
-    parser.add_argument("--proof", metavar="REV",
-                        help="print the JSON proof for the changed paths at commit REV")
+    parser.add_argument("--proof", metavar="HEAD", help="print the JSON proof for the changed paths")
+    parser.add_argument("--base", metavar="BASE", help="the commit the batch lands on (with --proof)")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)
     root = Path(args.root) if args.root else Path(__file__).resolve().parent.parent
     try:
         if args.proof is not None:
-            print(json.dumps(proof(args.paths, root, args.proof), indent=2))
+            if args.base is None:
+                parser.error("--proof requires --base")
+            print(json.dumps(proof(args.paths, root, args.proof, args.base), indent=2))
             return 0
-        if args.is_embedded is not None:
-            return 1 if decide([args.is_embedded], root)[0] else 0
         if args.show_embedded:
             for path, info in sorted(binding_paths(root).items()):
                 print(f"{info['mode']}\t{info['how']}\t{path}")

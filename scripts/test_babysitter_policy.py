@@ -361,8 +361,9 @@ class PolicyTests(unittest.TestCase):
         record = copy.deepcopy(self.record)
         record["local"] = {"head": self.head, "test_scope": "docs-only", "test_base": self.base,
                            "test_paths": list(paths),
-                           "docs_proof": proof or {"rev": self.head, "paths": sorted(paths), "skip": True,
-                                                   "reasons": [], "binding_digest": "0" * 64}}
+                           "docs_proof": proof or {"head": self.head, "base": self.base,
+                                                   "paths": sorted(paths), "skip": True, "reasons": [],
+                                                   "digests": {"head": "0" * 64, "base": "1" * 64}}}
         record["validation"]["affected_behavior"] = "Installed build renders the edited guide"
         return record
 
@@ -402,11 +403,13 @@ class PolicyTests(unittest.TestCase):
         for change in (
             lambda r: r["local"].pop("docs_proof"),
             lambda r: r["local"].update(docs_proof="docs-only"),
-            lambda r: r["local"]["docs_proof"].update(rev="c" * 40),
+            lambda r: r["local"]["docs_proof"].update(head="c" * 40),
+            lambda r: r["local"]["docs_proof"].update(base="c" * 40),
+            lambda r: r["local"]["docs_proof"]["digests"].pop("base"),
             lambda r: r["local"]["docs_proof"].update(skip=False),
             lambda r: r["local"]["docs_proof"].update(paths=["other.md"]),
             lambda r: r["local"]["docs_proof"].update(reasons=["x"]),
-            lambda r: r["local"]["docs_proof"].pop("binding_digest"),
+            lambda r: r["local"]["docs_proof"].pop("digests"),
         ):
             record = self.docs_only_record()
             change(record)
@@ -444,7 +447,7 @@ class PolicyTests(unittest.TestCase):
         return root, heads[0], heads[1]
 
     def proven_record(self, root, base, head, paths):
-        proof = policy.docs_gate_scope.proof(paths, root, head)
+        proof = policy.docs_gate_scope.proof(paths, root, head, base)
         record = self.docs_only_record(paths=paths, proof=proof)
         record.update(head=head, base_head=base)
         record["local"].update(head=head, test_base=base)
@@ -477,9 +480,48 @@ class PolicyTests(unittest.TestCase):
     def test_docs_only_proof_must_match_the_recomputed_proof(self):
         root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new"})
         record = self.proven_record(root, base, head, ["notes/guide.md"])
-        record["local"]["docs_proof"]["binding_digest"] = "0" * 64
+        record["local"]["docs_proof"]["digests"]["head"] = "0" * 64
         with self.assertRaisesRegex(policy.PolicyError, "differs from the proof recomputed"):
             policy.verify_changed_paths(record, root)
+
+    def test_docs_only_proof_rejects_markdown_the_base_embeds(self):
+        # An earlier batch added include_str! of docs/A.md to the base after this branch forked.
+        root, fork, base = self.git_fixture({"src/lib.rs": "pub fn f() {}\n", "docs/A.md": "old"},
+                                            {"src/lib.rs": 'const A: &str = include_str!("../docs/A.md");\n'})
+        def git(*args):
+            return subprocess.run(("git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                                   *args), check=True, capture_output=True, text=True).stdout.strip()
+        git("checkout", "-q", "-b", "branch", fork)
+        (root / "docs/A.md").write_text("new")
+        git("commit", "-qam", "edit")
+        head = git("rev-parse", "HEAD")
+        record = self.proven_record(root, base, head, ["docs/A.md"])
+        self.assertFalse(record["local"]["docs_proof"]["skip"])
+        record["local"]["docs_proof"].update(skip=True, reasons=[])
+        with self.assertRaisesRegex(policy.PolicyError, "at base: docs/A.md"):
+            policy.verify_changed_paths(record, root)
+
+    def test_live_batch_gate_recomputes_the_docs_only_proof(self):
+        root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new"})
+        record = self.proven_record(root, base, head, ["notes/guide.md"])
+        pr = {"baseRefName": "feature/alpha-cleanup", "headRefOid": head}
+        real_command = policy.command
+        def command(*args):
+            if args[0] == "gh":
+                return json.dumps({**pr, "state": "OPEN"})
+            if args[:3] == ("git", "ls-remote", "origin"):
+                return base
+            return real_command(*args)
+        record["checks_head"] = head
+        record["validation"].update(head=head, install_head=head)
+        with patch.object(policy, "command", side_effect=command), patch.object(
+            policy, "read_checks", return_value=self.checks
+        ), patch.object(policy, "alpha_root", return_value=root):
+            self.assertEqual(policy.live_gate(self.settings, record, 100, "batch"), head)
+            forged = copy.deepcopy(record)
+            forged["local"]["docs_proof"]["digests"]["base"] = "0" * 64
+            with self.assertRaisesRegex(policy.PolicyError, "differs from the proof recomputed"):
+                policy.live_gate(self.settings, forged, 100, "batch")
 
     def test_docs_only_paths_are_bound_to_the_actual_diff(self):
         root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new", "src/new.rs": ""})
@@ -827,9 +869,10 @@ class PolicyTests(unittest.TestCase):
                 docs_recovery = copy.deepcopy(recovery_record)
                 docs_recovery["local"] = {"head": "f" * 40, "test_scope": "docs-only", "test_base": "d" * 40,
                                           "test_paths": ["notes/guide.md"],
-                                          "docs_proof": {"rev": "f" * 40, "paths": ["notes/guide.md"],
+                                          "docs_proof": {"head": "f" * 40, "base": "d" * 40,
+                                                         "paths": ["notes/guide.md"],
                                                          "skip": True, "reasons": [],
-                                                         "binding_digest": "0" * 64}}
+                                                         "digests": {"head": "0" * 64, "base": "1" * 64}}}
                 current_tip[0] = "d" * 40
                 path.write_text(json.dumps(grown))
                 with patch.object(policy, "command", side_effect=recovery_command), patch.object(
