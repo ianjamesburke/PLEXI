@@ -1,6 +1,8 @@
 """run_logged.py: log file, quiet console, bounded failure tail, one final RESULT line, status file."""
 
 import os
+import pty
+import select
 import signal
 import subprocess
 import sys
@@ -27,7 +29,7 @@ class Base(unittest.TestCase):
     def run_logged(self, name, command, *flags, **kwargs):
         env = {k: v for k, v in os.environ.items() if k != "PLEXI_RUN_LOGGED_ACTIVE"}
         return subprocess.run([sys.executable, str(SCRIPT), "--dir", str(self.dir), *flags, name, "--", *command],
-                              capture_output=True, text=True, env=env, **kwargs)
+                              capture_output=True, text=True, env=env, start_new_session=True, **kwargs)
 
     def files(self, name, suffix):
         return sorted(self.dir.glob(f"{name}-*.{suffix}"))
@@ -216,6 +218,65 @@ class Hardening(Base):
         result = self.run_logged("nocmd2", ["/nonexistent/binary"])
         self.assertEqual(result.returncode, 127)
         self.assertIn("cannot start", result.stderr)
+
+
+class Terminal(Base):
+    """A person at a terminal: the command must not be stopped (SIGTTIN) and Ctrl-C must reach it."""
+
+    def on_pty(self, flags, name, shell, marker_input, timeout=30):
+        """Run the wrapper as a session leader on a pty. Once the command creates its marker
+        file, type marker_input. Returns (pty output, exit status or None if it hung)."""
+        marker = Path(self.temp.name) / f"{name}.ready"
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execv(sys.executable, [sys.executable, str(SCRIPT), "--dir", str(self.dir), *flags, name, "--",
+                                      "sh", "-c", shell.replace("MARKER", str(marker))])
+        output, sent, deadline = b"", False, time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            if not sent and marker.exists():
+                time.sleep(0.3)
+                os.write(fd, marker_input)
+                sent = True
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    break
+                output += chunk
+            done, state = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = os.waitstatus_to_exitcode(state)
+                break
+        end = time.time() + 5
+        while status is None and time.time() < end:  # EOF seen: the wrapper is exiting
+            done, state = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = os.waitstatus_to_exitcode(state)
+            else:
+                time.sleep(0.05)
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            subprocess.run(["pkill", "-KILL", "-f", f"MARKER-{name}"])
+            os.waitpid(pid, 0)
+        os.close(fd)
+        return output.decode(errors="replace"), status
+
+    def test_command_can_read_the_terminal_without_being_stopped(self):
+        for flags in ((), ("--tee",)):
+            name = "tty-read" + ("-tee" if flags else "")
+            output, status = self.on_pty(flags, name, "touch MARKER; read answer < /dev/tty; echo got-$answer", b"hi\n")
+            self.assertEqual(status, 0, f"{flags}: hung or failed (SIGTTIN stop?) {output!r}")
+            self.assertIn("status=pass", output)
+
+    def test_ctrl_c_reaches_the_command(self):
+        for flags in ((), ("--tee",)):
+            name = "tty-int" + ("-tee" if flags else "")
+            output, status = self.on_pty(flags, name, f"touch MARKER; exec sleep 60 # MARKER-{name}", b"\x03")
+            self.assertEqual(status, 130, f"{flags}: {output!r}")
+            self.assertIn("exit=130", output)
 
 
 class RecipeWiring(unittest.TestCase):

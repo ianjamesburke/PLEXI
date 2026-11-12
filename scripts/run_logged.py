@@ -27,9 +27,12 @@ Both modes end stdout with exactly one line and write the same line to the statu
 The status file holds `status=running pid=<pid>` from the start, so a later process can
 tell "still running" (pid alive) from "wrapper killed" (pid dead, status still running).
 The wrapper exits with the command's exit code (128+signal for a signalled command).
-The command runs in its own process group (except attached to a terminal); SIGINT,
-SIGTERM and SIGHUP sent to the wrapper go to that whole group once, and a group that
-ignores them is killed after 10 s. SIGKILL cannot be caught, so a killed wrapper leaves
+With no controlling terminal the command runs in its own process group; SIGINT, SIGTERM
+and SIGHUP sent to the wrapper go to that whole group once, and a group that ignores them
+is killed after 10 s. With a controlling terminal (a person at a shell, whatever is
+redirected) the command stays in the wrapper's group so it can read the terminal without
+being stopped by SIGTTIN and Ctrl-C reaches it directly; only SIGTERM/SIGHUP are forwarded,
+to the command itself. SIGKILL cannot be caught, so a killed wrapper leaves
 `status=running` with a dead pid. A nested run (the command itself uses run_logged) is
 transparent: only the outermost wrapper reports.
 """
@@ -54,6 +57,15 @@ KILL_AFTER_SECONDS = 10.0  # forwarded signal ignored this long: SIGKILL the gro
 
 def warn(message):
     print(f"run-logged: warning: {message}", file=sys.stderr, flush=True)
+
+
+def has_controlling_terminal():
+    """True when this process can open /dev/tty, i.e. a person may be at a terminal."""
+    try:
+        os.close(os.open("/dev/tty", os.O_RDWR))
+        return True
+    except OSError:
+        return False
 
 
 def log_dir(explicit):
@@ -177,6 +189,11 @@ class Run:
 
     def execute(self):
         interactive = self.tee and sys.stdout.isatty() and sys.stderr.isatty()
+        # With a controlling terminal the command must stay in the wrapper's process group: a
+        # separate group is a background group there, and reading the terminal (a prompt, sudo,
+        # codesign) would stop it with SIGTTIN. Ctrl-C then reaches it through the terminal.
+        # Without one (agents, CI) the command leads its own group so signals reach all of it.
+        self.grouped = not (interactive or has_controlling_terminal())
         started = time.monotonic()
         if not interactive:
             self.open_files()
@@ -198,7 +215,7 @@ class Run:
                 threads = []
             else:
                 process = subprocess.Popen(self.command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                           process_group=0)
+                                           process_group=0 if self.grouped else None)
                 sinks = (sys.stdout, sys.stderr) if passthrough else (None, None)
                 threads = [threading.Thread(target=self.pump, args=(process.stdout, sinks[0]), daemon=True),
                            threading.Thread(target=self.pump, args=(process.stderr, sinks[1]), daemon=True)]
@@ -211,10 +228,10 @@ class Run:
         def forward(signum, _frame):
             if self.signalled_at is None:
                 self.signalled_at = time.monotonic()
-            self.deliver(process, interactive, signum)
+            self.deliver(process, signum)
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            # Attached to a terminal Ctrl-C already reaches the command: never deliver SIGINT twice.
-            if interactive and signum == signal.SIGINT:
+            # Sharing the terminal's group, Ctrl-C already reaches the command: never deliver SIGINT twice.
+            if not self.grouped and signum == signal.SIGINT:
                 signal.signal(signum, lambda *_: None)
             else:
                 signal.signal(signum, forward)
@@ -223,7 +240,7 @@ class Run:
             time.sleep(0.2)
             now = time.monotonic()
             if self.signalled_at is not None and now - self.signalled_at > KILL_AFTER_SECONDS:
-                self.deliver(process, interactive, signal.SIGKILL)
+                self.deliver(process, signal.SIGKILL)
                 self.signalled_at = now
             if not passthrough and now >= next_beat:
                 with self.lock:
@@ -246,13 +263,12 @@ class Run:
         tail = error_tail(self.log) if (code != 0 and not passthrough and self.log is not None) else []
         return self.finish(code, started, tail)
 
-    @staticmethod
-    def deliver(process, interactive, signum):
+    def deliver(self, process, signum):
         try:
-            if interactive:
-                process.send_signal(signum)
-            else:
+            if self.grouped:
                 os.killpg(process.pid, signum)  # the command leads its own group (process_group=0)
+            else:
+                process.send_signal(signum)
         except OSError:
             pass
 
