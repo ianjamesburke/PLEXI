@@ -1115,7 +1115,7 @@ impl PlexiApp {
     ///    beats above and left beats right.
     /// 3. `History`: no adjacent pane; the newest live window-local history entry.
     /// 4. `NearestColumn`: the closest remaining column, left before right.
-    fn choose_focus_after_close(
+    pub(crate) fn choose_focus_after_close(
         &self,
         ctx_idx: usize,
         closing_tile: TileId,

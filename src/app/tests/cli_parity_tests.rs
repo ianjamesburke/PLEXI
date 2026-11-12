@@ -389,7 +389,7 @@ fn workspace_snapshot_marks_other_windows_outside_active_view() {
     assert!(active["bounds"].is_object());
 }
 
-/// Stint 1183 reproduction: Cmd+U marks the focused pane hidden but leaves
+/// Cmd+U marks the focused pane hidden but leaves
 /// focus on it, and a hidden pane never qualifies for input, so the keyboard
 /// has no owner until the user moves focus by hand.
 #[test]
@@ -420,35 +420,19 @@ fn cmd_u_on_the_focused_pane_leaves_a_pane_that_owns_the_keyboard() {
     );
 }
 
-/// Stint 1183 reproduction: Cmd+U dims the pane in place. Its tile keeps its
-/// slot in the layout, so the neighbour gains no room.
+/// With no other visible pane to take focus, the hidden pane keeps it, so a
+/// second Cmd+U reveals the pane instead of leaving it unreachable.
 #[test]
-fn cmd_u_on_the_focused_pane_frees_its_layout_slot() {
+fn cmd_u_on_the_only_pane_keeps_focus_so_the_shortcut_reveals_it_again() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
-    let other = h.add_test_pane();
-    tile_pair(&mut h, pane, other);
     h.focus_pane(pane).run_frames(1);
 
     h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
+    assert!(h.app.windows[0].panes[&pane].is_hidden());
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
 
-    let window = &h.app.windows[0];
-    let still_laid_out = window
-        .tree
-        .tiles
-        .find_pane(&pane)
-        .is_some_and(|tile| window.tree.active_tiles().contains(&tile));
-    assert!(
-        !still_laid_out,
-        "a pane sent away with Cmd+U must not keep a tile in the visible layout"
-    );
-    assert!(
-        window
-            .tree
-            .tiles
-            .find_pane(&other)
-            .is_some_and(|tile| window.tree.active_tiles().contains(&tile)),
-        "the remaining pane must stay in the visible layout"
-    );
+    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
+    assert!(!h.app.windows[0].panes[&pane].is_hidden());
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
 }

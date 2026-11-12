@@ -60,15 +60,33 @@ impl PlexiApp {
     }
 
     pub(crate) fn set_pane_hidden(&mut self, pane_id: u64, hidden: bool) -> Result<(), String> {
-        let (win, _) = self
+        let (win, tile) = self
             .find_pane_in_any_window(pane_id)
             .ok_or_else(|| format!("pane {pane_id} not found"))?;
+        // A hidden pane never qualifies for input, so hiding the focused pane
+        // must hand focus on. The successor is chosen while the pane is still
+        // visible: the chooser locates it in its column, and hidden panes are
+        // absent from columns.
+        let hiding_focused = hidden && self.windows[win].focused_pane == Some(tile);
+        let next_focus = hiding_focused
+            .then(|| self.choose_focus_after_close(win, tile))
+            .flatten()
+            .map(|(tile_id, _rule)| tile_id);
         self.windows[win]
             .panes
             .get_mut(&pane_id)
             .ok_or_else(|| format!("pane {pane_id} has no runtime"))?
             .set_hidden(hidden);
         log::info!("pane_hide: pane={pane_id} hidden={hidden}");
+        if let Some(next) = next_focus {
+            log::info!("pane_hide: focus -> {next:?} (pane={pane_id} was focused)");
+            self.windows[win].navigate_to(next);
+        } else if hiding_focused {
+            // Focus stays so the same shortcut can reveal the pane again.
+            log::info!(
+                "pane_hide: pane={pane_id} keeps focus, no other visible pane in its window"
+            );
+        }
         self.mark_workspace_dirty();
         Ok(())
     }
