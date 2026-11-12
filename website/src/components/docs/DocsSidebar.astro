@@ -1,0 +1,37 @@
+---
+import { docsNav } from '../../lib/docsNav';
+
+interface Props {
+  currentSlug?: string;
+  landing?: boolean;
+}
+const { currentSlug, landing = false } = Astro.props;
+---
+<aside class="docs-sidebar">
+  <details class="docs-navigation" open>
+    <summary>Docs menu</summary>
+    <nav aria-label="Documentation">
+      <a
+        href="/docs"
+        class:list={['docs-nav-item', 'docs-nav-home', { active: landing }]}
+        aria-current={landing ? 'page' : undefined}
+      >Start here</a>
+      {docsNav.map(group => (
+        <div class="docs-nav-group">
+          <p class="docs-nav-label">{group.section}</p>
+          <ul>
+            {group.items.map(item => (
+              <li>
+                <a
+                  href={`/docs/${item.slug}`}
+                  class:list={['docs-nav-item', { active: currentSlug === item.slug }]}
+                  aria-current={currentSlug === item.slug ? 'page' : undefined}
+                >{item.title}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  </details>
+</aside>

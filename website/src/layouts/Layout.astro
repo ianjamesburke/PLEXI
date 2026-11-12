@@ -9,12 +9,15 @@ interface Props {
   description?: string;
   image?: string;
   type?: 'website' | 'article';
+  /** Keep the page out of search indexes (beta-gated or utility pages). */
+  noindex?: boolean;
 }
 const {
-  title = "Plexi — The last app you'll ever need.",
-  description = 'Your terminal, your agents and your plugins in one window. Build tools with AI and own everything you make.',
+  title = "Plexi: the last app you'll ever need",
+  description = 'Plexi is an agent operating system for developers who work with coding agents. Terminals, agents and plugins in one tiled window, driven by one CLI.',
   image = '/og-default.png',
   type = 'website',
+  noindex = false,
 } = Astro.props;
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
@@ -31,6 +34,7 @@ const imageURL = new URL(image, Astro.site).toString();
   <title>{title}</title>
   <meta name="description" content={description} />
   <link rel="canonical" href={canonicalURL} />
+  {noindex && <meta name="robots" content="noindex" />}
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" href="/favicon.ico" sizes="32x32" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

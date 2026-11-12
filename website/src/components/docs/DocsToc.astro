@@ -1,0 +1,57 @@
+---
+interface Props {
+  headings: { depth: number; slug: string; text: string }[];
+}
+const { headings } = Astro.props;
+// Long reference pages (the CLI has one heading per command group) get a filter.
+const filterable = headings.length > 12;
+---
+<nav class="docs-toc" aria-label="On this page">
+  <p class="docs-toc-title">On this page</p>
+  {filterable && (
+    <label class="docs-toc-filter">
+      <span class="sr-only">Filter sections</span>
+      <input type="search" placeholder="Filter sections" autocomplete="off" spellcheck="false" />
+    </label>
+  )}
+  <ul>
+    {headings.map(h => (
+      <li><a href={`#${h.slug}`}>{h.text}</a></li>
+    ))}
+  </ul>
+  {filterable && <p class="docs-toc-empty" hidden>No section matches.</p>}
+</nav>
+
+<script>
+  const toc = document.querySelector<HTMLElement>('.docs-toc');
+  if (toc) {
+    const links = [...toc.querySelectorAll<HTMLAnchorElement>('ul a')];
+
+    const input = toc.querySelector<HTMLInputElement>('.docs-toc-filter input');
+    const empty = toc.querySelector<HTMLElement>('.docs-toc-empty');
+    input?.addEventListener('input', () => {
+      const query = input.value.trim().toLowerCase();
+      let shown = 0;
+      for (const link of links) {
+        const match = link.textContent?.toLowerCase().includes(query) ?? false;
+        if (link.parentElement) link.parentElement.hidden = !match;
+        if (match) shown += 1;
+      }
+      if (empty) empty.hidden = shown > 0;
+    });
+
+    // Mark the section currently being read.
+    const byId = new Map(links.map(link => [decodeURIComponent(link.hash.slice(1)), link]));
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        links.forEach(link => link.classList.remove('current'));
+        byId.get(entry.target.id)?.classList.add('current');
+      }
+    }, { rootMargin: '-100px 0px -70% 0px' });
+    for (const id of byId.keys()) {
+      const heading = document.getElementById(id);
+      if (heading) observer.observe(heading);
+    }
+  }
+</script>

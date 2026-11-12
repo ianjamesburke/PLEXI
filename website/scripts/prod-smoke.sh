@@ -26,7 +26,7 @@ check "registry index"   "$BASE/registry/v1/index.json"
 
 # Every artifact in the index must download and match its checksum name.
 index=$(curl -s --max-time 20 "$BASE/registry/v1/index.json")
-for checksum in $(echo "$index" | python3 -c "import json,sys; [print(a['checksum']) for a in json.load(sys.stdin)['apps']]"); do
+for checksum in $(echo "$index" | python3 -c "import json,sys; [print(a['checksum']) for a in json.load(sys.stdin)['plugins']]"); do
   url="$BASE/registry/v1/packages/$checksum.plexipkg"
   actual=$(curl -s -L --max-time 60 "$url" | shasum -a 256 | cut -d' ' -f1) || actual="download-failed"
   if [[ "$actual" == "$checksum" ]]; then

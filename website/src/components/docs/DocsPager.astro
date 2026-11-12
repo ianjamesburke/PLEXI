@@ -1,0 +1,24 @@
+---
+import { docNeighbors } from '../../lib/docsNav';
+
+interface Props {
+  currentSlug?: string;
+}
+const { prev, next } = docNeighbors(Astro.props.currentSlug);
+---
+{(prev || next) && (
+  <nav class="docs-pager" aria-label="Previous and next page">
+    {prev ? (
+      <a class="docs-pager-link prev" href={`/docs/${prev.slug}`}>
+        <span class="docs-pager-dir">Previous</span>
+        <span class="docs-pager-title">{prev.title}</span>
+      </a>
+    ) : <span />}
+    {next && (
+      <a class="docs-pager-link next" href={`/docs/${next.slug}`}>
+        <span class="docs-pager-dir">Next</span>
+        <span class="docs-pager-title">{next.title}</span>
+      </a>
+    )}
+  </nav>
+)}

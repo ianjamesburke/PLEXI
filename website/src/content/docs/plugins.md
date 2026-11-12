@@ -1,78 +1,18 @@
 ---
-title: Plugins
-description: Build and run Plexi plugins.
+title: Plugin guide
+description: How a Plexi plugin is written, where it runs, what it may touch, and how to read its logs.
 order: 5
 ---
 
-Plexi plugins render into panes through PGAP. The Python SDK is the default authoring path.
-
-## Execution and permissions
-
-Python plugins opened in panes run in CPython-in-WASM, inside a Wasmtime store.
-The host routes `.py` and `.pyc` entries to this adapter and does not fall back
-to a native subprocess when the WASM bundle is missing. Rust WASM components
-use the component runtime; both paths gate host APIs through capabilities.
-
-The Python guest receives read-only mounts for its plugin directory, the SDK,
-and the Python standard library. Host filesystem access, network requests,
-and secrets go through the host APIs and their grants. Declaring a capability
-in the manifest requests access; it does not grant access by itself.
-
-Native Python still runs during development tooling, such as type checks and
-SDK tests executed with a local interpreter. Those processes have the permissions
-of the user who starts them; the pane sandbox does not cover them. A terminal
-pane running `python3` is also an ordinary native process.
-
-The routing and sandbox setup are defined by
-[`open_python_wasm_view_pane` and `build_python_runtime`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/pane_ops/create.rs)
-and [`WasmPythonRuntime::launch`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/host/wasm_python.rs).
-The [plugin checker](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/cli/plugin_check.rs)
-uses WASM for render checks and native tooling for static analysis.
-
-## Create a plugin
-
-From inside a Plexi workspace:
-
-```sh
-plexi plugin init my-plugin
-```
-
-Outside a workspace, use `--global`.
-
-This scaffolds a new plugin folder with:
-
-```text
-my-plugin/
-  manifest.toml    ← capabilities, entry point, metadata
-  main.py          ← entry point
-  tests/           ← PluginHarness smoke tests
-  fixtures/        ← seed state for plugin check
-  AGENTS.md        ← notes for coding agents working on the plugin
-```
-
-Validate the plugin and write screenshots:
-
-```sh
-plexi plugin check ./my-plugin --png-dir /tmp/my-plugin-shots
-```
-
-## Open a view
-
-Pass the path to the plugin folder:
-
-```sh
-plexi view open ./my-plugin
-```
-
-The view opens in a pane. `plexi view list --json` lists declared views. A plugin ID opens its only view or its explicitly declared default; multiple unmarked views return the available choices. A plugin with no views cannot be opened.
-
-The retained visualizers open with `plexi view open cli-renderer -- git` and `plexi view open mcp-renderer -- filesystem`; `--cli git` and `--mcp filesystem` select those views directly. Their existing experiment gates still apply. `plexi agents-dashboard` opens the Agents dashboard when its experiment is enabled. Agents remain separate from plugins.
-
-These names describe the 0.5.0 checkpoint source, not a deployed marketplace.
+A plugin renders its views into panes through [PGAP](/docs/pgap), the protocol
+between a plugin and the host. The Python SDK is the default way to write one.
+If you have not built one yet, start with
+[Build your first plugin](/docs/first-plugin).
 
 ## The plugin pattern
 
-SDK v3 plugins are module-level `init`, `update`, and `view` functions. `view()` returns a component tree and must stay pure:
+An SDK v3 plugin is three module-level functions: `init`, `update` and `view`.
+There is no class to inherit from.
 
 ```python
 #!/usr/bin/env python3
@@ -102,7 +42,61 @@ def view():
     ], grow=True)
 ```
 
-Canvas plugins also return from `view()`: use `Canvas(...)` components and `RenderFrame` events for animation.
+- `init(size, args)` runs once on launch and returns startup effects.
+- `update(event)` runs for every input event and returns effects. Effects are data; the host applies them after `update` returns.
+- `view()` returns what to draw and must stay pure. All mutation goes through effects.
+
+Pick one rendering mode per plugin. Forms, lists and dashboards return a
+component tree (`Column`, `HStack`, `Text`, `Button`, `TextInput`). Games and
+visualizations return a `Canvas([...])` and advance their state from
+`RenderFrame` events. The [Python SDK reference](/docs/sdk) lists every
+component, effect and event.
+
+## The working loop
+
+```sh
+plexi plugin init my-plugin                              # scaffold
+plexi plugin check ./my-plugin --png-dir /tmp/shots      # validate and render
+plexi view open ./my-plugin                              # open the view in a pane
+plexi plugin test ./my-plugin                            # run its PluginHarness tests
+```
+
+`plexi plugin check` is the gate: it validates the manifest, inspects SDK usage
+without importing your code, and renders the view at small and normal pane
+sizes. There is no build step.
+
+With `watch = true` under `[plugin]` in the manifest, saving a source file
+reloads the view in the same pane. New scaffolds set it.
+
+`plexi view render ./my-plugin --png --output shot.png` renders a view without
+a host window, which is how an agent looks at its own work.
+
+`plexi_sdk` is importable only inside Plexi's plugin runtime. A bare
+`python3 -c "import plexi_sdk"` in a terminal fails or finds a stale copy. Test
+by opening the view or running `plexi plugin test`.
+
+## Execution and permissions
+
+Python plugins opened in panes run in CPython-in-WASM, inside a Wasmtime store.
+The host routes `.py` and `.pyc` entries to this adapter and does not fall back
+to a native subprocess when the WASM bundle is missing. Rust WASM components
+use the component runtime. Both paths gate host APIs through capabilities.
+
+The Python guest receives read-only mounts for its plugin directory, the SDK,
+and the Python standard library. Host filesystem access, network requests,
+and secrets go through the host APIs and their grants. Declaring a capability
+in the manifest requests access; it does not grant access by itself.
+
+Native Python still runs during development tooling, such as type checks and
+SDK tests executed with a local interpreter. Those processes have the permissions
+of the user who starts them; the pane sandbox does not cover them. A terminal
+pane running `python3` is also an ordinary native process.
+
+The routing and sandbox setup are defined by
+[`open_python_wasm_view_pane` and `build_python_runtime`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/pane_ops/create.rs)
+and [`WasmPythonRuntime::launch`](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/host/wasm_python.rs).
+The [plugin checker](https://github.com/ianjamesburke/PLEXI/blob/alpha/src/cli/plugin_check.rs)
+uses WASM for render checks and native tooling for static analysis.
 
 ## Capabilities
 
@@ -113,7 +107,23 @@ Declare what your plugin needs in `manifest.toml`:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Common capabilities: `secrets.get`, `net.http`, `fs.read`, `fs.write`, `ai.query`, `audio.record`, `timer`.
+Unknown IDs fail before the plugin starts. The
+[capability registry](/docs/plugin-manifest#capability-registry) lists every
+accepted ID and whether the host serves it yet. `plexi plugin inspect ./my-plugin`
+prints the trust sheet a person sees before installing your plugin.
+
+## Wrapping a CLI or an MCP server
+
+Two built-in views wrap tools that have no Plexi UI of their own:
+
+```sh
+plexi view open --cli git
+plexi view open --mcp filesystem
+```
+
+Both are behind experiments. `plexi experiments list` shows their state.
+`plexi agents-dashboard` opens the Agents dashboard when its experiment is
+enabled. Agents are separate from plugins.
 
 ## Logging
 
@@ -128,14 +138,35 @@ def init(size, args):
     return []
 ```
 
-On macOS and Linux the channel log is `~/.plexi-<channel>/plexi.log`; stable uses `~/.plexi/plexi.log`. On Windows it is `plexi.log` in the corresponding `.plexi-<channel>` directory under the user's home directory. Plexi rolls the live file by day or size. Dated archives are named `plexi-YYYY-MM-DD.log` (with a numeric suffix when needed), and `[log] retention_days` defaults to 30.
+On macOS the channel log is `~/.plexi-<channel>/plexi.log`; stable uses
+`~/.plexi/plexi.log`. Plexi rolls the live file by day or size. Dated archives
+are named `plexi-YYYY-MM-DD.log` (with a numeric suffix when needed), and
+`[log] retention_days` defaults to 30.
 
-Set `[log] level` in the channel's `config.toml` to `error`, `warn`, `info`, `debug`, or `trace`. A config reload applies the level to the running host. Third-party targets stay at warning level. Logs can contain anything a plugin explicitly writes, so never put secrets or user input in a plugin log or stderr.
+Set `[log] level` in the channel's `config.toml` to `error`, `warn`, `info`,
+`debug`, or `trace`. A config reload applies the level to the running host.
+Third-party targets stay at warning level. Logs can contain anything a plugin
+explicitly writes, so never put secrets or user input in a plugin log or stderr.
 
-SDK log messages appear with a `plugin::<id>:` message prefix and the host runtime's log target. Guest stderr lines carry a `plugin::<id> CPython WASM stderr` prefix; traceback lines are recorded at error level. Open the Logs plugin to tail, filter, and search the channel log. Its `logs.query` assistant tool returns matching lines, and `logs.set_filter` changes the displayed level.
+SDK log messages appear with a `plugin::<id>:` message prefix and the host
+runtime's log target. Guest stderr lines carry a `plugin::<id> CPython WASM stderr`
+prefix; traceback lines are recorded at error level. Open the Logs plugin
+(`plexi view open logs`) to tail, filter, and search the channel log.
 
-`plexi debug session list` lists recorded sessions; `plexi debug session show latest` reads the latest session, even after the host exits. Use `--pane <id>` to narrow the view and `--cli` for CLI calls. Session records live under the channel profile's `sessions/` directory. CLI content arguments are replaced by length and digest placeholders, and secret values and environment assignments are redacted. Tool inputs and outputs and plugin event content are recorded as lengths, while routing and session provenance remain available. `--join-agents` also reads external agent transcripts, which have their own content and privacy rules.
+## Session records
 
-To record CLI content deliberately, set `PLEXI_TRACE_CAPTURE_CONTENT=1` in both the host and the calling CLI process. Secret-named options and environment assignments remain redacted, but other content may contain sensitive text. Invalid CLI calls stay redacted. Existing trace files are not rewritten when this setting changes.
+`plexi debug session list` lists recorded sessions, and
+`plexi debug session show latest` reads the latest one, even after the host
+exits. Use `--pane <id>` to narrow the view and `--cli` for CLI calls.
 
-See also: [PGAP](/docs/pgap), [Secrets](/docs/secrets)
+CLI content arguments are replaced by length and digest placeholders, and
+secret values and environment assignments are redacted. Tool inputs and
+outputs and plugin event content are recorded as lengths, while routing and
+session provenance remain available. `--join-agents` also reads external agent
+transcripts, which have their own content and privacy rules.
+
+To record CLI content deliberately, set `PLEXI_TRACE_CAPTURE_CONTENT=1` in both
+the host and the calling CLI process. Secret-named options and environment
+assignments remain redacted, but other content may contain sensitive text.
+Invalid CLI calls stay redacted. Existing trace files are not rewritten when
+this setting changes.
