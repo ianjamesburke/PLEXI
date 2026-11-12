@@ -874,7 +874,7 @@ fn column_flex_gaps(
     match justify {
         Justify::Start => Vec::new(),
         Justify::Center => vec![0..0, n..n],
-        Justify::End => vec![0..0],
+        Justify::End => std::iter::once(0..0).collect(),
         Justify::SpaceBetween => (1..n).map(|at| at..at).collect(),
     }
 }
@@ -940,7 +940,7 @@ fn place_along_row(
     }
     let fixed = natural.iter().flatten().sum::<f32>() + gap * (n - 1) as f32;
     let leftover = available - fixed;
-    if !(leftover >= 0.0) {
+    if !leftover.is_finite() || leftover < 0.0 {
         return None;
     }
     let growers = natural.iter().filter(|w| w.is_none()).count();
