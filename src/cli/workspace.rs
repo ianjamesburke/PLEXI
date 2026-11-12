@@ -635,6 +635,9 @@ fn write_secret_inventory(
         }
         log::info!("folder_secrets: listed inventory backend={backend}");
     }
+    if let Some(note) = &inventory.grant_details_unavailable {
+        writeln!(output, "{note}").map_err(|e| e.to_string())?;
+    }
     for skipped in &inventory.skipped {
         match skipped {
             SkippedSecrets::OutsidePaneContext {
@@ -966,10 +969,12 @@ fn read_secret_value(name: &str, from_env: bool) -> Result<zeroize::Zeroizing<St
     Ok(zeroize::Zeroizing::new(value))
 }
 
+/// The CLI refuses, logs, and writes no audit row: the sealed audit belongs
+/// to the host process (stint 1291).
 fn audit_folder_denial(actor: &str, resource: &str, call_id: &str) {
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-    monitor.note_denial(actor, call_id, resource, "", "permission_denied");
-    log::info!("folder_secrets: refused actor={actor} resource={resource} call_id={call_id}");
+    log::info!(
+        "folder_secrets: refused actor={actor} resource={resource} call_id={call_id}; not audited, the CLI process does not write the sealed audit"
+    );
 }
 
 fn actor_from_flags(
@@ -1225,17 +1230,19 @@ pub fn folder_secret_read(
         let result = match crate::workspace::secrets::read_through_host_gate(&actor, name, &folder)
         {
             Some(proxied) => proxied,
+            // No in-process fallback (stint 1291): only the host admits a read.
             None => {
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                    &crate::config::config_dir(),
-                );
-                crate::workspace::secrets::read_folder_secret(
-                    &monitor,
-                    crate::workspace::secrets::folder_store(),
-                    &actor,
-                    name,
-                    &folder,
-                )
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                    .map_err(|error| error.to_string())
+                    .and_then(|monitor| {
+                        crate::workspace::secrets::read_folder_secret(
+                            &monitor,
+                            crate::workspace::secrets::folder_store(),
+                            &actor,
+                            name,
+                            &folder,
+                        )
+                    })
             }
         };
         match result {
@@ -1349,11 +1356,12 @@ mod secret_set_tests {
             !profile.join("grants.toml").exists(),
             "the cli must not record a folder-secret allow"
         );
-        let audit =
-            fs::read_to_string(profile.join("permission-audit.jsonl")).expect("refusal is audited");
-        assert!(audit.contains("permission_denied"));
-        assert!(audit.contains("FOLDER_B_SECRET"));
-        assert!(!audit.contains("secret-value-canary"));
+        // Stint 1291: the CLI process does not write the sealed audit; the
+        // refusal is logged only.
+        assert!(
+            !profile.join("permission-audit.jsonl").exists(),
+            "the cli must not write the sealed audit"
+        );
         assert_eq!(
             crate::workspace::secrets::backend_label(),
             "in-memory",
@@ -1498,6 +1506,25 @@ mod secret_list_tests {
         manager::{mutate_secret, Mutation, SecretTarget},
     };
 
+    /// Stint 1291: `secret list` from a CLI process still lists names, and says
+    /// in one line that grant and last-used details come from the host.
+    #[test]
+    fn secret_list_outside_the_host_omits_grant_details_and_says_so() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let cwd = tempfile::tempdir().unwrap();
+        let mut output = Vec::new();
+        crate::broker::custody::as_cli_process(|| {
+            write_secret_list(cwd.path(), true, false, &mut output).unwrap()
+        });
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains(crate::workspace::secrets::manager::GRANT_DETAILS_FROM_HOST),
+            "{output}"
+        );
+        assert!(!profile.path().join("permission-audit.jsonl").exists());
+    }
+
     fn check_listing(global: bool, folders_enabled: bool, json: bool) {
         let profile = tempfile::tempdir().unwrap();
         let _profile = crate::config::set_test_profile_dir(profile.path().into());
@@ -1505,7 +1532,7 @@ mod secret_list_tests {
         let cfg =
             secrets::init_workspace(root.path(), &crate::config::workspace_channel_dir()).unwrap();
         let root_path = crate::platform::path::canonical_or_self(root.path());
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path()).unwrap();
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let names = [
             format!("GLOBAL_{suffix}"),

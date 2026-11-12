@@ -625,7 +625,12 @@ impl PlexiApp {
         }
 
         // 2. PermissionMonitor pending requests & open_needs_you items.
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        // Display only. Outside the host there are no broker items to show.
+        let monitor =
+            PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap_or_else(|error| {
+                log::error!("attention: no permission monitor in this process: {error}");
+                PermissionMonitor::ephemeral()
+            });
         for (p_idx, pending) in monitor.list_pending().into_iter().enumerate() {
             let req_id = pending.pending_request_id.clone();
             if self.attention_queue.answered_ask_ids.contains(&req_id) || seen_ids.contains(&req_id)
@@ -1181,6 +1186,7 @@ impl PlexiApp {
             })
             .and_then(|rid| {
                 PermissionMonitor::for_profile(&crate::config::config_dir())
+                    .ok()?
                     .open_needs_you()
                     .into_iter()
                     .find(|r| r.id == rid)
@@ -1188,13 +1194,15 @@ impl PlexiApp {
             });
         let mut ids = vec![notice_id.to_string()];
         if let Some(resource) = resource {
-            ids.extend(
-                PermissionMonitor::for_profile(&crate::config::config_dir())
-                    .open_needs_you()
-                    .into_iter()
-                    .filter(|r| r.kind == NeedsYouKind::Integrity && r.resource == resource)
-                    .map(|r| r.id),
-            );
+            if let Ok(monitor) = PermissionMonitor::for_profile(&crate::config::config_dir()) {
+                ids.extend(
+                    monitor
+                        .open_needs_you()
+                        .into_iter()
+                        .filter(|r| r.kind == NeedsYouKind::Integrity && r.resource == resource)
+                        .map(|r| r.id),
+                );
+            }
         }
         ids.sort();
         ids.dedup();
@@ -1393,7 +1401,8 @@ impl PlexiApp {
 
         // 4. Check NeedsYou records with preview_refs
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .ok()?;
         for rec in monitor.open_needs_you() {
             let rec_pid = rec.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
                 rec.actor
@@ -1661,7 +1670,15 @@ impl PlexiApp {
         // Dispatch through the underlying host approval / notification channel.
         match &overlay.source {
             QueueSource::BrokerPending { request_id } => {
-                let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+                let monitor = match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+                    Ok(monitor) => monitor,
+                    Err(error) => {
+                        log::error!("decision_overlay: {error}");
+                        self.approval_keyboard.last_error =
+                            Some((request_id.clone(), error.to_string()));
+                        return false;
+                    }
+                };
                 let choice = match option.key.as_str() {
                     "allow_always" => ApprovalChoice::Always,
                     "deny" => ApprovalChoice::Deny,
@@ -2111,8 +2128,16 @@ impl PlexiApp {
                 self.save_notifications();
             }
             QueueSource::NeedsYou { request_id, .. } => {
-                let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-                let _ = monitor.resolve_needs_you_from(request_id, false, ResolveSurface::Desktop);
+                match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+                    Ok(monitor) => {
+                        let _ = monitor.resolve_needs_you_from(
+                            request_id,
+                            false,
+                            ResolveSurface::Desktop,
+                        );
+                    }
+                    Err(error) => log::error!("attention: dismiss left item open: {error}"),
+                }
             }
             QueueSource::ChildResult { pane_id } => {
                 self.child_result_events.retain(|&pid, _| pid != *pane_id);
@@ -2712,7 +2737,7 @@ mod tests {
             let mut h = HostHarness::new();
             let pane_id = h.add_focused_terminal();
             let root = tempfile::tempdir().unwrap();
-            let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+            let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
             let store = InMemoryKeychain::new();
             store.set("plexi:ws:CANARY", PROTECTED_VALUE).unwrap();
             let actor = SecretActor {
@@ -3349,7 +3374,7 @@ mod tests {
         });
         h.hidden_frame();
         h.app.sync_attention_queue();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let item = monitor
             .open_needs_you()
             .into_iter()
@@ -3411,7 +3436,7 @@ mod tests {
             .collect();
         assert_eq!(asks.len(), 2, "distinct requests must remain visible");
         assert_ne!(asks[0].id, asks[1].id);
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         for ask in &asks {
             assert_eq!(
                 monitor
@@ -3439,7 +3464,7 @@ mod tests {
     fn permission_with_unknown_outcome_does_not_report_success() {
         let mut h = HostHarness::new();
         h.add_focused_terminal();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let id = monitor
             .file_needs_you_with_details(
                 NeedsYouFile {
@@ -3860,7 +3885,7 @@ mod tests {
         let mut h = HostHarness::new();
         let focused = h.add_focused_terminal();
         let context = h.app.router.active().context_id;
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let id = monitor
             .file_needs_you_with_details(
                 NeedsYouFile {
@@ -4029,7 +4054,7 @@ mod tests {
     fn needs_you_failed_audit_is_retryable(with_choices: bool) {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let mut permission_id = None;
         if with_choices {
             // Rich asks use the answer branch; agent reports reuse the same run tag.
@@ -4193,7 +4218,7 @@ mod tests {
         let pane_5 = h.add_test_pane();
         h.app.set_context_columns(ctx_beta, vec![vec![pane_5]]);
 
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Question,
@@ -4251,7 +4276,7 @@ mod tests {
     fn enter_on_notice_opens_decision_overlay_and_records_acknowledged_resolution() {
         let mut h = HostHarness::new();
         let pane_id = h.add_test_pane();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
 
         let notice_id = monitor
             .file_needs_you(NeedsYouFile {

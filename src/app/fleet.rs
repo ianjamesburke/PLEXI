@@ -1078,7 +1078,8 @@ mod attention_tests {
             "attention card must be cleared when agent transitions to idle"
         );
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let settled = monitor.get_needs_you(&question_id).expect("settled item");
         assert_eq!(
             settled.resolution,
@@ -1399,12 +1400,16 @@ impl PlexiApp {
         if let Some(id) = pane_id {
             self.mark_agent_seen(id);
         }
-        let _ = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .resolve_needs_you_from(
-                &record.id,
-                true,
-                crate::broker::gate::ResolveSurface::Desktop,
-            );
+        match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()) {
+            Ok(monitor) => {
+                let _ = monitor.resolve_needs_you_from(
+                    &record.id,
+                    true,
+                    crate::broker::gate::ResolveSurface::Desktop,
+                );
+            }
+            Err(error) => log::error!("attention: result item left open: {error}"),
+        }
         result_path
     }
 
@@ -1428,8 +1433,14 @@ impl PlexiApp {
         session_id: Option<&str>,
     ) {
         let withdrawn =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .withdraw_agent_needs_you(pane_id, session_id);
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor.withdraw_agent_needs_you(pane_id, session_id),
+                Err(error) => {
+                    log::error!("attention: agent items not withdrawn: {error}");
+                    Vec::new()
+                }
+            };
         if !withdrawn.is_empty() {
             log::info!(
                 "attention: withdrew {} agent needs-you item(s) for pane_id={pane_id}: {:?}",

@@ -42,7 +42,12 @@ pub struct Prepared {
 
 #[derive(Debug)]
 pub enum GateStop {
-    Required { pending_request_id: String },
+    Required {
+        pending_request_id: String,
+    },
+    /// This process is not the host and no host route exists for the
+    /// command, so nothing was filed (stint 1291).
+    NoHostRoute,
     Failed(String),
 }
 
@@ -114,8 +119,13 @@ fn set_path(id: &str) -> PathBuf {
     sets_dir().join(format!("{id}.json"))
 }
 
-fn monitor() -> std::sync::Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+/// Host only. In a CLI process this is the named "not the host" error, so
+/// every gated change command refuses there (stint 1291).
+fn monitor() -> Result<std::sync::Arc<PermissionMonitor>, String> {
+    PermissionMonitor::for_profile(&crate::config::config_dir()).map_err(|error| {
+        log::info!("changes: refused outside the host process: {error}");
+        error.to_string()
+    })
 }
 
 fn bind(agent: &str, path: &Path, old: &str, new: &str) -> Result<BoundEdit, String> {
@@ -157,7 +167,10 @@ fn binding(edit: &BoundEdit) -> Result<ExactBinding, String> {
     })
 }
 
-/// Record an exact allow for this edit. The value of the edit is not logged.
+/// Test fixture: record an exact allow for this edit. Production has no
+/// route that records one without a click; `plexi changes allow` refuses
+/// (stint 1291).
+#[cfg(test)]
 pub fn allow_edit(agent: &str, path: &Path, old: &str, new: &str) -> Result<(), String> {
     let edit = bind(agent, path, old, new)?;
     let bound = binding(&edit)?;
@@ -169,7 +182,7 @@ pub fn allow_edit(agent: &str, path: &Path, old: &str, new: &str) -> Result<(), 
         GrantSource::User,
         &grant_id,
     );
-    let mon = monitor();
+    let mon = monitor()?;
     mon.store().record(record);
     mon.store().save();
     log::info!(
@@ -200,7 +213,7 @@ pub fn authorize_accept(id: &str) -> Result<(), String> {
         GrantSource::User,
         &grant_id,
     );
-    let mon = monitor();
+    let mon = monitor()?;
     mon.store().record(record);
     mon.store().save();
     log::info!(
@@ -220,7 +233,7 @@ struct AdmissionOk {
 
 fn admit_edit(edit: &BoundEdit) -> Result<AdmissionOk, GateStop> {
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let mon = monitor();
+    let mon = monitor().map_err(|_| GateStop::NoHostRoute)?;
     let admission = mon.admit(AdmitRequest {
         call_id: &call_id,
         tool: TOOL,
@@ -277,7 +290,7 @@ fn note(
     before: &str,
     after: &str,
 ) -> Result<(), String> {
-    monitor()
+    monitor()?
         .note_outcome(
             &edit.agent_id,
             &admitted.call_id,
@@ -1045,6 +1058,7 @@ mod tests {
         match refused {
             GateStop::Failed(message) => assert!(message.starts_with("stale:"), "{message}"),
             GateStop::Required { .. } => panic!("accept should be granted"),
+            GateStop::NoHostRoute => panic!("tests run as the host"),
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\nextra\n");
         assert!(preview(&prepared.id).unwrap().starts_with("status=stale\n"));
@@ -1072,6 +1086,7 @@ mod tests {
         match refused {
             GateStop::Failed(message) => assert!(message.starts_with("stale:"), "{message}"),
             GateStop::Required { .. } => panic!("accept should be granted"),
+            GateStop::NoHostRoute => panic!("tests run as the host"),
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
         assert!(preview(&prepared.id).unwrap().starts_with("status=stale\n"));

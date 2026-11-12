@@ -3366,7 +3366,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
         let pane_id = add_focused_pane(&mut h);
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let (id, _) = monitor
             .file_needs_you_with_details(
                 crate::broker::gate::NeedsYouFile {
@@ -3947,7 +3948,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let root = tempfile::tempdir().expect("workspace");
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let scope = crate::workspace::secrets::SecretScope::Workspace {
             id: "ws-banner".to_string(),
             root: root.path().to_path_buf(),
@@ -4015,7 +4017,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let profile = tempfile::tempdir().expect("profile");
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Keychain,
@@ -4123,7 +4126,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let grants = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
         let mut store =
-            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path()).unwrap();
         for capability_id in grants.capability_ids() {
             store.set_wasm(
                 plugin_id,
@@ -11370,7 +11373,7 @@ open(out + ".done", "w").close()
                 .unwrap_or("wasm");
             let workspace_root = fixture.parent().expect("fixture parent");
             let grants = WasmView::inspect_required_grants(&fixture).expect("inspect grants");
-            let mut store = PermissionStore::load_or_default(profile);
+            let mut store = PermissionStore::load_or_default(profile).unwrap();
             for capability_id in grants.capability_ids() {
                 store.set_wasm(
                     plugin_id,
@@ -12796,7 +12799,8 @@ open(out + ".done", "w").close()
     fn screenshot_attention_queue_realistic_asks_and_results() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,

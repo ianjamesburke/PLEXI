@@ -236,7 +236,7 @@ fn human_e7e5(h: &mut HostHarness, pane: u64) {
 }
 
 fn monitor() -> Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+    PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap()
 }
 
 /// `PlexiApp::new_for_test` gives every harness the same context id, and the

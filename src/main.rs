@@ -257,6 +257,15 @@ fn main() -> eframe::Result {
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    // Host start only (foreground, background and headless hosts all start
+    // here). Every CLI command, `host start` included, stays without custody.
+    if !cli_mode {
+        if let Err(error) = crate::broker::custody::install_for_host_start() {
+            log::error!("custody: {error}");
+            eprintln!("error: {error}");
+            cli::trace::exit(1);
+        }
+    }
     crate::app::plugin_migration::replay_early_traces();
     if !dropped_identity.is_empty() {
         log::info!("cli: dropped foreign channel identity variables {dropped_identity:?}");

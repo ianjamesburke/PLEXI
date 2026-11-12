@@ -43,6 +43,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
+use super::custody::HostProcess;
+
+#[cfg(test)]
+const TEST_HOST: &HostProcess = &HostProcess::for_test();
+
 /// Silent keychain work during startup stops here.
 ///
 /// `plexi host start` gives up at 90s. A keychain call that outlives this
@@ -152,7 +157,8 @@ pub(crate) fn plaintext_seal_refusal(detail: &str) -> String {
     )
 }
 
-pub(crate) fn get(account: &str) -> Result<Option<Zeroizing<String>>, String> {
+/// Host only: the [`HostProcess`] argument is the custody check (stint 1291).
+pub(crate) fn get(_host: &HostProcess, account: &str) -> Result<Option<Zeroizing<String>>, String> {
     if is_mac_account(account) && !pr_isolation_active() {
         if let Some(cached) = session_mac(account) {
             return Ok(cached);
@@ -239,7 +245,8 @@ pub(crate) fn clear_session_mac() {
         .clear();
 }
 
-pub(crate) fn add_new(account: &str, value: &str) -> Result<(), String> {
+/// Host only: the [`HostProcess`] argument is the custody check (stint 1291).
+pub(crate) fn add_new(_host: &HostProcess, account: &str, value: &str) -> Result<(), String> {
     let account = account.to_string();
     let value = value.to_string();
     dispatch_keychain(move || add_new_direct(&account, &value))
@@ -2180,7 +2187,10 @@ struct RestoreMacItem {
 #[cfg(test)]
 impl RestoreMacItem {
     fn take() -> Self {
-        let previous = get(MAC_ITEM).ok().flatten().map(|value| value.to_string());
+        let previous = get(TEST_HOST, MAC_ITEM)
+            .ok()
+            .flatten()
+            .map(|value| value.to_string());
         let _ = delete(MAC_ITEM);
         Self { previous }
     }
@@ -2238,9 +2248,9 @@ mod tests {
     fn host_key_is_not_written_to_the_user_secret_store() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
-        add_new("probe-item", "host-only-key").unwrap();
+        add_new(TEST_HOST, "probe-item", "host-only-key").unwrap();
         assert_eq!(
-            get("probe-item").unwrap().unwrap().as_str(),
+            get(TEST_HOST, "probe-item").unwrap().unwrap().as_str(),
             "host-only-key"
         );
         assert!(system_store().get("plexi:host:permission-mac").is_none());
@@ -2259,13 +2269,13 @@ mod tests {
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
         let account = "plexi:host:needs-you-journal-tip:\
             0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        assert!(get(account).unwrap().is_none());
+        assert!(get(TEST_HOST, account).unwrap().is_none());
         set(account, "abcd").unwrap();
-        assert_eq!(get(account).unwrap().unwrap().as_str(), "abcd");
+        assert_eq!(get(TEST_HOST, account).unwrap().unwrap().as_str(), "abcd");
         set(account, "ef01").unwrap();
-        assert_eq!(get(account).unwrap().unwrap().as_str(), "ef01");
+        assert_eq!(get(TEST_HOST, account).unwrap().unwrap().as_str(), "ef01");
         delete(account).unwrap();
-        assert!(get(account).unwrap().is_none());
+        assert!(get(TEST_HOST, account).unwrap().is_none());
         assert!(system_store().get(account).is_none());
     }
 
@@ -2290,7 +2300,7 @@ mod tests {
         });
         std::thread::spawn(move || {
             armed_rx.recv().unwrap();
-            let _ = done_tx.send(get(account));
+            let _ = done_tx.send(get(TEST_HOST, account));
         });
         let bound = Duration::from_secs(30);
         torn_down_rx
@@ -2310,14 +2320,14 @@ mod tests {
     fn unreadable_item_can_be_deleted_without_reading_it() {
         let _guard = ExclusiveHostKey::acquire();
         let _restore = RestoreMacItem::take();
-        add_new(MAC_ITEM, "previous-build-key").unwrap();
+        add_new(TEST_HOST, MAC_ITEM, "previous-build-key").unwrap();
         let denied = UnreadableMacKey::acquire();
-        let error = get(MAC_ITEM).expect_err("silent read fails");
+        let error = get(TEST_HOST, MAC_ITEM).expect_err("silent read fails");
         assert!(is_key_unreadable(&error), "{error}");
         assert!(error.contains("-25293"), "{error}");
         assert_eq!(denied.interactive_reads(), 0);
         delete(MAC_ITEM).expect("delete does not need the secret");
-        assert!(get(MAC_ITEM).unwrap().is_none());
+        assert!(get(TEST_HOST, MAC_ITEM).unwrap().is_none());
     }
 
     #[test]
@@ -2326,14 +2336,14 @@ mod tests {
         let _restore = RestoreMacItem::take();
         let _stable = RebuildStableAccess::set(true);
         let before = acl_mutations();
-        add_new(MAC_ITEM, "stable-key").unwrap();
+        add_new(TEST_HOST, MAC_ITEM, "stable-key").unwrap();
         assert_eq!(
             acl_mutations(),
             before,
             "startup must not call an ACL-mutating API"
         );
         simulate_new_code_identity();
-        let error = get(MAC_ITEM).expect_err("the mock ACL was not widened");
+        let error = get(TEST_HOST, MAC_ITEM).expect_err("the mock ACL was not widened");
         assert!(is_key_unreadable(&error), "{error}");
         assert!(error.contains("-25293"), "{error}");
     }
@@ -2351,13 +2361,16 @@ mod tests {
         let _guard = ExclusiveHostKey::acquire();
         let _restore = RestoreMacItem::take();
         let _adhoc = RebuildStableAccess::set(false);
-        add_new(MAC_ITEM, "ad-hoc-key").unwrap();
+        add_new(TEST_HOST, MAC_ITEM, "ad-hoc-key").unwrap();
         simulate_new_code_identity();
-        let error = get(MAC_ITEM).expect_err("ad-hoc rebuild loses the acl");
+        let error = get(TEST_HOST, MAC_ITEM).expect_err("ad-hoc rebuild loses the acl");
         assert!(is_key_unreadable(&error), "{error}");
         assert!(error.contains("-25293"), "{error}");
         delete(MAC_ITEM).expect("rotation can remove the old item");
-        add_new(MAC_ITEM, "rotated-key").unwrap();
-        assert_eq!(get(MAC_ITEM).unwrap().unwrap().as_str(), "rotated-key");
+        add_new(TEST_HOST, MAC_ITEM, "rotated-key").unwrap();
+        assert_eq!(
+            get(TEST_HOST, MAC_ITEM).unwrap().unwrap().as_str(),
+            "rotated-key"
+        );
     }
 }

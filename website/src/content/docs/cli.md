@@ -264,7 +264,7 @@ Preview and accept an agent's file edit before it is written.
 
 | Subcommand | Description |
 |---|---|
-| `allow` | Record a permission-gate allow for one exact edit |
+| `allow` | Refused: a terminal cannot allow an edit. Only a click in the Plexi window does; this command records nothing |
 | `propose` | Prepare an edit. The file is not modified |
 | `preview` | Print the prepared diff and whether the set is stale |
 | `accept` | Write a pending change set after the permission gate admits it |
@@ -274,7 +274,7 @@ Preview and accept an agent's file edit before it is written.
 
 ### `plexi changes allow`
 
-Record a permission-gate allow for one exact edit
+Refused: a terminal cannot allow an edit. Only a click in the Plexi window does; this command records nothing
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1134,7 +1134,7 @@ Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Pl
 | `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare plugin id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable) |
 | `--pack` | string | no | Install from a pack file or 'core' |
 | `--refresh` | flag | no | With --pack: re-extract already-installed `local:` plugins from this binary's embedded tree, replacing the installed copy. The update path for bundled core plugins on stable channels |
-| `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
+| `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently. Confirms the install only: no permission is granted, and the plugin asks in the Plexi window when it first runs |
 
 ### `plexi plugin uninstall`
 

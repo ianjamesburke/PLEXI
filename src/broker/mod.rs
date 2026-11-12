@@ -9,6 +9,7 @@
 //! capability path. Event streams, undo, model routing enforcement, and the
 //! `/permissions` UI surface come later; their target types exist as data only.
 
+pub mod custody;
 pub mod gate;
 pub(crate) mod host_key;
 pub mod integrity;
@@ -776,6 +777,9 @@ struct GrantStoreData {
 pub struct GrantStore {
     file: TomlStore<GrantStoreData>,
     untrusted: Vec<seal::IntegrityFault>,
+    /// Set only by the sealed loader. A store without it is in-memory and
+    /// never touches disk (stint 1291).
+    custody: Option<custody::HostProcess>,
 }
 
 impl Default for GrantStore {
@@ -783,8 +787,17 @@ impl Default for GrantStore {
         Self {
             file: TomlStore::detached(STORE_LABEL),
             untrusted: Vec::new(),
+            custody: None,
         }
     }
+}
+
+/// Load the legacy `permissions.toml` store. Host only (stint 1291).
+pub fn load_permission_store(
+    config_dir: &Path,
+) -> Result<PermissionStore, custody::NotHostProcess> {
+    let host = custody::host_process()?;
+    Ok(PermissionStore::load_sealed(&host, config_dir))
 }
 
 impl GrantStore {
@@ -804,8 +817,15 @@ impl GrantStore {
     /// skipped, the file is sealed, and a legacy audit log is given an
     /// authenticated tip. That path does not quarantine and does not record
     /// an integrity fault.
-    pub fn load_or_default(config_dir: &Path) -> Self {
-        if let Err(error) = seal::ensure_readable_mac_key(config_dir) {
+    ///
+    /// Host only: a process that never ran host start gets [`custody::NotHostProcess`].
+    pub fn load_or_default(config_dir: &Path) -> Result<Self, custody::NotHostProcess> {
+        let host = custody::host_process()?;
+        Ok(Self::load_sealed(&host, config_dir))
+    }
+
+    pub(in crate::broker) fn load_sealed(host: &custody::HostProcess, config_dir: &Path) -> Self {
+        if let Err(error) = seal::ensure_readable_mac_key(host, config_dir) {
             if host_key::is_key_unreadable(&error) {
                 log::info!(
                     "grant_store: mac key unreadable and rotation needs keychain access; left {} in place and loaded no grants",
@@ -818,16 +838,17 @@ impl GrantStore {
                         GrantStoreData::default(),
                     ),
                     untrusted: Vec::new(),
+                    custody: Some(*host),
                 };
             }
             log::error!("grant_store: mac key recovery failed: {error}");
         }
-        if let Some(store) = Self::adopt_legacy_unsealed(config_dir) {
+        if let Some(store) = Self::adopt_legacy_unsealed(host, config_dir) {
             return store;
         }
         let path = config_dir.join("grants.toml");
         let existed = path.is_file();
-        let loaded = seal::load_toml::<GrantStoreData>(&path);
+        let loaded = seal::load_toml::<GrantStoreData>(host, &path);
         if loaded.trusted {
             log::info!(
                 "grant_store: loaded {} records from {}",
@@ -846,21 +867,22 @@ impl GrantStore {
         let mut store = Self {
             file: TomlStore::at(path, STORE_LABEL, data),
             untrusted,
+            custody: Some(*host),
         };
         if rejected {
             log::info!("grant_store: grants.toml was rejected; permissions.toml was not imported");
             return store;
         }
-        store.import_and_retire_legacy(config_dir, loaded.trusted);
+        store.import_and_retire_legacy(host, config_dir, loaded.trusted);
         store
     }
 
     /// One-time adopt of a pre-seal `grants.toml`. `None` leaves the caller
     /// on the fail-closed path.
-    fn adopt_legacy_unsealed(config_dir: &Path) -> Option<Self> {
+    fn adopt_legacy_unsealed(host: &custody::HostProcess, config_dir: &Path) -> Option<Self> {
         let path = config_dir.join("grants.toml");
         let body = seal::legacy_unsealed_body(&path)?;
-        if !seal::profile_never_sealed(config_dir) {
+        if !seal::profile_never_sealed(host, config_dir) {
             return None;
         }
         let mut data = parse_legacy_grant_store(&body).ok()?;
@@ -872,14 +894,15 @@ impl GrantStore {
         let mut store = Self {
             file: TomlStore::at(path, STORE_LABEL, data),
             untrusted: Vec::new(),
+            custody: Some(*host),
         };
-        store.import_and_retire_legacy(config_dir, true);
+        store.import_and_retire_legacy(host, config_dir, true);
         if let Err(error) = store.try_save() {
             log::error!("grant_store: legacy grants.toml could not be sealed: {error}");
             return Some(store);
         }
         let audit = config_dir.join("permission-audit.jsonl");
-        if let Err(error) = seal::adopt_legacy_audit(&audit) {
+        if let Err(error) = seal::adopt_legacy_audit(host, &audit) {
             log::error!("grant_store: legacy permission-audit.jsonl was not sealed: {error}");
         } else {
             crate::broker::integrity::note_saved_file(&audit);
@@ -887,12 +910,17 @@ impl GrantStore {
         Some(store)
     }
 
-    fn import_and_retire_legacy(&mut self, config_dir: &Path, grants_trusted: bool) {
+    fn import_and_retire_legacy(
+        &mut self,
+        host: &custody::HostProcess,
+        config_dir: &Path,
+        grants_trusted: bool,
+    ) {
         let legacy_path = config_dir.join("permissions.toml");
         if !legacy_path.is_file() {
             return;
         }
-        let legacy = PermissionStore::load_or_default(config_dir);
+        let legacy = PermissionStore::load_sealed(host, config_dir);
         if let Some(fault) = legacy.integrity_fault().cloned() {
             log::info!(
                 "grant_store: skipped legacy migration; permissions.toml failed integrity ({})",
@@ -1065,9 +1093,17 @@ impl GrantStore {
     }
 
     /// Atomically write a sealed file. No-op for path-less test stores.
+    ///
+    /// Host only: the custody token is the one this store was loaded with.
     pub fn try_save(&self) -> Result<(), String> {
         let label = self.file.label();
-        seal::write_toml(&self.file.path, label, &self.file.data)?;
+        let Some(host) = self.custody.as_ref() else {
+            if self.file.path.as_os_str().is_empty() {
+                return Ok(());
+            }
+            return Err(custody::NotHostProcess.to_string());
+        };
+        seal::write_toml(host, &self.file.path, label, &self.file.data)?;
         crate::broker::integrity::note_saved_file(&self.file.path);
         Ok(())
     }
@@ -1298,6 +1334,9 @@ pub(crate) mod admission_matrix;
 
 #[cfg(test)]
 mod cli_operation_tests;
+
+#[cfg(test)]
+mod custody_guard_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1600,7 +1639,7 @@ mod tests {
     fn persistence_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let mut store = GrantStore::load_or_default(tmp.path());
+        let mut store = GrantStore::load_or_default(tmp.path()).unwrap();
         store.record(GrantRecord::plugin_capability(
             "my-app",
             ws.path(),
@@ -1610,7 +1649,7 @@ mod tests {
         store.record(agent_grant(Decision::Allow, GrantSource::User));
         store.save();
 
-        let reloaded = GrantStore::load_or_default(tmp.path());
+        let reloaded = GrantStore::load_or_default(tmp.path()).unwrap();
         assert_eq!(reloaded.records().len(), 2);
         assert_eq!(reloaded.evaluate(&agent_request(), None), Decision::Allow);
         let req = PermissionRequest::plugin_capability("my-app", ws.path(), Capability::NetHttp);
@@ -1622,7 +1661,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("grants.toml");
         std::fs::write(&path, b"not toml ][[[").unwrap();
-        let store = GrantStore::load_or_default(tmp.path());
+        let store = GrantStore::load_or_default(tmp.path()).unwrap();
         assert!(!path.exists(), "corrupt grants.toml must be renamed away");
         assert!(store.records().is_empty());
         let backup_exists = std::fs::read_dir(tmp.path()).unwrap().any(|e| {
@@ -1647,7 +1686,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
 
         // Seed a legacy permissions.toml with all three states.
-        let mut legacy = PermissionStore::load_or_default(tmp.path());
+        let mut legacy = PermissionStore::load_or_default(tmp.path()).unwrap();
         legacy.set(
             "my-app",
             ws.path(),
@@ -1669,7 +1708,7 @@ mod tests {
         legacy.save();
 
         // First load migrates all three, mapped per the spec table.
-        let store = GrantStore::load_or_default(tmp.path());
+        let store = GrantStore::load_or_default(tmp.path()).unwrap();
         assert_eq!(store.records().len(), 3, "migration must be loss-free");
         let ws_canon = ws.path().canonicalize().unwrap();
         for (cap, expected) in [
@@ -1700,7 +1739,7 @@ mod tests {
         );
 
         // Second load must not duplicate. The retired file is not enforcement.
-        let store2 = GrantStore::load_or_default(tmp.path());
+        let store2 = GrantStore::load_or_default(tmp.path()).unwrap();
         assert_eq!(store2.records().len(), 3, "migration must be idempotent");
         std::fs::remove_file(tmp.path().join("grants.toml")).unwrap();
         // Re-seed happens only from a live permissions.toml. With both gone,
@@ -1725,7 +1764,7 @@ mod tests {
     fn rejected_grants_do_not_import_legacy_permissions() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let mut legacy = PermissionStore::load_or_default(tmp.path());
+        let mut legacy = PermissionStore::load_or_default(tmp.path()).unwrap();
         legacy.set(
             "my-app",
             ws.path(),
@@ -1738,7 +1777,7 @@ mod tests {
             b"[[records]]\nactor_id = \"forged\"\n# plexi-mac:00\n",
         )
         .unwrap();
-        let store = GrantStore::load_or_default(tmp.path());
+        let store = GrantStore::load_or_default(tmp.path()).unwrap();
         assert!(store.records().is_empty());
         assert!(tmp.path().join("permissions.toml").is_file());
         assert!(!store.integrity_faults().is_empty());
@@ -1748,7 +1787,7 @@ mod tests {
     fn declared_non_sensitive_caps_are_listed_and_sensitive_caps_wait() {
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let monitor = gate::PermissionMonitor::open_profile(profile.path());
+        let monitor = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
         let declared =
             std::collections::HashSet::from([Capability::Timer, Capability::PermissionsManage]);
         let perms =
@@ -1773,7 +1812,7 @@ mod tests {
             1
         );
         std::fs::remove_file(profile.path().join("permissions.toml")).ok();
-        let reopened = gate::PermissionMonitor::open_profile(profile.path());
+        let reopened = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
         assert_eq!(
             reopened.store().evaluate(
                 &PermissionRequest::plugin_capability("sample", ws.path(), Capability::Timer),
@@ -1907,7 +1946,7 @@ grant_id = "grant_legacy_1"
 args_unbound = true
 "#;
         std::fs::write(dir.path().join("grants.toml"), legacy_toml).unwrap();
-        let store = GrantStore::load_or_default(dir.path());
+        let store = GrantStore::load_or_default(dir.path()).unwrap();
         assert_eq!(store.records().len(), 1);
         assert_eq!(store.records()[0].grant_id, "grant_legacy_1");
         assert_eq!(store.records()[0].kind, GrantKind::Hard);

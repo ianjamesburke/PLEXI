@@ -1258,8 +1258,18 @@ impl AgentHost {
             // seal save has not landed, and the next `agents.list` comes back
             // as `permission_required` with no `agents` field. Keep that
             // monitor. The subscription copy is still the file on disk.
-            self.grant_store = GrantStore::load_or_default(dir);
-            self.monitor = crate::broker::gate::PermissionMonitor::for_profile(dir);
+            match (
+                GrantStore::load_or_default(dir),
+                crate::broker::gate::PermissionMonitor::for_profile(dir),
+            ) {
+                (Ok(store), Ok(monitor)) => {
+                    self.grant_store = store;
+                    self.monitor = monitor;
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    log::error!("agent: workspace reload kept its grants unchanged: {error}");
+                }
+            }
             log::info!(
                 "agent: workspace reload kept the live permission monitor ({} grant(s))",
                 self.monitor.store().records().len()
@@ -1600,7 +1610,12 @@ impl AgentHost {
         model_modes: crate::config::ResolvedModelModes,
     ) -> Self {
         let config_dir = crate::config::config_dir();
-        let grant_store = GrantStore::load_or_default(&config_dir);
+        // Host only (stint 1291). Outside the host this agent host starts with
+        // no grants and a diskless monitor, so every call asks or is refused.
+        let grant_store = GrantStore::load_or_default(&config_dir).unwrap_or_else(|error| {
+            log::error!("agent: production host has no grant store: {error}");
+            GrantStore::default()
+        });
         // The config dir is an inert root that matches no pane's workspace —
         // replaced by the first `reload_workspace` with an active workspace.
         let mut host = Self::new(
@@ -1612,7 +1627,10 @@ impl AgentHost {
             )),
             config_dir.clone(),
         );
-        host.monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+        match crate::broker::gate::PermissionMonitor::for_profile(&config_dir) {
+            Ok(monitor) => host.monitor = monitor,
+            Err(error) => log::error!("agent: production host keeps a diskless monitor: {error}"),
+        }
         host.grants_dir = Some(config_dir);
         host
     }
@@ -2238,7 +2256,7 @@ default_tier = "low"
         let mut host =
             AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), ws.path().to_path_buf());
         host.grants_dir = Some(profile.path().to_path_buf());
-        host.monitor = PermissionMonitor::for_profile(profile.path());
+        host.monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let binding = crate::broker::ExactBinding {
             actor_type: ActorType::Agent,
             actor_id: "agent:lead".to_string(),
@@ -2492,6 +2510,7 @@ enabled = ["before-turn"]
         assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
         assert!(!writer.posture.allow.is_empty());
         assert!(GrantStore::load_or_default(profile.path())
+            .unwrap()
             .records()
             .is_empty());
     }
@@ -2537,6 +2556,7 @@ enabled = ["before-turn"]
         );
         assert!(
             GrantStore::load_or_default(profile.path())
+                .unwrap()
                 .records()
                 .is_empty(),
             "settings allow lists and leftover grant files do not authorize"

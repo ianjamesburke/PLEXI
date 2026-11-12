@@ -102,7 +102,10 @@ impl PlexiApp {
         if self.synthetic_input_frame {
             return;
         }
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let Ok(monitor) = PermissionMonitor::for_profile(&crate::config::config_dir()) else {
+            log::error!("approval: no permission monitor in this process");
+            return;
+        };
         if let Some(request) = monitor.list_pending().first() {
             self.approval_keyboard
                 .focus(request.pending_request_id.clone(), Instant::now());
@@ -166,7 +169,10 @@ impl PlexiApp {
         if self.synthetic_input_frame {
             return KeyDisposition::Consumed;
         }
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let Ok(monitor) = PermissionMonitor::for_profile(&crate::config::config_dir()) else {
+            log::error!("approval: no permission monitor in this process");
+            return KeyDisposition::Passthrough;
+        };
         if monitor.show_pending(&id).is_none() {
             if let Some(record) = monitor
                 .get_needs_you(&id)
@@ -438,7 +444,7 @@ mod tests {
     fn approval_keyboard_arm_oldest_escape_and_pane_typing() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let first = pending(&monitor, "FIRST", root.path());
         let second = pending(&monitor, "SECOND", root.path());
         let now = Instant::now();
@@ -482,7 +488,7 @@ mod tests {
     fn approval_keyboard_rejects_synthetic_and_repeat_input() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
@@ -511,7 +517,7 @@ mod tests {
     fn approval_keyboard_always_requires_confirmation_and_rearms() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
@@ -533,7 +539,7 @@ mod tests {
     fn approval_decision_key_stays_owned_until_release() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
@@ -655,7 +661,7 @@ mod tests {
         );
 
         // AgentDone NeedsYou item is open with "<agent> done: <summary>".
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let open = monitor.open_needs_you();
         let done_item = open
             .iter()
@@ -800,7 +806,7 @@ mod tests {
     fn keyboard_a_resolves_permission_request_and_change_after_arm() {
         use crate::broker::gate::NeedsYouKind as K;
         let mut h = HostHarness::new();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let req = file_item(&monitor, K::PermissionRequest, "run-a", &[]);
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&req));
@@ -844,7 +850,7 @@ mod tests {
     fn keyboard_digit_answers_question_and_blocked_run() {
         use crate::broker::gate::NeedsYouKind as K;
         let mut h = HostHarness::new();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let now = Instant::now();
         let q = file_item(&monitor, K::Question, "run-q", &["Proceed", "Abort"]);
         h.app.focus_approval();
@@ -882,7 +888,7 @@ mod tests {
     fn keyboard_needs_you_rejects_synthetic_and_modified_keys() {
         use crate::broker::gate::NeedsYouKind as K;
         let mut h = HostHarness::new();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let req = file_item(&monitor, K::PermissionRequest, "run-s", &[]);
         h.app.focus_approval();
         let now = Instant::now();
@@ -901,7 +907,7 @@ mod tests {
     fn approval_decision_failure_keeps_request_pending_and_surfaces_error() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let first = pending(&monitor, "FIRST", root.path());
         let _done = file_item(
             &monitor,

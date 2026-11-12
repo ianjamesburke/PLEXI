@@ -792,11 +792,6 @@ pub enum InstallConfirm {
     PreApproved,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct InstallGateDecision {
-    selected_wasm_optional: Vec<String>,
-}
-
 /// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
 /// Print the trust sheet for a validated plugin dir or package: identity,
 /// runtime + trust label, size, and every declared capability with its
@@ -963,71 +958,14 @@ pub fn confirm_install(
     }
 }
 
-fn parse_wasm_optional_selection(answer: &str, optional: &[String]) -> Result<Vec<String>, String> {
-    let trimmed = answer.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-        return Ok(Vec::new());
-    }
-    if trimmed.eq_ignore_ascii_case("all") {
-        return Ok(optional.to_vec());
-    }
-
-    let mut selected = Vec::new();
-    for raw in trimmed.split(',') {
-        let token = raw.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let index = token
-            .parse::<usize>()
-            .map_err(|_| format!("invalid optional WASM grant selection '{token}'"))?;
-        if index == 0 || index > optional.len() {
-            return Err(format!(
-                "optional WASM grant selection {index} is out of range 1..{}",
-                optional.len()
-            ));
-        }
-        let capability = optional[index - 1].clone();
-        if !selected.contains(&capability) {
-            selected.push(capability);
-        }
-    }
-    Ok(selected)
-}
-
-fn prompt_wasm_optional_grants(
-    report: &crate::app::package::PackageReport,
-    assume_yes: bool,
-    is_tty: bool,
-    reader: &mut impl io::BufRead,
-) -> Result<Vec<String>, String> {
-    if report.wasm_optional_capabilities.is_empty() || assume_yes {
-        return Ok(Vec::new());
-    }
-    if !is_tty {
-        return Ok(Vec::new());
-    }
-
-    eprintln!("Optional WASM grants to remember for this launch directory:");
-    for (index, capability) in report.wasm_optional_capabilities.iter().enumerate() {
-        eprintln!("  {}. {}", index + 1, capability);
-    }
-    eprint!("Grant optional WASM capabilities? [none/all/1,3] ");
-    let _ = io::stderr().flush();
-    let mut answer = String::new();
-    reader
-        .read_line(&mut answer)
-        .map_err(|e| format!("failed to read optional WASM grant selection: {e}"))?;
-    parse_wasm_optional_selection(&answer, &report.wasm_optional_capabilities)
-}
-
 /// Run the full trust gate for an interactive install: print the trust sheet,
-/// then prompt. Returns selected install-review decisions or an exit code.
+/// then prompt. `--yes` confirms the install only; it never answers a
+/// capability (stint 1291). Returns an exit code when the install stops.
 fn run_install_gate(
     report: &crate::app::package::PackageReport,
     assume_yes: bool,
     marketplace_reviewed: bool,
-) -> Result<InstallGateDecision, i32> {
+) -> Result<(), i32> {
     use std::io::IsTerminal;
     let label = trust_label_for(report, marketplace_reviewed);
     print_trust_sheet(report, label);
@@ -1046,15 +984,7 @@ fn run_install_gate(
         is_tty,
         &mut stdin,
     ) {
-        Ok(true) => match prompt_wasm_optional_grants(report, assume_yes, is_tty, &mut stdin) {
-            Ok(selected_wasm_optional) => Ok(InstallGateDecision {
-                selected_wasm_optional,
-            }),
-            Err(e) => {
-                eprintln!("error: {e}");
-                Err(1)
-            }
-        },
+        Ok(true) => Ok(()),
         Ok(false) => {
             eprintln!("install aborted — '{}' was not installed", report.id);
             Err(1)
@@ -1109,7 +1039,7 @@ pub fn plugin_install_with_pin(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    plugin_install_with_pin_inner(path, pin, confirm, assume_yes, None)
+    plugin_install_with_pin_inner(path, pin, confirm, assume_yes)
 }
 
 fn plugin_install_with_pin_inner(
@@ -1117,7 +1047,6 @@ fn plugin_install_with_pin_inner(
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
-    preapproved_gate: Option<InstallGateDecision>,
 ) -> i32 {
     let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
@@ -1132,15 +1061,11 @@ fn plugin_install_with_pin_inner(
     // content, or an outer path that already validated and prompted) proceed
     // with a warning so startup seeding can never break on legacy layouts.
     let mut validated_report = None;
-    let mut gate_decision = preapproved_gate.unwrap_or_default();
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                match run_install_gate(&report, assume_yes, false) {
-                    Ok(decision) => {
-                        gate_decision = decision;
-                    }
-                    Err(code) => return code,
+                if let Err(code) = run_install_gate(&report, assume_yes, false) {
+                    return code;
                 }
             }
             validated_report = Some(report);
@@ -1241,8 +1166,8 @@ fn plugin_install_with_pin_inner(
         let _ = std::fs::remove_dir_all(&staging);
         return 1;
     }
-    if let Some(report) = validated_report.as_ref() {
-        remember_wasm_install_review(report, &gate_decision.selected_wasm_optional);
+    if let (Some(report), InstallConfirm::Interactive) = (validated_report.as_ref(), confirm) {
+        announce_capabilities_ask_at_launch(report);
     }
 
     log::info!(
@@ -1257,91 +1182,61 @@ fn plugin_install_with_pin_inner(
     0
 }
 
-fn remember_wasm_install_review(
-    report: &crate::app::package::PackageReport,
-    selected_wasm_optional: &[String],
-) {
-    let workspace_root = match std::env::current_dir() {
-        Ok(path) => path,
-        Err(e) => {
-            log::warn!(
-                "plugin::install: could not resolve cwd for wasm install review '{}': {e}",
-                report.id
-            );
-            return;
-        }
-    };
-    let Some(summary) = persist_wasm_install_review(
-        report,
-        selected_wasm_optional,
-        &crate::config::config_dir(),
-        &workspace_root,
-    ) else {
-        return;
-    };
-    log::info!(
-        "plugin::install: wasm review plugin={} workspace={} required_granted={} optional_granted={} optional_deferred={}",
-        report.id,
-        workspace_root.display(),
-        summary.required_granted,
-        summary.optional_granted,
-        summary.optional_deferred
-    );
-    if summary.required_granted > 0 || summary.optional_granted > 0 {
-        println!(
-            "Remembered WASM grants for '{}': {} required, {} optional.",
-            report.id, summary.required_granted, summary.optional_granted
+/// Install writes no permission (stint 1291): the CLI process is not the
+/// host, and `--yes` confirms the install only. Says, per runtime, what the
+/// first launch gives automatically and what waits for a person.
+fn announce_capabilities_ask_at_launch(report: &crate::app::package::PackageReport) {
+    if let Some(line) = install_permission_line(report) {
+        log::info!(
+            "plugin::install: no grant written for {}: {line}",
+            report.id
         );
+        println!("{line}");
     }
 }
 
-fn persist_wasm_install_review(
-    report: &crate::app::package::PackageReport,
-    selected_wasm_optional: &[String],
-    config_dir: &std::path::Path,
-    workspace_root: &std::path::Path,
-) -> Option<crate::app::permissions::WasmInstallGrantSummary> {
-    if report.wasm_required_capabilities.is_empty() && report.wasm_optional_capabilities.is_empty()
-    {
+fn install_permission_line(report: &crate::app::package::PackageReport) -> Option<String> {
+    use crate::app::package::PackageRuntime;
+    // The same rule the host applies at first launch.
+    let (needs_person, automatic): (Vec<String>, Vec<String>) = report
+        .capabilities
+        .iter()
+        .map(|cap| cap.as_str().to_string())
+        .chain(report.wasm_required_capabilities.iter().cloned())
+        .chain(report.wasm_optional_capabilities.iter().cloned())
+        .partition(|id| crate::broker::gate::declared_capability_needs_click(id));
+    if automatic.is_empty() && needs_person.is_empty() {
         return None;
     }
-    let selected: std::collections::HashSet<String> =
-        selected_wasm_optional.iter().cloned().collect();
-    let mut store = crate::app::permissions::PermissionStore::load_or_default(config_dir);
-    let summary = store.apply_wasm_install_review(
-        &report.id,
-        workspace_root,
-        &report.wasm_required_capabilities,
-        &report.wasm_optional_capabilities,
-        &selected,
+    let mut line = format!(
+        "Installing grants no permissions. When '{}' first runs",
+        report.id
     );
-    store.save();
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir);
-    for capability_id in &report.wasm_required_capabilities {
-        monitor.grant_capability_id(
-            &report.id,
-            workspace_root,
-            capability_id,
-            crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
-        );
+    if !automatic.is_empty() {
+        line.push_str(&format!(" it gets {} automatically", automatic.join(", ")));
     }
-    for capability_id in &report.wasm_optional_capabilities {
-        let decision = if selected.contains(capability_id) {
-            crate::broker::Decision::Allow
-        } else {
-            crate::broker::Decision::Ask
-        };
-        monitor.grant_capability_id(
-            &report.id,
-            workspace_root,
-            capability_id,
-            decision,
-            crate::broker::GrantSource::User,
-        );
+    if !needs_person.is_empty() {
+        if !automatic.is_empty() {
+            line.push(';');
+        }
+        match report.runtime {
+            PackageRuntime::Wasm => line.push_str(&format!(
+                " {} wait for your approval in the Plexi window",
+                needs_person.join(", ")
+            )),
+            PackageRuntime::Python => line.push_str(&format!(
+                " {} stay withheld: Python plugins cannot ask for them yet",
+                needs_person.join(", ")
+            )),
+        }
     }
-    Some(summary)
+    line.push('.');
+    Some(line)
 }
+
+/// Shown in the rendered Permissions view and on stderr when `view render`
+/// runs outside the host (stint 1291).
+const PERMISSION_ROWS_FROM_HOST: &str = "Permission rows come from the running Plexi host and are not available to this command; rendering the view with none.";
 
 /// `plexi plugin package <path> [--out <file>]` — build a `.plexipkg` artifact.
 pub fn plugin_package_cli(path: &str, out: Option<&str>) -> i32 {
@@ -1419,14 +1314,11 @@ fn plugin_install_package_inner(
         }
     };
 
-    let gate_decision = if confirm == InstallConfirm::Interactive {
-        match run_install_gate(&report, assume_yes, marketplace_reviewed) {
-            Ok(decision) => Some(decision),
-            Err(code) => return code,
+    if confirm == InstallConfirm::Interactive {
+        if let Err(code) = run_install_gate(&report, assume_yes, marketplace_reviewed) {
+            return code;
         }
-    } else {
-        None
-    };
+    }
 
     // Extract into a unique temp dir and reuse the existing dir-install path.
     let staging = std::env::temp_dir().join(format!("plexipkg-install-{}", uuid::Uuid::new_v4()));
@@ -1449,8 +1341,10 @@ fn plugin_install_package_inner(
         pin,
         InstallConfirm::PreApproved,
         assume_yes,
-        gate_decision,
     );
+    if code == 0 && confirm == InstallConfirm::Interactive {
+        announce_capabilities_ask_at_launch(&report);
+    }
     if code == 0 {
         if let Some(metadata) = source_metadata {
             let plugin_dir = crate::app::registry::plugins_dir().join(&report.id);
@@ -1941,9 +1835,18 @@ pub fn view_render(
         state_format,
     );
     let seed_state = if seed_state.is_none() && plugin_id == "permissions" {
-        let entries =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .list_entries();
+        // Permission rows live in the running host (stint 1291). This command
+        // renders the view without them and says so.
+        let (entries, notice) =
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => (monitor.list_entries(), String::new()),
+                Err(error) => {
+                    log::info!("view_render: permissions inventory unavailable: {error}");
+                    eprintln!("{PERMISSION_ROWS_FROM_HOST}");
+                    (Vec::new(), PERMISSION_ROWS_FROM_HOST.to_string())
+                }
+            };
         log::info!(
             "view_render: seeding permissions inventory count={}",
             entries.len()
@@ -1952,7 +1855,7 @@ pub fn view_render(
             "entries": entries,
             "selected": 0,
             "mode": "list",
-            "notice": "",
+            "notice": notice,
         }))
     } else {
         seed_state
@@ -2608,6 +2511,80 @@ mod plugin_install_workspace_tests {
         assert_eq!(code, 0, "reverse-DNS plugin ids must install cleanly");
     }
 
+    /// Stint 1291: `--yes` confirms the install only. A WASM package whose
+    /// `[plugin.capabilities.wasm]` lists required and optional ids leaves no
+    /// capability row in either permission file; the plugin asks when it runs.
+    #[test]
+    fn install_yes_writes_no_grant() {
+        let profile = TempDir::new().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let src = TempDir::new().unwrap();
+        let plugin_id = "plexi-test-install-yes-no-grant";
+        std::fs::write(
+            src.path().join("manifest.toml"),
+            format!(
+                "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"Test\"\nversion = \"0.1.0\"\ndescription = \"Test\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [\"spawn.plugin\", \"state:read-write\"]\noptional = [\"ai.query\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"app.wasm\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("app.wasm"), b"\0asm").unwrap();
+
+        let code = super::plugin_install_with_pin(
+            &src.path().to_string_lossy(),
+            None,
+            super::InstallConfirm::Interactive,
+            true,
+        );
+        assert_eq!(code, 0, "install --yes must still install the plugin");
+
+        let grants =
+            std::fs::read_to_string(profile.path().join("grants.toml")).unwrap_or_default();
+        assert!(
+            !grants.contains(plugin_id),
+            "install --yes must not write a grant row:\n{grants}"
+        );
+        let legacy =
+            std::fs::read_to_string(profile.path().join("permissions.toml")).unwrap_or_default();
+        assert!(
+            !legacy.contains(plugin_id),
+            "install --yes must not write a legacy permission row:\n{legacy}"
+        );
+    }
+
+    /// Stint 1291: the install line says what each runtime really gets.
+    #[test]
+    fn install_permission_line_is_true_per_runtime() {
+        use crate::app::package::{PackageReport, PackageRuntime};
+        use crate::app::permissions::Capability;
+        let mut report = PackageReport {
+            id: "p".to_string(),
+            name: "P".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: PackageRuntime::Python,
+            entry: "main.py".to_string(),
+            capabilities: vec![Capability::FsRead, Capability::SpawnView],
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
+            file_count: 1,
+            total_size: 1,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
+        };
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs it gets fs.read automatically; spawn.plugin stay withheld: Python plugins cannot ask for them yet."
+        );
+        report.runtime = PackageRuntime::Wasm;
+        report.capabilities = Vec::new();
+        report.wasm_required_capabilities = vec!["fs:write:/w".to_string()];
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs fs:write:/w wait for your approval in the Plexi window."
+        );
+        report.wasm_required_capabilities = Vec::new();
+        assert!(super::install_permission_line(&report).is_none());
+    }
+
     #[test]
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();
@@ -2637,10 +2614,7 @@ mod plugin_install_workspace_tests {
 
 #[cfg(test)]
 mod install_confirm_tests {
-    use super::{
-        confirm_install, parse_wasm_optional_selection, prompt_wasm_optional_grants,
-        trust_sheet_lines, InstallConfirm,
-    };
+    use super::{confirm_install, trust_sheet_lines, InstallConfirm};
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
     use std::io::Cursor;
 
@@ -2783,116 +2757,6 @@ mod install_confirm_tests {
             TrustLabel::PythonUnreviewed
         );
         assert_eq!(super::trust_label_for(&r, true), TrustLabel::ReviewedNative);
-    }
-
-    #[test]
-    fn wasm_optional_selection_accepts_none_all_and_indices() {
-        let optional = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-            "state:read-write".to_string(),
-        ];
-
-        assert_eq!(
-            parse_wasm_optional_selection("", &optional).unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("none", &optional).unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("all", &optional).unwrap(),
-            optional
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("2, 1, 2", &optional).unwrap(),
-            vec![
-                "net:fetch:api.example.com".to_string(),
-                "ai.query".to_string()
-            ]
-        );
-        assert!(parse_wasm_optional_selection("4", &optional).is_err());
-        assert!(parse_wasm_optional_selection("ai.query", &optional).is_err());
-    }
-
-    #[test]
-    fn wasm_optional_prompt_skips_assume_yes_and_reads_tty_selection() {
-        let mut r = report();
-        r.runtime = PackageRuntime::Wasm;
-        r.wasm_optional_capabilities = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-
-        let skipped =
-            prompt_wasm_optional_grants(&r, true, true, &mut Cursor::new(b"all\n")).unwrap();
-        assert!(
-            skipped.is_empty(),
-            "--yes must not silently grant optional WASM capabilities"
-        );
-
-        let selected =
-            prompt_wasm_optional_grants(&r, false, true, &mut Cursor::new(b"2\n")).unwrap();
-        assert_eq!(selected, vec!["net:fetch:api.example.com".to_string()]);
-    }
-
-    #[test]
-    fn wasm_install_review_persistence_writes_selected_scope() {
-        let config = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let mut r = report();
-        r.id = "wasm-install-review".to_string();
-        r.runtime = PackageRuntime::Wasm;
-        r.wasm_required_capabilities = vec!["state:read-write".to_string()];
-        r.wasm_optional_capabilities = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-
-        let summary = super::persist_wasm_install_review(
-            &r,
-            &["net:fetch:api.example.com".to_string()],
-            config.path(),
-            workspace.path(),
-        )
-        .expect("wasm review should persist");
-
-        assert_eq!(summary.required_granted, 1);
-        assert_eq!(summary.optional_granted, 1);
-        assert_eq!(summary.optional_deferred, 1);
-
-        let stored = |capability: &str, root: &std::path::Path| {
-            let monitor = crate::broker::gate::PermissionMonitor::open_profile(config.path());
-            let workspace_root = crate::platform::path::canonical_or_self(root);
-            let store = monitor.store();
-            store.records().iter().find_map(|record| {
-                (record.actor_id == "wasm-install-review"
-                    && record.target_id == capability
-                    && record.workspace_root.as_deref() == Some(workspace_root.as_path()))
-                .then_some(record.decision)
-            })
-        };
-        assert_eq!(
-            stored("state:read-write", workspace.path()),
-            Some(crate::broker::Decision::Allow)
-        );
-        assert_eq!(
-            stored("ai.query", workspace.path()),
-            Some(crate::broker::Decision::Ask)
-        );
-        assert_eq!(
-            stored("net:fetch:api.example.com", workspace.path()),
-            Some(crate::broker::Decision::Allow)
-        );
-        assert_eq!(
-            stored(
-                "net:fetch:api.example.com",
-                tempfile::tempdir().unwrap().path()
-            ),
-            None,
-            "raw WASM install grants must remain workspace-scoped"
-        );
     }
 }
 

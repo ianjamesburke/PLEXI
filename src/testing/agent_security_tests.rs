@@ -9,7 +9,7 @@ use crate::testing::HostHarness;
 use crate::workspace::secrets::NonDestructiveStore;
 
 fn monitor() -> std::sync::Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+    PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap()
 }
 
 fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
@@ -606,7 +606,7 @@ fn raw_set_permission_socket_line_writes_no_grant() {
     let root = h.workspace_root();
     let profile = h.app.permission_store_dir.clone();
     // The deleted handler wrote the monitor for `permission_store_dir`.
-    let broker = || PermissionMonitor::for_profile(&profile);
+    let broker = || PermissionMonitor::for_profile(&profile).unwrap();
     let grants_before = broker().store().records().to_vec();
     let callers: [Option<&[u32]>; 3] = [Some(&[pane_pid]), Some(&[]), None];
     let mut acks = Vec::new();
@@ -630,7 +630,7 @@ fn raw_set_permission_socket_line_writes_no_grant() {
         );
         acks.push(ack);
     }
-    let stored = crate::app::permissions::PermissionStore::load_or_default(&profile);
+    let stored = crate::app::permissions::PermissionStore::load_or_default(&profile).unwrap();
     assert_eq!(
         stored.iter_entries().count(),
         0,

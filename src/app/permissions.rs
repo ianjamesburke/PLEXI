@@ -486,13 +486,9 @@ pub struct PermissionStoreData {
 pub struct PermissionStore {
     file: TomlStore<PermissionStoreData>,
     untrusted: Option<crate::broker::seal::IntegrityFault>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WasmInstallGrantSummary {
-    pub required_granted: usize,
-    pub optional_granted: usize,
-    pub optional_deferred: usize,
+    /// Set only by the sealed loader; an in-memory store never touches disk
+    /// (stint 1291).
+    custody: Option<crate::broker::custody::HostProcess>,
 }
 
 impl Default for PermissionStore {
@@ -500,6 +496,7 @@ impl Default for PermissionStore {
         Self {
             file: TomlStore::detached(STORE_LABEL),
             untrusted: None,
+            custody: None,
         }
     }
 }
@@ -632,12 +629,24 @@ impl PermissionStore {
     /// [`crate::broker::seal::profile_never_sealed`] is true. It is not
     /// quarantined and it does not create a host key; the grant import seals
     /// the profile and retires this file.
-    pub fn load_or_default(config_dir: &Path) -> Self {
+    ///
+    /// Host only: a process that never ran host start gets
+    /// [`crate::broker::custody::NotHostProcess`].
+    pub fn load_or_default(
+        config_dir: &Path,
+    ) -> Result<Self, crate::broker::custody::NotHostProcess> {
+        crate::broker::load_permission_store(config_dir)
+    }
+
+    pub(crate) fn load_sealed(
+        host: &crate::broker::custody::HostProcess,
+        config_dir: &Path,
+    ) -> Self {
         let path = config_dir.join("permissions.toml");
-        if let Some(store) = Self::adopt_legacy_unsealed(config_dir, &path) {
+        if let Some(store) = Self::adopt_legacy_unsealed(host, config_dir, &path) {
             return store;
         }
-        let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(&path);
+        let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(host, &path);
         if loaded.key_unreadable {
             log::info!(
                 "permission_store: mac key unreadable; left {} in place and loaded no entries",
@@ -646,6 +655,7 @@ impl PermissionStore {
             return Self {
                 file: TomlStore::at(path, STORE_LABEL, PermissionStoreData::default()),
                 untrusted: None,
+                custody: Some(*host),
             };
         }
         if loaded.trusted {
@@ -661,6 +671,7 @@ impl PermissionStore {
         let mut store = Self {
             file: TomlStore::at(path, STORE_LABEL, loaded.data),
             untrusted: loaded.fault,
+            custody: Some(*host),
         };
         if store.untrusted.is_some() {
             return store;
@@ -675,9 +686,13 @@ impl PermissionStore {
         store
     }
 
-    fn adopt_legacy_unsealed(config_dir: &Path, path: &Path) -> Option<Self> {
+    fn adopt_legacy_unsealed(
+        host: &crate::broker::custody::HostProcess,
+        config_dir: &Path,
+        path: &Path,
+    ) -> Option<Self> {
         let body = crate::broker::seal::legacy_unsealed_body(path)?;
-        if !crate::broker::seal::profile_never_sealed(config_dir) {
+        if !crate::broker::seal::profile_never_sealed(host, config_dir) {
             return None;
         }
         let mut data = toml::from_str::<PermissionStoreData>(&body).ok()?;
@@ -691,6 +706,7 @@ impl PermissionStore {
         Some(Self {
             file: TomlStore::at(path.to_path_buf(), STORE_LABEL, data),
             untrusted: None,
+            custody: Some(*host),
         })
     }
 
@@ -764,10 +780,18 @@ impl PermissionStore {
     }
 
     /// Atomically write a sealed file. No-op for a test store with no path.
+    ///
+    /// Host only: the custody token is the one this store was loaded with.
     pub fn save(&self) {
         let label = self.file.label();
-        if let Err(error) = crate::broker::seal::write_toml(&self.file.path, label, &self.file.data)
-        {
+        let result = match self.custody.as_ref() {
+            Some(host) => {
+                crate::broker::seal::write_toml(host, &self.file.path, label, &self.file.data)
+            }
+            None if self.file.path.as_os_str().is_empty() => Ok(()),
+            None => Err(crate::broker::custody::NotHostProcess.to_string()),
+        };
+        if let Err(error) = result {
             log::error!(
                 "{label}: failed to save {}: {error}",
                 self.file.path.display()
@@ -911,46 +935,6 @@ impl PermissionStore {
         }
 
         (granted, blocked)
-    }
-
-    /// Persist install-review decisions for manifest-declared raw WASM
-    /// capabilities in the current workspace. Required capabilities are
-    /// approved by the install confirmation itself. Optional capabilities are
-    /// either approved or explicitly left Yellow so non-sensitive optional
-    /// capabilities are not silently granted by the default unset behavior.
-    pub fn apply_wasm_install_review(
-        &mut self,
-        plugin_id: &str,
-        workspace_root: &Path,
-        required: &[String],
-        optional: &[String],
-        selected_optional: &HashSet<String>,
-    ) -> WasmInstallGrantSummary {
-        for capability_id in required {
-            self.set_wasm(
-                plugin_id,
-                workspace_root,
-                capability_id,
-                PermissionState::Green,
-            );
-        }
-
-        let mut optional_granted = 0;
-        for capability_id in optional {
-            let optional_state = if selected_optional.contains(capability_id) {
-                optional_granted += 1;
-                PermissionState::Green
-            } else {
-                PermissionState::Yellow
-            };
-            self.set_wasm(plugin_id, workspace_root, capability_id, optional_state);
-        }
-
-        WasmInstallGrantSummary {
-            required_granted: required.len(),
-            optional_granted,
-            optional_deferred: optional.len().saturating_sub(optional_granted),
-        }
     }
 }
 
@@ -1300,7 +1284,7 @@ mod tests {
     fn iter_entries_parses_stored_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set(
             "my-app",
             workspace,
@@ -1335,7 +1319,7 @@ mod tests {
     fn permission_store_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set(
             "my-app",
             workspace,
@@ -1350,7 +1334,7 @@ mod tests {
         );
         store.save();
 
-        let reloaded = PermissionStore::load_or_default(tmp.path());
+        let reloaded = PermissionStore::load_or_default(tmp.path()).unwrap();
         assert_eq!(
             reloaded.get("my-app", workspace, Capability::FsRead),
             Some(PermissionState::Green)
@@ -1366,7 +1350,7 @@ mod tests {
     fn build_permission_sets_applies_stored_state() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set(
             "my-app",
             workspace,
@@ -1400,7 +1384,7 @@ mod tests {
         // The plugin must send a CapabilityRequest to trigger the consent modal.
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let store = PermissionStore::load_or_default(tmp.path());
+        let store = PermissionStore::load_or_default(tmp.path()).unwrap();
 
         let sensitive: HashSet<Capability> = [
             Capability::PanesSpawn,
@@ -1436,7 +1420,7 @@ mod tests {
         // A prior Green decision must still result in the cap being pre-granted.
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set(
             "my-app",
             workspace,
@@ -1463,7 +1447,7 @@ mod tests {
         // (no regression for caps like fs.read, timer, pipe.open, etc.).
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
-        let store = PermissionStore::load_or_default(tmp.path());
+        let store = PermissionStore::load_or_default(tmp.path()).unwrap();
 
         let non_sensitive: HashSet<Capability> = [
             Capability::FsRead,
@@ -1505,7 +1489,7 @@ mod tests {
         let perm_path = tmp.path().join("permissions.toml");
         std::fs::write(&perm_path, b"this is not valid toml ][[[").unwrap();
 
-        let store = PermissionStore::load_or_default(tmp.path());
+        let store = PermissionStore::load_or_default(tmp.path()).unwrap();
 
         // Corrupt file must be renamed away — original path gone.
         assert!(
@@ -1559,7 +1543,7 @@ mod tests {
         let raw_path = workspace_tmp.path().to_path_buf();
         let canonical = raw_path.canonicalize().unwrap_or_else(|_| raw_path.clone());
 
-        let mut store = PermissionStore::load_or_default(config_tmp.path());
+        let mut store = PermissionStore::load_or_default(config_tmp.path()).unwrap();
         // Store via raw path.
         store.set(
             "my-app",
@@ -1600,12 +1584,13 @@ mod tests {
         let raw_key = format!("my-app::{}::fs.read", raw_path.display());
         let toml_content = format!("[entries]\n\"{raw_key}\" = \"green\"\n");
         crate::broker::seal::write_sealed(
+            &crate::broker::custody::HostProcess::for_test(),
             &config_tmp.path().join("permissions.toml"),
             toml_content.as_bytes(),
         )
         .expect("seal legacy permissions file");
 
-        let store = PermissionStore::load_or_default(config_tmp.path());
+        let store = PermissionStore::load_or_default(config_tmp.path()).unwrap();
 
         // Entry must now be under the canonical key.
         let canonical_key = format!("my-app::{}::fs.read", canonical.display());
@@ -1626,7 +1611,7 @@ mod tests {
         let workspace = std::path::Path::new("/work/project");
 
         // Grant fs.read for plugin in /work/project-extra.
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set(
             "my-app",
             workspace_extra,
@@ -1635,7 +1620,7 @@ mod tests {
         );
         store.save();
 
-        let reloaded = PermissionStore::load_or_default(tmp.path());
+        let reloaded = PermissionStore::load_or_default(tmp.path()).unwrap();
         let declared: HashSet<Capability> = HashSet::new();
         let (caps, _blocked) = reloaded.build_permission_sets("my-app", workspace, &declared);
 
@@ -1650,7 +1635,7 @@ mod tests {
     fn wasm_permission_entries_round_trip_raw_scoped_capabilities() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
 
         store.set_wasm(
             "wasm-app",
@@ -1666,7 +1651,7 @@ mod tests {
         );
         store.save();
 
-        let reloaded = PermissionStore::load_or_default(tmp.path());
+        let reloaded = PermissionStore::load_or_default(tmp.path()).unwrap();
         assert_eq!(
             reloaded.get_wasm("wasm-app", workspace.path(), "fs:read:/tmp/allowed"),
             Some(PermissionState::Green)
@@ -1681,7 +1666,7 @@ mod tests {
     fn wasm_permission_sets_restore_remembered_and_withhold_sensitive_unset() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let mut store = PermissionStore::load_or_default(tmp.path());
+        let mut store = PermissionStore::load_or_default(tmp.path()).unwrap();
         store.set_wasm(
             "wasm-app",
             workspace.path(),
@@ -1708,84 +1693,6 @@ mod tests {
         assert!(granted.contains("ui:theme"));
         assert!(!granted.contains("fs:read:/unset"));
         assert!(blocked.contains("net:fetch:block.example"));
-    }
-
-    #[test]
-    fn wasm_install_review_persists_required_and_deferred_optional() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let mut store = PermissionStore::load_or_default(tmp.path());
-        let required = vec!["state:read-write".to_string()];
-        let optional = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-
-        let summary = store.apply_wasm_install_review(
-            "wasm-app",
-            workspace.path(),
-            &required,
-            &optional,
-            &HashSet::new(),
-        );
-
-        assert_eq!(
-            summary,
-            WasmInstallGrantSummary {
-                required_granted: 1,
-                optional_granted: 0,
-                optional_deferred: 2,
-            }
-        );
-        assert_eq!(
-            store.get_wasm("wasm-app", workspace.path(), "state:read-write"),
-            Some(PermissionState::Green)
-        );
-        assert_eq!(
-            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
-            Some(PermissionState::Yellow)
-        );
-        assert_eq!(
-            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
-            Some(PermissionState::Yellow)
-        );
-    }
-
-    #[test]
-    fn wasm_install_review_can_persist_optional_grants() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let mut store = PermissionStore::load_or_default(tmp.path());
-        let optional = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-        let selected = HashSet::from(["net:fetch:api.example.com".to_string()]);
-
-        let summary = store.apply_wasm_install_review(
-            "wasm-app",
-            workspace.path(),
-            &[],
-            &optional,
-            &selected,
-        );
-
-        assert_eq!(
-            summary,
-            WasmInstallGrantSummary {
-                required_granted: 0,
-                optional_granted: 1,
-                optional_deferred: 1,
-            }
-        );
-        assert_eq!(
-            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
-            Some(PermissionState::Yellow)
-        );
-        assert_eq!(
-            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
-            Some(PermissionState::Green)
-        );
     }
 
     #[test]

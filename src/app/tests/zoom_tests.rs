@@ -551,7 +551,8 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
 #[test]
 fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
     let mut h = HostHarness::new();
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     // Two restarts filed the same kind of integrity record.
     for run_tag in ["a", "b"] {
         monitor

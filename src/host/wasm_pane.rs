@@ -747,14 +747,19 @@ impl WasmPane {
             } else {
                 crate::broker::Decision::Deny
             };
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .grant_capability_id(
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor.grant_capability_id(
                     self.app.plugin_id(),
                     &self.permission_workspace_root,
                     &capability_id,
                     decision,
                     crate::broker::GrantSource::User,
-                );
+                ),
+                Err(error) => {
+                    log::error!("wasm capability: decision not remembered: {error}")
+                }
+            }
         }
         log::info!(
             "wasm capability: decision plugin_id={} capability={} granted={}",
@@ -3598,10 +3603,10 @@ mod tests {
         let plugin = "sysmon-pane";
         let grant_id = format!("cap:{plugin}:{cap}");
         // The running host's monitor is open before the pane decides.
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let mut p = pane(0.0).with_remembered_capabilities(
             ws.path().to_path_buf(),
-            PermissionStore::load_or_default(profile.path()),
+            PermissionStore::load_or_default(profile.path()).unwrap(),
             HashSet::new(),
             HashSet::new(),
         );
@@ -3616,7 +3621,9 @@ mod tests {
         assert!(p.has_session_grant(cap));
         // 2. The legacy PermissionStore file.
         assert_eq!(
-            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            PermissionStore::load_or_default(profile.path())
+                .unwrap()
+                .get_wasm(plugin, ws.path(), cap),
             Some(PermissionState::Green)
         );
         // 3. The monitor's GrantStore.
@@ -3637,7 +3644,9 @@ mod tests {
         // CUTOVER: expected to change to ask. The PermissionStore row survives
         // the monitor revocation; the next monitor load imports it again.
         assert_eq!(
-            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            PermissionStore::load_or_default(profile.path())
+                .unwrap()
+                .get_wasm(plugin, ws.path(), cap),
             Some(PermissionState::Green)
         );
         let restarted = PermissionMonitor::reload_for_test(profile.path());
@@ -3659,10 +3668,10 @@ mod tests {
         let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let ws = tempfile::tempdir().unwrap();
         let cap = "clipboard.read";
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let mut p = pane(0.0).with_remembered_capabilities(
             ws.path().to_path_buf(),
-            PermissionStore::load_or_default(profile.path()),
+            PermissionStore::load_or_default(profile.path()).unwrap(),
             HashSet::new(),
             HashSet::new(),
         );
@@ -3670,11 +3679,9 @@ mod tests {
         p.decide_next_capability_prompt(true);
         assert!(p.has_session_grant(cap));
         assert_eq!(
-            PermissionStore::load_or_default(profile.path()).get_wasm(
-                "sysmon-pane",
-                ws.path(),
-                cap
-            ),
+            PermissionStore::load_or_default(profile.path())
+                .unwrap()
+                .get_wasm("sysmon-pane", ws.path(), cap),
             None
         );
         assert!(!monitor

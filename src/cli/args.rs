@@ -1057,7 +1057,8 @@ pub enum AssistantPermissionCmd {
 
 #[derive(Subcommand)]
 pub enum ChangesCmd {
-    /// Record a permission-gate allow for one exact edit.
+    /// Refused: a terminal cannot allow an edit. Only a click in the Plexi
+    /// window does; this command records nothing.
     Allow {
         /// Agent id the grant and the later audit row name.
         #[arg(long)]
@@ -1430,7 +1431,9 @@ pub enum PluginCmd {
         version: Option<String>,
         /// Skip the trust-sheet confirmation prompt. Required for
         /// non-interactive (scripted) installs — without a terminal the
-        /// install fails closed instead of proceeding silently.
+        /// install fails closed instead of proceeding silently. Confirms the
+        /// install only: no permission is granted, and the plugin asks in the
+        /// Plexi window when it first runs.
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },

@@ -10,6 +10,10 @@ use crate::host::changes::{self, GateStop};
 
 fn stop(error: GateStop) -> i32 {
     match error {
+        GateStop::NoHostRoute => {
+            eprintln!("error: {NO_HOST_ROUTE}");
+            1
+        }
         GateStop::Required { pending_request_id } => {
             println!("permission_required");
             println!("pending_request_id={pending_request_id}");
@@ -27,22 +31,25 @@ fn stop(error: GateStop) -> i32 {
     }
 }
 
+/// Stint 1291: change commands need the permission broker, which only the
+/// host holds, and the host has no request route for them yet.
+const NO_HOST_ROUTE: &str = "this plexi changes command cannot run from the terminal: permission decisions are made only by the Plexi host, and it has no route for this command yet. Nothing was filed and there is nothing to approve";
+
 pub fn changes_profile_cli() -> i32 {
     println!("{}", crate::config::config_dir().display());
     0
 }
 
-pub fn changes_allow_cli(agent: &str, file: &Path, old: &str, new: &str) -> i32 {
-    match changes::allow_edit(agent, file, old, new) {
-        Ok(()) => {
-            println!("allowed");
-            0
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            1
-        }
-    }
+/// Refused (stint 1291). A terminal is not the person: only a click in the
+/// Plexi window records an allow, and the host has no request route for this
+/// command yet. Nothing is written.
+pub fn changes_allow_cli(agent: &str, file: &Path, _old: &str, _new: &str) -> i32 {
+    log::info!(
+        "changes: allow refused in the CLI process agent={agent} path={}",
+        file.display()
+    );
+    eprintln!("error: {NO_HOST_ROUTE}");
+    1
 }
 
 pub fn changes_propose_cli(agent: &str, file: &Path, old: &str, new: &str) -> i32 {
@@ -102,5 +109,62 @@ pub fn changes_revert_cli(id: &str) -> i32 {
             0
         }
         Err(error) => stop(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Stint 1291: `plexi changes allow` runs in the CLI process, which never
+    /// writes a grant or opens the permission store. A leftover legacy
+    /// `permissions.toml` is not imported by it either (that import seals).
+    /// Stint 1291: the gated change commands need the broker, which only the
+    /// host holds. From a CLI process they fail with the named error and write
+    /// nothing.
+    #[test]
+    fn changes_propose_refuses_outside_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let file = dir.path().join("draft.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+
+        let result = crate::broker::custody::as_cli_process(|| {
+            crate::host::changes::propose_gated("editor-bot", &file, "alpha", "beta")
+        });
+
+        match result {
+            Err(crate::host::changes::GateStop::NoHostRoute) => {}
+            Err(other) => panic!("expected the no-host-route refusal, got {other:?}"),
+            Ok(_) => panic!("propose must not run outside the host"),
+        }
+        assert!(!profile.join("grants.toml").exists());
+        assert!(!profile.join("permission-audit.jsonl").exists());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+    }
+
+    #[test]
+    fn changes_allow_writes_no_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let legacy = profile.join("permissions.toml");
+        std::fs::write(&legacy, "[entries]\n").unwrap();
+        let file = dir.path().join("draft.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+
+        let code = super::changes_allow_cli("editor-bot", &file, "alpha", "beta");
+
+        assert_ne!(code, 0, "changes allow must refuse in the CLI process");
+        assert!(
+            !profile.join("grants.toml").exists(),
+            "changes allow must not write grants.toml"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "[entries]\n",
+            "the CLI must not import or retire permissions.toml"
+        );
     }
 }
