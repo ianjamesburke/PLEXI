@@ -366,8 +366,30 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
     // the first boot failure instead of paying the probe cost 4 more times
     // (stint 0458 — a broken first draft is the assistant loop's hot path).
     let mut render_boot_failed = false;
-    let total_sizes = render_sizes.len();
-    for (index, (width, height)) in render_sizes.into_iter().enumerate() {
+    let plan = plan_check_sizes(
+        render_sizes,
+        (manifest.launch.min_width, manifest.launch.min_height),
+    );
+    for (width, height) in &plan.skipped {
+        println!(
+            "skip render {width}x{height} — below the manifest's [launch] minimum pane size; the host shows its \"too small\" placeholder there"
+        );
+    }
+    log::info!(
+        "plugin_check[{}]: rendering {:?}, skipped {:?} below the manifest minimum, unreachable controls are errors at {:?}",
+        manifest.plugin.id,
+        plan.render,
+        plan.skipped,
+        plan.strict
+    );
+    if plan.render.is_empty() && launch_config.is_some() {
+        warnings.push(
+            "render — every requested size is below the manifest's [launch] minimum pane size; nothing was rendered. Pass a larger --size".to_string(),
+        );
+    }
+    let strict_size = plan.strict;
+    let total_sizes = plan.render.len();
+    for (index, (width, height)) in plan.render.into_iter().enumerate() {
         let label = format!("{width}x{height}");
         let Some(launch_config) = &launch_config else {
             continue;
@@ -392,7 +414,7 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
                 report_layout_findings(
                     &manifest.plugin.id,
                     &label,
-                    layout_findings(&tree, &layout, (width, height)),
+                    layout_findings(&tree, &layout, strict_size == Some((width, height))),
                     &mut errors,
                     &mut warnings,
                 );
@@ -547,25 +569,25 @@ fn run_seeded_state_and_action_probe(
         }
     };
 
-    let matched = matched_seed_signals(&frame, &fixture.signals);
+    // A value proves the seed reached the view only when the seed is what put
+    // it on screen, so every signal is judged against the same frame without
+    // the seed: static copy that happens to contain the value never counts.
+    let unseeded = match crate::host::wasm_python::run_headless_frame(
+        launch_config,
+        (width as f32, height as f32),
+        None,
+    ) {
+        Ok(tree) => ui_tree_to_json(&tree),
+        Err(e) => {
+            errors.push(format!(
+                "seeded render {label} — unseeded comparison render failed: {e}"
+            ));
+            return;
+        }
+    };
+    let matched = matched_seed_signals(&frame, &unseeded, &fixture.signals);
     if matched.is_empty() {
-        // Only a miss pays for a second boot: the same frame without the seed
-        // tells an ignored seed apart from a value the probe cannot see.
-        let unseeded = match crate::host::wasm_python::run_headless_frame(
-            launch_config,
-            (width as f32, height as f32),
-            None,
-        ) {
-            Ok(tree) => Some(ui_tree_to_json(&tree)),
-            Err(e) => {
-                log::warn!(
-                    "plugin_check[{}]: unseeded comparison render {label} failed: {e}",
-                    manifest.plugin.id
-                );
-                None
-            }
-        };
-        let seed_ignored = unseeded.as_ref() == Some(&frame);
+        let seed_ignored = unseeded == frame;
         log::info!(
             "plugin_check[{}]: seeded render {label} matched no fixture value; seed_ignored={seed_ignored}",
             manifest.plugin.id
@@ -631,7 +653,12 @@ fn run_seeded_state_and_action_probe(
                             .then(|| expected_action_signal(&fixture.state, handler_id))
                             .flatten();
                         if let Some(expected) = expected {
-                            if frame_shows(&after_frame, &SeedValue::Number(expected.clone())) {
+                            let expected_value = SeedValue::Number(expected.clone());
+                            // Same differential rule as the seed: the click
+                            // must be what put the number on screen.
+                            if frame_shows(&after_frame, &expected_value)
+                                && !frame_shows(&prev_frame, &expected_value)
+                            {
                                 any_effect = true;
                                 println!(
                                     "✓ {action_label} — rendered expected state value {expected}"
@@ -643,7 +670,7 @@ fn run_seeded_state_and_action_probe(
                             } else {
                                 probe_failed = true;
                                 errors.push(format!(
-                                    "{action_label} — expected rendered state value {expected} after action"
+                                    "{action_label} — expected the action to put state value {expected} on screen (shown after the click and not before it)"
                                 ));
                             }
                         } else if after_frame != prev_frame {
@@ -675,7 +702,7 @@ fn run_seeded_state_and_action_probe(
 /// frame is identical without the seed, the likeliest cause.
 fn seed_miss_error(label: &str, signals: &[SeedSignal], seed_ignored: bool) -> String {
     let mut message = format!(
-        "seeded render {label} — no value from fixtures/state.json appeared in the rendered frame. Looked for: {}. Rule: a string matches when displayed text contains it, ignoring case; a number matches as a whole number in displayed text. Displayed text is Text, Button, Badge, list rows, headers, TextInput value and placeholder, and canvas text.",
+        "seeded render {label} — no value from fixtures/state.json appeared in the rendered frame because of the seed. Looked for: {}. Rule: a value counts when displayed text shows it with the seed and does not show it without; a string matches when displayed text contains it, ignoring case; a number matches as a whole number. Displayed text is Text, Button, Badge, list rows, headers, TextInput value and canvas text. Use fixture values that differ from the plugin's defaults and static copy.",
         join_signals(signals)
     );
     if seed_ignored {
@@ -723,25 +750,32 @@ fn collect_scalar_signals(value: &serde_json::Value, path: &str, signals: &mut V
     }
 }
 
-fn matched_seed_signals(frame: &serde_json::Value, signals: &[SeedSignal]) -> Vec<SeedSignal> {
+/// Signals the seed put on screen: shown in the seeded frame and absent from
+/// the unseeded one.
+fn matched_seed_signals(
+    seeded: &serde_json::Value,
+    unseeded: &serde_json::Value,
+    signals: &[SeedSignal],
+) -> Vec<SeedSignal> {
     signals
         .iter()
-        .filter(|signal| frame_shows(frame, &signal.value))
+        .filter(|signal| {
+            frame_shows(seeded, &signal.value) && !frame_shows(unseeded, &signal.value)
+        })
         .cloned()
         .collect()
 }
 
-/// Frame JSON fields that hold text a user reads. Everything else (type tags,
-/// keys, handler ids, sizes) is structure and never satisfies a seed.
+/// Frame JSON fields that hold text showing plugin state. Everything else is
+/// structure (type tags, keys, handler ids, sizes) or static affordance copy
+/// (TextInput placeholders, footer key chips) and never satisfies a seed.
 const DISPLAYED_FIELDS: &[&str] = &[
     "text",
     "label",
     "value",
-    "placeholder",
     "title",
     "subtitle",
     "texts",
-    "keys",
     "description",
 ];
 
@@ -832,9 +866,44 @@ fn expected_action_signal(state: &serde_json::Value, handler_id: &str) -> Option
     None
 }
 
-/// The smallest pane `plugin check` renders. A control that cannot be reached
-/// here is an error, because nothing on screen tells the user it exists.
+/// The smallest pane a plugin is expected to work in unless its manifest sets
+/// a larger `[launch]` minimum. At the smallest size checked at or above this
+/// floor, a control that cannot be reached is an error, because nothing on
+/// screen tells the user it exists.
 const SMALLEST_CHECK_SIZE: (u32, u32) = (320, 240);
+/// Less of a control than this, in points on either axis, is not a usable
+/// click target.
+const MIN_REACHABLE_EXTENT: f32 = 16.0;
+
+#[derive(Debug, PartialEq)]
+struct SizePlan {
+    render: Vec<(u32, u32)>,
+    /// Requested sizes below the manifest minimum, where the host shows its
+    /// "too small" placeholder instead of the plugin.
+    skipped: Vec<(u32, u32)>,
+    /// The size at which an unreachable control is an error.
+    strict: Option<(u32, u32)>,
+}
+
+fn plan_check_sizes(sizes: Vec<(u32, u32)>, manifest_min: (Option<f32>, Option<f32>)) -> SizePlan {
+    let min_width = manifest_min.0.unwrap_or(0.0);
+    let min_height = manifest_min.1.unwrap_or(0.0);
+    let (render, skipped): (Vec<_>, Vec<_>) = sizes
+        .into_iter()
+        .partition(|(width, height)| *width as f32 >= min_width && *height as f32 >= min_height);
+    let strict = render
+        .iter()
+        .copied()
+        .filter(|(width, height)| {
+            *width >= SMALLEST_CHECK_SIZE.0 && *height >= SMALLEST_CHECK_SIZE.1
+        })
+        .min_by_key(|(width, height)| (u64::from(*width) * u64::from(*height), *width));
+    SizePlan {
+        render,
+        skipped,
+        strict,
+    }
+}
 /// Painted geometry may differ by this many points before it counts as cut
 /// or overlapping; strokes and glyph ink sit slightly outside widget rects.
 const LAYOUT_TOLERANCE: f32 = 2.0;
@@ -949,11 +1018,13 @@ fn node_children(data: &crate::host::wasm_view::UiNodeData) -> Vec<u32> {
 ///
 /// Nodes under a `Scroll` or `ListView` are exempt from the visibility rules,
 /// since scrolling reaches them. A node the pass has no entry for is unknown
-/// and never reported.
+/// and never reported. With `strict`, a Button or TextInput that cannot be
+/// reached (nothing of it visible, or too little to click) is an error; a
+/// control that is only partly cut still warns.
 fn layout_findings(
     tree: &UiTree,
     layout: &[crate::host::wasm_render::NodeLayout],
-    pane: (u32, u32),
+    strict: bool,
 ) -> Vec<LayoutFinding> {
     use crate::host::wasm_view::UiNodeData;
     use std::collections::{HashMap, HashSet};
@@ -980,7 +1051,6 @@ fn layout_findings(
         }
     }
 
-    let smallest = pane == SMALLEST_CHECK_SIZE;
     let mut findings = Vec::new();
 
     for node in &tree.nodes {
@@ -1016,17 +1086,15 @@ fn layout_findings(
         if scrollable.contains(&node.id) {
             continue;
         }
-        let is_error = smallest && interactive;
-        let reach = if is_error {
-            " This is the smallest supported pane and the control cannot be reached, so it is an error."
-        } else {
-            ""
-        };
+        const UNREACHABLE: &str =
+            " The control cannot be reached at the smallest pane size checked, so this is an error.";
         let (Some(rect), Some(visible)) = (fact.rect, fact.visible) else {
+            let is_error = strict && interactive;
             findings.push(LayoutFinding {
                 is_error,
                 message: format!(
-                    "{name} is not visible: it was laid out outside its container or with zero size; move it above any grow Spacer, or put the content that pushes it out inside Scrollable(...).{reach}"
+                    "{name} is not visible: it was laid out outside its container or with zero size; move it above any grow Spacer, or put the content that pushes it out inside Scrollable(...).{}",
+                    if is_error { UNREACHABLE } else { "" }
                 ),
             });
             continue;
@@ -1043,11 +1111,18 @@ fn layout_findings(
             .map(|(amount, side)| format!("{}px on the {side}", amount.round()))
             .collect();
         if !cut.is_empty() {
+            let is_error = strict
+                && interactive
+                && (visible.width() < MIN_REACHABLE_EXTENT
+                    || visible.height() < MIN_REACHABLE_EXTENT);
             findings.push(LayoutFinding {
                 is_error,
                 message: format!(
-                    "{name} is cut off ({}); shorten it, stack the row vertically at this width, or put its container inside Scrollable(...).{reach}",
-                    cut.join(", ")
+                    "{name} is cut off ({}, {}x{}px still showing); shorten it, stack the row vertically at this width, or put its container inside Scrollable(...).{}",
+                    cut.join(", "),
+                    visible.width().round(),
+                    visible.height().round(),
+                    if is_error { UNREACHABLE } else { "" }
                 ),
             });
         }
@@ -2170,6 +2245,33 @@ mod gauntlet_probe_tests {
         }
     }
 
+    /// A fixture value that static copy already shows proves nothing: it has
+    /// to appear because of the seed.
+    #[test]
+    fn seed_value_already_in_static_copy_does_not_count() {
+        let frame = |count: &str| {
+            serde_json::json!({"nodes": [
+                {"data": {"type": "Text", "text": "Step 1 of 3"}},
+                {"data": {"type": "TextInput", "value": "", "placeholder": "Search…"}},
+                {"data": {"type": "Text", "text": count}},
+            ]})
+        };
+        let signals =
+            super::seed_state_signals(&serde_json::json!({"count": 1, "query": "search"}));
+
+        // The view ignores the seed entirely: "1" and "Search…" are static.
+        let matched = super::matched_seed_signals(&frame("Count: 0"), &frame("Count: 0"), &signals);
+        assert!(matched.is_empty(), "{matched:?}");
+
+        // A placeholder is affordance copy, never state.
+        assert!(!super::frame_shows(&frame("Count: 0"), &text("search")));
+
+        // A seed the view does show counts, by the value it put on screen.
+        let signals = super::seed_state_signals(&serde_json::json!({"count": 7}));
+        let matched = super::matched_seed_signals(&frame("Count: 7"), &frame("Count: 0"), &signals);
+        assert_eq!(super::join_signals(&matched), "count = 7");
+    }
+
     #[test]
     fn seed_miss_error_names_the_fixture_values_rule_and_overwrite_hint() {
         let signals = super::seed_state_signals(&serde_json::json!({"mood": "calm", "count": 3}));
@@ -2347,7 +2449,7 @@ mod layout_finding_tests {
             unpainted(3),
             unpainted(4),
         ];
-        let findings = super::layout_findings(&tree(ACTIONS_TREE), &layout, (800, 600));
+        let findings = super::layout_findings(&tree(ACTIONS_TREE), &layout, false);
         let text = messages(&findings);
         assert!(text.contains("Button \"Start\" is not visible"), "{text}");
         assert!(text.contains("Button \"Reset\" is not visible"), "{text}");
@@ -2367,11 +2469,7 @@ mod layout_finding_tests {
             painted(3, rect(24.0, 10.0, 90.0, 28.0)),
             painted(4, rect(122.0, 10.0, 90.0, 28.0)),
         ];
-        let text = messages(&super::layout_findings(
-            &tree(ACTIONS_TREE),
-            &layout,
-            (480, 320),
-        ));
+        let text = messages(&super::layout_findings(&tree(ACTIONS_TREE), &layout, false));
         assert!(
             text.contains("Text \"Timer\" and Row (node 2) overlap by 120x18px"),
             "{text}"
@@ -2383,6 +2481,8 @@ mod layout_finding_tests {
     }
 
     /// Gauntlet 05: an EmptyState pushed the only button off a 320x240 pane.
+    /// A control with nothing showing, or too little to click, is an error at
+    /// the strict size. One that is only partly cut still works, so it warns.
     #[test]
     fn unreachable_button_at_the_smallest_size_is_an_error() {
         let layout = vec![
@@ -2393,20 +2493,57 @@ mod layout_finding_tests {
             unpainted(4),
         ];
         let tree = tree(ACTIONS_TREE);
-        let small = super::layout_findings(&tree, &layout, (320, 240));
+        let small = super::layout_findings(&tree, &layout, true);
         let text = messages(&small);
         assert!(
-            text.contains("[error] Button \"Start\" is cut off (8px on the bottom)"),
+            text.contains(
+                "[warning] Button \"Start\" is cut off (8px on the bottom, 90x20px still showing)"
+            ),
             "{text}"
         );
         assert!(
             text.contains("[error] Button \"Reset\" is not visible"),
             "{text}"
         );
-        assert!(text.contains("smallest supported pane"), "{text}");
+        assert!(text.contains("cannot be reached"), "{text}");
 
-        let larger = super::layout_findings(&tree, &layout, (480, 320));
+        let larger = super::layout_findings(&tree, &layout, false);
         assert!(larger.iter().all(|f| !f.is_error), "{}", messages(&larger));
+
+        let sliver = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(3, rect(24.0, 234.0, 90.0, 28.0)),
+        ];
+        let text = messages(&super::layout_findings(&tree, &sliver, true));
+        assert!(
+            text.contains(
+                "[error] Button \"Start\" is cut off (22px on the bottom, 90x6px still showing)"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn check_sizes_skip_below_the_manifest_minimum_and_pick_the_strict_size() {
+        let defaults = super::DEFAULT_CHECK_SIZES.to_vec();
+
+        let plain = super::plan_check_sizes(defaults.clone(), (None, None));
+        assert_eq!(plain.render, defaults);
+        assert_eq!(plain.strict, Some((320, 240)));
+
+        // A plugin that declares a 400px minimum is never shown at 320 wide.
+        let wide = super::plan_check_sizes(defaults, (Some(400.0), None));
+        assert_eq!(wide.skipped, vec![(320, 240)]);
+        assert_eq!(wide.strict, Some((480, 320)));
+
+        // Below the 320x240 floor nothing is strict; the next size up is.
+        let custom = super::plan_check_sizes(vec![(300, 200), (640, 480)], (None, None));
+        assert_eq!(custom.render, vec![(300, 200), (640, 480)]);
+        assert_eq!(custom.strict, Some((640, 480)));
+        assert_eq!(
+            super::plan_check_sizes(vec![(300, 200)], (None, None)).strict,
+            None
+        );
     }
 
     /// Gauntlet 02: a button label wrapped as "Star" / "t".
@@ -2434,11 +2571,7 @@ mod layout_finding_tests {
             start,
             painted(4, rect(72.0, 40.0, 90.0, 44.0)),
         ];
-        let text = messages(&super::layout_findings(
-            &tree(ACTIONS_TREE),
-            &layout,
-            (320, 240),
-        ));
+        let text = messages(&super::layout_findings(&tree(ACTIONS_TREE), &layout, true));
         assert!(
             text.contains("[warning] Button \"Start\": the label breaks in the middle of a word"),
             "{text}"
@@ -2460,11 +2593,11 @@ mod layout_finding_tests {
             painted(2, rect(24.0, 40.0, 296.0, 100.0)),
             painted(3, rect(24.0, 40.0, 500.0, 18.0)),
         ];
-        let findings = super::layout_findings(&tree(banner), &layout, (320, 240));
+        let findings = super::layout_findings(&tree(banner), &layout, true);
         let text = messages(&findings);
         assert!(
             text.contains(
-                "[warning] Text \"Sync failed: check the relay address\" is cut off (44px on the right)"
+                "[warning] Text \"Sync failed: check the relay address\" is cut off (44px on the right, 296x18px still showing)"
             ),
             "{text}"
         );
@@ -2485,7 +2618,7 @@ mod layout_finding_tests {
             ]}"#,
         );
         let layout = crate::host::wasm_render::render_ui_tree_layout(&tall, 320.0, 240.0);
-        let findings = super::layout_findings(&tall, &layout, (320, 240));
+        let findings = super::layout_findings(&tall, &layout, true);
         let text = messages(&findings);
         assert!(
             text.contains("[error] Button \"Add item\" is not visible"),
@@ -2501,7 +2634,7 @@ mod layout_finding_tests {
             ]}"#,
         );
         let layout = crate::host::wasm_render::render_ui_tree_layout(&fits, 320.0, 240.0);
-        let findings = super::layout_findings(&fits, &layout, (320, 240));
+        let findings = super::layout_findings(&fits, &layout, true);
         assert!(findings.is_empty(), "{}", messages(&findings));
 
         let frame = super::frame_json_with_layout(&fits, &layout);
@@ -2512,19 +2645,190 @@ mod layout_finding_tests {
         assert!(button["rect"][2].as_f64().unwrap_or(0.0) > 0.0, "{frame}");
     }
 
-    /// Runs the layout pass over the maintained set (`packs/core.toml`) at the
-    /// smallest and a normal pane size and prints every finding. It asserts
-    /// only that each plugin was measured: findings in bundled plugins are
-    /// theirs to fix, and pinning them here would fail on every layout fix.
+    fn rendered(
+        json: &str,
+        width: f32,
+        height: f32,
+    ) -> (crate::host::wasm_view::UiTree, Vec<NodeLayout>) {
+        let tree = tree(json);
+        let layout = crate::host::wasm_render::render_ui_tree_layout(&tree, width, height);
+        (tree, layout)
+    }
+
+    /// The renderer's own text measurement: a word wider than the pane has to
+    /// break inside itself, and a sentence that wraps at its spaces does not.
     #[test]
-    fn core_pack_plugins_are_measured_by_the_layout_pass() {
-        let pack: toml::Value =
-            toml::from_str(crate::cli::install_host::CORE_PACK_TOML).expect("core pack parses");
+    fn rendered_text_reports_a_mid_word_break_and_not_a_break_at_a_space() {
+        let fact = |layout: &[NodeLayout]| {
+            layout
+                .iter()
+                .find(|fact| fact.id == 1)
+                .cloned()
+                .expect("the text node is measured")
+        };
+        let (_, layout) = rendered(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"column","children":[1]}},
+                {"id":1,"key":"1","data":{"type":"text","text":"Pneumonoultramicroscopicsilicovolcanoconiosislongword"}}
+            ]}"#,
+            200.0,
+            240.0,
+        );
+        assert!(fact(&layout).text_wrapped_mid_word, "{layout:?}");
+
+        let (_, layout) = rendered(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"column","children":[1]}},
+                {"id":1,"key":"1","data":{"type":"text","text":"one two three four five six seven eight nine ten eleven twelve"}}
+            ]}"#,
+            200.0,
+            240.0,
+        );
+        let wrapped = fact(&layout);
+        assert!(
+            wrapped.rect.is_some_and(|rect| rect.height() > 30.0),
+            "the sentence must wrap onto several rows for this to prove anything: {wrapped:?}"
+        );
+        assert!(!wrapped.text_wrapped_mid_word, "{wrapped:?}");
+    }
+
+    /// A correct layout through the real pass: a Text above a Row of two
+    /// buttons shares no space and produces no finding at all.
+    #[test]
+    fn rendered_row_of_buttons_under_text_has_no_overlap_finding() {
+        let (tree, layout) = rendered(ACTIONS_TREE, 480.0, 320.0);
+        for id in [1, 3, 4] {
+            assert!(
+                layout
+                    .iter()
+                    .any(|fact| fact.id == id && fact.visible.is_some()),
+                "node {id} must be measured and visible: {layout:?}"
+            );
+        }
+        let findings = super::layout_findings(&tree, &layout, true);
+        assert!(findings.is_empty(), "{}", messages(&findings));
+    }
+
+    /// Stint: buttons never break mid-word; rows, Select and Banner wrap at
+    /// narrow widths.
+    const STINT_NARROW_ROWS: &str = "1333";
+    /// Stint: bundled canvas plugins paint over their SurfaceHeader.
+    const STINT_CANVAS_OVER_HEADER: &str = "1353";
+
+    /// A layout finding in a bundled plugin that is known and has a stint to
+    /// fix it. `finding` is the start of the finding's message.
+    struct KnownLayoutFinding {
+        plugin: &'static str,
+        size: (u32, u32),
+        finding: &'static str,
+        fix_stint: &'static str,
+        /// False for a finding that depends on random plugin state (where the
+        /// balls spawn): it is allowed, and not required to reproduce.
+        every_run: bool,
+    }
+
+    const fn known(
+        plugin: &'static str,
+        size: (u32, u32),
+        finding: &'static str,
+        fix_stint: &'static str,
+    ) -> KnownLayoutFinding {
+        KnownLayoutFinding {
+            plugin,
+            size,
+            finding,
+            fix_stint,
+            every_run: true,
+        }
+    }
+
+    const fn sometimes(
+        plugin: &'static str,
+        size: (u32, u32),
+        finding: &'static str,
+        fix_stint: &'static str,
+    ) -> KnownLayoutFinding {
+        KnownLayoutFinding {
+            plugin,
+            size,
+            finding,
+            fix_stint,
+            every_run: false,
+        }
+    }
+
+    const KNOWN_CORE_LAYOUT_FINDINGS: &[KnownLayoutFinding] = &[
+        known(
+            "logs",
+            (320, 240),
+            "Button \"DEBUG\": the label breaks in the middle of a word",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "logs",
+            (320, 240),
+            "Button \"DEBUG\" is cut off",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "github-issues",
+            (320, 240),
+            "TextInput \"owner/repo (e.g. plexiapp/plexi)\" is cut off",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "github-issues",
+            (320, 240),
+            "Text \"#\" is not visible",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "github-issues",
+            (320, 240),
+            "Text \"No repository loaded\" is not visible",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "github-issues",
+            (320, 240),
+            "Text \"Type owner/repo above",
+            STINT_NARROW_ROWS,
+        ),
+        known(
+            "sudoku",
+            (320, 240),
+            "SurfaceHeader \"Sudoku\" and Canvas",
+            STINT_CANVAS_OVER_HEADER,
+        ),
+        sometimes(
+            "balls",
+            (320, 240),
+            "SurfaceHeader \"Balls\" and Canvas",
+            STINT_CANVAS_OVER_HEADER,
+        ),
+        sometimes(
+            "balls",
+            (800, 600),
+            "SurfaceHeader \"Balls\" and Canvas",
+            STINT_CANVAS_OVER_HEADER,
+        ),
+    ];
+
+    /// The maintained set (`packs/core.toml`) is clean under the layout pass
+    /// except for `KNOWN_CORE_LAYOUT_FINDINGS`, at the smallest size each
+    /// plugin supports and at a normal one. A new finding fails, and so does
+    /// a known one that stopped reproducing, so the list cannot go stale:
+    /// the change that fixes a plugin removes its entries.
+    #[test]
+    fn core_pack_plugins_have_only_known_layout_findings() {
+        let pack = crate::app::packs::Pack::from_toml_str(crate::cli::install_host::CORE_PACK_TOML)
+            .expect("core pack parses");
         let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("apps");
+        let mut errors = Vec::new();
+        let mut reproduced = vec![false; KNOWN_CORE_LAYOUT_FINDINGS.len()];
         let mut checked = 0;
-        for plugin in pack["plugin"].as_array().expect("[[plugin]] entries") {
-            let source = plugin["source"].as_str().expect("plugin source");
-            let Some(dir) = source.strip_prefix("local:") else {
+        for plugin in &pack.plugins {
+            let Some(dir) = plugin.source.strip_prefix("local:") else {
                 continue;
             };
             let dir = apps.join(dir);
@@ -2533,7 +2837,13 @@ mod layout_finding_tests {
                 continue;
             }
             let config = super::python_launch_config(&manifest, &entry, &dir).unwrap();
-            for (width, height) in [super::SMALLEST_CHECK_SIZE, (800, 600)] {
+            let plan = super::plan_check_sizes(
+                vec![super::SMALLEST_CHECK_SIZE, (480, 320), (800, 600)],
+                (manifest.launch.min_width, manifest.launch.min_height),
+            );
+            // The strict size and one normal size; the rest add boots, not coverage.
+            let sizes: Vec<(u32, u32)> = plan.strict.into_iter().chain([(800, 600)]).collect();
+            for (width, height) in sizes {
                 let tree = crate::host::wasm_python::run_headless_frame(
                     &config,
                     (width as f32, height as f32),
@@ -2550,17 +2860,49 @@ mod layout_finding_tests {
                     "{} {width}x{height}: the layout pass measured no node",
                     manifest.plugin.id
                 );
-                for finding in super::layout_findings(&tree, &layout, (width, height)) {
-                    eprintln!(
-                        "core-pack layout {}: {} {width}x{height}: {}",
-                        if finding.is_error { "error" } else { "warning" },
-                        manifest.plugin.id,
-                        finding.message
+                let strict = plan.strict == Some((width, height));
+                for finding in super::layout_findings(&tree, &layout, strict) {
+                    let line = format!(
+                        "{} {width}x{height}: {}",
+                        manifest.plugin.id, finding.message
                     );
+                    eprintln!(
+                        "core-pack layout {}: {line}",
+                        if finding.is_error { "error" } else { "warning" }
+                    );
+                    match KNOWN_CORE_LAYOUT_FINDINGS.iter().position(|known| {
+                        known.plugin == manifest.plugin.id
+                            && known.size == (width, height)
+                            && finding.message.starts_with(known.finding)
+                    }) {
+                        Some(index) => reproduced[index] = true,
+                        None => errors.push(line),
+                    }
                 }
                 checked += 1;
             }
         }
         assert!(checked > 0, "no core plugin was checked");
+        assert!(
+            errors.is_empty(),
+            "new core pack layout findings (fix the plugin, or add each to KNOWN_CORE_LAYOUT_FINDINGS with its fix stint):\n{}",
+            errors.join("\n")
+        );
+        let stale: Vec<String> = KNOWN_CORE_LAYOUT_FINDINGS
+            .iter()
+            .zip(&reproduced)
+            .filter(|(known, reproduced)| known.every_run && !**reproduced)
+            .map(|(known, _)| {
+                format!(
+                    "{} {}x{}: {} (stint {})",
+                    known.plugin, known.size.0, known.size.1, known.finding, known.fix_stint
+                )
+            })
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "known core pack layout findings no longer reproduce; remove them from KNOWN_CORE_LAYOUT_FINDINGS:\n{}",
+            stale.join("\n")
+        );
     }
 }
