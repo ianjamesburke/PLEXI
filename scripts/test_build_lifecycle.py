@@ -364,6 +364,15 @@ class Lifecycle(unittest.TestCase):
         return subprocess.run(['bash', self.LEASE, *args], env=env, cwd=self.repo, capture_output=True,
                               text=True, timeout=timeout)
 
+    def test_lease_caps_build_jobs_unless_caller_sets_them(self):
+        env = self.lease_env()
+        env.pop('CARGO_BUILD_JOBS', None)
+        expected = str(max(1, (os.cpu_count() or 1) // 3))
+        result = self.run_lease('sh', '-c', 'printf %s "$CARGO_BUILD_JOBS"', env=env)
+        self.assertEqual(result.stdout, expected, result.stderr)
+        result = self.run_lease('sh', '-c', 'printf %s "$CARGO_BUILD_JOBS"', env={**env, 'CARGO_BUILD_JOBS': '7'})
+        self.assertEqual(result.stdout, '7', result.stderr)
+
     def test_short_job_starts_while_full_job_holds_the_lease(self):
         env = self.lease_env()
         self.start_holder(None, 30, env)
