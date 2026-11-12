@@ -4,11 +4,13 @@
 Lint: every job that can read the release signing identity declares the
 `release-signing` environment and runs `release-approval-gate.py` before it
 touches a secret; publication depends on such a job; nightly holds no signing
-secret. Gate: the script refuses unless the environment names a reviewer and
-forbids administrator bypass.
+secret; no workflow reads secrets wholesale; only release.yml publishes. Gate:
+the script refuses unless the environment names a reviewer, forbids
+administrator bypass and restricts deployment refs.
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -21,14 +23,30 @@ WORKFLOWS = ROOT / ".github/workflows"
 GATE = ROOT / "scripts/release-approval-gate.py"
 ENVIRONMENT = "release-signing"
 SIGNING_SECRET = "secrets.PLEXI_ALPHA_SIGNING_"
+# The only jobs that may use the signing environment, with their exact
+# environment value. A changed expression must be reviewed here.
+GATED_JOBS = {
+    "distribution.yml:package":
+        "${{ inputs.tag != '' && startsWith(matrix.os, 'macos') && 'release-signing' || '' }}",
+    "release.yml:signing": "release-signing",
+}
+# Jobs that may write repository contents (tags, releases).
+CONTENT_WRITERS = {"nightly.yml:tag", "release.yml:publish"}
+RELEASE_PUBLISH = re.compile(r"publish-release\.sh|gh release (create|upload|edit)|action-gh-release|/releases\b")
+WHOLE_SECRETS = re.compile(r"tojson\s*\(\s*secrets\s*\)|secrets\s*\[", re.I)
+RUN_ANYWAY = re.compile(r"always\s*\(|failure\s*\(|cancelled\s*\(", re.I)
 
 
 def workflow(name):
     return yaml.safe_load((WORKFLOWS / name).read_text())
 
 
+def workflow_paths():
+    return sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+
+
 def all_jobs():
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in workflow_paths():
         for job_id, job in (yaml.safe_load(path.read_text()).get("jobs") or {}).items():
             yield path.name, job_id, job
 
@@ -43,61 +61,69 @@ def needs(job):
 
 
 class WorkflowLint(unittest.TestCase):
-    def test_every_job_reading_the_signing_identity_is_gated(self):
-        gated = []
+    def test_signing_environment_and_secrets_are_confined_to_gated_jobs(self):
+        seen = set()
         for name, job_id, job in all_jobs():
-            if not reads_signing_secret(job):
-                continue
             where = f"{name}:{job_id}"
-            if "uses" in job:
+            uses_environment = ENVIRONMENT in json.dumps(job.get("environment", ""))
+            if not (uses_environment or reads_signing_secret(job)):
+                continue
+            if "uses" in job and not uses_environment:
                 # Caller jobs cannot declare an environment; the called job must.
                 self.assertEqual(job["uses"], "./.github/workflows/distribution.yml", where)
                 continue
-            environment = str(job.get("environment", ""))
-            self.assertIn(ENVIRONMENT, environment,
-                          f"{where} reads the signing identity without the {ENVIRONMENT} environment")
+            self.assertIn(where, GATED_JOBS, f"{where} uses the signing environment or secrets outside the gated jobs")
+            self.assertEqual(job.get("environment"), GATED_JOBS[where], f"{where} environment changed")
             steps = job.get("steps") or []
             gate = next((i for i, s in enumerate(steps) if "release-approval-gate.py" in str(s.get("run", ""))), None)
-            first_secret = next(i for i, s in enumerate(steps) if reads_signing_secret(s))
             self.assertIsNotNone(gate, f"{where} has no release-approval-gate.py step")
-            self.assertIn(ENVIRONMENT, steps[gate]["run"], where)
-            self.assertLess(gate, first_secret, f"{where} reads a signing secret before the approval gate")
-            self.assertEqual(steps[gate].get("if"), steps[first_secret].get("if"),
-                             f"{where} gate and signing step must run under the same condition")
+            self.assertIn(f"release-approval-gate.py {ENVIRONMENT}", steps[gate]["run"], where)
+            self.assertNotIn("continue-on-error", steps[gate], where)
+            for i, step in enumerate(steps):
+                if reads_signing_secret(step):
+                    self.assertLess(gate, i, f"{where} reads a signing secret before the approval gate")
+                    self.assertEqual(steps[gate].get("if"), step.get("if"),
+                                     f"{where} gate and signing step must run under the same condition")
             self.assertEqual((job.get("permissions") or {}).get("actions"), "read", where)
-            gated.append(where)
-        self.assertIn("release.yml:signing", gated)
-        self.assertIn("distribution.yml:package", gated)
+            seen.add(where)
+        self.assertEqual(seen, set(GATED_JOBS))
 
-    def test_conditional_environment_covers_every_signing_leg(self):
+    def test_signing_condition_matches_the_environment_expression(self):
         job = workflow("distribution.yml")["jobs"]["package"]
-        environment = job["environment"]
-        signing = next(s for s in job["steps"] if reads_signing_secret(s))
-        self.assertEqual(signing["if"], "runner.os == 'macOS' && inputs.tag != ''")
-        # Signing runs on macOS legs of tagged builds; the environment must be
-        # chosen for exactly those legs (matrix.os is the only job-level proxy).
-        self.assertIn("inputs.tag != ''", environment)
-        self.assertIn("startsWith(matrix.os, 'macos')", environment)
-        self.assertIn(f"'{ENVIRONMENT}'", environment)
+        signing = [s for s in job["steps"] if reads_signing_secret(s)]
+        self.assertTrue(signing)
+        for step in signing:
+            self.assertEqual(step["if"], "runner.os == 'macOS' && inputs.tag != ''")
 
-    def test_no_workflow_inherits_secrets(self):
+    def test_no_workflow_reads_secrets_wholesale(self):
+        for path in workflow_paths():
+            self.assertIsNone(WHOLE_SECRETS.search(path.read_text()), f"{path.name} reads secrets by index or toJSON")
         for name, job_id, job in all_jobs():
             self.assertNotEqual(job.get("secrets"), "inherit", f"{name}:{job_id}")
 
-    def test_publish_waits_on_the_gated_package_job(self):
+    def test_only_release_publish_publishes_and_it_waits_on_the_gated_package_job(self):
+        publishers = [f"{n}:{j}" for n, j, job in all_jobs() if RELEASE_PUBLISH.search(json.dumps(job))]
+        self.assertEqual(publishers, ["release.yml:publish"])
+        writers = {f"{n}:{j}" for n, j, job in all_jobs()
+                   if (job.get("permissions") or {}) == "write-all"
+                   or (isinstance(job.get("permissions"), dict) and job["permissions"].get("contents") == "write")}
+        self.assertLessEqual(writers, CONTENT_WRITERS)
+        for path in workflow_paths():
+            top = yaml.safe_load(path.read_text()).get("permissions")
+            self.assertFalse(top == "write-all" or (isinstance(top, dict) and top.get("contents") == "write"), path.name)
         jobs = workflow("release.yml")["jobs"]
-        publishers = [j for j, job in jobs.items() if "publish-release.sh" in json.dumps(job)]
-        self.assertEqual(publishers, ["publish"])
-        self.assertIn("packages", needs(jobs["publish"]))
-        self.assertEqual(jobs["packages"]["uses"], "./.github/workflows/distribution.yml")
+        publish, packages = jobs["publish"], jobs["packages"]
+        self.assertIn("packages", needs(publish))
+        self.assertIsNone(RUN_ANYWAY.search(str(publish.get("if", ""))), "publish must not run after a failed package job")
+        self.assertNotIn("continue-on-error", packages)
+        self.assertEqual(packages["uses"], "./.github/workflows/distribution.yml")
         leg = json.dumps(workflow("distribution.yml")["jobs"]["package"]["strategy"])
         self.assertIn('\\"platform\\":\\"macos-arm64\\",\\"optional\\":false', leg)
 
     def test_nightly_holds_no_signing_secret_and_only_dispatches_release(self):
-        nightly = workflow("nightly.yml")
-        text = json.dumps(nightly)
+        text = json.dumps(workflow("nightly.yml"))
         self.assertNotIn(SIGNING_SECRET, text)
-        self.assertNotIn("publish-release.sh", text)
+        self.assertNotIn(ENVIRONMENT, text)
         self.assertIn("gh workflow run release.yml", text)
 
 
@@ -121,7 +147,9 @@ class GateScript(unittest.TestCase):
         return subprocess.run(["python3", str(GATE), ENVIRONMENT], env=env, capture_output=True, text=True)
 
     def protected(self, **overrides):
-        body = {"name": ENVIRONMENT, "can_admins_bypass": False, "protection_rules": [
+        body = {"name": ENVIRONMENT, "can_admins_bypass": False,
+                "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
+                "protection_rules": [
             {"type": "required_reviewers", "prevent_self_review": False,
              "reviewers": [{"type": "User", "reviewer": {"login": "owner"}}]}]}
         body.update(overrides)
@@ -139,6 +167,7 @@ class GateScript(unittest.TestCase):
             "no reviewer": (self.protected(protection_rules=[{"type": "wait_timer", "wait_timer": 5}]), 0),
             "empty reviewer list": (self.protected(protection_rules=[{"type": "required_reviewers", "reviewers": []}]), 0),
             "admin bypass": (self.protected(can_admins_bypass=True), 0),
+            "no branch policy": (self.protected(deployment_branch_policy=None), 0),
             "bypass field absent": ({k: v for k, v in self.protected().items() if k != "can_admins_bypass"}, 0),
             "api failure": ("{}", 1),
             "invalid json": ("not json", 0),

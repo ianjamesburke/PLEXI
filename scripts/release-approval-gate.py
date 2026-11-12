@@ -4,8 +4,10 @@
 Runs as the first step of every job that can read the release signing
 identity. GitHub creates a referenced environment that does not exist, with no
 protection rules, so the job would start without anyone approving it. This
-gate reads the environment's rules and fails closed when they are missing,
-when no reviewer is named, or when administrators may bypass them.
+gate reads the environment's rules and refuses when they are missing, when no
+reviewer is named, when administrators may bypass them, or when any ref may
+deploy. It is a misconfiguration check; the server-side reviewer rule is the
+boundary.
 Usage: release-approval-gate.py <environment>; needs GH_TOKEN with actions:read
 and GITHUB_REPOSITORY.
 """
@@ -18,8 +20,9 @@ import sys
 def refuse(environment, reason):
     print(f"release-approval-gate: REFUSED environment={environment}: {reason}. "
           "Fix: repository Settings > Environments > "
-          f"{environment}: add a required reviewer and untick "
-          "'Allow administrators to bypass configured protection rules' "
+          f"{environment}: add a required reviewer, untick "
+          "'Allow administrators to bypass configured protection rules' and "
+          "select deployment branches and tags "
           "(scripts/RELEASE_CHANNELS.md, Signed publish approval).", file=sys.stderr)
     return 1
 
@@ -46,6 +49,8 @@ def main(argv):
         return refuse(environment, f"gh api returned invalid JSON: {error}")
     if body.get("can_admins_bypass") is not False:
         return refuse(environment, "administrators may bypass its protection rules")
+    if not body.get("deployment_branch_policy"):
+        return refuse(environment, "any branch or tag may deploy to it (no deployment branch policy)")
     reviewers = [
         reviewer
         for rule in body.get("protection_rules") or []

@@ -89,14 +89,23 @@ pull requests do.
 Every job that can read the release signing identity runs in the GitHub
 environment `release-signing`, and that includes nightly alpha, `verify_only`
 and `signing_only` runs. The job starts only after a required reviewer
-approves it in the Actions run. Its first step, `scripts/release-approval-gate.py`,
-refuses to continue unless the environment names a required reviewer and
-forbids administrator bypass. GitHub creates a missing environment with no
-rules, so a missing or unconfigured environment stops signing instead of
-skipping the approval. Publication depends on the signed macOS package job,
-so nothing publishes without that approval. `scripts/test_release_approval.py`
-(run by `just test-infra-scripts`) fails when a job reads the identity outside
-the environment.
+approves it in the Actions run. Publication depends on the signed macOS
+package job, so nothing publishes without that approval.
+
+The boundary is the server-side reviewer rule on that environment, together
+with the signing secrets existing only as its environment secrets.
+`scripts/release-approval-gate.py`, the first step of each signing job, is a
+misconfiguration check. It refuses unless the environment names a required
+reviewer, forbids administrator bypass and restricts deployment refs, so a
+missing or auto-created environment stops signing. Signing does not fail
+closed while repository-level copies of the signing secrets exist: any job,
+without an environment, can read those. `scripts/test_release_approval.py`
+(the `Release approval lint` workflow, and `just test-infra-scripts`) fails
+when a job uses the identity or the environment outside the gated jobs, reads
+secrets wholesale, or publishes release assets outside `release.yml`.
+
+Reviewers: check which commit a run signs before approving. Anyone who can
+push can create a `v*` tag or dispatch the workflow on any commit.
 
 Repository settings this depends on (Settings > Environments >
 `release-signing`):
@@ -107,12 +116,15 @@ Repository settings this depends on (Settings > Environments >
 - Deployment branches and tags: selected, `alpha`, `beta`, `main` and tags `v*`.
 - Environment secrets `PLEXI_ALPHA_SIGNING_P12_BASE64`,
   `PLEXI_ALPHA_SIGNING_P12_PASSWORD` and `PLEXI_ALPHA_SIGNING_CERT_SHA1`. The
-  repository-level secrets with those names are deleted, so no other workflow
-  can read the identity.
+  repository-level secrets with those names are deleted.
 
 The approval is only as strong as the reviewer's GitHub credential. A token
 that can approve deployments, including a `gh` login on a machine where agents
 run, can approve a signing job too.
+
+Open question: `alpha` has branch protection without required reviews or
+status checks, and `beta` and `main` have none, so any writer can put a commit
+on a deployable ref. Whether to require reviews there is undecided.
 
 SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
 The Python SDK publishes only on stable tags; prerelease tags skip
