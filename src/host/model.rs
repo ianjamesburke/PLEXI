@@ -430,6 +430,23 @@ mod tests {
         assert_eq!(placement, Placement::Right);
     }
 
+    /// Stint 1318: the one checkable clause of the HostModel rule. `HostModel`
+    /// has no UI toolkit dependency; the needle is split so this test does not match
+    /// itself.
+    #[test]
+    fn host_model_source_has_no_ui_toolkit_reference() {
+        let needle = ["eg", "ui"].concat();
+        let source = include_str!("model.rs");
+        let hits: Vec<&str> = source
+            .lines()
+            .filter(|line| line.contains(needle.as_str()))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "src/host/model.rs must not reference {needle}; move UI work to PlexiApp: {hits:?}"
+        );
+    }
+
     #[test]
     fn add_context_stores_hierarchy_fields() {
         let mut model = HostModel::new();
