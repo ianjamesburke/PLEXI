@@ -588,6 +588,7 @@ test-build-inputs:
 # Infrastructure checks, including offline Cargo build-input fixtures.
 test-infra-scripts: test-build-inputs
     python3 scripts/test_release_evidence.py
+    uv run --no-project --with pyyaml python scripts/test_release_approval.py
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py

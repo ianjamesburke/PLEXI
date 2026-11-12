@@ -1,0 +1,32 @@
+name: Release approval lint
+
+# Fails when a workflow can read the release signing identity or publish
+# release assets without the human approval gate (scripts/RELEASE_CHANNELS.md,
+# Signed publish approval). Also runs locally in `just test-infra-scripts`.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/release-approval-gate.py'
+      - 'scripts/test_release_approval.py'
+  push:
+    branches: [alpha]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/release-approval-gate.py'
+      - 'scripts/test_release_approval.py'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Lint release approval gate
+        run: uv run --no-project --with pyyaml python scripts/test_release_approval.py

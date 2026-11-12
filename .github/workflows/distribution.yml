@@ -8,12 +8,14 @@ on:
       tag:
         type: string
         required: true
+    # Stored only as secrets of the `release-signing` environment; a job
+    # receives them only after that environment's required reviewer approves.
     secrets:
-      PLEXI_RELEASE_SIGNING_P12_BASE64:
+      PLEXI_ALPHA_SIGNING_P12_BASE64:
         required: false
-      PLEXI_RELEASE_SIGNING_P12_PASSWORD:
+      PLEXI_ALPHA_SIGNING_P12_PASSWORD:
         required: false
-      PLEXI_RELEASE_SIGNING_CERT_SHA1:
+      PLEXI_ALPHA_SIGNING_CERT_SHA1:
         required: false
   pull_request:
     paths:
@@ -40,6 +42,11 @@ jobs:
       matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true},{"os":"windows-latest","platform":"windows-x64","optional":true},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true}]}') }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
+    # Every signing leg waits for a human approval (scripts/RELEASE_CHANNELS.md).
+    environment: ${{ inputs.tag != '' && startsWith(matrix.os, 'macos') && 'release-signing' || '' }}
+    permissions:
+      contents: read
+      actions: read
     env:
       PLEXI_BUILD_TAG: ${{ inputs.tag }}
       PLEXI_CPYTHON_BUNDLE_DIR: ${{ github.workspace }}/target/distribution-runtime
@@ -51,6 +58,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
+      - name: Refuse to sign without a required human reviewer
+        if: runner.os == 'macOS' && inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: python3 scripts/release-approval-gate.py release-signing
       - uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: distribution-${{ matrix.platform }}
@@ -64,9 +77,9 @@ jobs:
         if: runner.os == 'macOS' && inputs.tag != ''
         timeout-minutes: 2
         env:
-          PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_RELEASE_SIGNING_P12_BASE64 }}
-          PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_RELEASE_SIGNING_P12_PASSWORD }}
-          PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_RELEASE_SIGNING_CERT_SHA1 }}
+          PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
         shell: bash
         run: bash scripts/setup-release-signing.sh
       - name: Fetch the verified package runtime
