@@ -1,89 +1,178 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
 import { docsNav } from '../../lib/docsNav';
+
+const startCommands: Record<string, string> = {
+  'getting-started': 'curl -fsSL https://plexiapp.com/install | bash',
+  'first-agent': 'plexi agent hook install --claude-code',
+  'first-plugin': 'plexi plugin init my-plugin',
+};
+const [start, ...rest] = docsNav;
 ---
-<DocsLayout title="Documentation" description="Documentation for the Plexi tiling terminal host, scriptable CLI, and local plugin runtime.">
-  <section class="docs-index">
-    <div>
-      <header class="index-header">
-        <p>Start with the tiling terminal host, its scriptable CLI, and local plugin authoring. Assistant, marketplace, and MCP surfaces are gated outside stable v1.</p>
-      </header>
-      <div class="sections">
-        {docsNav.map(group => (
-          <div class="section-block">
-            <span class="section-label">{group.section}</span>
-            <ul>
-              {group.items.map(item => (
-                <li>
-                  <a href={`/docs/${item.slug}`}>{item.title}</a>
-                </li>
-              ))}
-            </ul>
-          </div>
+<DocsLayout
+  landing
+  title="Plexi Docs"
+  description="Install Plexi, run a coding agent in it, build a plugin for it, and look up every CLI command, config key and SDK call."
+>
+  <div class="start">
+    <header class="start-head">
+      <h1>Plexi docs</h1>
+      <p class="start-lede">
+        Plexi is an agent operating system for developers who work with coding agents.
+        Terminals, agents and plugins share one tiling window, and the <code>plexi</code> CLI
+        drives all of it, so an agent can operate Plexi the same way you do.
+      </p>
+      <p class="start-status">
+        It ships today on Apple Silicon Mac. Windows and Linux are coming soon.
+        Builds are self-signed and not notarized; <a href="/docs/getting-started#open-an-unsigned-build">Install</a> covers opening one.
+      </p>
+    </header>
+
+    <section class="start-path" aria-labelledby="path-title">
+      <h2 id="path-title">Three steps in</h2>
+      <ol>
+        {start.items.map((item, index) => (
+          <li>
+            <a href={`/docs/${item.slug}`}>
+              <span class="step-n" aria-hidden="true">{index + 1}</span>
+              <span class="step-text">
+                <span class="step-title">{item.title}</span>
+                <span class="step-summary">{item.summary}</span>
+              </span>
+              <code class="step-cmd">{startCommands[item.slug]}</code>
+            </a>
+          </li>
         ))}
-      </div>
-    </div>
-  </section>
+      </ol>
+    </section>
+
+    <aside class="start-version">
+      <h2>Which version these pages describe</h2>
+      <p>
+        The docs follow the <code>alpha</code> branch, where 0.5.0 is in progress. 0.5.0 renames
+        apps to plugins and views: <code>plexi plugin</code> manages packages and
+        <code>plexi view</code> opens them in panes. Releases up to 0.4.6 use
+        <code>plexi app</code> for the same jobs. Run <code>plexi --version</code>, and trust
+        <code>plexi --help</code> over this site when they disagree.
+      </p>
+    </aside>
+
+    {rest.map(group => (
+      <section class="start-group" aria-labelledby={`group-${group.section.replace(/\s+/g, '-').toLowerCase()}`}>
+        <div class="group-head">
+          <h2 id={`group-${group.section.replace(/\s+/g, '-').toLowerCase()}`}>{group.section}</h2>
+          <p>{group.blurb}</p>
+        </div>
+        <ul>
+          {group.items.map(item => (
+            <li>
+              <a href={`/docs/${item.slug}`}>
+                <span class="row-title">
+                  {item.title}
+                  {item.generatedFrom && <span class="row-tag">Generated</span>}
+                </span>
+                <span class="row-summary">{item.summary}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))}
+
+    <section class="start-help" aria-labelledby="help-title">
+      <h2 id="help-title">When the docs fall short</h2>
+      <p>
+        Every command explains itself: <code>plexi --help</code> lists the namespaces and
+        <code>plexi &lt;command&gt; --help</code> covers flags and examples. Agents learn Plexi from
+        that same text. For anything else, <a href="/support">get support</a> or
+        <a href="https://github.com/ianjamesburke/PLEXI/issues">open an issue</a>.
+      </p>
+    </section>
+  </div>
 </DocsLayout>
 
 <style>
-  .docs-index {
-    padding: 0;
-    min-height: 70vh;
+  .start { max-width: 980px; }
+  .start h1 {
+    font-family: var(--body);
+    font-weight: 750;
+    font-size: clamp(44px, 6vw, 84px);
+    line-height: 1;
+    letter-spacing: -.04em;
+    color: #fff;
   }
-  .index-header {
-    margin-bottom: 64px;
-  }
-  .index-header h1 {
-    font-size: 40px;
-    font-weight: 600;
-    letter-spacing: 0;
-    margin-bottom: 10px;
-  }
-  .index-header p {
-    color: var(--fg-2);
-    font-size: 15px;
-    line-height: 1.7;
-    max-width: 680px;
-  }
-.sections {
+  .start-lede { margin-top: 24px; max-width: 60ch; font-size: clamp(19px, 1.7vw, 24px); line-height: 1.45; color: var(--fg); }
+  .start-status { margin-top: 16px; max-width: 64ch; color: var(--fg-2); }
+  .start :is(p, li) code { font-size: .86em; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-3); color: var(--accent-light); }
+  .start p a { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
+  .start p a:hover { color: #fff; }
+  .start h2 { font-size: 15px; font-weight: 700; color: #fff; }
+
+  /* The getting-started path: an ordered sequence, so the numbers carry meaning. */
+  .start-path { padding: 0; margin-top: 64px; border: 0; }
+  .start-path ol { list-style: none; margin-top: 16px; border: 1px solid var(--border-2); border-radius: 14px; background: var(--bg-2); overflow: hidden; }
+  .start-path li + li { border-top: 1px solid var(--border); }
+  .start-path a {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-    gap: 40px;
+    grid-template-columns: 56px minmax(0, 1fr) minmax(0, auto);
+    align-items: center;
+    gap: 8px 24px;
+    padding: 26px 28px;
+    transition: background-color 140ms ease;
   }
-  .section-block {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .start-path a:hover { background: var(--bg-3); }
+  .start-path a:focus-visible { outline-offset: -4px; }
+  .step-n { font: 900 44px/1 var(--display); color: var(--accent-light); font-variant-numeric: tabular-nums; }
+  .step-text { display: flex; flex-direction: column; gap: 6px; }
+  .step-title { font-size: clamp(21px, 2vw, 26px); font-weight: 700; line-height: 1.2; letter-spacing: -.02em; color: #fff; }
+  .start-path a:hover .step-title { color: var(--accent-light); }
+  .step-summary { max-width: 52ch; font-size: 15.5px; line-height: 1.5; color: var(--fg-2); }
+  .start-path .step-cmd {
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    font-size: 12.5px;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .section-label {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--fg-4);
-    font-weight: 600;
+
+  .start-version { margin-top: 28px; padding: 20px 24px; border: 1px solid var(--border); border-radius: 12px; }
+  .start-version h2 { color: var(--amber); }
+  .start-version p { margin-top: 8px; max-width: 78ch; font-size: 15.5px; line-height: 1.6; color: var(--fg-2); }
+
+  /* Grouped index: title on the left, what the page answers on the right. */
+  .start-group { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px 40px; margin-top: 72px; padding: 0; border: 0; }
+  .group-head h2 { font-size: clamp(24px, 2.2vw, 30px); letter-spacing: -.025em; line-height: 1.15; }
+  .group-head p { margin-top: 10px; font-size: 14.5px; line-height: 1.5; color: var(--fg-2); }
+  .start-group ul { list-style: none; border-top: 1px solid var(--border-2); }
+  .start-group li { border-bottom: 1px solid var(--border); }
+  .start-group li a { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 4px 28px; align-items: baseline; padding: 16px 8px; transition: background-color 140ms ease; }
+  .start-group li a:hover { background: var(--bg-2); }
+  .start-group li a:focus-visible { outline-offset: -3px; }
+  .row-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; font-size: 17px; font-weight: 700; color: var(--accent-light); }
+  .start-group li a:hover .row-title { color: #fff; }
+  .row-tag { font: 700 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--amber); }
+  .row-summary { font-size: 15.5px; line-height: 1.5; color: var(--fg-2); }
+
+  .start-help { margin-top: 72px; padding: 28px 0 0; border: 0; border-top: 1px solid var(--border); }
+  .start-help h2 { font-size: 20px; }
+  .start-help p { margin-top: 10px; max-width: 68ch; color: var(--fg-2); }
+
+  @media (max-width: 1100px) {
+    .start-path a { grid-template-columns: 48px minmax(0, 1fr); }
+    .start-path .step-cmd { grid-column: 2; justify-self: start; max-width: 100%; }
   }
-  .section-block ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  @media (max-width: 820px) {
+    .start-group { grid-template-columns: 1fr; margin-top: 56px; }
+    .start-group li a { grid-template-columns: 1fr; }
   }
-  .section-block ul li a {
-    font-size: 14px;
-    color: var(--fg-2);
-    padding: 5px 0;
-    display: block;
-    border-bottom: 1px solid transparent;
-    transition: color 150ms;
-  }
-  .section-block ul li a:hover {
-    color: var(--accent-light);
-  }
-  @media (max-width: 980px) {
-    .docs-index { padding: 0; }
-    .index-header h1 { font-size: 30px; }
+  @media (max-width: 520px) {
+    .start-path a { grid-template-columns: 1fr; padding: 22px 18px; }
+    .start-path .step-cmd { grid-column: 1; }
+    .step-n { font-size: 32px; }
+    .start-version { padding: 18px; }
   }
 </style>

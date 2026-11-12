@@ -1,27 +1,39 @@
 ---
 import '../styles/global.css';
+import '../styles/docs.css';
 import Texture from '../components/Texture.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import { docsNav } from '../lib/docsNav';
+import DocsSidebar from '../components/docs/DocsSidebar.astro';
+import DocsToc from '../components/docs/DocsToc.astro';
+import DocsPager from '../components/docs/DocsPager.astro';
+import { docEntry } from '../lib/docsNav';
+
 interface Props {
   title: string;
   description?: string;
   currentSlug?: string;
   headings?: { depth: number; slug: string; text: string }[];
+  /** The docs start page: no article header, no prose wrapper, no page outline. */
+  landing?: boolean;
 }
 
-const { title, description = '', currentSlug, headings = [] } = Astro.props;
-const pageTitle = `${title} — Plexi Docs`;
+const { title, description = '', currentSlug, headings = [], landing = false } = Astro.props;
+const entry = docEntry(currentSlug);
+const summary = entry?.summary ?? description;
+const pageTitle = landing ? 'Plexi Docs' : `${title} · Plexi Docs`;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
+const outline = headings.filter(h => h.depth === 2);
+const showToc = !landing && outline.length > 1;
 ---
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="theme-color" content="#16161e" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{pageTitle}</title>
-  <meta name="description" content={description} />
+  <meta name="description" content={description || summary} />
   <link rel="canonical" href={canonicalURL} />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" href="/favicon.ico" sizes="32x32" />
@@ -29,62 +41,57 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
   <meta property="og:type" content="article" />
   <meta property="og:url" content={canonicalURL} />
   <meta property="og:title" content={pageTitle} />
-  <meta property="og:description" content={description} />
+  <meta property="og:description" content={description || summary} />
   <meta property="og:site_name" content="Plexi" />
 </head>
-<body>
+<body class="docs-body">
   <a class="skip-link" href="#article">Skip to article</a>
   <Texture />
   <Nav />
-  <div class="docs-masthead"><div class="wrap"><p class="eyebrow">Plexi / Reference</p><p class="docs-wordmark">Docs.</p><p>Installation, setup, and reference for Plexi.</p></div></div>
-  <div class="docs-shell">
-    <aside class="docs-sidebar">
-      <details class="docs-navigation" open>
-        <summary>Documentation menu</summary>
-        <nav aria-label="Documentation">
-      <div class="sidebar-inner">
-        <a href="/docs" class="sidebar-home">← Docs</a>
-        {docsNav.map(group => (
-          <div class="nav-group">
-            <span class="nav-group-label">{group.section}</span>
-            {group.items.map(item => (
-              <a
-                href={`/docs/${item.slug}`}
-                class:list={['nav-item', { active: currentSlug === item.slug }]}
-                aria-current={currentSlug === item.slug ? 'page' : undefined}
-              >
-                {item.title}
-              </a>
-            ))}
-          </div>
-        ))}
-      </div>
-        </nav>
-      </details>
-    </aside>
+  <div class:list={['docs-shell', { 'no-toc': !showToc }]}>
+    <DocsSidebar currentSlug={currentSlug} landing={landing} />
     <main class="docs-main" id="article" tabindex="-1">
-      <div class="docs-content">
-        <header class="doc-header">
-          <a class="eyebrow" href="/docs">Documentation /</a>
-          <h1>{title}</h1>
-        </header>
-        <div class="prose prose-invert max-w-none">
-          <slot />
-        </div>
-      </div>
+      {landing ? (
+        <slot />
+      ) : (
+        <article class:list={['docs-article', { reference: Boolean(entry?.generatedFrom) }]}>
+          <header class="doc-header">
+            <nav class="doc-crumbs" aria-label="Breadcrumb">
+              <a href="/docs">Docs</a>
+              {entry && <span aria-hidden="true">/</span>}
+              {entry && <span>{entry.section}</span>}
+            </nav>
+            <h1>{title}</h1>
+            {summary && <p class="doc-summary">{summary}</p>}
+            {entry?.generatedFrom && (
+              <p class="doc-generated">
+                <span class="doc-generated-tag">Generated</span>
+                Built from {entry.generatedFrom}. It tracks the <code>alpha</code> branch, so it can be ahead of the release you have installed.
+              </p>
+            )}
+          </header>
+          <div class="prose prose-invert max-w-none">
+            <slot />
+          </div>
+          <DocsPager currentSlug={currentSlug} />
+        </article>
+      )}
     </main>
-    {headings.some(h => h.depth === 2) && <nav class="docs-toc" aria-label="On this page"><p class="eyebrow">On this page</p>{headings.filter(h => h.depth === 2).map(h => <a href={`#${h.slug}`}>{h.text}</a>)}</nav>}
+    {showToc && <DocsToc headings={outline} />}
   </div>
   <Footer />
 </body>
 </html>
 
 <script>
+  // Sidebar: open on wide screens, collapsed behind its summary on narrow ones.
   const menu = document.querySelector<HTMLDetailsElement>('.docs-navigation');
   const narrow = window.matchMedia('(max-width: 980px)');
   const syncMenu = () => { if (menu) menu.open = !narrow.matches; };
   syncMenu();
   narrow.addEventListener('change', syncMenu);
+
+  // Wide tables and code blocks scroll on their own; make the scroller keyboard reachable.
   const syncScrollStops = () => {
     document.querySelectorAll<HTMLElement>('.prose pre, .prose table').forEach(el => {
       if (el.scrollWidth > el.clientWidth) el.tabIndex = 0;
@@ -93,39 +100,29 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
   };
   syncScrollStops();
   window.addEventListener('resize', syncScrollStops);
+
+  // Copy button on every code block.
+  document.querySelectorAll<HTMLPreElement>('.prose pre').forEach(pre => {
+    const frame = document.createElement('div');
+    frame.className = 'code-frame';
+    pre.replaceWith(frame);
+    frame.append(pre);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-copy';
+    button.textContent = 'Copy';
+    let reset: ReturnType<typeof setTimeout> | undefined;
+    button.addEventListener('click', async () => {
+      clearTimeout(reset);
+      try {
+        await navigator.clipboard.writeText(pre.innerText.replace(/\n$/, ''));
+        button.textContent = 'Copied';
+      } catch (error) {
+        console.error('docs: copying a code block failed', error);
+        button.textContent = 'Copy failed';
+      }
+      reset = setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+    });
+    frame.append(button);
+  });
 </script>
-<style>
-  .docs-masthead { padding-block: 48px; border-bottom: 6px solid var(--accent-light); }
-  .docs-wordmark { margin: 18px 0 24px; color: var(--accent-light); font: 900 clamp(74px, 10vw, 150px)/.85 var(--display); letter-spacing: -.09em; }
-  .docs-masthead p:last-child { font-size: clamp(18px, 1.8vw, 24px); }
-  .docs-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr) 170px; max-width: 1600px; margin: 0 auto; padding: 0 36px; gap: clamp(32px, 4vw, 64px); align-items: start; }
-  .docs-sidebar { border-right: 1px solid var(--border); position: sticky; top: 76px; max-height: calc(100dvh - 76px); overflow-y: auto; padding-right: 18px; }
-  summary { display: none; cursor: pointer; padding: 18px 0; font-weight: 700; }
-  .sidebar-inner { padding-block: 42px; }
-  .sidebar-home { display: block; color: var(--accent-light); font: 12px var(--mono); padding-bottom: 28px; }
-  .nav-group { margin-bottom: 28px; }
-  .nav-group-label { display: block; margin-bottom: 10px; font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-2); }
-  .nav-item { display: block; padding: 9px 12px; font-size: 14px; color: var(--fg-2); border-left: 2px solid transparent; line-height: 1.4; }
-  .nav-item:hover { background: var(--bg-3); color: var(--fg); }
-  .nav-item.active { border-color: var(--accent-light); color: var(--fg); background: var(--bg-4); font-weight: 700; }
-  .docs-main { min-width: 0; padding-block: 48px 100px; }
-  .docs-content { max-width: 800px; }
-  .doc-header { margin-bottom: 36px; }
-  .doc-header h1 { font-weight: 750; margin-top: 28px; font-size: clamp(36px, 4.5vw, 64px); line-height: 1.08; letter-spacing: -.055em; overflow-wrap: anywhere; }
-  .docs-toc { position: sticky; top: 100px; padding-top: 48px; max-height: calc(100dvh - 120px); overflow-y: auto; }
-  .docs-toc p { margin-bottom: 20px; }
-  .docs-toc a { display: block; color: var(--fg-2); font-size: 13px; line-height: 1.4; padding-block: 7px; }
-  .docs-toc a:hover { color: var(--accent-light); }
-  @media (max-width: 1200px) {
-    .docs-shell { grid-template-columns: 220px minmax(0, 1fr); gap: 36px; }
-    .docs-toc { display: none; }
-  }
-  @media (max-width: 980px) {
-    .docs-shell { display: block; }
-    .docs-sidebar { position: static; max-height: none; padding: 0; border-right: 0; border-bottom: 1px solid var(--border); overflow: visible; }
-    summary { display: list-item; list-style-position: inside; }
-    .sidebar-inner { padding: 12px 4px 24px; }
-    .docs-main { padding-top: 32px; }
-  }
-  @media (max-width: 700px) { .docs-shell { padding-inline: 18px; } .docs-masthead { padding-block: 36px; } }
-</style>

@@ -1,6 +1,6 @@
 ---
 title: Secrets
-description: Store secrets and control workspace access.
+description: Store API keys per workspace, and control which terminals, agents and plugins can read them.
 order: 6
 ---
 
@@ -162,7 +162,7 @@ withheld and must use permission-controlled reads.
 
 ## Workspace Scoping
 
-Secrets are scoped by workspace root path — a secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
+Secrets are scoped by workspace root path. A secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
 
 ### Human Pane Authority and Context Boundary
 
