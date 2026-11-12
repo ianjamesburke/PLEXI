@@ -1,4 +1,4 @@
-# File explorer host app, repo root listing, across the responsive range.
+# File explorer host app, fixture tree listing, across the responsive range.
 # 360x280 is the smallest plausible pane — the explorer must stay usable, not
 # overflow. 520x400 is the compact list layout, where the path row and chip row
 # must not collide. 680x600 is the middle width that previously broke: details
@@ -9,7 +9,7 @@
 sizes = [[360.0, 280.0], [520.0, 400.0], [680.0, 600.0], [760.0, 500.0], [1280.0, 800.0]]
 
 [[steps]]
-open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
+open = { kind = "builtin", id = "file_browser", cwd = "tests/fixtures/file-browser-tree", as = "files" }
 
 [[steps]]
 run_steps = 3
@@ -26,7 +26,7 @@ key = { target = "files", value = "cmd+f" }
 run_steps = 2
 
 [[steps]]
-text = { target = "files", value = "Cargo" }
+text = { target = "files", value = "plan" }
 
 [[steps]]
 run_steps = 2
