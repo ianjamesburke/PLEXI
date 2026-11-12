@@ -389,11 +389,19 @@ wherever your tree declares none, and any explicit value you set wins:
 - **Bottom-pinned content.** A `Spacer(grow=True)` splits a column: everything
   before it flows from the top, everything after it sits flush against the
   bottom. Children after the spacer are never pushed off the pane.
+  Grow spacers share a column's spare height: `[Spacer(grow=True), child,
+  Spacer(grow=True)]` centers `child`.
   You no longer set root padding: `Column(padding=...)` does not affect the
   declarative tree (it survives only for legacy canvas-mode layout).
 - **Inter-child spacing.** Leave `gap` unset on `Column`/`HStack` and the host
   spaces children (columns get `SPACE_MD`, rows get the tighter `SPACE_SM`).
   Pass an explicit `gap=` to override; `gap=0` packs children flush.
+- **Cross-axis `align`.** On both `Column` and `Row` (`HStack`), `align` is the
+  cross axis: a column places children at its left, center or right; a row
+  places them at its top, center or bottom. The values are `start`, `center`
+  and `end`. A `Row` defaults to `center`, a `Column` to `start`.
+- **Narrow panes.** `Actions`, `Select` and `Tabs` wrap whole buttons onto
+  further lines when the pane is narrow.
 - **Button targets.** Buttons get a comfortable minimum click/touch size, so
   single-glyph buttons (calculator keys, toolbar chips) are never cramped.
 
