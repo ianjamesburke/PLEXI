@@ -296,6 +296,10 @@ impl PlexiInput {
 }
 
 #[cfg(test)]
+#[path = "input_router_regression_tests.rs"]
+mod regression_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
