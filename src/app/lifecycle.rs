@@ -280,17 +280,10 @@ impl PlexiApp {
     pub(crate) fn permissions_caller_pane(
         &self,
         peer_ancestry: Option<&[u32]>,
-        claimed: Option<crate::spatial::tiling::PaneId>,
     ) -> Option<crate::spatial::tiling::PaneId> {
-        let peer_pane = peer_ancestry
+        peer_ancestry
             .and_then(|pids| self.resolve_socket_peer_pane(pids))
-            .map(|(pane, _, _)| pane);
-        if peer_pane.is_some() && peer_pane != claimed {
-            log::info!(
-                "permissions:cli host-derived caller pane={peer_pane:?} overrides claimed {claimed:?}"
-            );
-        }
-        peer_pane.or(claimed)
+            .map(|(pane, _, _)| pane)
     }
 
     fn refuse_cross_pane(
@@ -499,22 +492,13 @@ impl PlexiApp {
             crate::protocol::HostRequest::Permissions {
                 op,
                 id,
-                pane_id,
-                credential,
                 peer_ancestry,
                 response_file,
             } => {
-                // The kernel-verified peer decides who is calling. A process
-                // inside any pane is that pane's agent whatever the wire says;
-                // the client's own claim can only lower authority.
-                let claimed_pane = self.permissions_caller_pane(peer_ancestry.as_deref(), *pane_id);
-                self.permissions_cli_request(
-                    op,
-                    id.as_deref(),
-                    claimed_pane,
-                    credential.as_deref(),
-                    response_file,
-                );
+                // The kernel-verified peer names the caller pane for the audit
+                // trail. No socket caller is human, pane or not (stint 1271).
+                let caller_pane = self.permissions_caller_pane(peer_ancestry.as_deref());
+                self.permissions_cli_request(op, id.as_deref(), caller_pane, response_file);
             }
             crate::protocol::HostRequest::CallerContext {
                 peer_ancestry,

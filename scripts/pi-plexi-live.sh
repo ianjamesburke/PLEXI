@@ -106,8 +106,23 @@ echo "==> Discovered plugin tools in context $FIRST_CTX_ID:"
 echo "$TOOLS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print([t["name"] for t in d.get("tools",[])])'
 
 # Verify ask-tier gate (`clip.state` and `clip.crop` without grant return permission_required),
-# human approval via `plexi permissions allow`, resource-scoped execution on `intro`,
+# human approval by a click in the Plexi window, resource-scoped execution on `intro`,
 # operation_id deduplication, and that `outro` still requires its own approval.
+
+# No command grants a permission, including `plexi permissions allow` from this
+# terminal (stint 1271). The person running the harness approves the banner.
+wait_for_human_approval() {
+  local id="$1"
+  echo "==> Approve $id in the Plexi window ($LIVE_CHANNEL). Waiting up to 120s..."
+  for _ in {1..240}; do
+    if ! plexi_iso assistant permission show "$id" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "error: $id was not decided in the Plexi window within 120s" >&2
+  return 1
+}
 run_in_pane1() {
   local cmd="$1"
   local out_file="$2"
@@ -136,7 +151,7 @@ STATE_ASK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.state --json 
 echo "clip.state unapproved: $STATE_ASK_JSON"
 STATE_REQ_ID="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is False and d["error_code"] == "permission_required"; print(d["pending_request_id"])' "$STATE_ASK_JSON")"
 
-plexi_iso permissions allow "$STATE_REQ_ID"
+wait_for_human_approval "$STATE_REQ_ID"
 STATE_CALL_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.state --json --input '{\"clip_id\":\"intro\"}'" "$WORKSPACE_DIR/state_ok.json")"
 echo "clip.state approved: $STATE_CALL_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["output"]["clip"]["revision"] == "rev-1", d' "$STATE_CALL_JSON"
@@ -145,7 +160,7 @@ CROP_ASK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --
 echo "clip.crop unapproved: $CROP_ASK_JSON"
 CROP_REQ_ID="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is False and d["error_code"] == "permission_required"; print(d["pending_request_id"])' "$CROP_ASK_JSON")"
 
-plexi_iso permissions allow "$CROP_REQ_ID"
+wait_for_human_approval "$CROP_REQ_ID"
 CROP_OK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_ok.json")"
 echo "clip.crop approved: $CROP_OK_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["output"]["revision_after"] == "rev-2" and d["output"]["deduplicated"] is False, d' "$CROP_OK_JSON"

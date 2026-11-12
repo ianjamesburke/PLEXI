@@ -1153,12 +1153,9 @@ pub enum HostRequest {
         op: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<String>,
         /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
+        /// read from the wire. It names the caller pane for the audit trail
+        /// only: no socket caller is human, so it never decides authority.
         #[serde(skip)]
         peer_ancestry: Option<Vec<u32>>,
         response_file: String,

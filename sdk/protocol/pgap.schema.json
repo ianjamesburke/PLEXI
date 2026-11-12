@@ -3104,12 +3104,6 @@
           "additionalProperties": false,
           "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
           "properties": {
-            "credential": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "id": {
               "type": [
                 "string",
@@ -3118,14 +3112,6 @@
             },
             "op": {
               "type": "string"
-            },
-            "pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
             },
             "response_file": {
               "type": "string"

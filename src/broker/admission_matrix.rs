@@ -16,6 +16,12 @@
 //!   (needs the private `WasmPane::exec` and its queue).
 //! - CLI/agent adapter and the shared event-subscription path: this file.
 //!
+//! Standalone pin for socket-caller classification:
+//! `socket_caller_with_no_pane_is_not_human` in
+//! `src/testing/agent_security_tests.rs` (stint 1271): a socket caller whose
+//! ancestry reaches no pane is not human; its `allow`/`reset` file Needs you
+//! and only a desktop click applies them.
+//!
 //! Every driver uses `PermissionMonitor::ephemeral()` or an in-memory
 //! `GrantStore` unless a cell is about persistence; those use a temp profile
 //! with the test host-key backend. No network, no login keychain, no consent

@@ -546,10 +546,10 @@ pub enum Commands {
     },
     /// List and change decisions stored by the permission monitor.
     ///
-    /// `list` prints the live rows. `reset` clears a stored denial so the next
-    /// call asks again. `revoke` removes an allow. `allow` turns a denial into
-    /// an allow. Reset and allow from a pane, a call credential, or an agent
-    /// file a Needs you item and leave the decision unchanged.
+    /// `list` prints the live rows. `revoke` removes an allow and applies at
+    /// once. `reset` and `allow` widen a permission, so they never apply from a
+    /// command, even in your own terminal: they file a Needs you item and exit
+    /// 2. Approve it in the Plexi window (Needs you) to apply the change.
     Permissions {
         #[command(subcommand)]
         cmd: PermissionsCmd,
@@ -1023,7 +1023,7 @@ pub enum NeedsYouCmd {
 pub enum PermissionsCmd {
     /// List live permission decisions.
     List,
-    /// Clear a stored denial so the next call asks again.
+    /// Ask to clear a stored denial (does not grant): files a Needs you item to approve in Plexi
     Reset {
         /// Decision id from `plexi permissions list`.
         id: String,
@@ -1033,7 +1033,7 @@ pub enum PermissionsCmd {
         /// Decision id from `plexi permissions list`.
         id: String,
     },
-    /// Turn a denial or a pending ask into an allow.
+    /// Ask to allow a denial or pending ask (does not grant): files a Needs you item to approve in Plexi
     Allow {
         /// Decision id from `plexi permissions list`.
         id: String,

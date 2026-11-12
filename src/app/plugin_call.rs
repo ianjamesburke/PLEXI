@@ -181,27 +181,28 @@ impl PlexiApp {
         crate::rpc::write_response(response_file, body.to_string().as_bytes());
     }
 
+    /// `plexi permissions` over the command socket. No socket caller is
+    /// human: a pane, a credential, or their absence changes nothing about
+    /// that (`docs/prm/permissions-broker.md`, admission step 5). `allow` and
+    /// `reset` therefore file Needs you; `revoke` narrows and applies.
+    /// `caller_pane` is the host-resolved peer pane, kept for the audit trail.
     pub(crate) fn permissions_cli_request(
         &mut self,
         op: &str,
         id: Option<&str>,
-        pane_id: Option<u64>,
-        credential: Option<&str>,
+        caller_pane: Option<u64>,
         response_file: &str,
     ) {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let credential_set = credential.is_some_and(|value| !value.is_empty());
-        let human = pane_id.is_none() && !credential_set;
-        let actor_id = match pane_id {
+        let actor_id = match caller_pane {
             Some(id) => format!("pane:{id}"),
-            None if credential_set => "agent:credential".to_string(),
-            None => "user".to_string(),
+            None => "socket".to_string(),
         };
         let body = if op == "list" {
             let entries = monitor.list_entries();
             log::info!(
-                "permissions:cli list count={} human={human} actor={actor_id}",
+                "permissions:cli list count={} surface=socket actor={actor_id}",
                 entries.len()
             );
             serde_json::json!({"ok": true, "entries": entries})
@@ -211,12 +212,15 @@ impl PlexiApp {
                 id,
                 op,
                 &crate::broker::gate::PermissionCaller {
-                    human,
+                    human: false,
                     actor_id: actor_id.clone(),
                 },
             );
-            log::info!("permissions:cli {op} id={id} human={human} actor={actor_id}");
             let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+            log::info!(
+                "permissions:cli {op} id={id} surface=socket actor={actor_id} outcome={}",
+                body["status"].as_str().unwrap_or("unknown")
+            );
             let ok = matches!(
                 outcome,
                 crate::broker::gate::PermissionMutation::Applied { .. }

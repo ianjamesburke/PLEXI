@@ -907,10 +907,8 @@ Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `al
 
 | Field | Type | Required |
 |-------|------|----------|
-| `credential` | `string?` | no |
 | `id` | `string?` | no |
 | `op` | `string` | yes |
-| `pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 
 ### `caller_context`
