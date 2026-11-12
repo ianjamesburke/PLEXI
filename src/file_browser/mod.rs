@@ -5905,6 +5905,56 @@ mod tests {
         );
     }
 
+    /// Cmd+/- changes the pane `font_size`; the action palette's typed query
+    /// and its command rows must scale with it (stint 1110 PR 1).
+    #[test]
+    fn action_palette_query_and_rows_follow_pane_font_size() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let text_sizes = |font_size: f32| {
+            let (mut app, _dir) = make_three_file_plugin();
+            app.font_size = font_size;
+            app.open_palette("/hid");
+            let title = app
+                .rank_palette_candidates()
+                .first()
+                .expect("a candidate for /hid")
+                .title
+                .clone();
+            let ctx = egui::Context::default();
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(ctx.run_ui(
+                    RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        app.draw_action_palette(ui, &colors, 42, None);
+                    },
+                ));
+            }
+            let shapes = output.unwrap().shapes;
+            let size_of = |text: &str| {
+                shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == text => {
+                            Some(t.galley.job.sections[0].format.font_id.size)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("no painted text {text:?}"))
+            };
+            (size_of("/hid"), size_of(&title))
+        };
+        let (query_default, row_default) = text_sizes(FONT_SIZE_DEFAULT);
+        let (query_large, row_large) = text_sizes(FONT_SIZE_DEFAULT * 2.0);
+        assert_eq!(query_default, FONT_SIZE_DEFAULT);
+        assert_eq!(query_large, FONT_SIZE_DEFAULT * 2.0);
+        assert_eq!(row_default, style::TEXT_META);
+        assert_eq!(row_large, style::TEXT_META * 2.0);
+    }
+
     #[test]
     fn search_mode_supports_paste_and_backspace_without_parent_navigation() {
         let dir = tempfile::tempdir().expect("tempdir");
