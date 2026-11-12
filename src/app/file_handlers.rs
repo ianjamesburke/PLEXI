@@ -10,7 +10,9 @@
 //! This persisted config grammar stays unchanged to preserve user associations.
 //! It is not a CLI alias; new CLI calls use `view open`.
 //!   `os`            — hand to the OS default opener (`open` / `xdg-open`)
-//!   `cmd:<command>` — reserved; parsed now, executed in a follow-up
+//!
+//! `cmd:<command>` is not supported yet. It is rejected with a message rather
+//! than accepted and silently treated as `os`.
 //!
 //! `os` is the lone bare keyword (it is a singleton with no value), kept bare
 //! for ergonomics rather than forcing `os:default`.
@@ -22,29 +24,33 @@ pub enum FileHandler {
     View(String),
     /// Hand to the OS default opener.
     Os,
-    /// Run an external command with the path appended. Reserved — not yet
-    /// executed; callers fall back to [`FileHandler::Os`] behavior.
-    Cmd(String),
 }
 
 impl FileHandler {
-    /// Parse a `kind:value` handler spec. Returns `None` for an empty or
-    /// malformed spec (unknown kind, or `app:`/`cmd:` with no value) so the
-    /// caller can warn and fall through to the next resolution tier.
-    pub fn parse(spec: &str) -> Option<Self> {
+    /// Parse a `kind:value` handler spec. An empty, malformed or unsupported
+    /// spec (unknown kind, `app:` with no value, any `cmd:`) is an error that
+    /// names the spec and the accepted forms, so the config loader can report
+    /// it and the open path can skip it.
+    pub fn parse(spec: &str) -> Result<Self, String> {
         let spec = spec.trim();
         if spec == "os" {
-            return Some(FileHandler::Os);
+            return Ok(FileHandler::Os);
         }
         if let Some(id) = spec.strip_prefix("app:") {
             let id = id.trim();
-            return (!id.is_empty()).then(|| FileHandler::View(id.to_string()));
+            if id.is_empty() {
+                return Err(format!("{spec:?} names no plugin; use `app:<id>`"));
+            }
+            return Ok(FileHandler::View(id.to_string()));
         }
-        if let Some(cmd) = spec.strip_prefix("cmd:") {
-            let cmd = cmd.trim();
-            return (!cmd.is_empty()).then(|| FileHandler::Cmd(cmd.to_string()));
+        if spec.starts_with("cmd:") {
+            return Err(format!(
+                "{spec:?} is not supported: `cmd:` handlers are not implemented; use `os` or `app:<id>`"
+            ));
         }
-        None
+        Err(format!(
+            "{spec:?} is not a file handler; use `os` or `app:<id>`"
+        ))
     }
 }
 
@@ -56,42 +62,41 @@ mod tests {
     fn parses_plugin_handler() {
         assert_eq!(
             FileHandler::parse("app:text-editor"),
-            Some(FileHandler::View("text-editor".to_string()))
+            Ok(FileHandler::View("text-editor".to_string()))
         );
     }
 
     #[test]
     fn parses_os_keyword() {
-        assert_eq!(FileHandler::parse("os"), Some(FileHandler::Os));
+        assert_eq!(FileHandler::parse("os"), Ok(FileHandler::Os));
     }
 
     #[test]
-    fn parses_cmd_handler() {
-        assert_eq!(
-            FileHandler::parse("cmd:code -w"),
-            Some(FileHandler::Cmd("code -w".to_string()))
-        );
+    fn rejects_cmd_handler_until_implemented() {
+        let err = FileHandler::parse("cmd:code -w").unwrap_err();
+        assert!(err.contains("cmd:"), "{err}");
+        assert!(err.contains("not implemented"), "{err}");
     }
 
     #[test]
     fn trims_surrounding_whitespace() {
         assert_eq!(
             FileHandler::parse("  app:text-editor  "),
-            Some(FileHandler::View("text-editor".to_string()))
+            Ok(FileHandler::View("text-editor".to_string()))
         );
     }
 
     #[test]
     fn rejects_unknown_kind() {
-        assert_eq!(FileHandler::parse("plexi:text-editor"), None);
-        assert_eq!(FileHandler::parse("text-editor"), None);
-        assert_eq!(FileHandler::parse(""), None);
+        assert!(FileHandler::parse("plexi:text-editor").is_err());
+        assert!(FileHandler::parse("text-editor").is_err());
+        assert!(FileHandler::parse("").is_err());
     }
 
     #[test]
     fn rejects_empty_value() {
-        assert_eq!(FileHandler::parse("app:"), None);
-        assert_eq!(FileHandler::parse("cmd:"), None);
-        assert_eq!(FileHandler::parse("app:   "), None);
+        assert!(FileHandler::parse("app:").is_err());
+        assert!(FileHandler::parse("cmd:").is_err());
+        assert!(FileHandler::parse("app:   ").is_err());
     }
 }

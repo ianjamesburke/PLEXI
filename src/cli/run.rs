@@ -34,42 +34,6 @@ pub enum ParsedStep {
     Shell(String),
 }
 
-const PLEXI_SUBCOMMANDS: &[&str] = &[
-    "pane",
-    "plugin",
-    "view",
-    "context",
-    "workspace",
-    "secret",
-    "secrets",
-    "note",
-    "config",
-    "agent",
-    "assistant",
-    "host",
-    "notify",
-    "permissions",
-    "needs-you",
-    "ledger",
-    "debug",
-    "skill",
-    "agents-dashboard",
-    "changes",
-    "account",
-    "demo",
-    "doctor",
-    "routine",
-    "events",
-    "registry",
-    "open",
-    "close",
-    "focus",
-    "send",
-    "capture",
-    "list",
-    "prev",
-];
-
 fn shell_escape_step_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -288,6 +252,8 @@ fn tokenize_step_for_cli(step: &str) -> Option<Vec<String>> {
 }
 
 /// Classify a step string as either a Plexi CLI invocation or a shell snippet.
+/// A step runs through the CLI when its first word is `plexi`/`plexi-<channel>`
+/// or a top-level command of the clap tree (`known_subcommands`).
 pub fn parse_step(step: &str) -> ParsedStep {
     let trimmed = step.trim();
     if trimmed.is_empty() {
@@ -300,7 +266,7 @@ pub fn parse_step(step: &str) -> ParsedStep {
                     tokens[0] = "plexi".to_string();
                     return ParsedStep::PlexiCli(tokens);
                 }
-            } else if PLEXI_SUBCOMMANDS.contains(&first.as_str()) {
+            } else if super::known_subcommands().contains(first.as_str()) {
                 tokens.insert(0, "plexi".to_string());
                 return ParsedStep::PlexiCli(tokens);
             }

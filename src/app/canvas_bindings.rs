@@ -423,12 +423,12 @@ impl PlexiApp {
             .cloned()
         {
             match FileHandler::parse(&spec) {
-                Some(FileHandler::Os) => {
+                Ok(FileHandler::Os) => {
                     log::info!("open: '{path}' → OS default (file_handlers override)");
                     shell_open(path, false);
                     return;
                 }
-                Some(FileHandler::View(id)) => {
+                Ok(FileHandler::View(id)) => {
                     if self.launch_view_with_path(&id, path) {
                         log::info!("open: '{path}' → plugin '{id}' (file_handlers override)");
                         return;
@@ -439,15 +439,8 @@ impl PlexiApp {
                     shell_open(path, false);
                     return;
                 }
-                Some(FileHandler::Cmd(cmd)) => {
-                    log::warn!(
-                        "open: cmd handler '{cmd}' for .{ext} not yet implemented — OS fallback for '{path}'"
-                    );
-                    shell_open(path, false);
-                    return;
-                }
-                None => log::warn!(
-                    "open: invalid file_handler '{spec}' for .{ext} — ignoring, continuing resolution"
+                Err(err) => log::warn!(
+                    "open: file_handlers.{ext} ignored ({err}) — continuing resolution for '{path}'"
                 ),
             }
         }

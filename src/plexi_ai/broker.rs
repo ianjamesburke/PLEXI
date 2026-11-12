@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::config::{AiConfig, ResolvedModelModes};
 use crate::host::event_log::{self, HostEvent};
+use crate::platform::text;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 pub use crate::plexi_ai::backend::{ConcreteModelRoute, ReasoningEffort};
@@ -490,6 +491,11 @@ fn resolve_openrouter_api_key_from_store(
     Ok(None)
 }
 
+/// Character budget for one recent-event line in the context prefix.
+const CONTEXT_EVENT_LINE_CHARS: usize = 200;
+/// Character cap for the whole context prefix (~2000 tokens at 4 chars/token).
+const CONTEXT_PREFIX_CHARS: usize = 8000;
+
 /// Build a compact host context block to prepend to the system prompt.
 /// Budget: ≤2000 tokens (~8000 chars). Skipped when the system prompt
 /// starts with `# no-host-context`.
@@ -514,20 +520,17 @@ fn build_context_prefix(workspace_root: &std::path::Path, open_panes: &[PaneCont
         out.push_str("recent events:\n");
         for ev in &recent {
             let line = serde_json::to_string(ev).unwrap_or_default();
-            // Truncate long lines.
-            if line.len() > 200 {
-                out.push_str(&line[..200]);
-                out.push_str("…\n");
-            } else {
-                out.push_str(&line);
-                out.push('\n');
-            }
+            out.push_str(&text::head_tail(
+                &line,
+                CONTEXT_EVENT_LINE_CHARS,
+                text::Style::Head,
+            ));
+            out.push('\n');
         }
     }
     out.push_str("---\n");
-    // Hard cap: 8000 chars (~2000 tokens at 4 chars/token).
-    if out.len() > 8000 {
-        out.truncate(8000);
+    if out.chars().count() > CONTEXT_PREFIX_CHARS {
+        out = text::head_tail(&out, CONTEXT_PREFIX_CHARS, text::Style::Head);
         out.push_str("\n---\n");
     }
     out

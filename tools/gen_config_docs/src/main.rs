@@ -473,9 +473,8 @@ Choose which view opens each file type from the File Explorer. Keys are bare low
 |---|---|
 | `app:<id>` | Stored config spelling: open a plugin default view by its registry id (e.g. `app:text-editor`) |
 | `os` | Hand to the OS default opener (`open` / `xdg-open`) |
-| `cmd:<command>` | Reserved; falls back to `os` until wired |
 
-A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
+Any other value, including `cmd:<command>`, is reported as an invalid setting and ignored. A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
 
 "#
     );
