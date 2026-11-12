@@ -1,5 +1,6 @@
 pub mod router;
 pub mod secrets;
+pub mod terminal_authority;
 
 use crate::host::context::Context;
 use crate::spatial::tiling::PaneId;
@@ -363,23 +364,41 @@ fn background_session_from(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 impl WorkspaceFile {
-    pub fn save(&self) -> io::Result<()> {
+    /// Save the layout, then seal the authority of its terminals against the
+    /// exact bytes written (`terminal_authority`). `terminals` is only called
+    /// when a layout is written. A layout that saved but could not be sealed
+    /// is still a successful save: the next restore finds no matching ledger
+    /// and restricts every terminal.
+    pub fn save_sealing_terminals(
+        &self,
+        terminals: impl FnOnce() -> Vec<terminal_authority::TerminalAuthorityRecord>,
+    ) -> io::Result<()> {
         if ephemeral_session() {
             log::info!("workspace_save: skipped (ephemeral session)");
             return Ok(());
         }
-        self.save_to(&crate::config::config_dir())
+        let profile_dir = crate::config::config_dir();
+        let layout_sha256 = self.save_to_with_migration_source(&profile_dir, None)?;
+        if let Err(error) =
+            terminal_authority::seal_layout(&profile_dir, &layout_sha256, terminals())
+        {
+            log::error!("workspace_save: {error}");
+        }
+        Ok(())
     }
 
+    #[cfg(test)]
     pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
         self.save_to_with_migration_source(profile_dir, None)
+            .map(|_layout_sha256| ())
     }
 
+    /// Returns the digest of the layout bytes written.
     fn save_to_with_migration_source(
         &self,
         profile_dir: &Path,
         migration_source: Option<&[u8]>,
-    ) -> io::Result<()> {
+    ) -> io::Result<String> {
         self.validate()?;
         let path = workspace_path_in(profile_dir);
         let temp_path = unique_temp_path(&path);
@@ -446,10 +465,13 @@ impl WorkspaceFile {
             atomic_save(&path, &temp_path, json.as_bytes(), |file, bytes| {
                 file.write_all(bytes)
             })?;
-            Ok(json.len())
+            Ok((
+                json.len(),
+                terminal_authority::layout_digest(json.as_bytes()),
+            ))
         })();
         match result {
-            Ok(byte_count) => {
+            Ok((byte_count, layout_sha256)) => {
                 let pane_count: usize = self.windows.iter().map(|window| window.panes.len()).sum();
                 log::info!(
                     "workspace_save: saved bytes={} windows={} panes={} elapsed_ms={}",
@@ -458,7 +480,7 @@ impl WorkspaceFile {
                     pane_count,
                     started.elapsed().as_millis()
                 );
-                Ok(())
+                Ok(layout_sha256)
             }
             Err(error) => {
                 log::error!("workspace_save: {error}");
@@ -467,15 +489,29 @@ impl WorkspaceFile {
         }
     }
 
+    #[cfg(test)]
     pub fn load() -> Option<Self> {
+        Self::load_with_digest().map(|(layout, _layout_sha256)| layout)
+    }
+
+    /// Load the saved layout with the digest of the bytes it was parsed from.
+    pub fn load_with_digest() -> Option<(Self, String)> {
         if ephemeral_session() {
             log::info!("workspace_load: skipped (ephemeral session)");
             return None;
         }
-        Self::load_from(&crate::config::config_dir())
+        Self::load_with_digest_from(&crate::config::config_dir())
     }
 
+    #[cfg(test)]
     pub fn load_from(profile_dir: &Path) -> Option<Self> {
+        Self::load_with_digest_from(profile_dir).map(|(layout, _layout_sha256)| layout)
+    }
+
+    /// Load the saved layout with the digest of the bytes it was parsed from.
+    /// The digest is taken before any migration rewrites the file: terminal
+    /// authority was sealed against those bytes (`terminal_authority`).
+    pub fn load_with_digest_from(profile_dir: &Path) -> Option<(Self, String)> {
         let path = workspace_path_in(profile_dir);
         let mut data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
@@ -485,6 +521,7 @@ impl WorkspaceFile {
                 return None;
             }
         };
+        let layout_sha256 = terminal_authority::layout_digest(data.as_bytes());
         let mut ws: Self = match serde_json::from_str(&data) {
             Ok(ws) => ws,
             Err(e) => {
@@ -515,6 +552,7 @@ impl WorkspaceFile {
                 ws.strips = strips;
                 ws.version = 3;
                 ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
+                    .map(|_layout_sha256| ())
             }) {
                 Ok(()) => log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2"),
                 Err(error) => {
@@ -576,7 +614,66 @@ impl WorkspaceFile {
             }
             log::info!("workspace migration: saved plugin launch paths after package migration v2");
         }
-        Some(ws)
+        Some((ws, layout_sha256))
+    }
+
+    /// Give each pane in `panes` a new identity above every pane id this
+    /// layout has issued and above `floor`, and rewrite every reference the
+    /// layout holds to it: the window tile trees, the strips, and conjoined
+    /// parents. Returns old id to new id.
+    ///
+    /// A pane id is the principal stored grants are keyed on (`pane:<id>`).
+    /// A terminal whose authority cannot be verified is restored under a new
+    /// id so it starts with no stored grant (`terminal_authority`).
+    pub(crate) fn reissue_pane_ids(
+        &mut self,
+        panes: &[PaneId],
+        floor: PaneId,
+    ) -> HashMap<PaneId, PaneId> {
+        let mut reissued: HashMap<PaneId, PaneId> = HashMap::new();
+        if panes.is_empty() {
+            return reissued;
+        }
+        let mut next = self.next_pane_id.max(floor);
+        for window in &mut self.windows {
+            for pane in &mut window.panes {
+                if panes.contains(&pane.id) {
+                    reissued.insert(pane.id, next);
+                    pane.id = next;
+                    next += 1;
+                }
+            }
+            for (_, tile) in window.tree.tiles.iter_mut() {
+                if let egui_tiles::Tile::Pane(pane_id) = tile {
+                    if let Some(new_id) = reissued.get(pane_id) {
+                        *pane_id = *new_id;
+                    }
+                }
+            }
+        }
+        let renamed = |pane_id: &mut PaneId| {
+            if let Some(new_id) = reissued.get(pane_id) {
+                *pane_id = *new_id;
+            }
+        };
+        for strip in self.strips.values_mut() {
+            for column in &mut strip.columns {
+                column.panes.iter_mut().for_each(renamed);
+                if let Some(pane_id) = column.last_focused.as_mut() {
+                    renamed(pane_id);
+                }
+            }
+            if let Some(pane_id) = strip.focused_pane.as_mut() {
+                renamed(pane_id);
+            }
+        }
+        self.conjoined_contexts.values_mut().for_each(renamed);
+        self.next_pane_id = next;
+        log::info!(
+            "workspace: reissued {} pane ids; next_pane_id={next}",
+            reissued.len()
+        );
+        reissued
     }
 
     /// A saved `focused_pane` can name a container: `Tree::simplify` re-wraps
@@ -1915,6 +2012,90 @@ mod tests {
         append_agent_history_to(dir.path(), &rec).expect("append history");
         let loaded = load_agent_history_from(dir.path());
         assert_eq!(loaded, vec![rec]);
+    }
+
+    #[test]
+    fn reissued_pane_ids_are_rewritten_everywhere_the_layout_names_them() {
+        let mut tree: Tree<PaneId> = Tree::empty("reissue");
+        let kept = tree.tiles.insert_pane(3);
+        let moved = tree.tiles.insert_pane(4);
+        tree.root = Some(tree.tiles.insert_horizontal_tile(vec![kept, moved]));
+        let saved_pane = |id: PaneId| SavedPane {
+            id,
+            kind: SavedPaneKind::Terminal,
+            cwd: PathBuf::from("/tmp"),
+            name: None,
+            plugin_id: None,
+            plugin_state: None,
+            hidden: false,
+            heartbeat: None,
+            runtime_kind: None,
+            launch: None,
+            slots: HashMap::new(),
+            agent_session: None,
+        };
+        let context = |context_id: u64, parent_id: Option<u64>| Context {
+            name: crate::host::context::ContextName::custom("reissue"),
+            root: PathBuf::from("/tmp"),
+            description: None,
+            context_id,
+            parent_id,
+            depth: u32::from(parent_id.is_some()),
+            parked: false,
+        };
+        let mut strip = crate::strip::Strip::new(1);
+        strip.columns.push(crate::strip::Column::new_stacked(
+            crate::strip::ColumnId(0),
+            vec![3, 4],
+            crate::strip::ColumnWidth::default(),
+        ));
+        strip.columns[0].last_focused = Some(4);
+        strip.focused_pane = Some(4);
+        let mut layout = WorkspaceFile {
+            version: 3,
+            active_context: 0,
+            sidebar_visible: true,
+            next_pane_id: 5,
+            contexts: vec![context(1, None), context(2, Some(1))],
+            windows: vec![SavedWindow {
+                name: String::new(),
+                path: PathBuf::from("/tmp"),
+                tree,
+                panes: vec![saved_pane(3), saved_pane(4)],
+                focused_pane: Some(moved),
+                grid_x: 0,
+                grid_y: 0,
+                window_id: 1,
+                context_id: 1,
+            }],
+            strips: HashMap::from([(1, strip), (2, crate::strip::Strip::new(2))]),
+            conjoined_contexts: HashMap::from([(2, 4)]),
+            context_active_window: HashMap::new(),
+        };
+
+        // The floor wins over the layout's own counter.
+        let reissued = layout.reissue_pane_ids(&[4], 40);
+
+        assert_eq!(reissued, HashMap::from([(4, 40)]));
+        assert_eq!(layout.next_pane_id, 41);
+        let window = &layout.windows[0];
+        assert_eq!(
+            window.panes.iter().map(|pane| pane.id).collect::<Vec<_>>(),
+            vec![3, 40]
+        );
+        assert_eq!(window.tree.tiles.find_pane(&40), Some(moved));
+        assert_eq!(window.tree.tiles.find_pane(&3), Some(kept));
+        assert_eq!(window.tree.tiles.find_pane(&4), None);
+        assert_eq!(layout.strips[&1].columns[0].panes, vec![3, 40]);
+        assert_eq!(layout.strips[&1].columns[0].last_focused, Some(40));
+        assert_eq!(layout.strips[&1].focused_pane, Some(40));
+        assert_eq!(layout.conjoined_contexts[&2], 40);
+
+        assert!(layout.reissue_pane_ids(&[], 100).is_empty());
+        assert_eq!(
+            layout.next_pane_id, 41,
+            "nothing to reissue changes nothing"
+        );
     }
 }
 

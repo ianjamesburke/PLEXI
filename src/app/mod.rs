@@ -1680,7 +1680,7 @@ impl PlexiApp {
         let _ = std::fs::remove_dir_all(profile_dir.join("notify-queue"));
 
         // Try to load saved workspace
-        if let Some(ws) = WorkspaceFile::load() {
+        if let Some((ws, layout_sha256)) = WorkspaceFile::load_with_digest() {
             if let Some(restored) = restore_workspace(
                 ws,
                 &config,
@@ -1690,6 +1690,7 @@ impl PlexiApp {
                     hot_reload: &mut hr_watcher,
                     state_watch: &mut sw_watcher,
                     terminal_spawner: Some((&cc.egui_ctx, &tx)),
+                    layout_sha256: Some(&layout_sha256),
                 },
             ) {
                 let mut host = crate::host::model::HostModel::new();
@@ -5568,6 +5569,10 @@ pub(crate) struct WorkspaceRestoreCollaborators<'a> {
     pub hot_reload: &'a mut crate::host::hot_reload::HotReloadWatcher,
     pub state_watch: &'a mut crate::host::state_watch::StateWatcher,
     pub terminal_spawner: Option<(&'a egui::Context, &'a mpsc::Sender<(u64, PtyEvent)>)>,
+    /// Digest of the bytes `ws` was parsed from (`WorkspaceFile::load_with_digest`).
+    /// `None` for a layout that was not read from disk: its terminals cannot be
+    /// tied to a sealed authority record and are restored restricted.
+    pub layout_sha256: Option<&'a str>,
 }
 
 /// Reconstructed workspace state returned by [`restore_workspace`].
@@ -5589,13 +5594,35 @@ pub(crate) struct RestoredWorkspace {
 /// [`WorkspaceFile`]. Returns `None` when the workspace has no contexts or
 /// no windows survive pane restoration.
 pub(crate) fn restore_workspace(
-    ws: WorkspaceFile,
+    mut ws: WorkspaceFile,
     config: &config::PlexiConfig,
     collaborators: WorkspaceRestoreCollaborators<'_>,
 ) -> Option<RestoredWorkspace> {
     if ws.contexts.is_empty() {
         return None;
     }
+    // Decide terminal authority before anything reads a pane id: a terminal
+    // with no sealed record is reissued under a new id, and every map built
+    // below must see that id. A headless restore spawns no terminal.
+    let terminal_authority = if collaborators.terminal_spawner.is_some() {
+        // Reissued ids must also clear every pane a stored grant names, which
+        // the layout file cannot influence.
+        let granted_pane_floor =
+            crate::broker::gate::PermissionMonitor::for_profile(collaborators.profile_dir)
+                .list_entries()
+                .iter()
+                .filter_map(|entry| entry.actor_id.strip_prefix("pane:")?.parse::<u64>().ok())
+                .max()
+                .map_or(0, |highest| highest.saturating_add(1));
+        crate::workspace::terminal_authority::RestoreAuthority::resolve(
+            collaborators.profile_dir,
+            collaborators.layout_sha256,
+            granted_pane_floor,
+            &mut ws,
+        )
+    } else {
+        crate::workspace::terminal_authority::RestoreAuthority::default()
+    };
     let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
     let restore_mode = config.agent_restore_mode();
     let initial_active_ctx = ws.active_context.min(ws.contexts.len().saturating_sub(1));
@@ -5831,6 +5858,49 @@ pub(crate) fn restore_workspace(
                         .cloned()
                         .unwrap_or_default();
                     let ctx_root = ctx_root_map.get(&saved_win.context_id);
+                    // Only a sealed record can say who opened this terminal
+                    // and what restricted it. With none it is a new, restricted
+                    // principal: never the person's, no parent, no injected secrets.
+                    let sealed_authority = match terminal_authority.for_pane(saved_pane.id) {
+                        Some(
+                            crate::workspace::terminal_authority::RestoredAuthority::Verified(
+                                record,
+                            ),
+                        ) => {
+                            log::info!(
+                                "workspace_restore: terminal {} authority verified opener={:?} parent={:?} spawned_by={:?}",
+                                saved_pane.id,
+                                record.opener,
+                                record.parent_pane_id,
+                                record.spawned_by
+                            );
+                            Some(record)
+                        }
+                        Some(
+                            crate::workspace::terminal_authority::RestoredAuthority::Unverified {
+                                former_pane_id,
+                                reason,
+                            },
+                        ) => {
+                            log::info!(
+                                "workspace_restore: terminal {} (formerly {former_pane_id}) authority unverified ({}); restoring restricted",
+                                saved_pane.id,
+                                reason.as_str()
+                            );
+                            None
+                        }
+                        None => {
+                            log::error!(
+                                "workspace_restore: terminal {} has no authority decision; restoring restricted",
+                                saved_pane.id
+                            );
+                            None
+                        }
+                    };
+                    let desktop_opened = sealed_authority.is_some_and(|record| {
+                        record.opener
+                            == crate::workspace::terminal_authority::TerminalOpener::Desktop
+                    });
                     let effective_session = saved_pane
                         .agent_session
                         .as_ref()
@@ -5859,6 +5929,9 @@ pub(crate) fn restore_workspace(
                         root: ctx_root.cloned(),
                         depth: ctx_depth,
                     };
+                    // Not resuming a saved agent session (`restore_mode = "off"`)
+                    // does not make its terminal the person's.
+                    let withhold_secrets = saved_pane.agent_session.is_some() || !desktop_opened;
                     let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
@@ -5866,9 +5939,43 @@ pub(crate) fn restore_workspace(
                             cwd.clone(),
                             collaborators.colors,
                             &context_env,
-                            effective_session.is_some(),
+                            withhold_secrets,
                         );
                     let mut effective_session = effective_session;
+                    match (effective_session.as_mut(), sealed_authority) {
+                        (Some(session), Some(record)) => {
+                            session.parent_pane_id = record.parent_pane_id;
+                            session.spawned_by = record.spawned_by.clone();
+                            session.permission_posture = record.posture.clone();
+                        }
+                        (Some(session), None) => {
+                            session.parent_pane_id = None;
+                            session.spawned_by =
+                                Some(crate::host::pane::SPAWNED_BY_UNVERIFIED.to_string());
+                        }
+                        (None, Some(record)) => {
+                            if let Some(parent_id) = record.parent_pane_id {
+                                settings
+                                    .env
+                                    .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
+                            }
+                            if let Some(spawned_by) = record
+                                .spawned_by
+                                .as_ref()
+                                .filter(|spawned_by| spawned_by.as_str() != "human")
+                            {
+                                settings
+                                    .env
+                                    .insert("PLEXI_SPAWNED_BY".to_string(), spawned_by.clone());
+                            }
+                        }
+                        (None, None) => {
+                            settings.env.insert(
+                                "PLEXI_SPAWNED_BY".to_string(),
+                                crate::host::pane::SPAWNED_BY_UNVERIFIED.to_string(),
+                            );
+                        }
+                    }
                     if let Some(ref mut session) = effective_session {
                         settings
                             .env
@@ -5988,6 +6095,12 @@ pub(crate) fn restore_workspace(
                             .is_some_and(|n| !n.is_empty() && n != "terminal")
                             || effective_session.is_some();
                         pane.slots = saved_pane.slots.clone();
+                        if effective_session.is_none() {
+                            // A terminal with no agent session still carries the
+                            // restriction it was sealed with.
+                            pane.agent_permission_posture =
+                                sealed_authority.and_then(|record| record.posture.clone());
+                        }
                         if let Some(session) = effective_session {
                             pane.fleet_result = session.fleet_result.clone();
                             pane.fleet_seen = session.fleet_seen;

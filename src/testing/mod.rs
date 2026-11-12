@@ -262,22 +262,24 @@ impl HostHarness {
         app.permission_store_dir = profile_path.clone();
         app.focus_journal_path = profile_path.join("focus-journal.jsonl");
 
-        let restored = crate::workspace::WorkspaceFile::load_from(&profile_path).and_then(|ws| {
-            let cfg = app.config.clone();
-            let colors = app.colors.clone();
-            let pty_event_tx = app.pty_event_tx.clone();
-            crate::app::restore_workspace(
-                ws,
-                &cfg,
-                crate::app::WorkspaceRestoreCollaborators {
-                    profile_dir: &profile_path,
-                    colors: &colors,
-                    hot_reload: &mut app.hot_reload,
-                    state_watch: &mut app.state_watch,
-                    terminal_spawner: Some((&ctx, &pty_event_tx)),
-                },
-            )
-        });
+        let restored = crate::workspace::WorkspaceFile::load_with_digest_from(&profile_path)
+            .and_then(|(ws, layout_sha256)| {
+                let cfg = app.config.clone();
+                let colors = app.colors.clone();
+                let pty_event_tx = app.pty_event_tx.clone();
+                crate::app::restore_workspace(
+                    ws,
+                    &cfg,
+                    crate::app::WorkspaceRestoreCollaborators {
+                        profile_dir: &profile_path,
+                        colors: &colors,
+                        hot_reload: &mut app.hot_reload,
+                        state_watch: &mut app.state_watch,
+                        terminal_spawner: Some((&ctx, &pty_event_tx)),
+                        layout_sha256: Some(&layout_sha256),
+                    },
+                )
+            });
         if let Some(restored) = restored {
             app.install_restored_workspace(restored);
         } else {
