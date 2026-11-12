@@ -1691,21 +1691,16 @@ fn render_row_node(
             row_line(ui, line_align, placed.then_some(row_h), |ui| {
                 ui.spacing_mut().item_spacing.x = placement.gap;
                 ui.add_space(placement.lead);
-                for (idx, (child, &width)) in r.children.iter().zip(&placement.widths).enumerate() {
-                    let spacer = matches!(
-                        find_node(nodes, *child).map(|n| &n.data),
-                        Some(UiNodeData::Space(_))
-                    );
-                    // Each child gets a slot exactly its share wide; it lays
-                    // itself out centered inside, as in a measured slot.
+                for (idx, &width) in placement.widths.iter().enumerate() {
+                    // Each child gets a slot exactly its share wide and lays
+                    // itself out centered inside it, as in a measured slot.
+                    // A grow `Space` paints nothing in its slot.
                     ui.allocate_ui_with_layout(
                         egui::vec2(width, natural[idx].y),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_min_width(width);
-                            if !spacer {
-                                render_row_child(ui, env, r, idx, grid_cols, out, depth);
-                            }
+                            render_row_child(ui, env, r, idx, grid_cols, out, depth);
                         },
                     );
                 }
