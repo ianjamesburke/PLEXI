@@ -151,6 +151,12 @@ def _require_view_component(root: Any) -> None:
             f"view() returned the effect {type(root).__name__}. Effects are returned "
             "from update() or init(); view() returns exactly one component."
         )
+    if not (isinstance(root, dict) or hasattr(root, "to_node") or is_dataclass(root)):
+        raise TypeError(
+            f"view() returned {type(root).__name__}, which is not a component. "
+            "Return exactly one plexi_sdk.ui component, for example "
+            "Column(children=[Text(...)])."
+        )
 
 
 def _encode_uitree(root: Any) -> dict[str, Any]:
@@ -284,7 +290,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         out = {
             "type": "Row",
             "children": child_ids,
-            "align": data.get("align", "start"),
+            "align": data.get("align", "center"),
             "grow": data.get("grow", False),
         }
         if data.get("gap") is not None:

@@ -24,6 +24,7 @@
 # Mark `short` by cost: cold wall time near 2 min or less and no whole-host
 # build (doc generators). Anything that builds the host bin or its tests is full.
 # PLEXI_CARGO_FULL_PERMITS=1 confines full jobs to permit 0.
+# CARGO_BUILD_JOBS defaults to cpu_count // (FULL_PERMITS + 1) so permits also bound rustc fan-out.
 #
 # Each holder writes `<permit file>.holder` (pid, cwd, command, class,
 # start time). Waiters print it. A holder killed by SIGKILL leaves the file
@@ -190,6 +191,11 @@ write_holder(permit)
 event("acquire", queue_seconds=acquired_at - started)
 env = dict(os.environ)
 env["PLEXI_CARGO_LOCK_HELD"] = "1"
+# A permit bounds concurrent jobs, not threads: without a cap each permitted
+# cargo fans out one rustc per core. Split cores across the permits that can
+# run at once (general permits plus the short-only one). An explicit
+# CARGO_BUILD_JOBS from the caller wins.
+env.setdefault("CARGO_BUILD_JOBS", str(max(1, (os.cpu_count() or 1) // (FULL_PERMITS + 1))))
 try:
     # stdin/stdout/stderr are inherited unchanged (Popen default), so the
     # wrapped command sees this script's real stdin, not python's.

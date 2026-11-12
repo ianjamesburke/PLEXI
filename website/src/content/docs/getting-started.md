@@ -1,11 +1,11 @@
 ---
 title: Installation & Setup
-description: Get Plexi running on macOS, Linux, or Windows.
+description: Get Plexi running on macOS.
 order: 1
 ---
 
-Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
-Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
+Plexi is a tiling terminal host with a scriptable CLI for macOS. Windows and
+Linux builds are coming soon. Its stable v1 surface includes panes, subcontexts, agent status hooks,
 Quick Note, and the local plugin runtime.
 
 ## Install
@@ -14,29 +14,15 @@ Use the [Download page](/download) for the supported platform and channel combin
 install commands, prerequisites, and links to the published release assets. That page
 owns current download availability; source-build support does not imply a published archive.
 
-### Linux limitations
-
-Plexi supports X11 sessions. Wayland is not supported. The download is a tar archive,
-not an apt, AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
-On Linux, secrets are kept in a mode-`0600` file rather than an encrypted OS
-keyring. Hardware video decoding is not implemented on Linux.
-
-### Windows setup
-
-The Windows installer adds its user-owned command directory to the user `PATH`
-and records the installed tag; Windows shell completions are TBD. Use the PowerShell
-command on the Download page; the Unix `curl | bash` command is not a Windows installer.
-
 ### Source builds and unsigned releases
 
-From a macOS or Linux checkout, use `scripts/install.sh --from-source alpha` to
-build and install from source; it requires Rust, just, uv and Python 3.11. Windows has no
-equivalent source-install script. All alpha builds are unsigned and not
-notarized. Follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
-before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
-archive manually may need `chmod +x plexi`.
+From a macOS checkout, use `scripts/install.sh --from-source alpha` to
+build and install from source; it requires Rust, just, uv and Python 3.11. All
+alpha builds are unsigned and not notarized. Follow the
+[unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
+before bypassing a Gatekeeper warning.
 
-Plexi does not request Accessibility permission on first launch. Its plugin bundle
+Plexi does not request Accessibility permission on first launch. Its app bundle
 declares camera and microphone permissions for video rooms, which macOS requests
 only when a feature uses them.
 
@@ -58,7 +44,7 @@ Run it in a project to install for that project, or add `-g` for a global instal
 To pin the skill to a Plexi release, use the same current CLI:
 
 ```sh
-npx -y skills@latest add "ianjamesburke/plexi-skills#v0.2.0"
+npx -y skills@latest add "ianjamesburke/plexi-skills#v0.3.5"
 ```
 
 If a pinned install reports a clone URL with the `#v…` ref embedded in it and
@@ -79,7 +65,7 @@ Plexi opens with a single terminal pane. From there:
 
 ## Build Channels
 
-Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and plugin bundle — you can run all three simultaneously.
+Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and app bundle. You can run all three at once.
 
 | Channel | Binary | Profile | Workspace Dir |
 |---------|--------|---------|---------------|
@@ -92,7 +78,7 @@ beta or worktree channel only when you are explicitly testing those features.
 
 ## Next Steps
 
-- [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
-- [Panes & Pages](/docs/panes) — understand the layout model
-- [Plugins](/docs/plugins) — build and run Plexi plugins
-- [Python SDK](/docs/sdk) — author plugins for the local runtime
+- [Quick Note](/docs/quick-note): open a scratch overlay from anywhere
+- [Panes](/docs/panes): the layout model
+- [Plugins](/docs/plugins): build and run Plexi plugins
+- [Python SDK](/docs/sdk): author plugins for the local runtime

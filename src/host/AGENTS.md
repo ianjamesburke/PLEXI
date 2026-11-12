@@ -117,7 +117,7 @@ An experiment owns its storage in its own versioned location and never writes co
   process exit to observe yet. `HeadlessDeadline` runs the two clocks separately
   for that reason. This hides locally and fires in CI, where the runners are
   roughly 4x slower (`PLEXI_SCENE_TIMEOUT_SCALE: '4'` in
-  `.github/workflows/roadmap-evidence.yml` is the standing measurement) and 2000+
+  `.github/workflows/distribution.yml` is the standing measurement) and 2000+
   tests compete for cores.
 - **CPython-WASM perf samples stay at debug.** `record_render_perf` writes one
   line per painted Python pane per sample window. The Logs app tails the same

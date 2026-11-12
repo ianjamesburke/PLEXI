@@ -497,6 +497,10 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
 
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
+    /// The plugin's own code raised; the text is the SDK runtime's structured
+    /// report, headline first (`fatal_error::GuestFatalError::report`).
+    #[error("{0}")]
+    PluginRaised(String),
     #[error("read manifest at {path}: {source}")]
     ReadManifest {
         path: PathBuf,
@@ -570,6 +574,8 @@ pub enum WasmPythonError {
     StateNotObject { path: PathBuf, found: &'static str },
     #[error("invalid [state] declaration: {0}")]
     StateScopes(String),
+    #[error("invalid seed state: {0}")]
+    HeadlessSeed(String),
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
@@ -669,31 +675,84 @@ impl PythonLaunchConfig {
     }
 }
 
-fn python_init_payload(config: &PythonLaunchConfig, state: Value, size: (f32, f32)) -> Value {
-    // Same wire shape the live pane sends: state is always scope-keyed, never
-    // a flat `state` key. `state` here seeds only the plugin's default scope.
-    let default_scope = config
-        .state_scopes
+/// Shape a headless seed into the scope-keyed `states` object the init
+/// payload carries. A plugin that declares one scope takes a flat seed, which
+/// lands in that scope. A plugin that declares several takes an object keyed
+/// by scope name, so each scope can be seeded; a flat seed there is an error,
+/// never a guess about which scope it meant.
+pub fn headless_seed_states(
+    scopes: &[crate::host::state_scope::StateScope],
+    seed: Option<Value>,
+) -> Result<Value, String> {
+    let default_scope = scopes
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let Some(seed) = seed else {
+        return Ok(json!({ default_scope.as_str(): Value::Null }));
+    };
+    if scopes.len() <= 1 {
+        return Ok(json!({ default_scope.as_str(): seed }));
+    }
+    let declared: Vec<&'static str> = scopes.iter().map(|scope| scope.as_str()).collect();
+    let example = declared
+        .iter()
+        .map(|scope| format!("\"{scope}\": {{...}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(map) = seed.as_object() else {
+        return Err(format!(
+            "seed state must be a JSON object keyed by scope name, for example {{{example}}}"
+        ));
+    };
+    let mut unknown: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !declared.contains(key))
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "this plugin declares several [state] scopes ({}), so seed state must be keyed by scope name, for example {{{example}}}; found top-level key(s) that are not declared scopes: {}",
+            declared.join(", "),
+            unknown.join(", ")
+        ));
+    }
+    Ok(seed)
+}
+
+fn python_init_payload(
+    config: &PythonLaunchConfig,
+    seed: Option<Value>,
+    size: (f32, f32),
+) -> Result<Value, WasmPythonError> {
+    // Same wire shape the live pane sends: state is always scope-keyed, never
+    // a flat `state` key.
+    let states =
+        headless_seed_states(&config.state_scopes, seed).map_err(WasmPythonError::HeadlessSeed)?;
     let scope_names: Vec<&'static str> = config
         .state_scopes
         .iter()
         .map(|scope| scope.as_str())
         .collect();
-    json!({
+    log::info!(
+        "wasm_python[{}]: headless init seeds scope(s) {:?} of declared {:?}",
+        config.plugin_id,
+        states.as_object().map(|m| m.keys().collect::<Vec<_>>()),
+        scope_names
+    );
+    Ok(json!({
         "type": "init",
         "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
         "feature_flags": ["keyed_tree_delta"],
-        "states": { default_scope.as_str(): state },
+        "states": states,
         "state_scopes": scope_names,
         "theme": config.theme,
         "args": config.launch_args,
         "size": [size.0, size.1],
-    })
+    }))
 }
 
 fn cache_python_theme_for_relaunch(
@@ -778,6 +837,10 @@ impl WasmPythonRuntime {
                     .stdout(thread_stdout)
                     .stderr(thread_stderr)
                     .env("PYTHONPATH", "/sdk:/app")
+                    // Names the prefix the stdlib is mounted under, so CPython
+                    // does not search for it and warn "Could not find platform
+                    // dependent libraries <exec_prefix>" on every boot.
+                    .env("PYTHONHOME", "/usr/local")
                     .args(&[
                         "python",
                         "-u",
@@ -995,6 +1058,8 @@ struct HeadlessPythonSession {
     /// Previous decoded frame, so `tree_delta` frames (stint 0438) can be
     /// reconstructed the same way the live host does.
     last_tree: Option<PythonUiTree>,
+    /// Guest messages drained but not yet consumed by a `wait_for`.
+    inbox: VecDeque<Value>,
 }
 
 impl HeadlessPythonSession {
@@ -1004,14 +1069,11 @@ impl HeadlessPythonSession {
         seed_state: Option<Value>,
     ) -> Result<Self, WasmPythonError> {
         let runtime = WasmPythonRuntime::launch(config)?;
-        runtime.send(&python_init_payload(
-            config,
-            seed_state.unwrap_or(Value::Null),
-            size,
-        ))?;
+        runtime.send(&python_init_payload(config, seed_state, size)?)?;
         let mut session = Self {
             runtime,
             last_tree: None,
+            inbox: VecDeque::new(),
         };
         session.wait_for(|message| message.get("type").and_then(Value::as_str) == Some("ready"))?;
         Ok(session)
@@ -1027,6 +1089,7 @@ impl HeadlessPythonSession {
                 tree_message = Some(message.clone());
             }
             message_type == Some("frame_done")
+                && message.get("frame_id").and_then(Value::as_u64) == Some(frame_id)
         })?;
         let message = tree_message.ok_or_else(|| {
             WasmPythonError::BridgeJson(
@@ -1069,18 +1132,14 @@ impl HeadlessPythonSession {
     fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
         let mut deadline = HeadlessDeadline::new(std::time::Instant::now());
         loop {
-            for message in self.runtime.drain_messages()? {
-                if matches(&message) {
-                    return Ok(());
-                }
+            if self.take_until(&mut matches)? {
+                return Ok(());
             }
             if self.runtime.is_finished() {
                 // The guest may have flushed final messages between the drain
                 // above and exiting — drain once more before declaring death.
-                for message in self.runtime.drain_messages()? {
-                    if matches(&message) {
-                        return Ok(());
-                    }
+                if self.take_until(&mut matches)? {
+                    return Ok(());
                 }
                 return Err(self.guest_death_error());
             }
@@ -1094,10 +1153,8 @@ impl HeadlessPythonSession {
                 // cause the caller sees must not flip based on that race.
                 verdict => {
                     if self.runtime.is_finished() {
-                        for message in self.runtime.drain_messages()? {
-                            if matches(&message) {
-                                return Ok(());
-                            }
+                        if self.take_until(&mut matches)? {
+                            return Ok(());
                         }
                         return Err(self.guest_death_error());
                     }
@@ -1106,6 +1163,32 @@ impl HeadlessPythonSession {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// Drain the guest and feed its messages to `matches` in order, stopping at
+    /// the first match; later messages stay queued for the next wait. A
+    /// `fatal_error` ends the wait with the plugin's own exception, so the
+    /// caller leads with it instead of a bare death notice.
+    fn take_until(
+        &mut self,
+        matches: &mut impl FnMut(&Value) -> bool,
+    ) -> Result<bool, WasmPythonError> {
+        self.inbox.extend(self.runtime.drain_messages()?);
+        while let Some(message) = self.inbox.pop_front() {
+            if message.get("type").and_then(Value::as_str) == Some("fatal_error") {
+                let fatal = fatal_error::GuestFatalError::decode(&message)
+                    .map_err(WasmPythonError::BridgeJson)?;
+                log::info!(
+                    "python_compat: headless guest reported a fatal error: {}",
+                    fatal.headline()
+                );
+                return Err(WasmPythonError::PluginRaised(fatal.report()));
+            }
+            if matches(&message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The error returned when a deadline expires with the guest still alive.
@@ -1136,7 +1219,8 @@ impl HeadlessPythonSession {
     }
 
     /// The error returned when the guest thread has exited before producing the
-    /// awaited message. Drains stderr so the crash traceback rides along.
+    /// awaited message and without a `fatal_error` report: a hard crash, not a
+    /// plugin exception. Drains stderr so whatever it wrote rides along.
     fn guest_death_error(&self) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         WasmPythonError::BridgeJson(format!(
@@ -1184,6 +1268,9 @@ pub struct LivePythonPane {
     wake_schedule: WakeSchedule,
     wants_close: bool,
     error: Option<String>,
+    /// `Some` once the guest has sent `fatal_error`: the count of its messages
+    /// dropped since. That report is final, so nothing after it is serviced.
+    dropped_after_fatal: Option<u64>,
     /// stderr accumulated from a Python traceback until its unindented
     /// exception line arrives. `DrainableOutput` may split one traceback
     /// across several non-blocking drains.
@@ -2772,6 +2859,7 @@ impl LivePythonPane {
             wake_schedule,
             wants_close: false,
             error: None,
+            dropped_after_fatal: None,
             pending_traceback_stderr: String::new(),
             timers: std::collections::HashMap::new(),
             pending_timer_events: Vec::new(),
@@ -3254,7 +3342,10 @@ impl LivePythonPane {
                     self.perf_stdout_bytes += bytes;
                     let frame_id =
                         frame_id.or_else(|| self.frame_scheduler.oldest_pending_frame_id());
-                    if let Some(frame_id) = frame_id {
+                    // A guest that reported a fatal error is finished: none
+                    // of its later frames are kept.
+                    if let Some(frame_id) = frame_id.filter(|_| self.dropped_after_fatal.is_none())
+                    {
                         self.pending_trees.insert(frame_id, tree);
                     }
                 }
@@ -3353,6 +3444,17 @@ impl LivePythonPane {
             self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
+        if let Some(dropped) = self.dropped_after_fatal.as_mut() {
+            if *dropped == 0 {
+                log::info!(
+                    "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
+                    self.plugin_id,
+                    message_type.unwrap_or("<missing>").escape_debug()
+                );
+            }
+            *dropped += 1;
+            return;
+        }
         // Permission polls arrive every second from the Permissions plugin.
         // Handle them before the generic match so a miss cannot fall through
         // to the unhandled warning and leave the list blank.
@@ -3461,6 +3563,26 @@ impl LivePythonPane {
                 log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
+            Some("fatal_error") => {
+                let error = match fatal_error::GuestFatalError::decode(&message) {
+                    Ok(fatal) => {
+                        for line in fatal.traceback().lines() {
+                            log::error!("plugin::{} traceback: {line}", self.plugin_id);
+                        }
+                        fatal.headline()
+                    }
+                    Err(error) => {
+                        log::error!("plugin::{}: {error}", self.plugin_id);
+                        error
+                    }
+                };
+                log::info!(
+                    "plugin::{}: guest entered failed state: {error}",
+                    self.plugin_id
+                );
+                self.error = Some(error);
+                self.dropped_after_fatal = Some(0);
+            }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(command)) => {
                     if let Some(capability) =
@@ -4880,6 +5002,7 @@ impl LivePythonPane {
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
+        self.dropped_after_fatal = None;
         self.pending_traceback_stderr.clear();
         self.wants_close = false;
         self.timers.clear();
@@ -6543,11 +6666,14 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             // Rows sit tighter than columns by default; absence uses the token,
             // an explicit `gap: 0.0` still packs children flush (stint 0445).
             gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_SM),
+            // `align` is the cross axis. A row that does not say centers its
+            // children vertically, which is what every row did before the
+            // renderer read the field.
             align: decode_alignment(
                 value
                     .get("align")
                     .and_then(Value::as_str)
-                    .unwrap_or("start"),
+                    .unwrap_or("center"),
             )?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
@@ -6998,6 +7124,13 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
 #[path = "wasm_python/wire_contract_tests.rs"]
 mod wire_contract_tests;
 
+#[path = "wasm_python/fatal_error.rs"]
+mod fatal_error;
+
+#[cfg(test)]
+#[path = "wasm_python/fatal_error_tests.rs"]
+mod fatal_error_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7137,7 +7270,8 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         let config = state_test_config(workspace.path(), "test.scoped-init");
 
-        let payload = python_init_payload(&config, json!({"count": 41}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({"count": 41})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         // `state_test_config` declares exactly one scope: Context.
         assert_eq!(payload["states"], json!({ "context": { "count": 41 } }));
@@ -7157,7 +7291,8 @@ mod tests {
             ("bg".to_string(), "#abcdef".to_string()),
         ]);
 
-        let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         assert_eq!(payload["theme"], json!(config.theme));
         assert!(payload["theme"]
@@ -9258,6 +9393,11 @@ mod tests {
             crate::ui::style::SPACE_SM,
             "an unset row gap must fall back to the SPACE_SM token"
         );
+        assert_eq!(
+            r.align,
+            Alignment::Center,
+            "an unset row align must center children vertically"
+        );
 
         let col_zero = decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))
             .expect("decode column");
@@ -10103,7 +10243,10 @@ mod tests {
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
-            .send(&python_init_payload(&config, json!({}), (480.0, 320.0)))
+            .send(
+                &python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+                    .expect("single-scope seed"),
+            )
             .expect("send init");
         runtime
             .send(&json!({"type": "render", "frame_id": 1}))
@@ -10378,17 +10521,18 @@ mod tests {
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");
         // The invariant is the *cause*, not the wall clock: a guest that raises
-        // at import is detected via its process-exit signal and reported as a
-        // death, never mistaken for a live plugin or a poll timeout. Asserting on
-        // elapsed time flakes under parallel-test CPU contention (the crash can
-        // legitimately take longer than the poll budget to surface), so this
-        // checks the error path itself.
-        let WasmPythonError::BridgeJson(message) = &err else {
-            panic!("guest death must surface as a BridgeJson error, got {err:?}");
+        // at import reports its own exception and exits, and that report is what
+        // the caller gets, never a poll timeout. Asserting on elapsed time
+        // flakes under parallel-test CPU contention (the crash can legitimately
+        // take longer than the poll budget to surface), so this checks the
+        // error path itself.
+        let WasmPythonError::PluginRaised(report) = &err else {
+            panic!("an import-time exception must surface as PluginRaised, got {err:?}");
         };
-        assert!(
-            message.contains("plugin exited before responding"),
-            "broken guest must take the process-exit death path, not the timeout backstop: {message}"
+        assert_eq!(
+            report.lines().next(),
+            Some("plugin error in main.py:1 (import): RuntimeError: broken on purpose"),
+            "{report}"
         );
     }
 

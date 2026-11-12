@@ -1229,7 +1229,12 @@ class TestUnsupportedEffectsFailLoudly:
             }) + "\n")
             proc.stdin.flush()
             proc.wait(timeout=10)
-            return proc.stderr.read()
+            # The refusal ends the run, so it arrives as the runtime's
+            # structured `fatal_error` report rather than a stderr traceback.
+            messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
+            fatal = next(m for m in messages if m.get("type") == "fatal_error")
+            assert fatal["phase"] == "init"
+            return fatal["message"]
         finally:
             if proc.poll() is None:
                 proc.kill()

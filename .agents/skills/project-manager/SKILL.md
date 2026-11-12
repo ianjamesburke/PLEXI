@@ -320,7 +320,7 @@ On each re-entry after initial dispatch, lead with:
 - **`needs-you` means surface, don't capture.** The validate-pr pane already printed the testing block in its own pane; the user reads it there. The PM just flags which pane awaits a reply.
 - **Close `noop` panes immediately.** A `noop` title means the agent exited without real work — `pane close` right away and free the slot.
 - **State store:** `.claude/agent-memory/project-manager/pane-status.json`, keyed by pane id → `{state, unchanged}`. Drives staleness detection and slot accounting.
-- **Bare-shell pane recovery.** If a dispatch pane shows a prompt with no agent running ("← for agents"), re-send the command: `$PLEXI pane send <ID> 'c "/ship-issue <N>"\n'` — use `\n` for Enter, never a trailing `Enter` argument.
+- **Bare-shell pane recovery.** If a dispatch pane shows a prompt with no agent running ("← for agents"), re-send the command: `$PLEXI pane send <ID> 'c "/implement-issue <N>"\n'` — use `\n` for Enter, never a trailing `Enter` argument.
 - **Bundle issues should be batched.** Issues labeled `bundle` are micro-changes. Group by primary area and send all same-area bundles to one lane in one PR. Never open one PR per bundle issue.
 - **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.
 - **Auto-push alpha before dispatch.** `$PLEXI pane new` will clone a dirty tree — push first.

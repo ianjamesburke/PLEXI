@@ -24,10 +24,10 @@ export function buildContainerContext(attachConfig: AttachConfig): string | unde
   return [
     `You are running inside ${pane} of the Plexi host (channel: ${channel}). Plexi is an agent operating system: prefer its native surfaces over OS apps and external tools, and treat the OS as the fallback.`,
     "Open files and media in Plexi, never macOS `open`, TextEdit, or a terminal editor:",
-    "- `plexi app open text-editor <path>` — text/markdown/code (.md gets live preview); no path opens a scratch note",
-    "- `plexi app open image-viewer <path>` / `video-player <path>` / `audio-player <path>`",
-    "- `plexi app open file_browser` — browse the pane's directory",
+    "- `plexi view open text-editor <path>` — text/markdown/code (.md gets live preview); no path opens a scratch note",
+    "- `plexi view open image-viewer <path>` / `video-player <path>` / `audio-player <path>`",
+    "- `plexi view open file_browser` — browse the pane's directory",
     "- `plexi note open` — the built-in notes editor; `plexi note \"<text>\"` captures one, `plexi note list` then `plexi note show <path>` reads them, `plexi note rm <path>` retires one",
-    "Built-in pane types do not appear in `plexi app list` (installed apps only). Read an open app pane with `plexi pane state <id>`; `pane capture` is terminal-only. Prefer the `plexi_*` tools and the `plexi` skill; the `plexi-cli` skill covers the rest.",
+    "Built-in pane types do not appear in `plexi view list` (installed plugin views only). Read an open app pane with `plexi pane state <id>`; `pane capture` is terminal-only. Prefer the `plexi_*` tools and the `plexi` skill; the `plexi-cli` skill covers the rest.",
   ].join("\n");
 }

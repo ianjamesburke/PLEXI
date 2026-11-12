@@ -1495,8 +1495,7 @@ fi
 echo
 
 with_config item_v1_01
-# Paths are the files those PRs actually add. --any lists a rename: either
-# file lands the item, and every file that is present is run.
+# Paths are the files those PRs actually add.
 #   V1-02 #2720 scripts/permission-gate-e2e.sh (driver: #2709 scripts/e2e/human.sh)
 #   V1-03 #2720 scripts/no-self-approval-e2e.sh
 #   V1-04 #2718 scripts/permissions-seal-e2e.sh
@@ -1505,8 +1504,8 @@ with_config item_v1_01
 #   V1-07 #2710 scripts/e2e/ledger/run.sh
 #   V1-09 #2706 scripts/e2e_agents_api_installed.sh
 #   V1-10 #2715 scripts/multi-lead-e2e.sh + #2716 scripts/headless-queue-e2e.sh
-#   V1-11 #2717 scripts/agents-dashboard-steer-e2e.sh (#2707 agents-dashboard-e2e.sh superseded)
-#   V1-12 #2724 scripts/change-sets-e2e.sh (#2695 assistant-editor-change-set-e2e.sh superseded)
+#   V1-11 #2717 scripts/command-view-e2e.sh (#2707 agents-dashboard-e2e.sh superseded)
+#   V1-12 #2724 scripts/change-sets-e2e.sh
 #   V1-13 #2703 scripts/cloud-basics-e2e.sh
 #   V1-14 #2722 scripts/skill-check.sh
 #   V1-15 #2718 scripts/app-share-e2e.sh
@@ -1518,8 +1517,8 @@ with_config run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
 with_config run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
 with_config run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
 with_config run_one V1-10 1 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
-with_config run_one V1-11 1 --probe agents-dashboard -- --any scripts/agents-dashboard-steer-e2e.sh scripts/agents-dashboard-e2e.sh
-with_config run_one V1-12 1 --probe changes -- --any scripts/change-sets-e2e.sh scripts/assistant-editor-change-set-e2e.sh
+with_config run_one V1-11 1 --probe agents-dashboard -- scripts/command-view-e2e.sh
+with_config run_one V1-12 1 --probe changes -- scripts/change-sets-e2e.sh
 with_config run_one V1-13 0 -- scripts/cloud-basics-e2e.sh
 with_config item_v1_14
 with_config run_one V1-15 1 --probe plugin package -- scripts/app-share-e2e.sh

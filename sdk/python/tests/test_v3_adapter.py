@@ -212,7 +212,7 @@ def test_ui_tree_serializes_row_children() -> None:
         "type": "Row",
         "children": [1, 2],
         "gap": 8.0,
-        "align": "start",
+        "align": "center",
         "grow": False,
     }
     assert nodes[1]["data"]["type"] == "Button"
