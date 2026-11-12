@@ -214,10 +214,16 @@ impl PluginManifest {
             .unwrap_or("<unknown>")
             .to_owned();
         let legacy = value.get("app").is_some();
+        // Name the schema the file declares; a schema 2 file can still carry
+        // a leftover `[app]` table.
+        let declared = match value.get("schema_version") {
+            Some(version) => format!("this manifest declares schema_version = {version}"),
+            None => "this manifest declares no schema_version".to_string(),
+        };
         let wire: PluginManifestWire = value.try_into().map_err(|e: toml::de::Error| {
             let message = if legacy {
                 format!(
-                    "schema 1 `[app]` manifests are no longer accepted; rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
+                    "`[app]` manifests are no longer accepted ({declared}); rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
                 )
             } else {
                 e.to_string()
@@ -262,7 +268,18 @@ impl PluginManifest {
                 continue;
             }
             let raw = std::fs::read_to_string(&path).map_err(&io)?;
-            let existing = Self::parse(&raw)?;
+            // The registry skips a manifest that does not parse, so it owns
+            // no commands; `plexi plugin list` reports it as broken.
+            let existing = match Self::parse(&raw) {
+                Ok(existing) => existing,
+                Err(error) => {
+                    log::warn!(
+                        "plugin_install: ignoring unparseable manifest {} for command ownership: {error}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             self.contributes.check_command_owner(
                 &self.plugin.id,
                 &existing.plugin.id,

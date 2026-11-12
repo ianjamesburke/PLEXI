@@ -9,9 +9,16 @@ pub fn list_cli() -> i32 {
         &crate::app::registry::plugins_dir(),
     );
     let installed = registry.list();
+    let broken = skipped_plugin_lines(registry.skipped());
+    log::info!(
+        "plugin_list: loaded={} skipped={}",
+        installed.len(),
+        registry.skipped().len()
+    );
     if installed.is_empty() {
         println!("no plugins installed");
         println!("install one with: plexi plugin install <source>[@ref]");
+        print_lines(&broken);
         return 0;
     }
     // Read versions directly from the global plugins dir for the source-of-truth
@@ -79,7 +86,41 @@ pub fn list_cli() -> i32 {
             }
         }
     }
+    print_lines(&broken);
     0
+}
+
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+/// The `plexi plugin list` section for plugins the registry found but could
+/// not load: each directory, its error, and the command that diagnoses it.
+/// Empty when every plugin loaded.
+fn skipped_plugin_lines(skipped: &[crate::app::registry::SkippedPlugin]) -> Vec<String> {
+    if skipped.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        String::new(),
+        format!("Plugins that failed to load ({})", skipped.len()),
+    ];
+    for plugin in skipped {
+        let name = plugin
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| plugin.dir.display().to_string());
+        lines.push(format!("  {name:30} broken: {}", plugin.error));
+        lines.push(format!(
+            "  {:30} diagnose: plexi plugin check {}",
+            "",
+            plugin.dir.display()
+        ));
+    }
+    lines
 }
 
 /// `plexi plugin freeze <path>` — write a `pack.toml` snapshot of installed plugins to `path`.
