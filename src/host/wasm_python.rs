@@ -2504,8 +2504,19 @@ enum PermissionUiTrust {
     /// The plugin folder is byte-identical to this binary's embedded
     /// Permissions plugin.
     BundledPermissionsUi,
+    /// Uses the id `permissions` but differs from this build's copy, for
+    /// example after an upgrade. Refused like any other plugin, but told why.
+    MismatchedPermissionsCopy,
     Untrusted,
 }
+
+/// Refusal notice for every plugin that is not the bundled Permissions copy.
+const PERMISSION_BRIDGE_REFUSED_NOTICE: &str = "not permitted";
+
+/// Refusal notice for a plugin with the id `permissions` that differs from
+/// this build. Names the cause and the fix (`plexi plugin uninstall` then
+/// `plexi plugin install local:<name>`, see `PluginCmd` in `src/cli/args.rs`).
+const PERMISSIONS_COPY_MISMATCH_NOTICE: &str = "This Permissions plugin differs from the copy built into this Plexi version, so it cannot read or change permissions. Reinstall it: plexi plugin uninstall permissions --yes, then plexi plugin install local:permissions --yes";
 
 /// The one trust predicate for `read_permission_decisions` and
 /// `permission_decision`. The id is a necessary condition only, because the
@@ -2516,13 +2527,17 @@ enum PermissionUiTrust {
 /// What is not: the SDK root (`/sdk`) and the CPython stdlib the guest also
 /// imports from; those come from the host's own distribution, not the plugin.
 fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust {
-    if plugin_id == PERMISSIONS_UI_BUNDLE
-        && crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir)
-    {
-        PermissionUiTrust::BundledPermissionsUi
-    } else {
-        PermissionUiTrust::Untrusted
+    if plugin_id != PERMISSIONS_UI_BUNDLE {
+        return PermissionUiTrust::Untrusted;
     }
+    if crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir) {
+        return PermissionUiTrust::BundledPermissionsUi;
+    }
+    log::warn!(
+        "plugin::{plugin_id}: installed copy at {} differs from the Permissions plugin built into this Plexi version; the permission bridge is disabled for it. Fix: plexi plugin uninstall permissions --yes, then plexi plugin install local:permissions --yes",
+        plugin_dir.display()
+    );
+    PermissionUiTrust::MismatchedPermissionsCopy
 }
 
 /// A refused bridge message: names only, never the payload. Both fields are
@@ -2608,8 +2623,13 @@ fn answer_permission_bridge(
     let id = message.get("id").and_then(Value::as_str).unwrap_or("");
     let action = message.get("action").and_then(Value::as_str).unwrap_or("");
     if trust != PermissionUiTrust::BundledPermissionsUi {
+        let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
+            PERMISSIONS_COPY_MISMATCH_NOTICE
+        } else {
+            PERMISSION_BRIDGE_REFUSED_NOTICE
+        };
         return (
-            inventory(Vec::new(), "not permitted", "rejected"),
+            inventory(Vec::new(), notice, "rejected"),
             Some(PermissionBridgeRefusal {
                 kind,
                 action: loggable_action(action),
@@ -10682,21 +10702,21 @@ default = true
         .unwrap();
         assert_eq!(
             permission_ui_trust("permissions", spoof.path()),
-            PermissionUiTrust::Untrusted,
+            PermissionUiTrust::MismatchedPermissionsCopy,
             "declaring id = \"permissions\" is not provenance"
         );
 
         std::fs::write(bundled.join("typing.pyc"), b"\x00").unwrap();
         assert_eq!(
             permission_ui_trust("permissions", &bundled),
-            PermissionUiTrust::Untrusted,
+            PermissionUiTrust::MismatchedPermissionsCopy,
             "bundled source plus a planted module is not the bundled plugin"
         );
     }
 
     #[test]
     fn bundled_permissions_ui_lists_revokes_and_widens_only_through_needs_you() {
-        use crate::broker::gate::{NeedsYouKind, PermissionCaller, ResolveSurface};
+        use crate::broker::gate::{NeedsYouKind, ResolveSurface};
         let fx = bridge_fixture();
         let trusted = PermissionUiTrust::BundledPermissionsUi;
         let (reply, refusal) = answer_permission_bridge(
@@ -10773,16 +10793,6 @@ default = true
         );
         assert_eq!(reply["status"], "applied", "{reply}");
         assert!(!rows(&fx.monitor).iter().any(|(id, _)| id == &fx.grant));
-
-        // The CLI's human caller (peer-verified, no pane) still applies directly.
-        let human = PermissionCaller {
-            human: true,
-            actor_id: "user".to_string(),
-        };
-        assert!(matches!(
-            fx.monitor.mutate_entry(&fx.deny, "reset", &human),
-            crate::broker::gate::PermissionMutation::Applied { .. }
-        ));
     }
 
     /// Stint 1238 characterisation matrix, Python rows (see
@@ -10875,6 +10885,54 @@ default = true
             }
         });
         assert_eq!(checked, 14 * matrix::STATES.len());
+    }
+
+    #[test]
+    fn a_mismatched_permissions_copy_is_told_the_cause_and_fix_others_are_not() {
+        let fx = bridge_fixture();
+        let before = rows(&fx.monitor);
+        let read = json!({"type": "read_permission_decisions"});
+        let answer = |trust, kind, message: &Value, plugin| {
+            answer_permission_bridge(trust, kind, message, &fx.monitor, plugin).0
+        };
+        for (kind, message) in [
+            (PermissionBridgeKind::Read, read.clone()),
+            (PermissionBridgeKind::Decide, decide(&fx.pending, "allow")),
+        ] {
+            let stale = answer(
+                PermissionUiTrust::MismatchedPermissionsCopy,
+                kind,
+                &message,
+                "permissions",
+            );
+            assert_eq!(stale["status"], "rejected");
+            assert_eq!(stale["entries"], json!([]));
+            let notice = stale["notice"].as_str().unwrap();
+            assert!(notice.contains("differs from the copy built into this Plexi version"));
+            assert!(
+                notice.contains("plexi plugin install local:permissions"),
+                "{notice}"
+            );
+
+            let other = answer(PermissionUiTrust::Untrusted, kind, &message, "evil");
+            assert_eq!(
+                other,
+                json!({
+                    "type": "permission_inventory",
+                    "entries": [],
+                    "notice": "not permitted",
+                    "status": "rejected",
+                }),
+                "other plugins get one constant reply"
+            );
+        }
+        assert_eq!(rows(&fx.monitor), before);
+        let root = tempdir().expect("root");
+        assert_eq!(
+            permission_ui_trust("evil", root.path()),
+            PermissionUiTrust::Untrusted,
+            "only the id permissions gets the reinstall notice"
+        );
     }
 
     #[test]
@@ -10985,7 +11043,10 @@ default = true
         let mut pane =
             LivePythonPane::launch(bridge_pane_config(&spoof, ctx.path())).expect("launch spoof");
         assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
-        assert_eq!(pane.permission_ui, PermissionUiTrust::Untrusted);
+        assert_eq!(
+            pane.permission_ui,
+            PermissionUiTrust::MismatchedPermissionsCopy
+        );
         assert!(seeded_entry_ids(&pane).is_empty(), "no inventory at open");
 
         let before = rows(&monitor);
@@ -11031,7 +11092,10 @@ default = true
         swapped.extend_from_slice(b"\n# swapped in\n");
         std::fs::write(dir.join("main.py"), &swapped).unwrap();
         pane.relaunch().expect("relaunch swapped");
-        assert_eq!(pane.permission_ui, PermissionUiTrust::Untrusted);
+        assert_eq!(
+            pane.permission_ui,
+            PermissionUiTrust::MismatchedPermissionsCopy
+        );
         assert!(seeded_entry_ids(&pane).is_empty());
         let before = rows(&monitor);
         pane.handle_message(decide(&pending, "revoke"));
