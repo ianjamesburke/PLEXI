@@ -62,6 +62,29 @@ impl<'a> ToastShell<'a> {
         crate::ui::button::KitButton::new(label, colors).surface(colors.bg_sidebar)
     }
 
+    /// A notice whose whole explanation must stay readable (it tells the user
+    /// how to fix something): the message wraps instead of eliding, and the
+    /// action sits on the trailing edge below it, the toast's dismiss position.
+    pub(crate) fn notice_action(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        message: &str,
+        label: &str,
+    ) -> egui::Response {
+        let id = egui::Id::new(self.id).with("action");
+        self.show(ctx, colors, |ui| {
+            crate::ui::typography::body(ui, message, colors);
+            ui.add_space(style::SPACE_SM);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.push_id(id, |ui| ui.add(Self::button(label, colors)))
+                    .inner
+            })
+            .inner
+        })
+        .inner
+    }
+
     /// Reserve the complete action before fitting the message. Reflow into
     /// two rows when the inline message lane becomes too small. The action
     /// keeps its natural width and never wraps; the message elides first.
