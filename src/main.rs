@@ -131,8 +131,9 @@ fn main() -> eframe::Result {
         }
     }
     let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
-        eprintln!("profile initialization: {error}");
-        cli::trace::exit(1);
+        let show_window =
+            app::startup_error::shows_window(is_host_startup(&raw_args), boot_state.is_background());
+        app::startup_error::exit_on_profile_init_failure(&error, show_window)
     });
     if let Some(profile_init_lock) = profile_init_lock {
         let is_first_launch = crate::config::ensure_profile_initialized();

@@ -1578,9 +1578,33 @@ fn profile_initialization_needed() -> Result<bool, String> {
         || crate::distribution::profile_needs_seeding()?)
 }
 
+/// Why profile initialization stopped before the host could start. A failed
+/// plugin migration keeps its structure so startup can name the file, the
+/// package and the fix instead of a flattened string.
+#[derive(Debug)]
+pub enum ProfileInitError {
+    Migration(Box<crate::app::plugin_migration::MigrationFailure>),
+    Other(String),
+}
+
+impl std::fmt::Display for ProfileInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Migration(failure) => failure.fmt(f),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for ProfileInitError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
 /// Fresh profiles need no writable files. Re-check after acquiring the lock:
 /// another process may have completed initialization while we waited.
-pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
+pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, ProfileInitError> {
     if !profile_initialization_needed()? {
         return Ok(None);
     }
@@ -1598,7 +1622,7 @@ pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
     if !profile_initialization_needed()? {
         return Ok(None);
     }
-    crate::app::plugin_migration::migrate(&dir)?;
+    crate::app::plugin_migration::migrate(&dir).map_err(ProfileInitError::Migration)?;
     Ok(Some(lock))
 }
 
