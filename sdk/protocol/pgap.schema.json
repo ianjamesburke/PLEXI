@@ -1636,7 +1636,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "List permission state across plugins (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"plugin_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"plugin_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running plugin that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
+          "description": "List permission state across plugins (stint 0017). No gate: any socket\ncaller can send it, and nothing checks `permissions.manage`; its removal\nis tracked under stint 1285. Host writes a JSON object to `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"plugin_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"plugin_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running plugin that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
           "properties": {
             "response_file": {
               "type": "string"
@@ -1648,42 +1648,6 @@
           },
           "required": [
             "type",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Set the stored permission state for an (plugin, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running plugin with `plugin_id` is used;\nif no such plugin is running the request fails. Persists to\n`permissions.toml` AND live-updates any running plugin's permission set,\nso a revocation takes effect on the plugin's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
-          "properties": {
-            "capability": {
-              "type": "string"
-            },
-            "plugin_id": {
-              "type": "string"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "state": {
-              "type": "string"
-            },
-            "type": {
-              "const": "set_permission",
-              "type": "string"
-            },
-            "workspace": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "type",
-            "plugin_id",
-            "capability",
-            "state",
             "response_file"
           ],
           "type": "object"
@@ -3102,14 +3066,8 @@
         },
         {
           "additionalProperties": false,
-          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. No socket caller is human: `reset` and `allow`\nfile a Needs you item that only a click in the Plexi window applies;\n`revoke` and `list` apply directly.",
           "properties": {
-            "credential": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "id": {
               "type": [
                 "string",
@@ -3118,14 +3076,6 @@
             },
             "op": {
               "type": "string"
-            },
-            "pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
             },
             "response_file": {
               "type": "string"

@@ -1,25 +1,78 @@
 name: Rust host
 
-# Hosted host verification is post-landing via nightly.yml. Local full-suite
-# and independent validation gate Alpha landing; PRs do not start this workflow.
+# Hosted host build and test, advisory only. Two triggers:
+# - pull_request to alpha, drafts included (stint 1377): parallel build capacity
+#   so draft PRs need not queue on one Mac. Never a merge gate: local gates, the
+#   pr-candidate stamp and the independent installed tester decide merges
+#   (src/testing/TESTING.md). The `scope` job skips docs-only PRs with the same
+#   classifier the local gate uses (scripts/docs_gate_scope.py), failing closed.
+#   The Linux observer stays nightly-only.
+# - workflow_call from nightly.yml: post-landing full verification.
+# Reads repository contents only: no secrets, no signing identity.
 
 on:
+  pull_request:
+    branches: [alpha]
   workflow_call:
 
+# Pull requests group on refs/pull/<n>/merge, so a push cancels that PR's
+# superseded run and no other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   PLEXI_CPYTHON_BUNDLE_DIR: /Users/runner/.plexi-ci/wasm-bundles
 
 jobs:
-  test:
-    name: test
-    runs-on: macos-latest
-    timeout-minutes: 30
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
     steps:
       - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+        with:
+          # The PR merge commit and its first parent, the alpha tip it merges onto.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Docs-only gate
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+        # build=false only when docs_gate_scope.py says every changed path is
+        # markdown no Rust source can observe. Any git or classifier failure
+        # leaves build=true.
+        run: |
+          build=true
+          if [[ "$EVENT" == pull_request ]] &&
+             git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"; then
+            mapfile -d '' -t changed < "$RUNNER_TEMP/changed"
+            if python3 scripts/docs_gate_scope.py "${changed[@]}"; then
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: test
+    needs: scope
+    # Runs unless scope positively proved the diff docs-only.
+    if: ${{ !cancelled() && needs.scope.outputs.build != 'false' }}
+    runs-on: macos-latest
+    # A warm-cache run took 26.8 min on 2026-11-01 (release build, test build,
+    # 6 min of tests); 30 left no headroom for a cold cache.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Plexi CI environment
         uses: ./.github/actions/plexi-ci-env
@@ -41,10 +94,15 @@ jobs:
 
   clippy:
     name: clippy
+    needs: scope
+    # Runs unless scope positively proved the diff docs-only.
+    if: ${{ !cancelled() && needs.scope.outputs.build != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Plexi CI environment
         uses: ./.github/actions/plexi-ci-env
@@ -65,6 +123,8 @@ jobs:
   # `AGENTS.md`, Testing.
   linux:
     name: linux
+    # Nightly-only (root AGENTS.md, Testing); pull requests get the macOS jobs.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
     continue-on-error: true
     timeout-minutes: 30
@@ -72,6 +132,8 @@ jobs:
       PLEXI_CPYTHON_BUNDLE_DIR: /home/runner/.plexi-ci/wasm-bundles
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:

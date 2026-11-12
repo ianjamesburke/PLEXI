@@ -1,0 +1,26 @@
+---
+/**
+ * Shared page header for every non-home page.
+ * `title` is set in the Midnight display face. `lede` is one or two plain sentences.
+ * Default slot: optional actions (buttons, links) under the lede.
+ */
+interface Props { title: string; lede?: string; compact?: boolean }
+const { title, lede, compact = false } = Astro.props;
+---
+<header class:list={['page-head', { compact }]}>
+  <div class="wrap">
+    <h1>{title}</h1>
+    <div class="page-head-body">
+      {lede && <p class="lead">{lede}</p>}
+      {Astro.slots.has('default') && <div class="page-head-actions"><slot /></div>}
+    </div>
+  </div>
+</header>
+
+<style>
+  .page-head { position: relative; z-index: 1; padding: clamp(56px, 8vw, 120px) 0 clamp(36px, 4vw, 56px); border-bottom: 1px solid var(--border); }
+  h1 { font: 900 var(--text-display)/.86 var(--display); letter-spacing: -.04em; text-transform: uppercase; overflow-wrap: anywhere; }
+  .compact h1 { font-size: clamp(40px, 5.6vw, 84px); }
+  .page-head-body { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 28px 48px; margin-top: clamp(28px, 3.4vw, 48px); }
+  .page-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; }
+</style>

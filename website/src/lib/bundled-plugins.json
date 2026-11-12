@@ -1,0 +1,74 @@
+[
+  {
+    "id": "sudoku",
+    "name": "Sudoku",
+    "description": "Sudoku with easy, medium, and hard difficulties. Click or use arrow keys to select cells, type 1-9 to fill, N for notes mode.",
+    "capabilities": [
+      "timer"
+    ],
+    "source": "apps/sudoku"
+  },
+  {
+    "id": "logs",
+    "name": "Logs",
+    "description": "Live tail of the Plexi host log, color-coded by level, with level/app/search filters.",
+    "capabilities": [
+      "logs.read",
+      "timer"
+    ],
+    "source": "apps/logs"
+  },
+  {
+    "id": "todo",
+    "name": "Todo",
+    "description": "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly.",
+    "capabilities": [],
+    "source": "apps/todo"
+  },
+  {
+    "id": "calc",
+    "name": "Calculator",
+    "description": "Four-function calculator with connector tools for the Assistant.",
+    "capabilities": [],
+    "source": "apps/calc"
+  },
+  {
+    "id": "balls",
+    "name": "Balls",
+    "description": "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle.",
+    "capabilities": [],
+    "source": "apps/balls"
+  },
+  {
+    "id": "snake",
+    "name": "Snake",
+    "description": "Classic snake game — proves input + draw primitives.",
+    "capabilities": [
+      "timer"
+    ],
+    "source": "apps/snake"
+  },
+  {
+    "id": "breakout",
+    "name": "Breakout",
+    "description": "Classic brick-breaking arcade game with paddle, ball, and colorful brick grid.",
+    "capabilities": [],
+    "source": "apps/breakout"
+  },
+  {
+    "id": "tetris",
+    "name": "Tetris",
+    "description": "Classic Tetris driven by the continuous WASM frame clock.",
+    "capabilities": [],
+    "source": "apps/tetris"
+  },
+  {
+    "id": "github-issues",
+    "name": "GitHub Issues",
+    "description": "GitHub Issues viewer for the workspace repo.",
+    "capabilities": [
+      "net.http"
+    ],
+    "source": "apps/github-issues"
+  }
+]

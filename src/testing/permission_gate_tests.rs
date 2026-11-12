@@ -2057,3 +2057,302 @@ fn agent_spawned_pane_does_not_get_human_authority() {
     assert_eq!(ungranted["ok"], false, "{ungranted}");
     assert_eq!(ungranted["error_code"], "permission_denied", "{ungranted}");
 }
+
+// ── Stint 1264: synthetic clicks on the bundled Permissions view ────────────
+
+fn permissions_button(h: &HostHarness, pane_id: u64, label: &str) -> Option<String> {
+    h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(crate::host::pane::Pane::as_view)
+        .map(|pane| pane.semantic_state())?
+        .nodes
+        .into_iter()
+        .find(|node| node.role == "button" && node.label.as_deref() == Some(label))
+        .map(|node| node.id)
+}
+
+/// `plexi pane click <pane> --node <id>`: the route that skips
+/// `refuse_synthetic_approval` and reaches the plugin's own button handler.
+fn node_click_permissions_button(h: &mut HostHarness, pane_id: u64, label: &str) {
+    pump_until(h, |h| permissions_button(h, pane_id, label).is_some());
+    let node = permissions_button(h, pane_id, label).expect("button node");
+    let response = h.workspace_root().join(format!("node-{label}.json"));
+    let _ = std::fs::remove_file(&response);
+    h.inject_node_click(
+        pane_id,
+        &node,
+        "left",
+        Some(response.to_string_lossy().into_owned()),
+    );
+    pump_until(h, |_| response.is_file());
+    let body = std::fs::read_to_string(&response).unwrap();
+    assert!(body.contains("\"ok\":true"), "{label} node click: {body}");
+}
+
+fn permission_changes(mon: &PermissionMonitor) -> Vec<String> {
+    mon.list_needs_you()
+        .into_iter()
+        .filter(|row| row.kind == crate::broker::gate::NeedsYouKind::PermissionChange)
+        .map(|row| row.id)
+        .collect()
+}
+
+fn entry_kinds(mon: &PermissionMonitor) -> Vec<(String, String)> {
+    mon.list_entries()
+        .into_iter()
+        .map(|entry| (entry.id, entry.kind))
+        .collect()
+}
+
+fn admit_probe(mon: &PermissionMonitor, workspace: &Path, call: &str, tool: &str) -> String {
+    match mon.admit(AdmitRequest {
+        call_id: call,
+        tool,
+        input_json: "{}",
+        actor_type: ActorType::Agent,
+        actor_id: "agent:synthetic-probe",
+        actor_scope: ActorScope::User,
+        trust_origin: "host",
+        workspace_root: workspace,
+        context_id: 1,
+        package_id: "synthetic-probe",
+        instance_id: 1,
+        target_type: TargetType::HostTool,
+    }) {
+        Admission::Required { pending_request_id } => pending_request_id,
+        _ => panic!("{tool} must ask"),
+    }
+}
+
+/// Stint 1264 guarantee under synthetic input. A node click on the genuine
+/// bundled Permissions view reaches the plugin, and the plugin's message is
+/// never a human decision: Allow and Ask again only file a Needs you item and
+/// change no grant; Revoke (narrowing) applies. The filed item cannot then be
+/// approved by any synthetic route on the decision overlay where it is shown;
+/// only a desktop click approves it.
+#[test]
+fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it() {
+    let mut h = HostHarness::new();
+    let workspace = h.workspace_root();
+    let mon = monitor();
+    let pending = admit_probe(&mon, &workspace, "call-pending", "probe.pending");
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+    let before = h.state().open_panes;
+    let focused = h
+        .app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, Some(workspace.clone()), &[])
+        .expect("launch bundled Permissions");
+    let pane = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .or(focused)
+        .expect("Permissions pane");
+    h.wait_for_first_render(pane);
+
+    // (a) Allow on a pending ask: a Needs you item, no grant, ask still pending.
+    node_click_permissions_button(&mut h, pane, "Open");
+    node_click_permissions_button(&mut h, pane, "Allow");
+    pump_until(&mut h, |_| permission_changes(&mon).len() == 1);
+    assert!(
+        mon.show_pending(&pending).is_some(),
+        "the ask is still pending"
+    );
+    assert!(!entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"));
+
+    // (b) What a synthetic click can still do: narrow. Revoke denies the ask.
+    node_click_permissions_button(&mut h, pane, "Revoke");
+    pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
+    assert!(!entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"));
+
+    // (a) Ask again and Allow on a stored denial: Needs you items only.
+    let to_deny = admit_probe(&mon, &workspace, "call-deny", "probe.denied");
+    mon.approve_pending(&to_deny, ApprovalChoice::DenyAlways)
+        .unwrap();
+    let deny = entry_kinds(&mon)
+        .into_iter()
+        .find(|(_, kind)| kind == "deny")
+        .expect("stored denial")
+        .0;
+    node_click_permissions_button(&mut h, pane, "Ask again");
+    pump_until(&mut h, |_| permission_changes(&mon).len() == 2);
+    node_click_permissions_button(&mut h, pane, "Allow");
+    pump_until(&mut h, |_| permission_changes(&mon).len() == 3);
+    let unchanged = entry_kinds(&mon);
+    assert_eq!(unchanged, vec![(deny.clone(), "deny".to_string())]);
+    let allow_item = permission_changes(&mon)
+        .into_iter()
+        .find(|id| {
+            mon.list_needs_you().iter().any(|row| {
+                &row.id == id && row.run_tag.as_deref() == Some(&format!("allow:{deny}"))
+            })
+        })
+        .expect("allow-the-denial item");
+
+    // (b) The item cannot be approved by any synthetic route on its surface.
+    h.app.sync_attention_queue();
+    assert!(h.app.open_decision_overlay_for_ask(&allow_item));
+    h.run_frames(2);
+    let approve = h
+        .app
+        .approval_buttons
+        .iter()
+        .find(|b| b.pending_request_id == allow_item && b.label == "Approve")
+        .map(|b| {
+            egui::pos2(
+                (b.bounds[0] + b.bounds[2]) / 2.0,
+                (b.bounds[1] + b.bounds[3]) / 2.0,
+            )
+        })
+        .expect("overlay Approve button");
+    let (win, tile) = h.app.find_pane_in_any_window(pane).expect("pane tile");
+    let origin = h.app.windows[win]
+        .tree
+        .tiles
+        .rect(tile)
+        .expect("pane rect")
+        .min;
+    let rel = approve - origin;
+    let undecided = |h: &HostHarness, route: &str| {
+        assert!(
+            mon.list_needs_you().iter().any(|row| row.id == allow_item),
+            "{route}: the Needs you item was resolved"
+        );
+        assert_eq!(entry_kinds(&mon), unchanged, "{route}: a grant changed");
+        assert!(
+            h.app.attention_queue.decision_overlay.is_some(),
+            "{route}: overlay closed"
+        );
+    };
+    let respond = |h: &HostHarness, name: &str| {
+        h.workspace_root()
+            .join(format!("synthetic-{name}.json"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    let routes: Vec<(&str, HostRequest)> = vec![
+        (
+            "click_pane",
+            HostRequest::ClickPane {
+                pane_id: pane,
+                x: rel.x,
+                y: rel.y,
+                button: Some("left".into()),
+                response_file: Some(respond(&h, "click")),
+            },
+        ),
+        (
+            "drag_pane",
+            HostRequest::DragPane {
+                pane_id: pane,
+                from: Some([rel.x, rel.y]),
+                from_node: None,
+                to: Some([rel.x, rel.y]),
+                to_node: None,
+                steps: Some(1),
+                button: Some("left".into()),
+                response_file: Some(respond(&h, "drag")),
+            },
+        ),
+        (
+            "host_key_1",
+            HostRequest::HostKey {
+                key: "1".into(),
+                response_file: respond(&h, "host-key-1"),
+            },
+        ),
+        (
+            "host_key_enter",
+            HostRequest::HostKey {
+                key: "enter".into(),
+                response_file: respond(&h, "host-key-enter"),
+            },
+        ),
+        (
+            "key_pane_1",
+            HostRequest::KeyPane {
+                pane_id: pane,
+                key: "1".into(),
+                response_file: Some(respond(&h, "key-pane-1")),
+            },
+        ),
+        (
+            "key_pane_enter",
+            HostRequest::KeyPane {
+                pane_id: pane,
+                key: "enter".into(),
+                response_file: Some(respond(&h, "key-pane-enter")),
+            },
+        ),
+        (
+            "send_pane_action_allow",
+            HostRequest::SendPaneAction {
+                pane_id: pane,
+                action: "permissions:allow".into(),
+                args: Vec::new(),
+                response_file: Some(respond(&h, "action-allow")),
+            },
+        ),
+        (
+            "send_pane_action_reset",
+            HostRequest::SendPaneAction {
+                pane_id: pane,
+                action: "permissions:reset".into(),
+                args: Vec::new(),
+                response_file: Some(respond(&h, "action-reset")),
+            },
+        ),
+    ];
+    for (route, request) in routes {
+        h.inject_ipc(request);
+        h.run_frames(4);
+        undecided(&h, route);
+    }
+    let node = permissions_button(&h, pane, "Allow").expect("Allow node behind the overlay");
+    h.inject_node_click(pane, &node, "left", Some(respond(&h, "node")));
+    h.run_frames(4);
+    undecided(&h, "click_pane_node");
+    // Let any guest reply to the routes above land, then re-check.
+    let settle = Instant::now();
+    while settle.elapsed() < Duration::from_millis(1500) {
+        h.run_frames(1);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    undecided(&h, "after guest replies");
+
+    // Not vacuous: a desktop click on the same button approves the widening.
+    h.app.synthetic_input_frame = false;
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![
+            egui::Event::PointerMoved(approve),
+            egui::Event::PointerButton {
+                pos: approve,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: approve,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        ..Default::default()
+    });
+    pump_until(&mut h, |_| {
+        !mon.list_needs_you().iter().any(|row| row.id == allow_item)
+    });
+    assert!(
+        entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"),
+        "the desktop click applied the allow"
+    );
+}

@@ -6,11 +6,11 @@ schema_version = 2
 id = "__PLUGIN_ID__"
 name = "__DISPLAY_NAME__"
 version = "0.1.0"
-description = "A Plexi plugin"
+description = ""
 watch = true
 
 [plugin.capabilities]
-capabilities = ["timer"]
+capabilities = []
 
 [runtime]
 kind = "python"

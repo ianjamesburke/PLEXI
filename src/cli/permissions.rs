@@ -1,22 +1,24 @@
 //! `plexi permissions` — the permission monitor, from the terminal.
 //!
-//! A pane id or a call credential marks the caller as an agent. Reset and
-//! allow from an agent file Needs you and do not change the stored decision.
-//! Revoke narrows and runs for either caller.
+//! No command-socket caller is human, whether it runs in a pane, in your own
+//! terminal, or anywhere else. `allow` and `reset` widen, so they file a Needs
+//! you item and change nothing until a click in the Plexi window approves it.
+//! `revoke` narrows and applies directly.
+
+/// Exit code when the request was filed and waits for a click in the Plexi
+/// window (same meaning as `secret get`'s `permission_required`).
+const EXIT_WAITING_FOR_APPROVAL: i32 = 2;
 
 /// `plexi permissions list [--json]`, and `reset` / `revoke` / `allow <id>`.
 pub fn permissions_cli(op: &str, id: Option<&str>, json: bool) -> i32 {
     let response_file = crate::rpc::response_file("permissions", "json");
-    let (pane_id, credential) = caller_fields();
     let payload = serde_json::json!({
         "type": "permissions",
         "op": op,
         "id": id,
-        "pane_id": pane_id,
-        "credential": credential,
         "response_file": response_file,
     });
-    log::info!("permissions:cli: op={op} id={id:?} pane={pane_id:?}");
+    log::info!("permissions:cli: op={op} id={id:?}");
     let content = match super::request_with(
         payload,
         "permissions",
@@ -38,27 +40,22 @@ pub fn permissions_cli(op: &str, id: Option<&str>, json: bool) -> i32 {
     } else {
         println!("{value}");
     }
+    if value.get("status").and_then(|item| item.as_str()) == Some("needs_you") {
+        let item = value
+            .get("needs_you_id")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        eprintln!(
+            "Filed Needs you item {item}. Nothing changed yet: approve it in the Plexi window \
+             (Needs you). A command cannot {op} a permission by itself."
+        );
+        return EXIT_WAITING_FOR_APPROVAL;
+    }
     if value.get("ok").and_then(|item| item.as_bool()) == Some(true) {
         0
     } else {
         1
     }
-}
-
-fn caller_fields() -> (Option<u64>, Option<String>) {
-    let pane_id = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse().ok());
-    let mut credential = std::env::var("PLEXI_CALL_CREDENTIAL")
-        .ok()
-        .filter(|value| !value.is_empty());
-    // Clearing the env vars is not a human. A child of a pane on this host's
-    // socket is still an agent (`caller_is_pane_agent`).
-    if pane_id.is_none() && credential.is_none() && super::pane_caller::caller_is_pane_agent() {
-        credential = Some("pane-ancestor".to_string());
-    }
-    (pane_id, credential)
 }
 
 fn print_table(value: &serde_json::Value) {

@@ -376,8 +376,11 @@ pub struct PermissionEntry {
 /// Who is asking to change a stored permission.
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
-    /// A person at a terminal with no pane and no call credential.
-    /// The Permissions plugin's own buttons also pass `true`.
+    /// `true` only for host-owned trusted input. It is never derived from the
+    /// absence of an agent signal: socket callers (pane or not, credential or
+    /// not), MCP and Assistant tools, and plugin guest messages (including the
+    /// bundled Permissions plugin's) pass `false`, so their `allow`/`reset`
+    /// file Needs you and a desktop click applies them (stints 1264, 1271).
     pub human: bool,
     pub actor_id: String,
 }
@@ -3249,24 +3252,6 @@ impl PermissionMonitor {
         entries
     }
 
-    /// Persist one plugin capability. A later click replaces an auto-grant of the
-    /// same capability instead of adding a second row.
-    pub fn grant_plugin_capability(
-        &self,
-        plugin_id: &str,
-        workspace_root: &Path,
-        cap: crate::app::permissions::Capability,
-        decision: Decision,
-    ) {
-        self.grant_capability_id(
-            plugin_id,
-            workspace_root,
-            cap.as_str(),
-            decision,
-            GrantSource::User,
-        );
-    }
-
     /// Persist one capability id (manifest capability or raw WASM import).
     pub fn grant_capability_id(
         &self,
@@ -3441,7 +3426,7 @@ impl PermissionMonitor {
         }
         let outcome = self.apply_mutation(id, action);
         log::info!(
-            "permission_monitor: mutate {action} id={id} human={} actor={} outcome={}",
+            "permission_monitor: mutate {action} id={id:?} human={} actor={} outcome={}",
             caller.human,
             caller.actor_id,
             mutation_label(&outcome)
@@ -3451,7 +3436,7 @@ impl PermissionMonitor {
 
     fn file_widen(&self, id: &str, action: &str, actor: &str) -> PermissionMutation {
         let Some(entry) = self.entry_by_id(id) else {
-            log::info!("permission_monitor: widen {action} missing id={id} actor={actor}");
+            log::info!("permission_monitor: widen {action} missing id={id:?} actor={actor:?}");
             return PermissionMutation::Missing {
                 entry_id: id.to_string(),
             };
@@ -3476,7 +3461,7 @@ impl PermissionMonitor {
             },
             resource: entry.tool.clone(),
             summary: format!(
-                "Approve {action} for {} {} ({id}). An agent cannot widen this itself.",
+                "Approve {action} for {} {} ({id}). A request cannot widen this by itself.",
                 entry.actor_id, entry.tool
             ),
             expires_at: None,
@@ -3494,7 +3479,7 @@ impl PermissionMonitor {
                         },
                     );
                 log::info!(
-                    "permission_monitor: widen {action} id={id} filed needs_you={needs_you_id} actor={actor}"
+                    "permission_monitor: widen {action} id={id:?} filed needs_you={needs_you_id} actor={actor:?}"
                 );
                 PermissionMutation::NeedsYou {
                     needs_you_id,

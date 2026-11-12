@@ -1,0 +1,171 @@
+---
+import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import Arrow from '../components/Arrow.astro';
+import Shot from '../components/Shot.astro';
+import Notice from '../components/Notice.astro';
+import CopyCommand from '../components/CopyCommand.astro';
+import { release } from '../lib/release';
+
+// One row per surface. `shot` ids match .stint/runs/website-1112/IMAGES-NEEDED.md.
+const parts = [
+  {
+    id: 'panes',
+    title: 'Panes and terminals',
+    lead: 'Split a pane with ⌘D. The new terminal opens in the directory you were in.',
+    points: [
+      'Move focus with ⌘H, ⌘J, ⌘K and ⌘L. Swap a pane with its neighbour by adding Control.',
+      'Each terminal is a full PTY that loads your shell and your dotfiles.',
+      'A context groups the panes for one piece of work. Switch contexts and each layout is where you left it.',
+    ],
+    cmd: 'plexi pane new -n tests',
+    cmdNote: 'Opens a terminal pane named "tests".',
+    shot: { id: 'S7', pending: 'Four terminals tiled in one window, each in a different directory, with pane names set.', caption: 'Four terminals in one context.' },
+    doc: { href: '/docs/panes', label: 'Panes' },
+  },
+  {
+    id: 'agents',
+    title: 'Agents and their state',
+    lead: 'Claude Code and Codex run in a pane like any other CLI. Hooks tell Plexi whether each one is working, blocked or idle.',
+    points: [
+      'One command installs the hooks for the agent CLI you use.',
+      'plexi agent status prints a table of every agent pane and its state. Add --blocked to see only the ones waiting.',
+      'Questions and approvals that wait on you are listed by plexi needs-you.',
+    ],
+    cmd: 'plexi agent hook install --claude-code',
+    cmdNote: 'Use --codex for Codex. Then run plexi agent status.',
+    shot: { id: 'S3', pending: 'Two agent panes, one working and one blocked, with the list of items waiting on you open beside them.', caption: 'One agent working, one waiting on you.' },
+    doc: { href: '/docs/first-agent', label: 'Run your first agent' },
+  },
+  {
+    id: 'plugins',
+    title: 'Plugins and views',
+    lead: 'A plugin is a folder with a manifest and three Python functions. A view is what it draws in a pane.',
+    points: [
+      'plexi plugin init scaffolds the folder, the manifest and a test.',
+      'plexi plugin check validates the plugin and can write PNG snapshots of what it renders.',
+      'Python plugins run as CPython compiled to WebAssembly, inside a Wasmtime sandbox.',
+    ],
+    cmd: 'plexi view open todo',
+    cmdNote: 'Opens the bundled Todo plugin in a split to the right.',
+    shot: { id: 'S6', src: '/shots/todo.png', alt: 'The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete.', ratio: '4 / 3', caption: 'The bundled Todo view, rendered by plexi view render with seeded items.' },
+    doc: { href: '/plugins', label: 'Plugins and views' },
+  },
+  {
+    id: 'permissions',
+    title: 'Permissions',
+    lead: 'A plugin lists the capabilities it wants in its manifest. Listing one is a request. It is not a grant.',
+    points: [
+      'File access, network requests and secrets all go through host APIs and their grants.',
+      'plexi permissions list prints the decisions Plexi has stored. revoke removes one.',
+      'On macOS, secrets are stored through the system keychain.',
+    ],
+    cmd: 'plexi permissions list',
+    cmdNote: 'Prints the live permission decisions.',
+    shot: { id: 'S4', pending: 'A plugin asking for a capability, with the prompt visible before any decision is made.', caption: 'A capability request.' },
+    doc: { href: '/docs/plugins#execution-and-permissions', label: 'Execution and permissions' },
+  },
+  {
+    id: 'notes',
+    title: 'Notes',
+    lead: '⌘0 opens a note over whatever you are doing. Enter saves it as a Markdown file.',
+    points: [
+      'Escape closes the note without writing anything. The layout underneath does not change.',
+      'An agent can capture a note with the same command you would type.',
+    ],
+    cmd: 'plexi note add "check the flaky upload test"',
+    cmdNote: 'Writes a timestamped note.',
+    shot: { id: 'S8', pending: 'The Quick Note overlay open over a tiled layout, with two lines typed.', caption: 'Quick Note over a working layout.' },
+    doc: { href: '/docs/quick-note', label: 'Quick Note' },
+  },
+  {
+    id: 'palette',
+    title: 'Command palette',
+    lead: '⌘P opens the command palette. Type part of an action name and run it.',
+    points: [
+      '⌘E opens the file explorer at the directory of the terminal you were in.',
+      'Shortcuts can be changed in config.toml.',
+    ],
+    cmd: 'plexi --help',
+    cmdNote: 'The same actions, listed for an agent or a script.',
+    shot: { id: 'S9', pending: 'The command palette open with a query typed and matching actions listed.', caption: 'The command palette.' },
+    doc: { href: '/docs/config', label: 'Configuration' },
+  },
+];
+---
+<Layout
+  title="Product tour | Plexi"
+  description="What is in the Plexi window: panes and terminals, agents and their state, plugins and views, permissions, notes and the command palette. Each with the command that reaches it."
+>
+  <PageHead title="What is in the window." lede="Six things, each with the command an agent uses to reach it.">
+    <a class="btn lg" href="/download">Download for Mac <Arrow dir="down" /></a>
+  </PageHead>
+
+  <nav class="tour-index" aria-label="On this page">
+    <div class="wrap">
+      <ol>{parts.map(p => <li><a href={`#${p.id}`}>{p.title}</a></li>)}</ol>
+    </div>
+  </nav>
+
+  {parts.map((p, i) => (
+    <section class="part" id={p.id} aria-labelledby={`${p.id}-title`}>
+      <div class:list={['wrap', 'part-grid', { flip: i % 2 === 1 }]}>
+        <div class="part-text">
+          <h2 class="h2" id={`${p.id}-title`}>{p.title}</h2>
+          <p class="lead">{p.lead}</p>
+          <ul>{p.points.map(pt => <li>{pt}</li>)}</ul>
+          <div class="part-cmd">
+            <CopyCommand cmd={p.cmd} label={`the ${p.title.toLowerCase()} command`} />
+            <p>{p.cmdNote}</p>
+          </div>
+          <a class="link-arrow" href={p.doc.href}>{p.doc.label} <Arrow /></a>
+        </div>
+        <Shot caption={p.shot.caption} pending={p.shot.pending} src={p.shot.src} alt={p.shot.alt} ratio={p.shot.ratio} />
+      </div>
+      {p.id === 'permissions' && (
+        <div class="wrap part-notice">
+          <Notice tone="warn" title={`Being reworked for ${release.next}`}>
+            <p>The permission system is being hardened for {release.next}. On Beta {release.beta.version}, install only plugins you wrote or trust.</p>
+          </Notice>
+        </div>
+      )}
+    </section>
+  ))}
+
+  <section class="closer" aria-labelledby="closer-title">
+    <div class="wrap">
+      <h2 class="display" id="closer-title">Install it.</h2>
+      <div class="closer-body">
+        <CopyCommand cmd={release.installBeta} label="install command" />
+        <p>Apple Silicon. Beta {release.beta.version}. Builds are self-signed and not notarized. <a class="text-link" href="/download#trust">What that means</a>.</p>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .tour-index { position: sticky; top: var(--nav-h); z-index: 20; background: rgba(22, 22, 30, .96); border-bottom: 1px solid var(--border); }
+  .tour-index ol { list-style: none; display: flex; gap: 4px 0; overflow-x: auto; scrollbar-width: none; margin-inline: -12px; }
+  .tour-index a { display: block; padding: 14px 12px; white-space: nowrap; font: 12px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--fg-2); transition: color 150ms; }
+  .tour-index a:hover { color: var(--accent-light); }
+
+  .part { scroll-margin-top: calc(var(--nav-h) + 48px); }
+  .part-grid { display: grid; grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); gap: clamp(32px, 6vw, 96px); align-items: start; }
+  .part-grid.flip > .part-text { order: 2; }
+  .part-grid.flip { grid-template-columns: minmax(0, 1.18fr) minmax(0, .82fr); }
+  .part-text .lead { margin-top: 20px; }
+  .part-text ul { list-style: none; margin-top: 28px; border-top: 1px solid var(--border); }
+  .part-text li { padding: 14px 0; border-bottom: 1px solid var(--border); color: var(--fg-2); max-width: 60ch; }
+  .part-cmd { margin-top: 28px; }
+  .part-cmd p { margin-top: 10px; color: var(--fg-3); font-size: 14px; }
+  .part-text .link-arrow { margin-top: 20px; }
+  .part-notice { margin-top: 48px; }
+
+  .closer .wrap { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 32px clamp(32px, 6vw, 96px); align-items: end; }
+  .closer-body p { margin-top: 14px; color: var(--fg-2); font-size: 15px; }
+
+  @media (max-width: 860px) {
+    .part-grid, .part-grid.flip, .closer .wrap { grid-template-columns: minmax(0, 1fr); }
+    .part-grid.flip > .part-text { order: 0; }
+  }
+</style>

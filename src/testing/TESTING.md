@@ -75,6 +75,10 @@ fi
 
 `just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding rebuilds caused solely by mismatched warning flags; other changes or build-script invalidations can still trigger recompilation. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
 
+A filter that matches no test is an error, not a pass. Use `just test-for <path>` instead of composing filters by hand.
+
+When backgrounding a long gate, run it as `just run-logged <name> -- ...` and wait for its `RESULT` line or read the `.status` file beside the log it names. Cite the log path in hand-offs instead of pasting output.
+
 No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
 
 For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
@@ -173,7 +177,7 @@ completes.
 | Layer | Tool | Lives in | Runs |
 |---|---|---|---|
 | Pure logic | `#[test]` unit tests | next to the code | `cargo test --bin plexi` |
-| Host logic (AppRequest/HostEffect dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
+| Host logic (HostRequest/HostEffect dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
 | Observable behavior — host UI, host apps, portals, real PGAP apps | **TOML scenes** (`tests/scenes/*.toml`) | `tests/scenes/` | targeted `just scene`; `scene_suite` for broad/final coverage |
 
 `PlexiUiHarness` (`src/ui_tests.rs`) is the engine under scenes: PlexiApp inside egui_kittest with fully headless wgpu Metal rendering (no display needed). Direct PlexiUiHarness tests in `src/ui_tests.rs` are for egui-input edge cases scenes can't express (e.g. rename-commit-on-Enter inside a draw pass).
@@ -232,7 +236,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 | `paste = { target = "<handle>", value = "first\nsecond" }` | Focus an app pane and deliver literal text as one paste event (`plexi pane send --paste` live). Preserves newlines and literal backslashes without changing the system clipboard. |
 | `key = { target = "<handle>", value = "enter" }` | Focus a pane and press a key combo (`cmd`/`ctrl`/`alt`/`shift` plus a key name). Use `target = "host"` for a whole-host shortcut. |
 | `drop_file = { target = "<handle>", value = "<path-or-url>" }` | Deliver a file or image URL through the same pane drop handler used by native host drops. Rejection fails the scene. |
-| `drag = { target = "<handle>", from = [x, y], to = [x, y], steps = 8, button = "left" }` | Pointer drag through the production input path: press, `steps` intermediate moves, release — one frame each (`AppRequest::DragPane`; `plexi pane drag` live). Endpoints are pane-pixel coordinates, or semantic node ids via `from_node`/`to_node` (the drag targets the node's rendered bounds center; nodes without recorded bounds fail loudly). |
+| `drag = { target = "<handle>", from = [x, y], to = [x, y], steps = 8, button = "left" }` | Pointer drag through the production input path: press, `steps` intermediate moves, release — one frame each (`HostRequest::DragPane`; `plexi pane drag` live). Endpoints are pane-pixel coordinates, or semantic node ids via `from_node`/`to_node` (the drag targets the node's rendered bounds center; nodes without recorded bounds fail loudly). |
 | `focus = "<handle>"` | Focus an opened pane through the production pane-navigation path (`plexi pane focus` live). |
 | `close = "<handle>"` | Close an opened pane through the production pane lifecycle path (`plexi pane close` live). |
 | `seed_failed_agent = true` | Set the focused pane to a failed agent state and open its attention bar. Headless-only; live runs return `unsupported_live_verb`. |
@@ -290,8 +294,8 @@ driver.
 | Open process, builtin, and WASM panes | `open`, app-specific scenes | launch and lifecycle tests | `plexi view open` |
 | Pane focus, close, text, and native/process/WASM keys | `focus`, `close`, `text`, `key`; `pane-lifecycle.toml`, `assistant-settings.toml`, `wasm-sysmon.toml` | `HostHarness` IPC and native key tests | `plexi pane focus/close/send/key` |
 | Pane file and URL drops | `drop_file`; `notes-agent-drive.toml` | Production dispatch, persistence, and observable acceptance or rejection tests | `plexi pane drop <id> <path-or-url>` |
-| Canvas/pointer clicks on process and WASM app panes (stint 0398) | no scene verb yet — use `HostHarness::inject_click`/`AppRequest::ClickPane` for headless coverage | `HostHarness` `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform` (end-to-end, real process app, `fit="contain"`) + `wasm_render.rs` `canvas_click_inverts_fit_transform_to_canvas_space` (unit, transform math only) | `plexi pane click <id> <x> <y> [--button left]` — pane-pixel coordinates, delivered through the pane's live `canvas_transform` inversion, never OS automation |
-| Node-targeted clicks on Button/TextInput/ListView nodes in WASM (incl. CPython-in-WASM) app panes (stint 0414) | no scene verb yet — use `HostHarness::inject_node_click`/`AppRequest::ClickPaneNode` for headless coverage | `HostHarness` `click_pane_node_activates_button_and_mutates_guest_view` (end-to-end, real process app, node resolved from `plexi pane state`, covers the fail-loud missing/non-interactive paths) + `pane.rs` `resolve_interactive_node_*` (unit, role validation) | `plexi pane click <id> --node <node_id> [--button left]` — targets a node by the id `plexi pane state` reports, never pixel geometry; fails loudly (named error, nonzero exit) when the id is absent from the current tree or not an interactive role |
+| Canvas/pointer clicks on process and WASM app panes (stint 0398) | no scene verb yet — use `HostHarness::inject_click`/`HostRequest::ClickPane` for headless coverage | `HostHarness` `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform` (end-to-end, real process app, `fit="contain"`) + `wasm_render.rs` `canvas_click_inverts_fit_transform_to_canvas_space` (unit, transform math only) | `plexi pane click <id> <x> <y> [--button left]` — pane-pixel coordinates, delivered through the pane's live `canvas_transform` inversion, never OS automation |
+| Node-targeted clicks on Button/TextInput/ListView nodes in WASM (incl. CPython-in-WASM) app panes (stint 0414) | no scene verb yet — use `HostHarness::inject_node_click`/`HostRequest::ClickPaneNode` for headless coverage | `HostHarness` `click_pane_node_activates_button_and_mutates_guest_view` (end-to-end, real process app, node resolved from `plexi pane state`, covers the fail-loud missing/non-interactive paths) + `pane.rs` `resolve_interactive_node_*` (unit, role validation) | `plexi pane click <id> --node <node_id> [--button left]` — targets a node by the id `plexi pane state` reports, never pixel geometry; fails loudly (named error, nonzero exit) when the id is absent from the current tree or not an interactive role |
 | Pointer drags (press → moves → release) on app panes (stint 0510) | `drag` verb; `canvas-drag.toml` | `HostHarness` `drag_pane_delivers_press_moves_release_through_canvas_transform` (end-to-end, real process app, full trajectory in canvas space) + `drag_pane_node_endpoints_fail_loudly_without_bounds` (node-endpoint contract) | `plexi pane drag <id> --from x,y --to x,y [--steps N] [--button left]` (or `--from-node`/`--to-node`) — delivered one frame per sample through the production input paths, never OS automation |
 | Emitted event-bus events (`DeclareEventStreams`/`EmitEvent`, stint 0511) | `expect` `event_stream`/`event_payload_contains`; `event-probe.toml` | `HostHarness::wait_for_plugin_event` over the recorded `PluginTimeline`; `emitted_plugin_event_is_recorded_and_awaitable` (end-to-end, real process app) | `plexi events subscribe <plugin_id> <stream>` (NDJSON) — live scenes have no event-query seam yet, so event expectations are headless-only |
 | Split directions, tabs, overlays, and multi-window placement | host shortcuts can be driven with whole-host `key`; placement state is covered in focused Rust tests | pane layout, window cleanup, and spawn tests | `plexi pane new` / `plexi view open` placement flags |
@@ -301,7 +305,7 @@ driver.
 | Agent panes and terminal PTY behavior | host state and pane chrome can be captured; PTY behavior is not simulated | agent-state and `#[ignore = "requires-pty"]` tests | `plexi pane new`, `plexi agent report`, `plexi pane capture` |
 | Native, process, WASM, portal, sidebar, and overlay screenshots | `shot` captures the entire headless host framebuffer, so pane type does not require a separate capture path | renderer and semantic-state tests | live scenes capture `shot` through the channel host screenshot command; installed validation can also use `drive-host` capture |
 | Experiments (stint 0785) | top-level `experiments = ["wasm_apps", ...]` scene key lists `ReleaseFeature` keys switched on for the scene (all are off by default). Headless-only. | `set_test_experiments` in Rust tests | a live host reads its own `[experiments]` config; use `plexi experiments enable` |
-| App file picker + picker-granted fs scopes (stint 0508) | top-level `picker_script` scene key scripts every `OpenFilePicker` outcome in order (`{ paths = [...] }` / `{ cancel = true }`, `{out}` prefix → scene out dir); `file-picker.toml` runs the pick → write → read → cancel round trip. Headless-only. | `wasm_pane` picker tests (capability denial, grant scoping, save-as, folder subtree, cancel) + `resolve_app_fs_path` jail/grant tests | no scene-live support; launch the host with `PLEXI_PICKER_SCRIPT=<json>` — same entry format, consumed per pane at launch — so tester agents drive picks without a dialog |
+| App file picker + picker-granted fs scopes (stint 0508) | top-level `picker_script` scene key scripts every `OpenFilePicker` outcome in order (`{ paths = [...] }` / `{ cancel = true }`, `{out}` prefix → scene out dir); `file-picker.toml` runs the pick → write → read → cancel round trip. Headless-only. | `wasm_pane` picker tests (capability denial, grant scoping, save-as, folder subtree, cancel) + `resolve_plugin_fs_path` jail/grant tests | no scene-live support; launch the host with `PLEXI_PICKER_SCRIPT=<json>` — same entry format, consumed per pane at launch — so tester agents drive picks without a dialog |
 
 Do not require scene and CLI syntax to be identical. They must converge on the
 same production host operation. Pointer-only UI affordances and whole-host
@@ -370,7 +374,7 @@ still gets this pass before push.
 
 ## Editor Release Gate
 
-Any diff touching `src/editor/` or `src/app/text_editor_app.rs` runs the editor
+Any diff touching `src/editor/` or `src/app/text_editor_view.rs` runs the editor
 release gate before push, in this order:
 
 1. **Core matrix + fuzz** — `cargo test --bin plexi editor::gate`. Runs the
@@ -447,7 +451,7 @@ exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
 
 - Follow The Gate above for the push path and integration. The justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
-- Test-first for host logic: a new `AppRequest`/`HostEffect` gets a failing `HostHarness` test before implementation.
+- Test-first for host logic: a new `HostRequest`/`HostEffect` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).
 - Coverage: `cargo llvm-cov --bin plexi` (cargo-llvm-cov installed at `~/.cargo/bin/`).
 

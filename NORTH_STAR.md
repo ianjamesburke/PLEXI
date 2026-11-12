@@ -1,6 +1,6 @@
 # Plexi North Star
 
-> **Plexi — the last plugin you'll ever need.**
+> **Plexi — the last app you'll ever need.**
 
 This is the compass, not a plan. Read it before filing issues, implementing features, or making architectural decisions.
 
@@ -8,9 +8,9 @@ This is the compass, not a plan. Read it before filing issues, implementing feat
 
 ## The One-Liner
 
-**The last plugin you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
+**The last app you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
 
-Plexi is a mini-OS, not an plugin: a tiling, terminal-native personal computing environment where capability-gated plugins, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
+Plexi is a mini-OS, not an app: a tiling, terminal-native personal computing environment where capability-gated plugins, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
 
 ---
 
@@ -20,9 +20,7 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 1. **All data lives in portable, open formats — markdown, JSON, TOML.** App state, permission logs, agent transcripts: plain files on your disk that will still open in 100 years. If Plexi disappeared tomorrow, everything you made would still work. That is the founding constraint, not a feature.
 
-2. **Ergonomics are a priority, not an afterthought.** Friction is a bug with the same severity as a crash. Layout, focus, chrome, and defaults are designed deliberately — polish is not something that happens after the feature ships.
-
-    **Plexi should feel like a video game.** This sits just behind ergonomics: ergonomics wins first, and once the most ergonomic choice is settled, make it playful. Flat, clean shapes, small satisfying details, and motion that shows where things came from and where they went. Delight never costs a keystroke.
+2. **Ergonomics first, then play.** Friction is a bug with the same severity as a crash. Layout, focus, chrome, and defaults are designed deliberately — polish is not something that happens after the feature ships. Flat, clean shapes, small satisfying details, and motion that shows where things came from and where they went. Nothing moves unless you asked it to: messages, errors, and arrivals never shift or resize what you're looking at. Once the ergonomic choice is settled, make it feel like a video game: every input answers on the next displayed frame, and motion never makes you wait.
 
 3. **Keyboard-first. The mouse is optional.** Every interaction has a keyboard path, and the fast path is the default path.
 
@@ -38,7 +36,7 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 7. **Your environment is an inheritance.** A Plexi instance is a complete record of how a person works — every plugin, permission, transcript, and piece of state, portable and ownable. Hand someone your machine, and you hand them your working life. Hand the next generation your workflows the way you'd hand them a library. That has never been true of software before.
 
-8. **The whole plugin lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds an plugin, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Plugins are portable, auditable, replaceable; any process that speaks the protocol is an app.
+8. **The whole plugin lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds a plugin, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Plugins are portable, auditable, replaceable; any process that speaks the protocol is an app.
 
 9. **Local-first. Cloud is an option, never a dependency.** Sync, hosting, and the portable server instance are opt-in conveniences on the same architecture. Nothing required to run what you own lives on someone else's computer.
 
@@ -46,7 +44,13 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 11. **Make the last 20% easy.** When a workflow needs human judgment, Plexi puts the relevant material and the means to change it directly in the person's hands. Their choices become durable, machine-readable changes that automation can continue from. Every handoff preserves context, makes the result immediately perceptible, and supports correction and undo.
 
+    **Pull, never push.** Anything that needs a person (an ask, a failure, a result) waits, discoverable, until they pull it. Nothing takes focus, keys, or the screen when it arrives. When the window is unfocused, a dock badge counts as pull.
+
     Ask of every human-in-the-loop feature: **Which human decision does this make easier, and can the agent continue from that decision without asking the person to translate it back into instructions?** If the person must describe a change they already made, the handoff is incomplete.
+
+12. **Adopt before invent.** Before adding any new primitive (keybind, command, pane or state model, config syntax), name the prior art (tmux, vim, VS Code, Zellij, ...) and copy its proven behavior. Depart only with a written reason it doesn't fit Plexi cleanly; then reimagine it, keeping the best refinements from existing tools.
+
+    Ask of every new primitive: **What prior art does this copy, and where it departs, why?**
 
 ---
 

@@ -120,6 +120,19 @@ pub struct PaneAgentState {
     pub session_id: Option<String>,
 }
 
+/// Deleted `HostRequest` wire types and what replaced each. The socket refuses
+/// a line naming one with this message instead of a bare parse error, so a
+/// caller learns where the operation went.
+pub fn removed_host_request(kind: &str) -> Option<&'static str> {
+    match kind {
+        "set_permission" => Some(
+            "set_permission was removed: it changed grants with no caller \
+             identity. Use `plexi permissions` or the Permissions view instead.",
+        ),
+        _ => None,
+    }
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -584,9 +597,9 @@ pub enum HostRequest {
         steps: u64,
     },
 
-    /// List permission state across plugins (stint 0017). Gated on
-    /// `permissions.manage` when arriving over PGAP. Host writes a JSON object
-    /// to `response_file`:
+    /// List permission state across plugins (stint 0017). No gate: any socket
+    /// caller can send it, and nothing checks `permissions.manage`; its removal
+    /// is tracked under stint 1285. Host writes a JSON object to `response_file`:
     ///
     /// ```json
     /// {
@@ -612,24 +625,6 @@ pub enum HostRequest {
     /// neither granted nor blocked) are not retained by the host after
     /// launch and only appear once a decision is stored.
     ListPermissions { response_file: String },
-
-    /// Set the stored permission state for an (plugin, workspace, capability)
-    /// triple (stint 0017). Gated on `permissions.manage` when arriving over
-    /// PGAP. `state` is one of "green" | "yellow" | "red". When `workspace`
-    /// is omitted, the workspace root of a running plugin with `plugin_id` is used;
-    /// if no such plugin is running the request fails. Persists to
-    /// `permissions.toml` AND live-updates any running plugin's permission set,
-    /// so a revocation takes effect on the plugin's next request. Host writes
-    /// `{"ok":true}` or `{"error":"..."}` to `response_file`. Unknown
-    /// capability or state strings fail closed with an error reply.
-    SetPermission {
-        plugin_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace: Option<String>,
-        capability: String,
-        state: String,
-        response_file: String,
-    },
 
     /// Write bytes to a named host-managed pane file slot.
     SlotWrite {
@@ -1147,18 +1142,16 @@ pub enum HostRequest {
         response_file: String,
     },
     /// Read or change the permission monitor. `op` is `list`, `reset`,
-    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
-    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    /// `revoke`, or `allow`. No socket caller is human: `reset` and `allow`
+    /// file a Needs you item that only a click in the Plexi window applies;
+    /// `revoke` and `list` apply directly.
     Permissions {
         op: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<String>,
         /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
+        /// read from the wire. It names the caller pane for the audit trail
+        /// only: no socket caller is human, so it never decides authority.
         #[serde(skip)]
         peer_ancestry: Option<Vec<u32>>,
         response_file: String,

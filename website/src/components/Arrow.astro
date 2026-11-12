@@ -1,0 +1,9 @@
+---
+/** Drawn arrow used in links and buttons. `dir`: ne (leaves the page or section), right, down. */
+interface Props { dir?: 'ne' | 'right' | 'down'; size?: number }
+const { dir = 'right', size = 14 } = Astro.props;
+const rotate = { ne: -45, right: 0, down: 90 }[dir];
+---
+<svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true" style={`rotate:${rotate}deg`}>
+  <path d="M2 8h11M8.5 3.5 13 8l-4.5 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" />
+</svg>

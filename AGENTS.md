@@ -68,7 +68,7 @@ Do **not** invent a parallel Windows or Linux stack from bare `alpha`:
 ## Branches
 
 `alpha` is the starting branch for all feature branches, worktrees, and PRs. Never branch from `main` or `beta`. Feature branch naming: `feature/<issue-number>-short-description`.
-Three standing worktrees always exist: `alpha`, `beta`, `main`. Never remove them during cleanup.
+`alpha` is the main checkout; `beta` and `main` are standing worktrees under `worktrees/`. Never remove them during cleanup.
 
 ## Git Rules
 
@@ -93,7 +93,7 @@ Every new feature must be instrumented: no new capability, command, or user-visi
 **Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Follow its phase-aware gates before pushing, integrating, or installing.
 - Test-first for host logic. Define done by the test, not the code. No partial merges.
 - Observable state belongs in TOML scenes; return values and invariants belong in Rust tests.
-- `linux` CI is advisory (runs with `continue-on-error`), not a merge gate. Record Linux-only failures in the PR body; update `TRUTH.md` only when they change its current state or blockers.
+- `linux` CI runs only in the nightly workflow (`rust-host.yml` is `workflow_call` only) and is advisory (`continue-on-error`), not a merge gate. Record Linux-only failures in the PR body; update `TRUTH.md` only when they change its current state or blockers.
 - Host UI changes: visual review via harness screenshot test is mandatory before shipping.
 
 ## Panic Discipline
@@ -153,7 +153,7 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 - **egui repaint scheduling:** Add `InputState::predicted_dt` to remaining delay; avoid literal zero-delay requests which cause immediate repaint loops.
 - **macOS App Nap:** Non-frontmost idle host gets napped without `NSProcessInfo` activity (`platform::app_nap::disable_app_nap`).
 - **Service external I/O in `App::logic`, never `App::ui`:** eframe skips `App::ui` entirely when the window is hidden or occluded. All external drains (pane IPC, spawn queue, PTY events, shutdown, event-bus, screenshots, Python runtimes) must live in `App::logic`.
-- **App servicing axes:** `service_app_commands` in `App::logic` handles occluded windows; `AppRuntime::background_tick` handles inactive contexts. Both are required.
+- **App servicing axes:** `service_plugin_commands` in `App::logic` handles occluded windows; `ViewRuntime::background_tick` handles inactive contexts. Both are required.
 - **`rustfmt` on mod files:** `rustfmt src/main.rs` reformats all reachable modules. Format only leaf files touched.
 - **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Run the installable release gate before ready/merge; TESTING.md permits a focused-check draft push to acquire the PR channel before its final candidate build.
 - **Window close vs process exit:** Closing the window does not end the process. Every quit path must finish in `app::quit::exit_host`.
@@ -175,7 +175,7 @@ Three disjoint planes with sanctioned transports:
 
 ## Capturing Host State
 
-Use `plexi host screenshot [--pane <id>] [--output <path>]` to capture real host pixels. Never use macOS `screencapture`. For semantic state, use `plexi pane state <id>`. For headless app preview, use `plexi app render . --png`.
+Use `plexi host screenshot [--pane <id>] [--output <path>]` to capture real host pixels. Never use macOS `screencapture`. For semantic state, use `plexi pane state <id>`. For headless app preview, use `plexi view render . --png`.
 
 ## General Rules
 

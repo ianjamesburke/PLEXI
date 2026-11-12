@@ -196,7 +196,7 @@ def test_textedit_is_component() -> None:
 
 
 def test_textedit_to_node_fields() -> None:
-    te = TextEdit("notes", placeholder="Write here", value="hello", multiline=True, max_length=500)
+    te = TextEdit("notes", placeholder="Write here", value="hello")
     assert te.to_node() == {
         "type": "TextInput",
         "value": "hello",
@@ -209,7 +209,7 @@ def test_textedit_to_node_fields() -> None:
 
 
 def test_textedit_nested_in_column_is_native() -> None:
-    te = TextEdit("body", placeholder="Type...", multiline=True, height=120.0)
+    te = TextEdit("body", placeholder="Type...")
     col = Column([te])
     node = col.to_node()
     assert node is not None

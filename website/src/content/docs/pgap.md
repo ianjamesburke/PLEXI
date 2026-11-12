@@ -457,27 +457,11 @@ Query info for the previously focused pane. Host walks `pane_focus_history` from
 
 ### `list_permissions`
 
-List permission state across plugins (stint 0017). Gated on `permissions.manage` when arriving over PGAP. Host writes...
-
-**Capability:** `permissions.manage`
+List permission state across plugins (stint 0017). No gate: any socket caller can send it, and nothing checks `permis...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `response_file` | `string` | yes |
-
-### `set_permission`
-
-Set the stored permission state for an (plugin, workspace, capability) triple (stint 0017). Gated on `permissions.man...
-
-**Capability:** `permissions.manage`
-
-| Field | Type | Required |
-|-------|------|----------|
-| `capability` | `string` | yes |
-| `plugin_id` | `string` | yes |
-| `response_file` | `string` | yes |
-| `state` | `string` | yes |
-| `workspace` | `string?` | no |
 
 ### `slot_write`
 
@@ -903,14 +887,12 @@ Resolve one pending permission request from the desktop observation seam.
 
 ### `permissions`
 
-Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `allow`. A pane id or a call credential ...
+Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `allow`. No socket caller is human: `res...
 
 | Field | Type | Required |
 |-------|------|----------|
-| `credential` | `string?` | no |
 | `id` | `string?` | no |
 | `op` | `string` | yes |
-| `pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 
 ### `caller_context`

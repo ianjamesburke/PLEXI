@@ -171,7 +171,7 @@ def _require_declared(scope: str) -> None:
     snapshot = _require_state()
     if scope not in snapshot.scopes:
         raise ValueError(
-            f"state scope '{scope}' is not declared in this app's manifest "
+            f"state scope '{scope}' is not declared in this plugin's manifest "
             f"[state] scopes {list(snapshot.scopes)}"
         )
 

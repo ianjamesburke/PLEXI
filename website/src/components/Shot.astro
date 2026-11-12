@@ -1,0 +1,28 @@
+---
+/**
+ * Framed product image with a caption.
+ * With `src`: shows the real capture. Without it: an honest placeholder that says
+ * what the capture will show. Every placeholder is listed in
+ * .stint/runs/website-1112/IMAGES-NEEDED.md with the state to stage and the capture command.
+ */
+interface Props { src?: string; alt?: string; caption: string; pending?: string; ratio?: string }
+const { src, alt = '', caption, pending = '', ratio = '16 / 10' } = Astro.props;
+---
+<figure class="shot">
+  <div class="shot-frame" style={`aspect-ratio:${ratio}`}>
+    {src
+      ? <img src={src} alt={alt} loading="lazy" decoding="async" />
+      : <div class="shot-pending"><p class="shot-pending-label">Screenshot to come</p><p>{pending}</p></div>}
+  </div>
+  <figcaption>{caption}</figcaption>
+</figure>
+
+<style>
+  .shot { min-width: 0; }
+  .shot-frame { border: 1px solid var(--border-2); background: var(--bg-2); overflow: hidden; }
+  img { display: block; width: 100%; height: 100%; object-fit: contain; background: #2a2b45; }
+  .shot-pending { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; padding: clamp(18px, 3vw, 32px); border: 1px dashed var(--border); margin: 10px; height: calc(100% - 20px); color: var(--fg-2); font-size: 15px; line-height: 1.45; }
+  .shot-pending p { max-width: 46ch; }
+  .shot-pending-label { font: 700 12px/1.4 var(--mono); color: var(--accent-light); }
+  figcaption { margin-top: 12px; color: var(--fg-2); font: 13px/1.5 var(--mono); }
+</style>

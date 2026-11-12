@@ -58,28 +58,31 @@ test:
 
 # Full release host suite, test-target compilation and strict lint.
 release-host-gate:
-    {{TEST_ENV_SCRUB}} bash scripts/release-host-gate.sh
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee release-host-gate -- bash scripts/release-host-gate.sh
+
+# Run any long command with the full output in a named log, a one-line heartbeat,
+# a bounded error tail on failure, and one final machine-readable line:
+#   RESULT name=<name> status=<pass|fail> exit=<code> seconds=<n> log=<abs path>
+# The same line is written to <name>.status beside the log (.stint/runs/logs/ by
+# default, PLEXI_RUN_LOG_DIR to override), so a later process can check completion
+# without reading output. The exit code is the command's. See scripts/run_logged.py.
+#   just run-logged build-1 -- just build
+[positional-arguments, no-exit-message]
+run-logged name *command:
+    @python3 scripts/run_logged.py "$@"
 
 # Run selected host tests with the same flags and isolation as `just scene`.
 # Pass libtest filters and options after the recipe name. A filter that matches
 # no test fails (exit 1) with the nearest real module and test names; it never
 # reports a pass for zero tests. See scripts/filter_check.py.
 test-host +args:
-    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py host -- {{args}} < /dev/null
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-host -- python3 scripts/filter_check.py host -- {{args}} < /dev/null
 
 # Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
 # A file with no table entry falls back to its own module tests and says so.
 #   just test-for src/host/model.rs
 test-for path:
-    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py for {{path}} < /dev/null
-
-# Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
-# This includes scenes that opt out of scene_suite.
-roadmap-evidence:
-    python3 scripts/roadmap-evidence.py
-
-roadmap-evidence-fixtures:
-    python3 scripts/test-roadmap-evidence.py
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
@@ -117,7 +120,7 @@ perf-clippy:
 
 # Strict lint gate with the same managed build inputs and warning flags.
 clippy:
-    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
+    python3 scripts/run_logged.py --tee clippy -- bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
 
 # Verify host surface registration and scoped raw-composition exceptions.
 check-ui-layout:
@@ -337,11 +340,11 @@ sdk-smoke:
 # selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
 # Removes the previous managed PR installation and profile first.
 pr-install number test_scope="scoped":
-    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
+    python3 scripts/run_logged.py --tee pr-install-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
 
 # Build the final PR-channel candidate once, without installing it.
 pr-candidate number test_scope="scoped":
-    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
+    python3 scripts/run_logged.py --tee pr-candidate-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
 
 [private]
 _pr-prepare number test_scope action:
@@ -520,19 +523,6 @@ trim-targets:
 channel-list:
     bash scripts/channel-list.sh
 
-# Remove ALL Plexi channels plus shell integration and completions.
-# Same as: just uninstall all
-channel-uninstall channel="all":
-    bash scripts/uninstall.sh {{channel}}
-
-# Wipe a channel's installed apps directory then re-sync from examples/.
-# Useful when an app is renamed or removed — rsync won't delete stale dirs.
-#   just clear-apps alpha
-#   just clear-apps beta
-#   just clear-apps main
-clear-apps channel="":
-    bash scripts/clear-apps.sh {{channel}}
-
 # Preview what the next changelog would look like without committing anything.
 changelog:
     git cliff --unreleased --bump --tag-pattern 'v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -594,6 +584,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_filter_check.py
+    uv run --no-project python scripts/test_run_logged.py
     uv run --no-project python scripts/test_build_lifecycle.py
     uv run --no-project python scripts/test_distribution_cache.py
     uv run --no-project python scripts/test_publish_pr_image.py
@@ -602,7 +593,6 @@ test-infra-scripts: test-build-inputs
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
     python3 scripts/test_landing_safety.py
-    bash scripts/pr-install-reuse.sh self-test
     bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
 
@@ -664,16 +654,6 @@ bs-merge pr *flags:
 #   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
 bs-integrate pr record manifest:
     bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
-
-# Dispatch Claude agents at one or more issues. Labels each "in progress" first
-# to prevent double-claiming when multiple dispatches run close together.
-# TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
-# is validated — if this comment still exists, that replacement never happened.
-ship +issues:
-    for issue in {{issues}}; do \
-        gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
-        plexi pane new "c '/ship-issue $issue'" --window; \
-    done
 
 # Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to
 # the out dir. shots="0" skips screenshot steps (state-only, faster).

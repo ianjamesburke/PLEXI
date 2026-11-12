@@ -567,9 +567,9 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi needs-you resolve`: Resolve one item
 - `plexi permissions`: List and change decisions stored by the permission monitor
 - `plexi permissions list`: List live permission decisions
-- `plexi permissions reset`: Clear a stored denial so the next call asks again
+- `plexi permissions reset`: Ask to clear a stored denial (does not grant): files a Needs you item to approve in Plexi
 - `plexi permissions revoke`: Remove an allow, or refuse a pending ask
-- `plexi permissions allow`: Turn a denial or a pending ask into an allow
+- `plexi permissions allow`: Ask to allow a denial or pending ask (does not grant): files a Needs you item to approve in Plexi
 - `plexi notify`: Send a notification to the Plexi UI
 - `plexi notify dismiss`: Remove a notification previously posted by this pane
 - `plexi ai`: AI configuration and diagnostics — scan hardware, check integrations, recommend models

@@ -26,8 +26,8 @@ use plexi::platform::gpu::{
 use plexi::platform::host_log;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
 use plexi::platform::types::{
-    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent, StateSnapshot, SurfaceEvent,
-    SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, Justify, KeyEvent, StateSnapshot,
+    SurfaceEvent, SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── WGSL ──────────────────────────────────────────────────────────────────────
@@ -435,6 +435,7 @@ impl Pong {
                 children: vec![score_id, canvas_id, hint_id],
                 gap: 8.0,
                 align: Alignment::Center,
+                justify: Justify::Start,
                 grow: true,
             }),
         );

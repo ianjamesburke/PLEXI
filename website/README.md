@@ -15,7 +15,6 @@ The website for [Plexi](https://github.com/ianjamesburke/PLEXI).
 The site is an Astro app. Product roadmap and marketplace planning live in the repo root docs:
 
 - [`../NORTH_STAR.md`](../NORTH_STAR.md)
-- [`../ROADMAP.md`](../ROADMAP.md)
 - [`../docs/app-framework-marketplace.md`](../docs/app-framework-marketplace.md)
 
 Do not keep a parallel website roadmap here.

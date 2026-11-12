@@ -303,8 +303,8 @@ pub struct PlexiApp {
     /// title every frame creates a self-sustaining repaint loop (60fps
     /// visible, uncapped when occluded). Only send on change.
     pub(crate) last_sent_window_title: Option<String>,
-    /// Directory holding `permissions.toml` for the host-level permission
-    /// management handlers (`ListPermissions` / `SetPermission`, stint 0017).
+    /// Directory holding `permissions.toml` for the `ListPermissions` handler
+    /// (stint 0017).
     /// `config_dir()` in production; an isolated temp dir in tests so harness
     /// runs never read or write the developer's real permission store.
     pub(crate) permission_store_dir: std::path::PathBuf,
@@ -950,7 +950,42 @@ pub(crate) fn handle_socket_line_in(
             }
         }
         Err(e) => {
+            let kind = serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|frame| frame["type"].as_str().map(str::to_string));
+            if let Some((kind, message)) = kind.and_then(|kind| {
+                crate::protocol::removed_host_request(&kind).map(|message| (kind, message))
+            }) {
+                log::info!(
+                    "pane_ipc: refused removed request kind={kind} surface=socket \
+                     outcome=request_removed peer_pids={}",
+                    peer_ancestry.map_or(0, <[u32]>::len)
+                );
+                let reply = serde_json::json!({
+                    "error": message,
+                    "error_code": "request_removed",
+                });
+                if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+                    log::warn!("pane_ipc: could not report removed request {kind}: {error}");
+                }
+                return;
+            }
             log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+            // A caller waiting on a reply (an older or newer CLI sending a
+            // field this host does not accept) gets the reason, not a timeout.
+            if crate::rpc::extract_response_file_token(line).is_some() {
+                let reply = serde_json::json!({
+                    "ok": false,
+                    "error_code": "invalid_request",
+                    "error": format!(
+                        "this Plexi host could not read the request ({e}); the CLI and host \
+                         versions differ, so use the plexi-<channel> CLI that matches this host"
+                    ),
+                });
+                if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+                    log::warn!("pane_ipc: could not report the parse error: {error}");
+                }
+            }
         }
     }
 }
