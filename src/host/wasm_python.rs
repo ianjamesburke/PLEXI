@@ -3423,7 +3423,7 @@ impl LivePythonPane {
                     );
                 }
             }
-            Some("close") | Some("close_self") => self.wants_close = true,
+            Some("close_self") => self.wants_close = true,
             Some("save_plugin_state") => {
                 self.save_state(message.get("scope"), message.get("payload"))
             }
@@ -6981,6 +6981,10 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
 }
 
 #[cfg(test)]
+#[path = "wasm_python/wire_contract_tests.rs"]
+mod wire_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
@@ -10271,6 +10275,67 @@ mod tests {
             ),
             Some("{\"pong\": true}".to_string())
         );
+    }
+
+    /// The seam the other state tests skip: they call `save_state` directly,
+    /// so a message-name mismatch between the SDK's `PersistState` emission and
+    /// `handle_message` (the `save_app_state` / `save_plugin_state` rename
+    /// regression) went unseen. This runs the real embedded SDK in the real
+    /// CPython WASM guest and asserts the state file lands on disk.
+    #[test]
+    fn sdk_persist_state_effect_reaches_the_state_file_through_the_host() {
+        let app = tempdir().expect("plugin dir");
+        let root = tempdir().expect("context root");
+        std::fs::write(
+            app.path().join("main.py"),
+            "from plexi_sdk.effects import PersistState\n\
+             from plexi_sdk.ui import Column, Text\n\
+             \n\
+             def init(size, args):\n\
+             \x20   return [PersistState({'items': ['persisted-by-sdk']})]\n\
+             \n\
+             def update(event):\n\
+             \x20   return []\n\
+             \n\
+             def view():\n\
+             \x20   return Column([Text('persist')])\n",
+        )
+        .expect("write plugin");
+        let config = PythonLaunchConfig {
+            plugin_id: "test.sdk-persist".to_string(),
+            plugin_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
+            state_scopes: vec![crate::host::state_scope::StateScope::Context],
+            state_format: crate::host::state_scope::StateFormat::Json,
+            context_root: root.path().to_path_buf(),
+        };
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+        let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
+            LivePythonPane::launch(config).expect("launch CPython WASM"),
+        ));
+        let file = root.path().join(".plexi/app_states/test.sdk-persist.json");
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
+        while !file.exists() && std::time::Instant::now() < deadline {
+            visible_pass(&mut runtime, &colors);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| {
+            panic!(
+                "SDK PersistState never produced {}: {e}; the SDK and host disagree on the \
+                 state-save message type",
+                file.display()
+            )
+        }))
+        .expect("valid JSON");
+        assert_eq!(persisted, json!({"items": ["persisted-by-sdk"]}));
     }
 
     #[test]

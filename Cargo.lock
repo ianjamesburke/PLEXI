@@ -4273,6 +4273,7 @@ dependencies = [
  "plexi-daw-model",
  "plexi-distribution",
  "pollster",
+ "proc-macro2",
  "pulldown-cmark",
  "regex",
  "rfd",
