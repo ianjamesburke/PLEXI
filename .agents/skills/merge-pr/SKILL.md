@@ -46,7 +46,7 @@ Verifies the reviewed head, squash-merges it, fast-forwards Alpha, retires only 
 | Error | Recovery |
 |-------|----------|
 | PR behind Alpha | Rebase the lane, repeat applicable validation and independent review, then retry with the new reviewed SHA |
-| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH <SHA> && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
+| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH <SHA> && just merge-close <ISSUE> $PR && just merge-close-stints $PR <STINT...>` |
 | Local edit conflicts with the PR or Alpha sync | Preserve the edit and resolve the conflict before retrying |
 | Diverged local alpha | Investigate and preserve local commits; do not reset |
 | Ignored lane content | Merge completes and the lane is retained. Preserve or deliberately handle the listed files before retrying cleanup; Git removes ignored files with the worktree |
@@ -58,7 +58,8 @@ just merge-rebase <BRANCH>       # fetch + rebase feature branch on origin/alpha
 just merge-squash <PR> <SHA>     # squash-merge reviewed SHA only
 just merge-sync                  # fast-forward only, preserving local work
 just merge-cleanup <PR> <BRANCH> <SHA> # clean PR channel and clean lane only
-just merge-close-targets <PR> "<ISSUES>" "<STINTS>"  # close issues + mark stints done + append ship log
+just merge-close <ISSUE> <PR>    # strip pipeline labels + close issue + append ship log
+just merge-close-stints <PR> <STINT...>  # mark stints done
 ```
 
 ---
