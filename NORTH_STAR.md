@@ -20,7 +20,7 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 1. **All data lives in portable, open formats — markdown, JSON, TOML.** App state, permission logs, agent transcripts: plain files on your disk that will still open in 100 years. If Plexi disappeared tomorrow, everything you made would still work. That is the founding constraint, not a feature.
 
-2. **Ergonomics first, then play.** Friction is a bug with the same severity as a crash. Layout, focus, chrome, and defaults are designed deliberately — polish is not something that happens after the feature ships. Nothing moves unless you asked it to: messages, errors, and arrivals never shift or resize what you're looking at. Once the ergonomic choice is settled, make it feel like a video game: every input answers on the next displayed frame, and motion never makes you wait.
+2. **Ergonomics first, then play.** Friction is a bug with the same severity as a crash. Layout, focus, chrome, and defaults are designed deliberately — polish is not something that happens after the feature ships. Flat, clean shapes, small satisfying details, and motion that shows where things came from and where they went. Nothing moves unless you asked it to: messages, errors, and arrivals never shift or resize what you're looking at. Once the ergonomic choice is settled, make it feel like a video game: every input answers on the next displayed frame, and motion never makes you wait.
 
 3. **Keyboard-first. The mouse is optional.** Every interaction has a keyboard path, and the fast path is the default path.
 
