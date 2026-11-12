@@ -236,7 +236,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 |---|---|
 | `open = { kind = "process", path = "<dir>", as = "<handle>", args = [...] }` | Spawn a real PGAP app process from an app dir. Relative paths resolve from the repo root. Args surface as `ctx.args`. |
 | `open = { kind = "wasm", path = "<file.wasm>", as = "<handle>", args = [...] }` | Open a reviewed raw WASM component. |
-| `open = { kind = "builtin", id = "<id>", as = "<handle>", cwd = "<dir>" }` | Open a compiled-in host app by id. `cwd` is optional and defaults to a fresh harness-owned directory. |
+| `open = { kind = "builtin", id = "<id>", as = "<handle>", cwd = "<dir>" }` | Open a compiled-in host app by id. `cwd` is optional and defaults to a fresh harness-owned directory; a `cwd` that resolves to the repository root fails the scene at load (use a `tests/fixtures/` directory). |
 | `text = { target = "<handle>", value = "hello" }` | Focus a pane and insert text through egui's normal text-input path. The report records the character count, not the text. |
 | `paste = { target = "<handle>", value = "first\nsecond" }` | Focus an app pane and deliver literal text as one paste event (`plexi pane send --paste` live). Preserves newlines and literal backslashes without changing the system clipboard. |
 | `key = { target = "<handle>", value = "enter" }` | Focus a pane and press a key combo (`cmd`/`ctrl`/`alt`/`shift` plus a key name). Use `target = "host"` for a whole-host shortcut. |
