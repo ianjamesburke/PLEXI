@@ -555,6 +555,187 @@ fn two_harnesses_do_not_share_a_chess_tool_namespace() {
     crate::plexi_ai::tool_dispatch::unregister(pane_b);
 }
 
+// -- Overlay views and the tool registry (stint 1324) ---------------------
+
+/// Register one tool for the view currently on top of `pane_id`, as
+/// `App::dispatch` does for `ExposeTools`.
+fn register_top_view_tool(h: &HostHarness, pane_id: u64, plugin_id: &str, tool: &str) {
+    let origin = h
+        .app
+        .origin_for_pane(pane_id)
+        .expect("origin_for_pane must resolve for a live view pane");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    crate::plexi_ai::tool_dispatch::register(
+        pane_id,
+        plugin_id.to_string(),
+        vec![crate::protocol::AiTool {
+            name: tool.to_string(),
+            description: format!("{tool} test tool"),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(1_000),
+            read_only: false,
+        }],
+        crate::plexi_ai::tool_dispatch::PluginEventSender::Channel(tx),
+        origin,
+    );
+}
+
+/// Cover `pane_id` with a builtin view the way `place_view_pane` does for
+/// `hint = "overlay"`: the overlay reuses the pane id and stashes the covered
+/// pane in `overlay_replaced`.
+fn overlay_view_on(h: &mut HostHarness, pane_id: u64, manifest_id: &str) {
+    let covered = h.app.windows[0]
+        .panes
+        .remove(&pane_id)
+        .expect("covered pane is in the pane map");
+    let cwd = h.workspace_root();
+    let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        pip_status: None,
+        id: pane_id,
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::file_browser::FileBrowserView::new(cwd.clone()),
+        )),
+        workspace_root: cwd,
+        manifest_id: manifest_id.to_string(),
+        name: manifest_id.to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: Some(Box::new(covered)),
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    }));
+    h.app.windows[0].panes.insert(pane_id, overlay);
+}
+
+/// `(plugin_id, pane_id, provider tool name)` for every tool live in the
+/// harness's context, sorted.
+fn live_tools(h: &HostHarness) -> Vec<(String, u64, String)> {
+    let ctx = h.app.windows[0].context_id;
+    let mut tools: Vec<(String, u64, String)> =
+        crate::plexi_ai::tool_dispatch::snapshot_tools_for_context(ctx)
+            .into_iter()
+            .map(|entry| (entry.plugin_id, entry.pane_id, entry.provider_name))
+            .collect();
+    tools.sort();
+    tools
+}
+
+fn top_view_manifest(h: &HostHarness, pane_id: u64) -> Option<String> {
+    h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|pane| pane.as_view())
+        .map(|view| view.manifest_id.clone())
+}
+
+/// Stint 1324 (plexi-pr-3062 evidence): chess on pane 2 exposed its tools,
+/// snake opened as an overlay on pane 2, Esc returned to chess, and chess's
+/// tools were gone ("view pane: dropped pane=2 and cleared connector tools").
+/// The overlay reuses the pane id, so dropping it must not clear the tools of
+/// the view it uncovers.
+#[test]
+fn overlay_restore_keeps_the_uncovered_plugins_tools() {
+    let mut h = HostHarness::new();
+    let (_, pane) = h.app.add_view_pane_in_window(0, "chess");
+    h.focus_pane(pane);
+    register_top_view_tool(&h, pane, "chess", "chess.play");
+
+    overlay_view_on(&mut h, pane, "snake");
+    assert_eq!(
+        live_tools(&h),
+        vec![("chess".to_string(), pane, "chess.play".to_string())],
+        "an overlay that exposes no tools leaves the covered plugin's tools live"
+    );
+
+    h.app.close_focused_view();
+    assert_eq!(
+        top_view_manifest(&h, pane).as_deref(),
+        Some("chess"),
+        "closing the overlay restores chess on the same pane"
+    );
+    assert_eq!(
+        live_tools(&h),
+        vec![("chess".to_string(), pane, "chess.play".to_string())],
+        "chess's tools must still be listed and callable after the overlay closes"
+    );
+
+    crate::plexi_ai::tool_dispatch::unregister(pane);
+}
+
+/// Stint 1324: an overlay that exposes its own tools on the reused pane id
+/// replaces the covered plugin's tools while it is on top. When it closes, its
+/// tools go and the uncovered plugin's tools come back.
+#[test]
+fn overlay_with_its_own_tools_hands_the_pane_back_on_restore() {
+    let mut h = HostHarness::new();
+    let (_, pane) = h.app.add_view_pane_in_window(0, "chess");
+    h.focus_pane(pane);
+    register_top_view_tool(&h, pane, "chess", "chess.play");
+
+    overlay_view_on(&mut h, pane, "snake");
+    register_top_view_tool(&h, pane, "snake", "snake.turn");
+    assert_eq!(
+        live_tools(&h),
+        vec![("snake".to_string(), pane, "snake.turn".to_string())],
+        "the overlay on top owns the pane's live tools"
+    );
+
+    h.app.close_focused_view();
+    assert_eq!(top_view_manifest(&h, pane).as_deref(), Some("chess"));
+    assert_eq!(
+        live_tools(&h),
+        vec![("chess".to_string(), pane, "chess.play".to_string())],
+        "closing the overlay clears its tools and brings back chess's"
+    );
+
+    crate::plexi_ai::tool_dispatch::unregister(pane);
+}
+
+/// Stint 1324: closing a pane whose tile holds an overlay over a terminal must
+/// clear the overlay's tools. The old `Drop` skipped every view that still had
+/// an `overlay_replaced`, so this path left dead tools registered.
+#[test]
+fn closing_an_overlay_over_a_terminal_clears_its_tools() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    overlay_view_on(&mut h, term, "chess");
+    register_top_view_tool(&h, term, "chess", "chess.play");
+    assert_eq!(
+        live_tools(&h),
+        vec![("chess".to_string(), term, "chess.play".to_string())]
+    );
+
+    h.app.close_pane_by_id(term);
+    assert!(
+        !h.app.windows.iter().any(|w| w.panes.contains_key(&term)),
+        "the whole tile closed, not just the overlay"
+    );
+    assert_eq!(
+        live_tools(&h),
+        Vec::<(String, u64, String)>::new(),
+        "no tool may outlive the view that exposed it"
+    );
+}
+
+/// Regression guard for stint 1324: closing the whole stack (overlay and the
+/// plugin it covers) clears both views' tools.
+#[test]
+fn closing_a_pane_stack_clears_every_stacked_views_tools() {
+    let mut h = HostHarness::new();
+    let (_, pane) = h.app.add_view_pane_in_window(0, "chess");
+    h.focus_pane(pane);
+    register_top_view_tool(&h, pane, "chess", "chess.play");
+    overlay_view_on(&mut h, pane, "snake");
+    register_top_view_tool(&h, pane, "snake", "snake.turn");
+
+    h.app.close_pane_by_id(pane);
+    assert_eq!(live_tools(&h), Vec::<(String, u64, String)>::new());
+}
+
 // -- DrawCommand routing --------------------------------------------------
 
 /// Regression guard for PR #536: `AiQuery` was silently dropped into
