@@ -832,7 +832,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
 
 /// Host-written files at the plugin root that are not package content. Excluded so
 /// a version pin or the install marker never changes the content identity.
-const HOST_METADATA_FILES: [&str; 3] = [
+pub(crate) const HOST_METADATA_FILES: [&str; 3] = [
     "installed_version.txt",
     "pinned_version.txt",
     INSTALL_COMPLETE_MARKER,
