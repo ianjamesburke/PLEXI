@@ -892,6 +892,47 @@ mod tests {
         assert!(line.contains("destination="), "{line}");
     }
 
+    /// A Finder, Dock or LaunchServices launch carries launchd's PATH. The
+    /// migration runs during profile init, before the login-shell PATH is
+    /// installed, so it must succeed with exactly this PATH. The test re-runs
+    /// itself in a child process whose environment is passed explicitly.
+    #[test]
+    fn plugin_rename_migrates_with_launchd_path() {
+        const CHILD_ROOT: &str = "PLEXI_TEST_MIGRATION_LAUNCHD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            migrate(&root).unwrap_or_else(|failure| panic!("{failure}"));
+            assert!(root.join("plugins/notes/manifest.toml").is_file());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("apps/notes");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'notes'\nname = 'Notes'\ntype = 'app'\nentry = 'main.py'\n").unwrap();
+        std::fs::write(legacy.join("main.py"), "from plexi_sdk import AppBar\n").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "app::plugin_migration::tests::plugin_rename_migrates_with_launchd_path",
+                "--exact",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("HOME", root.path())
+            .env(CHILD_ROOT, root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "migration failed under launchd PATH:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("plugins/notes/main.py")).unwrap(),
+            "from plexi_sdk import SurfaceHeader\n"
+        );
+    }
+
     const LEGACY_WITH_INERT_KEYS: &str = "schema_version = 1\nextra_note = 'x'\n[app]\nid = 'logs'\nname = 'Logs'\ntype = 'app'\nentry = 'main.py'\nmouse_tracking = true\n[runtime]\npython_compat = true\n[launch]\non_launch = 'focus'\n";
 
     fn stage_legacy(root: &Path, id: &str, manifest: &str) {
