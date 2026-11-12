@@ -3195,24 +3195,6 @@ impl PermissionMonitor {
         entries
     }
 
-    /// Persist one plugin capability. A later click replaces an auto-grant of the
-    /// same capability instead of adding a second row.
-    pub fn grant_plugin_capability(
-        &self,
-        plugin_id: &str,
-        workspace_root: &Path,
-        cap: crate::app::permissions::Capability,
-        decision: Decision,
-    ) {
-        self.grant_capability_id(
-            plugin_id,
-            workspace_root,
-            cap.as_str(),
-            decision,
-            GrantSource::User,
-        );
-    }
-
     /// Persist one capability id (manifest capability or raw WASM import).
     pub fn grant_capability_id(
         &self,

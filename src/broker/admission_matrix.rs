@@ -16,6 +16,12 @@
 //!   (needs the private `WasmPane::exec` and its queue).
 //! - CLI/agent adapter and the shared event-subscription path: this file.
 //!
+//! Standalone pins outside the drivers, for routes that write grants instead
+//! of admitting a request:
+//! - `raw_set_permission_socket_line_writes_no_grant` in
+//!   `src/testing/agent_security_tests.rs` (stint 1272): no raw socket line,
+//!   from a pane or from no pane, writes a capability grant.
+//!
 //! Every driver uses `PermissionMonitor::ephemeral()` or an in-memory
 //! `GrantStore` unless a cell is about persistence; those use a temp profile
 //! with the test host-key backend. No network, no login keychain, no consent
