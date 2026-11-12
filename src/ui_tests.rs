@@ -2908,10 +2908,18 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
                 && r.stroke_kind == egui::StrokeKind::Inside)
         }));
-        assert!(h
-            .harness()
-            .query_by_label("↳ research · child of lead")
-            .is_some());
+        // Stint 1166: the Portal header title is the context name; its
+        // lineage moved to the tile's hover tooltip.
+        h.with_app(|app| {
+            let header =
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, portal)
+                    .expect("portal paints the shared pane header");
+            assert_eq!(header.elided_label.as_deref(), Some("research"));
+            assert_eq!(
+                app.pane_lineage().get(&portal).map(String::as_str),
+                Some("lead")
+            );
+        });
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();

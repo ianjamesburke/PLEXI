@@ -11,6 +11,7 @@ pub mod cli_renderer_view;
 pub mod descriptor_widgets;
 pub mod headless_renderer;
 pub mod minimap;
+pub mod portal_pane;
 pub mod terminal_pane;
 pub mod view_chrome;
 pub mod view_pane;

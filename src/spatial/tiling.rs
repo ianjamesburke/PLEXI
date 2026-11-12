@@ -796,149 +796,36 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 self.tab_action = tab_action;
             }
         } else if pane.as_portal().is_some() {
-            crate::platform::ui_profile::time("portal", || {
-                // Portal tile — direct egui rendering.
-                ui.painter()
-                    .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-                let preview = self.portal_info.get(pane_id).cloned().unwrap_or_default();
-                let colors_for_portal = self.colors;
-                let status_col =
-                    crate::ui::activity::context_status_color(&preview.status, &colors_for_portal);
-                let has_active_status = matches!(
-                    preview.status,
-                    crate::host::context_state::ContextStatus::NeedsYou
-                        | crate::host::context_state::ContextStatus::Blocked
-                        | crate::host::context_state::ContextStatus::Error
-                        | crate::host::context_state::ContextStatus::Working
-                );
-                let active_status_col = if has_active_status { status_col } else { None };
-                if let Some(sc) = active_status_col.filter(|_| {
-                    preview.status != crate::host::context_state::ContextStatus::NeedsYou
-                        || crate::ui::activity::attention(ui.ctx()).alpha > 0.0
-                }) {
-                    let wash_rect = egui::Rect::from_min_size(
-                        pane_rect.min,
-                        egui::vec2(pane_rect.width(), 44.0_f32.min(pane_rect.height())),
-                    );
-                    let wash_col =
-                        egui::Color32::from_rgba_unmultiplied(sc.r(), sc.g(), sc.b(), 24);
-                    ui.painter().rect_filled(wash_rect, 0.0, wash_col);
-                }
-                let padding = style::SPACE_MD;
-                // A column narrower than twice the padding would shrink to a
-                // negative rect, which egui's placer rejects.
-                let inner = egui::Rect::from_min_size(
-                    pane_rect.min + egui::vec2(padding, padding),
-                    egui::vec2(
-                        (pane_rect.width() - 2.0 * padding).max(0.0),
-                        (pane_rect.height() - 2.0 * padding).max(0.0),
-                    ),
-                );
-                let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-                portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(sc) = active_status_col {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(8.0, style::TEXT_BODY),
-                                egui::Sense::hover(),
-                            );
-                            let state = match preview.status {
-                                crate::host::context_state::ContextStatus::NeedsYou => {
-                                    AgentState::NeedsYou
-                                }
-                                crate::host::context_state::ContextStatus::Blocked => {
-                                    AgentState::Blocked
-                                }
-                                crate::host::context_state::ContextStatus::Error => {
-                                    AgentState::Failed
-                                }
-                                crate::host::context_state::ContextStatus::Working => {
-                                    AgentState::Working
-                                }
-                                _ => AgentState::Idle,
-                            };
-                            crate::ui::activity::paint_pip(
-                                ui.painter(),
-                                dot_rect.center(),
-                                3.5,
-                                Some(&state),
-                                sc,
-                                false,
-                            );
-                        }
-                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
-                            format!("↳ {} · child of {parent}", preview.context_name)
-                        } else {
-                            preview.context_name.clone()
-                        };
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(style::TEXT_BODY)
-                                .strong()
-                                .color(colors_for_portal.text_primary),
-                        );
-                    });
-                    if let Some(ref summary) = preview.status_summary {
-                        let summary_col = status_col.unwrap_or(colors_for_portal.text_dim);
-                        ui.label(
-                            egui::RichText::new(summary)
-                                .monospace()
-                                .size(style::TEXT_HINT)
-                                .strong()
-                                .color(summary_col),
-                        );
-                    }
-                    if !preview.context_description.is_empty() {
-                        ui.scope(|ui| {
-                            ui.set_max_width(inner.width());
-                            crate::ui::labels::description_label(
-                                ui,
-                                &preview.context_description,
-                                &colors_for_portal,
-                            );
-                        });
-                    }
-                    {
-                        let count_label =
-                            if preview.window_count > 1 && preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} windows \u{b7} {} notifs",
-                                    preview.pane_count,
-                                    preview.window_count,
-                                    preview.notification_count
-                                )
-                            } else if preview.window_count > 1 {
-                                format!(
-                                    "{} panes \u{b7} {} windows",
-                                    preview.pane_count, preview.window_count
-                                )
-                            } else if preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} notifs",
-                                    preview.pane_count, preview.notification_count
-                                )
-                            } else {
-                                format!("{} panes", preview.pane_count)
-                            };
-                        ui.label(
-                            egui::RichText::new(count_label)
-                                .size(style::TEXT_HINT)
-                                .color(colors_for_portal.text_dim),
-                        );
-                    }
-                    ui.add_space(style::SPACE_SM);
-                    if !preview.windows.is_empty() {
-                        let header_used = ui.cursor().min.y - inner.min.y;
-                        let map_h = (inner.height() - header_used).max(24.0);
-                        let (map_area, _) = ui.allocate_exact_size(
-                            egui::vec2(inner.width(), map_h),
-                            egui::Sense::hover(),
-                        );
-                        let t = ui.input(|i| i.time);
-                        paint_portal_minimap(ui, map_area, &preview.windows, &colors_for_portal, t);
-                    }
-                });
+            ui.painter()
+                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            portal_ui.set_clip_rect(clip_rect);
+            let portal_pane_id = *pane_id;
+            let preview = self
+                .portal_info
+                .get(&portal_pane_id)
+                .cloned()
+                .unwrap_or_default();
+            let tab_action = crate::platform::ui_profile::time("portal", || {
+                render::portal_pane::render(
+                    &mut portal_ui,
+                    render::portal_pane::PortalRenderParams {
+                        tile_id,
+                        pane_id: &portal_pane_id,
+                        preview: &preview,
+                        lineage_parent: self.pane_lineage.get(&portal_pane_id).map(String::as_str),
+                        tab_info: &self.tab_info,
+                        tab_labels: &self.tab_labels,
+                        tab_activities: &tab_activities,
+                        pane_names: &self.pane_names,
+                        colors: &self.colors,
+                        name_font_size: self.pane_title_font_size,
+                    },
+                )
             });
+            if tab_action.is_some() {
+                self.tab_action = tab_action;
+            }
             // Double-click on portal pane to zoom into the sub-context.
             if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {
                 if ui.rect_contains_pointer(pane_rect)
