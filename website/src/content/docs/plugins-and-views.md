@@ -15,6 +15,9 @@ in the manifest. You open views.
 The old word covered both. "Install the app" and "open the app" were
 different operations on different things.
 
+The [Plugins page](/plugins) shows the plugins that ship with Plexi. This page
+is the reference for the model and its commands.
+
 ## The two namespaces
 
 The CLI splits along the same line.

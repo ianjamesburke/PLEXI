@@ -1,10 +1,11 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
 import { docsNav } from '../../lib/docsNav';
+import { release } from '../../lib/release';
 import DocsSearch from '../../components/docs/DocsSearch.astro';
 
 const startCommands: Record<string, string> = {
-  'getting-started': 'curl -fsSL https://plexiapp.com/install | bash',
+  'getting-started': release.installStable,
   'first-agent': 'plexi agent hook install --claude-code',
   'first-plugin': 'plexi plugin init my-plugin',
 };
@@ -112,7 +113,7 @@ const [start, ...rest] = docsNav;
 
   /* The getting-started path: an ordered sequence, so the numbers carry meaning. */
   .start-path { padding: 0; margin-top: 64px; border: 0; }
-  .start-path ol { list-style: none; margin-top: 16px; border: 1px solid var(--border-2); border-radius: 14px; background: var(--bg-2); overflow: hidden; }
+  .start-path ol { list-style: none; margin-top: 16px; border: 1px solid var(--border-2); background: var(--bg-2); overflow: hidden; }
   .start-path li + li { border-top: 1px solid var(--border); }
   .start-path a {
     display: grid;
@@ -132,7 +133,7 @@ const [start, ...rest] = docsNav;
   .start-path .step-cmd {
     padding: 9px 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+
     background: var(--bg);
     font-size: 12.5px;
     color: var(--fg);
@@ -141,7 +142,7 @@ const [start, ...rest] = docsNav;
     text-overflow: ellipsis;
   }
 
-  .start-version { margin-top: 28px; padding: 20px 24px; border: 1px solid var(--border); border-radius: 12px; }
+  .start-version { margin-top: 28px; padding: 20px 24px; border: 1px solid var(--border); }
   .start-version h2 { color: var(--amber); }
   .start-version p { margin-top: 8px; max-width: 78ch; font-size: 15.5px; line-height: 1.6; color: var(--fg-2); }
 

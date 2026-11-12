@@ -41,14 +41,14 @@
 .docs-nav-item {
   display: block;
   padding: 7px 12px;
-  border-radius: 6px;
+
   font-size: 14.5px;
   line-height: 1.4;
   color: var(--fg-2);
   transition: background-color 120ms ease, color 120ms ease;
 }
 .docs-nav-item:hover { background: var(--bg-3); color: var(--fg); }
-.docs-nav-item.active { background: var(--bg-4); color: #fff; font-weight: 700; box-shadow: inset 2px 0 0 var(--accent-light); }
+.docs-nav-item.active { background: var(--bg-4); color: #fff; font-weight: 700; }
 
 /* Article header */
 .docs-article { max-width: 760px; }
@@ -77,7 +77,7 @@
   margin-top: 22px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+
   background: var(--bg-2);
   font-size: 14px;
   line-height: 1.5;
@@ -87,7 +87,7 @@
 .doc-generated code { font-size: 13px; color: var(--accent-light); }
 
 /* Page outline for screens too narrow for the right-hand column */
-.doc-outline { display: none; margin-top: 22px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.doc-outline { display: none; margin-top: 22px; border: 1px solid var(--border); background: var(--bg-2); }
 .doc-outline summary { padding: 12px 14px; cursor: pointer; font: 700 12px/1.4 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--fg); }
 .doc-outline ul { list-style: none; max-height: 50dvh; overflow-y: auto; padding: 0 14px 12px; }
 .doc-outline a { display: block; padding: 7px 0; font-size: 14.5px; color: var(--fg-2); overflow-wrap: anywhere; }
@@ -101,8 +101,8 @@
 .docs-article .prose h4 { margin: 26px 0 8px; font-size: 16px; }
 .docs-article .prose :not(pre) > code { font-size: .82em; overflow-wrap: anywhere; }
 .docs-article .prose :is(h2, h3, h4) code { font-size: .88em; background: none; border: 0; padding: 0; color: inherit; }
-.docs-article .prose pre { border-radius: 8px; border-color: var(--border); }
-.docs-article .prose table { border: 1px solid var(--border); border-radius: 8px; font-variant-numeric: tabular-nums; }
+.docs-article .prose pre { border-color: var(--border); }
+.docs-article .prose table { border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .docs-article .prose thead th { background: var(--bg-2); font: 700 12px/1.4 var(--mono); letter-spacing: .04em; color: var(--fg); }
 .docs-article .prose tbody tr + tr td { border-top: 1px solid var(--border); }
 .docs-article .prose td { min-width: 9ch; }
@@ -118,12 +118,13 @@
 .code-frame { position: relative; margin-bottom: 18px; }
 .code-frame pre { margin-bottom: 0; }
 .code-copy {
+  border-radius: 6px;
   position: absolute;
   top: 8px;
   right: 8px;
   padding: 6px 10px;
   border: 1px solid var(--border-2);
-  border-radius: 6px;
+
   background: var(--bg-3);
   color: var(--fg);
   font: 700 11px/1 var(--mono);
@@ -147,7 +148,7 @@
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border-2);
-  border-radius: 6px;
+
   background: var(--bg-2);
   color: var(--fg);
   font: 13px var(--mono);
@@ -158,7 +159,7 @@
 
 /* Previous / next */
 .docs-pager { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 72px; padding-top: 28px; border-top: 1px solid var(--border); }
-.docs-pager-link { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; transition: border-color 120ms ease, background-color 120ms ease; }
+.docs-pager-link { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px; border: 1px solid var(--border); transition: border-color 120ms ease, background-color 120ms ease; }
 .docs-pager-link:hover { border-color: var(--accent-light); background: var(--bg-2); }
 .docs-pager-link.next { text-align: right; grid-column: 2; }
 .docs-pager-dir { font: 12px/1.4 var(--mono); color: var(--fg-2); }
