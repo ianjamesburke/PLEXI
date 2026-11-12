@@ -640,7 +640,12 @@ impl PlexiApp {
                                     .unwrap_or_else(|| "Portal".to_string()),
                             }
                         };
-                        let label = if let Some(parent) = pane_lineage.get(&id) {
+                        let label = if matches!(p, crate::host::pane::Pane::Portal(_)) {
+                            // A Portal's header title is its context name; its
+                            // lineage lives in the tile's hover tooltip.
+                            pane_names.insert(id, label.clone());
+                            label
+                        } else if let Some(parent) = pane_lineage.get(&id) {
                             let label = format!("↳ {label} · child of {parent}");
                             pane_names.insert(id, label.clone());
                             label

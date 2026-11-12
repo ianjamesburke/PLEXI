@@ -199,6 +199,25 @@
       "gap": "Unresolved: minimap has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/render/portal_pane.rs",
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "portal_tiles_keep_long_names_inside_small_tiles"
+      },
+      "states": "two adjacent Portal tiles with 60+ character context names and long path descriptions at 360x200, 520x260 and a 520x90 tile too short for the minimap; standard header geometry and tab-group switching in the additional fixtures",
+      "minimum": "Shared pane header owns the title budget and elides with U+2026; the minimap hides below PORTAL_MINIMAP_MIN_H; description, lineage and counts move to the hover tooltip",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "portal_tile_uses_standard_pane_header"
+        },
+        {
+          "file": "src/ui_tests.rs",
+          "test": "portal_tile_in_tab_group_switches_to_sibling"
+        }
+      ]
+    },
+    {
       "id": "src/render/terminal_pane.rs",
       "fixture": {
         "file": "src/ui_tests.rs",
