@@ -480,6 +480,9 @@ pub struct PlexiBehavior<'a> {
     pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
+    /// Set only by a pointer press inside a pane, never by file-drag hover,
+    /// which also sets `new_focused` (stint 1340: a click clears selection).
+    pub clicked: Option<TileId>,
     pub close_exited: Option<TileId>,
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
@@ -595,6 +598,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
+        }
+        if is_click {
+            self.clicked = Some(tile_id);
         }
 
         let is_focused = self.owner_pane == Some(*pane_id);
