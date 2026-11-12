@@ -491,6 +491,25 @@ accepted IDs and what each allows are the "Capability registry" table in
 generated from `Capability::ALL` in `src/app/permissions.rs`. An ID outside
 that table fails `plexi plugin check` and install.
 
+`[[contributes.views]]` declares the views a plugin offers:
+
+```toml
+[[contributes.views]]
+id = "myapp.main"
+default = true
+
+[[contributes.views]]
+id = "myapp.settings"
+```
+
+Each `id` starts with the plugin id and a dot, and is unique in the manifest.
+At most one view is `default`. Opening a view id opens that view. Opening the
+plugin id opens its only view, or the default one; with several views and no
+default it fails and lists the declared ids. All views run the same entry
+file. The SDK has no accessor for which view a pane shows, and
+`plexi view render <path>` and `plexi plugin check` render the default view
+only.
+
 `[launch] on_launch` declares what the host does when your plugin is launched
 while an instance already exists: `focus_existing` (one instance globally —
 relaunch focuses it, jumping context if needed), `focus_existing_in_context`
