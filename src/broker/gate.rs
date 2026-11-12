@@ -376,8 +376,8 @@ pub struct PermissionEntry {
 /// Who is asking to change a stored permission.
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
-    /// A person at a terminal with no pane and no call credential.
-    /// The Permissions plugin's own buttons also pass `true`.
+    /// A person at a terminal with no pane and no call credential. Never a
+    /// plugin guest message, including the bundled Permissions plugin's.
     pub human: bool,
     pub actor_id: String,
 }

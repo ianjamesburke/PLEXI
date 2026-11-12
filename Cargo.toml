@@ -202,7 +202,8 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [dev-dependencies]
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
 serde_yaml = "0.9"
 # DAW release gate (stint 0519): the host test build drives the pure-model
 # fuzzer (via the `gate` feature) and the offline render engine, so
