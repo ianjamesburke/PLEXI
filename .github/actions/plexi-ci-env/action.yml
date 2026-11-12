@@ -28,6 +28,13 @@ inputs:
     description: '"true" when the job invokes a justfile recipe.'
     required: false
     default: 'false'
+  uv:
+    description: >
+      "true" when the job runs the host test suite. The 0.4.4 plugin migration
+      converts plugin source with `uv run --offline --python 3.12`
+      (src/app/plugin_migration.rs), so its tests need uv and a local 3.12.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -74,18 +81,32 @@ runs:
     # workflows already used it; the heavy jobs did not, and their hand-written
     # key was shared across three jobs holding different artifact kinds, so only
     # one write ever survived. `prefix-key` restores the per-job namespace.
+    #
+    # Pull requests restore and never save. A PR's cache is scoped to its own
+    # refs/pull/<n>/merge ref, which no other PR can read, and those entries
+    # pushed the repository past the 10 GB Actions cache limit. Pushes to alpha
+    # (and other non-PR runs) save; every PR can restore alpha's entries.
+    # Usage: `gh api repos/{owner}/{repo}/actions/cache/usage`, `gh cache list`.
     - name: Restore Cargo cache
       uses: Swatinem/rust-cache@v2
       with:
         prefix-key: plexi-${{ inputs.cache-key }}
+        save-if: ${{ github.event_name != 'pull_request' }}
 
+    # Pins the exact verified release. Bump both keys when
+    # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
     - name: Restore CPython WASI bundle cache
-      if: inputs.cpython-bundle == 'true'
+      if: inputs.cpython-bundle == 'true' && github.event_name == 'pull_request'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.PLEXI_CPYTHON_BUNDLE_DIR }}
+        key: cpython-wasi-3.12.12-wasi_sdk-20
+
+    - name: Restore and save CPython WASI bundle cache
+      if: inputs.cpython-bundle == 'true' && github.event_name != 'pull_request'
       uses: actions/cache@v4
       with:
         path: ${{ env.PLEXI_CPYTHON_BUNDLE_DIR }}
-        # Pins the exact verified release. Bump when
-        # scripts/fetch-cpython-bundle.sh changes VERSION/WASI_SDK.
         key: cpython-wasi-3.12.12-wasi_sdk-20
 
     - name: Prefetch verified CPython WASI bundle
@@ -95,3 +116,18 @@ runs:
       # fetch failure is attributed here rather than inside a test binary.
       shell: bash
       run: bash scripts/fetch-cpython-bundle.sh
+
+    # Hosted runners ship no uv. Same pinned action as sdk-typecheck.yml. Its
+    # own cache stays off so it adds nothing to the Actions cache.
+    - name: Install uv
+      if: inputs.uv == 'true'
+      uses: astral-sh/setup-uv@v8.2.0
+      with:
+        enable-cache: false
+
+    # The migration runs uv with --offline, so the interpreter must already be
+    # installed; fetch it here, where a network failure names this step.
+    - name: Install Python 3.12 for uv
+      if: inputs.uv == 'true'
+      shell: bash
+      run: uv python install 3.12
