@@ -19,6 +19,8 @@ const MAX_EXCEPTION_CHARS: usize = 128;
 const MAX_MESSAGE_CHARS: usize = 2048;
 /// The end of a traceback names the exception, so an oversized one keeps its tail.
 const MAX_TRACEBACK_BYTES: usize = 64 * 1024;
+/// One host log record is written per traceback line, so lines are capped too.
+const MAX_TRACEBACK_LINES: usize = 200;
 const TRUNCATED: &str = " [truncated]";
 
 /// The wire shape, exactly as the guest sent it. Nothing here is trusted.
@@ -259,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_outside_the_plugin_folder_is_dropped_with_its_line() {
+    fn a_file_outside_the_plugin_folder_is_replaced_and_loses_its_line() {
         for file in [
             "../other-plugin/main.py",
             "plugin/../../main.py",
@@ -271,7 +273,7 @@ mod tests {
                 .expect("well-formed message");
             assert_eq!(
                 error.headline(),
-                "plugin error (view): RuntimeError: nope",
+                "plugin error in <path outside the plugin> (view): RuntimeError: nope",
                 "file {file:?} must not be reported"
             );
         }
@@ -281,6 +283,22 @@ mod tests {
             nested.headline(),
             "plugin error in plugin/ui.py:54 (view): RuntimeError: nope"
         );
+    }
+
+    #[test]
+    fn a_traceback_of_many_short_lines_is_capped_by_line_count() {
+        let error = GuestFatalError::decode(&hostile(json!({
+            "traceback": format!("{}RuntimeError: last line", "x\n".repeat(20_000)),
+        })))
+        .expect("well-formed message");
+        let lines: Vec<&str> = error.traceback().lines().collect();
+        assert_eq!(
+            lines.len(),
+            MAX_TRACEBACK_LINES + 1,
+            "one marker line, then the tail"
+        );
+        assert_eq!(lines[0], "[traceback truncated: earlier frames dropped]");
+        assert_eq!(lines.last(), Some(&"RuntimeError: last line"));
     }
 
     #[test]
