@@ -94,6 +94,11 @@ warnings denied, runs strict Clippy, and records the artifact digest. Run all
 other applicable scoped, script, SDK, docs and visual checks before ready status.
 A changed head/base/configuration requires reassessment and fresh matching evidence.
 Only then mark the PR ready and hand it to the independent tester.
+Each push to a pull request targeting alpha, drafts included, starts a hosted
+"Rust host" run (`.github/workflows/rust-host.yml`: macOS release build, tests
+and Clippy; skipped when `scripts/docs_gate_scope.py` classifies the diff as
+docs-only), which is advisory and never replaces the local gates, the
+`pr-candidate` stamp or the installed check.
 
 `just pr-candidate` and `just pr-install` use `scripts/build-cache.py`: two
 persistent, exclusively locked Cargo slots per repository under
