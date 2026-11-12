@@ -1,6 +1,6 @@
 ---
 title: Panes
-description: The Plexi layout model — panes and how to navigate them.
+description: "The Plexi layout model: panes and how to navigate them."
 order: 4
 ---
 
@@ -10,8 +10,8 @@ Plexi's UI is built from **panes** arranged in a tiling grid.
 
 A pane is a single rectangular region. There are two kinds:
 
-- **Terminal** — a full PTY session. Inherits your shell, dotfiles, and CWD.
-- **App** — renders a Plexi plugin through PGAP. See [App execution and permissions](/docs/plugins#execution-and-permissions) for the Python/WASM runtime and capability boundaries.
+- **Terminal** is a full PTY session. Inherits your shell, dotfiles, and CWD.
+- **View** renders a Plexi plugin through PGAP. See [Plugin execution and permissions](/docs/plugins#execution-and-permissions) for the Python/WASM runtime and capability boundaries.
 
 ## Splitting
 
@@ -22,7 +22,7 @@ A pane is a single rectangular region. There are two kinds:
 | Split right, mirroring type | `⌘\` |
 | Split down, mirroring type | `⌘⇧\` |
 
-"Mirroring type" means the new pane matches the focused pane's type — terminal produces terminal, plugin produces a copy of the same app.
+"Mirroring type" means the new pane matches the focused pane's type: a terminal produces a terminal, and a view produces a copy of the same view.
 
 ## Navigation
 
