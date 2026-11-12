@@ -5603,7 +5603,11 @@ mod position_memory_tests {
         let (selection, anchor) = park(&mut h, pane);
 
         h.app.close_pane_by_id(pane);
-        h.run_frames(1);
+        assert!(
+            !crate::host::editor_positions::store_path().exists(),
+            "closing a pane must only record the position in memory; \
+             the store is written off the UI thread"
+        );
         assert!(
             h.app.find_open_text_editor_pane_any_window(&path).is_none(),
             "setup: the editor pane must be closed"
@@ -5615,6 +5619,64 @@ mod position_memory_tests {
             selection,
             anchor,
             "reopened file",
+        );
+    }
+
+    /// Runs frames until `done` holds, failing with `what` at the deadline.
+    fn run_frames_until(h: &mut HostHarness, what: &str, done: impl Fn(&HostHarness) -> bool) {
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        while !done(&*h) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            h.run_frames(1);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_closed_files_position_reaches_disk_in_the_background() {
+        let mut h = HostHarness::new();
+        let _sibling = h.add_test_pane();
+        let path = h.workspace_root().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        let pane = open_editor(&mut h, &path);
+        park(&mut h, pane);
+        h.app.close_pane_by_id(pane);
+
+        let store = crate::host::editor_positions::store_path();
+        run_frames_until(&mut h, "the position store to be written", |_| {
+            store.is_file()
+        });
+        let saved = std::fs::read_to_string(&store).unwrap();
+        assert!(
+            saved.contains("long.txt"),
+            "the closed file must be in the store: {saved}"
+        );
+    }
+
+    #[test]
+    fn a_failed_background_save_shows_a_notice() {
+        let mut h = HostHarness::new();
+        h.app.notifications_enabled = true;
+        let _sibling = h.add_test_pane();
+        // A directory where the store file belongs: every write's final
+        // rename fails.
+        let store = crate::host::editor_positions::store_path();
+        std::fs::create_dir_all(store.join("occupied")).unwrap();
+        let path = h.workspace_root().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        let pane = open_editor(&mut h, &path);
+        park(&mut h, pane);
+        h.app.close_pane_by_id(pane);
+
+        run_frames_until(&mut h, "a save-failure notice", |h| {
+            h.app
+                .pending_notifications
+                .iter()
+                .any(|n| n.title == "Editor positions not saved")
+        });
+        assert!(
+            store.join("occupied").is_dir(),
+            "a failed save must leave what was there untouched"
         );
     }
 
