@@ -4,7 +4,7 @@
 
 ## Scope
 
-Embedded CLI descriptor registry. JSON descriptors here are baked into the binary at build time and serve as Tier 2 fallbacks for `plexi app open --cli`.
+Embedded CLI descriptor registry. JSON descriptors here are baked into the binary at build time and serve as Tier 2 fallbacks for `plexi view open --cli`.
 
 ## Reference
 

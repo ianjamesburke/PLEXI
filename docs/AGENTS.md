@@ -38,7 +38,6 @@ reports are stored under that profile's `sessions/teams/` directory.
 | `notes-editor.md` | Native Notes editor, Live Preview, links, attachments, and agent validation | see file |
 | `prm/permissions-broker.md` | Thin core, public plugin capability API, broker consolidation and core-plugin extraction | see file |
 | `realtime-app-runtime.md` | Stable frame pacing and presentation across Python and native WASM apps | 0553 |
-| `search-primitive.md` | Unified upstream host search engine (`src/search/`) + `SearchBar` UI primitive (`src/ui/search_bar.rs`) for File Explorer, Notes Picker, Command Palette, and host tools | 0814 |
 | `search-results-detail-pattern.md` | Search→results→detail SDK vocabulary: `SelectList` usage, `Pending` wrapper for declarative loading state, canvas `ListRow` deletion — decision doc, taste call pending | 0728 |
 | `v1_one_note_proposal_contract.md` | Smallest safe contract for a manually invoked, one-selected-note proposal exemplar in Plexi V1 | 1009 |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
