@@ -11,6 +11,7 @@ file holds only this plugin's file list, build loop and metadata.
 
 - `manifest.toml`: identity, entry point, declared capabilities and views. `capabilities` starts empty.
 - `main.py`: the plugin. It defines `init`, `update` and `view`.
+  A child list built up in a variable must be annotated `list[Component]`, or the `plexi plugin check` type gate rejects appending another component type.
 - `tests/test_plugin.py`: PluginHarness tests. Run them with `plexi plugin test .`.
 - `fixtures/state.json`: seed state for `plexi plugin check` and `plexi view render --state`. Keep its keys in step with the state `view()` reads.
 - `plexi.scaffold.toml`: the versions this scaffold was generated with. Refresh it with `plexi plugin init --adopt .`, never by hand.

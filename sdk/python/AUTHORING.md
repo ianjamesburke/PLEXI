@@ -151,9 +151,10 @@ handle interaction in the app. A canvas can also be a child in a tree. See
 
 `plexi_sdk.ui` exports the types for annotations: `Component` (any tree
 component), `CanvasCommand` (any canvas command) and `BadgeColor` (the roles
-`Badge` and `Banner` accept). Annotate a list you build up in a variable, for
-example `body: list[Component] = [Text("Hi")]`, so `plexi plugin check`
-accepts appending other components to it.
+`Badge` and `Banner` accept). A child list you build up in a variable must be
+annotated, for example `body: list[Component] = [Text("Hi")]`. Without it, mypy
+types the list from its first value, and `plexi plugin check` fails when you
+append, or assign in another branch, a different component type.
 
 ## Effects
 
