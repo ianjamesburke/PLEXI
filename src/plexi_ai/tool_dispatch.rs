@@ -872,7 +872,7 @@ impl ToolDispatcher {
         let Some(principal) = crate::broker::principal::Principal::from_actor(
             self.scope.actor_type,
             &self.scope.caller_plugin_id,
-            Some(self.scope.caller_pane_id).filter(|pane| *pane != 0),
+            Some(self.scope.caller_pane_id),
         ) else {
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: deny caller={} tool={name} call_id={call_id}: not a requesting principal",

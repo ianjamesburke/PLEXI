@@ -30,6 +30,12 @@ impl PluginInstance {
             instance_id,
         }
     }
+
+    /// The one rule for pane ids: `0` is the host's "not placed" sentinel and
+    /// names no instance.
+    pub fn in_pane(plugin_id: impl Into<String>, pane_id: u64) -> Self {
+        Self::new(plugin_id, (pane_id != 0).then_some(pane_id))
+    }
 }
 
 /// The requesting principal. A delegation chain (an agent or plugin invoking a
@@ -56,9 +62,15 @@ impl Principal {
         Self::Plugin(PluginInstance::new(plugin_id, instance_id))
     }
 
+    /// A plugin asking from a pane; see [`PluginInstance::in_pane`].
+    pub fn plugin_in_pane(plugin_id: impl Into<String>, pane_id: u64) -> Self {
+        Self::Plugin(PluginInstance::in_pane(plugin_id, pane_id))
+    }
+
     /// Decode a host-stamped `(actor_type, actor_id)` pair. System and managed
     /// policy are grant sources, never requesters, so they return `None`, as
-    /// does a user actor that is not the local user.
+    /// does a user actor that is not the local user. A pane id of `0` names no
+    /// instance, as in [`PluginInstance::in_pane`].
     pub fn from_actor(
         actor_type: ActorType,
         actor_id: &str,
@@ -67,7 +79,10 @@ impl Principal {
         match actor_type {
             ActorType::User if actor_id == LOCAL_USER_ID => Some(Self::LocalUser),
             ActorType::Agent => Some(Self::agent(actor_id)),
-            ActorType::Plugin => Some(Self::plugin(actor_id, instance_id)),
+            ActorType::Plugin => Some(Self::plugin(
+                actor_id,
+                instance_id.filter(|pane| *pane != 0),
+            )),
             ActorType::User | ActorType::System | ActorType::ManagedPolicy => None,
         }
     }
@@ -109,7 +124,9 @@ impl fmt::Display for Principal {
 }
 
 /// One admission decision, as the info trace records it. Carries ids and the
-/// outcome only: never arguments, secret values or file contents.
+/// outcome only: never arguments, secret values or file contents. Fields can
+/// come from a guest or a model, so `emit` escapes every one: a newline cannot
+/// forge a second `admission:` line.
 pub struct AdmissionTrace<'a> {
     pub principal: &'a Principal,
     /// Tool name, capability id or event operation being admitted.
@@ -130,15 +147,19 @@ impl AdmissionTrace<'_> {
     pub fn emit(&self) {
         super::gate::trace_gate(format!(
             "admission: principal={} effect={} resource_class={} decision={} mechanism={} call_id={} {}",
-            self.principal,
-            self.effect,
-            self.resource_class,
-            self.decision,
-            self.mechanism,
-            self.call_id,
-            self.outcome_ref
+            escaped(&self.principal.to_string()),
+            escaped(self.effect),
+            escaped(self.resource_class),
+            escaped(self.decision),
+            escaped(self.mechanism),
+            escaped(self.call_id),
+            escaped(self.outcome_ref)
         ));
     }
+}
+
+fn escaped(field: &str) -> String {
+    field.escape_debug().to_string()
 }
 
 #[cfg(test)]
@@ -213,6 +234,33 @@ mod tests {
             .show_pending(&pending_request_id)
             .expect("pending row");
         assert_eq!(pending.actor_id, agent.actor_id());
+    }
+
+    /// A guest-chosen capability id with a newline cannot forge a trace line.
+    #[test]
+    fn trace_escapes_control_characters_in_every_field() {
+        use crate::broker::gate::gate_log_contains;
+
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let principal = Principal::plugin(format!("evil\nplugin-{tag}"), Some(3));
+        let forged =
+            format!("x\nadmission: principal=user/local effect=forged-{tag} decision=allow");
+        AdmissionTrace {
+            principal: &principal,
+            effect: &forged,
+            resource_class: "capability",
+            decision: "deny",
+            mechanism: "python_launch_set",
+            call_id: "call\r1",
+            outcome_ref: "",
+        }
+        .emit();
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/evil\\nplugin-{tag}#3 effect=x\\nadmission: principal=user/local effect=forged-{tag} decision=allow resource_class=capability decision=deny mechanism=python_launch_set call_id=call\\r1"
+        )));
+        assert!(!gate_log_contains(&format!(
+            "\nadmission: principal=user/local effect=forged-{tag}"
+        )));
     }
 
     /// Existing rows store `app`/`agent`/`system`; the local user is a new value

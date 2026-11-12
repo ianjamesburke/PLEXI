@@ -471,9 +471,9 @@ impl CliOpService {
                 call_id: &call_id,
                 tool,
                 input_json: &input,
-                principal: &crate::broker::principal::Principal::plugin(
+                principal: &crate::broker::principal::Principal::plugin_in_pane(
                     &who.plugin_id,
-                    Some(who.pane_id),
+                    who.pane_id,
                 ),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",

@@ -104,7 +104,7 @@ impl McpRendererView {
             call_id: &call,
             tool: &tool,
             input_json: &input,
-            principal: &crate::broker::principal::Principal::plugin(&actor, Some(pane)),
+            principal: &crate::broker::principal::Principal::plugin_in_pane(&actor, pane),
             actor_scope: ActorScope::BuiltIn,
             trust_origin: "host",
             workspace_root: &self.workspace,

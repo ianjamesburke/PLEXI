@@ -3298,11 +3298,14 @@ impl LivePythonPane {
         }
     }
 
-    /// The Python runtime has no host-stamped instance id yet, so the principal
-    /// names the plugin only.
+    /// The principal is this pane's plugin and the host-stamped pane owner
+    /// (`set_pipe_owner`), the same identity `cli_identity` uses.
     fn has_capability(&self, capability: &str) -> bool {
         launch_set_admits(
-            &crate::broker::principal::Principal::plugin(self.plugin_id.as_str(), None),
+            &crate::broker::principal::Principal::plugin_in_pane(
+                self.plugin_id.as_str(),
+                self.pane_owner.map_or(0, |(pane, _)| pane),
+            ),
             &self.config.capabilities,
             capability,
         )
@@ -10542,6 +10545,15 @@ default = true
         )));
         assert!(gate_log_contains(&format!(
             "admission: principal=plugin/{plugin_id} effect=net.http resource_class=capability decision=deny mechanism=python_launch_set"
+        )));
+        // A guest-chosen capability string cannot forge a second trace line.
+        let forged = format!("fs.write\nadmission: principal=user/local effect=forged-{plugin_id}");
+        assert!(!pane.has_capability(&forged));
+        assert!(gate_log_contains(&format!(
+            "effect=fs.write\\nadmission: principal=user/local effect=forged-{plugin_id} resource_class=capability decision=deny"
+        )));
+        assert!(!gate_log_contains(&format!(
+            "\nadmission: principal=user/local effect=forged-{plugin_id}"
         )));
 
         let monitor = PermissionMonitor::ephemeral();

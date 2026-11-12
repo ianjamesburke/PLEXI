@@ -1370,10 +1370,7 @@ impl WasmPane {
     /// The requesting principal of this pane's runtime checks: its plugin and,
     /// once placed, its pane.
     fn principal(&self) -> crate::broker::principal::Principal {
-        crate::broker::principal::Principal::plugin(
-            self.app.plugin_id(),
-            Some(self.pane_id).filter(|pane| *pane != 0),
-        )
+        crate::broker::principal::Principal::plugin_in_pane(self.app.plugin_id(), self.pane_id)
     }
 
     fn trace_capability(&self, capability_id: &str, decision: &str, mechanism: &str) {
