@@ -362,6 +362,54 @@ fn background_session_from(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
+/// Why [`WorkspaceFile::load_from`] returned no workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceLoadError {
+    /// Nothing to restore: no workspace file, or an ephemeral session.
+    NotSaved,
+    /// A workspace file exists but cannot be restored. The file is left as it
+    /// was found, and a session started without it must not save over it.
+    Unusable { path: PathBuf, reason: String },
+}
+
+impl WorkspaceLoadError {
+    fn unusable(path: &Path, reason: String) -> Self {
+        log::error!(
+            "workspace_load: cannot restore {}: {reason}; preserving original",
+            path.display()
+        );
+        Self::Unusable {
+            path: path.to_path_buf(),
+            reason,
+        }
+    }
+
+    /// Why a session started after this outcome must not save its workspace.
+    /// `None` when there was simply nothing to restore.
+    pub fn save_block(&self) -> Option<String> {
+        match self {
+            Self::NotSaved => None,
+            Self::Unusable { .. } => Some(self.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkspaceLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSaved => f.write_str("no saved workspace"),
+            Self::Unusable { path, reason } => write!(
+                f,
+                "workspace file {} could not be restored: {reason}. It was left untouched and \
+                 this session will not save over it; repair or move the file, then restart Plexi",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceLoadError {}
+
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
         if ephemeral_session() {
@@ -467,77 +515,60 @@ impl WorkspaceFile {
         }
     }
 
-    pub fn load() -> Option<Self> {
+    pub fn load() -> Result<Self, WorkspaceLoadError> {
         if ephemeral_session() {
             log::info!("workspace_load: skipped (ephemeral session)");
-            return None;
+            return Err(WorkspaceLoadError::NotSaved);
         }
         Self::load_from(&crate::config::config_dir())
     }
 
-    pub fn load_from(profile_dir: &Path) -> Option<Self> {
+    /// Read, validate and migrate the saved workspace. A missing file is
+    /// [`WorkspaceLoadError::NotSaved`]; every other failure is
+    /// [`WorkspaceLoadError::Unusable`] naming the file, and leaves it as found.
+    pub fn load_from(profile_dir: &Path) -> Result<Self, WorkspaceLoadError> {
         let path = workspace_path_in(profile_dir);
+        let unusable = |reason: String| WorkspaceLoadError::unusable(&path, reason);
         let mut data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
-            Err(error) => {
-                log::error!("workspace_load: cannot read {}: {error}", path.display());
-                return None;
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(WorkspaceLoadError::NotSaved)
             }
+            Err(error) => return Err(unusable(format!("cannot read the file: {error}"))),
         };
-        let mut ws: Self = match serde_json::from_str(&data) {
-            Ok(ws) => ws,
-            Err(e) => {
-                log::warn!("Failed to parse workspace file: {e}");
-                return None;
-            }
-        };
+        let mut ws: Self = serde_json::from_str(&data)
+            .map_err(|error| unusable(format!("not valid workspace JSON: {error}")))?;
         if !matches!(ws.version, 2 | 3) {
-            log::info!(
-                "Unsupported workspace file version {}; preserving original",
+            return Err(unusable(format!(
+                "unsupported workspace version {} (this build reads versions 2 and 3)",
                 ws.version
-            );
-            return None;
+            )));
         }
         if ws.version == 2 {
             ws.remove_legacy_deleted_context_focus();
         }
         ws.heal_stale_focus();
-        if let Err(error) = ws.validate() {
-            log::error!(
-                "workspace_load: invalid workspace {}: {error}; preserving original",
-                path.display()
-            );
-            return None;
-        }
+        ws.validate()
+            .map_err(|error| unusable(format!("invalid workspace: {error}")))?;
         if ws.version == 2 {
-            match ws.assign_legacy_window_ids().and_then(|()| ws.convert_legacy_strips()).and_then(|strips| {
-                ws.strips = strips;
-                ws.version = 3;
-                ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
-            }) {
-                Ok(()) => log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2"),
-                Err(error) => {
-                    log::error!("workspace migration: {}: {error}; preserving original", path.display());
-                    return None;
-                }
-            }
+            ws.assign_legacy_window_ids()
+                .and_then(|()| ws.convert_legacy_strips())
+                .and_then(|strips| {
+                    ws.strips = strips;
+                    ws.version = 3;
+                    ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
+                })
+                .map_err(|error| unusable(format!("version 2 to 3 migration failed: {error}")))?;
+            log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2");
             // A following plugin-path migration must compare against the bytes
             // this v2 migration just saved, not the pre-migration input. Keep
             // the compare-and-save guard so an intervening writer still wins.
-            data = match serde_json::to_string_pretty(&ws) {
-                Ok(data) => data,
-                Err(error) => {
-                    log::error!("workspace migration: cannot encode migrated layout: {error}");
-                    return None;
-                }
-            };
+            data = serde_json::to_string_pretty(&ws)
+                .map_err(|error| unusable(format!("cannot encode the migrated layout: {error}")))?;
         }
         let mut migrated = false;
-        if let Err(error) = crate::app::plugin_migration::migrate(profile_dir) {
-            log::error!("workspace plugin migration: {error}; preserving original");
-            return None;
-        }
+        crate::app::plugin_migration::migrate(profile_dir)
+            .map_err(|error| unusable(format!("plugin migration failed: {error}")))?;
         for window in &mut ws.windows {
             for pane in &mut window.panes {
                 if matches!(pane.plugin_id.as_deref(), Some("command" | "command-view")) {
@@ -550,14 +581,9 @@ impl WorkspaceFile {
                     None => None,
                 };
                 if let Some(launch_path) = launch_path {
-                    if let Err(error) =
-                        crate::app::plugin_migration::migrate_launch_root(launch_path)
-                    {
-                        log::error!(
-                            "workspace plugin-path migration: {error}; preserving original"
-                        );
-                        return None;
-                    }
+                    crate::app::plugin_migration::migrate_launch_root(launch_path).map_err(
+                        |error| unusable(format!("plugin-path migration failed: {error}")),
+                    )?;
                     if let Some(path) = crate::app::plugin_migration::migrated_path(launch_path) {
                         *launch_path = path;
                         migrated = true;
@@ -566,17 +592,13 @@ impl WorkspaceFile {
             }
         }
         if migrated {
-            if let Err(error) = ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
-            {
-                log::error!(
-                    "workspace plugin-path migration: {}: {error}; preserving original",
-                    path.display()
-                );
-                return None;
-            }
+            ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
+                .map_err(|error| {
+                    unusable(format!("saving migrated plugin paths failed: {error}"))
+                })?;
             log::info!("workspace migration: saved plugin launch paths after package migration v2");
         }
-        Some(ws)
+        Ok(ws)
     }
 
     /// A saved `focused_pane` can name a container: `Tree::simplify` re-wraps
@@ -1411,7 +1433,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = b"{invalid workspace";
         std::fs::write(&path, original).unwrap();
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
@@ -1546,7 +1568,7 @@ mod tests {
         workspace.strips.insert(42, crate::strip::Strip::new(42));
         let original = serde_json::to_vec(&workspace).unwrap();
         std::fs::write(&path, &original).unwrap();
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert!(WorkspaceFile::load_from(profile.path()).is_err());
         workspace.strips.clear();
         assert!(workspace.save_to(profile.path()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -1559,7 +1581,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1,"parent_id":2},{"name":"b","root":"/tmp","context_id":2,"parent_id":1}],"windows":[]}"#;
         std::fs::write(&path, original).unwrap();
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
@@ -1570,7 +1592,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1}],"windows":[],"context_active_window":{"1":88}}"#;
         std::fs::write(&path, original).unwrap();
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
@@ -1584,7 +1606,7 @@ mod tests {
             "contexts":[{"name":"a", "root":"/tmp", "context_id":1}],
             "windows":[{"name":"a", "path":"/tmp", "tree":tree, "panes":[{"id":1, "cwd":"/tmp"}], "focused_pane":null, "window_id":1, "context_id":1}]}).to_string();
         std::fs::write(&path, &original).unwrap();
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original.as_bytes());
     }
 

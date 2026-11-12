@@ -29,7 +29,7 @@ fn failed_workspace_save_remains_dirty_for_retry() {
         "a successful retry clears the dirty flag"
     );
     assert!(h.app.workspace_save_retry_at.is_none());
-    assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+    assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
 }
 
 #[test]

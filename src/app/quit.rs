@@ -142,12 +142,25 @@ impl super::PlexiApp {
             Ok(()) => self.quit_coordinator.save_failures = 0,
             Err(error) => {
                 self.quit_coordinator.save_failures += 1;
-                if self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS {
+                // A boot-time block cannot clear by retrying: ask at once.
+                if self.workspace_save_block.is_some()
+                    || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
+                {
                     self.quit_coordinator.save_failure = Some(error.to_string());
                 }
             }
         }
         saved
+    }
+
+    /// Whether the workspace this process is about to exit with is on disk.
+    /// Only a successful final save counts; a waived save does not.
+    pub(crate) fn quit_workspace_durability(&self) -> WorkspaceDurability {
+        if self.quit_coordinator.saved {
+            WorkspaceDurability::Saved
+        } else {
+            WorkspaceDurability::Unsaved
+        }
     }
 
     /// Dialog outcome for a quit whose save kept failing. `quit_anyway` skips
@@ -213,8 +226,8 @@ impl super::PlexiApp {
         if !self.persist_quit_state() {
             if let Some(cause) = self.quit_coordinator.save_failure() {
                 log::error!(
-                    "quit: workspace save failed {MAX_QUIT_SAVE_ATTEMPTS} times, \
-                     giving up retries: {cause}"
+                    "quit: workspace save failed {} time(s), asking the user: {cause}",
+                    self.quit_coordinator.save_failures
                 );
                 self.quit_coordinator.retry_at = None;
                 self.pending_close = true;
@@ -276,7 +289,7 @@ impl super::PlexiApp {
         self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
-        exit_host(reason);
+        exit_host(reason, self.quit_workspace_durability());
     }
 
     pub(super) fn begin_quit_cleanup(&self) {
@@ -492,8 +505,28 @@ impl ExitReason {
     }
 }
 
+/// Whether the final workspace save reached disk before exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceDurability {
+    Saved,
+    /// The save failed and the user quit without it, or a blocked session
+    /// was torn down. The file on disk is whatever was there before.
+    Unsaved,
+}
+
+/// Process exit status: zero only for a clean quit. Leftover pane
+/// processes, a socket that could not be released, or a workspace that was
+/// not saved each make the exit unclean.
+fn exit_status(remaining: usize, socket: &SocketRelease, workspace: WorkspaceDurability) -> i32 {
+    i32::from(
+        remaining != 0
+            || matches!(socket, SocketRelease::Failed(_))
+            || workspace == WorkspaceDurability::Unsaved,
+    )
+}
+
 /// Tear the host down and end the process. Never returns.
-pub(crate) fn exit_host(reason: ExitReason) -> ! {
+pub(crate) fn exit_host(reason: ExitReason, workspace: WorkspaceDurability) -> ! {
     trace("cleanup_begin");
     let start = Instant::now();
     let reason_label = reason.label();
@@ -523,10 +556,16 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
     trace("socket_release_begin");
     let socket = release_notify_socket();
     trace("socket_release_end");
-    log::info!(
-        "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} total_ms={}",
+    let status = exit_status(k.remaining, &socket, workspace);
+    let message = format!(
+        "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} workspace={workspace:?} status={status} total_ms={}",
         start.elapsed().as_millis()
     );
+    if workspace == WorkspaceDurability::Unsaved {
+        log::error!("{message}; the workspace was not saved");
+    } else {
+        log::info!("{message}");
+    }
     // The log file is the only record of a quit; flush before the fd dies.
     trace("exit_call");
     log::logger().flush();
@@ -534,9 +573,7 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
     // `on_exit` returns and which this call therefore skips: the wgpu device
     // and its worker threads are reclaimed by process teardown, exactly as on
     // the `plexi host stop` path that has always exited from mid-frame.
-    std::process::exit(i32::from(
-        k.remaining != 0 || matches!(socket, SocketRelease::Failed(_)),
-    ));
+    std::process::exit(status);
 }
 
 #[cfg(test)]
@@ -604,7 +641,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
         std::fs::remove_file(&path).unwrap();
         assert!(h.app.persist_quit_state());
-        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
         assert!(!h.app.workspace_dirty);
     }
 
@@ -966,7 +1003,7 @@ mod tests {
         assert!(!h.app.quit_coordinator.is_active());
         assert!(!h.app.quit_coordinator.hide_requested);
         assert!(!h.app.quitting);
-        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
         h.app.request_quit(ExitReason::WindowClosed);
         assert!(h.app.service_quit(&eframe::Frame::_new_kittest()));
         assert!(h.app.quit_coordinator.hide_requested);

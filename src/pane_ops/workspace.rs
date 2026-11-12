@@ -2446,6 +2446,13 @@ impl PlexiApp {
 
     /// Same save, but hands the cause back so the quit path can show it.
     pub(crate) fn save_workspace_result(&mut self) -> std::io::Result<()> {
+        if let Some(block) = &self.workspace_save_block {
+            log::error!("workspace_save: refused; {block}");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                block.clone(),
+            ));
+        }
         let save_start = std::time::Instant::now();
         // Trees can also be simplified by egui, independently of pane commands.
         // Reconcile every window before snapshotting, even when UI is occluded.
