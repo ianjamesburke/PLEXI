@@ -29,7 +29,7 @@
     "src/overlays/misc.rs": {
       "draw_shortcuts_overlay | ui.horizontal(|ui| {": 1,
       "draw_changelog_overlay | ui.horizontal(|ui| {": 2,
-      "draw_changelog_overlay | ui.with_layout(": 1,
+      "draw_changelog_overlay | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1,
       "draw_text_input_overlay | ui.horizontal(|ui| {": 1
     },
     "src/overlays/mod.rs": {

@@ -330,7 +330,77 @@ impl PlexiApp {
             .title("Changelog")
             .width(560.0)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
-                self.draw_update_status_line(ui);
+                // Running version and update status; the ready state carries
+                // the Restart button with its confirm step.
+                {
+                let line = self.update_status.line();
+                let ready = match &line {
+                    crate::host::update_status::UpdateLine::Ready { version } => Some(version.clone()),
+                    _ => None,
+                };
+                let status =
+                    crate::host::update_status::status_text(&line, crate::platform::clock::now_secs());
+                let tint = if ready.is_some() {
+                    self.colors.accent
+                } else {
+                    self.colors.text_dim
+                };
+                egui::Frame::new()
+                    .fill(tint.gamma_multiply(0.15))
+                    .stroke(Stroke::new(1.0_f32, tint.gamma_multiply(0.4)))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if let (Some(latest), true) = (&ready, self.update_confirm_prompt) {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new("Plexi will restart with the new version. Your workspace will be saved.")
+                                        .size(style::TEXT_HINT)
+                                        .color(self.colors.accent),
+                                );
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    let restart_label = format!("Restart to v{latest}");
+                                    let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
+                                        .kind(crate::ui::button::ButtonKind::Primary)
+                                        .size(crate::ui::button::ButtonSize::Sm);
+                                    if ui.add(confirm_btn).clicked() {
+                                        self.update_confirm_prompt = false;
+                                        self.restart_to_update("changelog");
+                                    }
+                                    let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
+                                        .kind(crate::ui::button::ButtonKind::Ghost)
+                                        .size(crate::ui::button::ButtonSize::Sm);
+                                    if ui.add(cancel_btn).clicked() {
+                                        self.update_confirm_prompt = false;
+                                    }
+                                });
+                            });
+                            return;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                crate::ui::typography::caption(
+                                    ui,
+                                    format!("Running v{}", self.display_version),
+                                    &self.colors,
+                                );
+                                crate::ui::typography::body(ui, status, &self.colors);
+                            });
+                            if ready.is_some() {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
+                                        .kind(crate::ui::button::ButtonKind::Primary)
+                                        .size(crate::ui::button::ButtonSize::Sm);
+                                    if ui.add(btn).clicked() {
+                                        self.update_confirm_prompt = true;
+                                    }
+                                });
+                            }
+                        });
+                    });
+                }
                 ui.add_space(style::SPACE_SM);
 
                 for line in CHANGELOG.lines() {
@@ -356,78 +426,6 @@ impl PlexiApp {
         if response.dismissed {
             self.close_changelog();
         }
-    }
-
-    /// Running version and update status at the top of the changelog view.
-    /// The ready state carries the Restart button with its confirm step.
-    fn draw_update_status_line(&mut self, ui: &mut egui::Ui) {
-        let line = self.update_status.line();
-        let ready = match &line {
-            crate::host::update_status::UpdateLine::Ready { version } => Some(version.clone()),
-            _ => None,
-        };
-        let status =
-            crate::host::update_status::status_text(&line, crate::platform::clock::now_secs());
-        let tint = if ready.is_some() {
-            self.colors.accent
-        } else {
-            self.colors.text_dim
-        };
-        egui::Frame::new()
-            .fill(tint.gamma_multiply(0.15))
-            .stroke(Stroke::new(1.0_f32, tint.gamma_multiply(0.4)))
-            .corner_radius(R6)
-            .inner_margin(egui::Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                if let (Some(latest), true) = (&ready, self.update_confirm_prompt) {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Plexi will restart with the new version. Your workspace will be saved.")
-                                .size(style::TEXT_HINT)
-                                .color(self.colors.accent),
-                        );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let restart_label = format!("Restart to v{latest}");
-                            let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
-                                .kind(crate::ui::button::ButtonKind::Primary)
-                                .size(crate::ui::button::ButtonSize::Sm);
-                            if ui.add(confirm_btn).clicked() {
-                                self.update_confirm_prompt = false;
-                                self.restart_to_update("changelog");
-                            }
-                            let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
-                                .kind(crate::ui::button::ButtonKind::Ghost)
-                                .size(crate::ui::button::ButtonSize::Sm);
-                            if ui.add(cancel_btn).clicked() {
-                                self.update_confirm_prompt = false;
-                            }
-                        });
-                    });
-                    return;
-                }
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        crate::ui::typography::caption(
-                            ui,
-                            format!("Running v{}", self.display_version),
-                            &self.colors,
-                        );
-                        crate::ui::typography::body(ui, status, &self.colors);
-                    });
-                    if ready.is_some() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
-                                .kind(crate::ui::button::ButtonKind::Primary)
-                                .size(crate::ui::button::ButtonSize::Sm);
-                            if ui.add(btn).clicked() {
-                                self.update_confirm_prompt = true;
-                            }
-                        });
-                    }
-                });
-            });
     }
 
     /// Shared text-input overlay. Renders a centered modal with a text field,
