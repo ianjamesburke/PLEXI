@@ -768,9 +768,100 @@ mod reply_error_tests {
 
 #[cfg(test)]
 mod socket_resolution_tests {
-    use super::{command_socket_available_from, resolve_command_socket_from};
+    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET};
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+
+    /// A home directory whose default profile (`~/.plexi`) holds a bound
+    /// endpoint. Dropping the listener leaves the stale socket file behind,
+    /// the way a crashed host does.
+    #[cfg(unix)]
+    fn home_with_default_host() -> (
+        tempfile::TempDir,
+        PathBuf,
+        crate::platform::ipc::IpcListener,
+    ) {
+        let home = tempfile::tempdir().expect("tempdir");
+        let profile = home.path().join(".plexi");
+        std::fs::create_dir_all(&profile).expect("profile dir");
+        let endpoint = crate::platform::ipc::endpoint_in(&profile);
+        let listener =
+            crate::platform::ipc::IpcListener::bind(&endpoint).expect("bind default host");
+        (home, endpoint, listener)
+    }
+
+    /// Stint 1124: with no `--socket`, no channel-named binary and no
+    /// `PLEXI_SOCKET`, the bare binary uses the host `plexi host status`
+    /// reports for it (`~/.plexi`) when that host accepts connections.
+    #[cfg(unix)]
+    #[test]
+    fn bare_binary_without_ambient_socket_discovers_a_live_default_host() {
+        let (home, endpoint, _listener) = home_with_default_host();
+        assert_eq!(
+            resolve_command_socket_from(None, None, None, home.path(), true),
+            Some(endpoint)
+        );
+    }
+
+    /// A missing or stale default endpoint is not discoverable, and discovery
+    /// is off when the caller disables it, so those callers keep the no-host
+    /// error.
+    #[cfg(unix)]
+    #[test]
+    fn missing_stale_or_disabled_default_host_is_not_discovered() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resolve_command_socket_from(None, None, None, empty.path(), true),
+            None,
+            "no profile"
+        );
+
+        let (home, endpoint, listener) = home_with_default_host();
+        assert_eq!(
+            resolve_command_socket_from(None, None, None, home.path(), false),
+            None,
+            "discovery disabled"
+        );
+        drop(listener);
+        assert!(endpoint.exists(), "the stale socket file stays behind");
+        assert_eq!(
+            resolve_command_socket_from(None, None, None, home.path(), true),
+            None,
+            "stale socket"
+        );
+    }
+
+    /// Discovery never outranks a routing input.
+    #[cfg(unix)]
+    #[test]
+    fn routing_inputs_still_win_over_a_live_default_host() {
+        let (home, _endpoint, _listener) = home_with_default_host();
+        assert_eq!(
+            resolve_command_socket_from(
+                None,
+                None,
+                Some(OsStr::new("/tmp/ambient.sock")),
+                home.path(),
+                true
+            ),
+            Some(PathBuf::from("/tmp/ambient.sock"))
+        );
+        assert_eq!(
+            resolve_command_socket_from(None, Some("alpha"), None, home.path(), true),
+            Some(crate::platform::ipc::endpoint_in(
+                &home.path().join(".plexi-alpha")
+            ))
+        );
+    }
+
+    #[test]
+    fn no_host_error_names_the_socket_flag() {
+        assert!(
+            NO_COMMAND_SOCKET.contains("--socket"),
+            "{NO_COMMAND_SOCKET}"
+        );
+        assert!(!NO_COMMAND_SOCKET.contains("run this inside a Plexi terminal pane"));
+    }
 
     #[test]
     fn binary_channel_wins_over_ambient_socket() {

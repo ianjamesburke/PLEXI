@@ -431,6 +431,138 @@ fn lifecycle_request(request: serde_json::Value, timeout: Option<std::time::Dura
 }
 
 #[cfg(test)]
+mod declare_consent_wait_tests {
+    use super::{read_publish_reply, ConsentWait};
+    use crate::platform::ipc::{IpcListener, IpcStream};
+    use std::io::{BufRead, BufReader, Write};
+    use std::time::{Duration, Instant};
+
+    /// A fake host that accepts one connection, reads the control line, writes
+    /// `reply` (if any), then holds the connection open until released, the
+    /// way the real host holds it while its consent modal is unanswered.
+    struct FakeHost {
+        conn: IpcStream,
+        release: std::sync::mpsc::Sender<()>,
+        host: std::thread::JoinHandle<()>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn fake_host(reply: Option<&'static str>) -> FakeHost {
+        let dir = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let endpoint = dir.path().join("consent.sock");
+        #[cfg(windows)]
+        let endpoint = std::path::PathBuf::from(format!(
+            r"\\.\pipe\plexi-consent-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let listener = IpcListener::bind(&endpoint).expect("bind fake host");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let host = std::thread::spawn(move || {
+            let stream = listener
+                .incoming()
+                .next()
+                .expect("one connection")
+                .expect("accept");
+            let mut writer = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read control line");
+            if let Some(reply) = reply {
+                writeln!(writer, "{reply}").expect("write reply");
+                writer.flush().expect("flush reply");
+            }
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        });
+        let mut conn = IpcStream::connect(&endpoint).expect("connect to fake host");
+        conn.write_all(b"{\"type\":\"events_declare\"}\n")
+            .expect("send control line");
+        conn.flush().expect("flush control line");
+        FakeHost {
+            conn,
+            release: release_tx,
+            host,
+            _dir: dir,
+        }
+    }
+
+    /// Stint 1124: an unanswered consent prompt must not block `declare`
+    /// forever. It says on stderr what it waits for and where to answer, then
+    /// exits 2 once `--timeout` passes.
+    #[test]
+    fn declare_unanswered_consent_exits_2_within_timeout_and_says_why() {
+        let FakeHost {
+            conn,
+            release,
+            host,
+            _dir,
+        } = fake_host(None);
+        let timeout = Duration::from_millis(400);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let started = Instant::now();
+        let code = read_publish_reply(
+            conn,
+            Some(ConsentWait {
+                what: "stream probe/task.done",
+                notice_after: Duration::from_millis(100),
+                timeout,
+            }),
+            &mut out,
+            &mut err,
+        );
+        let elapsed = started.elapsed();
+        let _ = release.send(());
+        host.join().expect("fake host");
+
+        let err = String::from_utf8(err).expect("utf8 stderr");
+        assert_eq!(code, 2, "unanswered consent must exit 2; stderr={err}");
+        assert!(
+            elapsed >= timeout && elapsed < Duration::from_secs(5),
+            "must give up at --timeout, took {elapsed:?}"
+        );
+        assert!(
+            err.contains("stream probe/task.done")
+                && err.contains("consent prompt")
+                && err.contains("Plexi window")
+                && err.contains("--timeout"),
+            "stderr must name what it waits for and where to answer: {err}"
+        );
+        assert!(out.is_empty(), "stdout carries only the payload");
+    }
+
+    /// A prompt answer prints the host's detail and exits 0 with no waiting
+    /// notice, so pre-granted declares stay quiet.
+    #[test]
+    fn declare_prompt_reply_prints_detail_without_waiting_notice() {
+        let FakeHost {
+            conn,
+            release,
+            host,
+            _dir,
+        } = fake_host(Some(r#"{"type":"ok","detail":"declared"}"#));
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = read_publish_reply(
+            conn,
+            Some(ConsentWait {
+                what: "stream probe/task.done",
+                notice_after: Duration::from_secs(2),
+                timeout: Duration::from_secs(5),
+            }),
+            &mut out,
+            &mut err,
+        );
+        let _ = release.send(());
+        host.join().expect("fake host");
+
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(out).expect("utf8"), "declared\n");
+        assert!(err.is_empty(), "no notice for a prompt answer");
+    }
+}
+
+#[cfg(test)]
 mod pane_consumer_output_tests {
     use super::consume_lifecycle;
     #[test]
