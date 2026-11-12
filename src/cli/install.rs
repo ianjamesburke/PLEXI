@@ -171,6 +171,20 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
     }
 }
 
+/// Workspace root the no-arg `plexi plugin install` applies `plugins.toml` from.
+fn workspace_pack_root(cwd: &Path) -> Option<PathBuf> {
+    // The registry's walk stops at `$HOME` and at the login home, so a
+    // redirected `HOME` never makes the installed profile dir a workspace
+    // (stint 1337).
+    let root = crate::app::registry::resolve_workspace_root(cwd);
+    log::info!(
+        "cli: install_workspace_pack workspace walk from {} found {:?}",
+        cwd.display(),
+        root.as_ref().map(|r| r.display().to_string())
+    );
+    root
+}
+
 /// `plexi install` with no args — detect `<channel_dir>/plugins.toml` and apply it.
 ///
 /// Walks up from CWD looking for the channel dir (workspace marker), reads
@@ -188,9 +202,7 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let channel_dir = crate::config::workspace_channel_dir();
 
-    // The registry's walk: stops at `$HOME` and at the login home, so a
-    // redirected `HOME` never makes the real profile dir a workspace (stint 1337).
-    let workspace_root = crate::app::registry::resolve_workspace_root(&cwd);
+    let workspace_root = workspace_pack_root(&cwd);
 
     let Some(root) = workspace_root else {
         eprintln!(
@@ -786,5 +798,45 @@ mod uninstall_data_tests {
                 ..
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod workspace_pack_root_tests {
+    use super::workspace_pack_root;
+
+    /// Stint 1337: with `$HOME` redirected away from the login home, the no-arg
+    /// `plugin install` must not apply a `plugins.toml` from the login home's
+    /// installed profile dir.
+    #[test]
+    fn no_arg_install_does_not_treat_the_login_home_profile_as_a_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let cwd = login_home.join("projects").join("demo");
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(
+            workspace_pack_root(&cwd),
+            None,
+            "the login home's profile dir is not a workspace"
+        );
+    }
+
+    #[test]
+    fn no_arg_install_finds_a_workspace_under_the_login_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let workspace = login_home.join("projects").join("demo");
+        let cwd = workspace.join("src");
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(workspace.join(&channel_dir)).unwrap();
+        std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(workspace_pack_root(&cwd), Some(workspace));
     }
 }

@@ -42,20 +42,21 @@ pub(super) fn describe_plugin_init_collision(plugin_dir: &std::path::Path, name:
     msg
 }
 
-/// Workspace root for `plugin init` without `--global`: the registry's own
-/// upward walk, so `$HOME` and the login home are both stops (stint 1337).
-fn plugin_init_workspace_root(
-    cwd: &std::path::Path,
-    channel_dir: &str,
-    stops: &[std::path::PathBuf],
-) -> Option<std::path::PathBuf> {
-    let root = crate::app::registry::resolve_workspace_root_stopping_at(cwd, channel_dir, stops);
+/// Where `plugin init <name>` without `--global` scaffolds when run from
+/// `cwd`: `<workspace>/<channel_dir>/plugins/<name>`, or `None` outside a
+/// workspace.
+fn plugin_init_workspace_dir(cwd: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let channel_dir = plugin_init_config_dir();
+    // The registry's walk stops at `$HOME` and at the login home, so a
+    // redirected `HOME` never makes the installed profile dir a workspace
+    // (stint 1337).
+    let root = crate::app::registry::resolve_workspace_root_with_channel(cwd, &channel_dir);
     log::info!(
         "plugin_init: workspace walk from {} for {channel_dir}/ found {:?}",
         cwd.display(),
         root.as_ref().map(|r| r.display().to_string())
     );
-    root
+    root.map(|root| root.join(&channel_dir).join("plugins").join(name))
 }
 
 /// `plexi plugin init [--lang python|rust] [--global] <name> [--open]`
@@ -99,13 +100,8 @@ pub fn plugin_init(
     let plugin_dir = if global {
         crate::app::registry::plugins_dir().join(name)
     } else {
-        let workspace_root = plugin_init_workspace_root(
-            &cwd,
-            &channel_dir,
-            &crate::app::registry::workspace_walk_stops(),
-        );
-        match workspace_root {
-            Some(root) => root.join(&channel_dir).join("plugins").join(name),
+        match plugin_init_workspace_dir(&cwd, name) {
+            Some(dir) => dir,
             None => {
                 eprintln!(
                     "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
@@ -3486,49 +3482,45 @@ mod scaffold_marketplace_tests {
 
 #[cfg(test)]
 mod plugin_init_workspace_walk_tests {
-    use super::plugin_init_workspace_root;
+    use super::{plugin_init_config_dir, plugin_init_workspace_dir};
 
-    /// Stint 1337: with `HOME` redirected, the real login home is still not a
-    /// workspace, even though it holds the installed channel profile dir.
+    /// Stint 1337: `$HOME` is not the login home (a sandbox or test profile
+    /// redirected it), the cwd is under the login home, and the login home
+    /// holds the installed channel profile dir. `plugin init` must not take
+    /// that profile dir for a workspace.
     #[test]
-    fn walk_stops_at_the_login_home_when_home_is_redirected() {
+    fn plugin_init_does_not_scaffold_into_the_login_home_profile() {
         let tmp = tempfile::tempdir().unwrap();
-        let redirected_home = tmp.path().join("sandbox-home");
         let login_home = tmp.path().join("login-home");
         let cwd = login_home.join("projects").join("demo");
-        std::fs::create_dir_all(&redirected_home).unwrap();
+        let profile = login_home.join(plugin_init_config_dir());
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::create_dir_all(login_home.join(".plexi-alpha")).unwrap();
-
-        let found = plugin_init_workspace_root(
-            &cwd,
-            ".plexi-alpha",
-            &[redirected_home, login_home.clone()],
-        );
+        std::fs::create_dir_all(&profile).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
 
         assert_eq!(
-            found, None,
-            "the login home's profile dir must not be taken for a workspace"
-        );
-        assert!(
-            !login_home.join(".plexi-alpha").join("plugins").exists(),
-            "nothing may be written under the login home's profile dir"
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            None,
+            "the login home's profile dir is not a workspace"
         );
     }
 
     #[test]
-    fn walk_finds_a_workspace_marker_in_an_ancestor() {
+    fn plugin_init_scaffolds_into_a_workspace_under_the_login_home() {
         let tmp = tempfile::tempdir().unwrap();
         let login_home = tmp.path().join("login-home");
         let workspace = login_home.join("projects").join("demo");
         let cwd = workspace.join("src").join("deep");
+        let channel_dir = plugin_init_config_dir();
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::create_dir_all(workspace.join(".plexi-alpha")).unwrap();
-        std::fs::create_dir_all(login_home.join(".plexi-alpha")).unwrap();
+        std::fs::create_dir_all(workspace.join(&channel_dir)).unwrap();
+        std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
 
-        let found = plugin_init_workspace_root(&cwd, ".plexi-alpha", &[login_home]);
-
-        assert_eq!(found, Some(workspace));
+        assert_eq!(
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            Some(workspace.join(&channel_dir).join("plugins").join("myapp"))
+        );
     }
 }
 

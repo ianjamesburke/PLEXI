@@ -1135,7 +1135,10 @@ pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_workspace_root_with_channel(
+    start: &Path,
+    channel_dir: &str,
+) -> Option<PathBuf> {
     resolve_workspace_root_stopping_at(start, channel_dir, &workspace_walk_stops())
 }
 
@@ -1151,12 +1154,48 @@ pub(crate) fn workspace_walk_stops() -> Vec<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         stops.push(home);
     }
-    if let Some(login) = login_home_dir() {
+    if let Some(login) = effective_login_home() {
         if !stops.iter().any(|have| paths_same(have, &login)) {
             stops.push(login);
         }
     }
     stops
+}
+
+fn effective_login_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(login) = TEST_LOGIN_HOME.with(|c| c.borrow().clone()) {
+        return Some(login);
+    }
+    login_home_dir()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Per-thread login home for tests. The passwd database cannot be pointed
+    /// at a temp dir, so a test that needs "`$HOME` is not the login home"
+    /// names the login home here and leaves `$HOME` alone.
+    static TEST_LOGIN_HOME: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that clears the per-thread test login home on drop.
+#[cfg(test)]
+pub(crate) struct TestLoginHomeGuard;
+
+#[cfg(test)]
+impl Drop for TestLoginHomeGuard {
+    fn drop(&mut self) {
+        TEST_LOGIN_HOME.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Name the login home for the current test thread. Hold the guard for the
+/// duration of the test.
+#[cfg(test)]
+pub(crate) fn set_test_login_home(path: &Path) -> TestLoginHomeGuard {
+    TEST_LOGIN_HOME.with(|c| *c.borrow_mut() = Some(path.to_path_buf()));
+    TestLoginHomeGuard
 }
 
 fn is_walk_stop(path: &Path, stops: &[PathBuf]) -> bool {
@@ -1216,7 +1255,7 @@ fn login_home_dir() -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn resolve_workspace_root_stopping_at(
+fn resolve_workspace_root_stopping_at(
     start: &Path,
     channel_dir: &str,
     stops: &[PathBuf],
