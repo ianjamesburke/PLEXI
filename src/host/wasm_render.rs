@@ -211,8 +211,8 @@ struct TreeRenderEnv<'a> {
 }
 
 /// Rows nested deeper than this, and rows inside another row's measuring
-/// pass, are laid out in one pass: their long text is not wrapped and `align`
-/// is resolved against the row's running height. A measuring pass renders a
+/// pass, are laid out in one pass: their long text is not wrapped and their
+/// children are centered whatever `align` says. A measuring pass renders a
 /// row's whole subtree once more, and trees are untrusted guest input, so the
 /// number of rows that may each do that above any one node is bounded. With
 /// the rule that a measuring pass never lays a flex column out, one frame
@@ -1285,20 +1285,20 @@ fn row_text_overflows(
         > available
 }
 
-/// What one measuring pass over a row found: its height, where each child
-/// starts along the row, and where the last child ends.
+/// What one measuring pass over a row found: its height and the rect each
+/// child took, in the measuring pass's own coordinates.
 struct RowMeasure {
     height: f32,
-    child_start: Vec<f32>,
-    end: f32,
+    child_rects: Vec<egui::Rect>,
 }
 
 impl RowMeasure {
     /// Width the children after `idx` need, including the gap before them.
     fn reserved_after(&self, idx: usize, gap: f32) -> f32 {
-        self.child_start
-            .get(idx + 1)
-            .map_or(0.0, |start| self.end - start + gap)
+        match (self.child_rects.get(idx + 1), self.child_rects.last()) {
+            (Some(next), Some(last)) => last.max.x - next.min.x + gap,
+            _ => 0.0,
+        }
     }
 }
 
@@ -1359,21 +1359,23 @@ fn measure_row(
         ..env
     };
     let mut sizing_out = RenderResult::default();
-    let mut child_start = Vec::with_capacity(r.children.len());
-    for idx in 0..r.children.len() {
-        child_start.push(sizing.cursor().min.x);
-        render_row_child(&mut sizing, env, r, idx, grid_cols, &mut sizing_out, depth);
-    }
+    let child_rects = (0..r.children.len())
+        .map(|idx| {
+            sizing
+                .scope(|ui| render_row_child(ui, env, r, idx, grid_cols, &mut sizing_out, depth))
+                .response
+                .rect
+        })
+        .collect();
     RowMeasure {
         height: sizing.min_rect().height(),
-        child_start,
-        end: sizing.min_rect().max.x,
+        child_rects,
     }
 }
 
 /// A horizontal run of a row. `egui` aligns each child against the height the
 /// run has when the child is added, so a run that places its children at the
-/// bottom is given the measured row height to place them in.
+/// top or bottom is given the measured row height to place them in.
 fn row_line<R>(
     ui: &mut egui::Ui,
     valign: egui::Align,
@@ -1439,7 +1441,9 @@ fn render_row_node(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = r.gap;
                 for line in lines {
-                    row_line(ui, valign, None, |ui| {
+                    // Buttons on a line share one height, so `align` has
+                    // nothing to place.
+                    row_line(ui, egui::Align::Center, None, |ui| {
                         ui.spacing_mut().item_spacing.x = r.gap;
                         for child in &r.children[line] {
                             render_node(ui, env, *child, out, depth + 1);
@@ -1452,9 +1456,11 @@ fn render_row_node(
     }
 
     // One measuring pass per row at most, and only when the row needs it: to
-    // place children at its bottom edge, or to wrap a long text.
+    // place children at its top or bottom edge, or to wrap a long text. A row
+    // that may not measure centers its children, as rows always have.
     let mut measure: Option<RowMeasure> = None;
-    if may_measure && valign == egui::Align::Max {
+    let placed = may_measure && valign != egui::Align::Center;
+    if placed {
         let measured = measure_row(ui, env, r, grid_cols, depth);
         trace_layout_once(ui, "row align places children across the row", || {
             format!("row={id} align={:?} row_h={:.0}", r.align, measured.height)
@@ -1462,7 +1468,8 @@ fn render_row_node(
         measure = Some(measured);
     }
     let height = measure.as_ref().map(|m| m.height);
-    row_line(ui, valign, height, |ui| {
+    let line_align = if placed { valign } else { egui::Align::Center };
+    row_line(ui, line_align, height, |ui| {
         ui.spacing_mut().item_spacing.x = r.gap;
         for (idx, child) in r.children.iter().enumerate() {
             let text = find_node(nodes, *child).and_then(|n| match &n.data {
@@ -1496,7 +1503,24 @@ fn render_row_node(
                     }
                 }
             }
-            render_row_child(ui, env, r, idx, grid_cols, out, depth);
+            let slot = measure
+                .as_ref()
+                .filter(|_| placed)
+                .and_then(|m| m.child_rects.get(idx))
+                .map(|rect| rect.size());
+            match slot {
+                // The row places the child's measured slot at its top or
+                // bottom; inside the slot the child lays itself out centered,
+                // so a button's label stays in the middle of the button.
+                Some(size) => {
+                    ui.allocate_ui_with_layout(
+                        size,
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| render_row_child(ui, env, r, idx, grid_cols, out, depth),
+                    );
+                }
+                None => render_row_child(ui, env, r, idx, grid_cols, out, depth),
+            }
         }
     });
 }
@@ -3416,6 +3440,41 @@ mod tests {
             small.min.x < pane.x / 4.0,
             "align is the cross axis: the row stays at the left edge, got {small:?}"
         );
+
+        // The row places the button, not the label inside it: in a top-aligned
+        // row the label is still in the middle of its button.
+        for align in [Alignment::Start, Alignment::End] {
+            let tree = UiTree {
+                root: 0,
+                nodes: vec![
+                    row_node(0, vec![1, 2], style::SPACE_SM, align),
+                    button_node(1, "Save"),
+                    node(
+                        2,
+                        UiNodeData::Text(TextNode {
+                            text: "TALL".to_string(),
+                            size: Some(48.0),
+                            bold: false,
+                            color: None,
+                            truncate: false,
+                            align: Alignment::Start,
+                        }),
+                    ),
+                ],
+            };
+            let texts = painted_texts(&tree, pane);
+            let label = painted_text(&texts, "Save").rect;
+            let tall = painted_text(&texts, "TALL").rect;
+            let button_center = match align {
+                Alignment::End => tall.max.y - style::BUTTON_H_MD / 2.0,
+                _ => tall.min.y + style::BUTTON_H_MD / 2.0,
+            };
+            assert!(
+                (label.center().y - button_center).abs() <= 2.0,
+                "{align:?}: label centre {} should be the button centre {button_center}",
+                label.center().y
+            );
+        }
     }
 
     /// Run `render` and return how many `render_node` calls it made.
