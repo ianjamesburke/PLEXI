@@ -3,8 +3,8 @@ description: >
   Rust toolchain, cargo cache, and the verified CPython-WASI bundle. The single
   definition of what a Plexi CI job needs to build and to run Python guests.
 
-# Why this exists: rust-host.yml and roadmap-evidence.yml both need this setup,
-# and the second was written by hand-copying the first. The CPython-WASI bundle
+# Why this exists: more than one workflow needs this setup, and a second one
+# was once written by hand-copying the first. The CPython-WASI bundle
 # steps were dropped in the copy, so every scene spawning a Python guest failed
 # with wait_app_frame_failed and no deadline could have fixed it — there was no
 # interpreter to produce a first frame. Define it once; a new workflow cannot
