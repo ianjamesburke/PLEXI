@@ -4016,7 +4016,7 @@ mod tests {
         let rows = [
             serde_json::json!({"type": "row", "children": [1, 3]}),
             serde_json::json!({"type": "row", "children": [1, 3], "align": "start"}),
-            serde_json::json!({"type": "row", "children": [1, 3], "justify": "start"}),
+            serde_json::json!({"type": "row", "children": [1, 3], "justify": "center"}),
             serde_json::json!({"type": "row", "children": [1, 5, 3]}),
         ];
         for (cell, row) in cells.iter().flat_map(|c| rows.iter().map(move |r| (c, r))) {
@@ -4445,19 +4445,60 @@ mod tests {
         let tree = UiTree { root: 0, nodes };
         let count = tree.nodes.len();
         let pane = egui::vec2(800.0, 600.0);
-        // The cells fit: the row hands its leftover width to the spacers.
+        // The cells fit, so the row hands its leftover width to the spacers:
+        // the spacer between the first two cells takes a share of about
+        // 120px. The fallback layout gives a grow spacer no width at all.
         let rects = laid_out(&tree, pane);
-        let (_, right) = content_x(pane);
-        let last_go = rect_of(&rects, 1 + (CELLS - 1) * 4 + 3);
+        let (first, second) = (rect_of(&rects, 1), rect_of(&rects, 5));
         assert!(
-            last_go.max.x < right - 100.0,
-            "the last cell is followed by a spacer's share: {last_go:?}"
+            second.min.x - first.max.x > 80.0,
+            "the spacer between the cells takes its share: {first:?} {second:?}"
         );
         let calls = render_node_calls(|| {
             painted_shapes(&tree, pane);
         });
         assert!(
             calls <= count * 2,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// Flex columns and justified rows nested alternately forty deep: a
+    /// row's measuring pass lays a flex column out at its content's size,
+    /// rows inside that pass do not measure, and a column's own measuring
+    /// pass never lays a flex column out, so visits stay within the frame
+    /// bound.
+    #[test]
+    fn alternating_flex_columns_and_rows_stay_within_the_visit_bound() {
+        const DEPTH: u32 = 40;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 2;
+            if level % 2 == 0 {
+                nodes.push(flex_column(
+                    base,
+                    vec![base + 1, base + 2],
+                    Alignment::Center,
+                    Justify::Center,
+                ));
+                nodes.push(text_node(base + 1, "level"));
+            } else {
+                nodes.push(justified_row_node(
+                    base,
+                    vec![base + 1, base + 2],
+                    Justify::SpaceBetween,
+                ));
+                nodes.push(button_node(base + 1, "Go"));
+            }
+        }
+        nodes.push(text_node(DEPTH * 2, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(800.0, 600.0));
+        });
+        assert!(
+            calls <= count * 2 * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
             "{calls} render_node calls for {count} nodes"
         );
     }
