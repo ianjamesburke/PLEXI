@@ -546,40 +546,37 @@ pub struct PlexiBehavior<'a> {
     pub resized: bool,
 }
 
-impl Behavior<PaneId> for PlexiBehavior<'_> {
-    fn on_edit(&mut self, action: egui_tiles::EditAction) {
-        if matches!(action, egui_tiles::EditAction::TileResized) {
-            self.resized = true;
-        }
-    }
+/// Where one pane is presented this frame. The tiled tree derives it from the
+/// strip snapshot; the zoom overlay passes the whole canvas. Everything else
+/// about the pane (header, attention, corner mask, content) is presented by
+/// [`PlexiBehavior::present_pane`] either way.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaneViewport {
+    /// Accepts pointer focus and file-drag targeting.
+    pub(crate) hit_rect: egui::Rect,
+    /// Pane content is clipped to this rect.
+    pub(crate) clip_rect: egui::Rect,
+    /// The pane is the only drop target (zoom), so a drop needs no pointer
+    /// position: macOS reports a stale pointer during OS-level file drags.
+    pub(crate) sole_drop_target: bool,
+}
 
-    fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
-        // While any pane is zoomed, paint background panes as dark placeholders
-        // and skip all input detection — the zoom overlay owns focus and drop
-        // handling. This avoids per-pane `ui.input()` calls during hover, which
-        // were O(n) and ran even when the results could never be acted on.
-        if self.zoomed_pane.is_some() {
-            let pane_rect = ui.available_rect_before_wrap();
-            ui.painter()
-                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            return UiResponse::None;
-        }
-
-        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
-        if self.off_strip_panes.contains(pane_id) || snapshot_pane.is_some_and(|p| !p.is_visible) {
-            let pane_rect = ui.available_rect_before_wrap();
-            let fill = match self.panes.get(pane_id) {
-                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
-                _ => self.colors.bg_darkest,
-            };
-            ui.painter().rect_filled(pane_rect, 0.0, fill);
-            return UiResponse::None;
-        }
-
-        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
-        let hit_rect = snapshot_pane
-            .map(|p| p.hit_rect.intersect(visible_rect))
-            .unwrap_or(visible_rect);
+impl PlexiBehavior<'_> {
+    /// Present one pane into `ui`, whose max rect is the pane's frame. Shared
+    /// by the tiled tree and the zoom overlay so zoom changes only the
+    /// viewport, never the pane's chrome.
+    pub(crate) fn present_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        tile_id: TileId,
+        pane_id: &mut PaneId,
+        viewport: PaneViewport,
+    ) {
+        let PaneViewport {
+            hit_rect,
+            clip_rect,
+            sole_drop_target,
+        } = viewport;
         let pointer_in_hit_rect = hit_rect.width() > 0.5
             && hit_rect.height() > 0.5
             && ui.input(|i| {
@@ -590,11 +587,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         // Detect clicks or file drags for focus inside the visible hit_rect only.
         let is_click = ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect;
-        let is_drag_hovering = match self.drag_cursor_pos {
-            Some(pos) => {
-                hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos)
+        let is_drag_hovering = if sole_drop_target {
+            ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
+        } else {
+            match self.drag_cursor_pos {
+                Some(pos) => {
+                    hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos)
+                }
+                None => self.hovered_files && pointer_in_hit_rect,
             }
-            None => self.hovered_files && pointer_in_hit_rect,
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
@@ -617,8 +618,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
-        // Drop target: the zoomed overlay owns drops when a pane is zoomed,
-        // so this path only runs when zoomed_pane.is_none() (guaranteed above).
+        // Drop target: the tiled pane under the pointer, or the zoomed pane,
+        // which is the sole drop target while zoomed.
         if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
@@ -693,12 +694,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             .unwrap_or_default();
 
         let Some(pane) = self.panes.get_mut(pane_id) else {
-            return UiResponse::None;
+            return;
         };
-
-        let clip_rect = snapshot_pane
-            .map(|p| p.clip_rect.intersect(visible_rect))
-            .unwrap_or(visible_rect);
 
         let pane_state = pane.effective_activity().cloned();
         if let Some(view_pane) = pane.as_view_mut() {
@@ -863,6 +860,50 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             style::pane_radius(self.pane_corner_radius, outer),
             self.colors.bg_darkest,
         );
+    }
+}
+
+impl Behavior<PaneId> for PlexiBehavior<'_> {
+    fn on_edit(&mut self, action: egui_tiles::EditAction) {
+        if matches!(action, egui_tiles::EditAction::TileResized) {
+            self.resized = true;
+        }
+    }
+
+    fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
+        // While any pane is zoomed, paint background panes as dark placeholders
+        // and skip all input detection — the zoom overlay owns focus and drop
+        // handling. This avoids per-pane `ui.input()` calls during hover, which
+        // were O(n) and ran even when the results could never be acted on.
+        if self.zoomed_pane.is_some() {
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter()
+                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            return UiResponse::None;
+        }
+
+        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
+        if self.off_strip_panes.contains(pane_id) || snapshot_pane.is_some_and(|p| !p.is_visible) {
+            let pane_rect = ui.available_rect_before_wrap();
+            let fill = match self.panes.get(pane_id) {
+                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
+                _ => self.colors.bg_darkest,
+            };
+            ui.painter().rect_filled(pane_rect, 0.0, fill);
+            return UiResponse::None;
+        }
+
+        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
+        let viewport = PaneViewport {
+            hit_rect: snapshot_pane
+                .map(|p| p.hit_rect.intersect(visible_rect))
+                .unwrap_or(visible_rect),
+            clip_rect: snapshot_pane
+                .map(|p| p.clip_rect.intersect(visible_rect))
+                .unwrap_or(visible_rect),
+            sole_drop_target: false,
+        };
+        self.present_pane(ui, tile_id, pane_id, viewport);
         UiResponse::None
     }
 
