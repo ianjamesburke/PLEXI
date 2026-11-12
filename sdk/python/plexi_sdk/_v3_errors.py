@@ -82,9 +82,17 @@ def fatal_error_fields(
         "file": location[0] if location else None,
         "line": location[1] if location else None,
         "exception": type(exc).__name__,
-        "message": str(exc),
+        "message": _message_text(exc),
         "traceback": "".join(summary.format()),
     }
+
+
+def _message_text(exc: BaseException) -> str:
+    """`str(exc)`, or a placeholder when the exception's own `__str__` raises."""
+    try:
+        return str(exc)
+    except Exception:
+        return f"<unprintable {type(exc).__name__} object>"
 
 
 def _plugin_relative(filename: str, plugin_root: Path) -> str | None:

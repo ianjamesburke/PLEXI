@@ -245,3 +245,21 @@ def test_traceback_uses_plugin_relative_paths(tmp_path):
     assert SDK_PATH not in traceback_text
     assert 'File "plexi_sdk/_v3_runtime.py"' in traceback_text
     assert traceback_text.rstrip().endswith("KeyError: 'missing'")
+
+
+def test_an_exception_whose_str_raises_still_produces_a_report(tmp_path):
+    source = _IMPORTS + _GOOD_INIT + _GOOD_UPDATE + textwrap.dedent(
+        """\
+        class Unprintable(Exception):
+            def __str__(self):
+                raise RuntimeError("no text for you")
+
+        def view():
+            raise Unprintable()
+        """
+    )
+    messages, _stderr, _rc = _run_plugin(tmp_path, source)
+    fatal = _fatal(messages)
+    assert fatal["exception"] == "Unprintable"
+    assert fatal["message"] == "<unprintable Unprintable object>"
+    assert fatal["line"] == _line_of(source, "raise Unprintable()")

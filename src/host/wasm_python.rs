@@ -1038,6 +1038,7 @@ impl HeadlessPythonSession {
                 tree_message = Some(message.clone());
             }
             message_type == Some("frame_done")
+                && message.get("frame_id").and_then(Value::as_u64) == Some(frame_id)
         })?;
         let message = tree_message.ok_or_else(|| {
             WasmPythonError::BridgeJson(
@@ -1216,6 +1217,9 @@ pub struct LivePythonPane {
     wake_schedule: WakeSchedule,
     wants_close: bool,
     error: Option<String>,
+    /// `Some` once the guest has sent `fatal_error`: the count of its messages
+    /// dropped since. That report is final, so nothing after it is serviced.
+    dropped_after_fatal: Option<u64>,
     /// stderr accumulated from a Python traceback until its unindented
     /// exception line arrives. `DrainableOutput` may split one traceback
     /// across several non-blocking drains.
@@ -2804,6 +2808,7 @@ impl LivePythonPane {
             wake_schedule,
             wants_close: false,
             error: None,
+            dropped_after_fatal: None,
             pending_traceback_stderr: String::new(),
             timers: std::collections::HashMap::new(),
             pending_timer_events: Vec::new(),
@@ -3385,6 +3390,17 @@ impl LivePythonPane {
             self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
+        if let Some(dropped) = self.dropped_after_fatal.as_mut() {
+            if *dropped == 0 {
+                log::info!(
+                    "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
+                    self.plugin_id,
+                    message_type.unwrap_or("<missing>").escape_debug()
+                );
+            }
+            *dropped += 1;
+            return;
+        }
         // Permission polls arrive every second from the Permissions plugin.
         // Handle them before the generic match so a miss cannot fall through
         // to the unhandled warning and leave the list blank.
@@ -3511,6 +3527,7 @@ impl LivePythonPane {
                     self.plugin_id
                 );
                 self.error = Some(error);
+                self.dropped_after_fatal = Some(0);
             }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(command)) => {
@@ -4931,6 +4948,7 @@ impl LivePythonPane {
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
+        self.dropped_after_fatal = None;
         self.pending_traceback_stderr.clear();
         self.wants_close = false;
         self.timers.clear();

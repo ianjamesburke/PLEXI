@@ -204,3 +204,48 @@ fn live_pane_failure_leads_with_the_plugin_exception() {
     assert_eq!(pane.error(), Some(expected.as_str()));
     assert_eq!(pane.lifecycle(), ("failed", Some(expected.as_str())));
 }
+
+/// The report is final: a guest that keeps talking after `fatal_error` gets
+/// nothing serviced, and cannot rewrite the failure the pane shows.
+#[test]
+fn live_pane_ignores_everything_after_the_first_fatal_error() {
+    let app = tempfile::tempdir().expect("plugin dir");
+    std::fs::write(
+        app.path().join("main.py"),
+        format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
+    )
+    .expect("write entry");
+    let mut pane = LivePythonPane::launch(launch_config(app.path())).expect("launch CPython WASM");
+    let fatal = |message: &str| {
+        json!({
+            "type": "fatal_error",
+            "phase": "view",
+            "file": "main.py",
+            "line": 3,
+            "exception": "RuntimeError",
+            "message": message,
+            "traceback": "Traceback (most recent call last):\nRuntimeError\n",
+        })
+    };
+    pane.handle_message(fatal("first"));
+    let expected = "plugin error in main.py:3 (view): RuntimeError: first";
+    assert_eq!(pane.error(), Some(expected));
+    assert_eq!(pane.dropped_after_fatal, Some(0));
+
+    pane.handle_message(fatal("second"));
+    pane.handle_message(json!({"type": "log", "level": "info", "message": "still here"}));
+    pane.handle_message(json!({"type": "ready", "sdk": "x", "features_used": []}));
+    pane.handle_message(json!({"type": "set_title", "title": "forged"}));
+
+    assert_eq!(
+        pane.error(),
+        Some(expected),
+        "a later report must not replace the first"
+    );
+    assert!(
+        !pane.ready,
+        "a message after fatal_error must not be handled"
+    );
+    assert_eq!(pane.display_name(), "test.fatal-error");
+    assert_eq!(pane.dropped_after_fatal, Some(4));
+}
