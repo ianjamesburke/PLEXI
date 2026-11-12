@@ -274,9 +274,7 @@ changes.
 Set `read_only=True` only for tools that never mutate plugin or workspace state.
 For Assistant calls specifically, read-only tools run without a write-grant
 prompt while every call is still recorded. Mutating Assistant calls prompt for
-an allow-once or persisted narrow grant before they run. The SDK does not
-enforce the flag: effects in a `tools.Reply` from a read-only tool are still
-applied.
+an allow-once or persisted narrow grant before they run.
 
 ## Cross-plugin events
 
@@ -488,8 +486,9 @@ The scaffold writes a valid `manifest.toml`; the shape lives in the template at
 adapter (stint 0285). Declare capabilities under `[plugin.capabilities]`. The
 accepted IDs and what each allows are the "Capability registry" table in
 [`plugin-manifest.md`](../../website/src/content/docs/plugin-manifest.md),
-generated from `Capability::ALL` in `src/app/permissions.rs`. An ID outside
-that table fails `plexi plugin check` and install.
+generated from `Capability::ALL` in `src/app/permissions.rs`. An ID that is
+not in the table, or that the table marks Reserved, fails `plexi plugin check`
+and install.
 
 `[[contributes.views]]` declares the views a plugin offers:
 
