@@ -449,10 +449,36 @@ impl PlexiApp {
         self.notes_picker_notice = Some((message, std::time::Instant::now()));
     }
 
+    /// Drop the undo record and the notice once their toasts have dwelt, so
+    /// Cmd+Z and the toast always agree on what is undoable. Runs from
+    /// `App::logic`, so a hidden window still expires them.
+    pub(crate) fn expire_notes_toasts(&mut self) {
+        let undo_expired = self
+            .notes_picker_undo
+            .as_ref()
+            .is_some_and(|deleted| deleted.at.elapsed() >= style::TOAST_DWELL_UNDO);
+        if undo_expired {
+            if let Some(deleted) = self.notes_picker_undo.take() {
+                log::info!(
+                    "notes_picker: undo window for {:?} expired after {:?}; the note stays in Trash",
+                    deleted.entry.path,
+                    style::TOAST_DWELL_UNDO
+                );
+            }
+        }
+        if self
+            .notes_picker_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= style::TOAST_DWELL_NOTICE)
+        {
+            self.notes_picker_notice = None;
+        }
+    }
+
     pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
         let Some(deleted) = self.notes_picker_undo.as_ref() else {
             if let Some((message, at)) = &self.notes_picker_notice {
-                let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
+                let remaining = style::TOAST_DWELL_NOTICE.saturating_sub(at.elapsed());
                 if !remaining.is_zero() {
                     crate::ui::toast::ToastShell::bottom("notes_delete_notice").show(
                         ctx,
@@ -469,8 +495,7 @@ impl PlexiApp {
             }
             return;
         };
-        const DURATION: std::time::Duration = std::time::Duration::from_secs(8);
-        let remaining = DURATION.saturating_sub(deleted.at.elapsed());
+        let remaining = style::TOAST_DWELL_UNDO.saturating_sub(deleted.at.elapsed());
         if remaining.is_zero() {
             return;
         }

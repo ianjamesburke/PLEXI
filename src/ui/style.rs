@@ -345,6 +345,11 @@ pub const PRESS_SCALE: f32 = 0.97;
 const _: () =
     assert!(DURATION_PRESS_MS <= 300 && DURATION_MICRO_MS <= 300 && DURATION_TOAST_MS <= 300);
 
+// How long a transient toast stays on screen (its motion is `DURATION_TOAST_MS`).
+// An undo toast covers noticing a slip; a plain notice only confirms.
+pub const TOAST_DWELL_UNDO: std::time::Duration = std::time::Duration::from_secs(4);
+pub const TOAST_DWELL_NOTICE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// CSS cubic-bezier(0.23, 1, 0.32, 1), evaluated by inverting its x curve.
 pub fn ease_out_cubic(t: f32) -> f32 {
     if t <= 0.0 {
