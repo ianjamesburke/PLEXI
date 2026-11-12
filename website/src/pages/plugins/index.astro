@@ -1,144 +1,185 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import Newsletter from '../../components/Newsletter.astro';
+import PageHead from '../../components/PageHead.astro';
+import Arrow from '../../components/Arrow.astro';
+import Shot from '../../components/Shot.astro';
+import Notice from '../../components/Notice.astro';
+import bundled from '../../lib/bundled-plugins.json';
+import { release } from '../../lib/release';
+
+// Generated from packs/core.toml by scripts/gen-bundled-plugins.mjs. Never typed by hand.
+type Bundled = { id: string; name: string; description: string; capabilities: string[]; source: string };
+const plugins = bundled as Bundled[];
+const TOOL_IDS = ['todo', 'logs', 'github-issues', 'calc'];
+const tools = TOOL_IDS.map(id => plugins.find(p => p.id === id)).filter((p): p is Bundled => Boolean(p));
+const games = plugins.filter(p => !TOOL_IDS.includes(p.id));
+const sourceUrl = (p: Bundled) => `${release.repo}/tree/alpha/${p.source}`;
+
+const steps = [
+  { cmd: 'plexi plugin init myapp', note: 'Writes main.py, manifest.toml, a test, and AGENTS.md for the agent that will work on it.' },
+  { cmd: 'plexi plugin check myapp --png-dir /tmp/myapp-shots', note: 'Checks the manifest and the SDK calls, renders the view at several sizes and saves a PNG of each.' },
+  { cmd: 'plexi view open myapp', note: 'Opens the view in a split beside the pane you ran it from.' },
+  { cmd: 'plexi view render myapp --png --output /tmp/myapp.png', note: 'Renders one frame without a window, so an agent can look at its own work.' },
+];
 ---
+<Layout
+  title="Plugins and views | Plexi"
+  description="A Plexi plugin is a small Python package that draws a view in a pane. See the plugins that ship with Plexi and how to build your own."
+>
+  <PageHead title="Plugins." lede="Small local tools that run in a pane. A set of them ships with Plexi, and you or your agent can write more in Python.">
+    <a class="btn lg" href="/docs/plugins">Build one <Arrow /></a>
+    <a class="link-arrow" href="/docs/sdk">SDK reference <Arrow /></a>
+  </PageHead>
 
-<Layout title="Plugins — Plexi" description="Build and run local Plexi plugins with the v1 plugin runtime and Python SDK.">
-  <div class="wrap">
-    <header class="plugins-header">
-      <div class="soon-badge">Local plugin runtime</div>
-      <h1>Build plugins for your workspace.</h1>
-      <p class="sub">
-        Create, test, and open plugins locally with <code>plexi plugin</code> and the
-        Python SDK. Plugins run in panes and request only the capabilities they need.
-      </p>
-    </header>
+  <section class="wrap split" id="model" aria-labelledby="model-title">
+    <h2 class="h2" id="model-title">Words to know.</h2>
+    <dl class="facts">
+      <div><dt>Plugin</dt><dd><strong>The package.</strong> A folder with a <code class="inline">manifest.toml</code> and Python source. The manifest names the plugin, its entry point and the capabilities it asks for.</dd></div>
+      <div><dt>View</dt><dd><strong>What you see.</strong> The interface a plugin draws inside a pane. Views tile, split and close like terminals do.</dd></div>
+      <div><dt>Capability</dt><dd><strong>What it may touch.</strong> File access, network requests, secrets and timers are host APIs. A plugin lists the ones it wants. Listing one is a request, not a grant.</dd></div>
+      <div><dt>Before {release.next}</dt><dd>Plugins were called apps. Beta {release.beta.version} and older docs still use that word in places.</dd></div>
+    </dl>
+  </section>
 
-    <div class="empty">
-      <p>Start with a local plugin, not a catalog.</p>
-      <p class="empty-sub">
-        See <a href="/docs/plugins">the plugin runtime guide</a> and the
-        <a href="/docs/sdk"> Python SDK reference</a>. Marketplace and publishing
-        flows are beta-gated and are not part of stable v1.
-      </p>
+  <section class="wrap" id="bundled" aria-labelledby="bundled-title">
+    <div class="bundled-head">
+      <h2 class="h2" id="bundled-title">In the box.</h2>
+      <p class="lead">{plugins.length} plugins ship with Plexi. Each is built on the same SDK you get, so each one is also example code.</p>
     </div>
-  </div>
 
-  <Newsletter />
+    <h3 class="group-label">Tools</h3>
+    <ul class="plugin-list">
+      {tools.map(p => (
+        <li>
+          <h4><a href={sourceUrl(p)}>{p.name}<Arrow dir="ne" size={12} /></a></h4>
+          <p>{p.description}</p>
+          <p class="caps"><span>Asks for</span> {p.capabilities.length ? p.capabilities.join(', ') : 'nothing'}</p>
+        </li>
+      ))}
+    </ul>
+
+    <h3 class="group-label">Games, which double as SDK examples</h3>
+    <ul class="plugin-list">
+      {games.map(p => (
+        <li>
+          <h4><a href={sourceUrl(p)}>{p.name}<Arrow dir="ne" size={12} /></a></h4>
+          <p>{p.description}</p>
+          <p class="caps"><span>Asks for</span> {p.capabilities.length ? p.capabilities.join(', ') : 'nothing'}</p>
+        </li>
+      ))}
+    </ul>
+    <p class="list-source">This list is generated from <a class="text-link" href={`${release.repo}/blob/alpha/packs/core.toml`}>packs/core.toml</a> and each plugin's manifest.</p>
+  </section>
+
+  <section class="wrap" id="build" aria-labelledby="build-title">
+    <div class="bundled-head">
+      <h2 class="h2" id="build-title">Three functions.</h2>
+      <p class="lead">A plugin is <code class="inline">init</code>, <code class="inline">update</code> and <code class="inline">view</code>. No class and nothing to inherit from.</p>
+    </div>
+    <div class="build-grid">
+      <pre class="code" tabindex="0" aria-label="Counter plugin source"><code><span class="k">from</span> plexi_sdk <span class="k">import</span> log, state
+<span class="k">from</span> plexi_sdk.effects <span class="k">import</span> SetState, SetTitle
+<span class="k">from</span> plexi_sdk.events <span class="k">import</span> KeyEvent
+<span class="k">from</span> plexi_sdk.ui <span class="k">import</span> SurfaceHeader, Column, FooterKeys, Text
+
+
+<span class="k">def</span> init(size, args):
+    log.info("counter: init")
+    <span class="k">return</span> [SetTitle("Counter"), SetState(&#123;"count": 0&#125;)]
+
+
+<span class="k">def</span> update(event):
+    <span class="k">if</span> isinstance(event, KeyEvent) <span class="k">and</span> event.key == "+" <span class="k">and</span> event.pressed:
+        <span class="k">return</span> [SetState(&#123;"count": state.get("count", 0) + 1&#125;)]
+    <span class="k">return</span> []
+
+
+<span class="k">def</span> view():
+    <span class="k">return</span> Column([
+        SurfaceHeader("Counter"),
+        Text(str(state.get("count", 0)), bold=True, align="center"),
+        FooterKeys([("+", "increment")]),
+    ], grow=True)</code></pre>
+      <div class="build-side">
+        <Shot ratio="4 / 3" caption="The counter view." pending="The counter plugin rendered alone at 800 by 600, showing its header, the count and the key hint." />
+        <dl class="facts">
+          <div><dt>init</dt><dd>Runs once on launch and returns the starting effects.</dd></div>
+          <div><dt>update</dt><dd>Runs for every input event and returns effects. State changes only through those effects.</dd></div>
+          <div><dt>view</dt><dd>Returns the interface as a tree of components. It reads state and never writes it.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap split" id="loop" aria-labelledby="loop-title">
+    <div class="sticky-head">
+      <h2 class="h2" id="loop-title">Scaffold, check, open.</h2>
+      <p class="muted">The loop is four commands, and an agent can run all four. Run them from inside a Plexi pane.</p>
+    </div>
+    <ol class="steps">
+      {steps.map(s => (
+        <li>
+          <pre class="code" tabindex="0"><code><span class="p">$ </span>{s.cmd}</code></pre>
+          <p>{s.note}</p>
+        </li>
+      ))}
+    </ol>
+  </section>
+
+  <section class="wrap split" id="sandbox" aria-labelledby="sandbox-title">
+    <h2 class="h2" id="sandbox-title">Where a plugin runs.</h2>
+    <div class="sandbox-body">
+      <p class="lead">Python plugins run as CPython compiled to WebAssembly, inside a Wasmtime sandbox.</p>
+      <p class="muted">The guest gets read-only mounts for its own folder, the SDK and the Python standard library. Reading your files, calling the network and reading a secret all go through host APIs, and each one is gated by a capability.</p>
+      <p class="muted">The sandbox covers plugins opened in panes. A terminal pane running <code class="inline">python3</code> is an ordinary process with your permissions, and so are the type checks and tests you run while developing.</p>
+      <Notice tone="warn" title={`Being reworked for ${release.next}`}>
+        <p>The permission system is being hardened for {release.next}. On Beta {release.beta.version}, install only plugins you wrote or trust.</p>
+      </Notice>
+      <Notice title="Registry installs are in beta">
+        <p>Installing plugins from a registry is in beta and off by default. Today the supported path is a local plugin that you scaffold and open by name or by path.</p>
+      </Notice>
+      <div class="next-links">
+        <a class="link-arrow" href="/docs/plugins">Plugin guide <Arrow /></a>
+        <a class="link-arrow" href="/docs/plugin-manifest">Manifest reference <Arrow /></a>
+        <a class="link-arrow" href="/docs/pgap">Capabilities <Arrow /></a>
+      </div>
+    </div>
+  </section>
 </Layout>
 
 <style>
-  .plugins-header {
-    padding: 96px 0 48px;
-    text-align: center;
-  }
+  .sticky-head { display: grid; gap: 20px; }
+  @media (min-width: 861px) { .sticky-head { position: sticky; top: calc(var(--nav-h) + 40px); } }
+  .sticky-head p { max-width: 36ch; }
 
-  .soon-badge {
-    display: inline-block;
-    font-size: 12px;
-    font-family: var(--mono);
-    color: var(--accent-light);
-    border: 1px solid var(--accent-dim);
-    background: var(--accent-dim);
-    padding: 3px 10px;
-    border-radius: 99px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    margin-bottom: 24px;
-  }
+  .bundled-head { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 20px clamp(40px, 8vw, 128px); align-items: end; margin-bottom: clamp(36px, 4vw, 56px); }
+  .group-label { font: 700 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-2); padding-bottom: 12px; border-bottom: 1px solid var(--border-2); }
+  .plugin-list + .group-label { margin-top: 56px; }
+  .plugin-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); column-gap: 40px; }
+  .plugin-list li { padding: 22px 0 24px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+  .plugin-list h4 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
+  .plugin-list h4 a { display: inline-flex; align-items: center; gap: 8px; }
+  .plugin-list h4 a:hover { color: var(--accent-light); }
+  .plugin-list h4 svg { color: var(--fg-3); }
+  .plugin-list p { color: var(--fg-2); font-size: 15px; line-height: 1.5; }
+  .plugin-list .caps { margin-top: auto; padding-top: 6px; font: 12px/1.5 var(--mono); color: var(--fg); }
+  .caps span { color: var(--fg-3); }
+  .list-source { margin-top: 24px; font-size: 14px; color: var(--fg-3); }
 
-  .plugins-header h1 {
-    font-size: 52px;
-    font-weight: 700;
-    letter-spacing: 0;
-    line-height: 1;
-    margin-bottom: 16px;
-    color: var(--fg);
-  }
+  .build-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: clamp(28px, 4vw, 64px); align-items: start; }
+  .build-grid .code { font-size: clamp(12px, 1vw, 14px); }
+  .build-side { display: grid; gap: 32px; }
+  .build-side .facts > div { grid-template-columns: 80px minmax(0, 1fr); }
 
-  .sub {
-    color: var(--fg-4);
-    font-size: 15px;
-    line-height: 1.7;
-    max-width: 540px;
-    margin: 0 auto;
-  }
+  .steps { list-style: none; counter-reset: step; }
+  .steps li { padding: 0 0 28px; }
+  .steps p { margin-top: 10px; color: var(--fg-2); font-size: 15px; max-width: 62ch; }
 
-  .sub code,
-  .empty code {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--accent-light);
-  }
+  .sandbox-body { display: grid; gap: 20px; }
+  .sandbox-body .muted { max-width: 62ch; }
+  .next-links { display: flex; flex-wrap: wrap; gap: 8px 32px; margin-top: 12px; }
 
-  .empty {
-    text-align: center;
-    padding: 48px 0 96px;
-    color: var(--fg-4);
-  }
-
-  .empty-sub {
-    font-size: 14px;
-    margin-top: 12px;
-  }
-  .empty-sub a { color: var(--accent-light); }
-
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 16px;
-    padding: 16px 0 96px;
-  }
-
-  .card {
-    display: block;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    text-decoration: none;
-    transition: border-color 0.15s ease;
-  }
-
-  .card:hover {
-    border-color: var(--accent-dim);
-  }
-
-  .card-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-  }
-
-  .card-name {
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--fg);
-  }
-
-  .card-price {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--accent-light);
-  }
-
-  .card-desc {
-    color: var(--fg-4);
-    font-size: 14px;
-    line-height: 1.6;
-    margin: 8px 0 16px;
-  }
-
-  .card-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--fg-4);
-  }
-
-  .card-trust {
-    color: var(--fg-4);
+  @media (max-width: 860px) {
+    .bundled-head, .build-grid { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

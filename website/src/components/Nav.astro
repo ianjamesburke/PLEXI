@@ -1,11 +1,15 @@
 ---
 import Logo from './Logo.astro';
+import { publishedPosts } from '../lib/blog';
 
+// Blog joins the nav by itself once a post is published.
+const hasPosts = (await publishedPosts()).length > 0;
 const links = [
   { href: '/product', label: 'Product' },
   { href: '/plugins', label: 'Plugins' },
   { href: '/docs', label: 'Docs' },
   { href: '/changelog', label: 'Changelog' },
+  ...(hasPosts ? [{ href: '/blog', label: 'Blog' }] : []),
 ];
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 const isCurrent = (href: string) => path === href || path.startsWith(`${href}/`);

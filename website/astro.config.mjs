@@ -9,6 +9,9 @@ export default defineConfig({
   site: 'https://plexiapp.com',
   integrations: [mdx(), sitemap()],
   adapter: node({ mode: 'standalone' }),
+  markdown: {
+    shikiConfig: { theme: 'tokyo-night' },
+  },
   image: {
     service: { entrypoint: 'astro/assets/services/sharp' },
   },

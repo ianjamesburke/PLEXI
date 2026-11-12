@@ -13,6 +13,8 @@ COPY website/ .
 # The install routes import these bootstraps from outside website/.
 COPY install.sh /install.sh
 COPY scripts/install-windows.ps1 /scripts/install-windows.ps1
+# The changelog page imports the git-cliff output from the repo root.
+COPY CHANGELOG.md /CHANGELOG.md
 
 RUN npm run build
 
