@@ -3444,6 +3444,126 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         })
     }
 
+    /// What `NaturalWidthFixture` painted: the width `KitButton::natural_width`
+    /// promised, the frame it got, and the rows its label was laid out in.
+    #[derive(Clone, Default)]
+    struct NaturalWidthSnapshot {
+        natural: f32,
+        frame: f32,
+        rows: Vec<String>,
+    }
+
+    /// A wrapping kit button in a slot exactly `natural_width` wide.
+    struct NaturalWidthFixture {
+        label: &'static str,
+        snapshot: Arc<std::sync::Mutex<NaturalWidthSnapshot>>,
+    }
+
+    impl crate::app::view_trait::View for NaturalWidthFixture {
+        fn type_id(&self) -> &'static str {
+            "natural_width_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Button natural width".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            use crate::ui::button::KitButton;
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
+            let natural = KitButton::new(self.label, ctx.colors).natural_width(ui);
+            let frame = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(natural, crate::ui::style::BUTTON_H_MD),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            KitButton::new(self.label, ctx.colors)
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                        )
+                        .rect
+                        .width()
+                    },
+                )
+                .inner;
+            let label = self.label;
+            let rows = ui.ctx().graphics(|g| {
+                g.get(layer).and_then(|list| {
+                    list.all_entries().skip(start).find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            if text.galley.job.text == label {
+                                return Some(
+                                    text.galley.rows.iter().map(|row| row.row.text()).collect(),
+                                );
+                            }
+                        }
+                        None
+                    })
+                })
+            });
+            if let Some(rows) = rows {
+                *self.snapshot.lock().unwrap() = NaturalWidthSnapshot {
+                    natural,
+                    frame,
+                    rows,
+                };
+            }
+        }
+    }
+
+    /// `KitButton::natural_width` is the one width measurement: under the host
+    /// style a wrapping button given exactly that width keeps its label on one
+    /// line and its frame fills the width, less the single round-up. The frame
+    /// stroke is not extra: egui takes the style's 1px widget stroke out of
+    /// the padding, so a kit button is its label plus its padding (the premise
+    /// of stint 1356 holds only under bare egui, which has no such stroke).
+    #[test]
+    fn kit_button_in_its_natural_width_keeps_the_label_on_one_line() {
+        for (case, label) in ["Reset", "Restore deleted note", "Friday"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut h = PlexiUiHarness::new_sized(720.0, 420.0);
+            let pane_id = add_focused_pane(&mut h);
+            let snapshot = Arc::new(std::sync::Mutex::new(NaturalWidthSnapshot::default()));
+            h.with_app_mut(|app| {
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(NaturalWidthFixture {
+                        label,
+                        snapshot: snapshot.clone(),
+                    }));
+                }
+            });
+            h.run_steps(3);
+            let painted = snapshot.lock().unwrap().clone();
+            assert_eq!(
+                painted.rows,
+                vec![label.to_string()],
+                "{label:?} must stay on one line in its natural width {}",
+                painted.natural
+            );
+            assert!(
+                painted.frame <= painted.natural && painted.natural - painted.frame < 1.0,
+                "{label:?}: frame is {} wide but natural_width promised {} (rounded up once)",
+                painted.frame,
+                painted.natural
+            );
+            h.save_screenshot(&evidence_png!(&format!("_{case}")))
+                .expect("natural width screenshot");
+        }
+    }
+
     #[derive(Clone)]
     struct PressSnapshot {
         fill: egui::Color32,

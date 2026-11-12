@@ -36,6 +36,30 @@ fn ui_builder_covers_every_node_variant() {
         .any(|node| matches!(node.data, UiNodeData::Surface(_))));
 }
 
+/// `align` is the cross axis on both containers. The builders pick the
+/// defaults the Python SDK and the host bridge use: a row centers its children
+/// vertically, a column starts them at the left.
+#[test]
+fn row_builder_centers_and_column_builder_starts() {
+    let mut tree = ui::Tree::new();
+    let text = tree.text("text", "Hello");
+    let row = tree.row("row", [text]);
+    let column = tree.column("column", [row]);
+    let tree = tree.finish(column);
+    let align_of = |id: u32| {
+        tree.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
+                UiNodeData::Row(r) => Some(r.align),
+                UiNodeData::Column(c) => Some(c.align),
+                _ => None,
+            })
+    };
+    assert!(matches!(align_of(row), Some(Alignment::Center)));
+    assert!(matches!(align_of(column), Some(Alignment::Start)));
+}
+
 #[test]
 fn effect_helpers_cover_host_effects() {
     let values = vec![

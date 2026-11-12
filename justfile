@@ -84,14 +84,6 @@ test-host +args:
 test-for path:
     {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 
-# Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
-# This includes scenes that opt out of scene_suite.
-roadmap-evidence:
-    python3 scripts/roadmap-evidence.py
-
-roadmap-evidence-fixtures:
-    python3 scripts/test-roadmap-evidence.py
-
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
 # apps/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.

@@ -13,7 +13,7 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 
 use super::wasm_view::bindings::plexi::platform::types::{
-    CanvasCommand, FooterKeysNode, PinnedEdge,
+    CanvasCommand, FooterKeysNode, PinnedEdge, RowNode, TextNode,
 };
 use super::wasm_view::{
     Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree,
@@ -55,6 +55,122 @@ pub struct RenderResult {
     pub canvas_clicks: Vec<CanvasClick>,
     pub canvas_time: std::time::Duration,
     authored_paint: Vec<std::ops::Range<usize>>,
+    /// Painted geometry per node, filled only by a pass started through
+    /// [`render_ui_tree_layout`]. `None` on every live-host pass.
+    pub node_layout: Option<Vec<NodeLayout>>,
+    node_paint: Option<Vec<NodePaintSpan>>,
+}
+
+/// What one node painted in a headless pass: read from the pass's shape list,
+/// so it reports the pixels the renderer produced and never a second layout.
+/// A node with no entry was not visited as its own node (a keypad button, a
+/// table cell); a node with an entry and `visible == None` painted nothing a
+/// viewer can see.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeLayout {
+    pub id: u32,
+    /// Union of everything the node painted, before clipping.
+    pub rect: Option<egui::Rect>,
+    /// The part of `rect` inside the clip rects it was painted under.
+    pub visible: Option<egui::Rect>,
+    /// Clip rect of the `Ui` the node was laid out in.
+    pub clip: egui::Rect,
+    /// A text run inside the node broke a line in the middle of a word.
+    pub text_wrapped_mid_word: bool,
+    /// A text run inside the node extends past its clip rect.
+    pub text_cut: bool,
+}
+
+#[derive(Debug)]
+struct NodePaintSpan {
+    id: u32,
+    shapes: std::ops::Range<usize>,
+    clip: egui::Rect,
+}
+
+/// True when consecutive rows of one text run split a word: the first row
+/// ends, and the next begins, on a non-whitespace character with no newline
+/// between them ("Star" / "t").
+pub fn rows_break_mid_word(rows: &[(String, bool)]) -> bool {
+    rows.windows(2).any(|pair| {
+        let (first, ends_with_newline) = &pair[0];
+        !ends_with_newline
+            && first.chars().last().is_some_and(|c| !c.is_whitespace())
+            && pair[1].0.chars().next().is_some_and(|c| !c.is_whitespace())
+    })
+}
+
+fn galley_rows(galley: &egui::Galley) -> Vec<(String, bool)> {
+    galley
+        .rows
+        .iter()
+        .map(|placed| {
+            (
+                placed.row.glyphs.iter().map(|g| g.chr).collect(),
+                placed.ends_with_newline,
+            )
+        })
+        .collect()
+}
+
+/// Slack, in points, before painted geometry counts as cut: strokes and
+/// glyph ink routinely sit a fraction of a point outside their widget rect.
+const LAYOUT_CUT_SLACK: f32 = 1.0;
+
+fn measure_shape(shape: &egui::Shape, clip: egui::Rect, fact: &mut NodeLayout) {
+    match shape {
+        egui::Shape::Noop => {}
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                measure_shape(shape, clip, fact);
+            }
+        }
+        other => {
+            let bounds = other.visual_bounding_rect();
+            if !bounds.is_positive() {
+                return;
+            }
+            fact.rect = Some(fact.rect.map_or(bounds, |r| r.union(bounds)));
+            let visible = bounds.intersect(clip);
+            if visible.is_positive() {
+                fact.visible = Some(fact.visible.map_or(visible, |r| r.union(visible)));
+            }
+            if let egui::Shape::Text(text) = other {
+                if !clip.expand(LAYOUT_CUT_SLACK).contains_rect(bounds) {
+                    fact.text_cut = true;
+                }
+                if rows_break_mid_word(&galley_rows(&text.galley)) {
+                    fact.text_wrapped_mid_word = true;
+                }
+            }
+        }
+    }
+}
+
+fn collect_node_layout(ui: &egui::Ui, spans: &[NodePaintSpan]) -> Vec<NodeLayout> {
+    ui.ctx().graphics(|g| {
+        let entries: Vec<&egui::epaint::ClippedShape> = g
+            .get(ui.layer_id())
+            .map(|list| list.all_entries().collect())
+            .unwrap_or_default();
+        spans
+            .iter()
+            .map(|span| {
+                let mut fact = NodeLayout {
+                    id: span.id,
+                    rect: None,
+                    visible: None,
+                    clip: span.clip,
+                    text_wrapped_mid_word: false,
+                    text_cut: false,
+                };
+                for entry in entries.get(span.shapes.clone()).unwrap_or_default() {
+                    measure_shape(&entry.shape, entry.clip_rect, &mut fact);
+                }
+                fact
+            })
+            .collect()
+    })
 }
 
 /// Render a view tree, compositing `surface` into the first surface-node
@@ -65,6 +181,7 @@ pub struct RenderResult {
 /// the same tree under the same value. Host-owned edit buffers use it to tell
 /// "the plugin pushed me a new value" apart from "I am painting the same stale
 /// tree again" — see `reconcile_text_input_buffer`.
+#[cfg(test)]
 pub fn render_ui_tree_with_surface(
     ui: &mut egui::Ui,
     tree: &UiTree,
@@ -85,6 +202,30 @@ struct TreeRenderEnv<'a> {
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
+    /// How many `Row`s enclose the node being rendered. Rows deeper than
+    /// `MAX_MEASURED_ROW_DEPTH` are laid out without a measuring pass.
+    row_depth: u8,
+    /// True inside a row's own measuring pass, where nested rows are laid
+    /// out in one pass so no row is measured once per enclosing row.
+    in_row_measure: bool,
+}
+
+/// Rows nested deeper than this, and rows inside another row's measuring
+/// pass, are laid out in one pass: their long text is not wrapped and their
+/// children are centered whatever `align` says. A measuring pass renders a
+/// row's whole subtree once more, and trees are untrusted guest input, so the
+/// number of rows that may each do that above any one node is bounded. With
+/// the rule that a measuring pass never lays a flex column out, one frame
+/// visits a node at most `2 * (MAX_MEASURED_ROW_DEPTH + 1)` times: once to
+/// paint and once in its nearest flex column's measurement, each with one
+/// more visit per measuring row above it.
+const MAX_MEASURED_ROW_DEPTH: u8 = 4;
+
+// `render_node` calls on this thread, for the tests that bound how often one
+// frame visits a node.
+#[cfg(test)]
+thread_local! {
+    static RENDER_NODE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -98,7 +239,31 @@ pub fn render_ui_tree_with_canvas_fits(
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
 ) -> RenderResult {
-    let mut out = RenderResult::default();
+    render_ui_tree_into(
+        ui,
+        tree,
+        colors,
+        surface,
+        canvas_fits,
+        pending_click,
+        surface_key,
+        tree_seq,
+        RenderResult::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_ui_tree_into(
+    ui: &mut egui::Ui,
+    tree: &UiTree,
+    colors: &Colors,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
+    mut out: RenderResult,
+) -> RenderResult {
     let paint_start = paint_len(ui);
     let env = TreeRenderEnv {
         nodes: &tree.nodes,
@@ -108,6 +273,8 @@ pub fn render_ui_tree_with_canvas_fits(
         pending_click,
         surface_key,
         tree_seq,
+        row_depth: 0,
+        in_row_measure: false,
     };
     let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
         render_node(ui, env, tree.root, out, 0);
@@ -139,6 +306,9 @@ pub fn render_ui_tree_with_canvas_fits(
     }
     resolve_default_text(ui, paint_start, colors.terminal_bg, &out.authored_paint);
     out.authored_paint.clear();
+    if let Some(spans) = out.node_paint.take() {
+        out.node_layout = Some(collect_node_layout(ui, &spans));
+    }
     out
 }
 
@@ -366,6 +536,48 @@ pub fn render_ui_tree_to_png(
     height: f32,
     pixels_per_point: f32,
 ) -> Result<Vec<u8>, String> {
+    let mut harness = headless_tree_harness(tree, width, height, pixels_per_point, None);
+    harness.run();
+    let img = harness
+        .render()
+        .map_err(|e| format!("offscreen render failed: {e}"))?;
+    let mut bytes = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| format!("PNG encode failed: {e}"))?;
+    Ok(bytes)
+}
+
+/// Headless layout pass over a `UiTree`: the same widgets, fonts and pane size
+/// as [`render_ui_tree_to_png`], returning what each node painted instead of
+/// pixels. Nothing is rasterized, so it needs no GPU.
+pub fn render_ui_tree_layout(tree: &UiTree, width: f32, height: f32) -> Vec<NodeLayout> {
+    let sink = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut harness = headless_tree_harness(tree, width, height, 1.0, Some(sink.clone()));
+    harness.run();
+    drop(harness);
+    let layout = sink.take();
+    log::info!(
+        "wasm_render: headless layout pass {width}x{height} measured {} node(s)",
+        layout.len()
+    );
+    layout
+}
+
+type NodeLayoutSink = std::rc::Rc<std::cell::RefCell<Vec<NodeLayout>>>;
+
+/// The harness both headless entry points share. With a `layout_sink`, every
+/// pass overwrites it with that pass's node geometry, so after `run` it holds
+/// the settled frame.
+fn headless_tree_harness(
+    tree: &UiTree,
+    width: f32,
+    height: f32,
+    pixels_per_point: f32,
+    layout_sink: Option<NodeLayoutSink>,
+) -> egui_kittest::Harness<'static> {
     let config = crate::config::PlexiConfig::load();
     let colors = crate::ui::theme::colors_from_config(&config);
 
@@ -378,7 +590,7 @@ pub fn render_ui_tree_to_png(
     // not hit this because `setup_fonts` runs once at startup, long before any
     // plugin frame.
     let mut fonts_ready = false;
-    let mut harness = egui_kittest::Harness::builder()
+    egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
         .with_pixels_per_point(pixels_per_point)
         .build_ui(move |ui| {
@@ -392,20 +604,25 @@ pub fn render_ui_tree_to_png(
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+                    let out = render_ui_tree_into(
+                        ui,
+                        &tree,
+                        &colors,
+                        None,
+                        None,
+                        None,
+                        None,
+                        0,
+                        RenderResult {
+                            node_paint: layout_sink.as_ref().map(|_| Vec::new()),
+                            ..RenderResult::default()
+                        },
+                    );
+                    if let (Some(sink), Some(layout)) = (&layout_sink, out.node_layout) {
+                        sink.replace(layout);
+                    }
                 });
-        });
-    harness.run();
-    let img = harness
-        .render()
-        .map_err(|e| format!("offscreen render failed: {e}"))?;
-    let mut bytes = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut bytes),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| format!("PNG encode failed: {e}"))?;
-    Ok(bytes)
+        })
 }
 
 fn rgba(c: &Color) -> Color32 {
@@ -622,12 +839,56 @@ fn column_bottom_pin(nodes: &[IndexedNode], child_id: u32) -> Option<(u32, &Foot
     }
 }
 
-/// Index of the first child that is a grow `Space` node — the "push everything
-/// after me to the bottom" marker `Spacer(grow=True)` compiles to.
-fn grow_spacer_index(nodes: &[IndexedNode], children: &[u32]) -> Option<usize> {
-    children.iter().position(
-        |id| matches!(find_node(nodes, *id).map(|n| &n.data), Some(UiNodeData::Space(s)) if s.grow),
-    )
+/// Indices of the children that are grow `Space` nodes, the flex gaps
+/// `Spacer(grow=True)` compiles to.
+fn grow_spacer_indices(nodes: &[IndexedNode], children: &[u32]) -> Vec<usize> {
+    children
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| {
+            matches!(find_node(nodes, **id).map(|n| &n.data), Some(UiNodeData::Space(s)) if s.grow)
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// One info line the first time a layout rule applies at this place in the
+/// tree, so the log shows which rule shaped a pane without a line per frame.
+/// Measuring passes stay silent: they repeat the pass that paints.
+fn trace_layout_once(ui: &egui::Ui, rule: &'static str, detail: impl FnOnce() -> String) {
+    if ui.is_sizing_pass() {
+        return;
+    }
+    let seen_id = ui.id().with(("plexi_layout_trace", rule));
+    let seen = ui.ctx().memory_mut(|m| {
+        let seen = m.data.get_temp::<bool>(seen_id).unwrap_or(false);
+        m.data.insert_temp(seen_id, true);
+        seen
+    });
+    if !seen {
+        log::info!("wasm_render: {rule}: {}", detail());
+    }
+}
+
+/// Greedy line breaking for a row that wraps whole children (stint 1333):
+/// each line takes children until the next one, plus the gap before it, would
+/// pass `available`. A child wider than the row still gets a line of its own.
+fn pack_row_lines(widths: &[f32], gap: f32, available: f32) -> Vec<std::ops::Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut used = 0.0;
+    for (idx, width) in widths.iter().enumerate() {
+        if idx > start && used + gap + width > available {
+            lines.push(start..idx);
+            start = idx;
+            used = 0.0;
+        }
+        used += if idx > start { gap + width } else { *width };
+    }
+    if start < widths.len() {
+        lines.push(start..widths.len());
+    }
+    lines
 }
 
 const KEYPAD_BUTTON_W: f32 = 64.0;
@@ -730,6 +991,13 @@ fn is_nested_card(nodes: &[IndexedNode], card_id: u32) -> bool {
     })
 }
 
+/// Width a plugin button needs to paint `label` on one line.
+fn button_one_line_width(ui: &egui::Ui, label: &str, min_size: egui::Vec2, colors: &Colors) -> f32 {
+    crate::ui::button::KitButton::new(label, colors)
+        .min_size(min_size)
+        .natural_width(ui)
+}
+
 fn render_button_node(
     ui: &mut egui::Ui,
     id: u32,
@@ -750,28 +1018,52 @@ fn render_button_node(
         ButtonStyle::Ghost => ButtonKind::Ghost,
     };
     let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
-    let response = ui.add_enabled(
-        !b.disabled,
-        KitButton::new(&b.label, colors)
-            .kind(kind)
-            .min_size(min_size)
-            .wrap_mode(egui::TextWrapMode::Wrap),
-    );
+    let add_button = |ui: &mut egui::Ui| {
+        ui.add_enabled(
+            !b.disabled,
+            KitButton::new(&b.label, colors)
+                .kind(kind)
+                .min_size(min_size)
+                .wrap_mode(egui::TextWrapMode::Wrap),
+        )
+    };
+    // A label may wrap between words, never inside one (stint 1333): egui
+    // breaks a word that is wider than the space it is given, so a button
+    // squeezed by its row siblings painted one letter per line. Give the
+    // button the width of its longest word and let it overflow the row.
+    let available = ui.available_width();
+    let one_line_width = |label: &str| button_one_line_width(ui, label, min_size, colors);
+    let word_width = if one_line_width(&b.label) <= available {
+        0.0
+    } else {
+        b.label
+            .split_whitespace()
+            .map(one_line_width)
+            .fold(0.0, f32::max)
+    };
+    let response = if word_width > available {
+        ui.allocate_ui_with_layout(egui::vec2(word_width, min_size.y), *ui.layout(), add_button)
+            .inner
+    } else {
+        add_button(ui)
+    };
     if response.clicked() || synthetic_click {
         out.actions.push(b.on_click.clone());
     }
 }
 
-/// Lay out a column's children, honoring a grow spacer as a bottom-pin split
-/// (stint 0674).
+/// Lay out a column's children, sharing the leftover height between its grow
+/// spacers (stints 0674 and 1327).
 ///
-/// A grow `Space` renders as `ui.add_space(available_height())`, which consumes
-/// every remaining pixel — so before this split, *every* child declared after a
-/// `Spacer(grow=True)` was pushed past the clip edge and silently vanished (the
-/// todo plugin's Add/Toggle/Delete controls). Splitting at the spacer and running
-/// the tail bottom-up puts those children flush against the bottom with no
-/// measurement pass, and they can never overlap the head: the two layouts grow
-/// toward each other and stop.
+/// A grow `Space` is a flex gap, not a widget. Rendered in flow it would be
+/// `ui.add_space(available_height())`, which consumes every remaining pixel and
+/// pushes each later child past the clip edge. The column is split at its grow
+/// spacers instead: every span after the first is measured with a sizing pass,
+/// the height left over is divided equally between the spacers, and each span
+/// is rendered top-down in its own rect. The last span is anchored to the
+/// bottom edge, so one spacer is a bottom pin and `[spacer, child, spacer]`
+/// centers the child. When the spans are taller than the column the spacers
+/// collapse to zero and the last span still holds the bottom edge.
 fn render_column_children(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
@@ -788,7 +1080,8 @@ fn render_column_children(
         }
     };
 
-    let Some(split) = grow_spacer_index(env.nodes, children) else {
+    let spacers = grow_spacer_indices(env.nodes, children);
+    let Some(&first_spacer) = spacers.first() else {
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
             render_span(ui, children, out)
         });
@@ -797,49 +1090,472 @@ fn render_column_children(
 
     let stack_size = egui::vec2(ui.available_width(), ui.available_height());
     let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
-
-    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
-        ui.set_clip_rect(stack_rect);
-        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
-            render_span(ui, &children[..split], out)
-        });
-    });
-
-    let tail = &children[split + 1..];
-    if tail.is_empty() {
+    // A column with a grow spacer always takes the whole rect it is offered,
+    // so a measuring pass has its size already. Laying its children out there
+    // would measure them again inside every enclosing measurement: two visits
+    // per level, doubling with each level of nesting.
+    if ui.is_sizing_pass() {
         return;
     }
 
-    // Measure the tail, then render it top-down in a bottom-anchored rect.
-    // A `bottom_up` layout cannot be used directly: a `Row` child is an
-    // `ui.horizontal`, whose own ui grows *downward* from wherever bottom-up
-    // seated it, so the row overflows the column's bottom edge and its lower
-    // half is clipped away. The sizing pass lays the tail out without painting,
-    // which gives an exact height with no frame of lag.
+    let head = &children[..first_spacer];
+    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
+        ui.set_clip_rect(stack_rect);
+        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+            render_span(ui, head, out)
+        });
+    });
+
+    // The spans that follow each grow spacer.
+    let spans: Vec<&[u32]> = spacers
+        .iter()
+        .enumerate()
+        .map(|(n, &at)| {
+            let end = spacers.get(n + 1).copied().unwrap_or(children.len());
+            &children[at + 1..end]
+        })
+        .collect();
+    if spans.iter().all(|span| span.is_empty()) {
+        return;
+    }
+
+    // Measure, then render top-down in a placed rect. A `bottom_up` layout
+    // cannot be used directly: a `Row` child is an `ui.horizontal`, whose own
+    // ui grows *downward* from wherever bottom-up seated it, so the row
+    // overflows the column's bottom edge and its lower half is clipped away.
+    // The sizing pass lays a span out without painting, which gives an exact
+    // height with no frame of lag.
+    let measure = |ui: &mut egui::Ui, span: &[u32]| {
+        if span.is_empty() {
+            return 0.0;
+        }
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(stack_rect)
+                .sizing_pass()
+                .invisible()
+                .layout(egui::Layout::top_down(cross_align(align))),
+        );
+        let mut sizing_out = RenderResult::default();
+        render_span(&mut sizing, span, &mut sizing_out);
+        sizing.min_rect().height()
+    };
+    // With one spacer the tail is anchored to the bottom edge and the head's
+    // height is never needed, so the head is not laid out a second time.
+    let head_h = if spans.len() > 1 {
+        measure(ui, head)
+    } else {
+        0.0
+    };
+    let heights: Vec<f32> = spans.iter().map(|span| measure(ui, span)).collect();
+    let leftover = stack_rect.height() - head_h - heights.iter().sum::<f32>();
+    let share = (leftover / spans.len() as f32).max(0.0);
+    if spans.len() > 1 {
+        trace_layout_once(
+            ui,
+            "column shares leftover height between grow spacers",
+            || {
+                format!(
+                    "spacers={} column_h={:.0} leftover={leftover:.0} share={share:.0}",
+                    spans.len(),
+                    stack_rect.height()
+                )
+            },
+        );
+    }
+
+    let mut cursor = stack_rect.min.y + head_h;
+    for (n, (span, &measured)) in spans.iter().zip(&heights).enumerate() {
+        cursor += share;
+        let top = cursor;
+        cursor += measured;
+        if span.is_empty() {
+            continue;
+        }
+        let height = measured.min(stack_rect.height());
+        let top = if n + 1 == spans.len() {
+            stack_rect.max.y - height
+        } else {
+            top
+        };
+        let span_rect = egui::Rect::from_min_max(
+            egui::pos2(stack_rect.min.x, top),
+            egui::pos2(stack_rect.max.x, top + height),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(span_rect), |ui| {
+            ui.set_clip_rect(span_rect.intersect(stack_rect));
+            ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+                render_span(ui, span, out)
+            });
+        });
+    }
+}
+
+/// Font size of a `Text` node. The size is guest input and is not validated
+/// when the tree is decoded: a NaN or infinite size falls back to the body
+/// size and any other is clamped to a range a font can be laid out at.
+fn text_size(t: &TextNode) -> f32 {
+    const MIN_TEXT_SIZE: f32 = 1.0;
+    const MAX_TEXT_SIZE: f32 = 512.0;
+    t.size
+        .filter(|size| size.is_finite())
+        .map_or(style::TEXT_BODY, |size| {
+            size.clamp(MIN_TEXT_SIZE, MAX_TEXT_SIZE)
+        })
+}
+
+/// The styled text of a `Text` node. `text` is the node's own text, or one
+/// word of it when a caller measures how narrow the node can wrap.
+fn text_rich(
+    ui: &egui::Ui,
+    node: &IndexedNode,
+    t: &TextNode,
+    text: &str,
+    colors: &Colors,
+) -> RichText {
+    let default_color = TextRole::from_key(&node.key)
+        .map(|role| role.preferred(colors))
+        .or(ui.visuals().override_text_color)
+        .unwrap_or(colors.text_primary);
+    let mut rich = RichText::new(text).size(text_size(t)).color(default_color);
+    if t.bold {
+        rich = rich.strong();
+    }
+    if let Some(c) = &t.color {
+        rich = rich.color(rgba(c));
+    }
+    rich
+}
+
+/// Width and height a row's `Text` child wraps to when it would run past the
+/// row's edge (stint 1333), or `None` when it is laid out as usual: it fits on
+/// one line, it truncates, or the width left is narrower than its longest
+/// word. `reserved` is the width the siblings after it need.
+fn row_text_wrap_size(
+    ui: &egui::Ui,
+    env: TreeRenderEnv<'_>,
+    node: &IndexedNode,
+    t: &TextNode,
+    reserved: f32,
+) -> Option<egui::Vec2> {
+    let galley = |text: &str, mode: egui::TextWrapMode, width: f32| {
+        egui::WidgetText::from(text_rich(ui, node, t, text, env.colors)).into_galley(
+            ui,
+            Some(mode),
+            width,
+            egui::FontSelection::Default,
+        )
+    };
+    let one_line = |text: &str| {
+        galley(text, egui::TextWrapMode::Extend, f32::INFINITY)
+            .size()
+            .x
+    };
+    let wrap_width = ui.available_width() - reserved;
+    let longest_word = t.text.split_whitespace().map(one_line).fold(0.0, f32::max);
+    if wrap_width < longest_word {
+        return None;
+    }
+    let height = galley(&t.text, egui::TextWrapMode::Wrap, wrap_width)
+        .size()
+        .y;
+    Some(egui::vec2(wrap_width, height))
+}
+
+/// True when a row's `Text` child is too long for the width left in the row.
+fn row_text_overflows(
+    ui: &egui::Ui,
+    env: TreeRenderEnv<'_>,
+    node: &IndexedNode,
+    t: &TextNode,
+) -> bool {
+    let available = ui.available_width();
+    if t.truncate || !available.is_finite() {
+        return false;
+    }
+    egui::WidgetText::from(text_rich(ui, node, t, &t.text, env.colors))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::FontSelection::Default,
+        )
+        .size()
+        .x
+        > available
+}
+
+/// What one measuring pass over a row found: its height and the rect each
+/// child took, in the measuring pass's own coordinates.
+struct RowMeasure {
+    height: f32,
+    child_rects: Vec<egui::Rect>,
+}
+
+impl RowMeasure {
+    /// Width the children after `idx` need, including the gap before them.
+    fn reserved_after(&self, idx: usize, gap: f32) -> f32 {
+        match (self.child_rects.get(idx + 1), self.child_rects.last()) {
+            (Some(next), Some(last)) => last.max.x - next.min.x + gap,
+            _ => 0.0,
+        }
+    }
+}
+
+/// One child of a row: a keypad cell when the row belongs to a button grid,
+/// any other node through `render_node`.
+fn render_row_child(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    r: &RowNode,
+    idx: usize,
+    grid_cols: Option<usize>,
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    let child = r.children[idx];
+    if let Some(cols) = grid_cols {
+        if let Some(UiNodeData::Button(b)) = find_node(env.nodes, child).map(|n| &n.data) {
+            let span = if idx == 0 && r.children.len() < cols {
+                cols - r.children.len() + 1
+            } else {
+                1
+            };
+            let btn_w = span as f32 * KEYPAD_BUTTON_W + (span.saturating_sub(1)) as f32 * r.gap;
+            render_button_node(
+                ui,
+                child,
+                b,
+                egui::vec2(btn_w, KEYPAD_BUTTON_H),
+                env.colors,
+                out,
+                env.pending_click,
+            );
+            return;
+        }
+    }
+    render_node(ui, env, child, out, depth + 1);
+}
+
+/// Lay a row out once without painting. Rows inside this pass do not measure
+/// and flex columns are not laid out, so it visits each node of the row's
+/// subtree at most once.
+fn measure_row(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    r: &RowNode,
+    grid_cols: Option<usize>,
+    depth: u32,
+) -> RowMeasure {
     let mut sizing = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(stack_rect)
             .sizing_pass()
             .invisible()
-            .layout(egui::Layout::top_down(cross_align(align))),
+            .layout(egui::Layout::left_to_right(egui::Align::Min)),
     );
+    sizing.spacing_mut().item_spacing.x = r.gap;
+    let env = TreeRenderEnv {
+        in_row_measure: true,
+        ..env
+    };
     let mut sizing_out = RenderResult::default();
-    render_span(&mut sizing, tail, &mut sizing_out);
-    let tail_h = sizing.min_rect().height().min(stack_rect.height());
+    let child_rects = (0..r.children.len())
+        .map(|idx| {
+            sizing
+                .scope(|ui| render_row_child(ui, env, r, idx, grid_cols, &mut sizing_out, depth))
+                .response
+                .rect
+        })
+        .collect();
+    RowMeasure {
+        height: sizing.min_rect().height(),
+        child_rects,
+    }
+}
 
-    let tail_rect = egui::Rect::from_min_max(
-        egui::pos2(stack_rect.min.x, stack_rect.max.y - tail_h),
-        stack_rect.max,
+/// A horizontal run of a row. `egui` aligns each child against the height the
+/// run has when the child is added, so a run that places its children at the
+/// top or bottom is given the measured row height to place them in.
+fn row_line<R>(
+    ui: &mut egui::Ui,
+    valign: egui::Align,
+    height: Option<f32>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let size = egui::vec2(
+        ui.available_size_before_wrap().x,
+        height.unwrap_or(ui.spacing().interact_size.y),
     );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(tail_rect), |ui| {
-        ui.set_clip_rect(tail_rect);
-        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
-            render_span(ui, tail, out)
+    ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(valign), add_contents)
+        .inner
+}
+
+/// Lay out a `Row` (stints 1327 and 1333).
+///
+/// `align` is the cross axis, as it is on a `Column`: it places children at
+/// the top, the center or the bottom of the row. A row made only of buttons
+/// (`Actions`, `Select`, `Tabs`) wraps whole buttons onto further lines when
+/// they do not fit; keypad grids keep their fixed cells. A `Text` child too
+/// long for the row wraps in the width the children after it leave.
+fn render_row_node(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    id: u32,
+    r: &RowNode,
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    let nodes = env.nodes;
+    let grid_cols = row_parent_button_grid_cols(nodes, id);
+    let available = ui.available_width();
+    let valign = cross_align(r.align);
+    let may_measure = !env.in_row_measure && env.row_depth < MAX_MEASURED_ROW_DEPTH;
+    let env = TreeRenderEnv {
+        row_depth: env.row_depth.saturating_add(1),
+        ..env
+    };
+
+    if grid_cols.is_none() && is_button_row(nodes, id).is_some() {
+        let widths: Vec<f32> = r
+            .children
+            .iter()
+            .map(|child| match find_node(nodes, *child).map(|n| &n.data) {
+                Some(UiNodeData::Button(b)) => button_one_line_width(
+                    ui,
+                    &b.label,
+                    egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
+                    env.colors,
+                ),
+                _ => 0.0,
+            })
+            .collect();
+        let lines = pack_row_lines(&widths, r.gap, available);
+        if lines.len() > 1 {
+            trace_layout_once(ui, "button row wraps whole buttons", || {
+                format!(
+                    "row={id} buttons={} lines={} available={available:.0}",
+                    widths.len(),
+                    lines.len()
+                )
+            });
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = r.gap;
+                for line in lines {
+                    // Buttons on a line share one height, so `align` has
+                    // nothing to place.
+                    row_line(ui, egui::Align::Center, None, |ui| {
+                        ui.spacing_mut().item_spacing.x = r.gap;
+                        for child in &r.children[line] {
+                            render_node(ui, env, *child, out, depth + 1);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+    }
+
+    // One measuring pass per row at most, and only when the row needs it: to
+    // place children at its top or bottom edge, or to wrap a long text. A row
+    // that may not measure centers its children, as rows always have.
+    let mut measure: Option<RowMeasure> = None;
+    let placed = may_measure && valign != egui::Align::Center;
+    if placed {
+        let measured = measure_row(ui, env, r, grid_cols, depth);
+        trace_layout_once(ui, "row align places children across the row", || {
+            format!("row={id} align={:?} row_h={:.0}", r.align, measured.height)
         });
+        measure = Some(measured);
+    }
+    let height = measure.as_ref().map(|m| m.height);
+    let line_align = if placed { valign } else { egui::Align::Center };
+    row_line(ui, line_align, height, |ui| {
+        ui.spacing_mut().item_spacing.x = r.gap;
+        for (idx, child) in r.children.iter().enumerate() {
+            let text = find_node(nodes, *child).and_then(|n| match &n.data {
+                UiNodeData::Text(t) => Some((n, t)),
+                _ => None,
+            });
+            if let Some((node, t)) = text {
+                if may_measure && row_text_overflows(ui, env, node, t) {
+                    let reserved = measure
+                        .get_or_insert_with(|| measure_row(ui, env, r, grid_cols, depth))
+                        .reserved_after(idx, r.gap);
+                    if let Some(size) = row_text_wrap_size(ui, env, node, t, reserved) {
+                        trace_layout_once(ui, "row text wraps at the row edge", || {
+                            format!(
+                                "node={child} wrap_width={:.0} reserved={reserved:.0}",
+                                size.x
+                            )
+                        });
+                        // A vertical child scope as wide as the wrap width:
+                        // the `Text` arm wraps there as it does in a column.
+                        ui.allocate_ui_with_layout(
+                            size,
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_max_width(size.x);
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                render_node(ui, env, *child, out, depth + 1);
+                            },
+                        );
+                        continue;
+                    }
+                }
+            }
+            let slot = measure
+                .as_ref()
+                .filter(|_| placed)
+                .and_then(|m| m.child_rects.get(idx))
+                .map(|rect| rect.size());
+            match slot {
+                // The row places the child's measured slot at its top or
+                // bottom; inside the slot the child lays itself out centered,
+                // so a button's label stays in the middle of the button.
+                Some(size) => {
+                    ui.allocate_ui_with_layout(
+                        size,
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| render_row_child(ui, env, r, idx, grid_cols, out, depth),
+                    );
+                }
+                None => render_row_child(ui, env, r, idx, grid_cols, out, depth),
+            }
+        }
     });
 }
 
 fn render_node(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    id: u32,
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    #[cfg(test)]
+    RENDER_NODE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let layout_start = node_paint_start(ui, out);
+    render_node_inner(ui, env, id, out, depth);
+    record_node_paint(ui, out, id, layout_start);
+}
+
+/// Where a node's paint span starts, when this pass records node geometry.
+fn node_paint_start(ui: &egui::Ui, out: &RenderResult) -> Option<usize> {
+    out.node_paint.is_some().then(|| paint_len(ui))
+}
+
+/// Close the paint span `node_paint_start` opened for node `id`.
+fn record_node_paint(ui: &egui::Ui, out: &mut RenderResult, id: u32, start: Option<usize>) {
+    if let (Some(start), Some(spans)) = (start, out.node_paint.as_mut()) {
+        spans.push(NodePaintSpan {
+            id,
+            shapes: start..paint_len(ui),
+            clip: ui.clip_rect(),
+        });
+    }
+}
+
+fn render_node_inner(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
     id: u32,
@@ -854,6 +1570,8 @@ fn render_node(
         pending_click,
         surface_key,
         tree_seq,
+        row_depth: _,
+        in_row_measure: _,
     } = env;
     if depth > MAX_DEPTH {
         return;
@@ -872,19 +1590,7 @@ fn render_node(
         UiNodeData::Empty => {}
 
         UiNodeData::Text(t) => {
-            let default_color = TextRole::from_key(&node.key)
-                .map(|role| role.preferred(colors))
-                .or(ui.visuals().override_text_color)
-                .unwrap_or(colors.text_primary);
-            let mut rich = RichText::new(&t.text)
-                .size(t.size.unwrap_or(style::TEXT_BODY))
-                .color(default_color);
-            if t.bold {
-                rich = rich.strong();
-            }
-            if let Some(c) = &t.color {
-                rich = rich.color(rgba(c));
-            }
+            let rich = text_rich(ui, node, t, &t.text, colors);
             let add_label = |ui: &mut egui::Ui| {
                 let mut label = egui::Label::new(rich);
                 if t.truncate {
@@ -1018,38 +1724,7 @@ fn render_node(
             ui.ctx().memory_mut(|m| m.data.insert_temp(state_id, state));
         }
 
-        UiNodeData::Row(r) => {
-            let grid_cols = row_parent_button_grid_cols(nodes, id);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = r.gap;
-                for (idx, child) in r.children.iter().enumerate() {
-                    if let Some(cols) = grid_cols {
-                        if let Some(UiNodeData::Button(b)) =
-                            find_node(nodes, *child).map(|n| &n.data)
-                        {
-                            let span = if idx == 0 && r.children.len() < cols {
-                                cols - r.children.len() + 1
-                            } else {
-                                1
-                            };
-                            let btn_w = span as f32 * KEYPAD_BUTTON_W
-                                + (span.saturating_sub(1)) as f32 * r.gap;
-                            render_button_node(
-                                ui,
-                                *child,
-                                b,
-                                egui::vec2(btn_w, KEYPAD_BUTTON_H),
-                                colors,
-                                out,
-                                pending_click,
-                            );
-                            continue;
-                        }
-                    }
-                    render_node(ui, env, *child, out, depth + 1);
-                }
-            });
-        }
+        UiNodeData::Row(r) => render_row_node(ui, env, id, r, out, depth),
 
         UiNodeData::Column(c) => {
             if let Some(table) = parse_table_node_key(&node.key) {
@@ -1382,6 +2057,8 @@ fn render_node(
             ui.separator();
         }
 
+        // A grow `Space` directly inside a `Column` never reaches this arm:
+        // `render_column_children` treats it as a flex gap.
         UiNodeData::Space(s) => {
             let amount = if s.grow {
                 ui.available_height().max(0.0)
@@ -2022,11 +2699,25 @@ mod tests {
     /// `pane`-sized screen (the host panel is `Frame::NONE`, so shapes are
     /// exactly what the tree render draws).
     fn painted_shapes(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::Rect> {
+        paint(tree, pane)
+            .into_iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .filter(|r| r.is_finite() && r.is_positive())
+            .collect()
+    }
+
+    /// One frame of `tree` in a `pane`-sized screen, as clipped shapes.
+    fn paint(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::epaint::ClippedShape> {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
+        // The host style, as the live host and the headless harness apply it.
+        // Kit button widths depend on it: egui takes the style's widget stroke
+        // out of the button padding, and bare egui has no such stroke, which
+        // makes every button 2px wider than `KitButton::natural_width`.
+        crate::ui::theme::setup_style(&ctx, &colors);
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
             ..Default::default()
@@ -2038,12 +2729,7 @@ mod tests {
                     let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None, 0);
                 });
         });
-        output
-            .shapes
-            .into_iter()
-            .map(|clipped| clipped.shape.visual_bounding_rect())
-            .filter(|r| r.is_finite() && r.is_positive())
-            .collect()
+        output.shapes
     }
 
     /// Split painted shapes into the pane-filling background surface (any shape
@@ -2448,6 +3134,987 @@ mod tests {
              body ends at {} with the footer at {footer_top}",
             body.max.y
         );
+    }
+
+    // ── Stints 1327 and 1333: column flex, row align, narrow-pane rows ──────
+
+    /// One painted text run: its content, the rows it was laid out in, where
+    /// it landed and the clip it was painted under.
+    struct PaintedText {
+        text: String,
+        rows: Vec<String>,
+        rect: egui::Rect,
+        clip: egui::Rect,
+    }
+
+    impl PaintedText {
+        /// Fully inside both its clip rect and the pane.
+        fn visible_in(&self, pane: egui::Vec2) -> bool {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, pane);
+            self.clip
+                .intersect(screen)
+                .expand(0.5)
+                .contains_rect(self.rect)
+        }
+
+        /// Every laid-out row holds only whole words of the source text.
+        fn breaks_only_between_words(&self) -> bool {
+            let words: Vec<&str> = self.text.split_whitespace().collect();
+            self.rows
+                .iter()
+                .all(|row| row.split_whitespace().all(|w| words.contains(&w)))
+        }
+    }
+
+    fn painted_texts(tree: &UiTree, pane: egui::Vec2) -> Vec<PaintedText> {
+        fn collect(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<PaintedText>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, out);
+                    }
+                }
+                egui::Shape::Text(text) if !text.galley.job.text.is_empty() => {
+                    out.push(PaintedText {
+                        text: text.galley.job.text.clone(),
+                        rows: text.galley.rows.iter().map(|r| r.row.text()).collect(),
+                        rect: text.galley.rect.translate(text.pos.to_vec2()),
+                        clip,
+                    });
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in paint(tree, pane) {
+            collect(&clipped.shape, clipped.clip_rect, &mut out);
+        }
+        out
+    }
+
+    fn painted_text<'a>(texts: &'a [PaintedText], text: &str) -> &'a PaintedText {
+        texts.iter().find(|t| t.text == text).unwrap_or_else(|| {
+            panic!(
+                "{text:?} was not painted; painted {:?}",
+                texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    fn text_node(id: u32, text: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Text(TextNode {
+                text: text.to_string(),
+                size: None,
+                bold: false,
+                color: None,
+                truncate: false,
+                align: Alignment::Start,
+            }),
+        )
+    }
+
+    fn button_node(id: u32, label: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Button(ButtonNode {
+                label: label.to_string(),
+                on_click: label.to_string(),
+                style: ButtonStyle::Secondary,
+                disabled: false,
+            }),
+        )
+    }
+
+    fn grow_node(id: u32) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Space(SpaceNode {
+                size: 0.0,
+                grow: true,
+            }),
+        )
+    }
+
+    fn column_node(id: u32, children: Vec<u32>) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Column(ColumnNode {
+                children,
+                gap: style::SPACE_MD,
+                align: Alignment::Start,
+                grow: true,
+            }),
+        )
+    }
+
+    fn row_node(id: u32, children: Vec<u32>, gap: f32, align: Alignment) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Row(RowNode {
+                children,
+                gap,
+                align,
+                grow: false,
+            }),
+        )
+    }
+
+    fn badge_node(id: u32, text: &str) -> IndexedNode {
+        node(
+            id,
+            UiNodeData::Badge(
+                crate::host::wasm_view::bindings::plexi::platform::types::BadgeNode {
+                    text: text.to_string(),
+                    color: BadgeColor::Warning,
+                },
+            ),
+        )
+    }
+
+    /// The sizes `plexi plugin check` renders by default.
+    const CHECK_SIZES: [egui::Vec2; 3] = [
+        egui::vec2(320.0, 240.0),
+        egui::vec2(800.0, 600.0),
+        egui::vec2(300.0, 900.0),
+    ];
+
+    /// `Column([SurfaceHeader, Spacer(grow), Text, Spacer(grow), FooterKeys])`.
+    fn centered_tree() -> UiTree {
+        UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 2, 3, 4, 5]),
+                node(
+                    1,
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
+                        title: "Timer".to_string(),
+                        subtitle: "running".to_string(),
+                    }),
+                ),
+                grow_node(2),
+                text_node(3, "CENTER"),
+                grow_node(4),
+                node(
+                    5,
+                    UiNodeData::FooterKeys(FooterKeysNode {
+                        entries: vec![FooterKeyEntry {
+                            keys: vec!["s".to_string()],
+                            description: "start".to_string(),
+                        }],
+                        divider: true,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    /// Stint 1327: only the first grow `Space` split a column, so a second one
+    /// landed in the bottom-pinned tail and the child between them sat at the
+    /// top. Leftover height is shared by every grow spacer, which centres it.
+    #[test]
+    fn column_two_grow_spacers_center_the_child_between_them() {
+        let tree = centered_tree();
+        for pane in CHECK_SIZES {
+            let shapes = painted_shapes(&tree, pane);
+            let full_width = |r: &egui::Rect| r.min.x <= 0.5 && r.max.x >= pane.x - 0.5;
+            let header_bottom = shapes
+                .iter()
+                .filter(|r| full_width(r) && r.min.y <= 0.5 && r.max.y < pane.y / 2.0)
+                .map(|r| r.max.y)
+                .fold(0.0, f32::max);
+            let footer_top = shapes
+                .iter()
+                .filter(|r| full_width(r) && r.min.y > pane.y / 2.0 && r.max.y < pane.y + 0.5)
+                .map(|r| r.min.y)
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                header_bottom > 0.0 && footer_top.is_finite(),
+                "{pane:?}: header and footer bands should both paint; painted {shapes:?}"
+            );
+            let texts = painted_texts(&tree, pane);
+            let text = painted_text(&texts, "CENTER");
+            let body_center = (header_bottom + footer_top) / 2.0;
+            assert!(
+                (text.rect.center().y - body_center).abs() <= 2.0,
+                "{pane:?}: text centre y {} should be within 2px of the body centre {body_center} \
+                 (body {header_bottom}..{footer_top})",
+                text.rect.center().y
+            );
+        }
+    }
+
+    /// Stint 1327: with two grow spacers the tail was measured at the full
+    /// stack height, laid out from the top over the head, and everything after
+    /// the second spacer was pushed past the clip edge.
+    #[test]
+    fn column_children_after_a_second_grow_spacer_are_painted_without_overlap() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 2, 3, 4, 5]),
+                text_node(1, "HEAD"),
+                grow_node(2),
+                text_node(3, "MIDDLE"),
+                grow_node(4),
+                row_node(5, vec![6, 7], style::SPACE_SM, Alignment::Start),
+                button_node(6, "Add item"),
+                button_node(7, "Delete"),
+            ],
+        };
+        for pane in CHECK_SIZES {
+            let texts = painted_texts(&tree, pane);
+            let head = painted_text(&texts, "HEAD");
+            let middle = painted_text(&texts, "MIDDLE");
+            let add = painted_text(&texts, "Add item");
+            let delete = painted_text(&texts, "Delete");
+            for t in [head, middle, add, delete] {
+                assert!(
+                    t.visible_in(pane),
+                    "{pane:?}: {:?} at {:?} is outside its clip {:?}",
+                    t.text,
+                    t.rect,
+                    t.clip
+                );
+            }
+            assert!(
+                head.rect.max.y <= middle.rect.min.y && middle.rect.max.y <= add.rect.min.y,
+                "{pane:?}: head {:?}, middle {:?} and actions {:?} must stack without overlap",
+                head.rect,
+                middle.rect,
+                add.rect
+            );
+            let above = middle.rect.min.y - head.rect.max.y;
+            let below = add.rect.min.y - middle.rect.max.y;
+            assert!(
+                (above - below).abs() <= style::BUTTON_H_MD,
+                "{pane:?}: the two spacers should share the leftover height, got {above} and {below}"
+            );
+        }
+    }
+
+    /// Stint 1327: the Row arm never read `align`. It is the cross axis, as on
+    /// a `Column`: children sit at the top, the center or the bottom of the
+    /// row, and the row itself does not move sideways.
+    #[test]
+    fn row_align_places_children_across_the_row() {
+        let pane = egui::vec2(400.0, 200.0);
+        // A short label beside a tall one: the tall text sets the row height.
+        let rects = |align: Alignment| {
+            let tree = UiTree {
+                root: 0,
+                nodes: vec![
+                    row_node(0, vec![1, 2], style::SPACE_SM, align),
+                    text_node(1, "small"),
+                    node(
+                        2,
+                        UiNodeData::Text(TextNode {
+                            text: "TALL".to_string(),
+                            size: Some(48.0),
+                            bold: false,
+                            color: None,
+                            truncate: false,
+                            align: Alignment::Start,
+                        }),
+                    ),
+                ],
+            };
+            let texts = painted_texts(&tree, pane);
+            (
+                painted_text(&texts, "small").rect,
+                painted_text(&texts, "TALL").rect,
+            )
+        };
+        let (small, tall) = rects(Alignment::Start);
+        assert!(
+            (small.min.y - tall.min.y).abs() <= 1.0,
+            "start puts children at the row's top: {small:?} vs {tall:?}"
+        );
+        let (small, tall) = rects(Alignment::End);
+        assert!(
+            (small.max.y - tall.max.y).abs() <= 1.0,
+            "end puts children at the row's bottom: {small:?} vs {tall:?}"
+        );
+        assert!(
+            small.min.x < pane.x / 4.0,
+            "align is the cross axis: the row stays at the left edge, got {small:?}"
+        );
+
+        // The row places the button, not the label inside it: in a top-aligned
+        // row the label is still in the middle of its button.
+        for align in [Alignment::Start, Alignment::End] {
+            let tree = UiTree {
+                root: 0,
+                nodes: vec![
+                    row_node(0, vec![1, 2], style::SPACE_SM, align),
+                    button_node(1, "Save"),
+                    node(
+                        2,
+                        UiNodeData::Text(TextNode {
+                            text: "TALL".to_string(),
+                            size: Some(48.0),
+                            bold: false,
+                            color: None,
+                            truncate: false,
+                            align: Alignment::Start,
+                        }),
+                    ),
+                ],
+            };
+            let texts = painted_texts(&tree, pane);
+            let label = painted_text(&texts, "Save").rect;
+            let tall = painted_text(&texts, "TALL").rect;
+            let button_center = match align {
+                Alignment::End => tall.max.y - style::BUTTON_H_MD / 2.0,
+                _ => tall.min.y + style::BUTTON_H_MD / 2.0,
+            };
+            assert!(
+                (label.center().y - button_center).abs() <= 2.0,
+                "{align:?}: label centre {} should be the button centre {button_center}",
+                label.center().y
+            );
+        }
+    }
+
+    /// The Row default is center: a row that says nothing about `align`, as
+    /// every SDK row that is not an explicit `HStack(align=...)` does, centers
+    /// its children vertically, and `align="start"` puts them at the top.
+    #[test]
+    fn row_without_align_centers_and_start_aligns_to_the_top() {
+        let rects = |align: &str| {
+            let tree = crate::host::wasm_python::decode_ui_tree(&format!(
+                r#"{{"root":0,"nodes":[
+                {{"id":0,"key":"0","data":{{"type":"row","children":[1,2]{align}}}}},
+                {{"id":1,"key":"1","data":{{"type":"text","text":"TALL","size":48.0}}}},
+                {{"id":2,"key":"2","data":{{"type":"text","text":"small"}}}}
+            ]}}"#
+            ))
+            .expect("row tree decodes");
+            let texts = painted_texts(&tree, egui::vec2(400.0, 200.0));
+            (
+                painted_text(&texts, "TALL").rect,
+                painted_text(&texts, "small").rect,
+            )
+        };
+        let (tall, small) = rects("");
+        assert!(
+            (small.center().y - tall.center().y).abs() <= 1.0,
+            "a row with no align centers its children: {small:?} vs {tall:?}"
+        );
+        let (tall, small) = rects(r#","align":"start""#);
+        assert!(
+            (small.min.y - tall.min.y).abs() <= 1.0,
+            "align start puts children at the top: {small:?} vs {tall:?}"
+        );
+    }
+
+    /// Run `render` and return how many `render_node` calls it made.
+    fn render_node_calls(render: impl FnOnce()) -> usize {
+        RENDER_NODE_CALLS.with(|calls| calls.set(0));
+        render();
+        RENDER_NODE_CALLS.with(|calls| calls.get())
+    }
+
+    /// Trees are untrusted guest input and measuring passes re-render a
+    /// subtree. Columns that each hold two grow spacers, nested forty deep,
+    /// cost two visits per level if every level measures its children again:
+    /// 2^40 calls. A measuring pass never lays a flex column out, so one frame
+    /// visits each node a bounded number of times.
+    #[test]
+    fn nested_flex_columns_visit_each_node_a_bounded_number_of_times() {
+        const DEPTH: u32 = 40;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 4;
+            // [spacer, text, spacer, next column]
+            nodes.push(column_node(
+                base,
+                vec![base + 1, base + 2, base + 3, base + 4],
+            ));
+            nodes.push(grow_node(base + 1));
+            nodes.push(text_node(base + 2, "level"));
+            nodes.push(grow_node(base + 3));
+        }
+        nodes.push(text_node(DEPTH * 4, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(800.0, 600.0));
+        });
+        assert!(
+            calls <= count * 3,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// A row of N texts that each overflow the row measured the siblings after
+    /// every one of them: N^2 calls. One measuring pass serves the whole row.
+    #[test]
+    fn wide_row_of_overflowing_texts_is_measured_once() {
+        const TEXTS: u32 = 60;
+        let mut nodes = vec![row_node(
+            0,
+            (1..=TEXTS).collect(),
+            style::SPACE_SM,
+            Alignment::Start,
+        )];
+        for id in 1..=TEXTS {
+            nodes.push(text_node(id, BANNER_TEXT));
+        }
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(320.0, 240.0));
+        });
+        assert!(
+            calls <= count * 3,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// Rows that each hold a long text and the next row, nested sixty deep:
+    /// only the outermost `MAX_MEASURED_ROW_DEPTH` rows measure, so the cost
+    /// stays linear in the node count instead of growing with the depth.
+    #[test]
+    fn nested_rows_stop_measuring_past_the_depth_limit() {
+        const DEPTH: u32 = 60;
+        let mut nodes = Vec::new();
+        for level in 0..DEPTH {
+            let base = level * 2;
+            nodes.push(row_node(
+                base,
+                vec![base + 1, base + 2],
+                style::SPACE_SM,
+                Alignment::End,
+            ));
+            nodes.push(text_node(base + 1, BANNER_TEXT));
+        }
+        nodes.push(text_node(DEPTH * 2, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(320.0, 240.0));
+        });
+        assert!(
+            calls <= count * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// The two measurements together: a flex column measures its spans, and
+    /// the rows inside them wrap their text in that pass too, so the column
+    /// sees the wrapped height. Still linear in the node count.
+    #[test]
+    fn flex_column_over_nested_rows_stays_within_the_visit_bound() {
+        const DEPTH: u32 = 30;
+        let mut nodes = vec![column_node(0, vec![1, 2, 3, 4])];
+        nodes.push(grow_node(1));
+        nodes.push(text_node(2, "value"));
+        nodes.push(grow_node(3));
+        for level in 0..DEPTH {
+            let base = 4 + level * 2;
+            nodes.push(row_node(
+                base,
+                vec![base + 1, base + 2],
+                style::SPACE_SM,
+                Alignment::End,
+            ));
+            nodes.push(text_node(base + 1, BANNER_TEXT));
+        }
+        nodes.push(text_node(4 + DEPTH * 2, "leaf"));
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, egui::vec2(320.0, 240.0));
+        });
+        assert!(
+            calls <= count * 2 * (usize::from(MAX_MEASURED_ROW_DEPTH) + 1),
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// A column measures its spans before placing them, and a row in a span
+    /// wraps its text in that measurement exactly as it will when painted:
+    /// the span after a wrapped banner starts below all of its lines.
+    #[test]
+    fn column_measures_a_wrapped_row_at_its_wrapped_height() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 4, 5, 6, 7]),
+                row_node(1, vec![2, 3], 8.0, Alignment::Start),
+                badge_node(2, "warning"),
+                text_node(3, BANNER_TEXT),
+                grow_node(4),
+                text_node(5, "MIDDLE"),
+                grow_node(6),
+                text_node(7, "TAIL"),
+            ],
+        };
+        let pane = egui::vec2(320.0, 240.0);
+        let texts = painted_texts(&tree, pane);
+        let banner = painted_text(&texts, BANNER_TEXT);
+        let middle = painted_text(&texts, "MIDDLE");
+        assert!(banner.rows.len() > 1, "the banner must wrap at {pane:?}");
+        assert!(
+            middle.rect.min.y >= banner.rect.max.y,
+            "the middle span must start below the wrapped banner: {:?} then {:?}",
+            banner.rect,
+            middle.rect
+        );
+    }
+
+    /// A `Text` size is guest input: NaN and infinity fall back to the body
+    /// size and absurd sizes are clamped before any font is laid out.
+    #[test]
+    fn text_size_is_finite_and_bounded() {
+        let sized = |size: Option<f32>| {
+            text_size(&TextNode {
+                text: String::new(),
+                size,
+                bold: false,
+                color: None,
+                truncate: false,
+                align: Alignment::Start,
+            })
+        };
+        assert_eq!(sized(None), style::TEXT_BODY);
+        assert_eq!(sized(Some(f32::NAN)), style::TEXT_BODY);
+        assert_eq!(sized(Some(f32::INFINITY)), style::TEXT_BODY);
+        assert_eq!(sized(Some(f32::NEG_INFINITY)), style::TEXT_BODY);
+        assert_eq!(sized(Some(18.0)), 18.0);
+        assert_eq!(sized(Some(-4.0)), 1.0);
+        assert_eq!(sized(Some(1.0e9)), 512.0);
+        // The whole tree still renders with a hostile size in it.
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![node(
+                0,
+                UiNodeData::Text(TextNode {
+                    text: "hostile".to_string(),
+                    size: Some(f32::NAN),
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            )],
+        };
+        let texts = painted_texts(&tree, egui::vec2(320.0, 240.0));
+        assert!(painted_text(&texts, "hostile").rect.is_finite());
+    }
+
+    /// Stint 1333 must not touch keypad grids: a calc-shaped grid keeps its
+    /// fixed 64px cells at every check size instead of wrapping or resizing.
+    #[test]
+    fn keypad_grid_keeps_fixed_cells_at_the_check_sizes() {
+        let keys = [
+            ["7", "8", "9", "/"],
+            ["4", "5", "6", "*"],
+            ["1", "2", "3", "-"],
+        ];
+        let mut nodes = vec![column_node(0, vec![1, 2, 3])];
+        for (row, labels) in keys.iter().enumerate() {
+            let row_id = 1 + row as u32;
+            let first = 10 + row as u32 * 10;
+            nodes.push(row_node(
+                row_id,
+                (first..first + 4).collect(),
+                style::SPACE_SM,
+                Alignment::Start,
+            ));
+            for (col, label) in labels.iter().enumerate() {
+                nodes.push(button_node(first + col as u32, label));
+            }
+        }
+        let tree = UiTree { root: 0, nodes };
+        assert!(column_button_grid_spec(&tree.nodes, 0).is_some());
+        for pane in CHECK_SIZES {
+            let texts = painted_texts(&tree, pane);
+            for labels in keys {
+                let centers: Vec<egui::Pos2> = labels
+                    .iter()
+                    .map(|label| painted_text(&texts, label).rect.center())
+                    .collect();
+                for pair in centers.windows(2) {
+                    assert!(
+                        (pair[1].x - pair[0].x - (KEYPAD_BUTTON_W + style::SPACE_SM)).abs() <= 1.0,
+                        "{pane:?}: keypad cells must stay {KEYPAD_BUTTON_W}px apart plus the gap, got {centers:?}"
+                    );
+                    assert!(
+                        (pair[1].y - pair[0].y).abs() <= 0.5,
+                        "{pane:?}: a keypad row must not wrap, got {centers:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Content taller than a column with two grow spacers: the spacers collapse
+    /// and no span is dropped. The head starts at the top, the middle span is
+    /// laid out after it, and the last span still holds the bottom edge.
+    #[test]
+    fn overfull_column_with_two_grow_spacers_keeps_every_span() {
+        let tall = |id: u32, text: &str| {
+            node(
+                id,
+                UiNodeData::Text(TextNode {
+                    text: text.to_string(),
+                    size: Some(60.0),
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            )
+        };
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1, 2, 3, 4, 5]),
+                tall(1, "HEAD"),
+                grow_node(2),
+                tall(3, "MIDDLE"),
+                grow_node(4),
+                tall(5, "TAIL"),
+            ],
+        };
+        let pane = egui::vec2(320.0, 150.0);
+        let texts = painted_texts(&tree, pane);
+        let head = painted_text(&texts, "HEAD");
+        let middle = painted_text(&texts, "MIDDLE");
+        let tail = painted_text(&texts, "TAIL");
+        assert!(
+            head.rect.min.y < style::SPACE_MD + 2.0,
+            "head starts at the top: {:?}",
+            head.rect
+        );
+        assert!(
+            (middle.rect.min.y - head.rect.max.y).abs() <= 2.0,
+            "collapsed spacers put the middle span right after the head: {:?} then {:?}",
+            head.rect,
+            middle.rect
+        );
+        assert!(
+            (tail.rect.max.y - (pane.y - style::SPACE_MD)).abs() <= 2.0,
+            "the last span holds the bottom edge: {:?}",
+            tail.rect
+        );
+        for t in [head, middle, tail] {
+            assert!(
+                t.clip.intersects(t.rect),
+                "{:?} must be at least partly painted: rect {:?}, clip {:?}",
+                t.text,
+                t.rect,
+                t.clip
+            );
+        }
+    }
+
+    /// The layout pass behind `plugin check` records what each node painted.
+    /// Measuring passes render the same nodes invisibly and must not be
+    /// recorded, and a wrapped row text is painted by the `Text` arm like any
+    /// other, so it has one entry that is neither cut nor broken mid-word.
+    #[test]
+    fn layout_pass_records_each_wrapped_row_node_once() {
+        for (name, tree) in [
+            ("banner", banner_tree(true)),
+            (
+                "actions",
+                button_row_tree(
+                    &["Start timer", "Pause", "Reset", "Add a lap", "Settings"],
+                    style::SPACE_SM,
+                ),
+            ),
+            ("flex", centered_tree()),
+        ] {
+            let layout = render_ui_tree_layout(&tree, 320.0, 240.0);
+            for node in &tree.nodes {
+                let entries: Vec<&NodeLayout> =
+                    layout.iter().filter(|fact| fact.id == node.id).collect();
+                assert!(
+                    entries.len() <= 1,
+                    "{name}: node {} was recorded more than once: {entries:?}",
+                    node.id
+                );
+                let paints = matches!(
+                    node.data,
+                    UiNodeData::Text(_) | UiNodeData::Button(_) | UiNodeData::Badge(_)
+                );
+                if paints {
+                    assert_eq!(
+                        entries.len(),
+                        1,
+                        "{name}: node {} painted and should have a layout entry",
+                        node.id
+                    );
+                    let fact = entries[0];
+                    assert!(
+                        fact.visible.is_some() && !fact.text_cut && !fact.text_wrapped_mid_word,
+                        "{name}: node {} should be fully painted, got {fact:?}",
+                        node.id
+                    );
+                }
+            }
+        }
+    }
+
+    fn button_row_tree(labels: &[&str], gap: f32) -> UiTree {
+        let ids: Vec<u32> = (2..2 + labels.len() as u32).collect();
+        let mut nodes = vec![
+            column_node(0, vec![1]),
+            row_node(1, ids.clone(), gap, Alignment::Start),
+        ];
+        for (id, label) in ids.iter().zip(labels) {
+            nodes.push(button_node(*id, label));
+        }
+        UiTree { root: 0, nodes }
+    }
+
+    /// Every label is painted whole, on one line, inside the pane; returns the
+    /// number of distinct lines the buttons landed on.
+    fn assert_whole_buttons(tree: &UiTree, labels: &[&str], pane: egui::Vec2) -> usize {
+        let texts = painted_texts(tree, pane);
+        let mut lines: Vec<i32> = Vec::new();
+        for label in labels {
+            let t = painted_text(&texts, label);
+            assert_eq!(
+                t.rows.len(),
+                1,
+                "{pane:?}: button label {label:?} wrapped into {:?}",
+                t.rows
+            );
+            assert!(
+                t.visible_in(pane),
+                "{pane:?}: button {label:?} at {:?} is cut off (clip {:?})",
+                t.rect,
+                t.clip
+            );
+            let y = t.rect.center().y.round() as i32;
+            if !lines.contains(&y) {
+                lines.push(y);
+            }
+        }
+        lines.len()
+    }
+
+    /// Stint 1333: a button row was one `ui.horizontal`, so in a narrow pane the
+    /// last button wrapped its label mid-word and later buttons were cut off.
+    #[test]
+    fn button_row_wraps_whole_buttons_in_a_narrow_pane() {
+        let labels = ["Start timer", "Pause", "Reset", "Add a lap", "Settings"];
+        let tree = button_row_tree(&labels, style::SPACE_SM);
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            let lines = assert_whole_buttons(&tree, &labels, pane);
+            assert!(
+                lines >= 2,
+                "{pane:?}: five buttons cannot fit one line, yet they landed on {lines}"
+            );
+        }
+        // Wide enough for one line: the row must not wrap.
+        let lines = assert_whole_buttons(&tree, &labels, egui::vec2(800.0, 600.0));
+        assert_eq!(lines, 1, "a row that fits stays on one line");
+    }
+
+    /// Stint 1333: a seven-option `Select` lost its last option at 320px.
+    #[test]
+    fn seven_option_select_shows_every_option_in_a_narrow_pane() {
+        let labels = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
+        let tree = button_row_tree(&labels, 4.0);
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            assert_whole_buttons(&tree, &labels, pane);
+        }
+    }
+
+    const BANNER_TEXT: &str =
+        "Sync paused: the remote copy changed while you were offline, review before saving";
+
+    fn banner_tree(dismissible: bool) -> UiTree {
+        let mut children = vec![2, 3];
+        let mut nodes = vec![badge_node(2, "warning"), text_node(3, BANNER_TEXT)];
+        if dismissible {
+            children.push(4);
+            nodes.push(button_node(4, "×"));
+        }
+        let mut all = vec![
+            column_node(0, vec![1]),
+            row_node(1, children, 8.0, Alignment::Start),
+        ];
+        all.append(&mut nodes);
+        UiTree {
+            root: 0,
+            nodes: all,
+        }
+    }
+
+    /// Stint 1333: a `Banner` is a row of badge, text and an optional dismiss
+    /// button; its text ran past the pane edge instead of wrapping.
+    #[test]
+    fn banner_text_wraps_inside_a_narrow_pane() {
+        for pane in [egui::vec2(320.0, 240.0), egui::vec2(300.0, 900.0)] {
+            for dismissible in [false, true] {
+                let texts = painted_texts(&banner_tree(dismissible), pane);
+                let text = painted_text(&texts, BANNER_TEXT);
+                assert!(
+                    text.visible_in(pane),
+                    "{pane:?} dismissible={dismissible}: banner text at {:?} is cut off (clip {:?})",
+                    text.rect,
+                    text.clip
+                );
+                assert!(
+                    text.rows.len() > 1 && text.breaks_only_between_words(),
+                    "{pane:?}: banner text should wrap between words, got rows {:?}",
+                    text.rows
+                );
+                if dismissible {
+                    let dismiss = painted_text(&texts, "×");
+                    assert!(
+                        dismiss.visible_in(pane),
+                        "{pane:?}: dismiss button at {:?} must stay in the pane",
+                        dismiss.rect
+                    );
+                    assert!(
+                        dismiss.rect.min.x >= text.rect.max.x,
+                        "{pane:?}: the text must leave room for the dismiss button"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A banner that fits is laid out exactly as before: one unwrapped line.
+    #[test]
+    fn banner_text_that_fits_stays_on_one_line() {
+        let texts = painted_texts(&banner_tree(true), egui::vec2(1200.0, 300.0));
+        assert_eq!(painted_text(&texts, BANNER_TEXT).rows.len(), 1);
+    }
+
+    /// Stint 1333: a button squeezed by its row siblings broke its label one
+    /// letter per line. A button is never narrower than its longest word.
+    #[test]
+    fn button_label_never_breaks_mid_word() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                row_node(0, vec![1, 2], style::SPACE_SM, Alignment::Start),
+                badge_node(1, "live"),
+                button_node(2, "Recalibrate sensors"),
+            ],
+        };
+        let texts = painted_texts(&tree, egui::vec2(130.0, 240.0));
+        let label = painted_text(&texts, "Recalibrate sensors");
+        assert!(
+            label.breaks_only_between_words(),
+            "label broke inside a word: {:?}",
+            label.rows
+        );
+    }
+
+    #[test]
+    fn pack_row_lines_breaks_before_the_child_that_does_not_fit() {
+        assert_eq!(pack_row_lines(&[40.0, 40.0, 40.0], 10.0, 200.0), vec![0..3]);
+        assert_eq!(
+            pack_row_lines(&[40.0, 40.0, 40.0], 10.0, 100.0),
+            vec![0..2, 2..3]
+        );
+        // A child wider than the row still gets a line of its own.
+        assert_eq!(
+            pack_row_lines(&[40.0, 300.0, 40.0], 10.0, 100.0),
+            vec![0..1, 1..2, 2..3]
+        );
+        assert_eq!(
+            pack_row_lines(&[40.0, 40.0], 10.0, f32::INFINITY),
+            vec![0..2]
+        );
+        assert!(pack_row_lines(&[], 10.0, 100.0).is_empty());
+    }
+
+    /// Visual evidence for stints 1327 and 1333 at the check matrix sizes: a
+    /// value centered between two grow spacers above an `Actions` row,
+    /// and a banner, a seven-option select and an action row in flow.
+    #[test]
+    fn screenshot_column_flex_and_narrow_rows() {
+        let labels = ["Start timer", "Pause", "Reset", "Add a lap", "Settings"];
+        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let header = |title: &str| {
+            node(
+                1,
+                UiNodeData::SurfaceHeader(SurfaceHeaderNode {
+                    title: title.to_string(),
+                    subtitle: "paused".to_string(),
+                }),
+            )
+        };
+        let footer = node(
+            9,
+            UiNodeData::FooterKeys(FooterKeysNode {
+                entries: vec![FooterKeyEntry {
+                    keys: vec!["s".to_string()],
+                    description: "start".to_string(),
+                }],
+                divider: true,
+            }),
+        );
+        let buttons = |first: u32, labels: &[&str]| -> Vec<IndexedNode> {
+            labels
+                .iter()
+                .enumerate()
+                .map(|(i, label)| button_node(first + i as u32, label))
+                .collect()
+        };
+
+        let mut flex = vec![
+            column_node(0, vec![1, 2, 3, 4, 5, 9]),
+            header("Sand timer"),
+            grow_node(2),
+            node(
+                3,
+                UiNodeData::Text(TextNode {
+                    text: "04:32".to_string(),
+                    size: Some(28.0),
+                    bold: true,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Center,
+                }),
+            ),
+            grow_node(4),
+            row_node(5, (30..35).collect(), style::SPACE_SM, Alignment::Start),
+            footer.clone(),
+        ];
+        flex.extend(buttons(30, &labels));
+
+        let mut rows = vec![
+            column_node(0, vec![1, 2, 3, 4, 9]),
+            header("Narrow rows"),
+            row_node(2, vec![10, 11, 12], 8.0, Alignment::Start),
+            row_node(3, (20..27).collect(), 4.0, Alignment::Start),
+            row_node(4, (30..35).collect(), style::SPACE_SM, Alignment::Start),
+            footer,
+            badge_node(10, "warning"),
+            text_node(11, BANNER_TEXT),
+            button_node(12, "×"),
+        ];
+        rows.extend(buttons(20, &days));
+        rows.extend(buttons(30, &labels));
+
+        for (name, nodes) in [("flex", flex), ("rows", rows)] {
+            let tree = UiTree { root: 0, nodes };
+            for pane in CHECK_SIZES {
+                let png = render_ui_tree_to_png(&tree, pane.x, pane.y, 2.0).expect("render tree");
+                let path = crate::ui_tests::evidence_png!(format!("_{name}_{}x{}", pane.x, pane.y));
+                std::fs::write(&path, png).expect("write screenshot for visual review");
+            }
+        }
     }
 
     /// Stint 0674: `autofocus` makes a field its pane's *default* text surface,
