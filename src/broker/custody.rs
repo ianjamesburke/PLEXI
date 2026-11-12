@@ -12,8 +12,8 @@
 //! - Only the broker and the host start path can obtain one. The constructor
 //!   is private to this module. [`install_for_host_start`] mints the only
 //!   production token, and `main` calls it once, on the host start path
-//!   (`only_host_start_installs_custody` pins both facts). The accessor is
-//!   `pub(in crate::broker)`.
+//!   (`broker::custody_guard_tests` pins both facts by parsing the source).
+//!   The accessor is `pub(in crate::broker)`.
 //! - A process that never ran host start (every CLI command, including
 //!   `plexi host start`, which launches a separate host process) has no token,
 //!   so `PermissionMonitor::for_profile` and the store loaders fail loudly at
@@ -71,7 +71,7 @@ fn installed() -> &'static OnceLock<HostProcess> {
 /// Mint this process's host token. Call once, on the host start path, before
 /// anything opens permission state. A second call is an error and leaves the
 /// first token in place.
-pub fn install_for_host_start() -> Result<(), CustodyAlreadyInstalled> {
+pub(crate) fn install_for_host_start() -> Result<(), CustodyAlreadyInstalled> {
     installed()
         .set(HostProcess { _private: () })
         .map_err(|_| CustodyAlreadyInstalled)?;
@@ -123,75 +123,6 @@ impl HostProcess {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rs_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    /// Guard: exactly one production way to mint a `HostProcess` (inside
-    /// `install_for_host_start`), one `#[cfg(test)]` constructor, and exactly
-    /// one caller of `install_for_host_start` (the host start path in `main`).
-    #[test]
-    fn only_host_start_installs_custody() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        rs_files(&root, &mut files);
-        assert!(!files.is_empty(), "no sources found under {root:?}");
-        let mut mints = Vec::new();
-        let mut installs = Vec::new();
-        let (mint, install) = (
-            ["HostProcess", " { _private"].concat(),
-            ["install_for_host_start", "()"].concat(),
-        );
-        for path in &files {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            let rel = path.strip_prefix(&root).unwrap_or(path).display().to_string();
-            for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
-                if code.contains(&mint) {
-                    mints.push(format!("{rel}:{}", n + 1));
-                }
-                if code.contains(&install)
-                    && !code.contains("pub fn ")
-                    && rel != "broker/custody.rs"
-                {
-                    installs.push(format!("{rel}:{}", n + 1));
-                }
-            }
-        }
-        assert_eq!(
-            mints.len(),
-            2,
-            "HostProcess must have one production mint and one test constructor: {mints:?}"
-        );
-        assert!(
-            mints.iter().all(|site| site.starts_with("broker/custody.rs:")),
-            "HostProcess may only be constructed in broker/custody.rs: {mints:?}"
-        );
-        assert_eq!(
-            installs.len(),
-            1,
-            "exactly one caller may install host custody: {installs:?}"
-        );
-        assert!(
-            installs[0].starts_with("main.rs:"),
-            "host custody is installed only on the host start path in main.rs: {installs:?}"
-        );
-    }
-
     /// Stint 1291 pin: a process that never ran host start cannot open,
     /// read, migrate or seal permission state, and says why. A leftover legacy
     /// `permissions.toml` is not imported (that import seals).

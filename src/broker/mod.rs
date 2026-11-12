@@ -1336,6 +1336,9 @@ pub(crate) mod admission_matrix;
 mod cli_operation_tests;
 
 #[cfg(test)]
+mod custody_guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
