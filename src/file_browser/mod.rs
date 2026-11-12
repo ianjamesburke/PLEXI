@@ -5582,6 +5582,66 @@ mod tests {
     }
 
     #[test]
+    fn unchosen_search_selection_follows_the_top_result_through_async_reranks() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("my_alpha.md"));
+
+        settle_search(&mut app, &wake, |app| {
+            app.search_session
+                .hits()
+                .first()
+                .is_some_and(|hit| hit.file_name == "alpha")
+        });
+        assert_eq!(
+            selected_hit_name(&app).as_deref(),
+            Some("alpha"),
+            "before the user chooses a row, the selection is the best result"
+        );
+    }
+
+    #[test]
+    fn search_query_change_releases_the_chosen_result() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(app.search_pinned_path, Some(dir.path().join("xalpha.md")));
+
+        run_handle_key(&mut app, vec![Event::Text(".md".to_string())]);
+        assert_eq!(app.search_pinned_path, None);
+        assert_eq!(app.selected, 0);
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("my_alpha.md"));
+    }
+
+    #[test]
+    fn search_selection_falls_back_to_the_top_result_when_its_file_leaves() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        app.selected = 1;
+        app.search_pinned_path = Some(dir.path().join("deleted_alpha.md"));
+        app.pending_scroll = false;
+
+        app.apply_search_results_update();
+
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.search_pinned_path, None);
+        assert!(
+            app.pending_scroll,
+            "the new action target is scrolled into view"
+        );
+    }
+
+    #[test]
     fn arrow_down_still_selects_next_in_search() {
         let (mut app, _dir) = make_populated_dir_plugin();
         // add a second file so there's something to move to
