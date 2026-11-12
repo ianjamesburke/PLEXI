@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("docs_gate_scope.py")
 spec = importlib.util.spec_from_file_location("docs_gate_scope", SCRIPT)
@@ -209,6 +210,13 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(bindings["guides"]["how"], "manifest-read")
         self.assertNotIn("tools", bindings)
 
+    def test_scanner_desync_fails_closed(self):
+        root = make_root({"src/lib.rs": 'fn f() { read(Path::new(env!("CARGO_MANIFEST_DIR")).join("guides")); }\n',
+                          "guides/a.md": "x"})
+        # A scanner that loses string/code parity must not leave the manifest rule silently blind.
+        with patch.object(scope, "_scan", side_effect=lambda text: (text, {}, [])):
+            self.assert_required(["notes/guide.md"], root, "scanner lost literal sync")
+
     def test_unterminated_raw_string_fails_closed(self):
         root = make_root({"src/lib.rs": 'const S: &str = r#"never closed;\n'})
         self.assert_required(["notes/guide.md"], root, "binding set unavailable")
@@ -238,7 +246,8 @@ class DecisionTests(unittest.TestCase):
     def test_concat_manifest_dir_include_resolves(self):
         root = make_root({"Cargo.toml": "[package]\n", "guides/a.md": "x", "src/lib.rs": (
             'const A: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/guides/a.md"));\n')})
-        self.assert_required(["guides/a.md"], root, "include_str")
+        self.assert_required(["guides/a.md"], root, "guides/a.md is bound by include_str")
+        self.assertTrue(scope.decide(["notes/guide.md"], root)[0])
 
     def test_includes_resolve_through_tracked_symlinks(self):
         root = make_root({"real/a.md": "x", "other/b.md": "x", "Cargo.toml": "[package]\n", "src/lib.rs": (
