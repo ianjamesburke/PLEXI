@@ -1280,6 +1280,9 @@ pub struct LivePythonPane {
     /// One info line the first time this pane serves
     /// `read_permission_decisions`. Later polls stay quiet at info.
     announced_permission_read: bool,
+    /// Host-derived authority over the permission bridge, set at launch and
+    /// re-derived on relaunch because a hot reload can change the files.
+    permission_ui: PermissionUiTrust,
     /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
     /// opened by or targeting this Python runtime.
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
@@ -2489,6 +2492,108 @@ fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridge
     }
 }
 
+/// Embedded name of the bundled Permissions plugin (`apps/permissions`).
+const PERMISSIONS_UI_BUNDLE: &str = "permissions";
+
+/// A pane's authority over the permission bridge (stint 1264). Derived from
+/// what the host itself shipped, never from a plugin id or manifest claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionUiTrust {
+    /// Byte-identical to this binary's embedded Permissions plugin.
+    BundledPermissionsUi,
+    Untrusted,
+}
+
+/// The one trust predicate for `read_permission_decisions` and
+/// `permission_decision`. The id is a necessary condition only, because the
+/// bundled manifest declares it; any installed plugin may reuse it, so the
+/// content check decides.
+fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust {
+    if plugin_id == PERMISSIONS_UI_BUNDLE
+        && crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir)
+    {
+        PermissionUiTrust::BundledPermissionsUi
+    } else {
+        PermissionUiTrust::Untrusted
+    }
+}
+
+/// A refused bridge message: names only, never the payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionBridgeRefusal {
+    operation: String,
+    ask_id: String,
+}
+
+/// Answer one permission bridge message. Returns the `permission_inventory`
+/// reply for the guest and, when refused, what to log.
+///
+/// No guest message is a human decision. The bundled Permissions plugin calls
+/// the broker as a non-human caller: `revoke` narrows and applies; `allow` and
+/// `reset` widen, so the broker files a Needs you item that only a real click
+/// in the host window can approve. Every other plugin is refused outright and
+/// sees no inventory.
+fn answer_permission_bridge(
+    trust: PermissionUiTrust,
+    kind: PermissionBridgeKind,
+    message: &Value,
+    monitor: &crate::broker::gate::PermissionMonitor,
+    plugin_id: &str,
+) -> (Value, Option<PermissionBridgeRefusal>) {
+    let inventory =
+        |entries: Vec<crate::broker::gate::PermissionEntry>, notice: &str, status: &str| {
+            json!({
+                "type": "permission_inventory",
+                "entries": entries,
+                "notice": notice,
+                "status": status,
+            })
+        };
+    let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+    let action = message.get("action").and_then(Value::as_str).unwrap_or("");
+    if trust != PermissionUiTrust::BundledPermissionsUi {
+        let operation = match kind {
+            PermissionBridgeKind::Read => "read_permission_decisions".to_string(),
+            PermissionBridgeKind::Decide => format!("permission_decision:{}", action.trim()),
+        };
+        return (
+            inventory(Vec::new(), "not permitted", "rejected"),
+            Some(PermissionBridgeRefusal {
+                operation,
+                ask_id: id.to_string(),
+            }),
+        );
+    }
+    if kind == PermissionBridgeKind::Read {
+        return (inventory(monitor.list_entries(), "", "list"), None);
+    }
+    let outcome = monitor.mutate_entry(
+        id,
+        action,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("app:{plugin_id}"),
+        },
+    );
+    log::info!("plugin::{plugin_id}: permission {action} id={id} human=false");
+    let (notice, status) = match &outcome {
+        crate::broker::gate::PermissionMutation::Applied { entry_id } => {
+            (format!("{action} applied for {entry_id}"), "applied")
+        }
+        crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
+            format!("Confirm {action} in Needs you ({needs_you_id})"),
+            "needs_you",
+        ),
+        crate::broker::gate::PermissionMutation::Missing { entry_id } => {
+            (format!("missing {entry_id}"), "missing")
+        }
+        crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
+            (error.clone(), "rejected")
+        }
+    };
+    (inventory(monitor.list_entries(), &notice, status), None)
+}
+
 fn guest_log_level(raw: Option<&str>) -> log::Level {
     match raw.map(str::trim) {
         Some("debug") => log::Level::Debug,
@@ -2530,6 +2635,7 @@ impl LivePythonPane {
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
         let plugin_id = config.plugin_id.clone();
+        let permission_ui = permission_ui_trust(&plugin_id, &config.plugin_dir);
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
@@ -2610,6 +2716,7 @@ impl LivePythonPane {
             stderr_classifier: GuestStderrClassifier::new(),
             unhandled_warned_at: HashMap::new(),
             announced_permission_read: false,
+            permission_ui,
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ),
@@ -3159,10 +3266,7 @@ impl LivePythonPane {
         // Handle them before the generic match so a miss cannot fall through
         // to the unhandled warning and leave the list blank.
         if let Some(kind) = permission_bridge_kind(message_type) {
-            match kind {
-                PermissionBridgeKind::Read => self.handle_read_permission_decisions(),
-                PermissionBridgeKind::Decide => self.handle_permission_decision(&message),
-            }
+            self.handle_permission_bridge(kind, &message);
             return;
         }
         match message_type {
@@ -3533,19 +3637,25 @@ impl LivePythonPane {
             .list_entries()
     }
 
-    fn send_permission_inventory(&mut self, notice: &str, status: &str) {
-        let entries = Self::permission_entries();
-        log::debug!(
-            "plugin::{}: permission inventory count={} status={status}",
-            self.plugin_id,
-            entries.len()
-        );
-        if let Err(error) = self.runtime.send(&json!({
-            "type": "permission_inventory",
-            "entries": entries,
-            "notice": notice,
-            "status": status,
-        })) {
+    fn handle_permission_bridge(&mut self, kind: PermissionBridgeKind, message: &Value) {
+        if kind == PermissionBridgeKind::Read
+            && self.permission_ui == PermissionUiTrust::BundledPermissionsUi
+            && !self.announced_permission_read
+        {
+            self.announced_permission_read = true;
+            log::info!(
+                "plugin::{}: serving read_permission_decisions",
+                self.plugin_id
+            );
+        }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let (reply, refusal) =
+            answer_permission_bridge(self.permission_ui, kind, message, &monitor, &self.plugin_id);
+        if let Some(refusal) = refusal {
+            self.warn_refused_permission_bridge(&refusal);
+        }
+        if let Err(error) = self.runtime.send(&reply) {
             log::error!(
                 "plugin::{}: send permission_inventory: {error}",
                 self.plugin_id
@@ -3553,15 +3663,24 @@ impl LivePythonPane {
         }
     }
 
-    fn handle_read_permission_decisions(&mut self) {
-        if !self.announced_permission_read {
-            self.announced_permission_read = true;
-            log::info!(
-                "plugin::{}: serving read_permission_decisions",
-                self.plugin_id
-            );
+    /// Warn once per refused operation per window; a 1 Hz poll stays at debug.
+    fn warn_refused_permission_bridge(&mut self, refusal: &PermissionBridgeRefusal) {
+        let key = format!("refused:{}", refusal.operation);
+        let now = std::time::Instant::now();
+        let instance = self
+            .pane_owner
+            .map(|(pane_id, _)| pane_id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let line = format!(
+            "plugin::{}: refused {} instance={instance} id={}: only the bundled Permissions plugin may use the permission bridge",
+            self.plugin_id, refusal.operation, refusal.ask_id
+        );
+        if unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now) {
+            self.unhandled_warned_at.insert(key, now);
+            log::warn!("{line}");
+        } else {
+            log::debug!("{line}");
         }
-        self.send_permission_inventory("", "list");
     }
 
     /// Warn once per message type per window. Repeats stay at debug so a
@@ -3584,42 +3703,6 @@ impl LivePythonPane {
             "plugin::{}: unhandled CPython WASM message: {message}",
             self.plugin_id
         );
-    }
-
-    fn handle_permission_decision(&mut self, message: &Value) {
-        let id = message.get("id").and_then(Value::as_str).unwrap_or("");
-        let action = message.get("action").and_then(Value::as_str).unwrap_or("");
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let outcome = monitor.mutate_entry(
-            id,
-            action,
-            &crate::broker::gate::PermissionCaller {
-                human: true,
-                actor_id: format!("app:{}", self.plugin_id),
-            },
-        );
-        log::info!(
-            "plugin::{}: permission {action} id={id} human=true",
-            self.plugin_id
-        );
-        let (notice, status) = match &outcome {
-            crate::broker::gate::PermissionMutation::Applied { entry_id } => (
-                format!("{action} applied for {entry_id}"),
-                "applied".to_string(),
-            ),
-            crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
-                format!("filed Needs you {needs_you_id}"),
-                "needs_you".to_string(),
-            ),
-            crate::broker::gate::PermissionMutation::Missing { entry_id } => {
-                (format!("missing {entry_id}"), "missing".to_string())
-            }
-            crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
-                (error.clone(), "rejected".to_string())
-            }
-        };
-        self.send_permission_inventory(&notice, &status);
     }
 
     fn handle_http_request(&mut self, message: &Value) {
@@ -4014,7 +4097,7 @@ impl LivePythonPane {
                 })
                 .collect(),
         );
-        if self.plugin_id == "permissions" {
+        if self.permission_ui == PermissionUiTrust::BundledPermissionsUi {
             let entries = Self::permission_entries();
             log::info!(
                 "plugin::{}: seeded permission inventory count={}",
@@ -4719,6 +4802,7 @@ impl LivePythonPane {
         self.stderr_classifier = GuestStderrClassifier::new();
         self.unhandled_warned_at.clear();
         self.announced_permission_read = false;
+        self.permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -10390,6 +10474,259 @@ default = true
         );
         let typo = json!({"type": "read_permission_decision"});
         assert_eq!(permission_bridge_kind(bridge_message_type(&typo)), None);
+    }
+
+    /// A monitor holding one pending ask, one stored denial and one grant.
+    struct BridgeFixture {
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+        pending: String,
+        deny: String,
+        grant: String,
+    }
+
+    fn bridge_admit(
+        monitor: &crate::broker::gate::PermissionMonitor,
+        call: &str,
+        tool: &str,
+    ) -> String {
+        let admission = monitor.admit(crate::broker::gate::AdmitRequest {
+            call_id: call,
+            tool,
+            input_json: "{}",
+            actor_type: crate::broker::ActorType::Agent,
+            actor_id: "agent:bridge-test",
+            actor_scope: crate::broker::ActorScope::User,
+            trust_origin: "host",
+            workspace_root: Path::new("/ws"),
+            context_id: 1,
+            package_id: "bridge-test",
+            instance_id: 1,
+            target_type: crate::broker::TargetType::HostTool,
+        });
+        match admission {
+            crate::broker::gate::Admission::Required { pending_request_id } => pending_request_id,
+            _ => panic!("{tool} must ask"),
+        }
+    }
+
+    fn bridge_fixture() -> BridgeFixture {
+        use crate::broker::gate::ApprovalChoice;
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        let to_deny = bridge_admit(&monitor, "call-deny", "bridge.denied");
+        monitor
+            .approve_pending(&to_deny, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let to_grant = bridge_admit(&monitor, "call-grant", "bridge.granted");
+        monitor
+            .approve_pending(&to_grant, ApprovalChoice::Always)
+            .unwrap();
+        let pending = bridge_admit(&monitor, "call-pending", "bridge.pending");
+        let entries = monitor.list_entries();
+        let id_of = |kind: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.kind == kind)
+                .unwrap_or_else(|| panic!("fixture has a {kind} row"))
+                .id
+                .clone()
+        };
+        BridgeFixture {
+            deny: id_of("deny"),
+            grant: id_of("allow"),
+            pending,
+            monitor,
+        }
+    }
+
+    fn decide(id: &str, action: &str) -> Value {
+        json!({"type": "permission_decision", "id": id, "action": action})
+    }
+
+    fn rows(monitor: &crate::broker::gate::PermissionMonitor) -> Vec<(String, String)> {
+        monitor
+            .list_entries()
+            .into_iter()
+            .map(|entry| (entry.id, entry.kind))
+            .collect()
+    }
+
+    #[test]
+    fn permission_bridge_refuses_a_plugin_without_bundled_provenance() {
+        let fx = bridge_fixture();
+        let before = rows(&fx.monitor);
+        let needs_before = fx.monitor.list_needs_you().len();
+        let read = json!({"type": "read_permission_decisions"});
+        let (reply, refusal) = answer_permission_bridge(
+            PermissionUiTrust::Untrusted,
+            PermissionBridgeKind::Read,
+            &read,
+            &fx.monitor,
+            "evil",
+        );
+        assert_eq!(reply["entries"], json!([]), "no inventory: {reply}");
+        assert_eq!(reply["status"], "rejected");
+        assert_eq!(
+            refusal.map(|r| r.operation),
+            Some("read_permission_decisions".to_string())
+        );
+        for (id, action) in [
+            (&fx.pending, "allow"),
+            (&fx.deny, "allow"),
+            (&fx.deny, "reset"),
+            (&fx.grant, "revoke"),
+            (&fx.pending, "revoke"),
+        ] {
+            let (reply, refusal) = answer_permission_bridge(
+                PermissionUiTrust::Untrusted,
+                PermissionBridgeKind::Decide,
+                &decide(id, action),
+                &fx.monitor,
+                "evil",
+            );
+            assert_eq!(reply["status"], "rejected", "{action} {id}: {reply}");
+            assert_eq!(reply["notice"], "not permitted");
+            assert_eq!(reply["entries"], json!([]));
+            assert_eq!(
+                refusal,
+                Some(PermissionBridgeRefusal {
+                    operation: format!("permission_decision:{action}"),
+                    ask_id: id.clone(),
+                })
+            );
+            assert_eq!(rows(&fx.monitor), before, "{action} {id} changed nothing");
+            assert_eq!(fx.monitor.list_needs_you().len(), needs_before);
+        }
+    }
+
+    #[test]
+    fn permission_bridge_trust_comes_from_bundled_content_not_the_id() {
+        let root = tempdir().expect("root");
+        let bundled =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        assert_eq!(
+            permission_ui_trust("permissions", &bundled),
+            PermissionUiTrust::BundledPermissionsUi
+        );
+        assert_eq!(
+            permission_ui_trust("other", &bundled),
+            PermissionUiTrust::Untrusted,
+            "the bundled copy is trusted only under its own id"
+        );
+
+        let spoof = tempdir().expect("spoof");
+        std::fs::write(
+            spoof.path().join("manifest.toml"),
+            std::fs::read_to_string(bundled.join("manifest.toml")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            spoof.path().join("main.py"),
+            "def init(size, args):\n    return []\n",
+        )
+        .unwrap();
+        assert_eq!(
+            permission_ui_trust("permissions", spoof.path()),
+            PermissionUiTrust::Untrusted,
+            "declaring id = \"permissions\" is not provenance"
+        );
+
+        std::fs::write(bundled.join("typing.pyc"), b"\x00").unwrap();
+        assert_eq!(
+            permission_ui_trust("permissions", &bundled),
+            PermissionUiTrust::Untrusted,
+            "bundled source plus a planted module is not the bundled plugin"
+        );
+    }
+
+    #[test]
+    fn bundled_permissions_ui_lists_revokes_and_widens_only_through_needs_you() {
+        use crate::broker::gate::{NeedsYouKind, PermissionCaller, ResolveSurface};
+        let fx = bridge_fixture();
+        let trusted = PermissionUiTrust::BundledPermissionsUi;
+        let (reply, refusal) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Read,
+            &json!({"type": "read_permission_decisions"}),
+            &fx.monitor,
+            "permissions",
+        );
+        assert!(refusal.is_none());
+        assert_eq!(reply["status"], "list");
+        assert_eq!(
+            reply["entries"].as_array().map(Vec::len),
+            Some(3),
+            "{reply}"
+        );
+
+        // Allow on a pending ask: no grant on the guest message alone.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.pending, "allow"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "needs_you", "{reply}");
+        let kinds = rows(&fx.monitor);
+        assert!(kinds.contains(&(fx.pending.clone(), "pending".to_string())));
+        assert_eq!(
+            kinds.iter().filter(|(_, kind)| kind == "allow").count(),
+            1,
+            "only the fixture grant exists"
+        );
+        let change = fx
+            .monitor
+            .list_needs_you()
+            .into_iter()
+            .find(|row| row.kind == NeedsYouKind::PermissionChange)
+            .expect("allow files a Needs you item");
+        assert!(
+            fx.monitor
+                .resolve_needs_you_from(&change.id, true, ResolveSurface::Socket)
+                .is_err(),
+            "a socket cannot approve the widening"
+        );
+        fx.monitor
+            .resolve_needs_you_from(&change.id, true, ResolveSurface::Desktop)
+            .expect("a real host click approves");
+        assert!(
+            !rows(&fx.monitor)
+                .iter()
+                .any(|(id, kind)| id == &fx.pending && kind == "pending"),
+            "the host click settles the ask"
+        );
+
+        // Reset clears a denial: widening, so it waits for the host too.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.deny, "reset"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "needs_you", "{reply}");
+        assert!(rows(&fx.monitor).contains(&(fx.deny.clone(), "deny".to_string())));
+
+        // Revoke narrows and applies.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.grant, "revoke"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "applied", "{reply}");
+        assert!(!rows(&fx.monitor).iter().any(|(id, _)| id == &fx.grant));
+
+        // The CLI's human caller (peer-verified, no pane) still applies directly.
+        let human = PermissionCaller {
+            human: true,
+            actor_id: "user".to_string(),
+        };
+        assert!(matches!(
+            fx.monitor.mutate_entry(&fx.deny, "reset", &human),
+            crate::broker::gate::PermissionMutation::Applied { .. }
+        ));
     }
 
     #[test]
