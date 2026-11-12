@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn waiting_approval_timeout_and_dead_caller_cancel_only_the_pending_call() {
         use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
         use crate::plexi_ai::tool_dispatch::PermissionPresenter;
         for (peer_pid, timeout, reason) in [
             (
@@ -1136,8 +1136,7 @@ mod tests {
                 call_id,
                 tool: "probe.add",
                 input_json,
-                actor_type: ActorType::Agent,
-                actor_id: "agent:waiter",
+                principal: &crate::broker::principal::Principal::agent("agent:waiter"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: workspace.path(),

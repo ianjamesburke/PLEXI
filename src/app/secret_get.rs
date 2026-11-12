@@ -35,7 +35,7 @@ impl PlexiApp {
         ancestry: &[u32],
     ) -> Result<crate::workspace::secrets::manager::SecretInventory, String> {
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
         let candidates: Vec<_> = self
             .router
             .iter()
@@ -68,7 +68,7 @@ impl PlexiApp {
         let posture = self.pane_permission_posture(pane);
         match monitor.admit_with_posture(AdmitRequest {
             call_id: &call, tool: "secret.list", input_json: &input,
-            actor_type: ActorType::Agent, actor_id: &actor, actor_scope: ActorScope::User,
+            principal: &crate::broker::principal::Principal::agent(&actor), actor_scope: ActorScope::User,
             trust_origin: "plexi-cli", workspace_root: &root, context_id: ctx.context_id,
             package_id: "", instance_id: 0, target_type: TargetType::Secret,
         }, posture.as_ref()) {

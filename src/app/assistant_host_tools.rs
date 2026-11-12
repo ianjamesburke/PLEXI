@@ -1153,7 +1153,7 @@ impl PlexiApp {
         input_json: &str,
     ) -> crate::plexi_ai::tool_dispatch::ToolCallResult {
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
         use crate::plexi_ai::tool_dispatch::ToolCallResult;
 
         let context_id = self
@@ -1174,8 +1174,7 @@ impl PlexiApp {
             call_id: &call_id,
             tool: name,
             input_json,
-            actor_type: ActorType::Agent,
-            actor_id: actor,
+            principal: &crate::broker::principal::Principal::agent(actor),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: &workspace,

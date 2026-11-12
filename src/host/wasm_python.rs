@@ -3298,8 +3298,14 @@ impl LivePythonPane {
         }
     }
 
+    /// The Python runtime has no host-stamped instance id yet, so the principal
+    /// names the plugin only.
     fn has_capability(&self, capability: &str) -> bool {
-        manifest_declares(&self.config.capabilities, capability)
+        launch_set_admits(
+            &crate::broker::principal::Principal::plugin(self.plugin_id.as_str(), None),
+            &self.config.capabilities,
+            capability,
+        )
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
@@ -5251,6 +5257,27 @@ fn required_capability_for_python_plugin_command(
 /// and its tests.
 fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
+}
+
+/// Runtime capability check against the launch snapshot, traced with the
+/// requesting principal.
+fn launch_set_admits(
+    principal: &crate::broker::principal::Principal,
+    launch_set: &[String],
+    capability: &str,
+) -> bool {
+    let admitted = manifest_declares(launch_set, capability);
+    crate::broker::principal::AdmissionTrace {
+        principal,
+        effect: capability,
+        resource_class: "capability",
+        decision: if admitted { "allow" } else { "deny" },
+        mechanism: "python_launch_set",
+        call_id: "",
+        outcome_ref: "",
+    }
+    .emit();
+    admitted
 }
 
 fn plugin_command_from_python_message(
@@ -10403,7 +10430,7 @@ default = true
         use crate::app::permissions::Capability;
         use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
         use crate::broker::gate::{AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
 
         const PLUGIN: &str = "matrix.python";
         let profile = tempdir().unwrap();
@@ -10430,8 +10457,12 @@ default = true
             if family != Family::CliExec {
                 matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
             }
-            let permissions =
-                monitor.materialize_plugin_permissions(PLUGIN, ws, &declared, Vec::new());
+            let permissions = monitor.materialize_plugin_permissions(
+                &crate::broker::principal::PluginInstance::new(PLUGIN, None),
+                ws,
+                &declared,
+                Vec::new(),
+            );
             let launch_set: Vec<String> = permissions
                 .capabilities
                 .iter()
@@ -10449,8 +10480,10 @@ default = true
                             call_id: "call-1",
                             tool: "cli.op.mutate",
                             input_json: input,
-                            actor_type: ActorType::Plugin,
-                            actor_id: PLUGIN,
+                            principal: &crate::broker::principal::Principal::plugin(
+                                PLUGIN,
+                                Some(4),
+                            ),
                             actor_scope: ActorScope::User,
                             trust_origin: "host",
                             workspace_root: ws,
@@ -10484,6 +10517,47 @@ default = true
         assert_eq!(checked, 14 * matrix::STATES.len());
     }
 
+    /// Stint 1238 step 1: a Python pane's runtime capability check traces the
+    /// pane's own plugin as the requesting principal, and its launch
+    /// materialization traces the same plugin.
+    #[test]
+    fn python_runtime_check_traces_its_plugin_principal() {
+        use crate::broker::gate::{gate_log_contains, PermissionMonitor};
+        use crate::broker::principal::PluginInstance;
+
+        let plugin_id = format!("test.principal-{}", uuid::Uuid::new_v4().simple());
+        let app = tempdir().expect("plugin dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\n",
+        )
+        .expect("write plugin");
+        let mut config = state_test_config(app.path(), &plugin_id);
+        config.capabilities = vec!["fs.read".to_string()];
+        let pane = LivePythonPane::launch(config).expect("launch pane");
+        assert!(pane.has_capability("fs.read"));
+        assert!(!pane.has_capability("net.http"));
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=fs.read resource_class=capability decision=allow mechanism=python_launch_set"
+        )));
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=net.http resource_class=capability decision=deny mechanism=python_launch_set"
+        )));
+
+        let monitor = PermissionMonitor::ephemeral();
+        let declared =
+            std::collections::HashSet::from([crate::app::permissions::Capability::FsRead]);
+        monitor.materialize_plugin_permissions(
+            &PluginInstance::new(plugin_id.as_str(), None),
+            app.path(),
+            &declared,
+            Vec::new(),
+        );
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=fs.read resource_class=capability decision=allow mechanism=manifest_mint"
+        )));
+    }
+
     /// CUTOVER: expected to change to deny (no human approval). Every Python
     /// guest can send `permission_decision`; `handle_permission_decision`
     /// forwards it to `PermissionMonitor::mutate_entry` with this exact caller,
@@ -10495,7 +10569,7 @@ default = true
         use crate::broker::gate::{
             Admission, AdmitRequest, PermissionCaller, PermissionMonitor, PermissionMutation,
         };
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
 
         let monitor = PermissionMonitor::ephemeral();
         let ws = tempdir().unwrap();
@@ -10504,8 +10578,7 @@ default = true
                 call_id: "call-1",
                 tool: "probe.add",
                 input_json: "{}",
-                actor_type: ActorType::Agent,
-                actor_id: "agent:caller",
+                principal: &crate::broker::principal::Principal::agent("agent:caller"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: ws.path(),

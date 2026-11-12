@@ -1175,7 +1175,7 @@ impl PlexiApp {
         .map_err(|e| format!("manifest lists {e}"))?;
         let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
             .materialize_plugin_permissions(
-                &plugin_id,
+                &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
                 &workspace_root,
                 &declared_caps,
                 installed.manifest.capabilities.allowed_hosts.clone(),
@@ -3661,7 +3661,12 @@ fn gate_plugin_permissions_in_profile(
         })
         .collect();
     let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .materialize_plugin_permissions(plugin_id, workspace_root, &declared, allowed_hosts);
+        .materialize_plugin_permissions(
+            &crate::broker::principal::PluginInstance::new(plugin_id, None),
+            workspace_root,
+            &declared,
+            allowed_hosts,
+        );
     apply_media_release_gate(plugin_id, &mut permissions);
     permissions
 }
@@ -3714,7 +3719,7 @@ fn gate_wasm_sets_in_profile(
     std::collections::HashSet<String>,
 ) {
     crate::broker::gate::PermissionMonitor::for_profile(profile_dir).materialize_wasm_sets(
-        plugin_id,
+        &crate::broker::principal::PluginInstance::new(plugin_id, None),
         workspace_root,
         declared,
     )

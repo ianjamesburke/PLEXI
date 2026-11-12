@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
-use super::{ActorScope, ActorType, TargetType};
+use super::{ActorScope, TargetType};
 
 struct Call {
     tool: &'static str,
@@ -42,8 +42,7 @@ impl Call {
                 call_id: "call-1",
                 tool: self.tool,
                 input_json: &self.input(),
-                actor_type: ActorType::Plugin,
-                actor_id: "board",
+                principal: &crate::broker::principal::Principal::plugin("board", Some(self.pane)),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: &self.workspace,

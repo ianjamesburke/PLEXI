@@ -554,7 +554,11 @@ fn review_raw_wasm_open_with_reader(
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
     let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
     let (granted, blocked) = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
-        .materialize_wasm_sets(&plugin_id, &workspace_root, &declared);
+        .materialize_wasm_sets(
+            &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
+            &workspace_root,
+            &declared,
+        );
     let blocked_required: Vec<String> = required_caps
         .iter()
         .filter(|cap| blocked.contains(*cap))

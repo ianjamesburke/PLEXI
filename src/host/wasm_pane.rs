@@ -704,6 +704,15 @@ impl WasmPane {
             return;
         };
         let capability_id = prompt.capability_id;
+        self.trace_capability(
+            &capability_id,
+            if granted { "allow" } else { "deny" },
+            if remember {
+                "wasm_prompt_remembered"
+            } else {
+                "wasm_prompt_session"
+            },
+        );
         if granted {
             self.session_blocks.remove(&capability_id);
             self.session_grants.insert(capability_id.clone());
@@ -1199,7 +1208,13 @@ impl WasmPane {
     /// pane through `picker_rx` in `collect_picker_results`, where the picked
     /// paths become fs grants before `file-picked` reaches the guest.
     fn open_file_picker(&mut self, req: OpenFilePickerEffect) {
-        if !self.has_session_grant("fs.pick") {
+        let granted = self.has_session_grant("fs.pick");
+        self.trace_capability(
+            "fs.pick",
+            if granted { "allow" } else { "deny" },
+            "wasm_session_set",
+        );
+        if !granted {
             log::info!(
                 "wasm picker: request {} denied: missing capability fs.pick",
                 req.request_id
@@ -1280,7 +1295,13 @@ impl WasmPane {
         effect: WasmHostEffect,
         denied: impl FnOnce(String) -> InputEvent,
     ) {
-        if self.has_session_grant(capability_id) {
+        let granted = self.has_session_grant(capability_id);
+        self.trace_capability(
+            capability_id,
+            if granted { "allow" } else { "deny" },
+            "wasm_session_set",
+        );
+        if granted {
             log::info!(
                 "wasm effect: plugin_id={} capability={} effect={effect:?}",
                 self.app.plugin_id(),
@@ -1304,15 +1325,18 @@ impl WasmPane {
             capability_id
         );
         if self.session_grants.contains(&capability_id) {
+            self.trace_capability(&capability_id, "allow", "wasm_session_set");
             self.queue
                 .push_back(InputEvent::CapabilityGranted(capability_id));
             return;
         }
         if self.session_blocks.contains(&capability_id) {
+            self.trace_capability(&capability_id, "deny", "wasm_session_set");
             self.queue
                 .push_back(InputEvent::CapabilityDenied(capability_id));
             return;
         }
+        self.trace_capability(&capability_id, "ask", "wasm_queue");
         if self
             .pending_capability_prompts
             .iter()
@@ -1343,6 +1367,28 @@ impl WasmPane {
         }
     }
 
+    /// The requesting principal of this pane's runtime checks: its plugin and,
+    /// once placed, its pane.
+    fn principal(&self) -> crate::broker::principal::Principal {
+        crate::broker::principal::Principal::plugin(
+            self.app.plugin_id(),
+            Some(self.pane_id).filter(|pane| *pane != 0),
+        )
+    }
+
+    fn trace_capability(&self, capability_id: &str, decision: &str, mechanism: &str) {
+        crate::broker::principal::AdmissionTrace {
+            principal: &self.principal(),
+            effect: capability_id,
+            resource_class: "capability",
+            decision,
+            mechanism,
+            call_id: "",
+            outcome_ref: "",
+        }
+        .emit();
+    }
+
     fn has_session_grant(&self, capability_id: &str) -> bool {
         self.session_grants.contains(capability_id)
     }
@@ -1353,14 +1399,17 @@ impl WasmPane {
 
     fn handle_ai_query(&mut self, req: AiQueryEffect) {
         if self.has_session_grant("ai.query") {
+            self.trace_capability("ai.query", "allow", "wasm_session_set");
             self.dispatch_ai_query(req);
             return;
         }
         if self.has_session_block("ai.query") {
+            self.trace_capability("ai.query", "deny", "wasm_session_set");
             self.queue_ai_denied(req.request_id, "capability denied: ai.query blocked");
             return;
         }
         if self.deferred_ai_queries.len() >= 16 {
+            self.trace_capability("ai.query", "deny", "wasm_queue_full");
             self.queue_ai_denied(
                 req.request_id,
                 "capability withheld: too many deferred ai.query requests pending consent",
@@ -3513,6 +3562,29 @@ mod tests {
         }
     }
 
+    /// Stint 1238 step 1: a native WASM pane's capability checks trace its
+    /// plugin and pane instance as the requesting principal.
+    #[test]
+    fn wasm_runtime_check_traces_its_plugin_instance_principal() {
+        use crate::broker::gate::gate_log_contains;
+
+        let mut p = pane(0.0);
+        p.set_pane_id(4242);
+        let plugin_id = p.app.plugin_id().to_string();
+        p.exec(request_capability("clipboard.read"), 0);
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id}#4242 effect=clipboard.read resource_class=capability decision=ask mechanism=wasm_queue"
+        )));
+        p.decide_next_capability_prompt(false);
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id}#4242 effect=clipboard.read resource_class=capability decision=deny mechanism=wasm_prompt_session"
+        )));
+        p.exec(request_capability("clipboard.read"), 0);
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id}#4242 effect=clipboard.read resource_class=capability decision=deny mechanism=wasm_session_set"
+        )));
+    }
+
     /// Stint 1238 characterisation matrix, native WASM rows (see
     /// `crate::broker::admission_matrix`). Launch goes through
     /// `PermissionMonitor::materialize_wasm_sets` and
@@ -3547,7 +3619,11 @@ mod tests {
             } else {
                 HashSet::new()
             };
-            let (granted, blocked) = monitor.materialize_wasm_sets(PLUGIN, ws, &declared);
+            let (granted, blocked) = monitor.materialize_wasm_sets(
+                &crate::broker::principal::PluginInstance::new(PLUGIN, None),
+                ws,
+                &declared,
+            );
             let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
                 Mech::ManifestAsGrant
             } else {
@@ -3641,8 +3717,11 @@ mod tests {
             Some(PermissionState::Green)
         );
         let restarted = PermissionMonitor::reload_for_test(profile.path());
-        let (granted, _) =
-            restarted.materialize_wasm_sets(plugin, ws.path(), &HashSet::from([cap.to_string()]));
+        let (granted, _) = restarted.materialize_wasm_sets(
+            &crate::broker::principal::PluginInstance::new(plugin, None),
+            ws.path(),
+            &HashSet::from([cap.to_string()]),
+        );
         assert!(
             granted.contains(cap),
             "today a monitor-revoked WASM grant comes back from permissions.toml on restart"
