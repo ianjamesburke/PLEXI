@@ -2761,9 +2761,6 @@ mod layout_finding_tests {
         assert!(findings.is_empty(), "{}", messages(&findings));
     }
 
-    /// Stint: buttons never break mid-word; rows, Select and Banner wrap at
-    /// narrow widths.
-    const STINT_NARROW_ROWS: &str = "1333";
     /// Stint: bundled canvas plugins paint over their SurfaceHeader.
     const STINT_CANVAS_OVER_HEADER: &str = "1353";
 
@@ -2810,42 +2807,6 @@ mod layout_finding_tests {
     }
 
     const KNOWN_CORE_LAYOUT_FINDINGS: &[KnownLayoutFinding] = &[
-        known(
-            "logs",
-            (320, 240),
-            "Button \"DEBUG\": the label breaks in the middle of a word",
-            STINT_NARROW_ROWS,
-        ),
-        known(
-            "logs",
-            (320, 240),
-            "Button \"DEBUG\" is cut off",
-            STINT_NARROW_ROWS,
-        ),
-        known(
-            "github-issues",
-            (320, 240),
-            "TextInput \"owner/repo (e.g. plexiapp/plexi)\" is cut off",
-            STINT_NARROW_ROWS,
-        ),
-        known(
-            "github-issues",
-            (320, 240),
-            "Text \"#\" is not visible",
-            STINT_NARROW_ROWS,
-        ),
-        known(
-            "github-issues",
-            (320, 240),
-            "Text \"No repository loaded\" is not visible",
-            STINT_NARROW_ROWS,
-        ),
-        known(
-            "github-issues",
-            (320, 240),
-            "Text \"Type owner/repo above",
-            STINT_NARROW_ROWS,
-        ),
         known(
             "sudoku",
             (320, 240),

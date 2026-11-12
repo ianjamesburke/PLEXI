@@ -1371,7 +1371,11 @@ fn render_row_node(
             if let Some(text_node) = child_node {
                 if let UiNodeData::Text(t) = &text_node.data {
                     let trailing = &r.children[idx + 1..];
+                    // This path paints the text without `render_node`, so it
+                    // records the node's paint span itself.
+                    let layout_start = node_paint_start(ui, out);
                     if render_row_text_wrapped(ui, env, text_node, t, trailing, r.gap, out, depth) {
+                        record_node_paint(ui, out, *child, layout_start);
                         continue;
                     }
                 }
@@ -1413,9 +1417,19 @@ fn render_node(
     out: &mut RenderResult,
     depth: u32,
 ) {
-    let layout_start = out.node_paint.is_some().then(|| paint_len(ui));
+    let layout_start = node_paint_start(ui, out);
     render_node_inner(ui, env, id, out, depth);
-    if let (Some(start), Some(spans)) = (layout_start, out.node_paint.as_mut()) {
+    record_node_paint(ui, out, id, layout_start);
+}
+
+/// Where a node's paint span starts, when this pass records node geometry.
+fn node_paint_start(ui: &egui::Ui, out: &RenderResult) -> Option<usize> {
+    out.node_paint.is_some().then(|| paint_len(ui))
+}
+
+/// Close the paint span `node_paint_start` opened for node `id`.
+fn record_node_paint(ui: &egui::Ui, out: &mut RenderResult, id: u32, start: Option<usize>) {
+    if let (Some(start), Some(spans)) = (start, out.node_paint.as_mut()) {
         spans.push(NodePaintSpan {
             id,
             shapes: start..paint_len(ui),

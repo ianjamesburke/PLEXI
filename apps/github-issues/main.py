@@ -250,8 +250,7 @@ def update(event) -> list:
 def view():
     data = _state()
     if not data["repo"]:
-        children: list[Component] = [
-            SurfaceHeader("GitHub Issues", "select repository"),
+        body: list[Component] = [
             Card(
                 [
                     Text("Open a GitHub repository", size=15.0, bold=True),
@@ -274,19 +273,25 @@ def view():
             ),
         ]
         if data["error"]:
-            children.append(Banner(data["error"], tone="danger", title="Error"))
-        children.extend(
+            body.append(Banner(data["error"], tone="danger", title="Error"))
+        body.append(
+            EmptyState(
+                "No repository loaded",
+                "Type owner/repo above and press Enter to browse issues.",
+                icon="#",
+            )
+        )
+        # The body scrolls so the repository field stays reachable in a pane
+        # too short to show both cards.
+        return Column(
             [
-                EmptyState(
-                    "No repository loaded",
-                    "Type owner/repo above and press Enter to browse issues.",
-                    icon="#",
-                ),
+                SurfaceHeader("GitHub Issues", "select repository"),
+                Scrollable(Column(body)),
                 Spacer(grow=True),
                 FooterKeys([("enter", "load repo")]),
-            ]
+            ],
+            grow=True,
         )
-        return Column(children, grow=True)
     if data["view"] == "detail":
         return _detail_view(data)
     return _list_view(data)
