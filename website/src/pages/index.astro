@@ -1,14 +1,155 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import Hero from '../components/Hero.astro';
-import Story from '../components/Story.astro';
+import Arrow from '../components/Arrow.astro';
+import WindowDiagram from '../components/WindowDiagram.astro';
 import Newsletter from '../components/Newsletter.astro';
+import { release } from '../lib/release';
 ---
 <Layout
-  title="Plexi — The last plugin you'll ever need."
-  description="A desktop workspace for terminals, local plugins, and coding agents. Available as a macOS alpha; Windows and Linux parity is a goal."
+  title="Plexi: the last app you'll ever need"
+  description="Plexi is an agent operating system for developers who work with coding agents. Terminals, agents and plugins in one tiled window, driven by one CLI. Beta for Apple Silicon Mac."
 >
-  <Hero />
-  <Story />
+  <header class="hero wrap" aria-labelledby="hero-title">
+    <h1 id="hero-title"><span>The last</span><span class="accent">app you'll</span><span>ever need.</span></h1>
+    <div class="hero-bottom">
+      <p class="lead">Plexi is an agent operating system for developers who work with coding agents. Your terminals, your agents and the plugins they build share one tiled window, and one CLI drives all of it.</p>
+      <div class="hero-actions">
+        <a class="btn lg" href="/download">Download for Mac <Arrow dir="down" /></a>
+        <a class="link-arrow" href="/product">Take the tour <Arrow /></a>
+      </div>
+    </div>
+    <p class="platform-note">Beta {release.beta.version} for Apple Silicon. Windows and Linux are coming soon.</p>
+  </header>
+
+  <div class="wrap hero-figure"><WindowDiagram /></div>
+
+  <div class="product-strip" aria-hidden="true">Terminals / Agents / Plugins</div>
+
+  <section class="wrap split" id="product" aria-labelledby="product-title">
+    <div class="sticky-head">
+      <h2 class="h2" id="product-title">What's in the window.</h2>
+      <a class="link-arrow" href="/product">See each part <Arrow /></a>
+    </div>
+    <div class="rows">
+      <article>
+        <h3 class="title">Terminals that tile.</h3>
+        <p>Split a pane with <kbd>⌘D</kbd> and move between panes with <kbd>⌘H</kbd> <kbd>⌘J</kbd> <kbd>⌘K</kbd> <kbd>⌘L</kbd>. A new pane opens in the directory you were already in. Group related panes into a context and switch between contexts without losing your place.</p>
+      </article>
+      <article>
+        <h3 class="title">The agents you already use.</h3>
+        <p>Claude Code and Codex run in a pane like any other CLI. Install Plexi's hooks with one command and each agent reports its status to the host, so you can see which pane is working and which one is waiting on you.</p>
+      </article>
+      <article>
+        <h3 class="title">Plugins your agent can write.</h3>
+        <p>A plugin is a small Python package that draws a view in a pane. Scaffold one with <code class="inline">plexi plugin init</code>. It runs sandboxed in WebAssembly and gets a capability only after you approve it.</p>
+        <a class="link-arrow" href="/plugins">How plugins and views work <Arrow /></a>
+      </article>
+    </div>
+  </section>
+
+  <section class="statement on-accent-surface" aria-labelledby="cli-title">
+    <div class="wrap">
+      <h2 class="display" id="cli-title">Every feature<br />is a command.</h2>
+      <div class="statement-bottom">
+        <div>
+          <p>Plexi is built so that every feature is reachable from the <code>plexi</code> CLI. An agent in one pane can open another pane, brief the agent in it, read its state and capture what it drew.</p>
+          <a class="link-arrow" href="/docs/cli">CLI reference <Arrow /></a>
+        </div>
+        <pre class="code" tabindex="0" aria-label="Example plexi commands"><code><span class="p">$ </span>plexi pane new --agent claude -n worker
+<span class="p">$ </span>plexi pane send worker "Read the brief and fix the failing test" --submit
+<span class="p">$ </span>plexi pane state worker
+<span class="p">$ </span>plexi host screenshot --pane worker -o /tmp/worker.png</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap split" aria-labelledby="files-title">
+    <h2 class="h2" id="files-title">Files you can read.</h2>
+    <div>
+      <p class="lead">Config is TOML. Notes and todo lists are Markdown. They sit on your disk in formats that open without Plexi.</p>
+      <p class="after-lead muted">The Todo plugin keeps its list in a Markdown checklist that you or an agent can edit directly. Quick Note saves each capture as a timestamped Markdown file. Nothing you make in Plexi needs Plexi to read it back.</p>
+    </div>
+  </section>
+
+  <section class="wrap split" aria-labelledby="status-title">
+    <div class="sticky-head">
+      <h2 class="h2" id="status-title">Where it stands.</h2>
+      <a class="link-arrow" href="/changelog">Changelog <Arrow /></a>
+    </div>
+    <dl class="facts">
+      <div><dt>Platform</dt><dd><strong>Apple Silicon Mac.</strong> Windows and Linux are coming soon.</dd></div>
+      <div><dt>Release</dt><dd><strong>Beta {release.beta.version}</strong> is the current build. {release.next} is in progress and renames apps to plugins and views. These pages already use the new names.</dd></div>
+      <div><dt>Signing</dt><dd>Builds are self-signed and not notarized. macOS warns the first time you open one, and the <a class="text-link" href="/download">download page</a> says what to do about it.</dd></div>
+      <div><dt>Stability</dt><dd>Plexi is pre-1.0. Commands, config keys and the plugin API can change between releases.</dd></div>
+    </dl>
+  </section>
+
+  <section class="founder wrap split" id="about" aria-labelledby="founder-title">
+    <div><h2 class="title" id="founder-title">Ian Burke</h2><p class="founder-role">Founder of Plexi</p></div>
+    <div>
+      <blockquote>“Plexi takes the speed limit off your computer. I can have four terminals researching different things, turn that work into reports and dashboards, make a decision, and act on it without leaving the app.”</blockquote>
+      <p class="origin">I wanted to move between agents and plugins as fast as I wanted to move. I'd pushed macOS as far as I could and tried Linux. Plexi came out of that: one Rust app, with the goal of giving me nearly the same workspace on Mac, Windows, and Linux.</p>
+    </div>
+  </section>
+
+  <section class="closer" aria-labelledby="closer-title">
+    <div class="wrap">
+      <h2 class="display" id="closer-title">Install it.</h2>
+      <div class="closer-actions">
+        <a class="btn lg" href="/download">Download for Mac <Arrow dir="down" /></a>
+        <a class="link-arrow" href="/docs">Read the docs <Arrow /></a>
+      </div>
+    </div>
+  </section>
+
   <Newsletter />
 </Layout>
+
+<style>
+  .hero { padding-top: clamp(40px, 5vw, 82px); padding-bottom: 28px; }
+  .hero::before { content: ''; position: absolute; right: 6%; top: 5%; width: min(40vw, 590px); aspect-ratio: 1; border: 1px solid var(--border); transform: rotate(14deg); pointer-events: none; }
+  .hero h1 { position: relative; padding: clamp(28px, 4vw, 56px) 0 clamp(36px, 4vw, 52px); font: 900 clamp(3.1rem, 12.3vw, 12.5rem)/.82 var(--display); letter-spacing: -.04em; text-transform: uppercase; }
+  .hero h1 span { display: block; }
+  .hero h1 .accent { color: var(--accent-light); }
+  .hero-bottom { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 40px; border-top: 1px solid var(--border); padding-top: 24px; }
+  .hero-bottom .lead { max-width: 46ch; font-weight: 600; }
+  .hero-actions { display: flex; gap: 14px 28px; flex-wrap: wrap; align-items: center; }
+  .platform-note { margin-top: 24px; color: var(--fg-2); font: 13px/1.6 var(--mono); }
+  .hero-figure { padding-top: clamp(24px, 4vw, 56px); padding-bottom: clamp(56px, 7vw, 110px); }
+
+  .product-strip { position: relative; z-index: 1; padding: 22px var(--gutter); background: var(--accent-light); color: var(--bg); font: 900 clamp(22px, 3.8vw, 62px)/1.1 var(--display); letter-spacing: -.04em; text-transform: uppercase; }
+
+  .sticky-head { display: grid; gap: 28px; justify-items: start; }
+  @media (min-width: 861px) { .sticky-head { position: sticky; top: calc(var(--nav-h) + 40px); } }
+  .h2 { max-width: 11ch; }
+
+  .rows article { padding: 30px 0 34px; border-top: 1px solid var(--border); }
+  .rows article:last-child { border-bottom: 1px solid var(--border); }
+  .rows p { margin-top: 12px; color: var(--fg-2); max-width: 60ch; }
+  .rows .link-arrow { margin-top: 14px; }
+  .rows kbd { margin-inline: 1px; }
+
+  .statement { background: var(--accent-light); color: var(--bg); border-top: 0; }
+  .statement .display { font-size: clamp(44px, 9.6vw, 156px); }
+  .statement-bottom { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(28px, 6vw, 96px); align-items: start; margin-top: clamp(36px, 5vw, 64px); padding-top: 28px; border-top: 1px solid currentColor; }
+  .statement-bottom > * { min-width: 0; }
+  .statement-bottom p { font-size: 20px; line-height: 1.45; max-width: 40ch; margin-bottom: 20px; }
+  .statement-bottom p code { font-size: .9em; font-weight: 700; }
+  .statement .code { background: var(--bg); border-color: var(--bg); color: var(--fg); font-size: clamp(12px, 1.05vw, 15px); line-height: 2; }
+
+  .after-lead { margin-top: 24px; max-width: 60ch; }
+
+  .founder-role { margin-top: 10px; color: var(--fg-2); font: 13px var(--mono); }
+  blockquote { font-size: clamp(25px, 3vw, 44px); font-weight: 650; line-height: 1.17; letter-spacing: -.035em; text-wrap: balance; }
+  .origin { margin-top: 40px; padding-top: 26px; border-top: 1px solid var(--border); color: var(--fg-2); font-size: 18px; max-width: 62ch; }
+
+  .closer .wrap { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 32px 48px; }
+  .closer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 28px; padding-bottom: 10px; }
+
+  @media (max-width: 950px) { .hero-bottom { grid-template-columns: 1fr; gap: 26px; } }
+  @media (max-width: 860px) { .statement-bottom { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 700px) {
+    .hero::before { width: 80vw; right: -25%; }
+    .statement-bottom p { font-size: 18px; }
+  }
+</style>
