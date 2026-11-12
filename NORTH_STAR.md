@@ -1,6 +1,6 @@
 # Plexi North Star
 
-> **Plexi — the last plugin you'll ever need.**
+> **Plexi — the last app you'll ever need.**
 
 This is the compass, not a plan. Read it before filing issues, implementing features, or making architectural decisions.
 
@@ -8,9 +8,9 @@ This is the compass, not a plan. Read it before filing issues, implementing feat
 
 ## The One-Liner
 
-**The last plugin you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
+**The last app you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
 
-Plexi is a mini-OS, not an plugin: a tiling, terminal-native personal computing environment where capability-gated plugins, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
+Plexi is a mini-OS, not an app: a tiling, terminal-native personal computing environment where capability-gated plugins, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
 
 ---
 
@@ -38,7 +38,7 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 7. **Your environment is an inheritance.** A Plexi instance is a complete record of how a person works — every plugin, permission, transcript, and piece of state, portable and ownable. Hand someone your machine, and you hand them your working life. Hand the next generation your workflows the way you'd hand them a library. That has never been true of software before.
 
-8. **The whole plugin lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds an plugin, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Plugins are portable, auditable, replaceable; any process that speaks the protocol is an app.
+8. **The whole plugin lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds a plugin, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Plugins are portable, auditable, replaceable; any process that speaks the protocol is an app.
 
 9. **Local-first. Cloud is an option, never a dependency.** Sync, hosting, and the portable server instance are opt-in conveniences on the same architecture. Nothing required to run what you own lives on someone else's computer.
 
