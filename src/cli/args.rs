@@ -2215,9 +2215,16 @@ pub enum PaneCmd {
     /// the pane, handles collapsed-paste Enter, and exits 0 only once the host
     /// confirms the input line cleared.
     ///
-    /// Key formats: single character ("h"), named key ("enter", "escape", "space",
-    /// "up", "down", "left", "right", "backspace", "plus", "minus", "equals"),
-    /// or chord ("ctrl+c").
+    /// Terminal panes accept: one character ("h", "H"); a named key ("enter",
+    /// "escape", "space", "tab", "backspace", "up", "down", "left", "right",
+    /// "plus", "minus", "equals"); "ctrl+<key>" for a-z, `@`, `[`, `\`, `]`,
+    /// `^`, `_`, `-` and space; "shift+tab"; and "alt+<key>" for any of those that sends one
+    /// character ("alt+m" sends ESC then m). Anything else, such as "alt+up",
+    /// "cmd+c" or an unknown name, exits 1 and sends nothing. View panes accept
+    /// the same names plus their own chords ("cmd+s", "f5").
+    ///
+    /// Exit 0 means the host delivered the key, not that the receiving program
+    /// acted on it. Check the pane afterwards when it matters.
     ///
     /// Example: plexi pane key 42 escape
     Key {

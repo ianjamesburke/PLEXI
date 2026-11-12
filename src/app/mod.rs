@@ -5325,43 +5325,160 @@ impl PlexiApp {
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 
-/// Translate a key string (e.g. "enter", "ctrl+c", "h") to PTY bytes.
-fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
-    let key_lower = key.to_lowercase();
-    // Handle ctrl+X chords using bit-mask to support any ASCII char ([, ], \, /, @, etc.)
-    if let Some(rest) = key_lower.strip_prefix("ctrl+") {
-        if let Some(ch) = rest.chars().next() {
-            if ch.is_ascii() && !ch.is_ascii_control() {
-                return vec![(ch as u8) & 0x1F];
+/// Split a key string into its modifier names and base key. A trailing `+`
+/// is the plus key itself (`"+"`, `"alt++"`), matching
+/// `key_str_to_egui_raw_input`.
+fn split_key_chord(key: &str) -> (Vec<&str>, &str) {
+    if key == "+" {
+        (Vec::new(), "+")
+    } else if let Some(prefix) = key.strip_suffix("++") {
+        (prefix.split('+').collect(), "+")
+    } else {
+        let mut parts: Vec<&str> = key.split('+').collect();
+        let base = parts.pop().unwrap_or(key);
+        (parts, base)
+    }
+}
+
+fn terminal_key_error(key: &str, reason: &str) -> String {
+    format!(
+        "unsupported terminal key {key:?}: {reason}; nothing was sent. Terminal panes \
+         accept one character, enter, escape, space, tab, backspace, up, down, left, \
+         right, plus, minus, equals, ctrl+<a-z @ [ \\ ] ^ _ - space>, shift+tab, and \
+         alt+<any of those except arrows and shift+tab> (see `plexi pane key --help`)"
+    )
+}
+
+/// The C0 byte a terminal sends for Ctrl plus `base`, for the keys with a
+/// defined control code (the same set `egui_term`'s physical Ctrl bindings
+/// emit). `None` for anything else, which the caller rejects.
+fn ctrl_key_byte(base_lower: &str, single: Option<char>) -> Option<u8> {
+    if base_lower == "space" {
+        return Some(0x00);
+    }
+    if base_lower == "minus" {
+        return Some(0x1f);
+    }
+    match single?.to_ascii_lowercase() {
+        c @ ('a'..='z' | '@' | '[' | '\\' | ']' | '^' | '_') => Some((c as u8) & 0x1f),
+        '-' => Some(0x1f),
+        _ => None,
+    }
+}
+
+/// Translate a `plexi pane key` string into the bytes a terminal pane's PTY
+/// receives, or explain why it cannot be sent.
+///
+/// Names and modifiers are case-insensitive; a single character keeps its
+/// case. Alt uses the legacy meta encoding (ESC, then the key's byte), which
+/// is what `egui_term`'s physical Alt bindings write; it applies only to keys
+/// that encode as one character, because cursor keys carry modifiers as CSI
+/// parameters instead. Anything outside the vocabulary is an error, so a key
+/// description is never typed into the terminal as text.
+fn key_str_to_pty_bytes(key: &str) -> Result<Vec<u8>, String> {
+    let (modifier_names, base) = split_key_chord(key);
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    for name in &modifier_names {
+        let flag = match name.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => &mut ctrl,
+            "alt" | "option" => &mut alt,
+            "shift" => &mut shift,
+            "cmd" | "command" | "meta" | "super" => {
+                return Err(terminal_key_error(
+                    key,
+                    "terminals do not receive Cmd or Meta chords",
+                ))
+            }
+            "" => return Err(terminal_key_error(key, "empty modifier")),
+            other => {
+                return Err(terminal_key_error(
+                    key,
+                    &format!("unknown modifier {other:?}"),
+                ))
+            }
+        };
+        if *flag {
+            return Err(terminal_key_error(
+                key,
+                &format!("repeated modifier {name:?}"),
+            ));
+        }
+        *flag = true;
+    }
+    if base.is_empty() {
+        return Err(terminal_key_error(key, "no key after the modifiers"));
+    }
+    let base_lower = base.to_lowercase();
+    let single = {
+        let mut chars = base.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        }
+    };
+
+    // `one_char` marks keys whose encoding is a single character, the only
+    // keys the legacy Alt prefix applies to.
+    let (bytes, one_char): (Vec<u8>, bool) = if ctrl {
+        if shift {
+            return Err(terminal_key_error(
+                key,
+                "ctrl+shift chords are not supported",
+            ));
+        }
+        match ctrl_key_byte(&base_lower, single) {
+            Some(byte) => (vec![byte], true),
+            None => {
+                return Err(terminal_key_error(
+                    key,
+                    "ctrl applies only to a-z, @ [ \\ ] ^ _ -, and space",
+                ))
             }
         }
-    }
-    match key_lower.as_str() {
-        "enter" => b"\r".to_vec(),
-        "escape" | "esc" => b"\x1b".to_vec(),
-        "space" => b" ".to_vec(),
-        "backspace" => b"\x7f".to_vec(),
-        "tab" => b"\t".to_vec(),
-        "up" | "arrowup" => b"\x1b[A".to_vec(),
-        "down" | "arrowdown" => b"\x1b[B".to_vec(),
-        "right" | "arrowright" => b"\x1b[C".to_vec(),
-        "left" | "arrowleft" => b"\x1b[D".to_vec(),
-        _ => {
-            // single printable char
-            let mut chars = key.chars();
-            if let Some(ch) = chars.next() {
-                if chars.next().is_none() {
+    } else if shift {
+        if base_lower != "tab" {
+            return Err(terminal_key_error(
+                key,
+                "shift is supported only as shift+tab; send the shifted character itself",
+            ));
+        }
+        (b"\x1b[Z".to_vec(), false)
+    } else {
+        match base_lower.as_str() {
+            "enter" | "return" => (b"\r".to_vec(), true),
+            "escape" | "esc" => (b"\x1b".to_vec(), true),
+            "space" => (b" ".to_vec(), true),
+            "tab" => (b"\t".to_vec(), true),
+            "backspace" => (b"\x7f".to_vec(), true),
+            "plus" => (b"+".to_vec(), true),
+            "minus" => (b"-".to_vec(), true),
+            "equals" => (b"=".to_vec(), true),
+            "up" | "arrowup" => (b"\x1b[A".to_vec(), false),
+            "down" | "arrowdown" => (b"\x1b[B".to_vec(), false),
+            "right" | "arrowright" => (b"\x1b[C".to_vec(), false),
+            "left" | "arrowleft" => (b"\x1b[D".to_vec(), false),
+            _ => match single {
+                Some(c) => {
                     let mut buf = [0u8; 4];
-                    return ch.encode_utf8(&mut buf).as_bytes().to_vec();
+                    (c.encode_utf8(&mut buf).as_bytes().to_vec(), true)
                 }
-            }
-            log::warn!(
-                "pane_ipc: key_pane: unrecognized key string ({} chars), sending raw bytes",
-                key.chars().count()
-            );
-            key.as_bytes().to_vec()
+                None => return Err(terminal_key_error(key, "unknown key name")),
+            },
         }
+    };
+    if !alt {
+        return Ok(bytes);
     }
+    if !one_char {
+        return Err(terminal_key_error(
+            key,
+            "alt applies only to keys that send one character",
+        ));
+    }
+    let mut prefixed = Vec::with_capacity(bytes.len() + 1);
+    prefixed.push(0x1b);
+    prefixed.extend_from_slice(&bytes);
+    Ok(prefixed)
 }
 
 /// Parse a key string into a (key_name, Modifiers) pair for PGAP view panes.

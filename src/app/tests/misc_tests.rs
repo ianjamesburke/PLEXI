@@ -173,6 +173,64 @@ fn key_str_to_egui_raw_input_rejects_unmappable_strings() {
     assert!(key_str_to_egui_raw_input("notakey").is_none());
 }
 
+/// Stint 1096: the terminal vocabulary of `plexi pane key`, pinned at the
+/// parser so each supported spelling and each rejection reason is explicit.
+#[test]
+fn key_str_to_pty_bytes_encodes_the_terminal_vocabulary() {
+    for (key, expected) in [
+        ("alt+m", b"\x1bm".as_slice()),
+        ("option+m", b"\x1bm".as_slice()),
+        ("alt+M", b"\x1bM".as_slice()),
+        ("alt++", b"\x1b+".as_slice()),
+        ("alt+enter", b"\x1b\r".as_slice()),
+        ("alt+escape", b"\x1b\x1b".as_slice()),
+        ("ctrl+alt+c", b"\x1b\x03".as_slice()),
+        ("control+c", b"\x03".as_slice()),
+        ("ctrl+C", b"\x03".as_slice()),
+        ("ctrl+space", b"\x00".as_slice()),
+        ("ctrl+@", b"\x00".as_slice()),
+        ("ctrl+\\", b"\x1c".as_slice()),
+        ("ctrl+]", b"\x1d".as_slice()),
+        ("ctrl+minus", b"\x1f".as_slice()),
+        ("shift+tab", b"\x1b[Z".as_slice()),
+        ("Return", b"\r".as_slice()),
+        ("plus", b"+".as_slice()),
+        ("minus", b"-".as_slice()),
+        ("equals", b"=".as_slice()),
+        ("+", b"+".as_slice()),
+        ("Q", b"Q".as_slice()),
+    ] {
+        assert_eq!(
+            key_str_to_pty_bytes(key).as_deref(),
+            Ok(expected),
+            "{key:?} must encode as {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn key_str_to_pty_bytes_rejects_with_a_reason_and_never_falls_back_to_text() {
+    for (key, reason) in [
+        ("alt+m+x", "unknown modifier \"m\""),
+        ("ctrl+ctrl+c", "repeated modifier"),
+        ("meta+c", "Cmd or Meta"),
+        ("ctrl+shift+c", "ctrl+shift"),
+        ("ctrl+tab", "ctrl applies only"),
+        ("shift+enter", "shift+tab"),
+        ("alt+left", "alt applies only"),
+        ("alt+shift+tab", "alt applies only"),
+        ("alt+", "no key after the modifiers"),
+        ("++", "empty modifier"),
+        ("pagedown", "unknown key name"),
+    ] {
+        let error = key_str_to_pty_bytes(key).expect_err(key);
+        assert!(
+            error.contains(reason) && error.contains("nothing was sent"),
+            "{key:?} must be rejected for {reason:?}, got {error:?}"
+        );
+    }
+}
+
 #[test]
 fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let ctx = egui::Context::default();
