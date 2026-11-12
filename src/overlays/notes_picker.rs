@@ -1733,6 +1733,98 @@ mod tests {
         assert_eq!(app.notes_picker_filtered(), vec![0, 1, 2]);
     }
 
+    /// A harness with one focused pane and the picker open on a single note.
+    fn harness_with_note(
+        dir: &std::path::Path,
+    ) -> (crate::testing::HostHarness, std::path::PathBuf) {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        let path = dir.join("note.md");
+        std::fs::write(&path, b"original\nbytes\n").unwrap();
+        h.app.notes_picker_entries = vec![picker_entry(path.clone(), "note")];
+        h.app.push_focus_layer(FocusKind::NotesPicker);
+        h.run_frames(2);
+        (h, path)
+    }
+
+    /// Runs one frame and reports whether the undo toast painted in it.
+    fn undo_toast_painted(h: &mut crate::testing::HostHarness) -> bool {
+        let id = egui::Id::new("notes_delete_undo_rect");
+        let ctx = h.app.ctx.clone();
+        ctx.data_mut(|data| data.remove::<egui::Rect>(id));
+        h.run_frames(1);
+        ctx.data(|data| data.get_temp::<egui::Rect>(id)).is_some()
+    }
+
+    fn age_undo(h: &mut crate::testing::HostHarness, by: std::time::Duration) {
+        let deleted = h.app.notes_picker_undo.as_mut().expect("pending undo");
+        deleted.at = deleted
+            .at
+            .checked_sub(by)
+            .expect("clock has room to backdate");
+    }
+
+    #[test]
+    fn notes_delete_undo_expires_after_its_dwell_even_after_the_picker_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists(), "delete moves the note to Trash at once");
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.focus_stack.contains(&FocusKind::NotesPicker));
+        assert!(
+            undo_toast_painted(&mut h),
+            "the undo toast stays up inside its dwell after the picker closes"
+        );
+
+        age_undo(
+            &mut h,
+            style::TOAST_DWELL_UNDO + std::time::Duration::from_millis(50),
+        );
+        assert!(
+            !undo_toast_painted(&mut h),
+            "the undo toast must be gone once its dwell passes"
+        );
+        assert!(
+            h.app.notes_picker_undo.is_none(),
+            "expiry must clear the undo record so Cmd+Z and the toast agree"
+        );
+
+        h.app.push_focus_layer(FocusKind::NotesPicker);
+        h.run_frames(1);
+        h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert!(
+            !path.exists(),
+            "Cmd+Z in a reopened picker must not undo an expired delete"
+        );
+    }
+
+    #[test]
+    fn notes_delete_undo_inside_its_dwell_restores_bytes_and_the_notice_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists());
+        age_undo(
+            &mut h,
+            style::TOAST_DWELL_UNDO.saturating_sub(std::time::Duration::from_secs(1)),
+        );
+        assert!(undo_toast_painted(&mut h), "still inside the dwell");
+        h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+
+        let (_, at) = h.app.notes_picker_notice.as_mut().expect("restored notice");
+        *at = at
+            .checked_sub(style::TOAST_DWELL_NOTICE + std::time::Duration::from_millis(50))
+            .expect("clock has room to backdate");
+        h.run_frames(1);
+        assert!(
+            h.app.notes_picker_notice.is_none(),
+            "the restored notice clears after its dwell"
+        );
+    }
+
     fn set_editor_pane_unsaved(app: &mut PlexiApp, pane_id: u64, text: &str) {
         let runtime = &mut app.windows[0]
             .panes
