@@ -15,8 +15,8 @@ wit_bindgen::generate!({
 
 use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    Alignment, Justify, Color, ColumnNode, Effect, IndexedNode, InputEvent, ProgressBarNode, RowNode,
-    StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, Justify, ProgressBarNode,
+    RowNode, StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 use plexi::platform::{host_log, host_state};
 

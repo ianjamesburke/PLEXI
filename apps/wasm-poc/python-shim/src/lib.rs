@@ -15,8 +15,8 @@ use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::host_log;
 use plexi::platform::host_state;
 use plexi::platform::types::{
-    Alignment, Justify, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
-    StateSnapshot, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
+    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, Justify,
+    KeyEvent, StateSnapshot, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
 };
 use serde_json::{json, Value};
 

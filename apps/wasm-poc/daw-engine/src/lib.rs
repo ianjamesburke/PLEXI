@@ -45,10 +45,10 @@ use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::audio_rt_control::{self, AudioConfig, AudioFormat};
 use plexi::platform::host_log;
 use plexi::platform::types::{
-    Alignment, Justify, BadgeColor, BadgeNode, ButtonNode, ButtonStyle, CanvasCommand, CanvasLine,
+    Alignment, BadgeColor, BadgeNode, ButtonNode, ButtonStyle, CanvasCommand, CanvasLine,
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, DeclareToolsEffect, Effect,
     FilePickedEvent, FilePickerMode, FileReadEffect, FileWriteEffect, FooterKeyEntry,
-    FooterKeysNode, IndexedNode, InputEvent, KeyEvent, MouseButton, MouseEvent,
+    FooterKeysNode, IndexedNode, InputEvent, Justify, KeyEvent, MouseButton, MouseEvent,
     OpenFilePickerEffect, PaddingNode, RowNode, StateSnapshot, TextNode, TimerEffect,
     ToolCallEvent, ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
 };

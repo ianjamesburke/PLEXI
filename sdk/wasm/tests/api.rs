@@ -60,13 +60,15 @@ fn row_builder_centers_and_column_builder_starts() {
     assert!(matches!(align_of(column), Some(Alignment::Start)));
     // `justify` is the main axis; both builders place children from the start.
     for id in [row, column] {
-        let justify = tree.nodes.iter().find(|node| node.id == id).and_then(|node| {
-            match &node.data {
+        let justify = tree
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
                 UiNodeData::Row(r) => Some(r.justify),
                 UiNodeData::Column(c) => Some(c.justify),
                 _ => None,
-            }
-        });
+            });
         assert!(matches!(justify, Some(Justify::Start)), "node {id}");
     }
 }
@@ -139,4 +141,36 @@ fn ergonomic_app_trait_has_default_init() {
     );
     assert!(app.init(context).is_empty());
     assert_eq!(Alignment::Start, Alignment::Start);
+}
+
+/// Stint 1358: a guest sets a row's or column's main-axis `justify`; any
+/// other node is refused by id.
+#[test]
+fn set_justify_places_rows_and_columns_and_refuses_other_nodes() {
+    let mut tree = ui::Tree::new();
+    let text = tree.text("text", "Hello");
+    let row = tree.row("row", [text]);
+    let column = tree.column("column", [row]);
+    tree.set_justify(row, Justify::SpaceBetween)
+        .expect("a row takes justify");
+    tree.set_justify(column, Justify::Center)
+        .expect("a column takes justify");
+    let err = tree
+        .set_justify(text, Justify::End)
+        .expect_err("a text has no justify");
+    assert_eq!(err, ui::NotAContainer { id: text });
+    assert!(err.to_string().contains("not a row or column"));
+    let tree = tree.finish(column);
+    let justify_of = |id: u32| {
+        tree.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
+                UiNodeData::Row(r) => Some(r.justify),
+                UiNodeData::Column(c) => Some(c.justify),
+                _ => None,
+            })
+    };
+    assert!(matches!(justify_of(row), Some(Justify::SpaceBetween)));
+    assert!(matches!(justify_of(column), Some(Justify::Center)));
 }

@@ -26,8 +26,8 @@ use plexi::platform::host_log;
 use plexi::platform::host_state;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
 use plexi::platform::types::{
-    Alignment, Justify, BadgeColor, BadgeNode, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
-    RowNode, StateSnapshot, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, BadgeColor, BadgeNode, ColumnNode, Effect, IndexedNode, InputEvent, Justify,
+    KeyEvent, RowNode, StateSnapshot, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── Note table ────────────────────────────────────────────────────────────────

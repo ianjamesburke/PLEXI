@@ -26,8 +26,8 @@ use plexi::platform::gpu::{
 use plexi::platform::host_log;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
 use plexi::platform::types::{
-    Alignment, Justify, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent, StateSnapshot, SurfaceEvent,
-    SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, Justify, KeyEvent, StateSnapshot,
+    SurfaceEvent, SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── WGSL ──────────────────────────────────────────────────────────────────────

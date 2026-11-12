@@ -32,9 +32,10 @@ use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::audio_rt_control::{self, AudioConfig, AudioFormat};
 use plexi::platform::host_log;
 use plexi::platform::types::{
-    Alignment, Justify, BadgeColor, BadgeNode, ColumnNode, DeclareToolsEffect, Effect, FilePickerMode,
-    FileReadEffect, IndexedNode, InputEvent, KeyEvent, OpenFilePickerEffect, StateSnapshot,
-    TextNode, TimerEffect, ToolCallEvent, ToolDecl, ToolResultEffect, UiNodeData, UiTree,
+    Alignment, BadgeColor, BadgeNode, ColumnNode, DeclareToolsEffect, Effect, FilePickerMode,
+    FileReadEffect, IndexedNode, InputEvent, Justify, KeyEvent, OpenFilePickerEffect,
+    StateSnapshot, TextNode, TimerEffect, ToolCallEvent, ToolDecl, ToolResultEffect, UiNodeData,
+    UiTree,
 };
 
 use model::Jukebox;
