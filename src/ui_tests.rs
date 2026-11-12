@@ -3240,6 +3240,144 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.save_screenshot(&evidence_png!()).unwrap();
     }
 
+    /// Stint 1043: zoom changes only the viewport. A terminal waiting on the
+    /// user shows the same shared header (title and NEEDS YOU badge) and the
+    /// same focus ring geometry before zoom, while zoomed and after restore,
+    /// and zooming never clears the pending state.
+    #[test]
+    fn zoomed_pane_keeps_shared_header_attention_and_focus_ring() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let other = add_focused_pane(&mut h);
+        let workspace_root = h.workspace_root().to_path_buf();
+        let pane = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let id = app.host.alloc_pane_id();
+            let mut term = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            term.name = Some("release checks".to_string());
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(term)));
+            let tile = win.tree.tiles.insert_pane(id);
+            let other_tile = win.tree.tiles.find_pane(&other).expect("other pane tile");
+            win.tree.root = Some(
+                win.tree
+                    .tiles
+                    .insert_horizontal_tile(vec![other_tile, tile]),
+            );
+            win.focused_pane = Some(tile);
+            assert!(win.panes.get_mut(&id).unwrap().set_agent(Some(
+                crate::protocol::PaneAgentState {
+                    pane_id: id,
+                    agent: "codex".into(),
+                    state: crate::protocol::AgentState::NeedsYou,
+                    detail: Some("Approve the release tag".into()),
+                    session_id: None,
+                },
+            )));
+            id
+        });
+        h.run_steps(3);
+
+        // Header bar and focus ring for the pane, from emitted paint.
+        let chrome = |h: &mut PlexiUiHarness, phase: &str| {
+            let (bar, accent, configured_radius) = h.with_app(|app| {
+                let bar = crate::ui::layout_report::snapshot(&app.ctx)
+                    .into_iter()
+                    .filter(|r| r.surface == "pane_header")
+                    .find(|r| {
+                        r.texts.iter().any(|t| t.text == "NEEDS YOU")
+                            && r.texts.iter().any(|t| t.text == "release checks")
+                    })
+                    .map(|r| r.parent)
+                    .unwrap_or_else(|| {
+                        panic!("{phase}: no shared header with title and NEEDS YOU badge")
+                    });
+                (bar, app.colors.accent, app.config.pane_corner_radius)
+            });
+            let ring = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == accent
+                            && r.stroke_kind == egui::StrokeKind::Inside
+                            && (r.rect.min - bar.min).length() < 0.5 =>
+                    {
+                        Some(r.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{phase}: no focus ring framing the header {bar:?}"));
+            assert_eq!(
+                ring.stroke.width,
+                crate::ui::style::PANE_FOCUS_WIDTH,
+                "{phase}: focus ring width"
+            );
+            assert_eq!(
+                ring.corner_radius,
+                crate::ui::style::pane_radius(configured_radius, ring.rect),
+                "{phase}: focus ring corners"
+            );
+            assert!(
+                (bar.width() - ring.rect.width()).abs() < 0.5,
+                "{phase}: header spans the pane {bar:?} vs ring {:?}",
+                ring.rect
+            );
+            assert_eq!(
+                h.with_app(|app| app
+                    .find_pane_in_any_window(pane)
+                    .and_then(|(w, _)| app.windows[w].panes.get(&pane))
+                    .and_then(|p| p.effective_activity().cloned())),
+                Some(crate::protocol::AgentState::NeedsYou),
+                "{phase}: zoom must not clear the pending state"
+            );
+            (bar, ring.rect)
+        };
+
+        let (before_bar, before_ring) = chrome(&mut h, "tiled");
+        h.save_screenshot(&evidence_png!("_tiled")).unwrap();
+        h.with_app_mut(|app| app.toggle_pane_zoom());
+        h.run_steps(3);
+        assert!(h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()));
+        let (zoom_bar, zoom_ring) = chrome(&mut h, "zoomed");
+        h.save_screenshot(&evidence_png!("_zoomed")).unwrap();
+        assert!(
+            zoom_ring.width() > before_ring.width(),
+            "zoom enlarges the viewport: {zoom_ring:?} vs {before_ring:?}"
+        );
+        assert!(
+            (zoom_bar.height() - before_bar.height()).abs() < 0.5,
+            "same header height"
+        );
+        h.with_app_mut(|app| app.toggle_pane_zoom());
+        h.run_steps(3);
+        assert!(h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_none()));
+        let (after_bar, after_ring) = chrome(&mut h, "restored");
+        h.save_screenshot(&evidence_png!("_restored")).unwrap();
+        assert_eq!(
+            after_bar, before_bar,
+            "restore returns the header to its tile"
+        );
+        assert_eq!(
+            after_ring, before_ring,
+            "restore returns the ring to its tile"
+        );
+        assert_eq!(h.with_app(|app| app.visual_owner_pane()), Some(pane));
+    }
+
     /// Stint 1166: a Portal that shares a tab group paints the tab bar, and
     /// clicking a sibling's tab switches to it and back.
     #[test]
