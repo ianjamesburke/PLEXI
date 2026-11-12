@@ -8,6 +8,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,12 +118,62 @@ class DecisionTests(unittest.TestCase):
         })
         self.assert_required(["docs/ASSERTED.md"], root, "in test code")
 
-    def test_new_file_in_a_doc_sync_asserted_directory_is_required(self):
+    def test_file_level_include_binds_the_file_not_its_directory(self):
         root = make_root({
-            "src/lib.rs": "#[cfg(test)]\nmod tests { const A: &str = include_str!(\"../docs/ASSERTED.md\"); }\n",
-            "docs/ASSERTED.md": "x",
+            "src/lib.rs": ("#[cfg(test)]\nmod tests {\n"
+                           '    const R: &str = include_str!("../README.md");\n'
+                           '    const C: &str = include_str!("../docs/CONFIG.md");\n}\n'),
+            "README.md": "x", "docs/CONFIG.md": "x", "NOTES.md": "x", "docs/OTHER.md": "x",
         })
-        self.assert_required(["docs/BRAND_NEW.md"], root, "doc-sync assertion")
+        self.assert_required(["README.md"], root, "README.md is bound by include_str")
+        self.assert_required(["docs/CONFIG.md"], root, "docs/CONFIG.md is bound by include_str")
+        for sibling in ("NOTES.md", "docs/OTHER.md", "docs/BRAND_NEW.md"):
+            with self.subTest(sibling=sibling):
+                self.assertTrue(scope.decide([sibling], root)[0])
+
+    RS_WALK = (
+        "fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {\n"
+        "    for entry in read_dir(dir).unwrap().flatten() {\n"
+        "        let path = entry.path();\n"
+        "        if path.is_dir() { rs_files(&path, out); }\n"
+        '        else if path.extension().is_some_and(|e| e == "rs") { out.push(path); }\n'
+        "    }\n}\n"
+        "#[test]\nfn guard() {\n"
+        '    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");\n'
+        "    let mut files = Vec::new();\n    rs_files(&root, &mut files);\n"
+        "    for f in files { read_to_string(f); }\n}\n"
+    )
+
+    def test_extension_filtered_walk_binds_only_that_extension(self):
+        root = make_root({"src/lib.rs": self.RS_WALK, "src/AGENTS.md": "x"})
+        self.assertEqual(scope.binding_paths(root)["src"]["exts"], ["rs"])
+        self.assertTrue(scope.decide(["src/AGENTS.md"], root)[0])
+        self.assertFalse(scope.decide(["src/lib.rs"], root)[0])
+
+    def test_unfiltered_walk_binds_markdown(self):
+        unfiltered = self.RS_WALK.replace('path.extension().is_some_and(|e| e == "rs")', "true")
+        root = make_root({"src/lib.rs": unfiltered, "src/AGENTS.md": "x"})
+        self.assert_required(["src/AGENTS.md"], root, "src/ is bound by manifest-read")
+
+    def test_walk_that_also_names_markdown_binds_markdown(self):
+        reads_md = self.RS_WALK.replace("for f in files { read_to_string(f); }",
+                                        'for f in files { read_to_string(f.join("SKILL.md")); }')
+        root = make_root({"src/lib.rs": reads_md, "src/AGENTS.md": "x"})
+        self.assert_required(["src/AGENTS.md"], root, "src/ is bound by manifest-read")
+
+    def test_ends_with_filter_narrows_and_a_md_filter_binds(self):
+        rs = ('#[test]\nfn g() { let r = Path::new(env!("CARGO_MANIFEST_DIR")).join("guides");'
+              ' for p in walk(r) { if p.ends_with(".rs") { read(p); } } }\n')
+        root = make_root({"src/lib.rs": rs, "guides/a.md": "x"})
+        self.assertTrue(scope.decide(["guides/a.md"], root)[0])
+        root = make_root({"src/lib.rs": rs.replace('".rs"', '".md"'), "guides/a.md": "x"})
+        self.assert_required(["guides/a.md"], root, "guides/ is bound by manifest-read")
+
+    def test_extension_filter_in_a_transitive_helper_is_seen(self):
+        chained = self.RS_WALK.replace("    rs_files(&root, &mut files);\n", "    collect(&root, &mut files);\n")
+        chained += "fn collect(dir: &Path, out: &mut Vec<PathBuf>) { rs_files(dir, out); }\n"
+        root = make_root({"src/lib.rs": chained, "src/AGENTS.md": "x"})
+        self.assertTrue(scope.decide(["src/AGENTS.md"], root)[0])
 
     def test_new_include_str_moves_the_path_into_the_required_set(self):
         before = make_root({"src/lib.rs": "pub fn f() {}\n"})
@@ -356,6 +407,17 @@ class RealRepoSanityTests(unittest.TestCase):
                      "skills/plexi-cli/SKILL.md", "docs/cli/PARITY.md"):
             with self.subTest(path=path):
                 self.assertFalse(scope.decide_with([path], bindings)[0], path)
+        # Narrowed groups: file-level includes and .rs-only walks leave their siblings skippable.
+        for path in ("AGENTS.md", "NORTH_STAR.md", "docs/AGENTS.md", "src/testing/TESTING.md",
+                     "src/cli/AGENTS.md", "website/src/content/docs/NEW.md"):
+            with self.subTest(path=path):
+                self.assertTrue(scope.decide_with([path], bindings)[0], path)
+        listing = subprocess.run(("git", "-C", str(root), "ls-files", "-z", "*.md"),
+                                 check=True, capture_output=True, text=True).stdout
+        markdown = [path for path in listing.split("\0") if path]
+        skippable = [path for path in markdown if scope.decide_with([path], bindings)[0]]
+        print(f"\nreal repo: {len(skippable)} of {len(markdown)} tracked markdown files skippable",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
