@@ -38,6 +38,33 @@ pub(crate) struct DeletedNote {
     closed_editor: bool,
 }
 
+/// What a cached preview was read at. A different modified time or length
+/// means the note was rewritten since, so the cache is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NoteStamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+impl NoteStamp {
+    fn of(path: &std::path::Path) -> std::io::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+}
+
+/// The preview half's cached note body. `checked` is cleared whenever the
+/// picker closes, so the next open stats the note once before trusting it.
+pub(crate) struct NotePreview {
+    path: std::path::PathBuf,
+    stamp: Option<NoteStamp>,
+    text: std::sync::Arc<str>,
+    checked: bool,
+}
+
 #[cfg(not(test))]
 struct PlatformTrash;
 
@@ -223,17 +250,36 @@ impl PlexiApp {
             .copied()
     }
 
-    /// Content of the selected note for the preview half, read once per path
-    /// and cached until the selection moves to another note or the note goes.
+    /// Content of the selected note for the preview half. Read once per
+    /// selection; on each picker open the cache is checked against the file's
+    /// modified time and length (one stat) and re-read only when either moved.
     pub(crate) fn notes_picker_preview_text(&mut self) -> Option<std::sync::Arc<str>> {
         let path = self
             .notes_picker_selected_entry()
             .map(|idx| self.notes_picker_entries[idx].path.clone())?;
-        if let Some((cached, text)) = &self.notes_picker_preview {
-            if *cached == path {
-                return Some(text.clone());
+        if let Some(cached) = self
+            .notes_picker_preview
+            .as_mut()
+            .filter(|cached| cached.path == path)
+        {
+            if cached.checked {
+                return Some(cached.text.clone());
             }
+            let current = NoteStamp::of(&path).ok();
+            if current.is_some() && current == cached.stamp {
+                cached.checked = true;
+                return Some(cached.text.clone());
+            }
+            let reason = match (current, cached.stamp) {
+                (None, _) => "the note can no longer be read",
+                (Some(_), None) => "the cached read had no file stamp",
+                (Some(_), Some(_)) => "its modified time or length changed",
+            };
+            log::info!("notes_picker: cached preview of {path:?} is stale ({reason}); re-reading");
         }
+        // Stamp before reading: a write landing mid-read leaves an older stamp,
+        // so the next check re-reads rather than trusting a torn body.
+        let stamp = NoteStamp::of(&path).ok();
         let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
             // Preview and clipboard share one projection: the note body, with a
             // Plexi capture metadata envelope stripped and user text preserved.
@@ -243,8 +289,21 @@ impl PlexiApp {
                 format!("Could not read note: {e}").into()
             }
         };
-        self.notes_picker_preview = Some((path, text.clone()));
+        self.notes_picker_preview = Some(NotePreview {
+            path,
+            stamp,
+            text: text.clone(),
+            checked: true,
+        });
         Some(text)
+    }
+
+    /// The note may be edited while the picker is away; make the next preview
+    /// read stat it before reusing the cached text.
+    pub(crate) fn notes_picker_preview_needs_check(&mut self) {
+        if let Some(cached) = self.notes_picker_preview.as_mut() {
+            cached.checked = false;
+        }
     }
 
     /// Dismiss the notes picker overlay and restore focus to the originating pane.
@@ -252,6 +311,7 @@ impl PlexiApp {
         log::info!("notes_picker: closed");
         self.notes_picker_status = None;
         self.notes_picker_last_drawn_selected = None;
+        self.notes_picker_preview_needs_check();
         self.pop_focus_layer(&FocusKind::NotesPicker);
     }
 

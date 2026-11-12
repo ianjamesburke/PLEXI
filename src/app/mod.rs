@@ -402,9 +402,9 @@ pub struct PlexiApp {
     pub(crate) notes_picker_last_drawn_selected: Option<usize>,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
-    /// Notes picker: file content shown in the preview half, keyed by path so
-    /// it is read once per selection rather than every frame.
-    pub(crate) notes_picker_preview: Option<(std::path::PathBuf, std::sync::Arc<str>)>,
+    /// Notes picker: file content shown in the preview half, read once per
+    /// selection rather than every frame and re-checked on each open.
+    pub(crate) notes_picker_preview: Option<crate::overlays::notes_picker::NotePreview>,
     /// Last recoverable notes picker deletion.
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
     pub(crate) notes_trash: Box<dyn crate::overlays::notes_picker::NotesTrash>,
@@ -5066,6 +5066,7 @@ impl PlexiApp {
             },
             None,
         );
+        self.notes_picker_preview_needs_check();
         self.push_focus_layer(FocusKind::NotesPicker);
         self.kick_notes_index_refresh();
         log::info!(
