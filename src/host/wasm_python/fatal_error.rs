@@ -22,6 +22,9 @@ const MAX_TRACEBACK_BYTES: usize = 64 * 1024;
 /// One host log record is written per traceback line, so lines are capped too.
 const MAX_TRACEBACK_LINES: usize = 200;
 const TRUNCATED: &str = " [truncated]";
+const TRACEBACK_TRUNCATED: &str = "[traceback truncated: earlier frames dropped]";
+/// Shown in place of a reported path that is not inside the plugin folder.
+const OUTSIDE_PLUGIN: &str = "<path outside the plugin>";
 
 /// The wire shape, exactly as the guest sent it. Nothing here is trusted.
 #[derive(Deserialize)]
@@ -69,12 +72,17 @@ impl GuestFatalError {
                      {PHASES:?}); the host and the packaged plexi_sdk disagree on its fields"
                 )
             })?;
+        let reported_file = wire.file.is_some();
         let file = wire.file.filter(|file| is_plugin_relative(file));
         Ok(Self {
             phase,
             // A line number means nothing without the file it counts into.
             line: file.as_ref().and(wire.line),
-            file: file.map(|file| escape_untrusted(&file, false)),
+            file: match file {
+                Some(file) => Some(escape_untrusted(&file, false)),
+                None if reported_file => Some(OUTSIDE_PLUGIN.to_string()),
+                None => None,
+            },
             exception: escape_untrusted(&keep_head(&wire.exception, MAX_EXCEPTION_CHARS), false),
             message: escape_untrusted(&keep_head(&wire.message, MAX_MESSAGE_CHARS), false),
             traceback: escape_untrusted(
@@ -148,18 +156,27 @@ fn keep_head(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// The last `max_bytes` of `text`, cut forward to the next whole line.
+/// The end of `text`: at most `max_bytes`, cut forward to a whole line, and at
+/// most `MAX_TRACEBACK_LINES` lines. A cut is marked on its own first line.
 fn keep_tail(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
-    if text.len() <= max_bytes {
-        return text.into();
+    let text = text.trim_end();
+    let mut tail = text;
+    if tail.len() > max_bytes {
+        let mut cut = tail.len() - max_bytes;
+        while !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        tail = &tail[cut..];
+        tail = tail.find('\n').map_or(tail, |newline| &tail[newline + 1..]);
     }
-    let mut cut = text.len() - max_bytes;
-    while !text.is_char_boundary(cut) {
-        cut += 1;
+    if let Some((cut, _)) = tail.rmatch_indices('\n').nth(MAX_TRACEBACK_LINES - 1) {
+        tail = &tail[cut + 1..];
     }
-    let tail = &text[cut..];
-    let tail = tail.find('\n').map_or(tail, |newline| &tail[newline + 1..]);
-    format!("[traceback truncated: earlier frames dropped]\n{tail}").into()
+    if tail.len() == text.len() {
+        text.into()
+    } else {
+        format!("{TRACEBACK_TRUNCATED}\n{tail}").into()
+    }
 }
 
 #[cfg(test)]
