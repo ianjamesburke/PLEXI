@@ -7330,6 +7330,127 @@ fn traversal_and_control_keys_reach_focused_terminal_pty() {
     }
 }
 
+// -- Stint 1096: `plexi pane key` terminal key contract -----------------------
+//
+// `HostRequest::KeyPane` against a terminal pane must write exactly the bytes
+// the named key or chord encodes, or reject it with an error and write
+// nothing. Before the fix an unknown name such as `alt+m` was typed into the
+// PTY as the literal text `alt+m` and the reply said `ok`.
+
+/// Send `key` to terminal `term` through the production `KeyPane` dispatch and
+/// return the JSON reply plus every byte handed to the PTY writer.
+fn key_pane_terminal_bytes(
+    h: &mut HostHarness,
+    dir: &std::path::Path,
+    term: PaneId,
+    key: &str,
+) -> (serde_json::Value, Vec<u8>) {
+    h.terminal_backend(term).enable_input_tap();
+    let response = temp_response(dir, "terminal-key");
+    h.app.handle_pane_ipc_request(HostRequest::KeyPane {
+        pane_id: term,
+        key: key.to_string(),
+        response_file: Some(response.clone()),
+    });
+    let written = h.terminal_backend(term).take_input_tap();
+    (read_json_response(&response), written)
+}
+
+/// The incident chord: `alt+m` must reach the PTY as the legacy meta encoding
+/// (ESC then `m`, the same bytes a physical Alt+M writes through
+/// `egui_term`'s Alt bindings), never as the five characters `alt+m`.
+#[test]
+fn key_pane_alt_chord_reaches_terminal_as_meta_escape() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+
+    for (key, expected) in [
+        ("alt+m", b"\x1bm".as_slice()),
+        ("ALT+M", b"\x1bM".as_slice()),
+        ("alt+.", b"\x1b.".as_slice()),
+        ("alt+backspace", b"\x1b\x7f".as_slice()),
+        ("ctrl+alt+c", b"\x1b\x03".as_slice()),
+    ] {
+        let (response, written) = key_pane_terminal_bytes(&mut h, tmp.path(), term, key);
+        assert_eq!(
+            response["ok"], true,
+            "{key:?} must be accepted, got {response}"
+        );
+        assert_eq!(
+            written, expected,
+            "{key:?} must reach the PTY as {expected:?}, got {written:?}"
+        );
+    }
+}
+
+/// Unknown names and malformed chords fail with an error reply and write
+/// zero bytes, so whatever the user already typed on the line is untouched.
+#[test]
+fn key_pane_rejects_unsupported_terminal_chords_without_writing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+
+    for key in [
+        "notakey", "ctrl+cc", "ctrl+", "ctrl+c+d", "ctrl+1", "hyper+a", "cmd+c", "alt+up",
+        "shift+a", "",
+    ] {
+        let (response, written) = key_pane_terminal_bytes(&mut h, tmp.path(), term, key);
+        assert!(
+            response.get("ok").is_none(),
+            "{key:?} must not report ok, got {response}"
+        );
+        let error = response["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("nothing was sent"),
+            "{key:?} must explain the rejection, got {response}"
+        );
+        assert!(
+            written.is_empty(),
+            "{key:?} must write zero bytes to the PTY, got {written:?}"
+        );
+    }
+}
+
+/// Guard: the vocabulary that already worked keeps its exact bytes.
+#[test]
+fn key_pane_terminal_named_keys_and_characters_keep_their_bytes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+
+    for (key, expected) in [
+        ("enter", b"\r".as_slice()),
+        ("escape", b"\x1b".as_slice()),
+        ("esc", b"\x1b".as_slice()),
+        ("tab", b"\t".as_slice()),
+        ("space", b" ".as_slice()),
+        ("backspace", b"\x7f".as_slice()),
+        ("up", b"\x1b[A".as_slice()),
+        ("down", b"\x1b[B".as_slice()),
+        ("right", b"\x1b[C".as_slice()),
+        ("ArrowLeft", b"\x1b[D".as_slice()),
+        ("ctrl+c", b"\x03".as_slice()),
+        ("ctrl+d", b"\x04".as_slice()),
+        ("ctrl+[", b"\x1b".as_slice()),
+        ("h", b"h".as_slice()),
+        ("H", b"H".as_slice()),
+        ("+", b"+".as_slice()),
+        ("\u{e9}", "\u{e9}".as_bytes()),
+    ] {
+        let (response, written) = key_pane_terminal_bytes(&mut h, tmp.path(), term, key);
+        assert_eq!(
+            response["ok"], true,
+            "{key:?} must be accepted, got {response}"
+        );
+        assert_eq!(
+            written, expected,
+            "{key:?} must reach the PTY as {expected:?}, got {written:?}"
+        );
+    }
+}
+
 /// Editor-scoped chords must not hijack a focused terminal. The editor's
 /// link-activation (Ctrl+Enter) and find (Cmd+F) live in editor/notes plugin
 /// panes; with a terminal focused, no editor renders, so these must leave the
