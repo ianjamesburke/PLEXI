@@ -234,10 +234,10 @@ class Column(Component):
 class HStack(Component):
     """Horizontal stack of child components (`Row` alias).
 
-    ``align`` places the children along the row: ``"start"`` (left),
-    ``"center"`` or ``"end"`` (right). Children are always centered vertically
-    on the row. A ``Text`` child too long for the row wraps in the width its
-    later siblings leave.
+    ``align`` is the cross axis, as on ``Column``: it places children at the
+    top (``"start"``), the middle (``"center"``, the default) or the bottom
+    (``"end"``) of the row. A ``Text`` child too long for the row wraps in the
+    width its later siblings leave.
     """
 
     def __init__(
@@ -245,7 +245,7 @@ class HStack(Component):
         children: list[Component] | None = None,
         gap: float | None = None,
         *,
-        align: str = "start",
+        align: str = "center",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -663,9 +663,9 @@ class Button(Component):
 class Actions(Component):
     """Horizontal row of ``Button`` components (`ActionBar` alias).
 
-    ``align`` places the buttons along the row: ``"start"``, ``"center"`` or
-    ``"end"``. Buttons that do not fit the pane width wrap onto further lines
-    as whole buttons; a label never breaks inside a word.
+    ``align`` places the buttons at the top, middle (the default) or bottom of
+    the row. Buttons that do not fit the pane width wrap onto further lines as
+    whole buttons; a label never breaks inside a word.
     """
 
     def __init__(
@@ -674,7 +674,7 @@ class Actions(Component):
         *,
         actions: list[Button] | None = None,
         gap: float = SPACE_SM,
-        align: str = "start",
+        align: str = "center",
     ) -> None:
         items = actions if actions is not None else (buttons if buttons is not None else [])
         if not isinstance(items, list):

@@ -415,7 +415,7 @@ def _article_view(data: dict[str, Any]) -> Component:
                 truncate=True,
             )
         )
-    meta_row = Row(meta_children, gap=8.0)
+    meta_row = Row(meta_children, gap=8.0, align="center")
 
     children: list[Component] = [
         SurfaceHeader(title, subtitle),

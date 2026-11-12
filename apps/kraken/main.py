@@ -121,7 +121,8 @@ def view():
                         Text(f"{label} Details", size=14.0, bold=True),
                         Spacer(grow=True),
                         Badge(selected_pair or "NONE", color="accent"),
-                    ]
+                    ],
+                    align="center",
                 ),
                 Divider(),
                 KeyValue(

@@ -831,15 +831,15 @@ bottom.
 ### `HStack`
 
 ```python
-HStack(children: list[Component] | None = None, gap: float | None = None, align: str = 'start', grow: bool = False)
+HStack(children: list[Component] | None = None, gap: float | None = None, align: str = 'center', grow: bool = False)
 ```
 
 Horizontal stack of child components (`Row` alias).
 
-``align`` places the children along the row: ``"start"`` (left),
-``"center"`` or ``"end"`` (right). Children are always centered vertically
-on the row. A ``Text`` child too long for the row wraps in the width its
-later siblings leave.
+``align`` is the cross axis, as on ``Column``: it places children at the
+top (``"start"``), the middle (``"center"``, the default) or the bottom
+(``"end"``) of the row. A ``Text`` child too long for the row wraps in the
+width its later siblings leave.
 
 ### `Card`
 
@@ -951,14 +951,14 @@ Interactive button dispatching ``UiAction(on_click)`` when activated.
 ### `Actions`
 
 ```python
-Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None, gap: float = SPACE_SM, align: str = 'start')
+Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None, gap: float = SPACE_SM, align: str = 'center')
 ```
 
 Horizontal row of ``Button`` components (`ActionBar` alias).
 
-``align`` places the buttons along the row: ``"start"``, ``"center"`` or
-``"end"``. Buttons that do not fit the pane width wrap onto further lines
-as whole buttons; a label never breaks inside a word.
+``align`` places the buttons at the top, middle (the default) or bottom of
+the row. Buttons that do not fit the pane width wrap onto further lines as
+whole buttons; a label never breaks inside a word.
 
 ### `TextInput`
 

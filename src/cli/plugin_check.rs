@@ -2483,6 +2483,44 @@ mod layout_finding_tests {
             .join("\n")
     }
 
+    /// Stints 1327 and 1333: rows that wrap and columns that share space
+    /// between grow spacers are measured in invisible passes before they are
+    /// painted. Those passes must not reach the layout facts, so a narrow pane
+    /// that the renderer now lays out whole has no finding at all: no phantom
+    /// "not visible" node and no duplicate.
+    #[test]
+    fn wrapped_rows_and_flex_columns_have_no_layout_findings_at_the_smallest_size() {
+        let tree = tree(
+            r#"{"root":0,"nodes":[
+            {"id":0,"key":"0","data":{"type":"column","children":[1,5,6,7,8,14]}},
+            {"id":1,"key":"1","data":{"type":"row","children":[2,3,4],"gap":8.0}},
+            {"id":2,"key":"2","data":{"type":"badge","label":"warning","color":"warning"}},
+            {"id":3,"key":"3","data":{"type":"text","text":"Sync paused: the remote copy changed while you were offline"}},
+            {"id":4,"key":"4","data":{"type":"button","label":"Dismiss","on_click":"dismiss","style":"ghost"}},
+            {"id":5,"key":"5","data":{"type":"spacer","size":0.0,"grow":true}},
+            {"id":6,"key":"6","data":{"type":"text","text":"04:32"}},
+            {"id":7,"key":"7","data":{"type":"spacer","size":0.0,"grow":true}},
+            {"id":8,"key":"8","data":{"type":"row","children":[9,10,11,12,13]}},
+            {"id":9,"key":"9","data":{"type":"button","label":"Start timer","on_click":"start"}},
+            {"id":10,"key":"10","data":{"type":"button","label":"Pause","on_click":"pause"}},
+            {"id":11,"key":"11","data":{"type":"button","label":"Reset","on_click":"reset"}},
+            {"id":12,"key":"12","data":{"type":"button","label":"Add a lap","on_click":"lap"}},
+            {"id":13,"key":"13","data":{"type":"button","label":"Settings","on_click":"settings"}},
+            {"id":14,"key":"14","data":{"type":"footer_keys","entries":[{"keys":["s"],"description":"start"}],"divider":true}}
+        ]}"#,
+        );
+        let layout = crate::host::wasm_render::render_ui_tree_layout(&tree, 320.0, 240.0);
+        let mut seen = std::collections::HashSet::new();
+        for fact in &layout {
+            assert!(seen.insert(fact.id), "node {} was measured twice", fact.id);
+        }
+        for id in [3, 4, 6, 9, 10, 11, 12, 13] {
+            assert!(seen.contains(&id), "node {id} has no layout entry");
+        }
+        let findings = super::layout_findings(&tree, &layout, true);
+        assert!(findings.is_empty(), "{}", messages(&findings));
+    }
+
     const ACTIONS_TREE: &str = r#"{"root":0,"nodes":[
         {"id":0,"key":"0","data":{"type":"column","children":[1,2]}},
         {"id":1,"key":"1","data":{"type":"text","text":"Timer"}},

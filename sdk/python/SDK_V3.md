@@ -581,7 +581,7 @@ class Surface:
 class Row:
     children: list      # list[UINode]
     gap: float = 0.0
-    align: str = "start"
+    align: str = "center"   # cross axis: top | center | bottom
     grow: bool = False
     # → ui-node-data::row(row-node)
 

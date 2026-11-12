@@ -466,7 +466,7 @@ def _detail_view(data: dict):
             Card(
                 [
                     Text(f"#{detail['number']} {detail['title']}", size=16.0, bold=True),
-                    Row(badges, gap=6.0),
+                    Row(badges, gap=6.0, align="center"),
                     Text(meta_text, size=12.0, color=theme.muted),
                     Divider(),
                     Text(issue_body, size=13.0, color=theme.fg),

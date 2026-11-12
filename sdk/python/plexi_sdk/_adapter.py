@@ -290,7 +290,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         out = {
             "type": "Row",
             "children": child_ids,
-            "align": data.get("align", "start"),
+            "align": data.get("align", "center"),
             "grow": data.get("grow", False),
         }
         if data.get("gap") is not None:
