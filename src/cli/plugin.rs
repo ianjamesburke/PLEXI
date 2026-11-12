@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 5;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 6;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn plugin_init_config_dir() -> String {
@@ -40,6 +40,23 @@ pub(super) fn describe_plugin_init_collision(plugin_dir: &std::path::Path, name:
     };
     msg.push_str(&format!("\n  Try: plexi plugin init {name}-2"));
     msg
+}
+
+/// Where `plugin init <name>` without `--global` scaffolds when run from
+/// `cwd`: `<workspace>/<channel_dir>/plugins/<name>`, or `None` outside a
+/// workspace.
+fn plugin_init_workspace_dir(cwd: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let channel_dir = plugin_init_config_dir();
+    // The registry's walk stops at `$HOME` and at the login home, so a
+    // redirected `HOME` never makes the installed profile dir a workspace
+    // (stint 1337).
+    let root = crate::app::registry::resolve_workspace_root_with_channel(cwd, &channel_dir);
+    log::info!(
+        "plugin_init: workspace walk from {} for {channel_dir}/ found {:?}",
+        cwd.display(),
+        root.as_ref().map(|r| r.display().to_string())
+    );
+    root.map(|root| root.join(&channel_dir).join("plugins").join(name))
 }
 
 /// `plexi plugin init [--lang python|rust] [--global] <name> [--open]`
@@ -83,31 +100,8 @@ pub fn plugin_init(
     let plugin_dir = if global {
         crate::app::registry::plugins_dir().join(name)
     } else {
-        let home = dirs::home_dir();
-        let workspace_root = {
-            let mut current = cwd;
-            let mut found: Option<std::path::PathBuf> = None;
-            loop {
-                if let Some(ref h) = home {
-                    if current == *h {
-                        break;
-                    }
-                }
-                if current == std::path::Path::new("/") {
-                    break;
-                }
-                if current.join(&channel_dir).is_dir() {
-                    found = Some(current);
-                    break;
-                }
-                if !current.pop() {
-                    break;
-                }
-            }
-            found
-        };
-        match workspace_root {
-            Some(root) => root.join(&channel_dir).join("plugins").join(name),
+        match plugin_init_workspace_dir(&cwd, name) {
+            Some(dir) => dir,
             None => {
                 eprintln!(
                     "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
@@ -229,29 +223,11 @@ pub fn plugin_init(
                         plugin_dir.display()
                     );
                 }
-                println!("  Agent loop: read {}/AGENTS.md", plugin_dir.display());
-                println!(
-                    "  Test with: {explicit_plexi} plugin test {}",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Check gate: {explicit_plexi} plugin check {} --png-dir /tmp/{name}-shots",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Render state: {explicit_plexi} view render {} --state fixtures/state.json",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
-                );
-                println!("  Host probes:");
-                println!("    {explicit_host_plexi} pane state <pane-id>");
-                println!("    {explicit_host_plexi} pane action <pane-id> <handler-id>");
-                println!("    {explicit_host_plexi} pane key <pane-id> <key>");
-                println!(
-                    "  SDK docs: read sdk/python/SDK_V3.md; with Plexi's SDK on PYTHONPATH, run python -c \"import plexi_sdk; help(plexi_sdk)\""
-                );
+                for line in
+                    python_init_next_steps(&plugin_dir, name, &explicit_plexi, &explicit_host_plexi)
+                {
+                    println!("{line}");
+                }
             }
             0
         }
@@ -260,6 +236,33 @@ pub fn plugin_init(
             1
         }
     }
+}
+
+/// Lines `plugin init` prints after scaffolding a Python plugin.
+fn python_init_next_steps(
+    plugin_dir: &std::path::Path,
+    name: &str,
+    explicit_plexi: &str,
+    explicit_host_plexi: &str,
+) -> Vec<String> {
+    let dir = plugin_dir.display();
+    vec![
+        format!("  Agent loop: read {dir}/AGENTS.md"),
+        format!("  Test with: {explicit_plexi} plugin test {dir}"),
+        format!("  Check gate: {explicit_plexi} plugin check {dir} --png-dir /tmp/{name}-shots"),
+        format!(
+            "  Render state: {explicit_plexi} view render {dir} --state {dir}/fixtures/state.json"
+        ),
+        "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
+            .to_string(),
+        "  Host probes:".to_string(),
+        format!("    {explicit_host_plexi} pane state <pane-id>"),
+        format!("    {explicit_host_plexi} pane action <pane-id> <handler-id>"),
+        format!("    {explicit_host_plexi} pane key <pane-id> <key>"),
+        "  Guide: sdk/python/AUTHORING.md in the Plexi repo (https://github.com/ianjamesburke/PLEXI/blob/alpha/sdk/python/AUTHORING.md)"
+            .to_string(),
+        "  API reference: https://plexiapp.com/docs/sdk".to_string(),
+    ]
 }
 
 /// `uv run` arguments for `plexi plugin test`, built for one plugin directory.
@@ -576,43 +579,21 @@ fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Resul
     );
     std::fs::write(plugin_dir.join("manifest.toml"), manifest)?;
 
-    // main.py + plugin/tools.py + plugin/ui.py — plexi_sdk is injected via PYTHONPATH
-    // by the host at launch; do NOT copy plexi_sdk.py alongside (the package uses
-    // relative imports that break when imported as a flat single file).
-    // main.py is the thin lifecycle wiring; tools and UI live in their own
-    // modules. The package avoids a root-level tools.py that would shadow
-    // `plexi_sdk.tools`.
-    // __DISPLAY_NAME__ is substituted below.
+    // main.py: plexi_sdk is injected via PYTHONPATH by the host at launch; do
+    // NOT copy plexi_sdk alongside (the package uses relative imports that
+    // break when imported as a flat single file).
     let display_name = to_title_case(name);
     let main_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init.py");
-    let tools_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_tools.py");
-    let ui_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_ui.py");
     let main_path = plugin_dir.join("main.py");
     std::fs::write(
         &main_path,
-        main_template
-            .replace("__CLASS_NAME__", &to_struct_name(name))
-            .replace("__DISPLAY_NAME__", &display_name),
-    )?;
-    let package_dir = plugin_dir.join("plugin");
-    std::fs::create_dir_all(&package_dir)?;
-    std::fs::write(
-        package_dir.join("__init__.py"),
-        "\"\"\"Plugin modules for this Plexi plugin.\"\"\"\n",
-    )?;
-    std::fs::write(
-        package_dir.join("tools.py"),
-        tools_template.replace("__DISPLAY_NAME__", &display_name),
-    )?;
-    std::fs::write(
-        package_dir.join("ui.py"),
-        ui_template.replace("__DISPLAY_NAME__", &display_name),
+        main_template.replace("__DISPLAY_NAME__", &display_name),
     )?;
 
     mark_executable(&main_path)?;
 
-    // tests/test_plugin.py — a working PluginHarness example co-located with the plugin
-    // so agents learn the test pattern from the scaffold, not from docs.
+    // tests/test_plugin.py: PluginHarness tests that drive the scaffold's one
+    // handler, so they fail when it breaks.
     let tests_dir = plugin_dir.join("tests");
     std::fs::create_dir_all(&tests_dir)?;
     let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_plugin_init.py");
@@ -624,7 +605,7 @@ fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Resul
     std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
 
     log::info!(
-        "plugin_init: wrote python scaffold modules main.py plugin/tools.py plugin/ui.py at {}",
+        "plugin_init: wrote python skeleton main.py tests/test_plugin.py fixtures/state.json at {}",
         plugin_dir.display()
     );
 
@@ -2123,18 +2104,6 @@ fn to_title_case(s: &str) -> String {
         .join(" ")
 }
 
-fn to_struct_name(s: &str) -> String {
-    s.split(['-', '_'])
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-            }
-        })
-        .collect::<String>()
-}
-
 /// `plexi plugin update [<id>]` — canonical plugin update path.
 ///
 /// Pulls git-backed installed plugins in the current workspace-aware registry.
@@ -3245,8 +3214,8 @@ mod scaffold_marketplace_tests {
             "generated test must exemplify PluginHarness"
         );
         assert!(
-            test_src.contains("assert_no_overlap"),
-            "generated test must assert no layout overlap"
+            test_src.contains("h.ui_action(\"increment\")") && test_src.contains("h.key(\"+\")"),
+            "generated test must drive the handler it asserts on, so breaking the handler fails it"
         );
         assert!(
             !test_src.contains("__DISPLAY_NAME__"),
@@ -3285,10 +3254,6 @@ mod scaffold_marketplace_tests {
         assert!(
             agents.contains("Hot reload is part of the dev loop"),
             "AGENTS.md must teach same-pane hot reload validation"
-        );
-        assert!(
-            agents.contains("padding=SPACE_MD"),
-            "AGENTS.md must teach the semantic shell padding contract"
         );
         assert!(
             agents.contains("log.debug"),
@@ -3366,130 +3331,136 @@ mod scaffold_marketplace_tests {
             .is_some());
     }
 
+    fn scaffold_files(root: &std::path::Path) -> Vec<String> {
+        fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    out.push(
+                        path.strip_prefix(root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    );
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Stint 1330: the scaffold is a skeleton to extend, not a demo to delete.
     #[test]
-    fn python_scaffold_splits_tools_and_ui_from_thin_main() {
+    fn python_scaffold_is_a_minimal_skeleton() {
         let dir = TempDir::new().unwrap();
         let plugin_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&plugin_dir).unwrap();
         scaffold_python_plugin(&plugin_dir, "myapp").unwrap();
 
-        let read = |file: &str| {
-            std::fs::read_to_string(plugin_dir.join(file))
-                .unwrap_or_else(|e| panic!("python scaffold must write {file}: {e}"))
-        };
-        let main_src = read("main.py");
-        let package_src = read("plugin/__init__.py");
-        let tools_src = read("plugin/tools.py");
-        let ui_src = read("plugin/ui.py");
-        assert!(
-            !plugin_dir.join("plugin_tools.py").exists()
-                && !plugin_dir.join("plugin_ui.py").exists(),
-            "v5 scaffold must not write the flat v4 modules"
-        );
-        assert!(
-            !plugin_dir.join("tools.py").exists(),
-            "v5 scaffold must not write a root tools.py that shadows plexi_sdk.tools"
+        let files = scaffold_files(&plugin_dir);
+        assert_eq!(
+            files,
+            [
+                ".gitignore",
+                "AGENTS.md",
+                "fixtures/state.json",
+                "main.py",
+                "manifest.toml",
+                "plexi.scaffold.toml",
+                "tests/test_plugin.py",
+            ],
+            "the scaffold writes exactly these files"
         );
 
-        for (file, src) in [
-            ("main.py", &main_src),
-            ("plugin/__init__.py", &package_src),
-            ("plugin/tools.py", &tools_src),
-            ("plugin/ui.py", &ui_src),
-        ] {
+        for file in &files {
+            let src = std::fs::read_to_string(plugin_dir.join(file)).unwrap();
+            for demo in ["demo.", "LEFT_COUNTER", "timer"] {
+                assert!(
+                    !src.contains(demo),
+                    "{file} must not carry demo content ({demo:?})"
+                );
+            }
             assert!(
-                !src.contains("__DISPLAY_NAME__") && !src.contains("__CLASS_NAME__"),
+                !src.contains("__DISPLAY_NAME__")
+                    && !src.contains("__PLUGIN_ID__")
+                    && !src.contains("__APP_NAME__"),
                 "{file} must substitute its placeholders"
             );
         }
 
-        // main.py: thin lifecycle wiring only.
+        let manifest: crate::app::registry::PluginManifest =
+            toml::from_str(&std::fs::read_to_string(plugin_dir.join("manifest.toml")).unwrap())
+                .expect("scaffolded manifest must parse");
         assert!(
-            main_src.contains("SDK v3 plugin generated by `plexi plugin init`"),
-            "generated main.py should identify the SDK v3 scaffold"
-        );
-        assert!(
-            main_src.contains("init(size, args)"),
-            "generated main.py should document the lifecycle function names"
-        );
-        assert!(
-            main_src.contains("Do not mutate Plexi state in-place"),
-            "generated main.py should explain effect-returned state changes"
-        );
-        assert!(
-            main_src.contains("Components describe UI. Effects describe host work."),
-            "generated main.py should explain component/effect separation"
-        );
-        assert!(
-            main_src.contains("from plugin import tools as plugin_tools")
-                && main_src.contains("from plugin import ui as plugin_ui"),
-            "generated main.py should import the tools and UI modules"
-        );
-        assert!(
-            main_src.contains("tools.expose()"),
-            "generated main.py must expose tools from init"
-        );
-        assert!(
-            main_src.contains("tools.dispatch(event)"),
-            "generated main.py must dispatch tool calls first in update"
-        );
-        assert!(
-            main_src.contains("plugin_ui.build_view("),
-            "generated main.py must delegate view to the UI module"
-        );
-        assert!(
-            !main_src.contains("plexi_sdk.ui") && !main_src.contains("SurfaceHeader("),
-            "generated main.py must not build UI itself"
+            manifest.plugin.capabilities.capabilities.is_empty(),
+            "a skeleton that returns no gated effect declares no capability"
         );
 
-        // plugin/tools.py: plain functions on the SDK decorator API.
-        assert!(
-            tools_src.contains("from plexi_sdk import state, tools"),
-            "generated plugin/tools.py should use the SDK tools module"
-        );
-        assert!(
-            tools_src.contains("@tools.tool("),
-            "generated plugin/tools.py should declare tools with the decorator"
-        );
-        assert!(
-            tools_src.contains("read_only=True"),
-            "generated plugin/tools.py should demonstrate a read-only tool"
-        );
-
-        // plugin/ui.py: the component tree and the primitive guidance.
+        let main_src = std::fs::read_to_string(plugin_dir.join("main.py")).unwrap();
         for needle in [
-            "def build_view(",
-            "ActionBar(",
-            "Card(",
-            "Section(",
-            "Badge(",
-            "Divider(",
-            "TextEdit(",
-            "SelectList(",
-            "Scrollable(",
-            "UiValueChange",
-            "FooterKeys(",
-            "SPACE_MD",
-            "padding=SPACE_MD",
-            "log.debug",
-            "log.info",
-            "log.warn",
-            "log.error",
+            "def init(size, args):",
+            "def update(event):",
+            "def view():",
+            "isinstance(event, Resize)",
+            "on_click=\"increment\"",
+            "event.key == \"+\"",
+            "log.info(",
         ] {
             assert!(
-                ui_src.contains(needle),
-                "generated plugin/ui.py should mention {needle}"
+                main_src.contains(needle),
+                "generated main.py should contain {needle}"
             );
         }
         assert!(
-            !ui_src.contains("SetState("),
-            "generated plugin/ui.py must stay free of effects"
+            !main_src.contains("tools."),
+            "the skeleton exposes no assistant tools"
         );
 
         let agents = std::fs::read_to_string(plugin_dir.join("AGENTS.md")).unwrap();
+        for file in &files {
+            assert!(
+                agents.contains(&format!("`{file}`")),
+                "AGENTS.md must say what {file} is for"
+            );
+        }
+    }
+
+    /// Stint 1330: the init output names the guide and only real commands.
+    #[test]
+    fn python_init_next_steps_point_at_the_authoring_guide() {
+        let lines = python_init_next_steps(
+            std::path::Path::new("/ws/.plexi-alpha/plugins/myapp"),
+            "myapp",
+            "PLEXI_CHANNEL=alpha plexi",
+            "PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi",
+        )
+        .join("\n");
+
         assert!(
-            agents.contains("plugin/tools.py") && agents.contains("plugin/ui.py"),
-            "AGENTS.md must document the tools-vs-UI module split"
+            lines.contains("sdk/python/AUTHORING.md"),
+            "init must point at the canonical guide: {lines}"
+        );
+        assert!(
+            lines.contains("https://plexiapp.com/docs/sdk"),
+            "init must point at the docs site API reference: {lines}"
+        );
+        assert!(
+            !lines.contains("SDK_V3.md"),
+            "the design spec is partly historical and is not the guide: {lines}"
+        );
+        assert!(
+            !lines.contains("help(plexi_sdk"),
+            "plexi_sdk does not import in a bare interpreter: {lines}"
+        );
+        assert!(
+            lines.contains(
+                "view render /ws/.plexi-alpha/plugins/myapp --state /ws/.plexi-alpha/plugins/myapp/fixtures/state.json"
+            ),
+            "--state is read relative to the cwd, so the printed path must be complete: {lines}"
         );
     }
 
@@ -3530,6 +3501,50 @@ mod scaffold_marketplace_tests {
         let _on =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
         assert_placeholder(&manifest_for(scaffold_python_plugin));
+    }
+}
+
+#[cfg(test)]
+mod plugin_init_workspace_walk_tests {
+    use super::{plugin_init_config_dir, plugin_init_workspace_dir};
+
+    /// Stint 1337: `$HOME` is not the login home (a sandbox or test profile
+    /// redirected it), the cwd is under the login home, and the login home
+    /// holds the installed channel profile dir. `plugin init` must not take
+    /// that profile dir for a workspace.
+    #[test]
+    fn plugin_init_does_not_scaffold_into_the_login_home_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let cwd = login_home.join("projects").join("demo");
+        let profile = login_home.join(plugin_init_config_dir());
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            None,
+            "the login home's profile dir is not a workspace"
+        );
+    }
+
+    #[test]
+    fn plugin_init_scaffolds_into_a_workspace_under_the_login_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let workspace = login_home.join("projects").join("demo");
+        let cwd = workspace.join("src").join("deep");
+        let channel_dir = plugin_init_config_dir();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(workspace.join(&channel_dir)).unwrap();
+        std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            Some(workspace.join(&channel_dir).join("plugins").join("myapp"))
+        );
     }
 }
 

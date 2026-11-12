@@ -43,7 +43,7 @@ Use `Shift+↑` and `Shift+↓` to extend the current selection, or `⌘A` to se
 | Paste into current folder | `⌘V` |
 | Move selected items to trash | `⌘Backspace` |
 | Reveal selected items with the system opener | `⌘Enter` |
-| Open selected items with default plugin | `⌘O` |
+| Open selected items in their default macOS app | `⌘O` |
 
 Moving items to trash opens a confirmation modal before changing the filesystem. File operations log success and failure details to the Plexi log.
 

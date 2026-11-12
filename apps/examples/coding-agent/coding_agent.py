@@ -29,7 +29,7 @@ def view():
     return Column([
         SurfaceHeader("Coding Agent", subtitle="V3 AI-query example"),
         TextEdit("prompt", value=state.get("prompt", ""),
-                 placeholder="Paste code or describe the problem...", multiline=True),
+                 placeholder="Paste code or describe the problem..."),
         Button("Ask", on_click="ask", style="primary"),
         Label(state.get("answer", "Ask for a review, debug plan, or explanation."), max_lines=20),
         FooterKeys([("enter", "submit text"), ("ask", "send query")]),
