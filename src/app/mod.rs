@@ -241,6 +241,7 @@ pub struct PlexiApp {
     /// 300ms past the last signal so it doesn't flap between frames
     /// (stint 0731).
     pub(crate) drag_window_last_seen: Option<std::time::Instant>,
+    pub(crate) resize_gesture: crate::platform::ui_profile::ResizeGesture,
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `HostRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
@@ -1734,6 +1735,7 @@ impl PlexiApp {
                     frame_diag_window: None,
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
+                    resize_gesture: Default::default(),
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
@@ -2019,6 +2021,7 @@ impl PlexiApp {
             frame_diag_window: None,
             prev_screen_rect: None,
             drag_window_last_seen: None,
+            resize_gesture: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -2998,6 +3001,7 @@ impl PlexiApp {
             frame_diag_window: None,
             prev_screen_rect: None,
             drag_window_last_seen: None,
+            resize_gesture: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -3867,15 +3871,15 @@ impl eframe::App for PlexiApp {
         }
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
-        let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
+        let ui_profile_start = (crate::platform::ui_profile::enabled() || self.resize_gesture.active())
+            .then(std::time::Instant::now);
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+        let ui_cpu_start = crate::platform::ui_profile::enabled()
+            .then(crate::platform::ui_profile::thread_cpu_time);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::UiRender,
         );
-        if crate::platform::ui_profile::enabled() {
-            let drag_active = self.detect_drag_active(ctx);
-            crate::platform::ui_profile::set_drag_active(drag_active);
-        }
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
@@ -4303,7 +4307,15 @@ impl eframe::App for PlexiApp {
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
         if let Some(start) = ui_profile_start {
-            crate::platform::ui_profile::end_frame(start.elapsed());
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            if let Some(cpu_start) = ui_cpu_start {
+                crate::platform::ui_profile::note_cpu_frame(
+                    crate::platform::ui_profile::thread_cpu_time() - cpu_start,
+                );
+            }
+            let elapsed = start.elapsed();
+            self.resize_gesture.end_frame(elapsed);
+            crate::platform::ui_profile::end_frame(elapsed);
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -4948,12 +4960,22 @@ impl PlexiApp {
     /// between frames when a gesture pauses briefly mid-drag.
     fn detect_drag_active(&mut self, ctx: &egui::Context) -> bool {
         let screen_rect = ctx.content_rect();
-        let rect_changed = self.prev_screen_rect.replace(screen_rect) != Some(screen_rect);
+        let rect_changed = self
+            .prev_screen_rect
+            .replace(screen_rect)
+            .is_some_and(|previous| previous != screen_rect);
         let pointer_dragging = ctx.input(|i| i.pointer.any_down() && i.pointer.is_moving());
 
         let now = std::time::Instant::now();
         if rect_changed || pointer_dragging {
             self.drag_window_last_seen = Some(now);
+            // Ensure the trailing summary/save check runs even if input stops
+            // or the window becomes occluded. Account for egui scheduling.
+            let predicted = ctx.input(|i| i.predicted_dt);
+            ctx.request_repaint_after(
+                std::time::Duration::from_millis(300)
+                    + std::time::Duration::from_secs_f32(predicted),
+            );
             return true;
         }
         matches!(

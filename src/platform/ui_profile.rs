@@ -2,17 +2,87 @@
 //!
 //! Stint 0716's `[FREEZE]` / `logic_drain:` instrumentation lives in
 //! `App::logic` and is structurally blind to drag-resize stutter, which
-//! happens in `App::ui`. This module measures where `ui()` frame time goes
-//! during an active drag or window resize, gated behind `PLEXI_UI_PROFILE=1`
-//! so it costs nothing on the default hot path.
+//! happens in `App::ui`. Detailed spans are gated by `PLEXI_UI_PROFILE=1`.
+//! Bounded, per-app gesture summaries remain available in ordinary info logs.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+/// Cheap, always-on gesture summary. Histogram storage is bounded even if a
+/// divider is held indefinitely; p95 is an upper bound in whole milliseconds.
+#[derive(Default)]
+pub(crate) struct ResizeGesture {
+    sample: Option<Box<GestureSample>>,
+}
+
+struct GestureSample {
+    frames: u64,
+    buckets: [u64; 257],
+    max_ms: f64,
+}
+
+impl GestureSample {
+    fn record(&mut self, total: Duration) {
+        let ms = total.as_secs_f64() * 1000.0;
+        self.frames += 1;
+        self.buckets[(ms.ceil() as usize).min(256)] += 1;
+        self.max_ms = self.max_ms.max(ms);
+    }
+
+    fn p95_bucket(&self) -> usize {
+        let rank = (self.frames * 95).div_ceil(100);
+        let mut accumulated = 0;
+        self.buckets
+            .iter()
+            .position(|count| {
+                accumulated += count;
+                accumulated >= rank
+            })
+            .unwrap_or(256)
+    }
+}
+
+impl ResizeGesture {
+    pub(crate) fn active(&self) -> bool {
+        self.sample.is_some()
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool) {
+        match (self.active(), active) {
+            (false, true) => {
+                self.sample = Some(Box::new(GestureSample {
+                    frames: 0,
+                    buckets: [0; 257],
+                    max_ms: 0.0,
+                }));
+                log::info!("resize_gesture: start");
+            }
+            (true, false) => {
+                let sample = self.sample.take().unwrap();
+                let p95 = sample.p95_bucket();
+                log::info!(
+                    "resize_gesture: end frames={} p95_ms{}{} max_ms={:.2}",
+                    sample.frames,
+                    if p95 == 256 { ">" } else { "<=" },
+                    if p95 == 256 { 255 } else { p95 },
+                    sample.max_ms
+                );
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn end_frame(&mut self, total: Duration) {
+        if let Some(sample) = self.sample.as_mut() {
+            sample.record(total);
+        }
+    }
+}
+
 /// Resolves once from `PLEXI_UI_PROFILE=1`. Every other fn in this module
-/// must check this before any `Instant::now()`/alloc/lock — zero cost when
-/// off is a hard requirement.
+/// for detailed span collection checks this before timing/allocating/locking.
+/// `ResizeGesture` is the separate bounded, always-on summary.
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("PLEXI_UI_PROFILE").as_deref() == Ok("1"))
@@ -29,7 +99,14 @@ pub fn time<T>(label: &str, f: impl FnOnce() -> T) -> T {
         return f();
     }
     let start = Instant::now();
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    let cpu_start = thread_cpu_time();
     let result = f();
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    note_nanos(
+        &format!("{label}_cpu"),
+        (thread_cpu_time() - cpu_start).as_nanos() as u64,
+    );
     note_nanos(label, start.elapsed().as_nanos() as u64);
     result
 }
@@ -201,6 +278,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resize_summary_histogram_is_bounded_and_counts_every_frame() {
+        let mut sample = GestureSample {
+            frames: 0,
+            buckets: [0; 257],
+            max_ms: 0.0,
+        };
+        for _ in 0..95 {
+            sample.record(Duration::from_micros(12_300));
+        }
+        for _ in 0..5 {
+            sample.record(Duration::from_secs(1));
+        }
+        assert_eq!(sample.frames, 100);
+        assert_eq!(sample.p95_bucket(), 13);
+        assert_eq!(sample.max_ms, 1000.0);
+        sample.record(Duration::from_secs(2));
+        assert_eq!(sample.p95_bucket(), 256);
+        let mut gesture = ResizeGesture::default();
+        gesture.end_frame(Duration::from_secs(1));
+        assert!(!gesture.active());
+        gesture.set_active(true);
+        gesture.end_frame(Duration::from_millis(3));
+        assert_eq!(gesture.sample.as_ref().unwrap().frames, 1);
+        gesture.set_active(false);
+        assert!(!gesture.active());
+    }
+
+    #[test]
     fn disabled_path_never_touches_spans() {
         if enabled() {
             // Skip: PLEXI_UI_PROFILE=1 set in this process's env by another
@@ -247,4 +352,68 @@ mod tests {
         assert_eq!(max, 100.0);
         assert_eq!(percentiles(&[]), (0.0, 0.0, 0.0));
     }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_measurement() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    CPU_FRAMES.lock().unwrap().clear();
+    set_drag_active(false);
+    set_drag_active(true);
+}
+
+#[cfg(test)]
+pub(crate) fn print_measurement() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let samples = CPU_FRAMES.lock().unwrap();
+        let (p50, p95, max) = percentiles(&samples);
+        println!(
+            "UI_THREAD_CPU frames={} p50_ms={p50:.2} p95_ms={p95:.2} max_ms={max:.2}",
+            samples.len()
+        );
+    }
+    let window = WINDOW.lock().unwrap();
+    let w = window.as_ref().expect("measurement window");
+    let (p50, p95, max) = percentiles(&w.frame_ms);
+    println!(
+        "{}",
+        window_summary_line(
+            w.frames,
+            w.started.elapsed().as_secs_f32(),
+            p50,
+            p95,
+            max,
+            &drain_spans()
+        )
+    );
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+static CPU_FRAMES: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+
+/// Test-only render-thread CPU clock excludes scheduler delay on shared builders.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn thread_cpu_time() -> Duration {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: value is a valid writable timespec; the clock is thread-local.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    assert_eq!(
+        result,
+        0,
+        "thread CPU clock: {}",
+        std::io::Error::last_os_error()
+    );
+    Duration::new(value.tv_sec as u64, value.tv_nsec as u32)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn note_cpu_frame(total: Duration) {
+    CPU_FRAMES
+        .lock()
+        .unwrap()
+        .push(total.as_secs_f32() * 1000.0);
 }
