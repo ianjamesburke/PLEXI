@@ -15,7 +15,7 @@
 //! `render()` returns an `image::RgbaImage` via wgpu Metal offscreen rendering.
 //! On macOS this is fully headless — no display required. Save with:
 //! ```
-//! h.render().unwrap().save("/tmp/out.png").unwrap();
+//! h.save_screenshot(&evidence_png!()).unwrap();
 //! ```
 //!
 //! # State isolation
