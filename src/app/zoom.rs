@@ -340,13 +340,18 @@ impl PlexiApp {
                 if idx == win_idx {
                     continue;
                 }
+                let mut touched = false;
                 for &pid in &target_pids {
                     if let Some(pane) = win.panes.remove(&pid) {
                         moved_panes.push((pid, pane));
                     }
                     if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
-                        win.tree.tiles.remove(tile_id);
+                        win.tree.remove_recursively(tile_id);
+                        touched = true;
                     }
+                }
+                if touched {
+                    win.simplify_and_reconcile();
                 }
             }
             for (pid, pane) in moved_panes {
@@ -397,6 +402,7 @@ impl PlexiApp {
             } else {
                 self.windows[win_idx].focused_pane = first_pane_tile;
             }
+            self.windows[win_idx].simplify_and_reconcile();
         }
         self.record_focused_pane_memory();
     }

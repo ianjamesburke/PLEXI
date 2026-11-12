@@ -14,6 +14,16 @@ pub type PaneId = u64;
 
 pub(crate) const TAB_BAR_HEIGHT: f32 = crate::ui::style::PANE_HEADER_HEIGHT;
 
+/// The one set of options every window tree is simplified with: egui's own
+/// pass at the start of `Tree::ui` (through `PlexiBehavior`) and
+/// `Window::simplify_and_reconcile`. Every pane sits in a Tabs container.
+pub(crate) fn host_simplification_options() -> SimplificationOptions {
+    SimplificationOptions {
+        all_panes_must_have_tabs: true,
+        ..SimplificationOptions::default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabBarAction {
     Switch(usize),
@@ -981,10 +991,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn simplification_options(&self) -> SimplificationOptions {
-        SimplificationOptions {
-            all_panes_must_have_tabs: true,
-            ..SimplificationOptions::default()
-        }
+        host_simplification_options()
     }
 
     fn tab_ui(

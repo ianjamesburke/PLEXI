@@ -9,7 +9,7 @@ use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
-use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
+use egui_tiles::{Container, Tile, TileId};
 use std::{collections::HashMap, path::PathBuf};
 
 pub(crate) enum SwapResult {
@@ -519,6 +519,7 @@ impl PlexiApp {
             new_pane_first,
         );
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
         self.zoom.context_last_pane.insert(ctx_id, new_id);
         log::info!("pane split: pane={new_id} source={focused:?} stacked={vertical}");
 
@@ -594,6 +595,7 @@ impl PlexiApp {
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
             ctx.tree.root = Some(tab_tile);
             ctx.navigate_to(pane_tile);
+            ctx.simplify_and_reconcile();
             return;
         }
 
@@ -672,26 +674,25 @@ impl PlexiApp {
                 tabs.add_child(new_tile);
                 tabs.set_active(new_tile);
             }
-            ctx.navigate_to(new_tile);
-            return;
-        }
-
-        let parent = ctx.tree.tiles.parent_of(focused);
-        let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![focused, new_tile]);
-
-        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
-            tabs.set_active(new_tile);
-        }
-
-        if let Some(parent_id) = parent {
-            if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
-                replace_child(parent_container, focused, tab_tile);
-            }
         } else {
-            ctx.tree.root = Some(tab_tile);
+            let parent = ctx.tree.tiles.parent_of(focused);
+            let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![focused, new_tile]);
+
+            if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
+                tabs.set_active(new_tile);
+            }
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
+                    replace_child(parent_container, focused, tab_tile);
+                }
+            } else {
+                ctx.tree.root = Some(tab_tile);
+            }
         }
 
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool) {
@@ -1001,11 +1002,6 @@ impl PlexiApp {
                 None
             };
 
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
-
             // Only update focused_pane when focus actually needs to transfer.
             // A background-pane close must not steal focus from the current pane.
             if let Some(new_focus) = next {
@@ -1033,7 +1029,7 @@ impl PlexiApp {
 
             // Unconditional: simplify can re-id a surviving focused pane into
             // a Tabs container even when the closed pane was not focused.
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
 
             removed
         };
@@ -1092,7 +1088,8 @@ impl PlexiApp {
             // else: builtin view pane drops here
         }
 
-        if let Some(new_focus) = next {
+        // The settled focus, not `next`: simplify may have re-id'd that tile.
+        if let Some(new_focus) = next.and(self.windows[ctx_idx].focused_pane) {
             self.record_close_focus_column(ctx_idx, new_focus);
         }
         if closed_pane_id.is_some() {
@@ -1612,15 +1609,10 @@ impl PlexiApp {
             return false;
         }
 
-        // Determine next_src_focus before calling move_focused_pane_to_adjacent_window
-        // (the function sets it internally, but we need active_window to remain src_idx).
-        let focused_tile = match self.windows[src_idx].focused_pane {
-            Some(t) => t,
-            None => return false,
-        };
-        let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
-
-        // Delegate the actual move (this sets active_window = adj_idx).
+        // Delegate the actual move (this sets active_window = adj_idx). It also
+        // settles the source window's focus on the pane that filled the
+        // vacated slot (stint 1230); re-assigning a tile id computed before the
+        // move would undo that, since simplify can re-id the pane.
         let moved = self.move_focused_pane_to_adjacent_window(dir);
         if !moved {
             return false;
@@ -1630,9 +1622,6 @@ impl PlexiApp {
         // find the source by its previously known index — it may have shifted if adj
         // was deleted, but since source had >1 pane it was never deleted.
         self.active_window = src_idx;
-
-        // Restore focus to the pane that filled the vacated slot in the source.
-        self.windows[src_idx].focused_pane = next_src_focus;
 
         log::info!(
             "send_pane_to_adjacent_window({:?}): pane sent, focus stays at source window",
@@ -1712,12 +1701,8 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
             ctx.focused_pane = next_src_focus;
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
             pane
         };
 
@@ -1785,6 +1770,7 @@ impl PlexiApp {
         });
 
         self.active_window = self.windows.len() - 1;
+        self.windows[self.active_window].simplify_and_reconcile();
         self.context_active_window.insert(ws_id, win_id);
         self.record_context_visit(win_id);
         self.minimap.visible = true;
@@ -1889,12 +1875,8 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(src_focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
             ctx.focused_pane = next_src_focus;
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
             pane
         };
 
@@ -1976,6 +1958,7 @@ impl PlexiApp {
             }
         }
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
 
         log::info!(
             "move_focused_pane_to_adjacent_window({:?}): pane {} moved from window index {} to {}",

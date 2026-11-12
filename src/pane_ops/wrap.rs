@@ -113,16 +113,11 @@ impl PlexiApp {
         };
         let mut child_tiles = parent.tree.tiles.clone();
         prune_tiles(&mut child_tiles, child_root, &selected);
-        let mut child_tree = Tree::new(
+        let child_tree = Tree::new(
             egui::Id::new(("child_tree", self.next_window_id + 1)),
             child_root,
             child_tiles,
         );
-        child_tree.simplify(&egui_tiles::SimplificationOptions {
-            join_nested_linear_containers: false,
-            all_panes_must_have_tabs: true,
-            ..Default::default()
-        });
         let context_id = self.next_window_id;
         let window_id = context_id + 1;
         self.next_window_id += 2;
@@ -174,7 +169,10 @@ impl PlexiApp {
             prune_tiles(&mut parent.tree.tiles, root, &keep);
         }
         parent.clear_zoom();
-        parent.focused_pane = Some(anchor_tile);
+        parent.navigate_to(anchor_tile);
+        parent.simplify_and_reconcile();
+        // Simplify can re-id the portal's tile; zoom-out returns to the settled one.
+        let parent_focus = parent.focused_pane;
         let parent_window = parent.window_id;
         self.host.clear_pane_selection(parent_window);
         self.host.insert_strip(parent_context, parent_strip);
@@ -192,7 +190,7 @@ impl PlexiApp {
                 parked: false,
             },
         );
-        self.windows.push(Window {
+        let mut child_window = Window {
             name: String::new(),
             path: root,
             tree: child_tree,
@@ -203,10 +201,12 @@ impl PlexiApp {
             grid_y: 0,
             window_id,
             context_id,
-        });
+        };
+        child_window.simplify_and_reconcile();
+        self.windows.push(child_window);
         self.context_active_window.insert(context_id, window_id);
         self.router
-            .push_depth(parent_context, parent_window, Some(anchor_tile));
+            .push_depth(parent_context, parent_window, parent_focus);
         if let Some(index) = self.router.position(|c| c.context_id == context_id) {
             self.switch_workspace(index);
         }

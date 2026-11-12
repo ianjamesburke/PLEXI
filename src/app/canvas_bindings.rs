@@ -105,6 +105,8 @@ impl PlexiApp {
             share,
             false, // new_pane_first = false → new terminal is the second (right/bottom) child
         );
+        // Focus stays on the sender, but the split can re-id its tile (stint 1230).
+        self.windows[active].simplify_and_reconcile();
 
         // Update the sender's linked_pane_id so legacy CdRequest also
         // routes to this terminal.
