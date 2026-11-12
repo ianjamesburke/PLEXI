@@ -1,0 +1,159 @@
+---
+// Jump-to search over docs page titles and their headings. The index is built
+// at build time and shipped inline, so there is no service and no dependency.
+import { getCollection, render } from 'astro:content';
+import { docsFlat } from '../../lib/docsNav';
+
+const docs = await getCollection('docs');
+const index: { t: string; p: string; u: string }[] = [];
+for (const item of docsFlat) {
+  const doc = docs.find(d => d.id === item.slug);
+  if (!doc) continue;
+  index.push({ t: item.title, p: item.section, u: `/docs/${item.slug}` });
+  const { headings } = await render(doc);
+  for (const h of headings) {
+    if (h.depth > 3) continue;
+    index.push({ t: h.text, p: item.title, u: `/docs/${item.slug}#${h.slug}` });
+  }
+}
+---
+<div class="docs-search" data-index={JSON.stringify(index)}>
+  <label for="docs-search-input">Search the docs</label>
+  <div class="docs-search-field">
+    <input
+      id="docs-search-input"
+      type="search"
+      placeholder="Try &quot;pane send&quot; or &quot;capabilities&quot;"
+      autocomplete="off"
+      spellcheck="false"
+      role="combobox"
+      aria-expanded="false"
+      aria-controls="docs-search-results"
+      aria-autocomplete="list"
+    />
+    <kbd aria-hidden="true">/</kbd>
+  </div>
+  <ul id="docs-search-results" role="listbox" aria-label="Search results" hidden></ul>
+  <p class="docs-search-status" role="status" aria-live="polite"></p>
+</div>
+
+<script>
+  interface Entry { t: string; p: string; u: string }
+  const root = document.querySelector<HTMLElement>('.docs-search');
+  const input = root?.querySelector<HTMLInputElement>('input');
+  const list = root?.querySelector<HTMLUListElement>('ul');
+  const status = root?.querySelector<HTMLElement>('.docs-search-status');
+  if (root && input && list && status) {
+    const entries: Entry[] = JSON.parse(root.dataset.index ?? '[]');
+    const LIMIT = 12;
+    let active = -1;
+
+    const close = () => {
+      list.hidden = true;
+      list.replaceChildren();
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      active = -1;
+    };
+
+    const mark = (index: number) => {
+      const options = [...list.children] as HTMLElement[];
+      options.forEach((option, i) => option.setAttribute('aria-selected', String(i === index)));
+      active = index;
+      const current = options[index];
+      if (current) {
+        input.setAttribute('aria-activedescendant', current.id);
+        current.scrollIntoView({ block: 'nearest' });
+      }
+    };
+
+    const search = () => {
+      const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!words.length) { close(); status.textContent = ''; return; }
+      const scored: { entry: Entry; score: number }[] = [];
+      for (const entry of entries) {
+        const title = entry.t.toLowerCase();
+        const hay = `${title} ${entry.p.toLowerCase()}`;
+        if (!words.every(word => hay.includes(word))) continue;
+        // Title hits beat page-name hits; whole pages beat headings; shorter titles beat longer.
+        const inTitle = words.every(word => title.includes(word)) ? 0 : 100;
+        const isHeading = entry.u.includes('#') ? 10 : 0;
+        const phrase = title.includes(words.join(' ')) ? -50 : 0;
+        scored.push({ entry, score: inTitle + isHeading + phrase + title.length / 100 });
+      }
+      scored.sort((a, b) => a.score - b.score);
+      const shown = scored.slice(0, LIMIT);
+      list.replaceChildren(...shown.map(({ entry }, i) => {
+        const option = document.createElement('li');
+        option.id = `docs-search-option-${i}`;
+        option.setAttribute('role', 'option');
+        const link = document.createElement('a');
+        link.href = entry.u;
+        link.tabIndex = -1;
+        const title = document.createElement('span');
+        title.className = 'hit-title';
+        title.textContent = entry.t;
+        const where = document.createElement('span');
+        where.className = 'hit-where';
+        where.textContent = entry.p;
+        link.append(title, where);
+        option.append(link);
+        return option;
+      }));
+      list.hidden = shown.length === 0;
+      input.setAttribute('aria-expanded', String(shown.length > 0));
+      active = -1;
+      status.textContent = shown.length === 0
+        ? 'Nothing matches. Search covers page titles and headings, not body text.'
+        : scored.length > LIMIT ? `Showing ${LIMIT} of ${scored.length} matches. Add a word to narrow it.` : '';
+      if (shown.length) mark(0);
+    };
+
+    input.addEventListener('input', search);
+    input.addEventListener('keydown', event => {
+      const count = list.children.length;
+      if (event.key === 'ArrowDown' && count) { event.preventDefault(); mark((active + 1) % count); }
+      else if (event.key === 'ArrowUp' && count) { event.preventDefault(); mark((active - 1 + count) % count); }
+      else if (event.key === 'Enter' && active >= 0) {
+        event.preventDefault();
+        const link = list.children[active]?.querySelector('a');
+        if (link) window.location.href = link.href;
+      } else if (event.key === 'Escape') { input.value = ''; close(); status.textContent = ''; }
+    });
+    document.addEventListener('keydown', event => {
+      const target = event.target as HTMLElement | null;
+      const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      if (event.key === '/' && !typing && !event.metaKey && !event.ctrlKey) { event.preventDefault(); input.focus(); }
+    });
+  }
+</script>
+
+<style>
+  .docs-search { margin-top: 32px; max-width: 640px; }
+  .docs-search label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 700; color: var(--fg); }
+  .docs-search-field { position: relative; }
+  .docs-search input {
+    width: 100%;
+    padding: 14px 48px 14px 16px;
+    border: 1px solid var(--border-2);
+
+    background: var(--bg-2);
+    color: #fff;
+    font: 16px var(--body);
+    caret-color: var(--accent-light);
+  }
+  .docs-search input::placeholder { color: var(--fg-2); }
+  .docs-search input:focus-visible { outline-offset: 2px; border-color: var(--accent-light); }
+  .docs-search kbd {
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    min-width: 24px; padding: 3px 7px; border: 1px solid var(--border-2); border-radius: 5px;
+    font: 12px var(--mono); text-align: center; color: var(--fg-2); pointer-events: none;
+  }
+  .docs-search ul { list-style: none; margin-top: 8px; max-height: 420px; overflow-y: auto; border: 1px solid var(--border-2); background: var(--bg-2); }
+  .docs-search :global(li + li) { border-top: 1px solid var(--border); }
+  .docs-search :global(li a) { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 11px 16px; }
+  .docs-search :global(li[aria-selected="true"]), .docs-search :global(li:hover) { background: var(--bg-4); }
+  .docs-search :global(.hit-title) { font-size: 15.5px; font-weight: 700; color: #fff; overflow-wrap: anywhere; }
+  .docs-search :global(.hit-where) { flex: none; font: 12px var(--mono); color: var(--fg-2); }
+  .docs-search-status { margin-top: 8px; min-height: 1.4em; font-size: 14px; color: var(--fg-2); }
+</style>

@@ -56,7 +56,7 @@ export function formatWidgetLines(
   if (snapshot.appTools.length > 0) {
     const toolNames = snapshot.appTools.map((t: any) => {
       const ro = t.read_only ? "ro" : "ask";
-      return `${t.app_id}.${t.name}[${ro}]`;
+      return `${t.plugin_id}.${t.name}[${ro}]`;
     });
     lines.push(`App tools: ${toolNames.join(", ")}`);
   }

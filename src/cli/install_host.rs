@@ -844,6 +844,120 @@ pub fn apply_examples_pack_if_empty(
     Some(apply_pack(cloner, &pack, target_root, false))
 }
 
+/// Root entries the installer writes beside an extracted plugin. `.venv` comes
+/// from `python_env::ensure_plugin_venv`; the files are `package` host metadata.
+/// The CPython guest cannot import any of them: `/app` is a plain PYTHONPATH
+/// entry with no `.pth` processing, and `.venv` is not a module name.
+fn is_installer_written_root_entry(name: &str) -> bool {
+    name == ".venv" || crate::app::package::HOST_METADATA_FILES.contains(&name)
+}
+
+/// Host-derived provenance: true when `plugin_dir` holds exactly the plugin
+/// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
+/// extra, no symlinks. Package content identity is not enough here because it
+/// skips `.pyc` files and caches, which the guest's importer would still load.
+/// A manifest id or package claim cannot satisfy this. It covers the plugin
+/// folder only, not the SDK or stdlib a guest also imports. The walk stops at
+/// the first difference, so its cost is bounded by the embedded tree.
+pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
+    let Some(bundled) = EMBEDDED_APPS.get_dir(name) else {
+        log::warn!("bundled_check: no embedded plugin '{name}'");
+        return false;
+    };
+    let mut files = HashMap::new();
+    let mut dirs = std::collections::HashSet::new();
+    collect_embedded(bundled, Path::new(name), &mut files, &mut dirs);
+    let outcome =
+        compare_with_embedded(plugin_dir, Path::new(""), &files, &dirs).and_then(|matched| {
+            if matched == files.len() {
+                Ok(())
+            } else {
+                Err(format!("{} bundled file(s) missing", files.len() - matched))
+            }
+        });
+    match outcome {
+        Ok(()) => {
+            log::info!("bundled_check: {name} verified at {}", plugin_dir.display());
+            true
+        }
+        Err(reason) => {
+            log::info!(
+                "bundled_check: {name} not bundled at {}: {reason}",
+                plugin_dir.display()
+            );
+            false
+        }
+    }
+}
+
+fn collect_embedded<'a>(
+    dir: &'a include_dir::Dir<'a>,
+    root: &Path,
+    files: &mut HashMap<PathBuf, &'a [u8]>,
+    dirs: &mut std::collections::HashSet<PathBuf>,
+) {
+    for entry in dir.entries() {
+        let Ok(rel) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        match entry {
+            include_dir::DirEntry::Dir(child) => {
+                dirs.insert(rel.to_path_buf());
+                collect_embedded(child, root, files, dirs);
+            }
+            include_dir::DirEntry::File(file) => {
+                files.insert(rel.to_path_buf(), file.contents());
+            }
+        }
+    }
+}
+
+/// Count the bundled files found under `rel`, or name the first difference.
+fn compare_with_embedded(
+    root: &Path,
+    rel: &Path,
+    files: &HashMap<PathBuf, &[u8]>,
+    dirs: &std::collections::HashSet<PathBuf>,
+) -> Result<usize, String> {
+    let dir = root.join(rel);
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    let mut matched = 0;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let name = entry.file_name();
+        let child = rel.join(&name);
+        if rel.as_os_str().is_empty() && name.to_str().is_some_and(is_installer_written_root_entry)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!("symlink {}", child.display()));
+        }
+        if meta.is_dir() {
+            if !dirs.contains(&child) {
+                return Err(format!("extra directory {}", child.display()));
+            }
+            matched += compare_with_embedded(root, &child, files, dirs)?;
+            continue;
+        }
+        let Some(expected) = files.get(&child) else {
+            return Err(format!("extra file {}", child.display()));
+        };
+        if meta.len() != expected.len() as u64 {
+            return Err(format!("changed file {}", child.display()));
+        }
+        let actual = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if actual != *expected {
+            return Err(format!("changed file {}", child.display()));
+        }
+        matched += 1;
+    }
+    Ok(matched)
+}
+
 /// Returns the set of plugin IDs defined in the bundled core pack.
 pub fn core_pack_ids() -> std::collections::HashSet<String> {
     Pack::from_toml_str(CORE_PACK_TOML)
@@ -1030,6 +1144,19 @@ pub(crate) mod test_support {
     use super::*;
     use std::sync::Mutex;
 
+    /// Extract this binary's embedded `local:<name>` plugin under `target_root`
+    /// the way the installer does, without provisioning a venv.
+    pub fn extract_bundled(name: &str, target_root: &Path) -> PathBuf {
+        let dest = target_root.join(name);
+        std::fs::create_dir_all(&dest).unwrap();
+        EMBEDDED_APPS
+            .get_dir(name)
+            .expect("embedded plugin")
+            .extract(target_root)
+            .unwrap();
+        dest
+    }
+
     /// In-memory [`Cloner`] for hermetic tests. Each "clone" writes a fixed
     /// manifest + entry file into the target dir; pull/checkout are no-ops.
     pub struct MockCloner {
@@ -1142,6 +1269,63 @@ mod install_tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn bundled_check_accepts_only_the_exact_embedded_tree() {
+        use super::test_support::extract_bundled;
+        let root = tmp();
+        let dir = extract_bundled("permissions", root.path());
+        assert!(matches_bundled_plugin("permissions", &dir));
+        for name in crate::app::package::HOST_METADATA_FILES {
+            std::fs::write(dir.join(name), "meta").unwrap();
+        }
+        std::fs::create_dir_all(dir.join(".venv/bin")).unwrap();
+        assert!(
+            matches_bundled_plugin("permissions", &dir),
+            "installer-written metadata and venv are not plugin code"
+        );
+        assert!(!matches_bundled_plugin("logs", &dir), "another bundle");
+
+        let cases: [(&str, fn(&Path)); 5] = [
+            ("edited entry", |d| {
+                std::fs::write(d.join("main.py"), "print('x')\n").unwrap()
+            }),
+            ("sourceless bytecode the importer would load", |d| {
+                std::fs::write(d.join("typing.pyc"), b"\x00").unwrap()
+            }),
+            ("pycache beside the entry", |d| {
+                // A dev build may embed a cache dir; a planted file is still extra.
+                std::fs::create_dir_all(d.join("__pycache__")).unwrap();
+                std::fs::write(d.join("__pycache__/planted.cpython-312.pyc"), b"\x00").unwrap();
+            }),
+            ("missing file", |d| {
+                std::fs::remove_file(d.join("main.py")).unwrap()
+            }),
+            ("extra module", |d| {
+                std::fs::write(d.join("helper.py"), "x = 1\n").unwrap()
+            }),
+        ];
+        for (label, mutate) in cases {
+            let root = tmp();
+            let dir = extract_bundled("permissions", root.path());
+            mutate(&dir);
+            assert!(!matches_bundled_plugin("permissions", &dir), "{label}");
+        }
+        #[cfg(unix)]
+        {
+            let root = tmp();
+            let dir = extract_bundled("permissions", root.path());
+            let bytes = std::fs::read(dir.join("main.py")).unwrap();
+            let elsewhere = root.path().join("main.py");
+            std::fs::write(&elsewhere, bytes).unwrap();
+            std::fs::remove_file(dir.join("main.py")).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, dir.join("main.py")).unwrap();
+            assert!(
+                !matches_bundled_plugin("permissions", &dir),
+                "a symlink can change after the check"
+            );
+        }
     }
 
     #[test]

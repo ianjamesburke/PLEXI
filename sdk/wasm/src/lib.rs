@@ -276,6 +276,24 @@ pub mod effects {
 pub mod ui {
     use super::*;
 
+    /// `Tree::set_justify` was given an id that is not a row or column.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct NotAContainer {
+        pub id: u32,
+    }
+
+    impl std::fmt::Display for NotAContainer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "node {} is not a row or column; justify applies to rows and columns only",
+                self.id
+            )
+        }
+    }
+
+    impl std::error::Error for NotAContainer {}
+
     /// Builds indexed nodes and assigns stable numeric IDs in insertion order.
     #[derive(Default)]
     pub struct Tree {
@@ -385,7 +403,10 @@ pub mod ui {
                 UiNodeData::Row(RowNode {
                     children: children.into_iter().collect(),
                     gap: 8.0,
-                    align: Alignment::Start,
+                    // `align` is the cross axis. A row centers its children
+                    // vertically unless the guest says otherwise.
+                    align: Alignment::Center,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             )
@@ -401,6 +422,7 @@ pub mod ui {
                     children: children.into_iter().collect(),
                     gap: 8.0,
                     align: Alignment::Start,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             )
@@ -500,6 +522,21 @@ pub mod ui {
                     texture_handle,
                 }),
             )
+        }
+        /// Set the main-axis `justify` of the row or column `id`: along a
+        /// row, down a column. `row` and `column` start as `Justify::Start`.
+        pub fn set_justify(&mut self, id: u32, justify: Justify) -> Result<(), NotAContainer> {
+            match self
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == id)
+                .map(|node| &mut node.data)
+            {
+                Some(UiNodeData::Row(row)) => row.justify = justify,
+                Some(UiNodeData::Column(column)) => column.justify = justify,
+                _ => return Err(NotAContainer { id }),
+            }
+            Ok(())
         }
         #[must_use]
         pub fn finish(self, root: u32) -> UiTree {

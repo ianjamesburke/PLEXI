@@ -303,8 +303,8 @@ pub struct PlexiApp {
     /// title every frame creates a self-sustaining repaint loop (60fps
     /// visible, uncapped when occluded). Only send on change.
     pub(crate) last_sent_window_title: Option<String>,
-    /// Directory holding `permissions.toml` for the host-level permission
-    /// management handlers (`ListPermissions` / `SetPermission`, stint 0017).
+    /// Directory holding `permissions.toml` for the `ListPermissions` handler
+    /// (stint 0017).
     /// `config_dir()` in production; an isolated temp dir in tests so harness
     /// runs never read or write the developer's real permission store.
     pub(crate) permission_store_dir: std::path::PathBuf,
@@ -950,7 +950,42 @@ pub(crate) fn handle_socket_line_in(
             }
         }
         Err(e) => {
+            let kind = serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|frame| frame["type"].as_str().map(str::to_string));
+            if let Some((kind, message)) = kind.and_then(|kind| {
+                crate::protocol::removed_host_request(&kind).map(|message| (kind, message))
+            }) {
+                log::info!(
+                    "pane_ipc: refused removed request kind={kind} surface=socket \
+                     outcome=request_removed peer_pids={}",
+                    peer_ancestry.map_or(0, <[u32]>::len)
+                );
+                let reply = serde_json::json!({
+                    "error": message,
+                    "error_code": "request_removed",
+                });
+                if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+                    log::warn!("pane_ipc: could not report removed request {kind}: {error}");
+                }
+                return;
+            }
             log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+            // A caller waiting on a reply (an older or newer CLI sending a
+            // field this host does not accept) gets the reason, not a timeout.
+            if crate::rpc::extract_response_file_token(line).is_some() {
+                let reply = serde_json::json!({
+                    "ok": false,
+                    "error_code": "invalid_request",
+                    "error": format!(
+                        "this Plexi host could not read the request ({e}); the CLI and host \
+                         versions differ, so use the plexi-<channel> CLI that matches this host"
+                    ),
+                });
+                if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+                    log::warn!("pane_ipc: could not report the parse error: {error}");
+                }
+            }
         }
     }
 }
@@ -1651,7 +1686,9 @@ impl PlexiApp {
         crate::platform::app_nap::disable_app_nap();
         // File a death/tamper item and leave a running stamp before any client
         // can connect. A kill skips `exit_host`, so the next start can see it.
-        crate::broker::gate::PermissionMonitor::for_profile(&profile_dir);
+        if let Err(error) = crate::broker::gate::PermissionMonitor::for_profile(&profile_dir) {
+            log::error!("permission_monitor: host start could not open the profile: {error}");
+        }
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),
@@ -3300,14 +3337,18 @@ impl PlexiApp {
             .clone()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
-        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-            .issue_credential(
-                Some(pane_id),
-                context_id,
-                &workspace_root,
-                &format!("pane:{pane_id}"),
-            );
-        env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
+        match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
+            Ok(monitor) => {
+                let call_credential = monitor.issue_credential(
+                    Some(pane_id),
+                    context_id,
+                    &workspace_root,
+                    &format!("pane:{pane_id}"),
+                );
+                env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
+            }
+            Err(error) => log::error!("pane_env: no call credential for pane {pane_id}: {error}"),
+        }
         if let Some((port, token)) =
             host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
         {
@@ -3727,11 +3768,13 @@ impl eframe::App for PlexiApp {
         if crate::broker::gate::PermissionMonitor::loaded(&profile).is_none()
             && crate::broker::gate::PermissionMonitor::has_persisted_queue(&profile)
         {
-            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
-            log::info!(
-                "needs_you: host opened restored queue count={}",
-                monitor.open_needs_you().len()
-            );
+            match crate::broker::gate::PermissionMonitor::for_profile(&profile) {
+                Ok(monitor) => log::info!(
+                    "needs_you: host opened restored queue count={}",
+                    monitor.open_needs_you().len()
+                ),
+                Err(error) => log::error!("needs_you: restored queue not opened: {error}"),
+            }
         }
         if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
             monitor.expire_needs_you();

@@ -257,7 +257,7 @@ impl Rig {
         std::fs::write(plugin_dir.join("manifest.toml"), MANIFEST).unwrap();
         std::fs::write(plugin_dir.join("main.py"), "# entry\n").unwrap();
         let bin = fixture::install("a", &root.path().join("bin/fixturecli"));
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let who = PaneIdentity {
             plugin_id: "ops-app".into(),
             plugin_dir: plugin_dir.clone(),
@@ -1026,13 +1026,13 @@ fn failed_grant_persistence_launches_nothing() {
     let profile = tempfile::tempdir().unwrap();
     {
         // A sealed profile, so an unreadable key makes the next save fail.
-        let monitor = PermissionMonitor::open_profile(profile.path());
+        let monitor = PermissionMonitor::open_profile(profile.path()).unwrap();
         monitor.store().try_save().expect("seal profile");
         monitor.note_denial("actor", "c1", "res", "op", "denied");
         crate::broker::integrity::mark_clean_shutdown(profile.path());
     }
     let mut rig = Rig::new();
-    rig.monitor = PermissionMonitor::open_profile(profile.path());
+    rig.monitor = PermissionMonitor::open_profile(profile.path()).unwrap();
     let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
     assert!(rig
         .submit("p", "fixture.echo", json!({"word": "x"}))

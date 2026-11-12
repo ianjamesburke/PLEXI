@@ -56,7 +56,13 @@ impl McpRendererView {
             server: args.first().cloned().unwrap_or_default(),
             workspace,
             identity: None,
-            monitor: PermissionMonitor::for_profile(&crate::config::config_dir()),
+            // Host only (stint 1291); elsewhere a diskless monitor that grants nothing.
+            monitor: PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap_or_else(
+                |error| {
+                    log::error!("mcp_renderer: diskless permission monitor: {error}");
+                    PermissionMonitor::ephemeral()
+                },
+            ),
             connection: None,
             receiver,
             sender,
@@ -640,7 +646,7 @@ mod tests {
             .launch_view_by_id_with_layout("mcp-renderer", None, &["fixture".into()], Some(cwd))
             .unwrap();
         h.hidden_frame();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let pending = monitor.list_pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].tool, "mcp.fixture.connect");

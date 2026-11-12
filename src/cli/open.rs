@@ -1,8 +1,8 @@
 use super::pane::open_github_ephemeral;
 use super::send_to_socket;
 use crate::app::launch_spec::PaneLaunchSpec;
-use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
 /// Wait for a spawn response and print the resulting pane id (or the raw
 /// response when the host answered with something else). Shared by all spawn
@@ -478,141 +478,6 @@ pub fn open_mcp_by_name(
     })
 }
 
-fn raw_wasm_plugin_id(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("wasm")
-        .to_string()
-}
-
-fn raw_wasm_workspace_root(path: &Path) -> PathBuf {
-    path.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn prompt_raw_wasm_review(
-    plugin_id: &str,
-    workspace_root: &Path,
-    missing: &[String],
-    is_tty: bool,
-    reader: &mut dyn BufRead,
-) -> Result<bool, String> {
-    if missing.is_empty() {
-        return Ok(true);
-    }
-    if !is_tty {
-        return Err(format!(
-            "raw WASM launch requires review for: {}. Run `plexi view open` from a terminal to approve these imports.",
-            missing.join(", ")
-        ));
-    }
-
-    eprintln!("Raw WASM component '{plugin_id}' requests host imports:");
-    for capability_id in missing {
-        eprintln!(
-            "  - {capability_id}: {}",
-            crate::app::permissions::wasm_capability_description(capability_id)
-        );
-    }
-    eprintln!("Scope: {}", workspace_root.display());
-    eprint!("Allow and remember for this scope? [y/N] ");
-    io::stderr()
-        .flush()
-        .map_err(|e| format!("could not flush review prompt: {e}"))?;
-
-    let mut answer = String::new();
-    reader
-        .read_line(&mut answer)
-        .map_err(|e| format!("could not read review response: {e}"))?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
-fn review_raw_wasm_open_with_reader(
-    path: &Path,
-    is_tty: bool,
-    reader: &mut dyn BufRead,
-) -> Result<(), String> {
-    let plugin_id = raw_wasm_plugin_id(path);
-    let workspace_root = raw_wasm_workspace_root(path);
-    let required_grants =
-        crate::host::wasm_view::WasmView::inspect_required_grants(path).map_err(|e| {
-            format!(
-                "could not inspect WASM imports for '{}': {e}",
-                path.display()
-            )
-        })?;
-    let required_caps = required_grants.capability_ids();
-    if required_caps.is_empty() {
-        return Ok(());
-    }
-
-    let config_dir = crate::config::config_dir();
-    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
-    let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
-    let (granted, blocked) = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
-        .materialize_wasm_sets(
-            &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
-            &workspace_root,
-            &declared,
-        );
-    let blocked_required: Vec<String> = required_caps
-        .iter()
-        .filter(|cap| blocked.contains(*cap))
-        .cloned()
-        .collect();
-    if !blocked_required.is_empty() {
-        return Err(format!(
-            "raw WASM launch blocked by saved decision for: {}",
-            blocked_required.join(", ")
-        ));
-    }
-    let missing: Vec<String> = required_caps
-        .iter()
-        .filter(|cap| !granted.contains(*cap))
-        .cloned()
-        .collect();
-    if !prompt_raw_wasm_review(&plugin_id, &workspace_root, &missing, is_tty, reader)? {
-        return Err("raw WASM launch cancelled".to_string());
-    }
-    for capability_id in &missing {
-        store.set_wasm(
-            &plugin_id,
-            &workspace_root,
-            capability_id,
-            crate::app::permissions::PermissionState::Green,
-        );
-    }
-    store.save();
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
-    for capability_id in &missing {
-        monitor.grant_capability_id(
-            &plugin_id,
-            &workspace_root,
-            capability_id,
-            crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
-        );
-    }
-    log::info!(
-        "open:cli: raw wasm review plugin={} path={} workspace={} grants={:?}",
-        plugin_id,
-        path.display(),
-        workspace_root.display(),
-        required_caps
-    );
-    Ok(())
-}
-
-fn review_raw_wasm_open(path: &Path) -> Result<(), String> {
-    let is_tty = io::stdin().is_terminal();
-    let mut stdin = io::stdin().lock();
-    review_raw_wasm_open_with_reader(path, is_tty, &mut stdin)
-}
-
 /// Thin wrapper preserving the existing `plexi view open` call site.
 pub fn open_cli(
     type_id: &str,
@@ -650,17 +515,13 @@ pub fn open_cli(
 
     // A `.wasm` file is a sandboxed component plugin launched through the same
     // path-spawn flow as a local plugin dir (the run primitive, G6).
+    // The CLI never reviews or remembers its imports (stint 1291): the host
+    // asks in its window before the component gets any.
     if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
-        if let Err(e) = review_raw_wasm_open(&resolved) {
-            log::warn!(
-                "open:cli: raw wasm review failed path={}: {e}",
-                resolved.display()
-            );
-            eprintln!("error: {e}");
-            return 1;
-        }
         let abs_path = resolved.to_string_lossy().to_string();
-        log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
+        log::info!(
+            "open:cli: detected .wasm component, opening from path={abs_path}; import review is the host's"
+        );
         return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
@@ -747,10 +608,10 @@ fn open_view_by_path(
 
 #[cfg(test)]
 mod open_cli_tests {
-    use super::{open_cli, review_raw_wasm_open_with_reader};
+    use super::open_cli;
     use crate::cli::test_env::{socket_env_guard, SocketEnvGuard};
     use serde_json::Value;
-    use std::io::{BufRead, BufReader, Cursor};
+    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
     /// Runs `run_cli` against a throwaway listener with `PLEXI_SOCKET` pointed at
@@ -830,28 +691,6 @@ mod open_cli_tests {
         // and wasmtime will reject it before the socket payload is ever sent.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
-        let plugin_id = fixture
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("wasm");
-        let workspace_root = fixture.parent().expect("fixture parent");
-
-        // Pre-approve all required grants so review does not prompt stdin.
-        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
-            .expect("inspect fixture grants")
-            .capability_ids();
-        let mut store =
-            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
-        for cap in required {
-            store.set_wasm(
-                plugin_id,
-                workspace_root,
-                &cap,
-                crate::app::permissions::PermissionState::Green,
-            );
-        }
-        store.save();
-
         let wasm_path_str = fixture.to_string_lossy().into_owned();
         let args = vec!["--sample".to_string(), "96".to_string()];
 
@@ -864,53 +703,52 @@ mod open_cli_tests {
         assert_eq!(payload["args"], serde_json::json!(["--sample", "96"]));
     }
 
+    /// Stint 1291: the CLI never reviews or remembers raw `.wasm` imports. It
+    /// forwards the launch and the host asks in its window; no permission
+    /// file is written by this process.
     #[test]
-    fn raw_wasm_review_requires_tty_for_unreviewed_imports() {
+    fn raw_wasm_open_writes_no_row() {
+        let env = socket_env_guard();
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
-        let mut reader = Cursor::new(Vec::<u8>::new());
+        let wasm_path_str = fixture.to_string_lossy().into_owned();
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let socket_path = socket_dir.path().join("open.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind open socket");
+        env.set(&socket_path);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept open connection");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).ok();
+            let payload: Option<Value> = serde_json::from_str(&line).ok();
+            if let Some(response_file) = payload
+                .as_ref()
+                .and_then(|p| p.get("response_file"))
+                .and_then(|v| v.as_str())
+            {
+                crate::rpc::write_response(response_file, br#"{"pane_id":123}"#);
+            }
+            payload
+        });
 
-        let err = review_raw_wasm_open_with_reader(&fixture, false, &mut reader)
-            .expect_err("non-tty raw wasm review should fail");
+        let code = open_cli(&wasm_path_str, &[], None, None, None);
+        if code != 0 {
+            // Unblock the listener when the CLI refused before connecting.
+            let _ = std::os::unix::net::UnixStream::connect(&socket_path);
+        }
+        let payload = server.join().expect("socket thread");
 
-        assert!(err.contains("raw WASM launch requires review"), "{err}");
-    }
-
-    #[test]
-    fn raw_wasm_review_tty_persists_required_imports() {
-        let config_dir = tempfile::tempdir().expect("temp config dir");
-        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/wasm-fixtures/sysmon.wasm");
-        let plugin_id = fixture
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("wasm");
-        let workspace_root = fixture.parent().expect("fixture parent");
-        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
-            .expect("inspect fixture grants")
-            .capability_ids();
-        let mut reader = Cursor::new(b"yes\n".to_vec());
-
-        review_raw_wasm_open_with_reader(&fixture, true, &mut reader)
-            .expect("tty approval should persist review");
-
-        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
-        let workspace = crate::platform::path::canonical_or_self(workspace_root);
-        let store = monitor.store();
-        for capability_id in required {
-            let decision = store.records().iter().find_map(|record| {
-                (record.actor_id == plugin_id
-                    && record.target_id == capability_id
-                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
-                .then_some(record.decision)
-            });
-            assert_eq!(
-                decision,
-                Some(crate::broker::Decision::Allow),
-                "{capability_id} should be remembered"
+        assert_eq!(
+            code, 0,
+            "raw .wasm open must forward to the host, not review locally"
+        );
+        assert_eq!(payload.expect("spawn payload")["type"], "spawn_pane");
+        for file in ["grants.toml", "permissions.toml"] {
+            assert!(
+                !config_dir.path().join(file).exists(),
+                "the CLI must not write {file}"
             );
         }
     }

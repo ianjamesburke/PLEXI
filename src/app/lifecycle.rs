@@ -280,17 +280,10 @@ impl PlexiApp {
     pub(crate) fn permissions_caller_pane(
         &self,
         peer_ancestry: Option<&[u32]>,
-        claimed: Option<crate::spatial::tiling::PaneId>,
     ) -> Option<crate::spatial::tiling::PaneId> {
-        let peer_pane = peer_ancestry
+        peer_ancestry
             .and_then(|pids| self.resolve_socket_peer_pane(pids))
-            .map(|(pane, _, _)| pane);
-        if peer_pane.is_some() && peer_pane != claimed {
-            log::info!(
-                "permissions:cli host-derived caller pane={peer_pane:?} overrides claimed {claimed:?}"
-            );
-        }
-        peer_pane.or(claimed)
+            .map(|(pane, _, _)| pane)
     }
 
     fn refuse_cross_pane(
@@ -499,22 +492,13 @@ impl PlexiApp {
             crate::protocol::HostRequest::Permissions {
                 op,
                 id,
-                pane_id,
-                credential,
                 peer_ancestry,
                 response_file,
             } => {
-                // The kernel-verified peer decides who is calling. A process
-                // inside any pane is that pane's agent whatever the wire says;
-                // the client's own claim can only lower authority.
-                let claimed_pane = self.permissions_caller_pane(peer_ancestry.as_deref(), *pane_id);
-                self.permissions_cli_request(
-                    op,
-                    id.as_deref(),
-                    claimed_pane,
-                    credential.as_deref(),
-                    response_file,
-                );
+                // The kernel-verified peer names the caller pane for the audit
+                // trail. No socket caller is human, pane or not (stint 1271).
+                let caller_pane = self.permissions_caller_pane(peer_ancestry.as_deref());
+                self.permissions_cli_request(op, id.as_deref(), caller_pane, response_file);
             }
             crate::protocol::HostRequest::CallerContext {
                 peer_ancestry,
@@ -2309,8 +2293,10 @@ impl PlexiApp {
                 {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
+                    // A raw `.wasm` with unreviewed imports queues the host's
+                    // review; the CLI no longer approves them (stint 1291).
                     launch_result = self
-                        .launch_view_by_path_with_layout_no_review_modal(
+                        .launch_view_by_path_with_layout(
                             &app_path.to_string_lossy(),
                             spec.layout.clone(),
                             spec.workspace_root.clone(),
@@ -2580,12 +2566,24 @@ impl PlexiApp {
                     }
                     return;
                 }
+                let pane_send_monitor = match crate::broker::gate::PermissionMonitor::for_profile(
+                    &crate::config::config_dir(),
+                ) {
+                    Ok(monitor) => monitor,
+                    Err(error) => {
+                        if let Some(rf) = response_file {
+                            write_json_response(
+                                rf,
+                                serde_json::json!({"error": error.to_string(), "error_code": "not_host"}),
+                            );
+                        }
+                        return;
+                    }
+                };
                 // Check operation identity before admission: a different
                 // payload must not create another ask under a used ID.
                 if let Some((caller, _)) = &caller_and_posture {
-                    let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                        &crate::config::config_dir(),
-                    );
+                    let monitor = pane_send_monitor.clone();
                     if let Some(existing) = monitor.get_continuation(&send_operation_id) {
                         let text_fingerprint = crate::broker::gate::fingerprint_args(
                             &serde_json::json!({"text": text_with_newlines}).to_string(),
@@ -2634,9 +2632,7 @@ impl PlexiApp {
                     }
                 }
                 let admission = caller_and_posture.map(|(caller, posture)| {
-                    let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                        &crate::config::config_dir(),
-                    );
+                    let monitor = pane_send_monitor.clone();
                     let root = self
                         .pane_context_authority_root(caller)
                         .unwrap_or_else(crate::config::config_dir);
@@ -2729,9 +2725,7 @@ impl PlexiApp {
                             crate::broker::gate::Admission::Proceed { fingerprint, .. },
                         )) = &proceed_or_none
                         {
-                            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                                &crate::config::config_dir(),
-                            );
+                            let monitor = pane_send_monitor.clone();
                             let context_id = self
                                 .windows
                                 .iter()
@@ -2875,9 +2869,7 @@ impl PlexiApp {
                             },
                         )) = proceed_or_none
                         {
-                            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                                &crate::config::config_dir(),
-                            );
+                            let monitor = pane_send_monitor.clone();
                             let actor = format!("pane:{caller}");
                             let resource = resource_id.unwrap_or_default();
                             let use_record = monitor.note_use(
@@ -3861,16 +3853,18 @@ impl PlexiApp {
                             crate::broker::gate::PermissionMonitor::for_profile(
                                 &crate::config::config_dir(),
                             )
+                            .ok()?
                             .list_pending()
                             .into_iter()
                             .next()
                             .map(|row| row.pending_request_id)
                         })
                         .unwrap_or_else(|| "none".to_string());
-                    crate::broker::gate::PermissionMonitor::for_profile(
+                    if let Ok(monitor) = crate::broker::gate::PermissionMonitor::for_profile(
                         &crate::config::config_dir(),
-                    )
-                    .refuse_client_resolve(&pending_id);
+                    ) {
+                        monitor.refuse_client_resolve(&pending_id);
+                    }
                     log::info!(
                         "permission_monitor: refused synthetic action pane={pane_id} action={action} pending={pending_id}"
                     );
@@ -4274,8 +4268,9 @@ impl PlexiApp {
                         let filed = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
                         )
-                        .file_needs_you(
-                            crate::broker::gate::NeedsYouFile {
+                        .map_err(|error| error.to_string())
+                        .and_then(|monitor| {
+                            monitor.file_needs_you(crate::broker::gate::NeedsYouFile {
                                 kind,
                                 actor: agent.clone(),
                                 resource: format!("pane:{pane_id}"),
@@ -4284,8 +4279,8 @@ impl PlexiApp {
                                 run_tag: session_id
                                     .clone()
                                     .or_else(|| Some(format!("pane:{pane_id}"))),
-                            },
-                        );
+                            })
+                        });
                         if let Err(error) = filed {
                             log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
                         }
@@ -4966,25 +4961,6 @@ impl PlexiApp {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
                 self.handle_list_permissions(response_file);
             }
-            crate::protocol::HostRequest::SetPermission {
-                plugin_id,
-                workspace,
-                capability,
-                state,
-                response_file,
-            } => {
-                log::info!(
-                    "pane_ipc: kind=set_permission plugin_id={plugin_id} workspace={workspace:?} \
-                     capability={capability} state={state} response_file={response_file:?}"
-                );
-                self.handle_set_permission(
-                    plugin_id,
-                    workspace.as_deref(),
-                    capability,
-                    state,
-                    response_file,
-                );
-            }
             crate::protocol::HostRequest::AgentCall {
                 role,
                 task,
@@ -5315,27 +5291,30 @@ impl PlexiApp {
                                 .unwrap_or_else(|| format!("pane:{pane_id}"));
                             if let Err(e) =
                                 crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
-                                    .file_needs_you_with_details(
-                                        crate::broker::gate::NeedsYouFile {
-                                            kind: crate::broker::gate::NeedsYouKind::AgentDone,
-                                            actor: format!("pane:{pane_id}"),
-                                            resource,
-                                            summary: done_title,
-                                            expires_at: None,
-                                            run_tag: session_id
-                                                .clone()
-                                                .or_else(|| Some(format!("pane:{pane_id}"))),
-                                        },
-                                        Some(crate::broker::gate::NeedsYouDetails {
-                                            pane_id: Some(*pane_id),
-                                            session_id: session_id.clone(),
-                                            preview_refs: result_md_path
-                                                .clone()
-                                                .into_iter()
-                                                .collect(),
-                                            ..Default::default()
-                                        }),
-                                    )
+                                    .map_err(|error| error.to_string())
+                                    .and_then(|monitor| {
+                                        monitor.file_needs_you_with_details(
+                                            crate::broker::gate::NeedsYouFile {
+                                                kind: crate::broker::gate::NeedsYouKind::AgentDone,
+                                                actor: format!("pane:{pane_id}"),
+                                                resource,
+                                                summary: done_title,
+                                                expires_at: None,
+                                                run_tag: session_id
+                                                    .clone()
+                                                    .or_else(|| Some(format!("pane:{pane_id}"))),
+                                            },
+                                            Some(crate::broker::gate::NeedsYouDetails {
+                                                pane_id: Some(*pane_id),
+                                                session_id: session_id.clone(),
+                                                preview_refs: result_md_path
+                                                    .clone()
+                                                    .into_iter()
+                                                    .collect(),
+                                                ..Default::default()
+                                            }),
+                                        )
+                                    })
                             {
                                 log::warn!("agent_done: could not file attention item for pane {pane_id}: {e}");
                             }
@@ -5554,16 +5533,17 @@ impl PlexiApp {
                         let _ = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
                         )
-                        .file_needs_you(
-                            crate::broker::gate::NeedsYouFile {
+                        .map_err(|error| error.to_string())
+                        .and_then(|monitor| {
+                            monitor.file_needs_you(crate::broker::gate::NeedsYouFile {
                                 kind: crate::broker::gate::NeedsYouKind::Question,
                                 actor: agent_label,
                                 resource: format!("pane:{pane_id}"),
                                 summary: question.clone(),
                                 expires_at: None,
                                 run_tag: session_id.or_else(|| Some(format!("pane:{pane_id}"))),
-                            },
-                        );
+                            })
+                        });
                     }
                     let payload = serde_json::json!({
                         "ok": true,
@@ -5822,7 +5802,16 @@ impl PlexiApp {
         use crate::app::permissions::PermissionStore;
         use crate::host::pane::Pane;
 
-        let store = PermissionStore::load_or_default(&self.permission_store_dir);
+        let store = match PermissionStore::load_or_default(&self.permission_store_dir) {
+            Ok(store) => store,
+            Err(error) => {
+                write_json_response(
+                    response_file,
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                return;
+            }
+        };
         let mut rows: Vec<serde_json::Value> = Vec::new();
         let mut stored_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (plugin_id, workspace, cap, state) in store.iter_entries() {
@@ -5887,112 +5876,6 @@ impl PlexiApp {
         })
         .to_string();
         write_response(response_file, body.as_bytes());
-    }
-
-    /// `SetPermission` host handler (stint 0017). Persists the new state to
-    /// `permissions.toml` and live-updates every running plugin instance with a
-    /// matching (plugin_id, workspace) so a revocation takes effect on the plugin's
-    /// next request. Unknown capability/state strings fail closed with an
-    /// error reply; a missing workspace fails unless the plugin is running.
-    fn handle_set_permission(
-        &mut self,
-        plugin_id: &str,
-        workspace: Option<&str>,
-        capability: &str,
-        state: &str,
-        response_file: &str,
-    ) {
-        use crate::app::permissions::{Capability, PermissionState, PermissionStore};
-        use crate::host::pane::Pane;
-
-        let outcome: Result<(), String> = (|| {
-            let cap = Capability::try_from(capability).map_err(|e| e.to_string())?;
-            let new_state = PermissionState::try_from(state)?;
-
-            let ws: std::path::PathBuf = match workspace {
-                Some(w) => std::path::PathBuf::from(w),
-                None => self
-                    .windows
-                    .iter()
-                    .find_map(|win| {
-                        win.panes.values().find_map(|pane| {
-                            let Pane::View(view_pane) = pane else {
-                                return None;
-                            };
-                            (view_pane.manifest_id == plugin_id)
-                                .then(|| view_pane.workspace_root.clone())
-                        })
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "workspace required: plugin '{plugin_id}' is not running; \
-                             pass workspace explicitly"
-                        )
-                    })?,
-            };
-
-            let mut store = PermissionStore::load_or_default(&self.permission_store_dir);
-            store.set(plugin_id, &ws, cap, new_state);
-            store.save();
-
-            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
-                .grant_plugin_capability(
-                    plugin_id,
-                    &ws,
-                    cap,
-                    crate::broker::Decision::from_permission_state(new_state),
-                );
-
-            // Live-update every running instance of this plugin in this workspace.
-            let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-            for win in &mut self.windows {
-                for pane in win.panes.values_mut() {
-                    let Pane::View(view_pane) = pane else {
-                        continue;
-                    };
-                    if view_pane.manifest_id != plugin_id {
-                        continue;
-                    }
-                    let proc_ws = view_pane
-                        .workspace_root
-                        .canonicalize()
-                        .unwrap_or_else(|_| view_pane.workspace_root.clone());
-                    if proc_ws != ws_canonical {
-                        continue;
-                    }
-                    match new_state {
-                        PermissionState::Green => {
-                            view_pane.permissions.capabilities.insert(cap);
-                            view_pane.permissions.blocked.remove(&cap);
-                        }
-                        PermissionState::Yellow => {
-                            view_pane.permissions.capabilities.remove(&cap);
-                            view_pane.permissions.blocked.remove(&cap);
-                        }
-                        PermissionState::Red => {
-                            view_pane.permissions.blocked.insert(cap);
-                            view_pane.permissions.capabilities.remove(&cap);
-                        }
-                    }
-                    log::info!(
-                        "pane_ipc: set_permission: live-updated '{plugin_id}' pane {} — {} → {}",
-                        view_pane.id,
-                        cap.as_str(),
-                        new_state.as_str()
-                    );
-                }
-            }
-            Ok(())
-        })();
-
-        let body = match &outcome {
-            Ok(()) => "{\"ok\":true}".to_string(),
-            Err(e) => serde_json::json!({ "error": e }).to_string(),
-        };
-        write_response(response_file, body.as_bytes());
-        if let Err(e) = outcome {
-            log::warn!("pane_ipc: set_permission failed: {e}");
-        }
     }
 
     /// Poll host-observed terminal activity for every terminal pane (1 Hz,

@@ -5,13 +5,13 @@ interface Props {
 }
 const { compact = false, blog = false } = Astro.props;
 const headline = blog
-  ? 'want to know when i write something?'
+  ? 'Get an email when I write something.'
   : compact
-  ? 'want a heads-up when a new version ships?'
-  : 'follow the build';
+  ? 'Get an email when a new version ships.'
+  : 'Follow the build.';
 const sub = blog
-  ? "one email per post. that's it."
-  : "New releases, sharp notes from the build, and no drip campaign.";
+  ? 'One email per post.'
+  : 'New releases and notes from the build.';
 const showSub = !compact;
 const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compact' : 'newsletter-form';
 ---
@@ -35,7 +35,7 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
             autocomplete="email"
             class="nl-input"
           />
-          <button type="submit" class="btn nl-btn">Subscribe <span class="arrow">→</span></button>
+          <button type="submit" class="btn nl-btn">Subscribe</button>
         </form>
         <div class="nl-message" data-form-id={formId} aria-live="polite"></div>
       </div>
@@ -57,8 +57,7 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
     padding: 64px 0 80px;
   }
   .nl-inner {
-    max-width: 760px;
-    margin: 0 auto;
+    max-width: 980px;
     text-align: left;
     display: grid;
     grid-template-columns: minmax(0, 0.8fr) minmax(320px, 0.85fr);
@@ -66,22 +65,21 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
     align-items: center;
   }
   .nl-headline {
-    font-family: var(--mono);
-    font-size: 28px;
-    line-height: 1.25;
-    letter-spacing: 0;
-    font-weight: 600;
+    font-size: var(--text-title);
+    line-height: 1.12;
+    letter-spacing: -.03em;
+    font-weight: 700;
     color: var(--fg);
     margin-bottom: 10px;
   }
   .newsletter.compact .nl-headline {
-    font-size: 20px;
-    margin-bottom: 18px;
+    font-size: 24px;
+    margin-bottom: 0;
   }
   .nl-sub {
-    color: var(--fg-3);
-    font-size: 14px;
-    line-height: 1.6;
+    color: var(--fg-2);
+    font-size: 16px;
+    line-height: 1.5;
   }
   .nl-signup {
     display: grid;
@@ -100,19 +98,16 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
     max-width: none;
     padding: 12px 14px;
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 16px;
+    min-height: 44px;
     color: var(--fg);
-    background: rgba(9, 10, 12, 0.72);
+    background: var(--bg);
     border: 1px solid var(--border-2);
-    border-radius: 6px;
-    outline: none;
+    border-radius: var(--radius-1);
     transition: border-color 150ms, box-shadow 150ms;
   }
   .nl-input::placeholder { color: var(--fg-4); }
-  .nl-input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.35);
-  }
+  .nl-input:focus-visible { border-color: var(--accent-light); outline-offset: 2px; }
   .nl-btn { white-space: nowrap; }
   .nl-message {
     font-size: 13px;
@@ -160,9 +155,10 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
           throw new Error(`HTTP ${res.status}`);
         }
         form.classList.add('hidden');
-        message.textContent = "Thanks — you're in.";
+        message.textContent = "Thanks. You're on the list.";
         message.className = 'nl-message success';
       } catch (err) {
+        console.error('newsletter: subscribe request failed', err);
         message.textContent = "Couldn't reach the server. Please try again in a moment.";
         message.className = 'nl-message error';
       }

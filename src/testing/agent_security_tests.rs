@@ -9,7 +9,7 @@ use crate::testing::HostHarness;
 use crate::workspace::secrets::NonDestructiveStore;
 
 fn monitor() -> std::sync::Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+    PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap()
 }
 
 fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
@@ -360,23 +360,12 @@ fn permissions_caller_is_derived_from_the_peer_not_the_wire() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let pid = h.terminal_backend(pane).child_pid();
-    // A pane process that claims no pane (unset env) is still that pane's agent.
-    assert_eq!(
-        h.app.permissions_caller_pane(Some(&[pid]), None),
-        Some(pane)
-    );
-    // A wire claim of another pane cannot override the verified peer.
-    assert_eq!(
-        h.app
-            .permissions_caller_pane(Some(&[pid]), Some(pane + 100)),
-        Some(pane)
-    );
-    // A caller outside every pane stays outside; its claim can only lower authority.
-    assert_eq!(h.app.permissions_caller_pane(Some(&[999_999]), None), None);
-    assert_eq!(
-        h.app.permissions_caller_pane(Some(&[999_999]), Some(7)),
-        Some(7)
-    );
+    // A pane process is that pane's agent whatever its environment says.
+    assert_eq!(h.app.permissions_caller_pane(Some(&[pid])), Some(pane));
+    // A caller outside every pane resolves to no pane. That is not a human
+    // (`socket_caller_with_no_pane_is_not_human`).
+    assert_eq!(h.app.permissions_caller_pane(Some(&[999_999])), None);
+    assert_eq!(h.app.permissions_caller_pane(None), None);
 }
 
 #[test]
@@ -480,4 +469,188 @@ fn plain_panes_are_stamped_spawned_by_human_with_a_badge() {
         .unwrap();
     assert_eq!(term.spawned_by.as_deref(), Some("human"));
     assert_eq!(term.spawned_by_badge().as_deref(), Some("spawned by you"));
+}
+
+/// One `permissions` socket line as the CLI sends it: no pane id, no
+/// credential, stamped with `ancestry` the way the listener stamps a peer.
+fn permissions_socket(
+    h: &mut HostHarness,
+    op: &str,
+    id: Option<&str>,
+    ancestry: Option<&[u32]>,
+) -> serde_json::Value {
+    let reply = PathBuf::from(crate::rpc::response_file("permissions-test", "json"));
+    let token = reply.to_string_lossy().into_owned();
+    let line = serde_json::json!({
+        "type": "permissions",
+        "op": op,
+        "id": id,
+        "response_file": token,
+    })
+    .to_string();
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, ancestry, &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    serde_json::from_str(&body).unwrap()
+}
+
+/// Stint 1271: a socket caller whose ancestry reaches no pane of this host
+/// (detached from its pane, another channel's pane, launchd) and carries no
+/// credential is not human. Its `allow` and `reset` file Needs you and change
+/// nothing; only a desktop click applies them.
+#[test]
+fn socket_caller_with_no_pane_is_not_human() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let pid = h.terminal_backend(term).child_pid();
+    let root = h.workspace_root();
+    write_workspace(&root, "ws-1271", &[]);
+    let asked = secret_get(&mut h, "API_KEY_1271", &root, &[pid]);
+    assert_eq!(asked["status"], "permission_required", "{asked}");
+    let pending = asked["pending_request_id"].as_str().unwrap().to_string();
+
+    // Outside every pane, and with no peer capture at all.
+    let detached: [Option<&[u32]>; 2] = [Some(&[999_999]), None];
+    for ancestry in detached {
+        let reply = permissions_socket(&mut h, "allow", Some(&pending), ancestry);
+        assert_eq!(reply["status"], "needs_you", "{ancestry:?}: {reply}");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            monitor().show_pending(&pending).is_some(),
+            "{ancestry:?}: the pending ask was approved without a click"
+        );
+    }
+
+    monitor()
+        .approve_pending(&pending, ApprovalChoice::DenyAlways)
+        .unwrap();
+    let deny = monitor()
+        .list_entries()
+        .into_iter()
+        .find(|entry| entry.kind == "deny")
+        .expect("stored denial")
+        .id;
+    for op in ["reset", "allow"] {
+        for ancestry in detached {
+            let reply = permissions_socket(&mut h, op, Some(&deny), ancestry);
+            assert_eq!(reply["status"], "needs_you", "{op} {ancestry:?}: {reply}");
+            assert!(
+                monitor().list_entries().iter().any(|e| e.id == deny),
+                "{op} {ancestry:?}: the denial changed without a click"
+            );
+        }
+    }
+    let listed = permissions_socket(&mut h, "list", None, Some(&[999_999]));
+    assert_eq!(listed["ok"], true, "{listed}");
+
+    // The filed item is applied by a desktop click, never by the socket.
+    let filed = permissions_socket(&mut h, "reset", Some(&deny), Some(&[999_999]));
+    let item = filed["needs_you_id"].as_str().unwrap().to_string();
+    assert!(monitor()
+        .resolve_needs_you_from(&item, true, crate::broker::gate::ResolveSurface::Socket)
+        .is_err());
+    assert!(monitor().list_entries().iter().any(|e| e.id == deny));
+    monitor()
+        .resolve_needs_you_from(&item, true, crate::broker::gate::ResolveSurface::Desktop)
+        .unwrap();
+    assert!(
+        monitor().list_entries().iter().all(|e| e.id != deny),
+        "the desktop click applies the reset"
+    );
+}
+
+/// An older CLI still sends the removed `pane_id`/`credential` fields. The host
+/// answers with the parse error instead of leaving the caller to time out.
+#[test]
+fn permissions_request_with_removed_fields_gets_a_clear_error() {
+    let mut h = HostHarness::new();
+    let reply = PathBuf::from(crate::rpc::response_file("permissions-old", "json"));
+    let token = reply.to_string_lossy().into_owned();
+    let line = serde_json::json!({
+        "type": "permissions",
+        "op": "allow",
+        "id": "grant-x",
+        "pane_id": null,
+        "credential": null,
+        "response_file": token,
+    })
+    .to_string();
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[999_999]), &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error_code"], "invalid_request", "{value}");
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown field"),
+        "{value}"
+    );
+}
+
+/// Stint 1272: a raw `set_permission` socket line, from a pane process or from
+/// a process with no pane, writes no grant anywhere and is told what replaced it.
+#[test]
+fn raw_set_permission_socket_line_writes_no_grant() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pane_pid = h.terminal_backend(pane).child_pid();
+    let root = h.workspace_root();
+    let profile = h.app.permission_store_dir.clone();
+    // The deleted handler wrote the monitor for `permission_store_dir`.
+    let broker = || PermissionMonitor::for_profile(&profile).unwrap();
+    let grants_before = broker().store().records().to_vec();
+    let callers: [Option<&[u32]>; 3] = [Some(&[pane_pid]), Some(&[]), None];
+    let mut acks = Vec::new();
+    for (i, ancestry) in callers.into_iter().enumerate() {
+        let reply = root.join(format!("set-permission-{i}.json"));
+        let line = serde_json::json!({
+            "type": "set_permission",
+            "plugin_id": "chess",
+            "workspace": root.to_string_lossy(),
+            "capability": "permissions.manage",
+            "state": "green",
+            "response_file": reply.to_string_lossy(),
+        })
+        .to_string();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, ancestry, &mut ack);
+        h.run_frames(2);
+        assert!(
+            !reply.exists(),
+            "caller {i}: the set handler ran and replied"
+        );
+        acks.push(ack);
+    }
+    let stored = crate::app::permissions::PermissionStore::load_or_default(&profile).unwrap();
+    assert_eq!(
+        stored.iter_entries().count(),
+        0,
+        "permissions.toml was written"
+    );
+    assert_eq!(
+        broker().store().records(),
+        grants_before.as_slice(),
+        "broker grant store changed"
+    );
+    for (i, ack) in acks.iter().enumerate() {
+        let ack: serde_json::Value = serde_json::from_slice(ack)
+            .unwrap_or_else(|e| panic!("caller {i} got no JSON refusal: {e}"));
+        assert_eq!(ack["error_code"], "request_removed", "{ack}");
+        assert!(
+            ack["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("plexi permissions"),
+            "refusal must name the replacement: {ack}"
+        );
+    }
 }

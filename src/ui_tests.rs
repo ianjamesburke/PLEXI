@@ -3366,7 +3366,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
         let pane_id = add_focused_pane(&mut h);
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let (id, _) = monitor
             .file_needs_you_with_details(
                 crate::broker::gate::NeedsYouFile {
@@ -3442,6 +3443,126 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             win.focused_pane = Some(tile_id);
             pane_id
         })
+    }
+
+    /// What `NaturalWidthFixture` painted: the width `KitButton::natural_width`
+    /// promised, the frame it got, and the rows its label was laid out in.
+    #[derive(Clone, Default)]
+    struct NaturalWidthSnapshot {
+        natural: f32,
+        frame: f32,
+        rows: Vec<String>,
+    }
+
+    /// A wrapping kit button in a slot exactly `natural_width` wide.
+    struct NaturalWidthFixture {
+        label: &'static str,
+        snapshot: Arc<std::sync::Mutex<NaturalWidthSnapshot>>,
+    }
+
+    impl crate::app::view_trait::View for NaturalWidthFixture {
+        fn type_id(&self) -> &'static str {
+            "natural_width_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Button natural width".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            use crate::ui::button::KitButton;
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
+            let natural = KitButton::new(self.label, ctx.colors).natural_width(ui);
+            let frame = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(natural, crate::ui::style::BUTTON_H_MD),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            KitButton::new(self.label, ctx.colors)
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                        )
+                        .rect
+                        .width()
+                    },
+                )
+                .inner;
+            let label = self.label;
+            let rows = ui.ctx().graphics(|g| {
+                g.get(layer).and_then(|list| {
+                    list.all_entries().skip(start).find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            if text.galley.job.text == label {
+                                return Some(
+                                    text.galley.rows.iter().map(|row| row.row.text()).collect(),
+                                );
+                            }
+                        }
+                        None
+                    })
+                })
+            });
+            if let Some(rows) = rows {
+                *self.snapshot.lock().unwrap() = NaturalWidthSnapshot {
+                    natural,
+                    frame,
+                    rows,
+                };
+            }
+        }
+    }
+
+    /// `KitButton::natural_width` is the one width measurement: under the host
+    /// style a wrapping button given exactly that width keeps its label on one
+    /// line and its frame fills the width, less the single round-up. The frame
+    /// stroke is not extra: egui takes the style's 1px widget stroke out of
+    /// the padding, so a kit button is its label plus its padding (the premise
+    /// of stint 1356 holds only under bare egui, which has no such stroke).
+    #[test]
+    fn kit_button_in_its_natural_width_keeps_the_label_on_one_line() {
+        for (case, label) in ["Reset", "Restore deleted note", "Friday"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut h = PlexiUiHarness::new_sized(720.0, 420.0);
+            let pane_id = add_focused_pane(&mut h);
+            let snapshot = Arc::new(std::sync::Mutex::new(NaturalWidthSnapshot::default()));
+            h.with_app_mut(|app| {
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(NaturalWidthFixture {
+                        label,
+                        snapshot: snapshot.clone(),
+                    }));
+                }
+            });
+            h.run_steps(3);
+            let painted = snapshot.lock().unwrap().clone();
+            assert_eq!(
+                painted.rows,
+                vec![label.to_string()],
+                "{label:?} must stay on one line in its natural width {}",
+                painted.natural
+            );
+            assert!(
+                painted.frame <= painted.natural && painted.natural - painted.frame < 1.0,
+                "{label:?}: frame is {} wide but natural_width promised {} (rounded up once)",
+                painted.frame,
+                painted.natural
+            );
+            h.save_screenshot(&evidence_png!(&format!("_{case}")))
+                .expect("natural width screenshot");
+        }
     }
 
     #[derive(Clone)]
@@ -3827,7 +3948,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let root = tempfile::tempdir().expect("workspace");
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let scope = crate::workspace::secrets::SecretScope::Workspace {
             id: "ws-banner".to_string(),
             root: root.path().to_path_buf(),
@@ -3895,7 +4017,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let profile = tempfile::tempdir().expect("profile");
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Keychain,
@@ -4003,7 +4126,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let grants = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
         let mut store =
-            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path()).unwrap();
         for capability_id in grants.capability_ids() {
             store.set_wasm(
                 plugin_id,
@@ -9320,6 +9443,190 @@ open(out + ".done", "w").close()
         }
     }
 
+    /// A plugin view of rows that hand out their width (stints 1358, 1363),
+    /// decoded from the wire as a Python plugin's view arrives.
+    struct RowLayoutFixture;
+
+    impl RowLayoutFixture {
+        fn tree() -> crate::host::wasm_view::UiTree {
+            let button = |label: &str| serde_json::json!({"type": "button", "label": label, "on_click": label});
+            let nodes = [
+                (
+                    0,
+                    serde_json::json!({"type": "column", "children": [1, 2, 3, 4]}),
+                ),
+                // `Row([Back, Spacer(grow=True), Next])`
+                (
+                    1,
+                    serde_json::json!({"type": "row", "children": [10, 11, 12]}),
+                ),
+                (10, button("Back step")),
+                (11, serde_json::json!({"type": "spacer", "grow": true})),
+                (12, button("Next step")),
+                // `Row([..], justify="center")`
+                (
+                    2,
+                    serde_json::json!({"type": "row", "children": [20, 21], "justify": "center"}),
+                ),
+                (20, button("Pause timer")),
+                (21, button("Reset timer")),
+                // Gauntlet card 07: two growing columns side by side.
+                (
+                    3,
+                    serde_json::json!({"type": "row", "children": [30, 31], "align": "start"}),
+                ),
+                (
+                    30,
+                    serde_json::json!({"type": "column", "children": [32, 33], "grow": true}),
+                ),
+                (
+                    31,
+                    serde_json::json!({"type": "column", "children": [34, 35], "grow": true}),
+                ),
+                (32, button("Convert units")),
+                (33, serde_json::json!({"type": "text", "text": "12 in"})),
+                (34, button("Copy result")),
+                (35, serde_json::json!({"type": "text", "text": "30.48 cm"})),
+                // Gauntlet card 10: centered columns as cells of a row.
+                (
+                    4,
+                    serde_json::json!({"type": "row", "children": [40, 41, 42], "gap": 12.0}),
+                ),
+                (
+                    40,
+                    serde_json::json!({"type": "column", "children": [43, 44], "align": "center"}),
+                ),
+                (
+                    41,
+                    serde_json::json!({"type": "column", "children": [45, 46], "align": "center"}),
+                ),
+                (
+                    42,
+                    serde_json::json!({"type": "column", "children": [47, 48], "align": "center"}),
+                ),
+                (
+                    43,
+                    serde_json::json!({"type": "badge", "text": "good", "color": "success"}),
+                ),
+                (44, button("Happy mood")),
+                (
+                    45,
+                    serde_json::json!({"type": "badge", "text": "fine", "color": "warning"}),
+                ),
+                (46, button("Meh mood")),
+                (
+                    47,
+                    serde_json::json!({"type": "badge", "text": "low", "color": "danger"}),
+                ),
+                (48, button("Sad mood")),
+            ];
+            let nodes: Vec<serde_json::Value> = nodes
+                .iter()
+                .map(
+                    |(id, data)| serde_json::json!({"id": id, "key": id.to_string(), "data": data}),
+                )
+                .collect();
+            crate::host::wasm_python::decode_ui_tree(
+                &serde_json::json!({"root": 0, "nodes": nodes}).to_string(),
+            )
+            .expect("row layout tree decodes")
+        }
+    }
+
+    impl crate::app::view_trait::View for RowLayoutFixture {
+        fn type_id(&self) -> &'static str {
+            "row_layout_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Row layout".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            crate::host::wasm_render::render_ui_tree_with_surface(
+                ui,
+                &Self::tree(),
+                ctx.colors,
+                None,
+                None,
+                0,
+            );
+        }
+    }
+
+    /// Stints 1358 and 1363 in a real plugin pane: a grow spacer pins a
+    /// button to the row's right edge, `justify="center"` centers a pair of
+    /// buttons, two growing columns split the row, and centered column cells
+    /// sit side by side instead of each taking the row's width.
+    #[test]
+    fn screenshot_rows_hand_out_width_in_a_plugin_pane() {
+        for (width, height) in [(800.0, 600.0), (420.0, 360.0)] {
+            let mut h = PlexiUiHarness::new_sized_ppp(width, height, 1.0);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(RowLayoutFixture));
+                }
+            });
+            h.run_steps(3);
+            // A row's measuring pass lays each child out once, invisible and
+            // disabled, before painting it, and egui gives those widgets
+            // accessibility nodes too: the painted button is the enabled one.
+            let mut rect = |label: &str| {
+                use egui_kittest::kittest::NodeT;
+                let painted: Vec<egui::Rect> = h
+                    .harness()
+                    .get_all_by_role_and_label(egui::accesskit::Role::Button, label)
+                    .filter(|node| !node.accesskit_node().is_disabled())
+                    .map(|node| node.rect())
+                    .collect();
+                assert_eq!(painted.len(), 1, "{label}: painted once, got {painted:?}");
+                painted[0]
+            };
+            let (back, next) = (rect("Back step"), rect("Next step"));
+            let (pause, reset) = (rect("Pause timer"), rect("Reset timer"));
+            let (convert, copy) = (rect("Convert units"), rect("Copy result"));
+            let moods = [rect("Happy mood"), rect("Meh mood"), rect("Sad mood")];
+            let size = format!("{width}x{height}");
+
+            // The rows share left and right edges: Back starts them, the
+            // spacer pins Next to the end.
+            let (left, right) = (back.min.x, next.max.x);
+            assert!(
+                right - left > width / 2.0,
+                "{size}: Next is pinned right: {back:?} {next:?}"
+            );
+            let pair_middle = (pause.min.x + reset.max.x) / 2.0;
+            assert!(
+                (pair_middle - (left + right) / 2.0).abs() <= 2.0,
+                "{size}: justify center: {pause:?} {reset:?} in {left}..{right}"
+            );
+            let half = (right - left - crate::ui::style::SPACE_SM) / 2.0;
+            assert!(
+                (copy.min.x - (left + half + crate::ui::style::SPACE_SM)).abs() <= 2.0,
+                "{size}: the second grow column starts halfway: {convert:?} {copy:?}"
+            );
+            assert!((convert.min.x - left).abs() <= 2.0, "{size}: {convert:?}");
+            for pair in moods.windows(2) {
+                assert!(
+                    pair[1].min.x - pair[0].max.x <= 12.0 + 2.0,
+                    "{size}: mood cells sit side by side: {moods:?}"
+                );
+            }
+            assert!(moods[2].max.x <= right + 0.5, "{size}: {moods:?}");
+            h.save_screenshot(&evidence_png!(&format!("_{size}")))
+                .expect("row layout screenshot");
+        }
+    }
+
     #[test]
     fn screenshot_plexi_theme_family() {
         use crate::protocol::AgentState;
@@ -11066,7 +11373,7 @@ open(out + ".done", "w").close()
                 .unwrap_or("wasm");
             let workspace_root = fixture.parent().expect("fixture parent");
             let grants = WasmView::inspect_required_grants(&fixture).expect("inspect grants");
-            let mut store = PermissionStore::load_or_default(profile);
+            let mut store = PermissionStore::load_or_default(profile).unwrap();
             for capability_id in grants.capability_ids() {
                 store.set_wasm(
                     plugin_id,
@@ -12492,7 +12799,8 @@ open(out + ".done", "w").close()
     fn screenshot_attention_queue_realistic_asks_and_results() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,

@@ -1,32 +1,21 @@
 ---
 import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import Arrow from '../components/Arrow.astro';
+import { release } from '../lib/release';
 
 const SPONSOR_URL = 'https://buymeacoffee.com/ianjamesbu8';
 ---
-<Layout
-  title="Fund Plexi"
-  description="Help fund Plexi."
->
-  <section class="support-page">
-    <div class="wrap">
-      <h1>Fund Plexi</h1>
-      <p class="lead">If you want to help me keep working on Plexi, you can chip in here.</p>
-      <a class="btn lg" href={SPONSOR_URL} target="_blank" rel="noopener noreferrer">Fund the work <span class="arrow">→</span></a>
-    </div>
+<Layout title="Fund Plexi" description="Help fund Plexi.">
+  <PageHead title="Fund Plexi." lede="If you want to help me keep working on Plexi, you can chip in here.">
+    <a class="btn lg" href={SPONSOR_URL} target="_blank" rel="noopener noreferrer">Fund the work <Arrow dir="ne" /></a>
+  </PageHead>
+  <section class="wrap split" aria-labelledby="other-title">
+    <h2 class="h2" id="other-title">Other ways to help.</h2>
+    <dl class="facts">
+      <div><dt>Use it</dt><dd><a class="text-link" href="/download">Install the beta</a> and work in it for a day.</dd></div>
+      <div><dt>Report it</dt><dd>Tell me what broke or got in your way on <a class="text-link" href={`${release.repo}/issues`}>GitHub issues</a>.</dd></div>
+      <div><dt>Follow it</dt><dd>The <a class="text-link" href="/changelog">changelog</a> lists what changed in each version.</dd></div>
+    </dl>
   </section>
 </Layout>
-
-<style>
-  .support-page { padding: 120px 0 80px; }
-  .support-page h1 { font-size: 48px; font-weight: 700; letter-spacing: 0; margin-bottom: 16px; }
-  .support-page .lead { color: var(--fg-2); font-size: 17px; line-height: 1.6; max-width: 540px; margin-bottom: 32px; }
-
-  @media (max-width: 980px) {
-    .support-page { padding: 88px 0 60px; }
-    .support-page h1 { font-size: 36px; }
-  }
-  @media (max-width: 480px) {
-    .support-page h1 { font-size: 28px; }
-    .support-page .lead { font-size: 15px; }
-  }
-</style>

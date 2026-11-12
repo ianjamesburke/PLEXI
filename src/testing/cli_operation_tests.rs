@@ -165,7 +165,7 @@ impl E2e {
     }
 
     fn monitor() -> std::sync::Arc<PermissionMonitor> {
-        PermissionMonitor::for_profile(&crate::config::config_dir())
+        PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap()
     }
 
     fn pending() -> Vec<crate::broker::gate::PendingView> {

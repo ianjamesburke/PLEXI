@@ -858,7 +858,12 @@ impl AssistantView {
             session_overrides,
             settings: settings_report.settings,
             settings_errors: settings_report.errors,
-            monitor: crate::broker::gate::PermissionMonitor::for_profile(profile_dir),
+            // Host only (stint 1291); elsewhere a diskless monitor that grants nothing.
+            monitor: crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+                .unwrap_or_else(|error| {
+                    log::error!("assistant: diskless permission monitor: {error}");
+                    crate::broker::gate::PermissionMonitor::ephemeral()
+                }),
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
             outcome_tx,
             outcome_rx,

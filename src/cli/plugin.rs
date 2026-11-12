@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 5;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 6;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn plugin_init_config_dir() -> String {
@@ -40,6 +40,23 @@ pub(super) fn describe_plugin_init_collision(plugin_dir: &std::path::Path, name:
     };
     msg.push_str(&format!("\n  Try: plexi plugin init {name}-2"));
     msg
+}
+
+/// Where `plugin init <name>` without `--global` scaffolds when run from
+/// `cwd`: `<workspace>/<channel_dir>/plugins/<name>`, or `None` outside a
+/// workspace.
+fn plugin_init_workspace_dir(cwd: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let channel_dir = plugin_init_config_dir();
+    // The registry's walk stops at `$HOME` and at the login home, so a
+    // redirected `HOME` never makes the installed profile dir a workspace
+    // (stint 1337).
+    let root = crate::app::registry::resolve_workspace_root_with_channel(cwd, &channel_dir);
+    log::info!(
+        "plugin_init: workspace walk from {} for {channel_dir}/ found {:?}",
+        cwd.display(),
+        root.as_ref().map(|r| r.display().to_string())
+    );
+    root.map(|root| root.join(&channel_dir).join("plugins").join(name))
 }
 
 /// `plexi plugin init [--lang python|rust] [--global] <name> [--open]`
@@ -83,31 +100,8 @@ pub fn plugin_init(
     let plugin_dir = if global {
         crate::app::registry::plugins_dir().join(name)
     } else {
-        let home = dirs::home_dir();
-        let workspace_root = {
-            let mut current = cwd;
-            let mut found: Option<std::path::PathBuf> = None;
-            loop {
-                if let Some(ref h) = home {
-                    if current == *h {
-                        break;
-                    }
-                }
-                if current == std::path::Path::new("/") {
-                    break;
-                }
-                if current.join(&channel_dir).is_dir() {
-                    found = Some(current);
-                    break;
-                }
-                if !current.pop() {
-                    break;
-                }
-            }
-            found
-        };
-        match workspace_root {
-            Some(root) => root.join(&channel_dir).join("plugins").join(name),
+        match plugin_init_workspace_dir(&cwd, name) {
+            Some(dir) => dir,
             None => {
                 eprintln!(
                     "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
@@ -229,29 +223,11 @@ pub fn plugin_init(
                         plugin_dir.display()
                     );
                 }
-                println!("  Agent loop: read {}/AGENTS.md", plugin_dir.display());
-                println!(
-                    "  Test with: {explicit_plexi} plugin test {}",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Check gate: {explicit_plexi} plugin check {} --png-dir /tmp/{name}-shots",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Render state: {explicit_plexi} view render {} --state fixtures/state.json",
-                    plugin_dir.display()
-                );
-                println!(
-                    "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
-                );
-                println!("  Host probes:");
-                println!("    {explicit_host_plexi} pane state <pane-id>");
-                println!("    {explicit_host_plexi} pane action <pane-id> <handler-id>");
-                println!("    {explicit_host_plexi} pane key <pane-id> <key>");
-                println!(
-                    "  SDK docs: read sdk/python/SDK_V3.md; with Plexi's SDK on PYTHONPATH, run python -c \"import plexi_sdk; help(plexi_sdk)\""
-                );
+                for line in
+                    python_init_next_steps(&plugin_dir, name, &explicit_plexi, &explicit_host_plexi)
+                {
+                    println!("{line}");
+                }
             }
             0
         }
@@ -260,6 +236,33 @@ pub fn plugin_init(
             1
         }
     }
+}
+
+/// Lines `plugin init` prints after scaffolding a Python plugin.
+fn python_init_next_steps(
+    plugin_dir: &std::path::Path,
+    name: &str,
+    explicit_plexi: &str,
+    explicit_host_plexi: &str,
+) -> Vec<String> {
+    let dir = plugin_dir.display();
+    vec![
+        format!("  Agent loop: read {dir}/AGENTS.md"),
+        format!("  Test with: {explicit_plexi} plugin test {dir}"),
+        format!("  Check gate: {explicit_plexi} plugin check {dir} --png-dir /tmp/{name}-shots"),
+        format!(
+            "  Render state: {explicit_plexi} view render {dir} --state {dir}/fixtures/state.json"
+        ),
+        "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
+            .to_string(),
+        "  Host probes:".to_string(),
+        format!("    {explicit_host_plexi} pane state <pane-id>"),
+        format!("    {explicit_host_plexi} pane action <pane-id> <handler-id>"),
+        format!("    {explicit_host_plexi} pane key <pane-id> <key>"),
+        "  Guide: sdk/python/AUTHORING.md in the Plexi repo (https://github.com/ianjamesburke/PLEXI/blob/alpha/sdk/python/AUTHORING.md)"
+            .to_string(),
+        "  API reference: https://plexiapp.com/docs/sdk".to_string(),
+    ]
 }
 
 /// `uv run` arguments for `plexi plugin test`, built for one plugin directory.
@@ -562,7 +565,7 @@ fn mark_executable(_path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
+pub(super) fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml — shape lives in the template file beside the other scaffold
     // artifacts so it can't silently diverge from the documented manifest. The
     // feature-gated marketplace placeholder is appended in Rust.
@@ -576,43 +579,21 @@ fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Resul
     );
     std::fs::write(plugin_dir.join("manifest.toml"), manifest)?;
 
-    // main.py + plugin/tools.py + plugin/ui.py — plexi_sdk is injected via PYTHONPATH
-    // by the host at launch; do NOT copy plexi_sdk.py alongside (the package uses
-    // relative imports that break when imported as a flat single file).
-    // main.py is the thin lifecycle wiring; tools and UI live in their own
-    // modules. The package avoids a root-level tools.py that would shadow
-    // `plexi_sdk.tools`.
-    // __DISPLAY_NAME__ is substituted below.
+    // main.py: plexi_sdk is injected via PYTHONPATH by the host at launch; do
+    // NOT copy plexi_sdk alongside (the package uses relative imports that
+    // break when imported as a flat single file).
     let display_name = to_title_case(name);
     let main_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init.py");
-    let tools_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_tools.py");
-    let ui_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_ui.py");
     let main_path = plugin_dir.join("main.py");
     std::fs::write(
         &main_path,
-        main_template
-            .replace("__CLASS_NAME__", &to_struct_name(name))
-            .replace("__DISPLAY_NAME__", &display_name),
-    )?;
-    let package_dir = plugin_dir.join("plugin");
-    std::fs::create_dir_all(&package_dir)?;
-    std::fs::write(
-        package_dir.join("__init__.py"),
-        "\"\"\"Plugin modules for this Plexi plugin.\"\"\"\n",
-    )?;
-    std::fs::write(
-        package_dir.join("tools.py"),
-        tools_template.replace("__DISPLAY_NAME__", &display_name),
-    )?;
-    std::fs::write(
-        package_dir.join("ui.py"),
-        ui_template.replace("__DISPLAY_NAME__", &display_name),
+        main_template.replace("__DISPLAY_NAME__", &display_name),
     )?;
 
     mark_executable(&main_path)?;
 
-    // tests/test_plugin.py — a working PluginHarness example co-located with the plugin
-    // so agents learn the test pattern from the scaffold, not from docs.
+    // tests/test_plugin.py: PluginHarness tests that drive the scaffold's one
+    // handler, so they fail when it breaks.
     let tests_dir = plugin_dir.join("tests");
     std::fs::create_dir_all(&tests_dir)?;
     let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_plugin_init.py");
@@ -624,7 +605,7 @@ fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Resul
     std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
 
     log::info!(
-        "plugin_init: wrote python scaffold modules main.py plugin/tools.py plugin/ui.py at {}",
+        "plugin_init: wrote python skeleton main.py tests/test_plugin.py fixtures/state.json at {}",
         plugin_dir.display()
     );
 
@@ -811,11 +792,6 @@ pub enum InstallConfirm {
     PreApproved,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct InstallGateDecision {
-    selected_wasm_optional: Vec<String>,
-}
-
 /// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
 /// Print the trust sheet for a validated plugin dir or package: identity,
 /// runtime + trust label, size, and every declared capability with its
@@ -982,71 +958,14 @@ pub fn confirm_install(
     }
 }
 
-fn parse_wasm_optional_selection(answer: &str, optional: &[String]) -> Result<Vec<String>, String> {
-    let trimmed = answer.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-        return Ok(Vec::new());
-    }
-    if trimmed.eq_ignore_ascii_case("all") {
-        return Ok(optional.to_vec());
-    }
-
-    let mut selected = Vec::new();
-    for raw in trimmed.split(',') {
-        let token = raw.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let index = token
-            .parse::<usize>()
-            .map_err(|_| format!("invalid optional WASM grant selection '{token}'"))?;
-        if index == 0 || index > optional.len() {
-            return Err(format!(
-                "optional WASM grant selection {index} is out of range 1..{}",
-                optional.len()
-            ));
-        }
-        let capability = optional[index - 1].clone();
-        if !selected.contains(&capability) {
-            selected.push(capability);
-        }
-    }
-    Ok(selected)
-}
-
-fn prompt_wasm_optional_grants(
-    report: &crate::app::package::PackageReport,
-    assume_yes: bool,
-    is_tty: bool,
-    reader: &mut impl io::BufRead,
-) -> Result<Vec<String>, String> {
-    if report.wasm_optional_capabilities.is_empty() || assume_yes {
-        return Ok(Vec::new());
-    }
-    if !is_tty {
-        return Ok(Vec::new());
-    }
-
-    eprintln!("Optional WASM grants to remember for this launch directory:");
-    for (index, capability) in report.wasm_optional_capabilities.iter().enumerate() {
-        eprintln!("  {}. {}", index + 1, capability);
-    }
-    eprint!("Grant optional WASM capabilities? [none/all/1,3] ");
-    let _ = io::stderr().flush();
-    let mut answer = String::new();
-    reader
-        .read_line(&mut answer)
-        .map_err(|e| format!("failed to read optional WASM grant selection: {e}"))?;
-    parse_wasm_optional_selection(&answer, &report.wasm_optional_capabilities)
-}
-
 /// Run the full trust gate for an interactive install: print the trust sheet,
-/// then prompt. Returns selected install-review decisions or an exit code.
+/// then prompt. `--yes` confirms the install only; it never answers a
+/// capability (stint 1291). Returns an exit code when the install stops.
 fn run_install_gate(
     report: &crate::app::package::PackageReport,
     assume_yes: bool,
     marketplace_reviewed: bool,
-) -> Result<InstallGateDecision, i32> {
+) -> Result<(), i32> {
     use std::io::IsTerminal;
     let label = trust_label_for(report, marketplace_reviewed);
     print_trust_sheet(report, label);
@@ -1065,15 +984,7 @@ fn run_install_gate(
         is_tty,
         &mut stdin,
     ) {
-        Ok(true) => match prompt_wasm_optional_grants(report, assume_yes, is_tty, &mut stdin) {
-            Ok(selected_wasm_optional) => Ok(InstallGateDecision {
-                selected_wasm_optional,
-            }),
-            Err(e) => {
-                eprintln!("error: {e}");
-                Err(1)
-            }
-        },
+        Ok(true) => Ok(()),
         Ok(false) => {
             eprintln!("install aborted — '{}' was not installed", report.id);
             Err(1)
@@ -1128,7 +1039,7 @@ pub fn plugin_install_with_pin(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    plugin_install_with_pin_inner(path, pin, confirm, assume_yes, None)
+    plugin_install_with_pin_inner(path, pin, confirm, assume_yes)
 }
 
 fn plugin_install_with_pin_inner(
@@ -1136,7 +1047,6 @@ fn plugin_install_with_pin_inner(
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
-    preapproved_gate: Option<InstallGateDecision>,
 ) -> i32 {
     let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
@@ -1151,15 +1061,11 @@ fn plugin_install_with_pin_inner(
     // content, or an outer path that already validated and prompted) proceed
     // with a warning so startup seeding can never break on legacy layouts.
     let mut validated_report = None;
-    let mut gate_decision = preapproved_gate.unwrap_or_default();
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                match run_install_gate(&report, assume_yes, false) {
-                    Ok(decision) => {
-                        gate_decision = decision;
-                    }
-                    Err(code) => return code,
+                if let Err(code) = run_install_gate(&report, assume_yes, false) {
+                    return code;
                 }
             }
             validated_report = Some(report);
@@ -1260,8 +1166,8 @@ fn plugin_install_with_pin_inner(
         let _ = std::fs::remove_dir_all(&staging);
         return 1;
     }
-    if let Some(report) = validated_report.as_ref() {
-        remember_wasm_install_review(report, &gate_decision.selected_wasm_optional);
+    if let (Some(report), InstallConfirm::Interactive) = (validated_report.as_ref(), confirm) {
+        announce_capabilities_ask_at_launch(report);
     }
 
     log::info!(
@@ -1276,91 +1182,61 @@ fn plugin_install_with_pin_inner(
     0
 }
 
-fn remember_wasm_install_review(
-    report: &crate::app::package::PackageReport,
-    selected_wasm_optional: &[String],
-) {
-    let workspace_root = match std::env::current_dir() {
-        Ok(path) => path,
-        Err(e) => {
-            log::warn!(
-                "plugin::install: could not resolve cwd for wasm install review '{}': {e}",
-                report.id
-            );
-            return;
-        }
-    };
-    let Some(summary) = persist_wasm_install_review(
-        report,
-        selected_wasm_optional,
-        &crate::config::config_dir(),
-        &workspace_root,
-    ) else {
-        return;
-    };
-    log::info!(
-        "plugin::install: wasm review plugin={} workspace={} required_granted={} optional_granted={} optional_deferred={}",
-        report.id,
-        workspace_root.display(),
-        summary.required_granted,
-        summary.optional_granted,
-        summary.optional_deferred
-    );
-    if summary.required_granted > 0 || summary.optional_granted > 0 {
-        println!(
-            "Remembered WASM grants for '{}': {} required, {} optional.",
-            report.id, summary.required_granted, summary.optional_granted
+/// Install writes no permission (stint 1291): the CLI process is not the
+/// host, and `--yes` confirms the install only. Says, per runtime, what the
+/// first launch gives automatically and what waits for a person.
+fn announce_capabilities_ask_at_launch(report: &crate::app::package::PackageReport) {
+    if let Some(line) = install_permission_line(report) {
+        log::info!(
+            "plugin::install: no grant written for {}: {line}",
+            report.id
         );
+        println!("{line}");
     }
 }
 
-fn persist_wasm_install_review(
-    report: &crate::app::package::PackageReport,
-    selected_wasm_optional: &[String],
-    config_dir: &std::path::Path,
-    workspace_root: &std::path::Path,
-) -> Option<crate::app::permissions::WasmInstallGrantSummary> {
-    if report.wasm_required_capabilities.is_empty() && report.wasm_optional_capabilities.is_empty()
-    {
+fn install_permission_line(report: &crate::app::package::PackageReport) -> Option<String> {
+    use crate::app::package::PackageRuntime;
+    // The same rule the host applies at first launch.
+    let (needs_person, automatic): (Vec<String>, Vec<String>) = report
+        .capabilities
+        .iter()
+        .map(|cap| cap.as_str().to_string())
+        .chain(report.wasm_required_capabilities.iter().cloned())
+        .chain(report.wasm_optional_capabilities.iter().cloned())
+        .partition(|id| crate::broker::gate::declared_capability_needs_click(id));
+    if automatic.is_empty() && needs_person.is_empty() {
         return None;
     }
-    let selected: std::collections::HashSet<String> =
-        selected_wasm_optional.iter().cloned().collect();
-    let mut store = crate::app::permissions::PermissionStore::load_or_default(config_dir);
-    let summary = store.apply_wasm_install_review(
-        &report.id,
-        workspace_root,
-        &report.wasm_required_capabilities,
-        &report.wasm_optional_capabilities,
-        &selected,
+    let mut line = format!(
+        "Installing grants no permissions. When '{}' first runs",
+        report.id
     );
-    store.save();
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir);
-    for capability_id in &report.wasm_required_capabilities {
-        monitor.grant_capability_id(
-            &report.id,
-            workspace_root,
-            capability_id,
-            crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
-        );
+    if !automatic.is_empty() {
+        line.push_str(&format!(" it gets {} automatically", automatic.join(", ")));
     }
-    for capability_id in &report.wasm_optional_capabilities {
-        let decision = if selected.contains(capability_id) {
-            crate::broker::Decision::Allow
-        } else {
-            crate::broker::Decision::Ask
-        };
-        monitor.grant_capability_id(
-            &report.id,
-            workspace_root,
-            capability_id,
-            decision,
-            crate::broker::GrantSource::User,
-        );
+    if !needs_person.is_empty() {
+        if !automatic.is_empty() {
+            line.push(';');
+        }
+        match report.runtime {
+            PackageRuntime::Wasm => line.push_str(&format!(
+                " {} wait for your approval in the Plexi window",
+                needs_person.join(", ")
+            )),
+            PackageRuntime::Python => line.push_str(&format!(
+                " {} stay withheld: Python plugins cannot ask for them yet",
+                needs_person.join(", ")
+            )),
+        }
     }
-    Some(summary)
+    line.push('.');
+    Some(line)
 }
+
+/// Shown in the rendered Permissions view and on stderr when `view render`
+/// runs outside the host (stint 1291).
+const PERMISSION_ROWS_FROM_HOST: &str = "Permission rows come from the running Plexi host and are not available to this command; rendering the view with none.";
 
 /// `plexi plugin package <path> [--out <file>]` — build a `.plexipkg` artifact.
 pub fn plugin_package_cli(path: &str, out: Option<&str>) -> i32 {
@@ -1438,14 +1314,11 @@ fn plugin_install_package_inner(
         }
     };
 
-    let gate_decision = if confirm == InstallConfirm::Interactive {
-        match run_install_gate(&report, assume_yes, marketplace_reviewed) {
-            Ok(decision) => Some(decision),
-            Err(code) => return code,
+    if confirm == InstallConfirm::Interactive {
+        if let Err(code) = run_install_gate(&report, assume_yes, marketplace_reviewed) {
+            return code;
         }
-    } else {
-        None
-    };
+    }
 
     // Extract into a unique temp dir and reuse the existing dir-install path.
     let staging = std::env::temp_dir().join(format!("plexipkg-install-{}", uuid::Uuid::new_v4()));
@@ -1468,8 +1341,10 @@ fn plugin_install_package_inner(
         pin,
         InstallConfirm::PreApproved,
         assume_yes,
-        gate_decision,
     );
+    if code == 0 && confirm == InstallConfirm::Interactive {
+        announce_capabilities_ask_at_launch(&report);
+    }
     if code == 0 {
         if let Some(metadata) = source_metadata {
             let plugin_dir = crate::app::registry::plugins_dir().join(&report.id);
@@ -1810,12 +1685,15 @@ pub fn view_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (plugin_id, plugin_dir, plugin_bin, capabilities, allowed_hosts) = if std::path::Path::new(
-        plugin,
-    )
-    .components()
-    .count()
-        > 1
+    let (
+        plugin_id,
+        plugin_dir,
+        plugin_bin,
+        capabilities,
+        allowed_hosts,
+        state_scopes,
+        state_format,
+    ) = if std::path::Path::new(plugin).components().count() > 1
         || std::path::Path::new(plugin).is_dir()
     {
         let plugin_dir = match std::path::Path::new(plugin).canonicalize() {
@@ -1880,6 +1758,17 @@ pub fn view_render(
             );
             return 1;
         }
+        let state = manifest
+            .state_scopes()
+            .map_err(|e| format!("[state] scopes: {e}"))
+            .and_then(|scopes| Ok((scopes, manifest.state_format()?)));
+        let (state_scopes, state_format) = match state {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("error: {}: {e}", manifest_path.display());
+                return 1;
+            }
+        };
         log::info!(
             "view_render[{}]: loaded from path '{plugin}'",
             manifest.plugin.id
@@ -1890,6 +1779,8 @@ pub fn view_render(
             entry,
             manifest.plugin.capabilities.capabilities,
             manifest.plugin.capabilities.allowed_hosts,
+            state_scopes,
+            state_format,
         )
     } else {
         // ID-based: registry lookup
@@ -1914,6 +1805,8 @@ pub fn view_render(
                     a.bin_path.clone(),
                     a.manifest.capabilities.capabilities.clone(),
                     a.manifest.capabilities.allowed_hosts.clone(),
+                    a.state_scopes.clone(),
+                    a.state_format,
                 )
             }
             None => {
@@ -1938,11 +1831,22 @@ pub fn view_render(
         &plugin_bin,
         &capabilities,
         &allowed_hosts,
+        state_scopes,
+        state_format,
     );
     let seed_state = if seed_state.is_none() && plugin_id == "permissions" {
-        let entries =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .list_entries();
+        // Permission rows live in the running host (stint 1291). This command
+        // renders the view without them and says so.
+        let (entries, notice) =
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => (monitor.list_entries(), String::new()),
+                Err(error) => {
+                    log::info!("view_render: permissions inventory unavailable: {error}");
+                    eprintln!("{PERMISSION_ROWS_FROM_HOST}");
+                    (Vec::new(), PERMISSION_ROWS_FROM_HOST.to_string())
+                }
+            };
         log::info!(
             "view_render: seeding permissions inventory count={}",
             entries.len()
@@ -1951,7 +1855,7 @@ pub fn view_render(
             "entries": entries,
             "selected": 0,
             "mode": "list",
-            "notice": "",
+            "notice": notice,
         }))
     } else {
         seed_state
@@ -2004,15 +1908,19 @@ pub fn view_render(
             }
         }
     } else {
-        // JSON mode (default): return the semantic UI-node tree
-        let json =
-            match serde_json::to_string_pretty(&crate::cli::plugin_check::ui_tree_to_json(&tree)) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("error: could not serialize frame: {e}");
-                    return 1;
-                }
-            };
+        // JSON mode (default): the semantic UI-node tree plus what each node
+        // painted at this size.
+        let layout =
+            crate::host::wasm_render::render_ui_tree_layout(&tree, width as f32, height as f32);
+        let json = match serde_json::to_string_pretty(
+            &crate::cli::plugin_check::frame_json_with_layout(&tree, &layout),
+        ) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("error: could not serialize frame: {e}");
+                return 1;
+            }
+        };
         match output {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &json) {
@@ -2097,18 +2005,6 @@ fn to_title_case(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn to_struct_name(s: &str) -> String {
-    s.split(['-', '_'])
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-            }
-        })
-        .collect::<String>()
 }
 
 /// `plexi plugin update [<id>]` — canonical plugin update path.
@@ -2615,6 +2511,80 @@ mod plugin_install_workspace_tests {
         assert_eq!(code, 0, "reverse-DNS plugin ids must install cleanly");
     }
 
+    /// Stint 1291: `--yes` confirms the install only. A WASM package whose
+    /// `[plugin.capabilities.wasm]` lists required and optional ids leaves no
+    /// capability row in either permission file; the plugin asks when it runs.
+    #[test]
+    fn install_yes_writes_no_grant() {
+        let profile = TempDir::new().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let src = TempDir::new().unwrap();
+        let plugin_id = "plexi-test-install-yes-no-grant";
+        std::fs::write(
+            src.path().join("manifest.toml"),
+            format!(
+                "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"Test\"\nversion = \"0.1.0\"\ndescription = \"Test\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [\"spawn.plugin\", \"state:read-write\"]\noptional = [\"ai.query\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"app.wasm\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("app.wasm"), b"\0asm").unwrap();
+
+        let code = super::plugin_install_with_pin(
+            &src.path().to_string_lossy(),
+            None,
+            super::InstallConfirm::Interactive,
+            true,
+        );
+        assert_eq!(code, 0, "install --yes must still install the plugin");
+
+        let grants =
+            std::fs::read_to_string(profile.path().join("grants.toml")).unwrap_or_default();
+        assert!(
+            !grants.contains(plugin_id),
+            "install --yes must not write a grant row:\n{grants}"
+        );
+        let legacy =
+            std::fs::read_to_string(profile.path().join("permissions.toml")).unwrap_or_default();
+        assert!(
+            !legacy.contains(plugin_id),
+            "install --yes must not write a legacy permission row:\n{legacy}"
+        );
+    }
+
+    /// Stint 1291: the install line says what each runtime really gets.
+    #[test]
+    fn install_permission_line_is_true_per_runtime() {
+        use crate::app::package::{PackageReport, PackageRuntime};
+        use crate::app::permissions::Capability;
+        let mut report = PackageReport {
+            id: "p".to_string(),
+            name: "P".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: PackageRuntime::Python,
+            entry: "main.py".to_string(),
+            capabilities: vec![Capability::FsRead, Capability::SpawnView],
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
+            file_count: 1,
+            total_size: 1,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
+        };
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs it gets fs.read automatically; spawn.plugin stay withheld: Python plugins cannot ask for them yet."
+        );
+        report.runtime = PackageRuntime::Wasm;
+        report.capabilities = Vec::new();
+        report.wasm_required_capabilities = vec!["fs:write:/w".to_string()];
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs fs:write:/w wait for your approval in the Plexi window."
+        );
+        report.wasm_required_capabilities = Vec::new();
+        assert!(super::install_permission_line(&report).is_none());
+    }
+
     #[test]
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();
@@ -2644,10 +2614,7 @@ mod plugin_install_workspace_tests {
 
 #[cfg(test)]
 mod install_confirm_tests {
-    use super::{
-        confirm_install, parse_wasm_optional_selection, prompt_wasm_optional_grants,
-        trust_sheet_lines, InstallConfirm,
-    };
+    use super::{confirm_install, trust_sheet_lines, InstallConfirm};
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
     use std::io::Cursor;
 
@@ -2790,116 +2757,6 @@ mod install_confirm_tests {
             TrustLabel::PythonUnreviewed
         );
         assert_eq!(super::trust_label_for(&r, true), TrustLabel::ReviewedNative);
-    }
-
-    #[test]
-    fn wasm_optional_selection_accepts_none_all_and_indices() {
-        let optional = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-            "state:read-write".to_string(),
-        ];
-
-        assert_eq!(
-            parse_wasm_optional_selection("", &optional).unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("none", &optional).unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("all", &optional).unwrap(),
-            optional
-        );
-        assert_eq!(
-            parse_wasm_optional_selection("2, 1, 2", &optional).unwrap(),
-            vec![
-                "net:fetch:api.example.com".to_string(),
-                "ai.query".to_string()
-            ]
-        );
-        assert!(parse_wasm_optional_selection("4", &optional).is_err());
-        assert!(parse_wasm_optional_selection("ai.query", &optional).is_err());
-    }
-
-    #[test]
-    fn wasm_optional_prompt_skips_assume_yes_and_reads_tty_selection() {
-        let mut r = report();
-        r.runtime = PackageRuntime::Wasm;
-        r.wasm_optional_capabilities = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-
-        let skipped =
-            prompt_wasm_optional_grants(&r, true, true, &mut Cursor::new(b"all\n")).unwrap();
-        assert!(
-            skipped.is_empty(),
-            "--yes must not silently grant optional WASM capabilities"
-        );
-
-        let selected =
-            prompt_wasm_optional_grants(&r, false, true, &mut Cursor::new(b"2\n")).unwrap();
-        assert_eq!(selected, vec!["net:fetch:api.example.com".to_string()]);
-    }
-
-    #[test]
-    fn wasm_install_review_persistence_writes_selected_scope() {
-        let config = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let mut r = report();
-        r.id = "wasm-install-review".to_string();
-        r.runtime = PackageRuntime::Wasm;
-        r.wasm_required_capabilities = vec!["state:read-write".to_string()];
-        r.wasm_optional_capabilities = vec![
-            "ai.query".to_string(),
-            "net:fetch:api.example.com".to_string(),
-        ];
-
-        let summary = super::persist_wasm_install_review(
-            &r,
-            &["net:fetch:api.example.com".to_string()],
-            config.path(),
-            workspace.path(),
-        )
-        .expect("wasm review should persist");
-
-        assert_eq!(summary.required_granted, 1);
-        assert_eq!(summary.optional_granted, 1);
-        assert_eq!(summary.optional_deferred, 1);
-
-        let stored = |capability: &str, root: &std::path::Path| {
-            let monitor = crate::broker::gate::PermissionMonitor::open_profile(config.path());
-            let workspace_root = crate::platform::path::canonical_or_self(root);
-            let store = monitor.store();
-            store.records().iter().find_map(|record| {
-                (record.actor_id == "wasm-install-review"
-                    && record.target_id == capability
-                    && record.workspace_root.as_deref() == Some(workspace_root.as_path()))
-                .then_some(record.decision)
-            })
-        };
-        assert_eq!(
-            stored("state:read-write", workspace.path()),
-            Some(crate::broker::Decision::Allow)
-        );
-        assert_eq!(
-            stored("ai.query", workspace.path()),
-            Some(crate::broker::Decision::Ask)
-        );
-        assert_eq!(
-            stored("net:fetch:api.example.com", workspace.path()),
-            Some(crate::broker::Decision::Allow)
-        );
-        assert_eq!(
-            stored(
-                "net:fetch:api.example.com",
-                tempfile::tempdir().unwrap().path()
-            ),
-            None,
-            "raw WASM install grants must remain workspace-scoped"
-        );
     }
 }
 
@@ -3221,8 +3078,8 @@ mod scaffold_marketplace_tests {
             "generated test must exemplify PluginHarness"
         );
         assert!(
-            test_src.contains("assert_no_overlap"),
-            "generated test must assert no layout overlap"
+            test_src.contains("h.ui_action(\"increment\")") && test_src.contains("h.key(\"+\")"),
+            "generated test must drive the handler it asserts on, so breaking the handler fails it"
         );
         assert!(
             !test_src.contains("__DISPLAY_NAME__"),
@@ -3261,10 +3118,6 @@ mod scaffold_marketplace_tests {
         assert!(
             agents.contains("Hot reload is part of the dev loop"),
             "AGENTS.md must teach same-pane hot reload validation"
-        );
-        assert!(
-            agents.contains("padding=SPACE_MD"),
-            "AGENTS.md must teach the semantic shell padding contract"
         );
         assert!(
             agents.contains("log.debug"),
@@ -3342,130 +3195,136 @@ mod scaffold_marketplace_tests {
             .is_some());
     }
 
+    fn scaffold_files(root: &std::path::Path) -> Vec<String> {
+        fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    out.push(
+                        path.strip_prefix(root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    );
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Stint 1330: the scaffold is a skeleton to extend, not a demo to delete.
     #[test]
-    fn python_scaffold_splits_tools_and_ui_from_thin_main() {
+    fn python_scaffold_is_a_minimal_skeleton() {
         let dir = TempDir::new().unwrap();
         let plugin_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&plugin_dir).unwrap();
         scaffold_python_plugin(&plugin_dir, "myapp").unwrap();
 
-        let read = |file: &str| {
-            std::fs::read_to_string(plugin_dir.join(file))
-                .unwrap_or_else(|e| panic!("python scaffold must write {file}: {e}"))
-        };
-        let main_src = read("main.py");
-        let package_src = read("plugin/__init__.py");
-        let tools_src = read("plugin/tools.py");
-        let ui_src = read("plugin/ui.py");
-        assert!(
-            !plugin_dir.join("plugin_tools.py").exists()
-                && !plugin_dir.join("plugin_ui.py").exists(),
-            "v5 scaffold must not write the flat v4 modules"
-        );
-        assert!(
-            !plugin_dir.join("tools.py").exists(),
-            "v5 scaffold must not write a root tools.py that shadows plexi_sdk.tools"
+        let files = scaffold_files(&plugin_dir);
+        assert_eq!(
+            files,
+            [
+                ".gitignore",
+                "AGENTS.md",
+                "fixtures/state.json",
+                "main.py",
+                "manifest.toml",
+                "plexi.scaffold.toml",
+                "tests/test_plugin.py",
+            ],
+            "the scaffold writes exactly these files"
         );
 
-        for (file, src) in [
-            ("main.py", &main_src),
-            ("plugin/__init__.py", &package_src),
-            ("plugin/tools.py", &tools_src),
-            ("plugin/ui.py", &ui_src),
-        ] {
+        for file in &files {
+            let src = std::fs::read_to_string(plugin_dir.join(file)).unwrap();
+            for demo in ["demo.", "LEFT_COUNTER", "timer"] {
+                assert!(
+                    !src.contains(demo),
+                    "{file} must not carry demo content ({demo:?})"
+                );
+            }
             assert!(
-                !src.contains("__DISPLAY_NAME__") && !src.contains("__CLASS_NAME__"),
+                !src.contains("__DISPLAY_NAME__")
+                    && !src.contains("__PLUGIN_ID__")
+                    && !src.contains("__APP_NAME__"),
                 "{file} must substitute its placeholders"
             );
         }
 
-        // main.py: thin lifecycle wiring only.
+        let manifest: crate::app::registry::PluginManifest =
+            toml::from_str(&std::fs::read_to_string(plugin_dir.join("manifest.toml")).unwrap())
+                .expect("scaffolded manifest must parse");
         assert!(
-            main_src.contains("SDK v3 plugin generated by `plexi plugin init`"),
-            "generated main.py should identify the SDK v3 scaffold"
-        );
-        assert!(
-            main_src.contains("init(size, args)"),
-            "generated main.py should document the lifecycle function names"
-        );
-        assert!(
-            main_src.contains("Do not mutate Plexi state in-place"),
-            "generated main.py should explain effect-returned state changes"
-        );
-        assert!(
-            main_src.contains("Components describe UI. Effects describe host work."),
-            "generated main.py should explain component/effect separation"
-        );
-        assert!(
-            main_src.contains("from plugin import tools as plugin_tools")
-                && main_src.contains("from plugin import ui as plugin_ui"),
-            "generated main.py should import the tools and UI modules"
-        );
-        assert!(
-            main_src.contains("tools.expose()"),
-            "generated main.py must expose tools from init"
-        );
-        assert!(
-            main_src.contains("tools.dispatch(event)"),
-            "generated main.py must dispatch tool calls first in update"
-        );
-        assert!(
-            main_src.contains("plugin_ui.build_view("),
-            "generated main.py must delegate view to the UI module"
-        );
-        assert!(
-            !main_src.contains("plexi_sdk.ui") && !main_src.contains("SurfaceHeader("),
-            "generated main.py must not build UI itself"
+            manifest.plugin.capabilities.capabilities.is_empty(),
+            "a skeleton that returns no gated effect declares no capability"
         );
 
-        // plugin/tools.py: plain functions on the SDK decorator API.
-        assert!(
-            tools_src.contains("from plexi_sdk import state, tools"),
-            "generated plugin/tools.py should use the SDK tools module"
-        );
-        assert!(
-            tools_src.contains("@tools.tool("),
-            "generated plugin/tools.py should declare tools with the decorator"
-        );
-        assert!(
-            tools_src.contains("read_only=True"),
-            "generated plugin/tools.py should demonstrate a read-only tool"
-        );
-
-        // plugin/ui.py: the component tree and the primitive guidance.
+        let main_src = std::fs::read_to_string(plugin_dir.join("main.py")).unwrap();
         for needle in [
-            "def build_view(",
-            "ActionBar(",
-            "Card(",
-            "Section(",
-            "Badge(",
-            "Divider(",
-            "TextEdit(",
-            "SelectList(",
-            "Scrollable(",
-            "UiValueChange",
-            "FooterKeys(",
-            "SPACE_MD",
-            "padding=SPACE_MD",
-            "log.debug",
-            "log.info",
-            "log.warn",
-            "log.error",
+            "def init(size, args) -> list:",
+            "def update(event) -> list:",
+            "def view() -> Component:",
+            "isinstance(event, Resize)",
+            "on_click=\"increment\"",
+            "event.key == \"+\"",
+            "log.info(",
         ] {
             assert!(
-                ui_src.contains(needle),
-                "generated plugin/ui.py should mention {needle}"
+                main_src.contains(needle),
+                "generated main.py should contain {needle}"
             );
         }
         assert!(
-            !ui_src.contains("SetState("),
-            "generated plugin/ui.py must stay free of effects"
+            !main_src.contains("tools."),
+            "the skeleton exposes no assistant tools"
         );
 
         let agents = std::fs::read_to_string(plugin_dir.join("AGENTS.md")).unwrap();
+        for file in &files {
+            assert!(
+                agents.contains(&format!("`{file}`")),
+                "AGENTS.md must say what {file} is for"
+            );
+        }
+    }
+
+    /// Stint 1330: the init output names the guide and only real commands.
+    #[test]
+    fn python_init_next_steps_point_at_the_authoring_guide() {
+        let lines = python_init_next_steps(
+            std::path::Path::new("/ws/.plexi-alpha/plugins/myapp"),
+            "myapp",
+            "PLEXI_CHANNEL=alpha plexi",
+            "PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi",
+        )
+        .join("\n");
+
         assert!(
-            agents.contains("plugin/tools.py") && agents.contains("plugin/ui.py"),
-            "AGENTS.md must document the tools-vs-UI module split"
+            lines.contains("sdk/python/AUTHORING.md"),
+            "init must point at the canonical guide: {lines}"
+        );
+        assert!(
+            lines.contains("https://plexiapp.com/docs/sdk"),
+            "init must point at the docs site API reference: {lines}"
+        );
+        assert!(
+            !lines.contains("SDK_V3.md"),
+            "the design spec is partly historical and is not the guide: {lines}"
+        );
+        assert!(
+            !lines.contains("help(plexi_sdk"),
+            "plexi_sdk does not import in a bare interpreter: {lines}"
+        );
+        assert!(
+            lines.contains(
+                "view render /ws/.plexi-alpha/plugins/myapp --state /ws/.plexi-alpha/plugins/myapp/fixtures/state.json"
+            ),
+            "--state is read relative to the cwd, so the printed path must be complete: {lines}"
         );
     }
 
@@ -3506,6 +3365,50 @@ mod scaffold_marketplace_tests {
         let _on =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
         assert_placeholder(&manifest_for(scaffold_python_plugin));
+    }
+}
+
+#[cfg(test)]
+mod plugin_init_workspace_walk_tests {
+    use super::{plugin_init_config_dir, plugin_init_workspace_dir};
+
+    /// Stint 1337: `$HOME` is not the login home (a sandbox or test profile
+    /// redirected it), the cwd is under the login home, and the login home
+    /// holds the installed channel profile dir. `plugin init` must not take
+    /// that profile dir for a workspace.
+    #[test]
+    fn plugin_init_does_not_scaffold_into_the_login_home_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let cwd = login_home.join("projects").join("demo");
+        let profile = login_home.join(plugin_init_config_dir());
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            None,
+            "the login home's profile dir is not a workspace"
+        );
+    }
+
+    #[test]
+    fn plugin_init_scaffolds_into_a_workspace_under_the_login_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let login_home = tmp.path().join("login-home");
+        let workspace = login_home.join("projects").join("demo");
+        let cwd = workspace.join("src").join("deep");
+        let channel_dir = plugin_init_config_dir();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(workspace.join(&channel_dir)).unwrap();
+        std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
+        let _login = crate::app::registry::set_test_login_home(&login_home);
+
+        assert_eq!(
+            plugin_init_workspace_dir(&cwd, "myapp"),
+            Some(workspace.join(&channel_dir).join("plugins").join("myapp"))
+        );
     }
 }
 

@@ -229,8 +229,8 @@ export class PlexiCliClient {
   }
 
   async listAppTools(options: { appId?: string; contextId?: number } = {}): Promise<CliResult<{ ok: boolean; context_id: number; tools: any[] }>> {
-    const args = ["app", "tools", "--json"];
-    if (options.appId) args.push("--app", options.appId);
+    const args = ["plugin", "tools", "--json"];
+    if (options.appId) args.push("--plugin", options.appId);
     if (options.contextId !== undefined) {
       args.push("--context", String(options.contextId));
     }
@@ -245,7 +245,7 @@ export class PlexiCliClient {
     waitApproved?: boolean;
     timeoutMs?: number;
   }): Promise<CliResult<any>> {
-    const cliArgs = ["app", "call", options.appId, options.tool, "--json"];
+    const cliArgs = ["plugin", "call", options.appId, options.tool, "--json"];
     if (options.argsJson !== undefined) {
       const serialized =
         typeof options.argsJson === "string"

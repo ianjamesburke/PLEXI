@@ -21,7 +21,7 @@ def update(event):
 def view():
     return Column([
         SurfaceHeader("TextEdit Demo"),
-        TextEdit("draft", value=state.get("draft", ""), multiline=True,
+        TextEdit("draft", value=state.get("draft", ""),
                  placeholder="Type here..."),
         Button("Submit", on_click="submit", style="primary"),
         Label(state.get("submitted", "") or "No submission yet", tone="hint"),

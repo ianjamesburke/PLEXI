@@ -477,7 +477,8 @@ pub(crate) fn restore_view_pane_in_profile(
                 ));
             }
             let permission_store =
-                crate::app::permissions::PermissionStore::load_or_default(profile_dir);
+                crate::app::permissions::PermissionStore::load_or_default(profile_dir)
+                    .map_err(|error| error.to_string())?;
             let required_grants = WasmView::inspect_required_grants(wasm_path)
                 .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
             let required_caps = required_grants.capability_ids();
@@ -875,7 +876,8 @@ impl PlexiApp {
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
         let permission_store =
-            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir())
+                .map_err(|error| error.to_string())?;
         let required_grants = WasmView::inspect_required_grants(wasm_path)
             .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
         let required_caps = required_grants.capability_ids();
@@ -1168,12 +1170,14 @@ impl PlexiApp {
             ));
         }
         let config_dir = crate::config::config_dir();
-        let permission_store = PermissionStore::load_or_default(&config_dir);
+        let permission_store =
+            PermissionStore::load_or_default(&config_dir).map_err(|error| error.to_string())?;
         let declared_caps = crate::app::permissions::parse_capability_strings(
             &installed.manifest.capabilities.capabilities,
         )
         .map_err(|e| format!("manifest lists {e}"))?;
         let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
+            .map_err(|error| error.to_string())?
             .materialize_plugin_permissions(
                 &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
                 &workspace_root,
@@ -2782,7 +2786,7 @@ impl PlexiApp {
     /// Launch a plugin directly from a filesystem path without looking it up in the registry.
     ///
     /// The plugin runs in-place; its own directory is used as `workspace_root`.
-    #[cfg(test)]
+    /// A raw `.wasm` with unreviewed imports queues the host review modal.
     pub(crate) fn launch_view_by_path_with_layout(
         &mut self,
         app_path: &str,
@@ -2819,6 +2823,7 @@ impl PlexiApp {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_view_by_path_with_layout_no_review_modal(
         &mut self,
         app_path: &str,
@@ -3660,13 +3665,19 @@ fn gate_plugin_permissions_in_profile(
             crate::app::permissions::Capability::try_from(capability.as_str()).ok()
         })
         .collect();
-    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .materialize_plugin_permissions(
+    // Outside the host nothing is granted (stint 1291).
+    let mut permissions = match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
+        Ok(monitor) => monitor.materialize_plugin_permissions(
             &crate::broker::principal::PluginInstance::new(plugin_id, None),
             workspace_root,
             &declared,
             allowed_hosts,
-        );
+        ),
+        Err(error) => {
+            log::error!("plugin::{plugin_id}: launched with no grants: {error}");
+            crate::app::permissions::PluginPermissions::default()
+        }
+    };
     apply_media_release_gate(plugin_id, &mut permissions);
     permissions
 }
@@ -3718,11 +3729,17 @@ fn gate_wasm_sets_in_profile(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    crate::broker::gate::PermissionMonitor::for_profile(profile_dir).materialize_wasm_sets(
-        &crate::broker::principal::PluginInstance::new(plugin_id, None),
-        workspace_root,
-        declared,
-    )
+    match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
+        Ok(monitor) => monitor.materialize_wasm_sets(
+            &crate::broker::principal::PluginInstance::new(plugin_id, None),
+            workspace_root,
+            declared,
+        ),
+        Err(error) => {
+            log::error!("plugin::{plugin_id}: no remembered WASM grants: {error}");
+            Default::default()
+        }
+    }
 }
 
 fn wasm_runtime_capabilities_from_permissions(

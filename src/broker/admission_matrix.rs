@@ -16,6 +16,15 @@
 //!   (needs the private `WasmPane::exec` and its queue).
 //! - CLI/agent adapter and the shared event-subscription path: this file.
 //!
+//! Standalone pins outside the drivers:
+//! - `raw_set_permission_socket_line_writes_no_grant` in
+//!   `src/testing/agent_security_tests.rs` (stint 1272): no raw socket line,
+//!   from a pane or from no pane, writes a capability grant.
+//! - `socket_caller_with_no_pane_is_not_human` in
+//!   `src/testing/agent_security_tests.rs` (stint 1271): a socket caller whose
+//!   ancestry reaches no pane is not human; its `allow`/`reset` file Needs you
+//!   and only a desktop click applies them.
+//!
 //! Every driver uses `PermissionMonitor::ephemeral()` or an in-memory
 //! `GrantStore` unless a cell is about persistence; those use a temp profile
 //! with the test host-key backend. No network, no login keychain, no consent
@@ -355,6 +364,30 @@ pub(crate) const TABLE: &[Line] = &[
     na(R::Agent, F::Notify, "plexi notify has no admission call site"),
     na(R::Agent, F::HostRead, "plexi log reads have no admission call site"),
     line(R::Agent, F::PluginTools, &["probe.add"], EXACT),
+];
+
+/// Persistence probe `InstallYes` (stint 1291): what a plugin gets at first
+/// launch after `plexi plugin install --yes`. On alpha before stint 1291 the
+/// CLI sealed an Allow row for every id in `[plugin.capabilities.wasm]`
+/// `required`, for any runtime: a WASM package listing these ids, or a Python
+/// package listing `spawn.plugin` in that table, admitted with no click. (A
+/// Python package declaring `spawn.plugin` only under `[plugin.capabilities]`
+/// got no row and was withheld, then as now.) Now install writes no grant and
+/// a Python package carrying the table is refused at validation, so each line
+/// is declared-and-nothing-stored. Driven by `install_yes_probe`.
+pub(crate) const INSTALL_YES: &[(Runtime, Family, &[&str], Cell)] = &[
+    (
+        R::Python,
+        F::Panes,
+        &["spawn.plugin"],
+        deny(PYSET).cut(PY_NO_ASK),
+    ),
+    (
+        R::Wasm,
+        F::Panes,
+        &["open-pane", "spawn.plugin"],
+        ask(QUEUE).cut(RUNTIME_QUEUE),
+    ),
 ];
 
 /// Ids each plugin runtime's registry knows that no line probes, with the
@@ -959,7 +992,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
     let profile = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
     let target = format!("{PUBLISHER}::{EVENT}");
-    let monitor = PermissionMonitor::for_profile(profile.path());
+    let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
     let record = stream_grant(
         Runtime::Agent,
         ws.path(),
@@ -971,7 +1004,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
     monitor.store().record(record);
     monitor.store().try_save().expect("save grants");
 
-    let service_copy = GrantStore::load_or_default(profile.path());
+    let service_copy = GrantStore::load_or_default(profile.path()).unwrap();
     assert_eq!(
         evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
         Decision::Allow
@@ -983,7 +1016,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
         Decision::Allow,
         "today the copy still admits after the monitor revoked the grant"
     );
-    let reloaded = GrantStore::load_or_default(profile.path());
+    let reloaded = GrantStore::load_or_default(profile.path()).unwrap();
     assert_eq!(
         evaluate_stream(&reloaded, None, Runtime::Agent, ws.path()),
         Decision::Ask
@@ -1013,10 +1046,135 @@ fn cutover_cells_are_enumerated() {
             }
         }
     }
+    for (runtime, family, ids, cell) in INSTALL_YES {
+        if let Some(expected) = cell.cutover {
+            rows.push(format!(
+                "| {runtime:?} | {family:?} | {} | InstallYes | {:?} by {:?} | {expected} |",
+                ids.join(", "),
+                cell.outcome,
+                cell.mech
+            ));
+        }
+    }
     println!("| Runtime | Family | Ids | State | Today | Expected after cutover |");
     println!("|---|---|---|---|---|---|");
     for row in &rows {
         println!("{row}");
     }
-    assert_eq!(rows.len(), 76);
+    // 76 matrix cells plus the two `InstallYes` probes (stint 1291).
+    assert_eq!(rows.len(), 78);
+}
+
+/// Stint 1291 `InstallYes` probe: install each package with `--yes` through
+/// the real CLI install path, then read what its first launch would get.
+#[test]
+fn install_yes_probe() {
+    let profile = tempfile::tempdir().unwrap();
+    let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+    for (runtime, family, ids, cell) in INSTALL_YES {
+        let src = tempfile::tempdir().unwrap();
+        let id = format!("install-yes-{runtime:?}-{family:?}").to_lowercase();
+        let quoted = ids
+            .iter()
+            .map(|id| format!("\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (caps, runtime_table, entry) = match runtime {
+            Runtime::Python => (
+                format!("capabilities = [{quoted}]\n"),
+                "kind = \"python\"\nentry = \"main.py\"",
+                "main.py",
+            ),
+            Runtime::Wasm => (
+                format!("capabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [{quoted}]\n"),
+                "kind = \"wasm\"\nentry = \"app.wasm\"",
+                "app.wasm",
+            ),
+            Runtime::Agent => panic!("agents are not installed"),
+        };
+        std::fs::write(
+            src.path().join("manifest.toml"),
+            format!(
+                "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{id}\"\nname = \"Probe\"\nversion = \"0.1.0\"\ndescription = \"Probe\"\n\n[plugin.capabilities]\n{caps}\n[runtime]\n{runtime_table}\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join(entry), b"\0asm").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        if *runtime == Runtime::Python {
+            // The alpha route: the same ids in the WASM table of a Python
+            // package. Refused now, and nothing is stored.
+            let table = tempfile::tempdir().unwrap();
+            std::fs::write(
+                table.path().join("manifest.toml"),
+                format!(
+                    "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{id}-table\"\nname = \"Probe\"\nversion = \"0.1.0\"\ndescription = \"Probe\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [{quoted}]\n\n[runtime]\n{runtime_table}\n\n[[contributes.views]]\nid = \"{id}-table.main\"\ndefault = true\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(table.path().join(entry), b"\0asm").unwrap();
+            let refused = crate::cli::plugin::plugin_install_with_pin(
+                &table.path().to_string_lossy(),
+                None,
+                crate::cli::plugin::InstallConfirm::Interactive,
+                true,
+            );
+            assert_eq!(
+                refused, 1,
+                "a Python package with a WASM table must be refused"
+            );
+            let grants =
+                std::fs::read_to_string(profile.path().join("grants.toml")).unwrap_or_default();
+            assert!(!grants.contains(&format!("{id}-table")), "{grants}");
+        }
+        let code = crate::cli::plugin::plugin_install_with_pin(
+            &src.path().to_string_lossy(),
+            None,
+            crate::cli::plugin::InstallConfirm::Interactive,
+            true,
+        );
+        assert_eq!(code, 0, "{runtime:?} probe package must install");
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
+        for probe in *ids {
+            let outcome = match runtime {
+                Runtime::Python => {
+                    let cap = crate::app::permissions::Capability::try_from(*probe).unwrap();
+                    let declared = std::iter::once(cap).collect();
+                    let granted = monitor
+                        .materialize_plugin_permissions(
+                            &super::principal::PluginInstance::new(id.as_str(), None),
+                            &cwd,
+                            &declared,
+                            Vec::new(),
+                        )
+                        .capabilities
+                        .contains(&cap);
+                    if granted {
+                        Outcome::Admit
+                    } else {
+                        Outcome::Deny
+                    }
+                }
+                _ => {
+                    let declared = std::iter::once(probe.to_string()).collect();
+                    let (granted, blocked) = monitor.materialize_wasm_sets(
+                        &super::principal::PluginInstance::new(id.as_str(), None),
+                        &cwd,
+                        &declared,
+                    );
+                    if blocked.contains(*probe) {
+                        Outcome::Deny
+                    } else if granted.contains(*probe) {
+                        Outcome::Admit
+                    } else {
+                        Outcome::Ask
+                    }
+                }
+            };
+            assert_eq!(
+                outcome, cell.outcome,
+                "{runtime:?} {family:?} {probe} after install --yes"
+            );
+        }
+    }
 }

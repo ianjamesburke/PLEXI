@@ -244,7 +244,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            assert not _find_events(events, "save_app_state")
+            assert not _find_events(events, "save_plugin_state")
         finally:
             proc.kill()
 
@@ -253,7 +253,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            saves = _find_events(events, "save_app_state")
+            saves = _find_events(events, "save_plugin_state")
             assert len(saves) == 1
             assert saves[0]["payload"]["count"] == 99
         finally:
@@ -1206,3 +1206,47 @@ def test_pipe_message_event_dispatched_and_replies(tmp_path):
     finally:
         proc.kill()
 
+
+
+class TestUnsupportedEffectsFailLoudly:
+    """An effect the live runtime cannot execute must raise, never vanish."""
+
+    def _run(self, tmp_path, effect_expr):
+        app = tmp_path / "app.py"
+        app.write_text(
+            "from plexi_sdk.effects import *\n"
+            "from plexi_sdk.ui import Text\n"
+            f"def init(size, args):\n    return [{effect_expr}]\n"
+            "def update(event):\n    return []\n"
+            "def view():\n    return Text('x')\n"
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            proc.stdin.write(json.dumps({
+                "type": "init", "plugin_id": "fail-loud", "workspace_root": "/tmp",
+                "capabilities": [], "feature_flags": [], "protocol": "pgap/4",
+                "width": 640.0, "height": 360.0,
+            }) + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+            # The refusal ends the run, so it arrives as the runtime's
+            # structured `fatal_error` report rather than a stderr traceback.
+            messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
+            fatal = next(m for m in messages if m.get("type") == "fatal_error")
+            assert fatal["phase"] == "init"
+            return fatal["message"]
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_ai_query_is_refused_with_a_named_error(self, tmp_path):
+        err = self._run(tmp_path, "AiQuery('r', 'fast', '', [])")
+        assert "fail-loud" in err and "AiQuery" in err and "not available" in err
+
+    def test_get_system_stats_is_refused_with_a_named_error(self, tmp_path):
+        err = self._run(tmp_path, "GetSystemStats()")
+        assert "GetSystemStats" in err and "not available" in err
+
+    def test_unknown_effect_type_is_refused(self, tmp_path):
+        err = self._run(tmp_path, "object()")
+        assert "fail-loud" in err and "object" in err and "not a supported effect" in err

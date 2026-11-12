@@ -43,7 +43,8 @@ impl PlexiApp {
             return Ok(None);
         }
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .map_err(|error| error.to_string())?;
         let verified = monitor
             .authenticate_call(caller.pane_id, caller.credential, peer)
             .map_err(|e| format!("permission_denied: caller identity: {e:?}"))?;
@@ -451,7 +452,7 @@ mod tests {
             )
             .unwrap();
         let root = h.workspace_root();
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
             h.app.windows[0].context_id,
@@ -598,7 +599,7 @@ mod tests {
             )
             .unwrap();
         assert!(!h.app.agent_tool_children.contains_key(&caller));
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
             h.app.windows[0].context_id,
@@ -660,7 +661,7 @@ mod tests {
             .or_default()
             .set_schema(json!({"type":"object","required":["verdict"]}), None)
             .unwrap();
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
             h.app.windows[0].context_id,
@@ -715,7 +716,7 @@ mod tests {
             )
             .unwrap();
         let root = h.workspace_root();
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
             h.app.windows[0].context_id,

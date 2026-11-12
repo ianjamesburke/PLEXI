@@ -96,6 +96,8 @@ pub enum PackageError {
     InvalidCliOperation { path: PathBuf, message: String },
     #[error("manifest at {path} declares [[cli_operation]] but not the `cli.operations` capability — add it to [plugin.capabilities].capabilities")]
     CliOperationsWithoutCapability { path: PathBuf },
+    #[error("{path} declares [plugin.capabilities.wasm] but its runtime is {runtime}; that table is only for WASM plugins. Move these ids to [plugin.capabilities].capabilities or remove the table")]
+    WasmCapabilitiesOnNonWasmRuntime { runtime: &'static str, path: PathBuf },
     #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
     UnknownWasmCapability {
         value: String,
@@ -388,6 +390,16 @@ fn validate_dir_inner(
 
     let files = collect_files(plugin_dir)?;
     let runtime = PackageRuntime::from_manifest(manifest.plugin.manifest_type, &entry)?;
+    // The table names raw WASM imports. On any other runtime its ids would
+    // only alias Python capability strings (stint 1291).
+    if runtime != PackageRuntime::Wasm
+        && !(wasm_required_capabilities.is_empty() && wasm_optional_capabilities.is_empty())
+    {
+        return Err(PackageError::WasmCapabilitiesOnNonWasmRuntime {
+            runtime: runtime.as_str(),
+            path: plugin_dir.join("manifest.toml"),
+        });
+    }
     scan_native_bypass_patterns(plugin_dir, &files, runtime, native_bypass_review)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
@@ -832,7 +844,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
 
 /// Host-written files at the plugin root that are not package content. Excluded so
 /// a version pin or the install marker never changes the content identity.
-const HOST_METADATA_FILES: [&str; 3] = [
+pub(crate) const HOST_METADATA_FILES: [&str; 3] = [
     "installed_version.txt",
     "pinned_version.txt",
     INSTALL_COMPLETE_MARKER,
@@ -1846,6 +1858,35 @@ values = ["hi"]
         assert!(
             matches!(err, PackageError::UnknownWasmCapability { ref value, .. } if value == "net:dial:example.com"),
             "expected UnknownWasmCapability, got: {err}"
+        );
+    }
+
+    /// Stint 1291: `[plugin.capabilities.wasm]` names raw WASM imports. A
+    /// Python package that lists them gets nothing from them and must not
+    /// validate (the ids overlap Python capability strings such as
+    /// `spawn.plugin`).
+    #[test]
+    fn wasm_capability_table_is_rejected_for_python_runtime() {
+        let work = TempDir::new().unwrap();
+        let plugin_dir = work.path().join("app");
+        fs::create_dir(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join("manifest.toml"),
+            "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"pkg-py-wasm-table\"\nname = \"Py\"\nversion = \"0.1.0\"\ndescription = \"Py\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [\"spawn.plugin\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pkg-py-wasm-table.main\"\ndefault = true\n",
+        )
+        .unwrap();
+        fs::write(plugin_dir.join("main.py"), "# stub\n").unwrap();
+
+        let err = validate_dir(&plugin_dir).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackageError::WasmCapabilitiesOnNonWasmRuntime {
+                    runtime: "python",
+                    ..
+                }
+            ),
+            "expected WasmCapabilitiesOnNonWasmRuntime, got: {err}"
         );
     }
 

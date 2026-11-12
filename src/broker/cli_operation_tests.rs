@@ -79,7 +79,7 @@ fn monitor() -> (
 ) {
     let profile = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
-    let monitor = PermissionMonitor::for_profile(profile.path());
+    let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
     (profile, ws, monitor)
 }
 
@@ -219,7 +219,7 @@ fn denial_is_not_a_grant_and_deny_always_is_remembered() {
 fn always_survives_restart_and_session_does_not() {
     let profile = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
-    let monitor = PermissionMonitor::for_profile(profile.path());
+    let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
     let always = Call::new(ws.path());
     let session = Call {
         binding: "task.show#bind-s",
@@ -248,7 +248,7 @@ fn tampered_grant_store_does_not_authorize() {
     let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
     let profile = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
-    let monitor = PermissionMonitor::for_profile(profile.path());
+    let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
     let call = Call::new(ws.path());
     let id = pending(call.admit(&monitor));
     monitor

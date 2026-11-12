@@ -738,15 +738,17 @@ impl PlexiApp {
                     if let Some(operation_id) = &submit.operation_id {
                         let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
-                        );
+                        )
+                        .map_err(|error| error.to_string());
                         let state = if reply.get("ok").and_then(Value::as_bool) == Some(true) {
                             crate::broker::gate::ContinuationState::Completed
                         } else {
                             // Text or Enter may already have been delivered.
                             crate::broker::gate::ContinuationState::OutcomeUnknown
                         };
-                        if let Err(error) = monitor.complete_continuation(operation_id, state, None)
-                        {
+                        if let Err(error) = monitor.and_then(|monitor| {
+                            monitor.complete_continuation(operation_id, state, None)
+                        }) {
                             log::error!(
                                 "pane_submit: could not record operation={operation_id}: {error}"
                             );
@@ -1593,7 +1595,14 @@ impl PlexiApp {
             return;
         }
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    log::error!("pane_send: approvals left parked: {error}");
+                    return;
+                }
+            };
         let now = Instant::now();
         let items = std::mem::take(&mut self.pending_send_approvals);
         let mut remaining_items = Vec::new();

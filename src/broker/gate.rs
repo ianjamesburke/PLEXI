@@ -376,8 +376,11 @@ pub struct PermissionEntry {
 /// Who is asking to change a stored permission.
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
-    /// A person at a terminal with no pane and no call credential.
-    /// The Permissions plugin's own buttons also pass `true`.
+    /// `true` only for host-owned trusted input. It is never derived from the
+    /// absence of an agent signal: socket callers (pane or not, credential or
+    /// not), MCP and Assistant tools, and plugin guest messages (including the
+    /// bundled Permissions plugin's) pass `false`, so their `allow`/`reset`
+    /// file Needs you and a desktop click applies them (stints 1264, 1271).
     pub human: bool,
     pub actor_id: String,
 }
@@ -490,6 +493,9 @@ pub struct PermissionMonitor {
     sheet_published_epoch: AtomicU64,
     #[cfg(test)]
     now_override: AtomicI64,
+    /// The host token this monitor was opened with. `None` for an ephemeral
+    /// monitor, which never touches disk (stint 1291).
+    custody: Option<super::custody::HostProcess>,
 }
 
 #[derive(Clone)]
@@ -552,7 +558,10 @@ pub enum Admission {
 }
 
 impl PermissionMonitor {
-    pub fn for_profile(dir: &Path) -> Arc<Self> {
+    /// The profile's shared monitor. Host only: a process that never ran host
+    /// start (every CLI command) gets [`super::custody::NotHostProcess`].
+    pub fn for_profile(dir: &Path) -> Result<Arc<Self>, super::custody::NotHostProcess> {
+        let host = super::custody::host_process()?;
         let key = crate::platform::path::canonical_or_self(dir);
         if let Some(existing) = monitors()
             .lock()
@@ -560,16 +569,17 @@ impl PermissionMonitor {
             .get(&key)
             .cloned()
         {
-            return existing;
+            return Ok(existing);
         }
         // Acquire the test host-key guard before `monitors()` so a cache miss
         // never holds `monitors()` while waiting on `ExclusiveHostKey`.
         #[cfg(test)]
         let _host_key = super::host_key::TestBackendGuard::acquire_if_needed();
         let mut map = monitors().lock().unwrap_or_else(|e| e.into_inner());
-        map.entry(key)
-            .or_insert_with(|| Self::open_profile(dir))
-            .clone()
+        Ok(map
+            .entry(key)
+            .or_insert_with(|| Self::open_with(&host, dir))
+            .clone())
     }
 
     /// Bind the profile's flight recorder to this run's session id.
@@ -579,32 +589,44 @@ impl PermissionMonitor {
 
     /// Open `dir` without the process cache. A restart test uses this so a
     /// second look actually reads the files again.
-    pub fn open_profile(dir: &Path) -> Arc<Self> {
-        let monitor = Self::open(dir);
+    #[cfg(test)]
+    pub fn open_profile(dir: &Path) -> Result<Arc<Self>, super::custody::NotHostProcess> {
+        let host = super::custody::host_process()?;
+        Ok(Self::open_with(&host, dir))
+    }
+
+    fn open_with(host: &super::custody::HostProcess, dir: &Path) -> Arc<Self> {
+        let monitor = Self::open(host, dir);
         monitor.adopt_flight_session(dir);
         Arc::new(monitor)
     }
 
     /// Private store. Used by tests that must not share a profile monitor.
     pub fn ephemeral() -> Arc<Self> {
-        Arc::new(Self::new(GrantStore::default(), None))
+        Arc::new(Self::from_arc(
+            Arc::new(Mutex::new(GrantStore::default())),
+            None,
+            None,
+            None,
+        ))
     }
 
-    fn open(dir: &Path) -> Self {
+    fn open(host: &super::custody::HostProcess, dir: &Path) -> Self {
         // Inspect before load. Migration can rewrite grants.toml, which would
         // hide an edit made while the host was down.
         let finding = super::integrity::inspect(dir);
-        if let Err(error) = super::seal::ensure_readable_mac_key(dir) {
+        if let Err(error) = super::seal::ensure_readable_mac_key(host, dir) {
             if super::host_key::is_key_unreadable(&error) {
                 log::info!(
                     "permission_monitor: mac key unreadable; rotation needs keychain access ({error})"
                 );
-                let store = GrantStore::load_or_default(dir);
+                let store = GrantStore::load_sealed(host, dir);
                 let audit = dir.join("permission-audit.jsonl");
                 let monitor = Self::from_arc(
                     Arc::new(Mutex::new(store)),
                     Some(audit),
                     Some(dir.to_path_buf()),
+                    Some(*host),
                 );
                 monitor.restore_queue();
                 monitor.file_keychain_needs_you();
@@ -616,8 +638,8 @@ impl PermissionMonitor {
         }
         // Snapshot before the grant load. Adopting a legacy file creates the
         // MAC key, and a later check would then look sealed.
-        let never_sealed = super::seal::profile_never_sealed(dir);
-        let store = GrantStore::load_or_default(dir);
+        let never_sealed = super::seal::profile_never_sealed(host, dir);
+        let store = GrantStore::load_sealed(host, dir);
         let mut faults = store.integrity_faults().to_vec();
         // `AgentHost::production` and `HostSubscriptionService::new` load the
         // grant file during startup, before this monitor exists. That load
@@ -633,14 +655,14 @@ impl PermissionMonitor {
         }
         let audit = dir.join("permission-audit.jsonl");
         let mut rejected_audit_reason = None;
-        if let Err(reason) = super::seal::verify_audit(&audit) {
+        if let Err(reason) = super::seal::verify_audit(host, &audit) {
             if super::host_key::is_key_unreadable(&reason) {
                 log::info!(
                     "permission_monitor: audit could not be checked because the seal key is unreadable ({reason})"
                 );
             } else if never_sealed
                 && super::seal::unauthenticated_audit(&reason)
-                && super::seal::adopt_legacy_audit(&audit).is_ok()
+                && super::seal::adopt_legacy_audit(host, &audit).is_ok()
             {
                 log::info!("permission_monitor: migrated legacy unsealed permission-audit.jsonl");
             } else {
@@ -661,13 +683,14 @@ impl PermissionMonitor {
             Arc::new(Mutex::new(store)),
             Some(audit.clone()),
             Some(dir.to_path_buf()),
+            Some(*host),
         );
         // Restore before filing new seal faults or clearing an untrusted seal
         // state so a persist of those faults cannot replace a queue left by the
         // previous process.
         monitor.restore_queue();
         if let Some(reason) = rejected_audit_reason {
-            super::seal::reject_untrusted_audit(&audit, &reason);
+            super::seal::reject_untrusted_audit(host, &audit, &reason);
         }
         for fault in &faults {
             monitor.raise_integrity(fault);
@@ -724,26 +747,27 @@ impl PermissionMonitor {
         }) else {
             return Err("permission profile directory is unknown".to_string());
         };
+        let host = self.custody()?;
         super::host_key::with_keychain_interaction(|| {
-            match super::seal::existing_mac_key(&dir) {
+            match super::seal::existing_mac_key(&host, &dir) {
                 Ok(Some(_)) => {
                     log::info!("permission_seal: interactive mac key read succeeded");
                 }
                 Ok(None) => {
-                    super::seal::mac_key_bytes(&dir)?;
+                    super::seal::mac_key_bytes(&host, &dir)?;
                     log::info!("permission_seal: created permission mac key after keychain prompt");
                 }
                 Err(error) if super::host_key::is_key_unreadable(&error) => {
                     log::info!(
                         "permission_seal: interactive mac key read still failed; rotating ({error})"
                     );
-                    super::seal::rotate_unreadable_mac_key(&dir)?;
-                    super::seal::reset_unverified_profile(&dir)?;
+                    super::seal::rotate_unreadable_mac_key(&host, &dir)?;
+                    super::seal::reset_unverified_profile(&host, &dir)?;
                 }
                 Err(error) => return Err(error),
             }
             self.restore_queue();
-            let loaded = GrantStore::load_or_default(&dir);
+            let loaded = GrantStore::load_sealed(&host, &dir);
             let mut faults = loaded.integrity_faults().to_vec();
             for fault in super::seal::take_integrity_faults(&dir) {
                 if !faults
@@ -758,11 +782,11 @@ impl PermissionMonitor {
                 self.raise_integrity(fault);
             }
             let audit = dir.join("permission-audit.jsonl");
-            if let Err(reason) = super::seal::verify_audit(&audit) {
+            if let Err(reason) = super::seal::verify_audit(&host, &audit) {
                 if super::host_key::is_key_unreadable(&reason) {
                     return Err(reason);
                 }
-                super::seal::reject_untrusted_audit(&audit, &reason);
+                super::seal::reject_untrusted_audit(&host, &audit, &reason);
                 self.raise_integrity(&super::seal::IntegrityFault {
                     file: "permission-audit.jsonl".to_string(),
                     reason,
@@ -812,7 +836,11 @@ impl PermissionMonitor {
             revision_after: String::new(),
         };
         if let Some(path) = &self.audit_path {
-            match super::seal::append_audit(path, &fact) {
+            let appended = match self.custody() {
+                Ok(host) => super::seal::append_audit(&host, path, &fact),
+                Err(error) => Err(super::seal::SealError::Io(error)),
+            };
+            match appended {
                 Ok(()) => {
                     super::integrity::note_saved_file(path);
                     self.remember_audit(fact);
@@ -828,14 +856,11 @@ impl PermissionMonitor {
         }
     }
 
-    fn new(store: GrantStore, audit_path: Option<PathBuf>) -> Self {
-        Self::from_arc(Arc::new(Mutex::new(store)), audit_path, None)
-    }
-
     fn from_arc(
         store: Arc<Mutex<GrantStore>>,
         audit_path: Option<PathBuf>,
         profile_dir: Option<PathBuf>,
+        custody: Option<super::custody::HostProcess>,
     ) -> Self {
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         log::info!("permission_monitor: session {session_id} started");
@@ -864,7 +889,14 @@ impl PermissionMonitor {
             sheet_published_epoch: AtomicU64::new(0),
             #[cfg(test)]
             now_override: AtomicI64::new(0),
+            custody,
         }
+    }
+
+    /// The host token for a disk-backed monitor. Only [`Self::open`] sets it.
+    fn custody(&self) -> Result<super::custody::HostProcess, String> {
+        self.custody
+            .ok_or_else(|| super::custody::NotHostProcess.to_string())
     }
 
     /// True when a previous host left a queue file. A frame uses this so it
@@ -881,7 +913,7 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&key);
-        Self::for_profile(dir)
+        Self::for_profile(dir).expect("tests run as the host")
     }
 
     /// The process-cached monitor for `dir`, if something in this process has
@@ -1931,7 +1963,9 @@ impl PermissionMonitor {
                     })
                     .unwrap_or_else(crate::config::config_dir);
                 let key_still_unreadable = !approve
-                    && super::seal::existing_mac_key(&profile_dir)
+                    && self
+                        .custody()
+                        .and_then(|host| super::seal::existing_mac_key(&host, &profile_dir))
                         .err()
                         .is_some_and(|error| super::host_key::is_key_unreadable(&error));
                 if key_still_unreadable {
@@ -2360,7 +2394,10 @@ impl PermissionMonitor {
         map.insert(key.clone(), record);
         if let Some(profile) = self.profile_dir.as_deref() {
             let rows: Vec<_> = map.values().cloned().collect();
-            if let Err(error) = super::needs_you_store::save_continuations(profile, &rows) {
+            if let Err(error) = self
+                .custody()
+                .and_then(|host| super::needs_you_store::save_continuations(&host, profile, &rows))
+            {
                 if let Some(previous) = previous {
                     map.insert(key, previous);
                 } else {
@@ -2389,7 +2426,9 @@ impl PermissionMonitor {
             record.updated_at = self.now_secs();
             if let Some(profile) = self.profile_dir.as_deref() {
                 let records = map.values().cloned().collect::<Vec<_>>();
-                super::needs_you_store::save_continuations(profile, &records)?;
+                self.custody().and_then(|host| {
+                    super::needs_you_store::save_continuations(&host, profile, &records)
+                })?;
             }
         }
         self.run_outcomes
@@ -2462,7 +2501,9 @@ impl PermissionMonitor {
             let updated = entry.clone();
             if let Some(profile) = self.profile_dir.as_deref() {
                 let records = map.values().cloned().collect::<Vec<_>>();
-                if let Err(error) = super::needs_you_store::save_continuations(profile, &records) {
+                if let Err(error) = self.custody().and_then(|host| {
+                    super::needs_you_store::save_continuations(&host, profile, &records)
+                }) {
                     map.insert(key, previous);
                     return Err(error);
                 }
@@ -2527,7 +2568,10 @@ impl PermissionMonitor {
         // an older snapshot cannot overwrite a durable pre-effect marker.
         let map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
         let records: Vec<ContinuationRecord> = map.values().cloned().collect();
-        if let Err(error) = super::needs_you_store::save_continuations(&profile, &records) {
+        if let Err(error) = self
+            .custody()
+            .and_then(|host| super::needs_you_store::save_continuations(&host, &profile, &records))
+        {
             log::error!(
                 "needs_you: persist continuations failed for {}: {error}",
                 profile.display()
@@ -2539,7 +2583,17 @@ impl PermissionMonitor {
         let Some(profile) = self.profile_dir.clone() else {
             return;
         };
-        match super::needs_you_store::load(&profile) {
+        let host = match self.custody() {
+            Ok(host) => host,
+            Err(error) => {
+                log::error!(
+                    "needs_you: queue not restored for {}: {error}",
+                    profile.display()
+                );
+                return;
+            }
+        };
+        match super::needs_you_store::load(&host, &profile) {
             super::needs_you_store::LoadedQueue::Empty => {
                 log::info!("needs_you: no persisted queue in {}", profile.display());
             }
@@ -2577,11 +2631,11 @@ impl PermissionMonitor {
                 }
             }
         }
-        self.restore_continuations(&profile);
+        self.restore_continuations(&host, &profile);
     }
 
-    fn restore_continuations(&self, profile: &Path) {
-        let loaded = super::needs_you_store::load_continuations(profile);
+    fn restore_continuations(&self, host: &super::custody::HostProcess, profile: &Path) {
+        let loaded = super::needs_you_store::load_continuations(host, profile);
         if loaded.is_empty() {
             return;
         }
@@ -2790,7 +2844,10 @@ impl PermissionMonitor {
                 details: record.details.clone(),
             });
         }
-        if let Err(error) = super::needs_you_store::save(&profile, &items) {
+        if let Err(error) = self
+            .custody()
+            .and_then(|host| super::needs_you_store::save(&host, &profile, &items))
+        {
             log::error!(
                 "needs_you: persist failed for {}: {error}",
                 profile.display()
@@ -3205,24 +3262,6 @@ impl PermissionMonitor {
         entries
     }
 
-    /// Persist one plugin capability. A later click replaces an auto-grant of the
-    /// same capability instead of adding a second row.
-    pub fn grant_plugin_capability(
-        &self,
-        plugin_id: &str,
-        workspace_root: &Path,
-        cap: crate::app::permissions::Capability,
-        decision: Decision,
-    ) {
-        self.grant_capability_id(
-            plugin_id,
-            workspace_root,
-            cap.as_str(),
-            decision,
-            GrantSource::User,
-        );
-    }
-
     /// Persist one capability id (manifest capability or raw WASM import).
     pub fn grant_capability_id(
         &self,
@@ -3410,7 +3449,7 @@ impl PermissionMonitor {
         }
         let outcome = self.apply_mutation(id, action);
         log::info!(
-            "permission_monitor: mutate {action} id={id} human={} actor={} outcome={}",
+            "permission_monitor: mutate {action} id={id:?} human={} actor={} outcome={}",
             caller.human,
             caller.actor_id,
             mutation_label(&outcome)
@@ -3420,7 +3459,7 @@ impl PermissionMonitor {
 
     fn file_widen(&self, id: &str, action: &str, actor: &str) -> PermissionMutation {
         let Some(entry) = self.entry_by_id(id) else {
-            log::info!("permission_monitor: widen {action} missing id={id} actor={actor}");
+            log::info!("permission_monitor: widen {action} missing id={id:?} actor={actor:?}");
             return PermissionMutation::Missing {
                 entry_id: id.to_string(),
             };
@@ -3445,7 +3484,7 @@ impl PermissionMonitor {
             },
             resource: entry.tool.clone(),
             summary: format!(
-                "Approve {action} for {} {} ({id}). An agent cannot widen this itself.",
+                "Approve {action} for {} {} ({id}). A request cannot widen this by itself.",
                 entry.actor_id, entry.tool
             ),
             expires_at: None,
@@ -3463,7 +3502,7 @@ impl PermissionMonitor {
                         },
                     );
                 log::info!(
-                    "permission_monitor: widen {action} id={id} filed needs_you={needs_you_id} actor={actor}"
+                    "permission_monitor: widen {action} id={id:?} filed needs_you={needs_you_id} actor={actor:?}"
                 );
                 PermissionMutation::NeedsYou {
                     needs_you_id,
@@ -3959,7 +3998,7 @@ impl PermissionMonitor {
         if !path.exists() {
             return Ok(uses);
         }
-        super::seal::verify_audit(path)?;
+        super::seal::verify_audit(&self.custody()?, path)?;
         let text = std::fs::read_to_string(path).map_err(|error| {
             log::warn!("secrets_manager: audit metadata read failed: {error}");
             "Could not read secret-use metadata.".to_string()
@@ -4062,7 +4101,11 @@ impl PermissionMonitor {
             let mut persisted_fact = serde_json::to_value(fact)
                 .map_err(|error| format!("audit serialization failed: {error}"))?;
             persisted_fact["timestamp"] = serde_json::json!(self.now_secs());
-            match super::seal::append_audit(path, &persisted_fact) {
+            let appended = match self.custody() {
+                Ok(host) => super::seal::append_audit(&host, path, &persisted_fact),
+                Err(error) => Err(super::seal::SealError::Io(error)),
+            };
+            match appended {
                 Ok(()) => super::integrity::note_saved_file(path),
                 Err(super::seal::SealError::Untrusted(reason)) => {
                     self.raise_integrity(&super::seal::IntegrityFault {
@@ -4089,7 +4132,9 @@ impl PermissionMonitor {
     }
 }
 
-fn declared_capability_needs_click(capability_id: &str) -> bool {
+/// Whether a declared capability with no stored decision is withheld at
+/// launch until a person grants it (otherwise it is auto-granted).
+pub(crate) fn declared_capability_needs_click(capability_id: &str) -> bool {
     match crate::app::permissions::Capability::try_from(capability_id) {
         Ok(cap) => cap.is_sensitive(),
         Err(_) => crate::app::permissions::wasm_capability_requires_consent(capability_id),
@@ -4746,6 +4791,9 @@ pub fn structured_error(code: &str, call_id: &str, pending_request_id: Option<&s
 mod tests {
     use super::*;
     use std::thread;
+
+    const TEST_HOST: &crate::broker::custody::HostProcess =
+        &crate::broker::custody::HostProcess::for_test();
     use std::time::Duration;
 
     #[test]
@@ -4875,7 +4923,7 @@ mod tests {
     #[test]
     fn pane_send_restart_before_decision_preserves_exact_retry() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"waiting-restart"}"#;
         let fingerprint = fingerprint_args(args).unwrap();
         let mut base = binding(&fingerprint);
@@ -4891,7 +4939,7 @@ mod tests {
         );
         drop(monitor);
 
-        let restored = PermissionMonitor::open_profile(dir.path());
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         let record = restored.get_continuation("waiting-restart").unwrap();
         assert_eq!(record.state, ContinuationState::Paused);
         assert_eq!(record.run_outcome.as_deref(), Some("retry_required"));
@@ -4921,7 +4969,7 @@ mod tests {
     fn pane_send_denial_after_timeout_is_terminal_in_reconciliation() {
         for via_socket in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"deny-detached"}"#;
             let mut base = binding(&fingerprint_args(args).unwrap());
             base.target_type = TargetType::Capability;
@@ -4947,7 +4995,7 @@ mod tests {
             assert_eq!(record.state, ContinuationState::Canceled);
             assert_eq!(record.run_outcome.as_deref(), Some("canceled"));
             drop(monitor);
-            let restored = PermissionMonitor::open_profile(dir.path());
+            let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert_eq!(
                 restored
                     .get_continuation("deny-detached")
@@ -4962,7 +5010,7 @@ mod tests {
     #[test]
     fn detached_pane_send_restart_reports_authority_must_be_rechecked() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"send-restart"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
         base.target_type = TargetType::Capability;
@@ -4979,7 +5027,7 @@ mod tests {
             .unwrap();
         drop(monitor);
 
-        let restored = PermissionMonitor::open_profile(dir.path());
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         let continuation = restored.get_continuation("send-restart").unwrap();
         assert_eq!(continuation.state, ContinuationState::Paused);
         assert_eq!(
@@ -4987,7 +5035,7 @@ mod tests {
             Some("retry_requires_authorization_check")
         );
         drop(restored);
-        let restored = PermissionMonitor::open_profile(dir.path());
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             restored
                 .get_continuation("send-restart")
@@ -5012,7 +5060,7 @@ mod tests {
     #[test]
     fn pane_send_claim_is_durable_and_fails_closed_on_persistence_error() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             monitor
                 .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
@@ -5020,7 +5068,7 @@ mod tests {
             PaneSendClaim::Claimed
         );
         drop(monitor);
-        let restored = PermissionMonitor::open_profile(dir.path());
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             restored
                 .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
@@ -5044,7 +5092,7 @@ mod tests {
             .complete_continuation("send-done", ContinuationState::Completed, None)
             .unwrap();
         drop(restored);
-        let completed = PermissionMonitor::open_profile(dir.path());
+        let completed = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             completed
                 .claim_pane_send("send-done", "pane:1", 2, 42, "fp-done")
@@ -5054,7 +5102,7 @@ mod tests {
         );
 
         let broken = tempfile::tempdir().unwrap();
-        let unavailable = PermissionMonitor::open_profile(broken.path());
+        let unavailable = PermissionMonitor::open_profile(broken.path()).unwrap();
         let path = broken.path().join("host").join("continuations.json");
         std::fs::create_dir_all(&path).unwrap();
         assert!(unavailable
@@ -5580,7 +5628,7 @@ mod tests {
         let victim = tempfile::tempdir().unwrap();
         let donor = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let mut donor_store = GrantStore::load_or_default(donor.path());
+        let mut donor_store = GrantStore::load_or_default(donor.path()).unwrap();
         donor_store.record(GrantRecord::plugin_capability(
             "my-app",
             ws.path(),
@@ -5588,7 +5636,7 @@ mod tests {
             Decision::Allow,
         ));
         donor_store.save();
-        let empty = GrantStore::load_or_default(victim.path());
+        let empty = GrantStore::load_or_default(victim.path()).unwrap();
         empty.save();
         let signed = std::fs::read_to_string(donor.path().join("grants.toml")).unwrap();
         let sealed_empty = std::fs::read_to_string(victim.path().join("grants.toml")).unwrap();
@@ -5610,13 +5658,13 @@ mod tests {
 
         // A startup loader can quarantine the file before any monitor exists.
         // The later monitor must still fail closed and file Needs you.
-        let preloaded = GrantStore::load_or_default(victim.path());
+        let preloaded = GrantStore::load_or_default(victim.path()).unwrap();
         assert!(preloaded.records().is_empty());
         assert!(
             !victim.path().join("grants.toml").exists(),
             "the startup load quarantines a forged grants file"
         );
-        let monitor = PermissionMonitor::open_profile(victim.path());
+        let monitor = PermissionMonitor::open_profile(victim.path()).unwrap();
         assert!(monitor.store().records().is_empty());
         let req = PermissionRequest::plugin_capability(
             "my-app",
@@ -5638,7 +5686,7 @@ mod tests {
     #[test]
     fn edited_and_deleted_audit_lines_are_detected() {
         let edited = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::open_profile(edited.path());
+        let monitor = PermissionMonitor::open_profile(edited.path()).unwrap();
         monitor.note_denial("actor", "c1", "res", "op", "denied");
         monitor.note_denial("actor", "c2", "res", "op", "denied");
         drop(monitor);
@@ -5648,9 +5696,10 @@ mod tests {
         assert!(lines.len() >= 2, "{original}");
         lines[0] = lines[0].replace("denied", "allowed");
         std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
-        let err = crate::broker::seal::verify_audit(&path).expect_err("an edited line must fail");
+        let err = crate::broker::seal::verify_audit(TEST_HOST, &path)
+            .expect_err("an edited line must fail");
         assert!(err.contains("mac"), "{err}");
-        let monitor = PermissionMonitor::open_profile(edited.path());
+        let monitor = PermissionMonitor::open_profile(edited.path()).unwrap();
         assert!(
             monitor
                 .open_needs_you()
@@ -5660,7 +5709,7 @@ mod tests {
         );
 
         let deleted = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::open_profile(deleted.path());
+        let monitor = PermissionMonitor::open_profile(deleted.path()).unwrap();
         monitor.note_denial("actor", "c1", "res", "op", "denied");
         monitor.note_denial("actor", "c2", "res", "op", "denied");
         drop(monitor);
@@ -5668,13 +5717,15 @@ mod tests {
         let original = std::fs::read_to_string(&path).unwrap();
         let first = original.lines().next().expect("first audit line");
         std::fs::write(&path, format!("{first}\n")).unwrap();
-        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted line must fail");
+        let err = crate::broker::seal::verify_audit(TEST_HOST, &path)
+            .expect_err("a deleted line must fail");
         assert!(err.contains("tip"), "{err}");
         std::fs::remove_file(&path).unwrap();
-        let err = crate::broker::seal::verify_audit(&path).expect_err("a deleted log must fail");
+        let err = crate::broker::seal::verify_audit(TEST_HOST, &path)
+            .expect_err("a deleted log must fail");
         assert!(err.contains("deleted"), "{err}");
 
-        let monitor = PermissionMonitor::open_profile(deleted.path());
+        let monitor = PermissionMonitor::open_profile(deleted.path()).unwrap();
         assert!(
             monitor
                 .open_needs_you()
@@ -5687,7 +5738,7 @@ mod tests {
     #[test]
     fn needs_you_survives_reload_and_reports_outcome_unknown() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(dir.path());
+        let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-persist"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
         base.session_id = Some(monitor.session_id().to_string());
@@ -5739,7 +5790,7 @@ mod tests {
     #[test]
     fn forged_queue_is_not_a_grant_and_is_not_silent() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(dir.path());
+        let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let args =
             r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-forge"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
@@ -5786,7 +5837,7 @@ mod tests {
     #[test]
     fn deleted_queue_is_an_integrity_item() {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(dir.path());
+        let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-delete"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
         base.session_id = Some(monitor.session_id().to_string());
@@ -5808,7 +5859,7 @@ mod tests {
     fn host_queue_directory_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(dir.path());
+        let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let args =
             r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-mode"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
@@ -5830,7 +5881,7 @@ mod tests {
             "the journal key lives in the host seal store"
         );
         let journal = std::fs::read(host.join("needs-you.json")).unwrap();
-        let key = super::super::seal::existing_mac_key(dir.path())
+        let key = super::super::seal::existing_mac_key(TEST_HOST, dir.path())
             .unwrap()
             .unwrap();
         assert!(!journal
@@ -5909,7 +5960,7 @@ mod tests {
             )
             .unwrap();
 
-            let preloaded = GrantStore::load_or_default(dir.path());
+            let preloaded = GrantStore::load_or_default(dir.path()).unwrap();
             assert!(
                 preloaded.integrity_faults().is_empty(),
                 "{:?}",
@@ -5930,10 +5981,13 @@ mod tests {
                 "a readable legacy permissions.toml is imported"
             );
             assert_no_untrusted(dir.path());
-            crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
-                .expect("legacy audit is replaced with an authenticated tip");
+            crate::broker::seal::verify_audit(
+                TEST_HOST,
+                &dir.path().join("permission-audit.jsonl"),
+            )
+            .expect("legacy audit is replaced with an authenticated tip");
 
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert!(
                 monitor.open_needs_you().is_empty(),
                 "legacy adopt files no integrity item: {:?}",
@@ -5944,7 +5998,7 @@ mod tests {
             crate::broker::host_key::delete(crate::broker::host_key::MAC_ITEM).unwrap();
             crate::broker::host_key::delete(&crate::broker::seal::mac_account(dir.path())).unwrap();
             strip_mac(&dir.path().join("grants.toml"));
-            let tampered = PermissionMonitor::open_profile(dir.path());
+            let tampered = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert!(
                 tampered.store().records().is_empty(),
                 "seal marker and audit tip block adopt after the mac key is removed"
@@ -5954,8 +6008,11 @@ mod tests {
                 dir.path().join("permission-audit.jsonl").is_file(),
                 "the authenticated audit stays in place"
             );
-            crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
-                .expect("audit tip still matches");
+            crate::broker::seal::verify_audit(
+                TEST_HOST,
+                &dir.path().join("permission-audit.jsonl"),
+            )
+            .expect("audit tip still matches");
         });
     }
 
@@ -5976,7 +6033,7 @@ mod tests {
             );
             assert!(!dir.path().join("permission-audit.jsonl").exists());
 
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert!(
                 monitor.open_needs_you().is_empty(),
                 "{:?}",
@@ -5990,7 +6047,7 @@ mod tests {
             assert_no_untrusted(dir.path());
             let audit = dir.path().join("permission-audit.jsonl");
             assert!(audit.is_file(), "adopt starts an authenticated audit tip");
-            crate::broker::seal::verify_audit(&audit).expect("new audit tip verifies");
+            crate::broker::seal::verify_audit(TEST_HOST, &audit).expect("new audit tip verifies");
         });
     }
 
@@ -5999,7 +6056,7 @@ mod tests {
         let stripped = tempfile::tempdir().unwrap();
         seal_one_grant(stripped.path());
         strip_mac(&stripped.path().join("grants.toml"));
-        let monitor = PermissionMonitor::open_profile(stripped.path());
+        let monitor = PermissionMonitor::open_profile(stripped.path()).unwrap();
         assert!(monitor.store().records().is_empty());
         assert_grants_quarantined(stripped.path(), &monitor);
         assert_eq!(
@@ -6010,7 +6067,7 @@ mod tests {
         let corrupt = tempfile::tempdir().unwrap();
         seal_one_grant(corrupt.path());
         corrupt_mac(&corrupt.path().join("grants.toml"));
-        let monitor = PermissionMonitor::open_profile(corrupt.path());
+        let monitor = PermissionMonitor::open_profile(corrupt.path()).unwrap();
         assert!(monitor.store().records().is_empty());
         assert_grants_quarantined(corrupt.path(), &monitor);
         let resources = sorted_integrity_resources(&monitor);
@@ -6034,7 +6091,7 @@ mod tests {
                 "records = []\n# plexi-mac:00\n",
             )
             .unwrap();
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert!(
                 monitor.store().records().is_empty(),
                 "a mac line is not a pre-seal file"
@@ -6048,9 +6105,9 @@ mod tests {
     fn fresh_profile_with_unreadable_existing_key_offers_recovery() {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
-        let original = crate::broker::seal::mac_key_bytes(dir.path()).unwrap();
+        let original = crate::broker::seal::mac_key_bytes(TEST_HOST, dir.path()).unwrap();
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let recovery = monitor
             .open_needs_you()
             .into_iter()
@@ -6060,18 +6117,19 @@ mod tests {
             );
         monitor.resolve_needs_you(&recovery.id, true).unwrap();
         assert_eq!(
-            *crate::broker::seal::mac_key_bytes(dir.path()).unwrap(),
+            *crate::broker::seal::mac_key_bytes(TEST_HOST, dir.path()).unwrap(),
             *original
         );
         super::super::integrity::mark_clean_shutdown(dir.path());
         crate::broker::host_key::clear_session_mac();
-        let restarted = PermissionMonitor::open_profile(dir.path());
+        let restarted = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(restarted.open_needs_you().is_empty());
         assert_eq!(
-            *crate::broker::seal::mac_key_bytes(dir.path()).unwrap(),
+            *crate::broker::seal::mac_key_bytes(TEST_HOST, dir.path()).unwrap(),
             *original
         );
-        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl")).unwrap();
+        crate::broker::seal::verify_audit(TEST_HOST, &dir.path().join("permission-audit.jsonl"))
+            .unwrap();
     }
 
     #[test]
@@ -6081,7 +6139,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         let denied = crate::broker::host_key::UnreadableMacKey::acquire();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             denied.interactive_reads(),
             0,
@@ -6115,9 +6173,9 @@ mod tests {
             "a rotated key is not a stuck needs-you item: {:?}",
             monitor.open_needs_you()
         );
-        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+        crate::broker::seal::verify_audit(TEST_HOST, &dir.path().join("permission-audit.jsonl"))
             .expect("the reset audit verifies under the new key");
-        let saved = GrantStore::load_or_default(dir.path());
+        let saved = GrantStore::load_or_default(dir.path()).unwrap();
         assert!(saved.integrity_faults().is_empty());
         assert!(saved.records().is_empty());
     }
@@ -6129,7 +6187,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         let denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let id = monitor.open_needs_you()[0].id.clone();
         assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
         assert_eq!(denied.interactive_reads(), 0);
@@ -6152,7 +6210,7 @@ mod tests {
             crate::app::permissions::Capability::NetHttp,
         );
         assert_eq!(monitor.store().evaluate(&req, None), Decision::Allow);
-        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+        crate::broker::seal::verify_audit(TEST_HOST, &dir.path().join("permission-audit.jsonl"))
             .expect("audit still verifies after the key is readable");
     }
 
@@ -6165,7 +6223,7 @@ mod tests {
         let denied = crate::broker::host_key::UnreadableMacKey::acquire()
             .delete_needs_prompt()
             .interactive_also_denied();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(monitor.open_needs_you().len(), 1);
         assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
         assert_eq!(monitor.open_needs_you()[0].summary, KEYCHAIN_ACCESS_SUMMARY);
@@ -6183,7 +6241,7 @@ mod tests {
         );
         assert!(monitor.store().records().is_empty());
         assert_no_untrusted(dir.path());
-        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
+        crate::broker::seal::verify_audit(TEST_HOST, &dir.path().join("permission-audit.jsonl"))
             .expect("rotated profile verifies");
         let req = PermissionRequest::plugin_capability(
             "my-app",
@@ -6200,7 +6258,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         let denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let id = monitor.open_needs_you()[0].id.clone();
         monitor
             .resolve_needs_you(&id, false)
@@ -6223,7 +6281,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(
             dir.path().join("grants.toml").is_file(),
             "unreadable startup leaves the sealed file in place: {:?}",
@@ -6250,7 +6308,7 @@ mod tests {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        GrantStore::load_or_default(dir.path()).save();
+        GrantStore::load_or_default(dir.path()).unwrap().save();
         write_legacy_grants(
             dir.path(),
             vec![GrantRecord::plugin_capability(
@@ -6267,7 +6325,7 @@ mod tests {
         )
         .unwrap();
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let resealed = std::fs::read_to_string(dir.path().join("grants.toml")).unwrap();
         assert!(
             resealed.contains("# plexi-mac:"),
@@ -6297,7 +6355,7 @@ mod tests {
         {
             seal_profile_grant(dir.path(), ws.path());
             super::super::integrity::mark_clean_shutdown(dir.path());
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
@@ -6316,7 +6374,7 @@ mod tests {
         crate::broker::host_key::clear_session_mac_for_test();
         crate::broker::host_key::reset_backend_get_calls();
 
-        let reopened = PermissionMonitor::open(dir.path());
+        let reopened = PermissionMonitor::open(TEST_HOST, dir.path());
         assert_eq!(
             crate::broker::host_key::backend_get_calls(),
             1,
@@ -6334,7 +6392,7 @@ mod tests {
         {
             seal_profile_grant(dir.path(), ws.path());
             super::super::integrity::mark_clean_shutdown(dir.path());
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
@@ -6349,7 +6407,7 @@ mod tests {
         }
 
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(
             monitor.open_needs_you().is_empty(),
             "key rotation must not file NeedsYouKind::Integrity or leave stale items: {:?}",
@@ -6378,7 +6436,7 @@ mod tests {
         {
             seal_profile_grant(dir.path(), ws.path());
             super::super::integrity::mark_clean_shutdown(dir.path());
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
@@ -6393,7 +6451,7 @@ mod tests {
         }
 
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             monitor.open_needs_you().len(),
             1,
@@ -6433,7 +6491,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         crate::broker::host_key::simulate_new_code_identity();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(
             monitor
                 .open_needs_you()
@@ -6472,7 +6530,7 @@ mod tests {
             audit.contains("allow_until"),
             "a persisted allow is audited: {audit}"
         );
-        let reloaded = GrantStore::load_or_default(dir.path());
+        let reloaded = GrantStore::load_or_default(dir.path()).unwrap();
         assert!(
             reloaded
                 .records()
@@ -6491,7 +6549,7 @@ mod tests {
         let before_grants = std::fs::read(dir.path().join("grants.toml")).unwrap();
         let before_audit =
             std::fs::read_to_string(dir.path().join("permission-audit.jsonl")).unwrap();
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
         let Admission::Required { pending_request_id } = monitor.admit(AdmitRequest {
             call_id: "c-save",
@@ -6555,7 +6613,7 @@ mod tests {
             let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
             let _block = BlockingKeychain::set_access();
             let started = std::time::Instant::now();
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             let elapsed = started.elapsed();
             assert!(
                 elapsed < bound,
@@ -6584,7 +6642,7 @@ mod tests {
             let before = std::fs::read(dir.path().join("grants.toml")).unwrap();
             let block = BlockingKeychain::any_call();
             let started = std::time::Instant::now();
-            let monitor = PermissionMonitor::open_profile(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             let elapsed = started.elapsed();
             assert!(
                 elapsed < bound,
@@ -6675,7 +6733,7 @@ mod tests {
     }
 
     fn seal_profile_grant(dir: &Path, workspace: &Path) {
-        let monitor = PermissionMonitor::open_profile(dir);
+        let monitor = PermissionMonitor::open_profile(dir).unwrap();
         {
             let mut store = monitor.store();
             store.record(GrantRecord::plugin_capability(
@@ -6744,7 +6802,7 @@ mod tests {
 
     fn seal_one_grant(dir: &Path) {
         let ws = tempfile::tempdir().unwrap();
-        let mut store = GrantStore::load_or_default(dir);
+        let mut store = GrantStore::load_or_default(dir).unwrap();
         store.record(GrantRecord::plugin_capability(
             "my-app",
             ws.path(),
@@ -6863,14 +6921,14 @@ mod tests {
             let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
             let _ = exclusive_held_tx.send(());
             std::thread::sleep(Duration::from_millis(25));
-            let _monitor = PermissionMonitor::for_profile(&path_a);
+            let _monitor = PermissionMonitor::for_profile(&path_a).unwrap();
             let _ = done_a.send("exclusive");
         });
 
         let done_b = done_tx;
         std::thread::spawn(move || {
             let _ = exclusive_held_rx.recv();
-            let _monitor = PermissionMonitor::for_profile(&path_b);
+            let _monitor = PermissionMonitor::for_profile(&path_b).unwrap();
             let _ = done_b.send("unguarded");
         });
 
@@ -6945,7 +7003,7 @@ mod tests {
     fn structured_question_never_mints_grant_refuses_unauthenticated_agent_and_persists_continuation(
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(dir.path());
+        let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let records_before = monitor.store().records().len();
 
         let details = NeedsYouDetails {
@@ -7033,7 +7091,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::broker::host_key::reset_backend_get_calls();
 
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(
             monitor.open_needs_you().is_empty(),
             "first launch on an empty profile must not raise spurious Needs attention items: {:?}",
@@ -7058,7 +7116,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         seal_profile_grant(dir.path(), ws.path());
         let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-tamper"}"#;
-        let monitor = PermissionMonitor::open_profile(dir.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let mut base = binding(&fingerprint_args(args).unwrap());
         base.session_id = Some(monitor.session_id().to_string());
         let _ = admit_of(&monitor, &base, args);
@@ -7067,7 +7125,7 @@ mod tests {
 
         // Now simulate Secret Service disappearing while sealed files exist on disk.
         let _unavailable = crate::broker::host_key::UnavailableHostKeyStore::acquire();
-        let reopened = PermissionMonitor::open_profile(dir.path());
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
         let open = reopened.open_needs_you();
         assert!(
             open.iter()

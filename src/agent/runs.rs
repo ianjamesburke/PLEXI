@@ -206,8 +206,29 @@ fn same_grant_specs(a: &[ToolGrant], b: &[ToolGrant]) -> bool {
             .all(|(x, y)| x.tool == y.tool && x.decision == y.decision && x.kind == y.kind)
 }
 
-fn monitor() -> std::sync::Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+/// The profile monitor, or the API refusal a non-host process returns
+/// (stint 1291).
+fn monitor() -> Result<std::sync::Arc<PermissionMonitor>, Value> {
+    PermissionMonitor::for_profile(&crate::config::config_dir()).map_err(|error| {
+        log::info!("agents_api: refused outside the host process: {error}");
+        json!({"ok": false, "error_code": "not_host", "error": error.to_string()})
+    })
+}
+
+/// `monitor()` or return early: the refusal for API calls, else `$fallback`.
+macro_rules! host_gate {
+    () => {
+        match monitor() {
+            Ok(gate) => gate,
+            Err(refusal) => return refusal,
+        }
+    };
+    ($fallback:expr) => {
+        match monitor() {
+            Ok(gate) => gate,
+            Err(_) => return $fallback,
+        }
+    };
 }
 
 fn record_scope_allow(
@@ -235,7 +256,9 @@ fn record_scope_allow(
         call_id: String::new(),
         operation_id: String::new(),
     };
-    let gate = monitor();
+    let Ok(gate) = monitor() else {
+        return;
+    };
     let now = gate.now_secs();
     let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
     let mut record = GrantRecord::from_binding(
@@ -481,7 +504,7 @@ struct RefusalContext<'a> {
 
 fn deny_with_request(ctx: RefusalContext<'_>) -> Value {
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let gate = monitor();
+    let gate = host_gate!();
     gate.note_denial(ctx.actor, &call_id, ctx.tool, "agents-api", "deny");
     let effective_parent_run = ctx.parent_run.or(ctx.run_id).map(str::to_string);
     let effective_run_id = ctx.run_id.or(ctx.parent_run).map(str::to_string);
@@ -570,7 +593,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
     if !valid_name(req.name) {
         return json!({"ok": false, "error_code": "invalid_name", "error": "agent name must be a lowercase slug"});
     }
-    let gate = monitor();
+    let gate = host_gate!();
     gate.expire_soft_grants();
     if let Some(parent) = req.parent_grants {
         if let Some(refused) = subset_denied(
@@ -836,7 +859,7 @@ fn grants_from_value(value: &Value) -> Result<Vec<ToolGrant>, String> {
 }
 
 fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
-    let gate = monitor();
+    let gate = host_gate!(Vec::new());
     let session_id = gate.session_id().to_string();
     let now = gate.now_secs();
     let pane_actor = format!("pane:{pane_id}");
@@ -899,7 +922,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
         Ok(path) => path,
         Err(error) => return json!({"ok": false, "error_code": "invalid_argument", "error": error}),
     };
-    monitor().expire_soft_grants();
+    host_gate!().expire_soft_grants();
     let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
     let caller_human_pane = payload
         .get("caller_human_pane")
@@ -924,7 +947,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
             .unwrap_or_else(|| "pane:unknown".to_string());
         let call_id = format!("agents-api-{op}-{}", uuid::Uuid::new_v4());
         let resource = workspace.display().to_string();
-        monitor().note_denial(&actor, &call_id, &resource, op, "context_scope_violation");
+        host_gate!().note_denial(&actor, &call_id, &resource, op, "context_scope_violation");
         log::info!(
             "agents_api: op={op} denied caller_pane={caller_pane:?} workspace={} outside caller context root {caller_context_root:?}",
             workspace.display()
@@ -1128,7 +1151,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
 }
 
 fn list_grants(workspace: &Path) -> Value {
-    let gate = monitor();
+    let gate = host_gate!();
     gate.expire_soft_grants();
     let store = gate.store();
     let mut rows: Vec<Value> = store
@@ -1186,7 +1209,7 @@ fn finish_run(workspace: &Path, id: &str) -> Value {
         }
         finished
     };
-    monitor().revoke_run_grants(id);
+    host_gate!().revoke_run_grants(id);
     log::info!("agents_api: finished run {id}");
     json!({"ok": true, "run": finished})
 }
@@ -1324,7 +1347,7 @@ fn invoke(
         });
     }
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let admission = monitor().admit(AdmitRequest {
+    let admission = host_gate!().admit(AdmitRequest {
         call_id: &call_id,
         tool,
         input_json,
@@ -1344,7 +1367,7 @@ fn invoke(
                 run.actor_id
             );
             let effective_parent = run.parent_run.as_deref().unwrap_or(&run.id);
-            let needs_you_id = monitor()
+            let needs_you_id = host_gate!()
                 .file_needs_you_with_details(
                     NeedsYouFile {
                         kind: NeedsYouKind::PermissionRequest,
@@ -1398,7 +1421,7 @@ fn invoke(
             ..
         } => {
             let resource = resource_id.unwrap_or_default();
-            if monitor()
+            if host_gate!()
                 .note_use(
                     &run.actor_id,
                     &call_id,
@@ -1420,7 +1443,7 @@ fn invoke(
                 });
             }
             let body = execute_tool(workspace, &run, tool, input_json);
-            monitor().consume_once(&grant_id, Some("agents-api"));
+            host_gate!().consume_once(&grant_id, Some("agents-api"));
             log::info!(
                 "agents_api: executed tool={tool} actor={} run={} call_id={call_id}",
                 run.actor_id,
@@ -1486,7 +1509,7 @@ pub fn projection(workspace: &Path) -> Value {
         &json!({"workspace": workspace, "all": true}),
     );
     let runs = handle_request("list_runs", &json!({"workspace": &workspace}));
-    let pending = serde_json::to_value(monitor().list_pending()).unwrap_or(json!([]));
+    let pending = serde_json::to_value(host_gate!().list_pending()).unwrap_or(json!([]));
     json!({
         "ok": true,
         "agents": agents.get("agents").cloned().unwrap_or(json!([])),
@@ -1595,7 +1618,7 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
 fn admit_pane(auth: &McpAuth, tool: &str, input_json: &str) -> Value {
     let actor = format!("mcp:pane:{}", auth.pane_id);
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let admission = monitor().admit(AdmitRequest {
+    let admission = host_gate!().admit(AdmitRequest {
         call_id: &call_id,
         tool,
         input_json,
@@ -1807,7 +1830,7 @@ mod tests {
             .join("agents")
             .join("rogue")
             .exists());
-        let audit = monitor().audit_records();
+        let audit = monitor().unwrap().audit_records();
         assert!(
             audit
                 .iter()
@@ -1865,11 +1888,12 @@ mod tests {
         );
         assert_eq!(review["error_code"], "permission_required", "{review}");
         let pending = review["pending_request_id"].as_str().unwrap();
-        let listed = monitor().list_pending();
+        let listed = monitor().unwrap().list_pending();
         assert!(listed
             .iter()
             .any(|row| row.pending_request_id == pending && row.actor_id == "agent:scout"));
         monitor()
+            .unwrap()
             .approve_pending(pending, ApprovalChoice::Once)
             .unwrap();
         let reviewed = handle_request(
@@ -1978,6 +2002,7 @@ mod tests {
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
         let ny_id = empty["needs_you_id"].as_str().expect("needs_you_id");
         monitor()
+            .unwrap()
             .resolve_needs_you_from(ny_id, true, crate::broker::gate::ResolveSurface::Desktop)
             .expect("desktop approve mints pane grant");
         let retried = handle_request(
@@ -2034,18 +2059,18 @@ mod tests {
             audit_raw.contains("agents.admin") && audit_raw.contains("agent:worker"),
             "expected deny audit row in permission-audit.jsonl, got:\n{audit_raw}"
         );
-        let audit_rows = monitor().audit_records();
+        let audit_rows = monitor().unwrap().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
                 row.kind == "deny"
                     && row.resource_id == "agents.admin"
                     && row.actor == "agent:worker"
             }),
-            "expected deny AuditFact in monitor().audit_records(), got: {audit_rows:?}"
+            "expected deny AuditFact in monitor().unwrap().audit_records(), got: {audit_rows:?}"
         );
 
         // 2. The refusal appears in `plexi needs-you list --json` (`list_needs_you`).
-        let items = monitor().list_needs_you();
+        let items = monitor().unwrap().list_needs_you();
         let entry = items
             .iter()
             .find(|item| item.id == needs_you_id)
@@ -2061,12 +2086,14 @@ mod tests {
 
         // 3. Click-only approval rule from 0788: socket cannot approve.
         assert!(monitor()
+            .unwrap()
             .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Socket)
             .is_err());
 
         // 4. Resolving with Allow from Desktop grants `agents.admin` for `parent_run` only,
         //    leaving `agent.json` untouched.
         monitor()
+            .unwrap()
             .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Desktop)
             .expect("desktop Allow must resolve PermissionRequest");
 
@@ -2147,7 +2174,7 @@ mod tests {
         .unwrap();
 
         let t0: i64 = 1_700_000_000;
-        monitor().set_now_for_test(t0);
+        monitor().unwrap().set_now_for_test(t0);
 
         let created = handle_request(
             "create_agent",
@@ -2200,7 +2227,7 @@ mod tests {
         assert_eq!(review_ok["ok"], true, "{review_ok}");
 
         // Advance injected clock past 10 days (`soft_grant_days`).
-        monitor().set_now_for_test(t0 + 10 * 86_400 + 1);
+        monitor().unwrap().set_now_for_test(t0 + 10 * 86_400 + 1);
 
         // Soft grant reverts to `ask` (`permission_required`) and writes an `expire` audit row.
         let review_after = handle_request(
@@ -2239,12 +2266,12 @@ mod tests {
             audit_raw.contains("expire") && audit_raw.contains("agents.review"),
             "expected expire audit row in permission-audit.jsonl, got:\n{audit_raw}"
         );
-        let audit_rows = monitor().audit_records();
+        let audit_rows = monitor().unwrap().audit_records();
         assert!(
             audit_rows.iter().any(|row| {
                 row.kind == "expire" && row.resource_id == "agents.review" && row.decision == "ask"
             }),
-            "expected expire AuditFact in monitor().audit_records(), got: {audit_rows:?}"
+            "expected expire AuditFact in monitor().unwrap().audit_records(), got: {audit_rows:?}"
         );
 
         // `list_grants` and `agent.json` reflect the reverted `ask` decision.

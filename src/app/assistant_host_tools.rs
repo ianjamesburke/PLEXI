@@ -245,10 +245,12 @@ impl PlexiApp {
                         }
                     })
                     .collect::<Vec<_>>();
-                let permissions = crate::broker::gate::PermissionMonitor::for_profile(
+                let permissions = match crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
-                )
-                .list_entries();
+                ) {
+                    Ok(monitor) => monitor.list_entries(),
+                    Err(error) => return ToolCallResult::err(error.to_string()),
+                };
                 let permissions =
                     serde_json::to_value(&permissions).unwrap_or(serde_json::json!([]));
                 let permissions = permissions.as_array().cloned().unwrap_or_default();
@@ -271,10 +273,12 @@ impl PlexiApp {
                 ToolCallResult::ok_value(doc)
             }
             "host.permissions.list" => {
-                let entries = crate::broker::gate::PermissionMonitor::for_profile(
+                let entries = match crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
-                )
-                .list_entries();
+                ) {
+                    Ok(monitor) => monitor.list_entries(),
+                    Err(error) => return ToolCallResult::err(error.to_string()),
+                };
                 log::info!(
                     "assistant_host_tool: host.permissions.list count={}",
                     entries.len()
@@ -286,9 +290,12 @@ impl PlexiApp {
                     return ToolCallResult::err("invalid_input: id is required".to_string());
                 };
                 let action = name.rsplit('.').next().unwrap_or("");
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                let monitor = match crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
-                );
+                ) {
+                    Ok(monitor) => monitor,
+                    Err(error) => return ToolCallResult::err(error.to_string()),
+                };
                 let outcome = monitor.mutate_entry(
                     id,
                     action,
@@ -1167,7 +1174,10 @@ impl PlexiApp {
         if workspace.as_os_str().is_empty() {
             return ToolCallResult::err("permission_denied: no workspace");
         }
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+            Ok(monitor) => monitor,
+            Err(error) => return ToolCallResult::err(error.to_string()),
+        };
         let actor = "agent:assistant";
         let call_id = format!("call_{}", uuid::Uuid::new_v4());
         let admission = monitor.admit(AdmitRequest {
@@ -2558,7 +2568,8 @@ mod tests {
             .expect("text editor pane");
 
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let approve = |result: &crate::plexi_ai::tool_dispatch::ToolCallResult| {
             assert_eq!(result.error_code.as_deref(), Some("permission_required"));
             let pending = result.pending_request_id.as_deref().unwrap();

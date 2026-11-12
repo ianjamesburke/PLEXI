@@ -512,6 +512,8 @@ class Color:
 
 # Alignment values map to WIT enum alignment { start, center, end, stretch }
 # Python: use string literals "start" | "center" | "end" | "stretch"
+# Row and Column `justify` (main axis) maps to WIT enum
+# justify { start, center, end, space-between }
 
 # ── Leaf nodes ────────────────────────────────────────────────────────────────
 
@@ -581,7 +583,8 @@ class Surface:
 class Row:
     children: list      # list[UINode]
     gap: float = 0.0
-    align: str = "start"
+    align: str = "center"   # cross axis: "start" (top) | "center" | "end" (bottom)
+    justify: str = "start"  # main axis: "start" | "center" | "end" | "space-between"
     grow: bool = False
     # → ui-node-data::row(row-node)
 
@@ -590,6 +593,7 @@ class Column:
     children: list      # list[UINode]
     gap: float = 0.0
     align: str = "start"
+    justify: str = "start"  # main axis: "start" | "center" | "end" | "space-between"
     grow: bool = False
     # → ui-node-data::column(column-node)
 
@@ -662,7 +666,7 @@ def flatten(node, key_prefix="") -> node-id:
     match type(node):
         case Column:
             child_ids = [flatten(c, f"{key}/{i}") for i, c in enumerate(node.children)]
-            arena.append(indexed-node(id, key, column-node(child_ids, node.gap, node.align, node.grow)))
+            arena.append(indexed-node(id, key, column-node(child_ids, node.gap, node.align, node.justify, node.grow)))
         case Text:
             arena.append(indexed-node(id, key, text-node(node.text, node.size, node.bold, ...)))
         ...

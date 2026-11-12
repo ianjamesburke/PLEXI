@@ -48,7 +48,7 @@ use plexi::platform::types::{
     Alignment, BadgeColor, BadgeNode, ButtonNode, ButtonStyle, CanvasCommand, CanvasLine,
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, DeclareToolsEffect, Effect,
     FilePickedEvent, FilePickerMode, FileReadEffect, FileWriteEffect, FooterKeyEntry,
-    FooterKeysNode, IndexedNode, InputEvent, KeyEvent, MouseButton, MouseEvent,
+    FooterKeysNode, IndexedNode, InputEvent, Justify, KeyEvent, MouseButton, MouseEvent,
     OpenFilePickerEffect, PaddingNode, RowNode, StateSnapshot, TextNode, TimerEffect,
     ToolCallEvent, ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
 };
@@ -1956,6 +1956,7 @@ impl View {
                 children: vec![transport, timeline, mixer, inspector, status_id, footer_id],
                 gap: 8.0,
                 align: Alignment::Stretch,
+                justify: Justify::Start,
                 grow: true,
             }),
         );
@@ -2126,6 +2127,7 @@ impl View {
                 ],
                 gap: 8.0,
                 align: Alignment::Center,
+                justify: Justify::Start,
                 grow: false,
             }),
         );
@@ -2467,6 +2469,7 @@ impl View {
                     children: vec![mute_id, solo_id, vdn_id, vup_id, pdn_id, pup_id],
                     gap: 4.0,
                     align: Alignment::Center,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             );
@@ -2479,6 +2482,7 @@ impl View {
                     children: vec![head_id, readout_id, controls_id],
                     gap: 4.0,
                     align: Alignment::Start,
+                    justify: Justify::Start,
                     grow: false,
                 }),
             );
@@ -2493,6 +2497,7 @@ impl View {
                 children: strip_ids,
                 gap: 16.0,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: false,
             }),
         );
@@ -2572,6 +2577,7 @@ impl View {
                 children,
                 gap: 8.0,
                 align: Alignment::Center,
+                justify: Justify::Start,
                 grow: false,
             }),
         );

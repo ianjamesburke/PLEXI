@@ -1,0 +1,20 @@
+---
+/** A short plain statement the reader should not miss. `tone`: note (default) or warn. */
+interface Props { tone?: 'note' | 'warn'; title?: string }
+const { tone = 'note', title } = Astro.props;
+---
+<aside class:list={['notice', tone]}>
+  {title && <p class="notice-title">{title}</p>}
+  <div class="notice-body"><slot /></div>
+</aside>
+
+<style>
+  .notice { border: 1px solid var(--border-2); background: var(--bg-2); padding: 20px 22px; max-width: 78ch; }
+  .notice.warn { border-color: var(--amber); }
+  .notice-title { font: 700 13px/1.4 var(--mono); color: var(--accent-light); margin-bottom: 8px; }
+  .warn .notice-title { color: var(--amber); }
+  .notice-body { color: var(--fg-2); font-size: 16px; line-height: 1.6; }
+  .notice-body :global(p + p) { margin-top: 10px; }
+  .notice-body :global(a) { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
+  .notice-body :global(code) { font-size: .88em; color: var(--fg); }
+</style>
