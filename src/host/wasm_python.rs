@@ -11114,7 +11114,7 @@ default = true
     }
 
     /// Stint 1238 matrix cell flipped by stint 1264. Was: any Python guest's
-    /// `permission_decision` reached `mutate_entry` as `human: true`, so
+    /// `permission_decision` reached `mutate_entry` as a human caller, so
     /// `allow` approved a pending ask as Always. Now: a guest without bundled
     /// provenance is refused and changes nothing; the bundled Permissions
     /// plugin is a non-human caller whose `allow` only files a Needs you item.
