@@ -256,7 +256,9 @@ fn record_scope_allow(
         call_id: String::new(),
         operation_id: String::new(),
     };
-    let gate = host_gate!(());
+    let Ok(gate) = monitor() else {
+        return;
+    };
     let now = gate.now_secs();
     let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
     let mut record = GrantRecord::from_binding(
