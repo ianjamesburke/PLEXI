@@ -1860,19 +1860,32 @@ mod tests {
         (app, ctx, paths)
     }
 
+    /// The preview once its background read has landed: ask, drain the way
+    /// `App::logic` does until no read is in flight, and ask again.
+    fn settled_preview(app: &mut PlexiApp) -> Option<std::sync::Arc<str>> {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        loop {
+            let text = app.notes_picker_preview_text();
+            if app.notes_picker_preview_job.is_none() {
+                return text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "notes picker preview read did not land"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            app.drain_notes_preview_read();
+        }
+    }
+
     #[test]
     fn notes_picker_preview_shows_selected_content_and_follows_selection() {
         let (mut app, ctx, paths) = picker_with_notes("preview", &["alpha body", "beta body"]);
-        assert_eq!(
-            app.notes_picker_preview_text().as_deref(),
-            Some("alpha body")
-        );
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("alpha body"));
         draw_picker_frame(&mut app, &ctx);
         press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
-        assert_eq!(
-            app.notes_picker_preview_text().as_deref(),
-            Some("beta body")
-        );
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("beta body"));
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
@@ -1884,14 +1897,19 @@ mod tests {
     #[test]
     fn notes_picker_preview_follows_an_edit_made_between_opens() {
         let (mut app, _ctx, paths) = picker_with_notes("preview-edit", &["top note", "other"]);
-        assert_eq!(app.notes_picker_preview_text().as_deref(), Some("top note"));
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("top note"));
         app.close_notes_picker();
         std::fs::write(&paths[0], "top note, edited in its editor pane").expect("edit note");
         app.push_focus_layer(FocusKind::NotesPicker);
         assert_eq!(
             app.notes_picker_preview_text().as_deref(),
+            Some("top note"),
+            "opening shows the cached text at once; the file check runs off the UI thread"
+        );
+        assert_eq!(
+            settled_preview(&mut app).as_deref(),
             Some("top note, edited in its editor pane"),
-            "a reopened picker must preview the edited body"
+            "a reopened picker must swap in the edited body"
         );
         for p in paths {
             let _ = std::fs::remove_file(p);
@@ -1901,10 +1919,10 @@ mod tests {
     #[test]
     fn notes_picker_preview_keeps_the_cached_text_when_the_note_is_unchanged() {
         let (mut app, _ctx, paths) = picker_with_notes("preview-same", &["unchanged body"]);
-        let first = app.notes_picker_preview_text().expect("preview");
+        let first = settled_preview(&mut app).expect("preview");
         app.close_notes_picker();
         app.push_focus_layer(FocusKind::NotesPicker);
-        let again = app.notes_picker_preview_text().expect("preview");
+        let again = settled_preview(&mut app).expect("preview");
         assert!(
             std::sync::Arc::ptr_eq(&first, &again),
             "an unchanged note must reuse the cached text, not re-read it"
@@ -1925,7 +1943,7 @@ mod tests {
         );
         let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full.as_str()]);
         let before = std::fs::read(&paths[0]).expect("read note before copy");
-        assert_eq!(app.notes_picker_preview_text().as_deref(), Some(body));
+        assert_eq!(settled_preview(&mut app).as_deref(), Some(body));
 
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(
