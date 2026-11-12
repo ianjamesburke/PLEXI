@@ -19,6 +19,7 @@ class InstallPretests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         self.helper = self.root / "scripts/pr-install-pretests.sh"
         self.helper.write_text(HELPER.read_text())
+        (self.root / "scripts/filter_check.py").write_text((ROOT / "scripts/filter_check.py").read_text())
         config = self.root / ".agents/skills/babysitter-v3/RUN_CONFIG.toml"
         config.parent.mkdir(parents=True)
         config.write_text((ROOT / ".agents/skills/babysitter-v3/RUN_CONFIG.toml").read_text())
@@ -43,6 +44,7 @@ class InstallPretests(unittest.TestCase):
     def run_scope(self, scope="scoped", filters="cli::tests::affected", final=False, **extra):
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
                "PR_PRETEST_FIXTURE_FILTERS": filters, "PR_PRETEST_FIXTURE_LOG": str(self.log),
+               "PLEXI_TEST_LIST_CACHE_DIR": str(self.root / "list-cache"),
                "PLEXI_PR_REQUIRED_PTY_FILTERS": "none", "PLEXI_PR_REQUIRED_SCENES": "none", **extra}
         env.pop("PLEXI_PR_TEST_FILTERS", None)
         if "PLEXI_PR_TEST_FILTERS" in extra:
@@ -109,8 +111,9 @@ class InstallPretests(unittest.TestCase):
         self.assertIn("matched=1", result.stdout)
         cargo = [line for line in commands if "test --bin plexi" in line]
         self.assertTrue(all("python3 scripts/cargo-channel-inputs.py test" in line for line in cargo))
-        self.assertEqual(len(cargo), 2)  # list matches, then execute the selection
-        self.assertTrue(all("-- cli::tests::affected" in line for line in cargo))
+        self.assertEqual(len(cargo), 2)  # list every test (validated locally), then execute the selection
+        self.assertTrue(cargo[0].endswith("-- --list"), cargo[0])
+        self.assertTrue(cargo[1].endswith("-- cli::tests::affected"), cargo[1])
         self.assertIn("just sdk-smoke", commands)
 
     def test_legacy_worktree_without_helper_retains_raw_cargo_fallback(self):
@@ -163,6 +166,23 @@ class InstallPretests(unittest.TestCase):
         self.assertTrue(all("--list" in line for line in commands))
         result, _ = self.run_scope(PLEXI_PR_TEST_FILTERS="")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_wrong_filter_gets_suggestions_and_a_warm_cache_rejects_it_before_any_cargo(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/main.rs").write_text("fn main() {}\n")
+        listing = "cli::registry::tests::lookup: test\nhost::model::tests::split: test"
+        result, _ = self.run_scope(filters="cli_registry", PR_PRETEST_FIXTURE_LIST=listing)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("filter matched zero tests: cli_registry", result.stderr)
+        self.assertIn("cli::registry::", result.stderr)  # nearest real module
+        self.log.unlink()
+        result, commands = self.run_scope(filters="cli::registry::", PR_PRETEST_FIXTURE_LIST=listing)
+        self.assertEqual(result.returncode, 0, result.stderr)  # first success warms the cache
+        self.log.unlink()
+        result, commands = self.run_scope(filters="plugin_check_cli", PR_PRETEST_FIXTURE_LIST=listing)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cached test list for this exact source state", result.stderr)
+        self.assertEqual(commands, [], "a warm cache must reject before any cargo or lease command")
 
     def test_each_selected_filter_must_match(self):
         result, commands = self.run_scope(filters="cli::tests::affected\ncli::tests::missing")
