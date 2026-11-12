@@ -565,7 +565,7 @@ fn mark_executable(_path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
+pub(super) fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml — shape lives in the template file beside the other scaffold
     // artifacts so it can't silently diverge from the documented manifest. The
     // feature-gated marketplace placeholder is appended in Rust.

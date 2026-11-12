@@ -2335,6 +2335,58 @@ mod gauntlet_probe_tests {
         );
     }
 
+    /// What `plexi plugin init` writes must pass the checks it is told to run:
+    /// no layout finding at any default size, its own fixture reflected by the
+    /// seeded probe, and its button changing the frame.
+    #[test]
+    fn scaffolded_python_plugin_has_no_layout_or_probe_findings() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let dir = tempfile::tempdir().expect("workspace");
+        let plugin_dir = dir.path().join("myapp");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        crate::cli::plugin::scaffold_python_plugin(&plugin_dir, "myapp").expect("scaffold");
+
+        let (manifest, entry) = super::load_local_plugin(&plugin_dir).expect("scaffold loads");
+        let config = super::python_launch_config(&manifest, &entry, &plugin_dir).unwrap();
+        let plan = super::plan_check_sizes(
+            super::check_sizes(&[]).unwrap(),
+            (manifest.launch.min_width, manifest.launch.min_height),
+        );
+        assert!(plan.skipped.is_empty(), "{plan:?}");
+        for (width, height) in plan.render.clone() {
+            let tree = crate::host::wasm_python::run_headless_frame(
+                &config,
+                (width as f32, height as f32),
+                None,
+            )
+            .expect("scaffold renders");
+            let layout =
+                crate::host::wasm_render::render_ui_tree_layout(&tree, width as f32, height as f32);
+            let findings =
+                super::layout_findings(&tree, &layout, plan.strict == Some((width, height)));
+            assert!(
+                findings.is_empty(),
+                "scaffold {width}x{height}: {:?}",
+                findings
+            );
+        }
+
+        let fixture = super::load_seed_fixture(&plugin_dir)
+            .expect("fixture parses")
+            .expect("scaffold ships fixtures/state.json");
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        super::run_seeded_state_and_action_probe(
+            &manifest,
+            &config,
+            &fixture,
+            &mut errors,
+            &mut warnings,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
     /// End to end through the live CPython-WASM runtime: a plugin that reads
     /// both declared scopes in `view()` boots headlessly, and a scope-keyed
     /// seed reaches each scope.
