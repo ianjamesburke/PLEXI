@@ -8,6 +8,8 @@ pass. Every recipe that takes a filter goes through here instead:
   for PATH               `just test-for`: tests covering one source file.
   precheck -- FILTERS    validate against the cached test list, no build.
   validate [-] -- FILTERS  validate a full `--list` output (file or stdin).
+  suite -- SKIPS...      `just test`: run every test target except SKIPS (libtest
+                         substring skips) and report how many tests that skipped.
 
 Test list cache. The list of test names depends only on the package's Rust
 sources and manifests, so it is keyed on a SHA-256 of those files' bytes
@@ -301,6 +303,40 @@ def run_host(root, args):
                             "locked-run", "--root", str(root), "--", *args], cwd=root)
 
 
+def skip_summary(names, skips):
+    """One line: total skipped, per-pattern counts, and how many matched only the function name."""
+    per = {skip: sum(1 for n in names if skip in n) for skip in skips}
+    skipped = [n for n in names if any(skip in n for skip in skips)]
+    name_only = [n for n in skipped if not any(skip in n.rsplit("::", 1)[0] for skip in skips)]
+    return (f"just test is NOT the full suite: skipped {len(skipped)} of {len(names)} tests "
+            f"({len(name_only)} of them only because a pattern occurs in the test function's name, "
+            f"not its module path). Patterns are substrings: "
+            + ", ".join(f"{skip}={count}" for skip, count in per.items())
+            + ". `just release-host-gate` runs everything.")
+
+
+def locked_suite(root, skips):
+    """Under the cargo lease: list every target, announce the skips, run, announce them again."""
+    base = ["python3", str(Path(root) / "scripts/cargo-channel-inputs.py"), "test", "--"]
+    listing = subprocess.run(base + ["--list"], cwd=root, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, text=True)
+    if listing.returncode != 0:
+        say(f"listing the tests failed (exit {listing.returncode}); see the build output above")
+        return listing.returncode
+    summary = skip_summary(parse_listing(listing.stdout), skips)
+    say(summary)
+    arguments = [part for skip in skips for part in ("--skip", skip)]
+    code = subprocess.call(base + arguments, cwd=root, stdin=subprocess.DEVNULL)
+    say(summary)
+    return code
+
+
+def run_suite(root, skips):
+    return subprocess.call(["bash", str(Path(root) / "scripts/cargo-with-lease.sh"), "python3",
+                            str(Path(__file__).resolve()), "locked-suite", "--root", str(root), "--", *skips],
+                           cwd=root)
+
+
 def scoped_filters(root, relative):
     result = subprocess.run(["bash", str(Path(root) / "scripts/scoped-tests.sh"), relative],
                             cwd=root, capture_output=True, text=True)
@@ -361,7 +397,7 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default=str(Path(__file__).resolve().parents[1]))
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("host", "locked-run", "precheck", "validate"):
+    for name in ("host", "locked-run", "locked-suite", "suite", "precheck", "validate"):
         command = sub.add_parser(name)
         command.add_argument("--root", dest="sub_root")
         command.add_argument("--label", default="test filter")
@@ -380,6 +416,10 @@ def main(argv):
         return run_host(root, args)
     if options.command == "locked-run":
         return locked_run(root, args)
+    if options.command == "suite":
+        return run_suite(root, args)
+    if options.command == "locked-suite":
+        return locked_suite(root, args)
     if options.command == "for":
         return run_for(root, options.path)
     parsed = parse_args(args)

@@ -209,6 +209,21 @@ class HostFlow(unittest.TestCase):
         (self.root / "src/newmod/empty.rs").write_text("//\n")
         self.assertEqual(self.run_fc("for", "src/newmod/empty.rs", names=names).returncode, 1)
 
+    def test_suite_announces_skips_before_and_after_and_keeps_the_exit_code(self):
+        names = NAMES + ["ui::context_changes_active::t", "changes::t"]
+        result = self.run_fc("suite", "--", "changes", "split", names=names, FC_EXIT="5")
+        self.assertEqual(result.returncode, 5, result.stderr)
+        lines = [l for l in result.stderr.splitlines() if "NOT the full suite" in l]
+        self.assertEqual(len(lines), 2, result.stderr)
+        self.assertIn("skipped 3 of 8 tests", lines[0])
+        self.assertIn("changes=2, split=1", lines[0])
+        self.assertIn("release-host-gate", lines[0])
+
+    def test_skip_summary_counts_name_only_matches(self):
+        summary = FC.skip_summary(["a::changes::t", "b::flips_when_state_changes"], ["changes"])
+        self.assertIn("skipped 2 of 2", summary)
+        self.assertIn("1 of them only because", summary)
+
     def test_module_filter(self):
         self.assertEqual(FC.module_filter("src/host/model.rs"), "host::model::")
         self.assertEqual(FC.module_filter("src/cli/mod.rs"), "cli::")
@@ -234,6 +249,13 @@ class TableParity(unittest.TestCase):
                     stale.append(pattern)
         self.assertEqual(stale, [], "scripts/scoped-tests.table patterns match no tracked file: "
                          "update the table in the change that moved or deleted the path")
+
+    def test_editor_view_edits_reach_the_editor_gate(self):
+        selected = subprocess.run(["bash", str(ROOT / "scripts/scoped-tests.sh"), "src/app/text_editor_view.rs"],
+                                  cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
+        self.assertIn("editor_gate", selected)
+        self.assertIn("app::text_editor_view::", selected)
+        self.assertNotIn("::", selected)
 
     def test_a_removed_path_is_detected(self):
         tracked = ["src/host/model.rs"]
