@@ -60,7 +60,7 @@ def identity(root, extra, sdk_tests=False):
     tag = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
                          cwd=root, capture_output=True, text=True)
     driver = {name: digest(Path(__file__).with_name(name))
-              for name in ("build-evidence.py", "pr-install-pretests.sh", "pr-sdk-selection.py")
+              for name in ("build-evidence.py", "pr-install-pretests.sh", "pr-sdk-selection.py", "filter_check.py")
               if Path(__file__).with_name(name).is_file()}
     return {"exact_tag": tag.stdout.strip() if tag.returncode == 0 else "", "driver": driver, "python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
             "source": str(root), "channel_input": digest(root / ".channel") if (root / ".channel").is_file() else None,

@@ -785,7 +785,7 @@ class PluginRuntime:
                 self._merge_state_effect(scoped, effect.data)
                 state_changed = True
                 _emit({
-                    "type": "save_app_state",
+                    "type": "save_plugin_state",
                     "scope": scope_name,
                     "payload": dict(scoped),
                 })
@@ -993,6 +993,16 @@ class PluginRuntime:
                     "pipe_id": str(effect.pipe_id),
                     "payload": effect.payload,
                 })
+            elif isinstance(effect, (effects.AiQuery, effects.GetSystemStats)):
+                raise TypeError(
+                    f"plugin {self._plugin_id!r}: effect {type(effect).__name__} is not "
+                    "available in this runtime (the host has no handler for it)"
+                )
+            else:
+                raise TypeError(
+                    f"plugin {self._plugin_id!r}: update() returned "
+                    f"{type(effect).__name__}, which is not a supported effect"
+                )
         if state_changed:
             self._set_state(in_view=False)
 

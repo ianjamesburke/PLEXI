@@ -48,19 +48,13 @@ website-registry:
 website-smoke:
     bash website/scripts/prod-smoke.sh
 
-# Run the full test suite — HostHarness regression tests + unit tests.
-# Skips release-gated experimental features and heavy scene renders during alpha dev.
+# Run the host test suite MINUS the patterns below. This is not the full suite:
+# libtest --skip is a substring match on the full test path, so each pattern also
+# drops unrelated tests whose names contain it. The recipe prints how many tests
+# were skipped, and by which pattern, before and after the run.
+# `just release-host-gate` is the full suite.
 test:
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test -- \
-        --skip assistant \
-        --skip daw \
-        --skip cloud \
-        --skip account:: \
-        --skip marketplace \
-        --skip ledger \
-        --skip routine \
-        --skip changes \
-        --skip scene_suite
+    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py suite -- assistant daw cloud account:: marketplace ledger routine changes scene_suite
 
 # Full release host suite, test-target compilation and strict lint.
 release-host-gate:
@@ -78,9 +72,17 @@ run-logged name *command:
     @python3 scripts/run_logged.py "$@"
 
 # Run selected host tests with the same flags and isolation as `just scene`.
-# Pass libtest filters and options after the recipe name.
+# Pass libtest filters and options after the recipe name. A filter that matches
+# no test fails (exit 1) with the nearest real module and test names; it never
+# reports a pass for zero tests. See scripts/filter_check.py.
 test-host +args:
-    python3 scripts/run_logged.py --tee test-host -- bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi -- {{args}} < /dev/null
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-host -- python3 scripts/filter_check.py host -- {{args}} < /dev/null
+
+# Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
+# A file with no table entry falls back to its own module tests and says so.
+#   just test-for src/host/model.rs
+test-for path:
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -602,6 +604,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_run_logged.py
     uv run --no-project python scripts/test_build_lifecycle.py
     uv run --no-project python scripts/test_distribution_cache.py

@@ -76,7 +76,7 @@ implementation — plus the log evidence below. Closing that gap is stint 0686.
 
 ## The resolution chain
 
-**Write** — `PersistState` from the guest → `save_app_state` message →
+**Write** — `PersistState` from the guest → `save_plugin_state` message →
 `LivePythonPane::save_state` → `python_state_path(&self.config)` →
 `write_python_state_atomic`. The path is
 `<config.workspace_root>/.plexi/app_states/<plugin_id>.json`. `config` is the
