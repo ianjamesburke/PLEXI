@@ -11,6 +11,7 @@ use crate::app::view_trait::{KeyDisposition, View, ViewCommand, ViewRenderContex
 use crate::editor::preview::{self, LinkKind, LinkTarget, MarkdownLayoutCache};
 use crate::editor::widget::{CodeTheme, EditorWidget, ImageCache, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
+use crate::host::editor_positions::EditorPosition;
 use crate::ui::dialog::{UnsavedChangesChoice, UnsavedChangesDialog};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -322,6 +323,7 @@ impl TextEditorView {
             config_saved: false,
         };
         app.refresh_commands_diagnostics();
+        app.restore_remembered_position();
         app
     }
 
@@ -864,6 +866,98 @@ impl TextEditorView {
             bar.recompute(&content);
         }
         self.refresh_commands_diagnostics();
+    }
+
+    /// Where this file was left: selection, viewport top and horizontal
+    /// scroll, keyed by the disk content they describe. `None` while the
+    /// buffer is not that content (unsaved edits, an external change, a load
+    /// error or a missing file), since no hash would identify it (stint 1236).
+    fn current_position(&self) -> Option<EditorPosition> {
+        if self.last_edit.is_some() || self.external.is_some() {
+            return None;
+        }
+        Some(EditorPosition {
+            selection: self.doc.selection(),
+            scroll_top: self.view.anchor.cursor,
+            scroll_offset: self.view.anchor.offset,
+            scroll_x: self.view.scroll_x,
+            content_hash: self.disk_hash?,
+        })
+    }
+
+    /// Puts the caret, selection and viewport back where `position` says.
+    /// Selection only: the buffer and its history are untouched.
+    fn apply_position(&mut self, position: &EditorPosition, source: &str) {
+        self.doc
+            .apply(EditorCommand::SetCursor(position.selection.anchor));
+        self.doc
+            .apply(EditorCommand::ExtendTo(position.selection.head));
+        self.view.anchor = crate::editor::view::ScrollAnchor {
+            cursor: position.scroll_top,
+            offset: position.scroll_offset,
+        };
+        self.view.scroll_x = position.scroll_x.max(0.0);
+        self.view.pending_reveal = None;
+        self.view.resolve_scroll(self.doc.buffer().line_count());
+        log::info!(
+            "text_editor: position restored from {source} path={:?} caret={}:{} top_line={}",
+            self.path,
+            position.selection.head.line,
+            position.selection.head.column,
+            position.scroll_top.line
+        );
+    }
+
+    /// Opens a file just loaded clean from disk at its remembered position.
+    /// Notes keep landing at the end of the document (stint 0544), so they
+    /// neither read nor write the store.
+    fn restore_remembered_position(&mut self) {
+        if self.is_note || self.last_edit.is_some() {
+            return;
+        }
+        let Some(hash) = self.disk_hash else {
+            return;
+        };
+        if let Some(position) = crate::host::editor_positions::lookup(&self.path, hash) {
+            self.apply_position(&position, "position_store");
+        }
+    }
+
+    /// Records where this file was left as the document lifecycle ends
+    /// (pane close, switching to another file).
+    fn remember_position(&self) {
+        if self.is_note {
+            return;
+        }
+        if let Some(position) = self.current_position() {
+            crate::host::editor_positions::remember(&self.path, position);
+        }
+    }
+
+    /// Applies the position saved in this pane's own state (host restart).
+    /// The caller has already made `self.path` the state's file.
+    fn restore_pane_position(&mut self, state: &serde_json::Value) {
+        let Some(raw) = state.get("position") else {
+            return;
+        };
+        let position: EditorPosition = match serde_json::from_value(raw.clone()) {
+            Ok(position) => position,
+            Err(e) => {
+                log::warn!(
+                    "text_editor: saved pane position for {:?} does not parse ({e}); keeping the default position",
+                    self.path
+                );
+                return;
+            }
+        };
+        if self.last_edit.is_some() || self.disk_hash != Some(position.content_hash) {
+            log::info!(
+                "text_editor: saved pane position not applied path={:?} (file changed since it was recorded)",
+                self.path
+            );
+            return;
+        }
+        self.apply_position(&position, "pane_state");
     }
 
     pub(crate) fn is_commands_file(&self) -> bool {
@@ -2872,10 +2966,20 @@ impl View for TextEditorView {
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
+        let mut state = serde_json::json!({
             "path": self.path.to_string_lossy(),
             "font_size": self.font_size,
-        }))
+        });
+        if let Some(position) = self.current_position() {
+            match serde_json::to_value(position) {
+                Ok(value) => state["position"] = value,
+                Err(e) => log::warn!(
+                    "text_editor: cannot save position for {:?} in pane state: {e}",
+                    self.path
+                ),
+            }
+        }
+        Some(state)
     }
 
     fn restore_state(&mut self, state: &serde_json::Value) {
@@ -2901,6 +3005,7 @@ impl View for TextEditorView {
                     });
                     return;
                 }
+                self.remember_position();
                 let (raw, load_error) = match std::fs::read_to_string(&new_path) {
                     Ok(s) => (s, None),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
@@ -2932,7 +3037,9 @@ impl View for TextEditorView {
                 self.last_edit = None;
                 self.find_bar = None;
                 self.refresh_commands_diagnostics();
+                self.restore_remembered_position();
             }
+            self.restore_pane_position(state);
         }
     }
 
@@ -3265,6 +3372,7 @@ impl Drop for TextEditorView {
         }
         // Unprompted close paths (CLI, quit) save a dirty file like they always
         // did; `flush_with` refuses when that would clobber an external write.
+        self.remember_position();
     }
 }
 

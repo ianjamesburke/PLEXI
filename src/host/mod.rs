@@ -16,6 +16,7 @@ pub mod command;
 pub mod command_view;
 pub mod context;
 pub mod context_state;
+pub mod editor_positions;
 pub mod effect;
 pub mod event_log;
 pub mod event_subscriptions;
