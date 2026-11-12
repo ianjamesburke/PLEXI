@@ -5446,6 +5446,85 @@ mod tests {
         );
     }
 
+    /// Poll the real search worker until its final phase for the current query
+    /// has been applied and `done` holds.
+    fn settle_search(
+        app: &mut FileBrowserView,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+        done: impl Fn(&FileBrowserView) -> bool,
+    ) {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            let _ = app.service_external(wake);
+            if !app.search_session.is_scanning() && done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        panic!(
+            "search worker did not settle for query {:?}",
+            app.search_query
+        );
+    }
+
+    fn selected_hit_name(app: &FileBrowserView) -> Option<String> {
+        app.selected_search_hit().map(|hit| hit.file_name.clone())
+    }
+
+    /// Two shallow hits are scored on the UI thread first; the worker's deep
+    /// walk then ranks an exact nested match above both. A file the user moved
+    /// to before that update must stay selected, not the row now at its index.
+    fn make_reranking_search_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("my_alpha.md"), b"x").expect("write my_alpha.md");
+        std::fs::write(dir.path().join("xalpha.md"), b"x").expect("write xalpha.md");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir sub");
+        std::fs::write(dir.path().join("sub").join("alpha"), b"x").expect("write sub/alpha");
+        dir
+    }
+
+    #[test]
+    fn search_selection_keeps_its_file_when_async_results_rerank() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        assert!(app.in_search);
+        let immediate: Vec<String> = app
+            .search_session
+            .hits()
+            .iter()
+            .map(|hit| hit.file_name.clone())
+            .collect();
+        assert_eq!(
+            immediate,
+            vec!["my_alpha.md".to_string(), "xalpha.md".to_string()],
+            "the synchronous shallow phase scores only the current directory"
+        );
+
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("xalpha.md"));
+
+        settle_search(&mut app, &wake, |app| {
+            app.search_session
+                .hits()
+                .first()
+                .is_some_and(|hit| hit.file_name == "alpha")
+        });
+
+        assert_eq!(
+            selected_hit_name(&app).as_deref(),
+            Some("xalpha.md"),
+            "a background rerank must not move the selection to another file"
+        );
+    }
+
     #[test]
     fn arrow_down_still_selects_next_in_search() {
         let (mut app, _dir) = make_populated_dir_plugin();
