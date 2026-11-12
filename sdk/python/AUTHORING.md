@@ -25,10 +25,16 @@ plexi plugin check myapp --png-dir /tmp/myapp-shots
 plexi view open myapp
 ```
 
-`plexi plugin init` writes `main.py`, `manifest.toml`, `tests/test_app.py`,
-`AGENTS.md`, `.gitignore`, and `plexi.scaffold.toml`. Never author a
-`manifest.toml` by hand — the scaffold sets the correct `schema_version` and a
-valid shape. Prune the unused SDK imports the template ships before finishing.
+`plexi plugin init` writes `main.py`, `manifest.toml`, `tests/test_plugin.py`,
+`fixtures/state.json`, `AGENTS.md`, `.gitignore`, and `plexi.scaffold.toml`.
+The scaffolded `AGENTS.md` says what each file is for. Never author a
+`manifest.toml` by hand: the scaffold sets the correct `schema_version` and a
+valid shape.
+
+`main.py` is a skeleton to extend: one state value, one button, one key, and a
+`Resize` handler. Its manifest declares no capabilities and it exposes no
+tools. `tests/test_plugin.py` drives the button and the key, so it fails when
+the handler breaks.
 
 For pre-existing or migrated plugins that predate scaffold metadata, run
 `plexi plugin init --adopt <dir>` (or `plexi plugin init --adopt` inside the plugin
@@ -40,7 +46,7 @@ the active `channel`/`profile_dir`.
 
 ## App Contract
 
-An plugin is three module-level functions — no class, no inheritance:
+A plugin is three module-level functions, with no class and no inheritance:
 
 ```python
 #!/usr/bin/env python3
@@ -71,7 +77,17 @@ def view():
     ], grow=True)
 ```
 
-- `init(size, args)` runs once on launch; return startup effects.
+- `init(size, args)` runs once on launch; return startup effects. `size` is
+  `(width, height)`, the pane's content area in logical points. The host sends
+  `Resize(width, height)` when either changes by more than half a point. A
+  pane that starts before it is first painted gets `(800, 600)` and then a
+  `Resize` with the real size. `plexi plugin check` and `plexi view render`
+  pass the size they render at. `PluginHarness` sends no size, so `init` sees
+  `(0, 0)` there.
+- Persisted and seeded state is already in `plexi_sdk.state` when `init` runs.
+  A `SetState` returned from `init` is merged on top, so it replaces a restored
+  or seeded value for the same key. Read with `state.get("key", default)`
+  instead of writing a default from `init`.
 - `update(event)` runs for every input event; return effects. Never mutate in
   place — effects are data the adapter executes after `update()` returns.
 - `view()` must be **pure**. Calling `state.set()` inside `view()` raises
@@ -115,7 +131,9 @@ Pick one per plugin:
 - **Canvas drawing** — games, animations, visualizations. `view()` returns a
   `Canvas([...])`. For animation, return `SetSchedulerMode("continuous", fps=60)`
   from `init()` and advance simulation state from `RenderFrame` events. Do not
-  build animation loops with timers.
+  build animation loops with timers. `RenderFrame.elapsed` is the seconds since
+  the previous frame, and `0.0` on the first. `SetSchedulerMode` needs no
+  capability.
 
 ### Tree components and canvas commands
 
@@ -145,7 +163,7 @@ fields is in `sdk.md` (Effects section). The common ones:
 
 `SetState` is process-local runtime state — view/update data, caches, game
 state. `PersistState` writes the same snapshot **and** saves durable plugin state;
-use it only when a key must survive an plugin restart. Both take an optional
+use it only when a key must survive a plugin restart. Both take an optional
 `scope=` naming one of the plugin's declared state scopes (see `[state] scopes`
 in the Manifest section); omitted means the plugin's default scope, and an
 undeclared scope raises — never a silent fallback. `state.get`/`state.all`/`state.load`/`state.patch`
@@ -256,7 +274,9 @@ changes.
 Set `read_only=True` only for tools that never mutate plugin or workspace state.
 For Assistant calls specifically, read-only tools run without a write-grant
 prompt while every call is still recorded. Mutating Assistant calls prompt for
-an allow-once or persisted narrow grant before they run.
+an allow-once or persisted narrow grant before they run. The SDK does not
+enforce the flag: effects in a `tools.Reply` from a read-only tool are still
+applied.
 
 ## Cross-plugin events
 
@@ -267,7 +287,8 @@ receive its events. The subscription result supplies the ID needed by
 Python and Rust WASM plugins share the same host registry, so publishers and
 subscribers can use either runtime. Subscriptions last until unsubscribe or
 the subscriber pane closes. The host permission broker may ask the user before
-allowing a cross-plugin subscription.
+allowing a cross-plugin subscription. Declaring and emitting streams needs no
+capability ID in the manifest.
 
 ## Focus and Visibility
 
@@ -316,7 +337,19 @@ Widget selection rules:
   is always explicit, sized to the eventual content so nothing jumps. Never
   thread a loading boolean through multiple view branches.
 - **Text entry:** use `TextInput` (`TextEdit` alias) in the component tree. Never read raw keys for
-  text.
+  text. It is a single-line field; there is no multi-line input yet. Every edit
+  arrives as `UiValueChange(handler_id, value)` with the field's `on_change`
+  id. Enter arrives as `UiAction(handler_id)` with its `on_submit` id and
+  carries no text, so keep the latest `UiValueChange.value` in state and read
+  it on submit. Both ids default to the field's `id`; tell the two events apart
+  by type. `FormField` behaves the same. In tests, `h.text_submit(id, value)`
+  delivers the `UiValueChange` and `h.ui_action(id)` delivers the Enter.
+- **Long content:** `Scrollable(child)` takes one child, so wrap a list in a
+  `Column`: `Column([SurfaceHeader(...), Scrollable(Column(rows)),
+  FooterKeys(...)], grow=True)`. A body taller than the pane then scrolls
+  between the header and the footer. `apps/logs` is a working example.
+- **Size-aware views:** store the size from `init` and `Resize` in state and
+  branch on it in `view()`, as the scaffolded `main.py` does.
 - **Forms:** a labeled field is a `FormField`; a Save/Cancel pair is an
   `Actions` (`ActionBar` alias) row. Buttons declared as plain `Column` children each take the
   column's full width and stack, so an action pair written that way reads as
@@ -324,7 +357,7 @@ Widget selection rules:
 - **Focus:** the field that should hold the cursor declares
   `autofocus=True` (on `TextInput` or `FormField`). The host focuses it
   whenever the pane owns input and nothing else is focused, including the
-  frame a revealed form first renders, so an plugin never issues a focus command
+  frame a revealed form first renders, so a plugin never issues a focus command
   or routes keys itself.
 - **Raw drawing / games:** return `Canvas(...)` and drive state from
   `RenderFrame`.
@@ -428,6 +461,9 @@ state.all()                       # every key, decoded
 
 `view()` reads state but must never write it.
 
+State restored from disk, or seeded by `plexi view render --state` and
+`fixtures/state.json`, is loaded before `init` runs (see App Contract).
+
 ## Logging
 
 Log through the frame with `plexi_sdk.log`. App logs forward into the host log
@@ -438,6 +474,9 @@ tagged `plugin::<plugin_id>`.
 - `log.warn` — recoverable fallbacks or ignored input.
 - `log.error` — unrecoverable failures, before returning or surfacing them.
 
+Each takes one string: `log.info(f"saved {count} rows")`. There are no format
+arguments or keyword fields.
+
 Always log at init and key state transitions; log escapes and errors from
 `update(event)`.
 
@@ -446,9 +485,11 @@ Always log at init and key state transitions; log escapes and errors from
 The scaffold writes a valid `manifest.toml`; the shape lives in the template at
 [`plexi_sdk/templates/manifest.toml`](plexi_sdk/templates/manifest.toml). A
 `[plugin] type = "plugin"` with a `.py` entry launches through the CPython-in-WASM
-adapter (stint 0285). Declare capabilities under `[plugin.capabilities]`; see
-`sdk.md` and `docs/wasm-runtime.md`'s "Capabilities" section for what each
-grant allows.
+adapter (stint 0285). Declare capabilities under `[plugin.capabilities]`. The
+accepted IDs and what each allows are the "Capability registry" table in
+[`plugin-manifest.md`](../../website/src/content/docs/plugin-manifest.md),
+generated from `Capability::ALL` in `src/app/permissions.rs`. An ID outside
+that table fails `plexi plugin check` and install.
 
 `[launch] on_launch` declares what the host does when your plugin is launched
 while an instance already exists: `focus_existing` (one instance globally —
@@ -505,7 +546,7 @@ fixed).
 
 ## Approved CLI Operations
 
-An plugin can run a known command-line program on the person's computer, but only
+A plugin can run a known command-line program on the person's computer, but only
 through operations its package declares and the person approves. This is the
 `cli_operations` experiment (`plexi experiments enable cli_operations`) and
 needs the `cli.operations` capability. It is not a shell: the plugin names an
@@ -560,7 +601,7 @@ interpreter would be unbound.
 
 Test-first. Define done by the test, not the code.
 
-- Add or update `tests/test_app.py` (PluginHarness) for every behavior change
+- Add or update `tests/test_plugin.py` (PluginHarness) for every behavior change
   before touching plugin code, then run `plexi plugin test .`.
 - Exercise behavior through actions and keys, not only by reading code:
   `plexi pane action <pane-id> <handler-id>` and `plexi pane key <pane-id> <key>`.
@@ -570,6 +611,15 @@ Test-first. Define done by the test, not the code.
   lines).
 - Final gate: `plexi plugin check .` renders the size matrix and validates the SDK
   v3 shape. There is no `plexi plugin build`.
+- `plexi plugin check` also reads `fixtures/state.json` when it exists. The file
+  must be one JSON object. The check seeds it, renders once, and fails unless
+  at least one string or number from the fixture shows up in the frame, then
+  clicks the handlers it finds. Keep the fixture's keys the ones `view()`
+  reads, and do not overwrite them from `init`. With no fixture the seeded
+  probe is skipped.
+- `--state` on `plexi view render` is read relative to the current directory,
+  not the plugin directory. The examples below run from inside the plugin
+  directory.
 
 Make the channel explicit when validating — `PLEXI_CHANNEL` leaks into plugin
 tooling:

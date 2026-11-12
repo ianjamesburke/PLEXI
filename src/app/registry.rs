@@ -1216,7 +1216,7 @@ fn login_home_dir() -> Option<PathBuf> {
     None
 }
 
-fn resolve_workspace_root_stopping_at(
+pub(crate) fn resolve_workspace_root_stopping_at(
     start: &Path,
     channel_dir: &str,
     stops: &[PathBuf],

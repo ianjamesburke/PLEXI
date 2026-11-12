@@ -188,30 +188,9 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let channel_dir = crate::config::workspace_channel_dir();
 
-    // Walk up from CWD looking for the channel dir (workspace marker).
-    let workspace_root = {
-        let home = dirs::home_dir();
-        let mut current = cwd;
-        let mut found: Option<std::path::PathBuf> = None;
-        loop {
-            if let Some(ref h) = home {
-                if current == *h {
-                    break;
-                }
-            }
-            if current == std::path::Path::new("/") {
-                break;
-            }
-            if current.join(&channel_dir).is_dir() {
-                found = Some(current);
-                break;
-            }
-            if !current.pop() {
-                break;
-            }
-        }
-        found
-    };
+    // The registry's walk: stops at `$HOME` and at the login home, so a
+    // redirected `HOME` never makes the real profile dir a workspace (stint 1337).
+    let workspace_root = crate::app::registry::resolve_workspace_root(&cwd);
 
     let Some(root) = workspace_root else {
         eprintln!(

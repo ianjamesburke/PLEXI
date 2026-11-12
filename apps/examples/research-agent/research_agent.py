@@ -29,7 +29,7 @@ def view():
     return Column([
         SurfaceHeader("Research Agent", subtitle="V3 AI-query example"),
         TextEdit("prompt", value=state.get("prompt", ""),
-                 placeholder="Ask about a topic to research...", multiline=True),
+                 placeholder="Ask about a topic to research..."),
         Button("Research", on_click="ask", style="primary"),
         Label(state.get("answer", "Ask a question to get a structured research brief."), max_lines=20),
         FooterKeys([("enter", "submit text"), ("ask", "send query")]),
