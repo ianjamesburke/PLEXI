@@ -2080,6 +2080,103 @@ mod tests {
         );
     }
 
+    // ─── Retired pre-tier store ──────────────────────────────────────────────
+
+    /// Stint 1312: the pre-tier migration is deleted. A pre-tier directory is
+    /// reported by path with the manual move, every time, and reporting it
+    /// only reads: nothing is moved, copied, or removed.
+    #[test]
+    fn pre_tier_notes_are_reported_by_path_and_never_moved() {
+        let env = tier_env("pre-tier-report");
+        seed(&env.legacy.join("inbox").join("staged.md"), "staged body");
+        let ctx_dir = env.legacy.join("ctx-project-1a2b3c4d");
+        seed(&ctx_dir.join("kept.md"), "kept body");
+        seed(&env.legacy.join("assets").join("pic-1.png"), "PNGBYTES");
+
+        let message = pre_tier_notes_error().expect("a pre-tier notes dir must be reported");
+        assert!(
+            message.contains(&env.legacy.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("inbox"), "{message}");
+        assert!(message.contains("ctx-project-1a2b3c4d"), "{message}");
+        assert!(message.contains("no longer migrates"), "{message}");
+        assert!(message.contains("left unchanged"), "{message}");
+        assert!(
+            message.contains(&env.global.display().to_string()),
+            "the fix names the global tier: {message}"
+        );
+        assert!(
+            message.contains(".plexi/notes"),
+            "the fix names the project tier: {message}"
+        );
+        assert!(!message.contains("pic-1.png"), "{message}");
+
+        assert_eq!(
+            std::fs::read_to_string(env.legacy.join("inbox").join("staged.md")).expect("staged"),
+            "staged body"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ctx_dir.join("kept.md")).expect("kept"),
+            "kept body"
+        );
+        assert!(scan_tier(&env.global).is_empty(), "nothing is copied");
+        assert!(scan_tier(&context_notes_dir(&env.root)).is_empty());
+        assert_eq!(
+            pre_tier_notes_error(),
+            Some(message),
+            "reported again on every launch until the user moves it"
+        );
+    }
+
+    /// An empty pre-tier base, or one holding only attachments, holds no note.
+    #[test]
+    fn a_pre_tier_base_without_notes_is_not_reported() {
+        let env = tier_env("pre-tier-empty");
+        assert_eq!(pre_tier_notes_error(), None);
+        seed(&env.legacy.join("assets").join("pic-1.png"), "PNGBYTES");
+        seed(&env.legacy.join("trash").join("gone.md"), "trashed");
+        assert_eq!(pre_tier_notes_error(), None);
+    }
+
+    /// On the stable channel the pre-tier base IS the global tier, so only a
+    /// hashed `ctx-` folder is unmistakably pre-tier. Ordinary global notes and
+    /// folders, `inbox` included, are tier content and are never reported.
+    #[test]
+    fn stable_channel_global_tier_is_not_mistaken_for_the_pre_tier_store() {
+        let base = std::env::temp_dir().join(format!(
+            "plexi-notes-stable-report-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join(".plexi");
+        std::fs::create_dir_all(&shared).expect("shared dir");
+        let _profile = crate::config::set_test_profile_dir(shared.clone());
+        let _shared_guard = crate::config::set_test_shared_dir(shared.clone());
+        let tier = global_notes_dir();
+        seed(&tier.join("precious.md"), "do not eat me");
+        seed(&tier.join("inbox").join("staged.md"), "staged body");
+        seed(&tier.join("ctx-manual").join("own.md"), "a user folder");
+        assert_eq!(pre_tier_notes_error(), None);
+
+        seed(
+            &tier.join("ctx-project-1a2b3c4d").join("kept.md"),
+            "kept body",
+        );
+        let message = pre_tier_notes_error().expect("a hashed ctx dir must be reported");
+        assert!(message.contains("ctx-project-1a2b3c4d"), "{message}");
+        assert!(!message.contains("precious"), "{message}");
+        assert!(!message.contains("ctx-manual"), "{message}");
+        assert_eq!(
+            std::fs::read_to_string(tier.join("ctx-project-1a2b3c4d").join("kept.md"))
+                .expect("kept"),
+            "kept body"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     fn discovery_for(env: &TierEnv) -> NotesDiscovery {
         NotesDiscovery {
             active_root: Some(env.root.clone()),
