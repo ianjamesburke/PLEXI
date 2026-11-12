@@ -15,14 +15,16 @@ export const docsNav: DocNavSection[] = [
       { slug: 'getting-started', title: 'Installation & Setup' },
       { slug: 'config', title: 'Configuration' },
       { slug: 'quick-note', title: 'Quick Note' },
+      { slug: 'file-explorer', title: 'File Explorer' },
     ],
   },
   {
     section: 'Concepts',
     items: [
       { slug: 'pgap', title: 'PGAP' },
-      { slug: 'panes', title: 'Panes & Pages' },
+      { slug: 'panes', title: 'Panes' },
       { slug: 'plugins', title: 'Plugins' },
+      { slug: 'plugin-manifest', title: 'Plugin manifest' },
       { slug: 'secrets', title: 'Secrets' },
     ],
   },
@@ -30,7 +32,6 @@ export const docsNav: DocNavSection[] = [
     section: 'SDK Reference',
     items: [
       { slug: 'sdk', title: 'Overview' },
-      { slug: 'sdk-emitter', title: 'Emitter' },
     ],
   },
   {

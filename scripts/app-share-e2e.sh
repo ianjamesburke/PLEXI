@@ -115,15 +115,50 @@ if [[ ! -f "$APP_DIR/manifest.toml" ]]; then
   cat "$WORK/init.log" >&2
   exit 1
 fi
+# The scaffold is a skeleton with no capabilities and no tools (stint 1330).
+# This check needs one auto-granted capability, one sensitive capability and
+# one assistant tool, so it declares and writes them itself.
 python3 - "$APP_DIR/manifest.toml" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = 'capabilities = ["timer"]'
+old = 'capabilities = []'
 new = 'capabilities = ["timer", "permissions.manage"]'
 if old not in text:
-    sys.exit(f"scaffold manifest has no timer capability list:\n{text}")
+    sys.exit(f"scaffold manifest has no empty capability list:\n{text}")
 path.write_text(text.replace(old, new, 1))
+PY
+rm -rf "$APP_DIR/tests" "$APP_DIR/fixtures"
+cat >"$APP_DIR/main.py" <<'PY'
+"""Share sample: one read-only assistant tool, written by app-share-e2e.sh."""
+
+from plexi_sdk import log, tools
+from plexi_sdk.effects import SetTitle
+from plexi_sdk.ui import Column, SurfaceHeader, Text
+
+
+@tools.tool(
+    "demo.greet",
+    "Greet someone by name.",
+    {"name": str},
+    {"greeting": str},
+    read_only=True,
+)
+def greet(name: str) -> dict:
+    return {"greeting": f"Hello, {name}!"}
+
+
+def init(size, args):
+    log.info("share sample: init")
+    return [SetTitle("Share Sample"), tools.expose()]
+
+
+def update(event):
+    return tools.dispatch(event) or []
+
+
+def view():
+    return Column([SurfaceHeader("Share Sample"), Text("Share sample")], grow=True)
 PY
 
 echo "validating and packaging"

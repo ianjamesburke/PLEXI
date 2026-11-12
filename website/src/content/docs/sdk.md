@@ -963,10 +963,14 @@ as whole buttons; a label never breaks inside a word.
 ### `TextInput`
 
 ```python
-TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '', multiline: bool = False, max_length: int | None = None, height: float = 0.0)
+TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '')
 ```
 
-Editable text input rendered natively by the host (`TextEdit` alias).
+Single-line editable text input rendered natively by the host (`TextEdit` alias).
+
+The host sends ``UiValueChange(on_change, value)`` on every edit and
+``UiAction(on_submit)`` when Enter is pressed in the field. Both ids default
+to ``id``. There is no multi-line input yet.
 
 ### `FormField`
 

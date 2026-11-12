@@ -704,7 +704,12 @@ ActionBar = Actions
 
 
 class TextInput(Component):
-    """Editable text input rendered natively by the host (`TextEdit` alias)."""
+    """Single-line editable text input rendered natively by the host (`TextEdit` alias).
+
+    The host sends ``UiValueChange(on_change, value)`` on every edit and
+    ``UiAction(on_submit)`` when Enter is pressed in the field. Both ids default
+    to ``id``. There is no multi-line input yet.
+    """
 
     def __init__(
         self,
@@ -717,9 +722,6 @@ class TextInput(Component):
         *,
         autofocus: bool = False,
         node_id: str = "",
-        multiline: bool = False,
-        max_length: int | None = None,
-        height: float = 0.0,
     ) -> None:
         resolved_id = id or node_id
         self.id = resolved_id
@@ -730,9 +732,6 @@ class TextInput(Component):
         self.on_submit = on_submit or resolved_id
         self.password = bool(password)
         self.autofocus = bool(autofocus)
-        self.multiline = bool(multiline)
-        self.max_length = max_length
-        self.height = float(height)
 
     def to_node(self) -> dict:
         return {
