@@ -1539,19 +1539,33 @@ mod tests {
         assert!(error.contains("plugin"), "must name [plugin]: {error}");
     }
 
+    /// Stint 1260: the legacy `[app]` message states the schema the manifest
+    /// actually declares instead of always calling it schema 1.
     #[test]
     fn legacy_app_table_error_says_rename_to_plugin_schema_2() {
-        for raw in [
-            "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
-            "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+        for (raw, declared) in [
+            (
+                "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares schema_version = 1",
+            ),
+            (
+                "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares schema_version = 2",
+            ),
+            (
+                "[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares no schema_version",
+            ),
         ] {
             let error = super::PluginManifest::parse(raw)
                 .expect_err("legacy must fail")
                 .to_string();
             assert!(
-                error.contains("schema 1 `[app]` manifests are no longer accepted"),
+                error.contains("`[app]` manifests are no longer accepted"),
                 "{error}"
             );
+            assert!(error.contains(declared), "{error}");
+            assert!(!error.contains("schema 1 `[app]`"), "{error}");
             assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
             assert!(error.contains("schema_version = 2"), "{error}");
         }
@@ -1667,6 +1681,42 @@ mod tests {
         assert!(registry.get("broken-one").is_none());
         assert!(registry.get("broken-two").is_none());
         assert!(registry.get("broken-three").is_none());
+    }
+
+    /// Stint 1260: a plugin whose manifest fails to load is recorded on the
+    /// registry with its directory and error, and is never loaded.
+    #[test]
+    fn broken_manifest_is_recorded_as_skipped_with_dir_and_error() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        write_plugin(global.path(), "valid-app", "Valid App");
+        let broken = global.path().join("broken-app");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("manifest.toml"),
+            "schema_version = 2\n[plugin]\nid = \"broken-app\"\n",
+        )
+        .unwrap();
+
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
+        assert!(registry.get("valid-app").is_some());
+        assert!(registry.get("broken-app").is_none());
+        let skipped = registry.skipped();
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert_eq!(skipped[0].dir, broken);
+        assert_eq!(skipped[0].source, RegistrySource::Global);
+        assert!(
+            skipped[0].error.contains("invalid manifest"),
+            "{}",
+            skipped[0].error
+        );
+        assert!(
+            registry
+                .list()
+                .iter()
+                .all(|plugin| plugin.plugin_dir != broken),
+            "a skipped plugin is data, never a loaded entry"
+        );
     }
 
     #[test]

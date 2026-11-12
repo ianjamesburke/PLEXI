@@ -601,6 +601,29 @@ mod tests {
         }
     }
 
+    /// Stint 1260: a sibling whose manifest no longer parses is skipped by
+    /// the registry and owns no commands, so it must not block an unrelated
+    /// install.
+    #[test]
+    fn command_install_lock_skips_a_sibling_whose_manifest_does_not_parse() {
+        let target = tempfile::tempdir().unwrap();
+        let broken = target.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(
+            broken.join("manifest.toml"),
+            "schema_version = 1\n[app]\nid = 'broken'\nname = 'Broken'\n",
+        )
+        .unwrap();
+        let candidate = PluginManifest::parse(GOOD).unwrap();
+        let lock = candidate
+            .lock_command_install(target.path())
+            .expect("a broken sibling must not block the install");
+        assert!(
+            lock.is_some(),
+            "a plugin with commands holds the install lock"
+        );
+    }
+
     #[test]
     fn schema2_names_every_later_contribution() {
         for name in [

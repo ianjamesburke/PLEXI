@@ -136,3 +136,30 @@ pub fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<String>)
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stint 1260: `plexi plugin list` names a plugin that failed to load,
+    /// its error, and the command that diagnoses it.
+    #[test]
+    fn skipped_plugins_are_listed_with_their_error_and_the_check_command() {
+        let skipped = [crate::app::registry::SkippedPlugin {
+            dir: std::path::PathBuf::from("/profile/plugins/broken-app"),
+            source: crate::app::registry::RegistrySource::Global,
+            error: "invalid manifest: missing field `runtime`".into(),
+        }];
+        let text = skipped_plugin_lines(&skipped).join("\n");
+        assert!(text.contains("broken-app"), "{text}");
+        assert!(
+            text.contains("invalid manifest: missing field `runtime`"),
+            "{text}"
+        );
+        assert!(
+            text.contains("plexi plugin check /profile/plugins/broken-app"),
+            "{text}"
+        );
+        assert!(skipped_plugin_lines(&[]).is_empty());
+    }
+}
