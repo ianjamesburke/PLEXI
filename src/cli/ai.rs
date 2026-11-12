@@ -885,6 +885,29 @@ mod tests {
         assert!(!guide.contains("ollama pull openrouter/"));
     }
 
+    /// Stint 1315: local AI providers are out for 0.5.0, so onboarding must
+    /// never route a user to Ollama, whatever the machine could run.
+    #[test]
+    fn onboarding_routes_to_openrouter_and_never_to_ollama() {
+        let integrations = IntegrationReport {
+            ollama_installed: true,
+            ollama_running: true,
+            ollama_models: Vec::new(),
+            openrouter_configured: false,
+        };
+
+        let guide = format_onboarding_guide(&integrations, &rec("local-great"));
+
+        assert!(
+            guide.contains("plexi secret set OPENROUTER_API_KEY --global"),
+            "{guide}"
+        );
+        assert!(!guide.contains("ollama pull"), "{guide}");
+        assert!(!guide.contains("ollama serve"), "{guide}");
+        assert!(!guide.contains("install Ollama"), "{guide}");
+        assert!(!guide.contains("plexi ai setup"), "{guide}");
+    }
+
     const SEEDED: &str = r#"# top comment
 [general]
 theme = "dark" # inline
