@@ -10520,6 +10520,45 @@ default = true
         assert_eq!(checked, 14 * matrix::STATES.len());
     }
 
+    /// Characterisation pin (stint 1238 step 1 review): `insert_path_token` and
+    /// `command_preview` have no capability gate. They stay refused only because
+    /// the Python bridge emits `sender_pane_id: 0`, which the dispatch link check
+    /// (`dispatch_insert_path_token`, `dispatch_command_preview`) rejects. Tracing
+    /// the principal from `pane_owner` must not change either.
+    #[test]
+    fn python_path_token_and_command_preview_keep_sender_zero_and_no_gate() {
+        use crate::app::view_trait::ViewCommand;
+
+        let insert = plugin_command_from_python_message(&json!({
+            "type": "insert_path_token", "terminal_pane_id": 7, "path": "/tmp/x"
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(required_capability_for_python_plugin_command(&insert).is_none());
+        assert!(matches!(
+            insert,
+            ViewCommand::InsertPathToken {
+                sender_pane_id: 0,
+                terminal_pane_id: 7,
+                ..
+            }
+        ));
+        let preview = plugin_command_from_python_message(&json!({
+            "type": "command_preview", "terminal_pane_id": 7, "request_id": "r", "command": "ls"
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(required_capability_for_python_plugin_command(&preview).is_none());
+        assert!(matches!(
+            preview,
+            ViewCommand::RequestCommandPreview {
+                sender_pane_id: 0,
+                terminal_pane_id: 7,
+                ..
+            }
+        ));
+    }
+
     /// Stint 1238 step 1: a Python pane's runtime capability check traces the
     /// pane's own plugin as the requesting principal, and its launch
     /// materialization traces the same plugin.
