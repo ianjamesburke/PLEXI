@@ -123,12 +123,12 @@ tips = true
 # soft_grant_days = 30         # expiry window in days for `--grant tool=allow:soft` grants; after expiry they revert to `ask`
 
 # [file_handlers]
-# Choose which app opens each file type from the File Explorer (Enter / double-
+# Choose which plugin opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:
 #   "app:<id>"      stored config spelling: open a plugin default view by its registry id (e.g. text-editor)
 #   "os"            hand to the OS default opener (open / xdg-open)
 #   "cmd:<command>" reserved for a future release; falls back to "os" for now
-# A handler here overrides an app's own file_types association. Unmapped types
+# A handler here overrides a plugin's own file_types association. Unmapped types
 # fall through to manifest associations, then builtin media players, then the OS.
 # md   = "app:text-editor"
 # txt  = "app:text-editor"
@@ -136,7 +136,7 @@ tips = true
 # py   = "os"
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"

@@ -475,7 +475,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi plugin prune`: Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines
 - `plexi plugin check`: Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks
 - `plexi plugin test`: Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/`
-- `plexi plugin info`: Show details about an installed view: manifest fields and tool status
+- `plexi plugin info`: Show details about an installed plugin: manifest fields and tool status
 - `plexi plugin state`: Read or replace a file-backed plugin's state document
 - `plexi plugin state get`: Print a plugin's current state document to stdout
 - `plexi plugin state set`: Replace a plugin's state document, reading from a file or stdin

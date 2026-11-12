@@ -123,7 +123,7 @@ echo "Generating changelog..."
 
 echo "Regenerating CLI docs..."
 (cd "$TREE" && bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- \
-    bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs)
+    bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs)
 
 # ── commit ────────────────────────────────────────────────────────────────────
 

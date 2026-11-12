@@ -256,6 +256,7 @@ fn main() -> eframe::Result {
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    crate::app::plugin_migration::replay_early_traces();
     if !dropped_identity.is_empty() {
         log::info!("cli: dropped foreign channel identity variables {dropped_identity:?}");
     }

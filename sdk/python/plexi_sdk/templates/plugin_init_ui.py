@@ -1,6 +1,6 @@
 """View builders for __DISPLAY_NAME__.
 
-Pure functions from app data to a component tree — no effects, no state
+Pure functions from plugin data to a component tree — no effects, no state
 reads beyond what ``main.py`` passes in. Components describe UI; effects
 (returned from ``main.py``) describe host work.
 

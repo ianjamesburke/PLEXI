@@ -96,10 +96,14 @@ impl std::fmt::Display for ConfigDiagnostic {
             ),
             Self::UnknownKey { path, table, key } => {
                 if table.is_empty() {
-                    write!(f, "{path}: unknown key `{key}`")
+                    write!(f, "{path}: unknown key `{key}`")?;
                 } else {
-                    write!(f, "{path}: unknown key `{key}` in [{table}]")
+                    write!(f, "{path}: unknown key `{key}` in [{table}]")?;
                 }
+                if let Some(new_key) = renamed_key(table, key) {
+                    write!(f, "; renamed, use `{new_key}` instead")?;
+                }
+                Ok(())
             }
             Self::DeprecatedSection {
                 path,
@@ -745,6 +749,14 @@ pub fn validate_commands_from_str(data: &str, path: &Path) -> Vec<ConfigDiagnost
     }
 
     diags
+}
+
+/// Keys removed by the plugin rename. Never accepted; only named in diagnostics.
+fn renamed_key(table: &str, key: &str) -> Option<&'static str> {
+    match (table, key) {
+        ("keybindings", "force_reload_app") => Some("force_reload_plugin"),
+        _ => None,
+    }
 }
 
 fn check_unknown_keys(
@@ -3448,6 +3460,18 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].to_string().contains("fake_flag"));
         assert!(diags[0].to_string().contains("[effects]"));
+    }
+
+    #[test]
+    fn validate_old_force_reload_app_names_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[keybindings]\nforce_reload_app = \"cmd+r\"\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        let message = diags[0].to_string();
+        assert!(message.contains("unknown key `force_reload_app` in [keybindings]"), "{message}");
+        assert!(message.contains("use `force_reload_plugin`"), "{message}");
     }
 
     #[test]

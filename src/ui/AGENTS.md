@@ -6,7 +6,8 @@
 
 Host overlays should use these instead of raw egui layout wherever a primitive exists:
 
-- Buttons: `button::KitButton` is the one button (default `Primary`/`Md`; `ButtonKind`, `ButtonSize`). Every host, toast and plugin button is painted by it; plugin Primary maps to `Accent`. Labels are `&str`; request `text_size`/`text_color`/`monospace` explicitly. `Ghost` is transparent at rest with the theme hover fill (menu items via `menu_item`, glyphs via `toolbar_button`, which is Ghost + `compact`). `selected(true)` promotes Primary/Secondary/Ghost to Accent (`effective_kind`). Raw egui buttons are banned by clippy `disallowed-methods` in `clippy.toml` (CI `rust-host.yml` clippy job and `just clippy`/`just pr-candidate`); only `KitButton::ui` and the stint 1209 text editor `#[expect]`s construct one.
+- Buttons: `button::KitButton` is the one button (default `Primary`/`Md`; `ButtonKind`, `ButtonSize`). Every host, toast and plugin button is painted by it. `Primary` is the accent-filled, strongest button in every theme. `Ghost` has no fill and a faint outline at rest, with the theme hover fill; menu items (`menu_item`) and compact glyphs (`toolbar_button`) drop the outline. `selected(true)` marks the active member of a group with the active fill and an accent outline, so a selected item never reads as Primary. Labels are `&str`; request `text_size`/`text_color`/`monospace` explicitly. `KitButton::natural_width` is the one width measurement; measure and paint from it. Raw egui buttons are banned by clippy `disallowed-methods` in `clippy.toml` (CI `rust-host.yml` clippy job and `just clippy`/`just pr-candidate`); only `KitButton::ui` and the stint 1209 text editor `#[expect]`s construct one.
+- `dropdown::select_value` for every single-choice dropdown: the kit owns trigger sizing and option geometry, egui owns popup placement and dismissal.
 - `overlay::ModalShell` for modal frame, scrim, title, body, scroll body, and dismissal.
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
@@ -22,7 +23,7 @@ Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITL
 
 `bounded::allocate` owns finite row budgets. Measure complete required actions and their minimum hit targets before optional metadata and flexible text. Paint and hit-test from the allocated rectangles. Use `ToastShell::action`, `PaneHeader`, `ListRow`, `AppChrome`, and `ActionModal` for their respective surfaces. When required content cannot fit, reflow it, expose a named overflow action, or enforce the container minimum; never accept an empty action label as successful elision. Optional text may elide or deliberately hide; paths and identifiers keep the elision policies above.
 
-Resolve text with `foreground::Surface` against the composited painted fill, including hover, selection, disabled tint, and opacity. Small text uses `Role::SmallText`; meaningful non-text control marks use `Role::ControlMark`. A token alone does not establish contrast.
+Resolve text with `foreground::Surface` against the composited painted fill, including hover, selection and opacity; disabled (inactive) text is exempt from `Role::SmallText` (WCAG 1.4.3) but must still clear `layout_report::INACTIVE_TEXT_MIN` (2:1). Small text uses `Role::SmallText`; meaningful non-text control marks use `Role::ControlMark`. A token alone does not establish contrast.
 
 Instrument migrated surfaces with `layout_report::Capture`, recording allocated text slots and required actions. Assertions inspect emitted paint as well as allocations. Only explicitly scrolling content may declare viewport clipping; a clip rectangle is not a fitting policy. Follow the matrix and screenshot contract in `src/testing/TESTING.md`.
 
@@ -53,6 +54,7 @@ Instrument migrated surfaces with `layout_report::Capture`, recording allocated 
 
 ## Rules
 
+- Optimistic UI is the default: the interface transitions to the user's intended end state in the same frame, slow work (file, network, clipboard) finishes off the UI thread, and a failure after the fact is reported by a visible notice that leaves user data intact; block the UI only when no safe rollback exists.
 - Components own geometry. Callers should not hand-place modal title gaps, row baselines, scroll-body heights, focus rings, or text styles.
 - Do not add hard-coded spacing, text sizes, radii, or button heights in overlay code. Add a token to `style.rs` or a component API here.
 - Do not render host chrome with direct `RichText::new(...).size(...)` unless this module has no matching semantic helper yet. Add the helper first.

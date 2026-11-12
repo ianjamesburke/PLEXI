@@ -285,7 +285,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         let dim = if no_color { "" } else { "\x1b[2m" };
         let reset = if no_color { "" } else { "\x1b[0m" };
 
-        println!("Checking {total} installed app(s)...\n");
+        println!("Checking {total} installed plugin(s)...\n");
 
         if healthy {
             println!("  {green}\u{2713}{reset} {total} plugin(s) -- all capabilities satisfied");
@@ -305,7 +305,7 @@ pub fn doctor_cli(json: bool) -> i32 {
                 println!("  {:14} {dim}--> run: plexi config edit{reset}", "");
             }
             println!(
-                "\n{sick_count} app(s) have unsatisfied capabilities. Run 'plexi config edit' to fix."
+                "\n{sick_count} plugin(s) have unsatisfied capabilities. Run 'plexi config edit' to fix."
             );
         }
 

@@ -138,14 +138,14 @@ pi-plexi-live:
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/protocol/.
 gen-schema:
-    bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
+    bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
     @echo "Schema and Python protocol models regenerated."
 
 # Regenerate the CLI reference docs from the clap Command tree.
 # Run after any change to src/cli_args.rs.
 gen-cli-docs:
-    bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
+    bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs
     @echo "CLI reference regenerated."
     git add website/src/content/docs/cli.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
@@ -170,18 +170,18 @@ check-generated artifact generator regen ok:
 
 # Verify the committed CLI docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/cli.md is stale.
-check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
+check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
 
 # Generate the installed agent skill without committing or pushing.
 gen-skill-docs:
-    bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+    bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill
 
-check-skill-docs: (check-generated "skills/plexi-cli/SKILL.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill" "gen-skill-docs" "CLI skill is up to date.")
+check-skill-docs: (check-generated "skills/plexi-cli/SKILL.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill" "gen-skill-docs" "CLI skill is up to date.")
 
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
-    bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
+    bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs
     @echo "Config reference regenerated."
     git add website/src/content/docs/config.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate config reference docs"
@@ -189,11 +189,11 @@ gen-config-docs:
 
 # Verify the committed config docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/config.md is stale.
-check-config-docs: (check-generated "website/src/content/docs/config.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs" "gen-config-docs" "Config docs are up to date.")
+check-config-docs: (check-generated "website/src/content/docs/config.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs" "gen-config-docs" "Config docs are up to date.")
 
 # Verify the committed schema is up to date with the current Rust source.
 # Fails if sdk/protocol/pgap.schema.json is stale.
-check-schema: (check-generated "sdk/protocol/pgap.schema.json" "bash scripts/cargo-with-lease.sh cargo run -p gen_schema" "gen-schema" "Schema is up to date.")
+check-schema: (check-generated "sdk/protocol/pgap.schema.json" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema" "gen-schema" "Schema is up to date.")
 
 # Generate SDK reference docs from Python docstrings.
 # Run after any change to sdk/python/plexi_sdk/.
@@ -282,22 +282,22 @@ regen-if-stale:
     set -euo pipefail
     if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
         echo "CLI docs source changed — regenerating CLI docs..."
-        bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
+        bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs
     fi
     for source in Cargo.toml src/cli/args.rs src/release/catalog.rs skills/plexi-cli/intro.md tools/gen_cli_docs/Cargo.toml tools/gen_cli_docs/src/main.rs tools/gen_cli_docs/src/skill.rs; do
         if [[ "$source" -nt skills/plexi-cli/SKILL.md ]]; then
             echo "CLI skill source changed — regenerating skill..."
-            bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+            bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill
             break
         fi
     done
     if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
         echo "Config source changed — regenerating config docs..."
-        bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
+        bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs
     fi
     if [[ -n "$(find src/protocol -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
         echo "src/protocol/ changed — regenerating schema..."
-        bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
+        bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi
 
@@ -721,8 +721,8 @@ e2e-test:
     uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring
 
 # Verify every host Action has a CLI mapping or explicit UI-only waiver.
-check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity" "gen-parity" "UI-to-CLI parity is up to date.")
+check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --parity" "gen-parity" "UI-to-CLI parity is up to date.")
 
 # Regenerate the UI-to-CLI parity table.
 gen-parity:
-    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity
+    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --parity

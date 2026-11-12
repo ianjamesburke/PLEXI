@@ -4,6 +4,65 @@ use std::path::Path;
 
 const MIGRATION: &str = "migration-plugin-v2";
 
+/// Migration runs during profile initialization, before `platform::logging::init`
+/// installs the file logger, so `log::info!` lines emitted then are dropped.
+/// Every trace is also buffered here and replayed by [`replay_early_traces`].
+static EARLY_TRACES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn trace(message: String) {
+    log::info!("{message}");
+    if let Ok(mut buffer) = EARLY_TRACES.lock() {
+        buffer.push(message);
+    }
+}
+
+/// Re-emit migration traces recorded before the logger existed. Call once,
+/// immediately after logger initialization.
+pub(crate) fn replay_early_traces() {
+    let drained = EARLY_TRACES
+        .lock()
+        .map(|mut buffer| std::mem::take(&mut *buffer))
+        .unwrap_or_default();
+    for message in drained {
+        log::info!("{message} (recorded before logger init)");
+    }
+}
+
+/// Keys the 0.4.x manifest parser read. That parser ignored every other key in
+/// the top-level table and in `[app]`, so such keys were inert; the strict 0.5
+/// parser rejects them. Migration drops them (the original stays in the backup)
+/// and names each one in its trace.
+const LEGACY_TOP_LEVEL_KEYS: &[&str] = &[
+    "schema_version",
+    "app",
+    "launch",
+    "runtime",
+    "secrets",
+    "marketplace",
+    "requires",
+    "state",
+    "cli_operation",
+];
+const LEGACY_APP_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "entry",
+    "type",
+    "version",
+    "min_sdk_version",
+    "description",
+    "capabilities",
+    "watch",
+    "author",
+    "tags",
+    "repo",
+    "dependencies",
+];
+
+fn count_entries(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| entries.flatten().count())
+}
+
 pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -37,6 +96,7 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     if !old.exists() && !backup.exists() {
         return Ok(());
     }
+    let source_count = count_entries(&old);
     let run = || -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&journal)?;
         if old.exists() && new.exists() {
@@ -91,9 +151,26 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
                     continue;
                 }
                 let raw = std::fs::read_to_string(&path)?;
-                let rewritten = migrate_manifest(&raw)?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let (rewritten, dropped) = migrate_manifest(&raw).map_err(|error| {
+                    format!(
+                        "{} (package {name}): {error}",
+                        old.join(&name).join("manifest.toml").display()
+                    )
+                })?;
                 // Validate the destination before moving any original directory.
-                let _: super::registry::PluginManifest = toml::from_str(&rewritten)?;
+                super::registry::PluginManifest::parse(&rewritten).map_err(|error| {
+                    format!(
+                        "{} (package {name}) does not convert to a valid schema 2 manifest: {error}",
+                        old.join(&name).join("manifest.toml").display()
+                    )
+                })?;
+                if !dropped.is_empty() {
+                    trace(format!(
+                        "plugin_migration: package={name} dropped_keys_ignored_by_0.4={} (original kept in backup)",
+                        dropped.join(",")
+                    ));
+                }
                 std::fs::write(&path, rewritten)?;
             }
             std::fs::write(&ready, b"schema=2\n")?;
@@ -109,15 +186,38 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
         Ok(())
     };
     run().map_err(|error| {
+        // A failed attempt leaves the profile as it found it: no half-built
+        // staging tree and no empty journal. The lock file is deliberately kept:
+        // it is an inert flock target, and unlinking it would let two processes
+        // lock different inodes.
+        if !ready.is_file() && staged.exists() {
+            if let Err(cleanup) = std::fs::remove_dir_all(&staged) {
+                log::warn!(
+                    "plugin migration cleanup: cannot remove {}: {cleanup}",
+                    staged.display()
+                );
+            }
+        }
+        if journal.is_dir() && count_entries(&journal) == 0 {
+            if let Err(cleanup) = std::fs::remove_dir(&journal) {
+                log::warn!(
+                    "plugin migration cleanup: cannot remove {}: {cleanup}",
+                    journal.display()
+                );
+            }
+        }
         let message = format!("plugin migration v2 at {} failed: {error}", root.display());
         log::error!("{message}");
         message
     })?;
-    log::info!(
-        "plugin_migration: schema=2 root={} backup={}",
-        root.display(),
-        backup.display()
-    );
+    trace(format!(
+        "plugin_migration: schema=2 source={} destination={} backup={} packages_in={} packages_out={} outcome=ok",
+        old.display(),
+        new.display(),
+        backup.display(),
+        source_count,
+        count_entries(&new),
+    ));
     Ok(())
 }
 
@@ -158,19 +258,24 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Publish first, then archive the input. A crash leaves an explicit collision,
     // never a missing pack or an implicit fallback to the old parser.
     std::fs::rename(staged, new)?;
-    std::fs::rename(old, backup)?;
-    log::info!("plugin_pack_migration: schema=2 root={}", root.display());
+    std::fs::rename(old, &backup)?;
+    trace(format!(
+        "plugin_pack_migration: schema=2 source={} destination={} backup={} outcome=ok",
+        root.join("apps.toml").display(),
+        root.join("plugins.toml").display(),
+        backup.display(),
+    ));
     Ok(())
 }
 
-fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn migrate_manifest(raw: &str) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
     let mut value: toml::Value = toml::from_str(raw)?;
     if value
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         == Some(2)
     {
-        return Ok(raw.to_owned());
+        return Ok((raw.to_owned(), Vec::new()));
     }
     if value
         .get("schema_version")
@@ -180,10 +285,25 @@ fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
         return Err("only installed schema_version 1 manifests can migrate to [plugin]".into());
     }
     let table = value.as_table_mut().ok_or("manifest must be a table")?;
+    let mut dropped = Vec::new();
+    table.retain(|key, _| {
+        let keep = LEGACY_TOP_LEVEL_KEYS.contains(&key);
+        if !keep {
+            dropped.push(key.to_owned());
+        }
+        keep
+    });
     let mut plugin = table
         .remove("app")
         .ok_or("legacy manifest is missing [app]")?;
     let identity = plugin.as_table_mut().ok_or("[app] must be a table")?;
+    identity.retain(|key, _| {
+        let keep = LEGACY_APP_KEYS.contains(&key);
+        if !keep {
+            dropped.push(format!("app.{key}"));
+        }
+        keep
+    });
     if let Some(capabilities) = identity
         .get_mut("capabilities")
         .and_then(|value| value.get_mut("capabilities"))
@@ -225,7 +345,7 @@ fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
         toml::Value::Array(vec![toml::Value::Table(view)]),
     );
     table.insert("contributes".into(), toml::Value::Table(contributes));
-    Ok(toml::to_string_pretty(&value)?)
+    Ok((toml::to_string_pretty(&value)?, dropped))
 }
 
 /// Rewrite a persisted launch path only when its owning config root has an
@@ -304,6 +424,104 @@ mod tests {
             std::fs::read_to_string(root.path().join(MIGRATION).join("apps.toml")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn plugin_rename_tree_migration_records_trace_with_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("apps/notes");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'notes'\nname = 'Notes'\ntype = 'app'\nentry = 'main.py'\n").unwrap();
+        std::fs::write(legacy.join("main.py"), "").unwrap();
+        migrate(root.path()).unwrap();
+        assert!(root.path().join("plugins/notes/manifest.toml").is_file());
+        assert!(root.path().join(MIGRATION).join("apps/notes").is_dir());
+        let traces = EARLY_TRACES.lock().unwrap();
+        let line = traces
+            .iter()
+            .find(|line| line.contains(&root.path().join("apps").display().to_string()))
+            .expect("migration must record a trace");
+        assert!(
+            line.contains("packages_in=1 packages_out=1 outcome=ok"),
+            "{line}"
+        );
+        assert!(line.contains("destination="), "{line}");
+    }
+
+    const LEGACY_WITH_INERT_KEYS: &str = "schema_version = 1\nextra_note = 'x'\n[app]\nid = 'logs'\nname = 'Logs'\ntype = 'app'\nentry = 'main.py'\nmouse_tracking = true\n[runtime]\npython_compat = true\n[launch]\non_launch = 'focus'\n";
+
+    fn stage_legacy(root: &Path, id: &str, manifest: &str) {
+        let dir = root.join("apps").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+        std::fs::write(dir.join("main.py"), "").unwrap();
+    }
+
+    /// 0.4.x ignored unknown keys in the top level and `[app]` (the owner's
+    /// bundled Logs manifest carries `mouse_tracking`); migration must not die on them.
+    #[test]
+    fn plugin_rename_migrates_manifest_with_keys_the_old_parser_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        stage_legacy(root.path(), "logs", LEGACY_WITH_INERT_KEYS);
+        migrate(root.path()).unwrap();
+        let migrated =
+            std::fs::read_to_string(root.path().join("plugins/logs/manifest.toml")).unwrap();
+        assert!(!migrated.contains("mouse_tracking") && !migrated.contains("extra_note"));
+        super::super::registry::PluginManifest::parse(&migrated).unwrap();
+        let backup =
+            std::fs::read_to_string(root.path().join(MIGRATION).join("apps/logs/manifest.toml"))
+                .unwrap();
+        assert!(
+            backup.contains("mouse_tracking"),
+            "original must be kept verbatim"
+        );
+        let traces = EARLY_TRACES.lock().unwrap();
+        assert!(traces.iter().any(|line| line.contains("package=logs")
+            && line.contains("app.mouse_tracking")
+            && line.contains("extra_note")));
+    }
+
+    #[test]
+    fn plugin_rename_failed_attempt_names_file_and_leaves_profile_clean() {
+        let root = tempfile::tempdir().unwrap();
+        stage_legacy(root.path(), "good", LEGACY_WITH_INERT_KEYS);
+        stage_legacy(
+            root.path(),
+            "bad",
+            "schema_version = 1\n[app]\nid = 'bad'\nname = 'Bad'\nentry = 'main.py'\n",
+        );
+        let error = migrate(root.path()).unwrap_err();
+        assert!(
+            error.contains("apps/bad/manifest.toml") && error.contains("package bad"),
+            "{error}"
+        );
+        assert!(error.contains("missing legacy app type"), "{error}");
+        assert!(root.path().join("apps/good/manifest.toml").is_file());
+        assert!(root.path().join("apps/bad/manifest.toml").is_file());
+        assert!(!root.path().join("plugins").exists());
+        assert!(
+            !root.path().join(MIGRATION).exists(),
+            "journal and staging must be removed"
+        );
+    }
+
+    /// A lock file and stale staging tree left by a killed attempt must not
+    /// block or corrupt the next attempt.
+    #[test]
+    fn plugin_rename_retry_after_leftover_lock_and_staged_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        stage_legacy(root.path(), "logs", LEGACY_WITH_INERT_KEYS);
+        let journal = root.path().join(MIGRATION);
+        std::fs::create_dir_all(journal.join("staged/junk")).unwrap();
+        std::fs::write(journal.join("staged/junk/stale.txt"), "stale").unwrap();
+        std::fs::write(root.path().join("migration-plugin-v2.lock"), "").unwrap();
+        migrate(root.path()).unwrap();
+        assert!(root.path().join("plugins/logs/manifest.toml").is_file());
+        assert!(
+            !root.path().join("plugins/junk").exists(),
+            "stale staging must not leak"
+        );
+        assert!(journal.join("complete").is_file());
     }
 
     #[test]

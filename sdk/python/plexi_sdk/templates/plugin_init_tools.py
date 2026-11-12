@@ -5,7 +5,7 @@ this module free of UI code: it answers the Assistant, ``plugin/ui.py`` draws.
 ``main.py`` returns ``tools.expose()`` from ``init`` and calls
 ``tools.dispatch(event)`` first in ``update``.
 
-It lives in the ``app`` package so a top-level ``tools.py`` never shadows
+It lives in the ``plugin`` package so a top-level ``tools.py`` never shadows
 ``plexi_sdk.tools``.
 Read-only tools pass ``read_only=True`` and skip the write-grant prompt; a
 mutating tool returns ``tools.Reply(output, effects)`` with its effects.

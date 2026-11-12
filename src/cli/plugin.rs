@@ -598,7 +598,7 @@ fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Resul
     std::fs::create_dir_all(&package_dir)?;
     std::fs::write(
         package_dir.join("__init__.py"),
-        "\"\"\"Application modules for this Plexi app.\"\"\"\n",
+        "\"\"\"Plugin modules for this Plexi plugin.\"\"\"\n",
     )?;
     std::fs::write(
         package_dir.join("tools.py"),
@@ -638,7 +638,7 @@ fn scaffold_wasm_view(plugin_dir: &std::path::Path, name: &str) -> io::Result<()
     std::fs::write(
         plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi WASM app\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = []\noptional = []\n\n[runtime]\nkind = \"wasm\"\nentry = \"target/wasm32-wasip1/release/{crate_name}.wasm\"\n\n[[contributes.views]]\nid = \"{name}.main\"\ndefault = true\n",
+            "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{name}\"\nname = \"{display}\"\nversion = \"0.1.0\"\ndescription = \"A Plexi WASM plugin\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = []\noptional = []\n\n[runtime]\nkind = \"wasm\"\nentry = \"target/wasm32-wasip1/release/{crate_name}.wasm\"\n\n[[contributes.views]]\nid = \"{name}.main\"\ndefault = true\n",
             display = to_title_case(name),
         ),
     )?;
@@ -1845,7 +1845,7 @@ pub fn view_render(
                 return 1;
             }
         };
-        let manifest: crate::app::registry::PluginManifest = match toml::from_str(&manifest_str) {
+        let manifest = match crate::app::registry::PluginManifest::parse(&manifest_str) {
             Ok(m) => m,
             Err(e) => {
                 log::warn!(

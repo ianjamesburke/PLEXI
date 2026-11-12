@@ -719,7 +719,8 @@ pub(super) fn load_local_plugin(plugin_dir: &Path) -> Result<(PluginManifest, Pa
     let manifest_path = plugin_dir.join("manifest.toml");
     let manifest_raw = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
-    let manifest = PluginManifest::parse(&manifest_raw).map_err(|e| e.to_string())?;
+    let manifest =
+        PluginManifest::parse(&manifest_raw).map_err(|e| format!("invalid manifest.toml: {e}"))?;
 
     if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
         return Err(format!(
