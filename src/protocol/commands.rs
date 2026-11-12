@@ -1142,18 +1142,16 @@ pub enum HostRequest {
         response_file: String,
     },
     /// Read or change the permission monitor. `op` is `list`, `reset`,
-    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
-    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    /// `revoke`, or `allow`. No socket caller is human: `reset` and `allow`
+    /// file a Needs you item that only a click in the Plexi window applies;
+    /// `revoke` and `list` apply directly.
     Permissions {
         op: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential: Option<String>,
         /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
+        /// read from the wire. It names the caller pane for the audit trail
+        /// only: no socket caller is human, so it never decides authority.
         #[serde(skip)]
         peer_ancestry: Option<Vec<u32>>,
         response_file: String,

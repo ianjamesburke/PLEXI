@@ -971,6 +971,21 @@ pub(crate) fn handle_socket_line_in(
                 return;
             }
             log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+            // A caller waiting on a reply (an older or newer CLI sending a
+            // field this host does not accept) gets the reason, not a timeout.
+            if crate::rpc::extract_response_file_token(line).is_some() {
+                let reply = serde_json::json!({
+                    "ok": false,
+                    "error_code": "invalid_request",
+                    "error": format!(
+                        "this Plexi host could not read the request ({e}); the CLI and host \
+                         versions differ, so use the plexi-<channel> CLI that matches this host"
+                    ),
+                });
+                if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+                    log::warn!("pane_ipc: could not report the parse error: {error}");
+                }
+            }
         }
     }
 }
