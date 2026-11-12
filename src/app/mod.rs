@@ -3777,6 +3777,9 @@ impl eframe::App for PlexiApp {
         // started, and the open path only reads the in-memory cache.
         self.ensure_notes_index_loaded();
         self.drain_notes_index_refresh();
+        // Undo and notice toasts expire here, not in the draw, so Cmd+Z in a
+        // reopened picker cannot undo a delete whose toast is already gone.
+        self.expire_notes_toasts();
 
         // Expired needs-you items auto-deny even while the window is hidden.
         // A queue file left by the previous process is opened once. A frame
