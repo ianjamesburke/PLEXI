@@ -891,11 +891,16 @@ fn grows_along_row(node: &IndexedNode) -> bool {
     }
 }
 
-/// A row child that, laid out directly in the row, would take more width
-/// than its content: a `Column` that centers or ends its children spreads
-/// over all the width the row has left (stint 1363).
-fn fills_row_width(node: &IndexedNode) -> bool {
-    matches!(&node.data, UiNodeData::Column(c) if cross_align(c.align) != egui::Align::Min)
+/// A row child that, laid out directly in the row, would take more than
+/// its content's size: a `Column` that centers or ends its children spreads
+/// over all the width the row has left, and a flex column (a grow spacer or
+/// a `justify`) over all the width and height (stint 1363). The row gives
+/// such a column a slot of its content's size instead.
+fn fills_row_width(nodes: &[IndexedNode], node: &IndexedNode) -> bool {
+    matches!(&node.data, UiNodeData::Column(c)
+        if cross_align(c.align) != egui::Align::Min
+            || c.justify != Justify::Start
+            || !grow_spacer_indices(nodes, &c.children).is_empty())
 }
 
 /// The widest gap a row or column honors. Gaps are guest input; a gap past
@@ -1202,9 +1207,12 @@ fn render_column_children(
     let has_spacer = gaps.iter().any(|gap| !gap.is_empty());
     // A justified column fills the height it is offered; a column of
     // unbounded height (inside a vertical `Scrollable`) has none to place
-    // its children in, so it stacks them from the top.
+    // its children in, so it stacks them from the top. In a row's measuring
+    // pass a flex column is measured at its content's size, the size the
+    // row then gives it (stint 1363), not as the rest of the pane.
     let Some(first_gap) = gaps
         .first()
+        .filter(|_| !env.in_row_measure)
         .filter(|_| has_spacer || ui.available_height().is_finite())
     else {
         ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
@@ -1503,7 +1511,7 @@ fn measure_row(
             .invisible()
             .layout(egui::Layout::left_to_right(egui::Align::Min)),
     );
-    sizing.spacing_mut().item_spacing.x = r.gap;
+    sizing.spacing_mut().item_spacing.x = sanitized_gap(r.gap);
     let env = TreeRenderEnv {
         in_row_measure: true,
         ..env
@@ -1597,6 +1605,8 @@ fn render_row_node(
     let grid_cols = row_parent_button_grid_cols(nodes, id);
     let available = ui.available_width();
     let valign = cross_align(r.align);
+    // Guest input: every gap the row lays out with is sanitized.
+    let gap = sanitized_gap(r.gap);
     let may_measure = !env.in_row_measure && env.row_depth < MAX_MEASURED_ROW_DEPTH;
     let env = TreeRenderEnv {
         row_depth: env.row_depth.saturating_add(1),
@@ -1617,7 +1627,7 @@ fn render_row_node(
                 _ => 0.0,
             })
             .collect();
-        let lines = pack_row_lines(&widths, r.gap, available);
+        let lines = pack_row_lines(&widths, gap, available);
         if lines.len() > 1 {
             trace_layout_once(ui, "button row wraps whole buttons", || {
                 format!(
@@ -1627,13 +1637,12 @@ fn render_row_node(
                 )
             });
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = r.gap;
+                ui.spacing_mut().item_spacing.y = gap;
                 for line in lines {
                     // Each line is placed along the row by `justify`.
                     let natural: Vec<Option<f32>> =
                         widths[line.clone()].iter().copied().map(Some).collect();
-                    let placement =
-                        place_along_row(&natural, sanitized_gap(r.gap), available, r.justify);
+                    let placement = place_along_row(&natural, gap, available, r.justify);
                     // Buttons on a line share one height, so `align` has
                     // nothing to place.
                     row_line(ui, egui::Align::Center, None, |ui| {
@@ -1642,10 +1651,24 @@ fn render_row_node(
                                 ui.spacing_mut().item_spacing.x = placement.gap;
                                 ui.add_space(placement.lead);
                             }
-                            None => ui.spacing_mut().item_spacing.x = r.gap,
+                            None => ui.spacing_mut().item_spacing.x = gap,
                         }
-                        for child in &r.children[line] {
-                            render_node(ui, env, *child, out, depth + 1);
+                        for idx in line.clone() {
+                            let child = r.children[idx];
+                            if r.justify == Justify::Start {
+                                render_node(ui, env, child, out, depth + 1);
+                                continue;
+                            }
+                            // A placed line takes exactly the widths it was
+                            // placed from (`natural_width` rounds up).
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(widths[idx], style::BUTTON_H_MD),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_width(widths[idx]);
+                                    render_node(ui, env, child, out, depth + 1);
+                                },
+                            );
                         }
                     });
                 }
@@ -1664,7 +1687,8 @@ fn render_row_node(
         && available.is_finite()
         && (r.justify != Justify::Start
             || r.children.iter().any(|child| {
-                find_node(nodes, *child).is_some_and(|n| grows_along_row(n) || fills_row_width(n))
+                find_node(nodes, *child)
+                    .is_some_and(|n| grows_along_row(n) || fills_row_width(nodes, n))
             }));
     if along {
         let natural = measure_row_children(ui, env, r, grid_cols, depth);
@@ -1678,9 +1702,7 @@ fn render_row_node(
             })
             .collect();
         let row_h = natural.iter().map(|s| s.y).fold(0.0, f32::max);
-        if let Some(placement) =
-            place_along_row(&widths, sanitized_gap(r.gap), available, r.justify)
-        {
+        if let Some(placement) = place_along_row(&widths, gap, available, r.justify) {
             trace_layout_once(ui, "row places children along the row", || {
                 format!(
                     "row={id} justify={:?} lead={:.0} gap={:.0} widths={:?}",
@@ -1709,7 +1731,7 @@ fn render_row_node(
         }
         // The children do not fit: lay the row out as rows always have, from
         // this measurement, so it is still measured once.
-        measure = Some(RowMeasure::from_sizes(&widths, &natural, r.gap, row_h));
+        measure = Some(RowMeasure::from_sizes(&widths, &natural, gap, row_h));
     }
     if placed && measure.is_none() {
         let measured = measure_row(ui, env, r, grid_cols, depth);
@@ -1721,7 +1743,7 @@ fn render_row_node(
     let height = measure.as_ref().map(|m| m.height);
     let line_align = if placed { valign } else { egui::Align::Center };
     row_line(ui, line_align, height, |ui| {
-        ui.spacing_mut().item_spacing.x = r.gap;
+        ui.spacing_mut().item_spacing.x = gap;
         for (idx, child) in r.children.iter().enumerate() {
             let text = find_node(nodes, *child).and_then(|n| match &n.data {
                 UiNodeData::Text(t) => Some((n, t)),
@@ -1731,7 +1753,7 @@ fn render_row_node(
                 if may_measure && row_text_overflows(ui, env, node, t) {
                     let reserved = measure
                         .get_or_insert_with(|| measure_row(ui, env, r, grid_cols, depth))
-                        .reserved_after(idx, r.gap);
+                        .reserved_after(idx, gap);
                     if let Some(size) = row_text_wrap_size(ui, env, node, t, reserved) {
                         trace_layout_once(ui, "row text wraps at the row edge", || {
                             format!(
@@ -1824,7 +1846,7 @@ fn render_node_inner(
         surface_key,
         tree_seq,
         row_depth: _,
-        in_row_measure: _,
+        in_row_measure,
     } = env;
     if depth > MAX_DEPTH {
         return;
@@ -2316,11 +2338,12 @@ fn render_node_inner(
         // reaches here only when the row does not hand out its leftover
         // width (it is too deep to measure, or its children do not fit), and
         // then it takes none: its share is the row's to give, and the row's
-        // height is no measure of width (stint 1363).
+        // height is no measure of width (stint 1363). In a row's measuring
+        // pass it takes none either way: the row measures content.
         UiNodeData::Space(s) => {
             let amount = if !s.grow {
                 s.size
-            } else if ui.layout().is_horizontal() {
+            } else if ui.layout().is_horizontal() || in_row_measure {
                 0.0
             } else {
                 ui.available_height().max(0.0)
@@ -3980,6 +4003,144 @@ mod tests {
         }
     }
 
+    /// A justified column, or one holding a grow spacer, fills the rect it
+    /// is offered. In a row it is offered the rest of the pane, so it took
+    /// all of it: the row never fit and its siblings were centred halfway
+    /// down the pane. In a row such a column is as large as its content.
+    #[test]
+    fn row_flex_column_children_take_their_content_size() {
+        let cells = [
+            serde_json::json!({"type": "column", "children": [2], "justify": "center"}),
+            serde_json::json!({"type": "column", "children": [2, 4]}),
+        ];
+        let rows = [
+            serde_json::json!({"type": "row", "children": [1, 3]}),
+            serde_json::json!({"type": "row", "children": [1, 3], "align": "start"}),
+            serde_json::json!({"type": "row", "children": [1, 3], "justify": "start"}),
+            serde_json::json!({"type": "row", "children": [1, 5, 3]}),
+        ];
+        for (cell, row) in cells.iter().flat_map(|c| rows.iter().map(move |r| (c, r))) {
+            let tree = wire_tree(&[
+                (0, row.clone()),
+                (1, cell.clone()),
+                (2, wire_button("Cell")),
+                (3, wire_button("After")),
+                (4, wire_grow_spacer()),
+                (5, wire_grow_spacer()),
+            ]);
+            for pane in ROW_PANES {
+                let rects = laid_out(&tree, pane);
+                let (_, right) = content_x(pane);
+                let (top, _) = content_y(pane);
+                let cell_button = rect_of(&rects, 2);
+                let after = rect_of(&rects, 3);
+                assert!(
+                    after.max.x <= right + 0.5
+                        && (row["children"].as_array().map_or(0, Vec::len) == 3
+                            || after.min.x - cell_button.max.x <= style::SPACE_SM + 1.5),
+                    "{cell} {row} {pane:?}: After sits in the row beside the cell: {cell_button:?} {after:?}"
+                );
+                // The row is as tall as its content, so After is beside the
+                // cell, not centred in the rest of the pane.
+                assert!(
+                    (cell_button.min.y - top).abs() <= 1.5
+                        && after.max.y <= top + 2.0 * style::BUTTON_H_MD,
+                    "{cell} {row} {pane:?}: both sit in a row at the top {top}: {cell_button:?} {after:?}"
+                );
+            }
+        }
+    }
+
+    /// Stint 1363: grow children take all of a row's leftover width, so
+    /// `justify` has nothing left to place.
+    #[test]
+    fn row_grow_children_override_justify() {
+        let tree = wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "row", "children": [1, 2, 3], "justify": "center"}),
+            ),
+            (1, wire_button("Back")),
+            (2, wire_grow_spacer()),
+            (3, wire_button("Next")),
+        ]);
+        for pane in ROW_PANES {
+            let rects = laid_out(&tree, pane);
+            let (left, right) = content_x(pane);
+            let (back, next) = (rect_of(&rects, 1), rect_of(&rects, 3));
+            assert!(
+                (back.min.x - left).abs() <= 1.5 && (next.max.x - right).abs() <= 1.5,
+                "{pane:?}: the spacer, not justify, places the buttons: {back:?} {next:?}"
+            );
+        }
+    }
+
+    /// Stint 1358: a row of buttons that wraps places each line by
+    /// `justify`.
+    #[test]
+    fn wrapping_button_row_justifies_each_line() {
+        let labels = [
+            "Start timer",
+            "Pause",
+            "Reset",
+            "Add a lap",
+            "Settings",
+            "Share",
+        ];
+        let children: Vec<u32> = (1..=labels.len() as u32).collect();
+        let mut nodes = vec![(
+            0,
+            serde_json::json!({"type": "row", "children": children, "justify": "center"}),
+        )];
+        for (i, label) in labels.iter().enumerate() {
+            nodes.push((i as u32 + 1, wire_button(label)));
+        }
+        let tree = wire_tree(&nodes);
+        let pane = egui::vec2(320.0, 240.0);
+        let rects = laid_out(&tree, pane);
+        let (left, right) = content_x(pane);
+        let mut lines: Vec<Vec<egui::Rect>> = Vec::new();
+        for id in children {
+            let rect = rect_of(&rects, id);
+            match lines.last_mut() {
+                Some(line) if (line[0].min.y - rect.min.y).abs() < 1.0 => line.push(rect),
+                _ => lines.push(vec![rect]),
+            }
+        }
+        assert!(lines.len() > 1, "the row must wrap at {pane:?}: {lines:?}");
+        for line in &lines {
+            let (first, last) = (line[0], line[line.len() - 1]);
+            assert!(
+                ((first.min.x - left) - (right - last.max.x)).abs() <= 1.5,
+                "each wrapped line is centered in {left}..{right}: {line:?}"
+            );
+        }
+    }
+
+    /// Stint 1358: grow spacers take all of a column's leftover height, so
+    /// they win over `justify`.
+    #[test]
+    fn column_grow_spacers_override_justify() {
+        let tree = wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "column", "children": [1, 2, 3], "justify": "center"}),
+            ),
+            (1, wire_button("Top")),
+            (2, wire_grow_spacer()),
+            (3, wire_button("Bottom")),
+        ]);
+        for pane in ROW_PANES {
+            let rects = laid_out(&tree, pane);
+            let (top, bottom) = content_y(pane);
+            let (first, second) = (rect_of(&rects, 1), rect_of(&rects, 3));
+            assert!(
+                (first.min.y - top).abs() <= 1.5 && (second.max.y - bottom).abs() <= 1.5,
+                "{pane:?}: the spacer, not justify, places the buttons: {first:?} {second:?}"
+            );
+        }
+    }
+
     /// Main-axis placement of three buttons in a row by `justify`.
     fn justified_row(justify: &str) -> UiTree {
         wire_tree(&[
@@ -4250,8 +4411,53 @@ mod tests {
         let calls = render_node_calls(|| {
             painted_shapes(&tree, egui::vec2(800.0, 600.0));
         });
+        // Paint plus one measurement: a second measurement of the row
+        // would cost another visit per node.
         assert!(
-            calls <= count * 3,
+            calls <= count * 2,
+            "{calls} render_node calls for {count} nodes"
+        );
+    }
+
+    /// The same bound when the children fit and the row places them along
+    /// its width rather than falling back to its usual layout.
+    #[test]
+    fn row_that_places_its_children_is_measured_once() {
+        const CELLS: u32 = 4;
+        let mut nodes = vec![row_node(
+            0,
+            (0..CELLS).flat_map(|c| [1 + c * 4, 2 + c * 4]).collect(),
+            style::SPACE_SM,
+            Alignment::End,
+        )];
+        for c in 0..CELLS {
+            let base = 1 + c * 4;
+            nodes.push(flex_column(
+                base,
+                vec![base + 2, base + 3],
+                Alignment::Center,
+                Justify::Start,
+            ));
+            nodes.push(grow_node(base + 1));
+            nodes.push(text_node(base + 2, "cell"));
+            nodes.push(button_node(base + 3, "Go"));
+        }
+        let tree = UiTree { root: 0, nodes };
+        let count = tree.nodes.len();
+        let pane = egui::vec2(800.0, 600.0);
+        // The cells fit: the row hands its leftover width to the spacers.
+        let rects = laid_out(&tree, pane);
+        let (_, right) = content_x(pane);
+        let last_go = rect_of(&rects, 1 + (CELLS - 1) * 4 + 3);
+        assert!(
+            last_go.max.x < right - 100.0,
+            "the last cell is followed by a spacer's share: {last_go:?}"
+        );
+        let calls = render_node_calls(|| {
+            painted_shapes(&tree, pane);
+        });
+        assert!(
+            calls <= count * 2,
             "{calls} render_node calls for {count} nodes"
         );
     }
