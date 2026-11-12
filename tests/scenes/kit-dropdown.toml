@@ -31,7 +31,7 @@ assert_label = { target = "host", label = "Selected environment: Development" }
 [[steps]]
 shot = "kit-dropdown-closed.png"
 [[steps]]
-# With no popup, Escape retains the host's existing CloseApp behavior.
+# With no popup, Escape retains the host's existing CloseView behavior.
 key = { target = "host", value = "escape" }
 [[steps]]
 run_steps = 3

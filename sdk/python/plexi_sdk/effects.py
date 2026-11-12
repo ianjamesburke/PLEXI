@@ -333,7 +333,7 @@ class EmitEvent:
 @dataclass
 class SubscribeEventStreams:
     request_id: str
-    app_id: str
+    plugin_id: str
     event_names: list[str]
     payload_mode: str = "full"
     trigger_mode: str = "conversation"

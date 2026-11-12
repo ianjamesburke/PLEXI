@@ -15,6 +15,22 @@ fn plexi_styles() -> Styles {
         .invalid(AnsiColor::Red.on_default())
 }
 
+/// Retired commands are errors, never aliases or compatibility dispatch.
+pub fn retired_namespace_message(args: &[String]) -> Option<&'static str> {
+    let mut args = args.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--profile" || arg == "--socket" {
+            args.next();
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return (arg == "app").then_some("the `app` namespace was removed; use `plugin` for packages, `view open/render` for views, or `pane action` for a running view");
+    }
+    None
+}
+
 /// A CLI context target: accepts a numeric context id or a context name
 /// (resolved by exact match, then unique prefix match).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,8 +235,7 @@ pub fn resolve_target_from_candidates(
     let mut ranked: Vec<(u64, String)> = candidates.to_vec();
     ranked.sort_by_key(|(id, name)| {
         let name_lower = name.to_ascii_lowercase();
-        let is_substr =
-            name_lower.contains(&query_lower) || query_lower.contains(&name_lower);
+        let is_substr = name_lower.contains(&query_lower) || query_lower.contains(&name_lower);
         let dist = edit_distance(&query_lower, &name_lower);
         (!is_substr, dist, *id)
     });
@@ -293,6 +308,13 @@ pub enum CliSetupCmd {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Discover, open, and render plugin views.
+    #[command(next_help_heading = "Plugins")]
+    View {
+        #[command(subcommand)]
+        cmd: ViewCmd,
+    },
+
     /// Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
     Lease {
         #[command(subcommand)]
@@ -309,14 +331,14 @@ pub enum Commands {
     /// the same projection in a pane. `cancel` stops that run. `resolve` and
     /// `allow` never grant, and an agent pane is refused.
     ///
-    /// Example: plexi command-view --json
-    /// Example: plexi command-view --follow
-    /// Example: plexi command-view open
-    /// Example: plexi command-view cancel run_example
-    #[command(name = "command-view")]
-    CommandView {
+    /// Example: plexi agents-dashboard --json
+    /// Example: plexi agents-dashboard --follow
+    /// Example: plexi agents-dashboard open
+    /// Example: plexi agents-dashboard cancel run_example
+    #[command(name = "agents-dashboard")]
+    AgentsDashboard {
         #[command(subcommand)]
-        cmd: Option<CommandViewCmd>,
+        cmd: Option<AgentsDashboardCmd>,
         /// Stream `command.view` events from `plexi.host.command` until interrupted.
         #[arg(long)]
         follow: bool,
@@ -458,19 +480,19 @@ pub enum Commands {
         cmd: ContextCmd,
     },
 
-    // ── Apps ──────────────────────────────────────────────────────────────────
-    /// Manage your Plexi apps — open, install, list, scaffold, and inspect.
-    #[command(next_help_heading = "Apps")]
-    App {
+    // ── Plugins ──────────────────────────────────────────────────────────────────
+    /// Manage your Plexi plugins — open, install, list, scaffold, and inspect.
+    #[command(next_help_heading = "Plugins")]
+    Plugin {
         #[command(subcommand)]
-        cmd: AppCmd,
+        cmd: PluginCmd,
     },
     /// Optional account that links this desktop to cloud features.
     ///
-    /// Free apps install without an account. Login requires the accounts backend
+    /// Free plugins install without an account. Login requires the accounts backend
     /// enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails
     /// closed with a clear message.
-    #[command(next_help_heading = "Apps")]
+    #[command(next_help_heading = "Plugins")]
     Account {
         #[command(subcommand)]
         cmd: AccountCmd,
@@ -500,10 +522,10 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
-    /// Subscribe to a Plexi app's event streams and receive brokered deliveries.
+    /// Subscribe to a Plexi plugin's event streams and receive brokered deliveries.
     ///
-    /// Apps declare named event streams (e.g. `probe.tick`) and emit events on them.
-    /// `plexi events subscribe <app_id> <stream>` opens a long-lived connection and
+    /// Plugins declare named event streams (e.g. `probe.tick`) and emit events on them.
+    /// `plexi events subscribe <plugin_id> <stream>` opens a long-lived connection and
     /// prints one JSON line per delivered event to stdout (NDJSON) until interrupted.
     /// Subscriptions are brokered: the host stamps your identity from the pane you run
     /// in and checks permission before any event is delivered.
@@ -516,7 +538,7 @@ pub enum Commands {
     ///
     /// One host record covers click approvals, agent questions, and blocked
     /// runs. The desktop badge reads that record.
-    /// `resolve --approve` on a click approval is refused. `--deny` still denies.
+    /// `resolve --pluginrove` on a click approval is refused. `--deny` still denies.
     #[command(name = "needs-you")]
     NeedsYou {
         #[command(subcommand)]
@@ -654,9 +676,9 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NoteCmd>,
     },
-    /// Audit all installed apps for capability and config gaps.
+    /// Audit all installed plugins for capability and config gaps.
     ///
-    /// Checks every installed app's declared capabilities against your current config.toml
+    /// Checks every installed plugin's declared capabilities against your current config.toml
     /// and reports what's working and what needs to be configured. Use --json for scripting.
     Doctor,
     /// Interactive keybinding tutorial — learn split and navigate in real time.
@@ -687,7 +709,7 @@ pub enum Commands {
     },
     /// Launch, stop, or check a headless-friendly Plexi host from the CLI.
     ///
-    /// `host start` launches this channel's app bundle detached from the
+    /// `host start` launches this channel's plugin bundle detached from the
     /// calling shell, optionally seeding panes from a `--layout` TOML file
     /// or repeated `--pane` flags, then blocks until the host confirms it's
     /// ready. Works identically on alpha, beta, main, and PR builds — the
@@ -707,7 +729,7 @@ pub enum Commands {
     /// List completions for prefix-based open (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-open")]
     CompleteOpen {
-        /// Prefix to complete: "cli:", "mcp:", "app:", or empty for all
+        /// Prefix to complete: "cli:", "mcp:", "view:", or empty for all
         prefix: String,
     },
     /// List run completions (hidden, used by shell completions)
@@ -716,26 +738,26 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
-pub enum CommandViewCmd {
+pub enum AgentsDashboardCmd {
     /// Open the command view pane in the active context.
     Open,
     /// Stop a live run before its next tool call.
     ///
-    /// Example: plexi command-view cancel run_example
+    /// Example: plexi agents-dashboard cancel run_example
     Cancel {
-        /// Run id from `command-view --json`
+        /// Run id from `agents-dashboard --json`
         run: String,
     },
     /// Resolve a pending approval. An agent pane is refused, and this command does not grant.
     ///
-    /// Example: plexi command-view resolve pending_example
+    /// Example: plexi agents-dashboard resolve pending_example
     Resolve {
         /// Pending request id
         id: String,
     },
     /// Record an allow. An agent pane is refused, and this command does not grant.
     ///
-    /// Example: plexi command-view allow --tool assistant.turn
+    /// Example: plexi agents-dashboard allow --tool assistant.turn
     Allow {
         /// Tool name. Ignored. The command does not write a grant.
         #[arg(long)]
@@ -812,7 +834,7 @@ pub enum DebugSessionCmd {
     /// With `--join-agents`, recorded agent session ids are resolved to their
     /// transcripts under `~/.pi/agent/sessions` and `~/.claude/projects`, and
     /// agent prompts and tool calls are interleaved with host permission and
-    /// app events.
+    /// plugin events.
     Show {
         /// Session id (`sess-…`) or `latest`. Omitted means `latest`.
         session: Option<String>,
@@ -1135,7 +1157,7 @@ pub struct NotifyPostArgs {
 
 #[derive(Subcommand)]
 pub enum EventsCmd {
-    /// Subscribe to an app's event stream and print delivered events as NDJSON.
+    /// Subscribe to a plugin's event stream and print delivered events as NDJSON.
     ///
     /// Opens a long-lived connection to the running Plexi instance and streams
     /// one JSON object per line to stdout: first a `subscribed` acknowledgement,
@@ -1144,12 +1166,12 @@ pub enum EventsCmd {
     ///
     /// Example: plexi events subscribe event-probe probe.tick --payload full
     Subscribe {
-        /// App id that publishes the stream (e.g. `event-probe`).
-        app_id: String,
+        /// Plugin id that publishes the stream (e.g. `event-probe`).
+        plugin_id: String,
         /// Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to
-        /// subscribe to every stream the app declares.
+        /// subscribe to every stream the plugin declares.
         stream: Option<String>,
-        /// Subscribe to all of the app's declared streams instead of one.
+        /// Subscribe to all of the plugin's declared streams instead of one.
         #[arg(long, conflicts_with = "stream")]
         all: bool,
         /// How much of each event to deliver: off, summary, full, or state-ref.
@@ -1164,15 +1186,15 @@ pub enum EventsCmd {
     },
     /// Declare an event stream so it can be emitted on and subscribed to.
     ///
-    /// Registers a named stream under an app-id namespace with a JSON-Schema
+    /// Registers a named stream under a plugin-id namespace with a JSON-Schema
     /// object describing its payload. Declaring is a prerequisite for `emit`.
     /// Re-declaring a stream replaces its previous schema. The first declare
     /// under a namespace you do not own prompts for host consent.
     ///
     /// Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
     Declare {
-        /// App-id namespace to declare the stream under (e.g. `my-agent`).
-        app_id: String,
+        /// Plugin-id namespace to declare the stream under (e.g. `my-agent`).
+        plugin_id: String,
         /// Stream name to declare (e.g. `task.done`).
         stream: String,
         /// JSON-Schema object describing the event payload.
@@ -1191,8 +1213,8 @@ pub enum EventsCmd {
     ///
     /// Example: plexi events emit my-agent task.done --summary "Build finished" --resource build-42 --revision-after done
     Emit {
-        /// App-id namespace the stream lives under (e.g. `my-agent`).
-        app_id: String,
+        /// Plugin-id namespace the stream lives under (e.g. `my-agent`).
+        plugin_id: String,
         /// Declared stream name to emit on (e.g. `task.done`).
         event: String,
         /// One-line human-readable description of what happened.
@@ -1227,14 +1249,14 @@ pub enum EventsCmd {
         #[arg(long = "changed-resource")]
         changed_resources: Vec<String>,
     },
-    /// List event streams currently declared by running apps.
+    /// List event streams currently declared by running plugins.
     List,
     /// Print the host MCP server config for an MCP-aware agent.
     ///
     /// Emits a `mcpServers` JSON block pointing at this instance's host MCP
     /// server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a
-    /// Claude Code or Codex agent in this pane can call workspace app tools and
-    /// subscribe to app events natively over MCP. The emitted credential is
+    /// Claude Code or Codex agent in this pane can call workspace plugin tools and
+    /// subscribe to plugin events natively over MCP. The emitted credential is
     /// valid only while the originating pane remains alive.
     McpConfig,
 }
@@ -1244,8 +1266,8 @@ pub enum WorkspaceCmd {
     /// Set up a .plexi/ workspace in the current directory.
     ///
     /// Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/`
-    /// (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`,
-    /// and `commands.toml` so that secrets, apps, and commands are scoped to this project.
+    /// (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `plugins.toml`,
+    /// and `commands.toml` so that secrets, plugins, and commands are scoped to this project.
     Init,
     /// Remove pane slot files for panes that are no longer open.
     Clean {
@@ -1341,27 +1363,27 @@ pub enum SecretCmd {
         /// Environment variable name
         name: String,
         /// Agent id. Stored as `agent:<id>`.
-        #[arg(long, conflicts_with = "app")]
+        #[arg(long, conflicts_with = "plugin")]
         agent: Option<String>,
-        /// App id. Stored as `app:<id>`.
+        /// Plugin id. Stored as `plugin:<id>`.
         #[arg(long, conflicts_with = "agent")]
-        app: Option<String>,
+        plugin: Option<String>,
         /// Directory the secret was bound to. Required when the name exists in more than one folder.
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
     },
-    /// Read a folder secret as an agent or app. Without a grant this prints
+    /// Read a folder secret as an agent or plugin. Without a grant this prints
     /// `permission_required` and writes an audit row that names the secret
     /// but not its value.
     Read {
         /// Environment variable name
         name: String,
         /// Agent id. Stored as `agent:<id>`.
-        #[arg(long, conflicts_with = "app")]
+        #[arg(long, conflicts_with = "plugin")]
         agent: Option<String>,
-        /// App id. Stored as `app:<id>`.
+        /// Plugin id. Stored as `plugin:<id>`.
         #[arg(long, conflicts_with = "agent")]
-        app: Option<String>,
+        plugin: Option<String>,
         /// Directory the secret was bound to. Required when the name exists in more than one folder.
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
@@ -1384,29 +1406,309 @@ pub enum SecretCmd {
 }
 
 #[derive(Subcommand)]
-pub enum AppCmd {
-    /// Open an app or tool in a new pane.
+pub enum PluginCmd {
+    /// Install a plugin from a local path, a remote source, or a pack file.
     ///
-    /// Pass an app id (e.g. `plexi app open calc`) or a path to an app directory
+    /// Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store.
+    /// Remote source: `plexi plugin install github:owner/repo` — fetches and installs from GitHub.
+    /// Pack file: `plexi plugin install --pack core` — installs from a pack file or the built-in core pack.
+    /// Workspace pack: `plexi plugin install` (no args) — installs from `<repo>/.plexi-<channel>/plugins.toml` (or `<repo>/.plexi/plugins.toml` on stable).
+    Install {
+        /// Source to install: a local path, GitHub spec (github:owner/repo), or bare plugin id.
+        /// Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable).
+        spec_or_path: Option<String>,
+        /// Install from a pack file or 'core'
+        #[arg(long)]
+        pack: Option<String>,
+        /// With --pack: re-extract already-installed `local:` plugins from this
+        /// binary's embedded tree, replacing the installed copy. The update
+        /// path for bundled core plugins on stable channels.
+        #[arg(long, requires = "pack")]
+        refresh: bool,
+        /// Pin a local path or package install to a specific version (e.g. --version 1.2.3).
+        #[arg(long, value_name = "SEMVER")]
+        version: Option<String>,
+        /// Skip the trust-sheet confirmation prompt. Required for
+        /// non-interactive (scripted) installs — without a terminal the
+        /// install fails closed instead of proceeding silently.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+    /// Remove an installed plugin by id.
+    ///
+    /// Example: plexi plugin uninstall github-tree
+    #[command(aliases = ["remove", "delete"])]
+    Uninstall {
+        /// Plugin id to remove (use `plexi plugin list` to see installed ids)
+        id: String,
+        /// Skip the confirmation prompt
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+    /// Show all installed plugins with their versions.
+    List,
+    /// Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines.
+    Prune {
+        /// Show candidates without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks.
+    ///
+    /// This is the compiler-like gate for generated Plexi plugins. It checks the
+    /// manifest, warns on missing or stale `plexi.scaffold.toml`, inspects
+    /// Python SDK usage without importing plugin code, and renders the plugin at
+    /// small and normal pane sizes. Run it with an explicit alpha or PR
+    /// channel so the SDK/profile under test is not ambient.
+    #[command(after_long_help = r#"PLUGIN CHECK LOOP:
+
+  Use `plexi plugin check` as the verification gate; there is no `plexi plugin build`.
+
+    Typical gates:
+    PLEXI_CHANNEL=alpha plexi plugin test .
+    PLEXI_CHANNEL=alpha plexi plugin check . --png-dir render-output/check
+    PLEXI_CHANNEL=pr-123 plexi plugin check . --png-dir render-output/check
+    plexi-pr-123 plugin check . --png-dir render-output/check
+
+  State and behavior probes:
+    PLEXI_CHANNEL=alpha plexi view render . --state fixtures/state.json
+    PLEXI_CHANNEL=alpha plexi view render . --png --output render-output/shot.png
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane action <pane-id> <handler-id>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
+
+  Logs:
+    Inspect ~/.plexi-alpha/plexi.log or the matching ~/.plexi-pr-N/plexi.log.
+    App code should use log.debug/info/warn/error intentionally.
+"#)]
+    Check {
+        /// Local plugin directory to check (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Render size to check as WxH. Repeat to override the default matrix.
+        #[arg(long = "size")]
+        sizes: Vec<String>,
+        /// Write PNG snapshots for each checked size into this directory.
+        #[arg(long, value_hint = ValueHint::DirPath)]
+        png_dir: Option<String>,
+    },
+    /// Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/`.
+    ///
+    /// Runs the Python tests in the plugin's `tests/` directory (the
+    /// `tests/test_plugin.py` scaffolded by `plexi plugin init`). PluginHarness spawns
+    /// the plugin as a real subprocess and checks it renders without overlap; see
+    /// `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
+    Test {
+        /// Plugin directory to test (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Update stored snapshots instead of comparing against them.
+        #[arg(long)]
+        snapshot: bool,
+    },
+    /// Show details about an installed plugin: manifest fields and tool status.
+    ///
+    /// Populates `tools` from the live tool registry when a pane of this plugin is
+    /// running in the current context; otherwise labels the section as
+    /// manifest-only (or static source scan) so an unopened plugin is never
+    /// misreported as declaring no tools. Run `plexi plugin tools` to snapshot all
+    /// live tools in the current context.
+    Info { id: String },
+    /// Read or replace a file-backed plugin's state document.
+    ///
+    /// Only plugins that declare a `[state]` section are addressable. The state
+    /// path uses the pane's current host context. Outside a pane, context scope
+    /// uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error.
+    /// Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
+    State {
+        #[command(subcommand)]
+        cmd: PluginStateCmd,
+    },
+    /// Create a new plugin from a template, or adopt an existing plugin directory.
+    ///
+    /// Scaffolds the folder structure and files you need to build a Plexi view:
+    /// manifest.toml, main.py, tests/test_plugin.py, AGENTS.md, .gitignore, and
+    /// plexi.scaffold.toml drift metadata.
+    ///
+    /// Pass `--adopt <dir>` (or `--adopt` inside a plugin directory) to write or
+    /// refresh `plexi.scaffold.toml` for a pre-existing plugin without creating or
+    /// modifying any source files.
+    ///
+    /// By default, a newly scaffolded plugin is placed in your workspace's plugin
+    /// directory. If no workspace is detected, pass --global to scaffold into
+    /// the global registry.
+    ///
+    /// Use --open to launch it in a split-right pane after scaffolding.
+    /// See `sdk/python/AUTHORING.md` for the canonical authoring guide.
+    Init {
+        #[arg(required_unless_present_any = ["wasm", "adopt"])]
+        name: Option<String>,
+        /// Write or refresh `plexi.scaffold.toml` for an existing plugin directory without altering source files.
+        #[arg(long, conflicts_with_all = ["wasm", "global", "open", "no_open", "from"])]
+        adopt: bool,
+        /// Create a Rust WASM component plugin with the Plexi WASM SDK.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
+        wasm: Option<String>,
+        /// Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
+        #[arg(long, default_value = "python", value_parser = ["python"])]
+        lang: String,
+        /// Scaffold into the global plugin registry instead of the workspace
+        #[arg(long)]
+        global: bool,
+        /// Open the plugin in a split-right pane after scaffolding
+        #[arg(long, conflicts_with = "no_open")]
+        open: bool,
+        /// Deprecated compatibility flag. Plugin init no longer opens by default.
+        #[arg(long)]
+        #[arg(hide = true)]
+        no_open: bool,
+        /// Open the new pane relative to this pane id or name. Defaults to the calling
+        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<PaneTarget>,
+    },
+    /// Check a Plexi plugin directory or .plexipkg package for errors before publishing or installing.
+    ///
+    /// A directory is validated in place. A `.plexipkg` file is extracted to a
+    /// temp dir with path-safety checks and verified end-to-end: descriptor,
+    /// content hashes, manifest, entry point, and capability strings.
+    Validate {
+        /// Plugin directory or .plexipkg file to check (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::AnyPath)]
+        path: String,
+    },
+    /// Show the trust sheet for a local plugin directory or .plexipkg package.
+    ///
+    /// Validates first (fail-closed), then prints what the plugin is, what
+    /// runtime it uses with a blunt trust label, and every capability it
+    /// declares — the same sheet shown before `plexi plugin install` proceeds.
+    Inspect {
+        /// Plugin directory or .plexipkg file to inspect
+        #[arg(value_hint = ValueHint::AnyPath)]
+        path: String,
+    },
+    /// Build a distributable .plexipkg package from a plugin directory.
+    ///
+    /// Validates the directory first (fail-closed), then writes
+    /// `<id>-<version>.plexipkg` containing the plugin files plus a generated
+    /// PACKAGE.toml with per-file sha256 checksums.
+    Package {
+        /// Plugin directory to package
+        #[arg(value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Output file path (default: ./<id>-<version>.plexipkg)
+        #[arg(long, value_hint = ValueHint::FilePath)]
+        out: Option<String>,
+    },
+    /// Export your currently installed plugins as a single TOML snapshot for sharing or backup.
+    ///
+    /// Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi plugin install`.
+    Freeze {
+        /// Destination path for the TOML snapshot file
+        #[arg(value_hint = ValueHint::FilePath)]
+        path: String,
+    },
+    /// Validate, package, and submit a plugin to the Plexi marketplace.
+    ///
+    /// Reads the `[marketplace]` manifest section (publisher, visibility, price),
+    /// validates the directory, builds a `.plexipkg`, and submits it. Without a
+    /// configured `[marketplace].submit_url` the package is prepared locally but
+    /// not uploaded — the artifact path is printed.
+    Publish {
+        /// Plugin directory to publish (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+    },
+    /// Browse every public plugin in the hosted marketplace.
+    Browse,
+    /// Search the public marketplace catalog.
+    Search {
+        /// Substring matched against plugin id, name, description, and tags
+        query: String,
+    },
+    /// Pull git-backed installed plugins to their latest source revision.
+    ///
+    /// Canonical plugin update command. Resolves workspace-local plugins when run
+    /// inside a workspace, and skips installed plugins that are not git checkouts.
+    Update {
+        /// Plugin id to update (omit to update all installed plugins visible here)
+        id: Option<String>,
+    },
+    /// Call a tool a plugin exposes and print its JSON result.
+    ///
+    /// Runs through the same tool dispatcher the Assistant uses, scoped to the
+    /// calling pane's context (the active context when run outside a pane).
+    /// The host stamps the caller identity from the pane credential or peer
+    /// ancestry (`pane:<id>`). A missing pane is never the human `user`.
+    /// The plugin sees that identity, never one taken from the input.
+    /// Exits 1 with `error: <message>` when the tool or the plugin rejects the call.
+    ///
+    /// Example: plexi plugin call chess chess.state
+    /// Example: plexi plugin call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+    #[command(name = "call")]
+    Call {
+        /// Plugin id that exposes the tool (from `plexi plugin info`)
+        plugin_id: String,
+        /// Tool name as the plugin declares it (e.g. `chess.state`)
+        tool: String,
+        /// Tool input as a JSON object
+        #[arg(long, default_value = "{}")]
+        input: String,
+        /// Pane id or name that owns the tool when more than one instance of the plugin is open.
+        #[arg(long)]
+        pane: Option<PaneTarget>,
+        /// Wait up to two minutes for desktop approval, then execute once.
+        #[arg(long)]
+        wait_approved: bool,
+    },
+    /// Snapshot the live tool registry exposed by running view panes in the current context.
+    ///
+    /// Reads the same context-scoped `ToolDispatcher` registry that agents and
+    /// `plexi plugin call` see: exposed tool name (including `<name>@<pane_id>`
+    /// disambiguation when multiple panes expose the same tool), owning plugin id
+    /// and pane id, description, and full JSON input/output schemas.
+    ///
+    /// Example: plexi plugin tools
+    /// Example: plexi plugin tools --json
+    /// Example: plexi plugin tools --plugin calc --json
+    #[command(name = "tools")]
+    Tools {
+        /// Filter to tools exposed by this plugin id
+        #[arg(long, value_name = "PLUGIN_ID")]
+        plugin: Option<String>,
+        /// Inspect a specific context id or name instead of the caller's context
+        #[arg(long, value_name = "CONTEXT_ID")]
+        context: Option<ContextTarget>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ViewCmd {
+    /// List declared views of installed plugins.
+    List,
+
+    /// Open a plugin or tool in a new pane.
+    ///
+    /// Pass a plugin id (e.g. `plexi view open calc`) or a path to a plugin directory
     /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
     /// to open any CLI tool with a Plexi UI.
     ///
     /// Default placement is a sibling split to the right — the calling pane is
     /// never taken over. Pass a direction flag (--down/--left/--up/--right),
-    /// --tab, or --window to override; the app's manifest `[launch] placement`
+    /// --tab, or --window to override; the plugin's manifest `[launch] placement`
     /// applies when no flag is given.
     Open {
-        /// App id or path to open (mutually exclusive with --mcp and --cli)
+        /// View id, default plugin id, or local path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
         type_id: Option<String>,
         /// Explore a configured stdio MCP server in a Plexi pane.
         ///
-        /// Example: plexi app open --mcp filesystem
+        /// Example: plexi view open --mcp filesystem
         #[arg(long, num_args = 1, value_name = "SERVER_ID", conflicts_with = "cli")]
         mcp: Vec<String>,
         /// Wrap a CLI tool in a Plexi pane with a visual UI.
         ///
-        /// Example: plexi app open --cli git
+        /// Example: plexi view open --cli git
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
         /// Split below
@@ -1434,79 +1736,18 @@ pub enum AppCmd {
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
         from: Option<PaneTarget>,
-        /// Extra arguments passed through to the app (only valid with an app id)
+        /// Extra arguments passed through to the plugin (only valid with a plugin id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
     },
-    /// Pre-approve a raw `.wasm` component's host imports without a prompt.
-    ///
-    /// The non-interactive form of the review `plexi app open <file.wasm>`
-    /// runs at a TTY: it persists Green grants for every host interface the
-    /// component imports, scoped to the wasm's parent directory — the same
-    /// store and scope an installed host checks at open time. Meant for
-    /// automation (release gates, scene runners) pre-approving a vetted,
-    /// repo-committed fixture so an installed host opens it without a human at
-    /// a terminal. It never opens a pane; production interactive review is
-    /// unchanged.
-    Trust {
-        /// Path to the `.wasm` component to trust.
-        #[arg(value_hint = ValueHint::FilePath)]
-        path: String,
-    },
-    /// Install an app from a local path, a remote source, or a pack file.
-    ///
-    /// Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store.
-    /// Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub.
-    /// Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack.
-    /// Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
-    Install {
-        /// Source to install: a local path, GitHub spec (github:owner/repo), or bare app id.
-        /// Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable).
-        spec_or_path: Option<String>,
-        /// Install from a pack file or 'core'
-        #[arg(long)]
-        pack: Option<String>,
-        /// With --pack: re-extract already-installed `local:` apps from this
-        /// binary's embedded tree, replacing the installed copy. The update
-        /// path for bundled core apps on stable channels.
-        #[arg(long, requires = "pack")]
-        refresh: bool,
-        /// Pin a local path or package install to a specific version (e.g. --version 1.2.3).
-        #[arg(long, value_name = "SEMVER")]
-        version: Option<String>,
-        /// Skip the trust-sheet confirmation prompt. Required for
-        /// non-interactive (scripted) installs — without a terminal the
-        /// install fails closed instead of proceeding silently.
-        #[arg(long = "yes", short = 'y')]
-        yes: bool,
-    },
-    /// Remove an installed app by id.
-    ///
-    /// Example: plexi app uninstall github-tree
-    #[command(aliases = ["remove", "delete"])]
-    Uninstall {
-        /// App id to remove (use `plexi app list` to see installed ids)
-        id: String,
-        /// Skip the confirmation prompt
-        #[arg(long = "yes", short = 'y')]
-        yes: bool,
-    },
-    /// Show all installed apps with their versions.
-    List,
-    /// Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines.
-    Prune {
-        /// Show candidates without removing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
+    /// Render a plugin headlessly (JSON frame tree by default, or PNG with --png).
     Render {
-        /// App id or local path to render (e.g. "calc" or "./my-app")
-        app: String,
+        /// View id, default plugin id, or local path to render (e.g. "calc" or "./my-plugin")
+        plugin: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]
         size: String,
-        /// Pre-seed the app's state from a JSON file before rendering
+        /// Pre-seed the plugin's state from a JSON file before rendering
         #[arg(long, value_hint = ValueHint::FilePath)]
         state: Option<String>,
         /// Where to save the output (default: stdout)
@@ -1515,250 +1756,6 @@ pub enum AppCmd {
         /// Render to a PNG image instead of JSON (default: JSON)
         #[arg(long)]
         png: bool,
-    },
-    /// Check a local app with manifest, scaffold metadata, SDK, and render-size checks.
-    ///
-    /// This is the compiler-like gate for generated Plexi apps. It checks the
-    /// manifest, warns on missing or stale `plexi.scaffold.toml`, inspects
-    /// Python SDK usage without importing app code, and renders the app at
-    /// small and normal pane sizes. Run it with an explicit alpha or PR
-    /// channel so the SDK/profile under test is not ambient.
-    #[command(after_long_help = r#"APP CHECK LOOP:
-
-  Use `plexi app check` as the verification gate; there is no `plexi app build`.
-
-    Typical gates:
-    PLEXI_CHANNEL=alpha plexi app test .
-    PLEXI_CHANNEL=alpha plexi app check . --png-dir render-output/check
-    PLEXI_CHANNEL=pr-123 plexi app check . --png-dir render-output/check
-    plexi-pr-123 app check . --png-dir render-output/check
-
-  State and behavior probes:
-    PLEXI_CHANNEL=alpha plexi app render . --state fixtures/state.json
-    PLEXI_CHANNEL=alpha plexi app render . --png --output render-output/shot.png
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app action <pane-id> <handler-id>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
-
-  Logs:
-    Inspect ~/.plexi-alpha/plexi.log or the matching ~/.plexi-pr-N/plexi.log.
-    App code should use log.debug/info/warn/error intentionally.
-"#)]
-    Check {
-        /// Local app directory to check (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
-        path: String,
-        /// Render size to check as WxH. Repeat to override the default matrix.
-        #[arg(long = "size")]
-        sizes: Vec<String>,
-        /// Write PNG snapshots for each checked size into this directory.
-        #[arg(long, value_hint = ValueHint::DirPath)]
-        png_dir: Option<String>,
-    },
-    /// Run an app's AppHarness tests with `uv run --with pytest pytest tests/`.
-    ///
-    /// Runs the Python tests in the app's `tests/` directory (the
-    /// `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns
-    /// the app as a real subprocess and checks it renders without overlap; see
-    /// `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
-    Test {
-        /// App directory to test (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
-        path: String,
-        /// Update stored snapshots instead of comparing against them.
-        #[arg(long)]
-        snapshot: bool,
-    },
-    /// Show details about an installed app: manifest fields and tool status.
-    ///
-    /// Populates `tools` from the live tool registry when a pane of this app is
-    /// running in the current context; otherwise labels the section as
-    /// manifest-only (or static source scan) so an unopened app is never
-    /// misreported as declaring no tools. Run `plexi app tools` to snapshot all
-    /// live tools in the current context.
-    Info { id: String },
-    /// Read or replace a file-backed app's state document.
-    ///
-    /// Only apps that declare a `[state]` section are addressable. The state
-    /// path uses the pane's current host context. Outside a pane, context scope
-    /// uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error.
-    /// Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
-    State {
-        #[command(subcommand)]
-        cmd: AppStateCmd,
-    },
-    /// Create a new app from a template, or adopt an existing app directory.
-    ///
-    /// Scaffolds the folder structure and files you need to build a Plexi app:
-    /// manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and
-    /// plexi.scaffold.toml drift metadata.
-    ///
-    /// Pass `--adopt <dir>` (or `--adopt` inside an app directory) to write or
-    /// refresh `plexi.scaffold.toml` for a pre-existing app without creating or
-    /// modifying any source files.
-    ///
-    /// By default, a newly scaffolded app is placed in your workspace's app
-    /// directory. If no workspace is detected, pass --global to scaffold into
-    /// the global registry.
-    ///
-    /// Use --open to launch it in a split-right pane after scaffolding.
-    /// See `sdk/python/AUTHORING.md` for the canonical authoring guide.
-    Init {
-        #[arg(required_unless_present_any = ["wasm", "adopt"])]
-        name: Option<String>,
-        /// Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files.
-        #[arg(long, conflicts_with_all = ["wasm", "global", "open", "no_open", "from"])]
-        adopt: bool,
-        /// Create a Rust WASM component app with the Plexi WASM SDK.
-        #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
-        wasm: Option<String>,
-        /// App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
-        #[arg(long, default_value = "python", value_parser = ["python"])]
-        lang: String,
-        /// Scaffold into the global app registry instead of the workspace
-        #[arg(long)]
-        global: bool,
-        /// Open the app in a split-right pane after scaffolding
-        #[arg(long, conflicts_with = "no_open")]
-        open: bool,
-        /// Deprecated compatibility flag. App init no longer opens by default.
-        #[arg(long)]
-        #[arg(hide = true)]
-        no_open: bool,
-        /// Open the new pane relative to this pane id or name. Defaults to the calling
-        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
-        #[arg(long, value_name = "PANE_ID")]
-        from: Option<PaneTarget>,
-    },
-    /// Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
-    ///
-    /// A directory is validated in place. A `.plexipkg` file is extracted to a
-    /// temp dir with path-safety checks and verified end-to-end: descriptor,
-    /// content hashes, manifest, entry point, and capability strings.
-    Validate {
-        /// App directory or .plexipkg file to check (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::AnyPath)]
-        path: String,
-    },
-    /// Show the trust sheet for a local app directory or .plexipkg package.
-    ///
-    /// Validates first (fail-closed), then prints what the app is, what
-    /// runtime it uses with a blunt trust label, and every capability it
-    /// declares — the same sheet shown before `plexi app install` proceeds.
-    Inspect {
-        /// App directory or .plexipkg file to inspect
-        #[arg(value_hint = ValueHint::AnyPath)]
-        path: String,
-    },
-    /// Build a distributable .plexipkg package from an app directory.
-    ///
-    /// Validates the directory first (fail-closed), then writes
-    /// `<id>-<version>.plexipkg` containing the app files plus a generated
-    /// PACKAGE.toml with per-file sha256 checksums.
-    Package {
-        /// App directory to package
-        #[arg(value_hint = ValueHint::DirPath)]
-        path: String,
-        /// Output file path (default: ./<id>-<version>.plexipkg)
-        #[arg(long, value_hint = ValueHint::FilePath)]
-        out: Option<String>,
-    },
-    /// Export your currently installed apps as a single TOML snapshot for sharing or backup.
-    ///
-    /// Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi app install`.
-    Freeze {
-        /// Destination path for the TOML snapshot file
-        #[arg(value_hint = ValueHint::FilePath)]
-        path: String,
-    },
-    /// Validate, package, and submit an app to the Plexi marketplace.
-    ///
-    /// Reads the `[marketplace]` manifest section (publisher, visibility, price),
-    /// validates the directory, builds a `.plexipkg`, and submits it. Without a
-    /// configured `[marketplace].submit_url` the package is prepared locally but
-    /// not uploaded — the artifact path is printed.
-    Publish {
-        /// App directory to publish (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
-        path: String,
-    },
-    /// Browse every public app in the hosted marketplace.
-    Browse,
-    /// Search the public marketplace catalog.
-    Search {
-        /// Substring matched against app id, name, description, and tags
-        query: String,
-    },
-    /// Pull git-backed installed apps to their latest source revision.
-    ///
-    /// Canonical app update command. Resolves workspace-local apps when run
-    /// inside a workspace, and skips installed apps that are not git checkouts.
-    Update {
-        /// App id to update (omit to update all installed apps visible here)
-        id: Option<String>,
-    },
-    /// Send a semantic action to a running app pane.
-    ///
-    /// Unlike `pane command` (which sends raw text), `app action` delivers a structured
-    /// semantic event directly to the app's event handler — no keystroke simulation.
-    ///
-    /// Example: plexi app action 42 refresh
-    /// Example: plexi app action 42 navigate-to /some/path
-    #[command(name = "action")]
-    Action {
-        /// Pane id or name of the target app pane (from `plexi pane list`)
-        pane_id: PaneTarget,
-        /// Action name to invoke (e.g. "refresh", "navigate-to", "add-item")
-        action: String,
-        /// Optional arguments forwarded to the action handler
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Call a tool an app exposes and print its JSON result.
-    ///
-    /// Runs through the same tool dispatcher the Assistant uses, scoped to the
-    /// calling pane's context (the active context when run outside a pane).
-    /// The host stamps the caller identity from the pane credential or peer
-    /// ancestry (`pane:<id>`). A missing pane is never the human `user`.
-    /// The app sees that identity, never one taken from the input.
-    /// Exits 1 with `error: <message>` when the tool or the app rejects the call.
-    ///
-    /// Example: plexi app call chess chess.state
-    /// Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
-    #[command(name = "call")]
-    Call {
-        /// App id that exposes the tool (from `plexi app info`)
-        app_id: String,
-        /// Tool name as the app declares it (e.g. `chess.state`)
-        tool: String,
-        /// Tool input as a JSON object
-        #[arg(long, default_value = "{}")]
-        input: String,
-        /// Pane id or name that owns the tool when more than one instance of the app is open.
-        #[arg(long)]
-        pane: Option<PaneTarget>,
-        /// Wait up to two minutes for desktop approval, then execute once.
-        #[arg(long)]
-        wait_approved: bool,
-    },
-    /// Snapshot the live tool registry exposed by running app panes in the current context.
-    ///
-    /// Reads the same context-scoped `ToolDispatcher` registry that agents and
-    /// `plexi app call` see: exposed tool name (including `<name>@<pane_id>`
-    /// disambiguation when multiple panes expose the same tool), owning app id
-    /// and pane id, description, and full JSON input/output schemas.
-    ///
-    /// Example: plexi app tools
-    /// Example: plexi app tools --json
-    /// Example: plexi app tools --app calc --json
-    #[command(name = "tools")]
-    Tools {
-        /// Filter to tools exposed by this app id
-        #[arg(long, value_name = "APP_ID")]
-        app: Option<String>,
-        /// Inspect a specific context id or name instead of the caller's context
-        #[arg(long, value_name = "CONTEXT_ID")]
-        context: Option<ContextTarget>,
     },
 }
 
@@ -1777,10 +1774,10 @@ pub enum HostCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Launch this channel's app bundle detached and wait for readiness.
+    /// Launch this channel's plugin bundle detached and wait for readiness.
     ///
     /// Errors if a host for this channel is already running. Seeds any
-    /// declared panes via the spawn-queue before the app boots, so they
+    /// declared panes via the spawn-queue before the plugin boots, so they
     /// appear on its first frame.
     ///
     /// Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
@@ -1874,6 +1871,23 @@ pub enum AccountCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Send a semantic action to a running view pane.
+    ///
+    /// Unlike `pane command` (which sends raw text), `pane action` delivers a structured
+    /// semantic event directly to the plugin's event handler — no keystroke simulation.
+    ///
+    /// Example: plexi pane action 42 refresh
+    /// Example: plexi pane action 42 navigate-to /some/path
+    #[command(name = "action")]
+    Action {
+        /// Pane id or name of the target view pane (from `plexi pane list`)
+        pane_id: PaneTarget,
+        /// Action name to invoke (e.g. "refresh", "navigate-to", "add-item")
+        action: String,
+        /// Optional arguments forwarded to the action handler
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Show active workspace strip membership and geometry.
     Layout,
     /// Hide a pane (defaults to the calling pane).
@@ -1935,7 +1949,7 @@ pub enum PaneCmd {
     ///   plexi pane new "npm run dev" -n "dev"                   # terminal with command, named
     ///   plexi pane new -d                                       # split below
     ///
-    /// For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
+    /// For plugins use `plexi view open`. For MCP servers use `plexi view open --mcp`.
     New {
         /// Shell command to run, or `agents` to open the built-in Agents pane
         #[arg(conflicts_with = "agent")]
@@ -2009,7 +2023,11 @@ pub enum PaneCmd {
         #[arg(long = "on-load", value_name = "STEP")]
         on_load: Vec<String>,
         /// Extra arguments forwarded to the command (for example after `--`)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with = "agent")]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            conflicts_with = "agent"
+        )]
         extra_args: Vec<String>,
     },
     /// Rename a pane.
@@ -2095,7 +2113,7 @@ pub enum PaneCmd {
     /// the text was parked as a collapsed paste), and exits 0 only once the prompt
     /// has left the input line — no `sleep` or `pane key <id> enter` needed.
     ///
-    /// Without `--submit`, terminal panes receive raw PTY bytes and app panes receive
+    /// Without `--submit`, terminal panes receive raw PTY bytes and view panes receive
     /// one egui text input event after the host focuses the target pane. For an
     /// ordinary shell command, see also `plexi pane command <id> "<cmd>" --enter`.
     ///
@@ -2117,7 +2135,7 @@ pub enum PaneCmd {
         /// and prints the observed input line to stderr. Terminal panes only.
         #[arg(long, short = 's')]
         submit: bool,
-        /// Paste literal text, including newlines, as one edit. App panes only;
+        /// Paste literal text, including newlines, as one edit. View panes only;
         /// does not read or change the system clipboard.
         #[arg(long, conflicts_with = "submit")]
         paste: bool,
@@ -2177,7 +2195,7 @@ pub enum PaneCmd {
     /// Send a key press to a pane.
     ///
     /// For terminal panes, injects the keystroke into the terminal.
-    /// For app panes, delivers a structured key event.
+    /// For view panes, delivers a structured key event.
     ///
     /// To submit a prompt or command with host confirmation, prefer
     /// `plexi pane send <id> "<text>" --submit` (or `plexi pane command <id> "<cmd>" --enter`)
@@ -2202,7 +2220,7 @@ pub enum PaneCmd {
         pane_id: PaneTarget,
         path_or_url: String,
     },
-    /// Inject a synthetic pointer click into an app pane, for driving canvas
+    /// Inject a synthetic pointer click into a view pane, for driving canvas
     /// interaction without OS-level automation.
     ///
     /// Two mutually exclusive targeting modes:
@@ -2219,7 +2237,7 @@ pub enum PaneCmd {
     /// next render pass and fails loudly if the id is missing or not an
     /// interactive role.
     ///
-    /// Only app panes accept clicks today.
+    /// Only view panes accept clicks today.
     ///
     /// Examples:
     ///   plexi pane click 42 120 80
@@ -2240,7 +2258,7 @@ pub enum PaneCmd {
         #[arg(long, default_value = "left")]
         button: String,
     },
-    /// Drag the pointer across an app pane through the production input path:
+    /// Drag the pointer across a view pane through the production input path:
     /// press, N intermediate moves, release — delivered one frame at a time.
     ///
     /// Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left)
@@ -2298,9 +2316,9 @@ pub enum PaneCmd {
     },
     /// Return the current UI state of a pane as JSON.
     ///
-    /// For app panes: returns a versioned, runtime-neutral `semantic` tree. Process
-    /// apps also retain the compatible `frame` RenderCommand array. Agents can use
-    /// the semantic nodes to inspect what any app runtime is currently displaying.
+    /// For view panes: returns a versioned, runtime-neutral `semantic` tree. Process
+    /// plugins also retain the compatible `frame` RenderCommand array. Agents can use
+    /// the semantic nodes to inspect what any plugin runtime is currently displaying.
     ///
     /// For terminal panes: returns a simple status object (type, title, pane_id).
     ///
@@ -2416,24 +2434,24 @@ pub enum PaneResultCmd {
 }
 
 #[derive(Subcommand)]
-pub enum AppStateCmd {
-    /// Print an app's current state document to stdout.
+pub enum PluginStateCmd {
+    /// Print a plugin's current state document to stdout.
     Get {
-        /// App id (from `plexi app list`)
-        app: String,
-        /// Which declared scope to read. Defaults to the app's first declared
-        /// scope; a scope the app did not declare is an error.
+        /// Plugin id (from `plexi plugin list`)
+        plugin: String,
+        /// Which declared scope to read. Defaults to the plugin's first declared
+        /// scope; a scope the plugin did not declare is an error.
         #[arg(long, value_parser = ["global", "context"])]
         scope: Option<String>,
     },
-    /// Replace an app's state document, reading from a file or stdin.
+    /// Replace a plugin's state document, reading from a file or stdin.
     Set {
-        /// App id (from `plexi app list`)
-        app: String,
+        /// Plugin id (from `plexi plugin list`)
+        plugin: String,
         /// File to read the new document from. Reads stdin when omitted.
         file: Option<std::path::PathBuf>,
-        /// Which declared scope to write. Defaults to the app's first declared
-        /// scope; a scope the app did not declare is an error.
+        /// Which declared scope to write. Defaults to the plugin's first declared
+        /// scope; a scope the plugin did not declare is an error.
         #[arg(long, value_parser = ["global", "context"])]
         scope: Option<String>,
     },
@@ -3172,7 +3190,12 @@ pub enum AgentCmd {
         #[arg(value_name = "PANE")]
         pane: Option<String>,
         /// Pane ID, agent role name, or run/session ID (alias for positional `<PANE>`)
-        #[arg(long = "pane", visible_alias = "pane-id", value_name = "PANE", conflicts_with = "pane")]
+        #[arg(
+            long = "pane",
+            visible_alias = "pane-id",
+            value_name = "PANE",
+            conflicts_with = "pane"
+        )]
         pane_flag: Option<String>,
     },
     /// Wait for one or more child agent panes to finish via `plexi agent done` and pull their results.
@@ -3361,11 +3384,11 @@ pub enum AgentTeamCmd {
 
 #[derive(Subcommand)]
 pub enum AiCmd {
-    /// Guide first-run AI setup and the next app install step.
+    /// Guide first-run AI setup and the next plugin install step.
     ///
     /// Runs the same checks as `plexi ai doctor`, then prints the shortest path
     /// to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI
-    /// for now. Ends with the app install command to try next.
+    /// for now. Ends with the plugin install command to try next.
     ///
     /// Example: plexi ai onboard
     Onboard,
@@ -3383,7 +3406,7 @@ pub enum AiCmd {
     ///
     /// Walks through Ollama installation detection, model recommendation based on your
     /// hardware, pulling the recommended model, and writing the [ai.ollama] section to
-    /// your config.toml so Plexi apps can use it immediately.
+    /// your config.toml so Plexi plugins can use it immediately.
     ///
     /// Example: plexi ai setup
     Setup,
@@ -3392,29 +3415,109 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
-        SecretCmd,
+        normalize_config_scope_aliases, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
+        PluginCmd, SecretCmd, ViewCmd,
     };
     use clap::Parser;
 
     #[test]
+    fn plugin_rename_new_namespaces_parse() {
+        for args in [
+            vec!["plexi", "plugin", "list"],
+            vec!["plexi", "plugin", "info", "calc"],
+            vec!["plexi", "view", "list"],
+            vec!["plexi", "view", "open", "calc.main"],
+            vec!["plexi", "view", "render", "calc.main"],
+            vec!["plexi", "pane", "action", "42", "refresh"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "must accept {args:?}");
+        }
+    }
+
+    #[test]
+    fn plugin_rename_rejects_old_namespace() {
+        let error = match Cli::try_parse_from(["plexi", "app", "list"]) {
+            Ok(_) => panic!("retired namespace must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!error.is_empty(), "must reject the old namespace");
+        let message =
+            super::retired_namespace_message(&["plexi".into(), "app".into(), "list".into()])
+                .unwrap();
+        assert!(message.contains("plugin") && message.contains("view"));
+    }
+
+    #[test]
     fn workspace_rollback_and_pane_layout_parse() {
-        let parsed = Cli::try_parse_from(["plexi", "host", "workspace-rollback", "--to-channel", "recovery"]).unwrap();
-        assert!(matches!(parsed.command, Some(Commands::Host { cmd: super::HostCmd::WorkspaceRollback { ref to_channel } }) if to_channel == "recovery"));
+        let parsed = Cli::try_parse_from([
+            "plexi",
+            "host",
+            "workspace-rollback",
+            "--to-channel",
+            "recovery",
+        ])
+        .unwrap();
+        assert!(
+            matches!(parsed.command, Some(Commands::Host { cmd: super::HostCmd::WorkspaceRollback { ref to_channel } }) if to_channel == "recovery")
+        );
         let parsed = Cli::try_parse_from(["plexi", "pane", "layout"]).unwrap();
-        assert!(matches!(parsed.command, Some(Commands::Pane { cmd: super::PaneCmd::Layout })));
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::Pane {
+                cmd: super::PaneCmd::Layout
+            })
+        ));
     }
 
     #[test]
     fn session_history_and_draft_flags_parse() {
-        let cli = Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest",
-            "--all-panes", "--include-internal", "--include-failed"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Skill { cmd: super::SkillCmd::Draft {
-            all_panes: true, include_internal: true, include_failed: true, .. } })));
-        assert!(Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest", "--pane", "19", "--all-panes"]).is_err());
-        let cli = Cli::try_parse_from(["plexi", "debug", "session", "show", "--utc", "--cli"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Debug { cmd: super::DebugCmd::Session {
-            cmd: super::DebugSessionCmd::Show { utc: true, cli: true, .. } } })));
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "skill",
+            "draft",
+            "--from-session",
+            "latest",
+            "--all-panes",
+            "--include-internal",
+            "--include-failed",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Skill {
+                cmd: super::SkillCmd::Draft {
+                    all_panes: true,
+                    include_internal: true,
+                    include_failed: true,
+                    ..
+                }
+            })
+        ));
+        assert!(Cli::try_parse_from([
+            "plexi",
+            "skill",
+            "draft",
+            "--from-session",
+            "latest",
+            "--pane",
+            "19",
+            "--all-panes"
+        ])
+        .is_err());
+        let cli =
+            Cli::try_parse_from(["plexi", "debug", "session", "show", "--utc", "--cli"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Debug {
+                cmd: super::DebugCmd::Session {
+                    cmd: super::DebugSessionCmd::Show {
+                        utc: true,
+                        cli: true,
+                        ..
+                    }
+                }
+            })
+        ));
     }
 
     #[test]
@@ -3699,7 +3802,7 @@ mod tests {
 
     #[test]
     fn removed_update_apps_alias_is_rejected() {
-        assert!(Cli::try_parse_from(["plexi", "update", "apps"]).is_err());
+        assert!(Cli::try_parse_from(["plexi", "update", "plugins"]).is_err());
     }
 
     #[test]
@@ -3755,20 +3858,26 @@ mod tests {
     }
 
     #[test]
-    fn app_open_mcp_accepts_only_a_server_id() {
-        let cli = Cli::try_parse_from(["plexi", "app", "open", "--mcp", "filesystem"]).unwrap();
-        let Some(Commands::App { cmd: AppCmd::Open { mcp, .. } }) = cli.command else {
-            panic!("expected MCP app open");
+    fn view_open_mcp_accepts_only_a_server_id() {
+        let cli = Cli::try_parse_from(["plexi", "view", "open", "--mcp", "filesystem"]).unwrap();
+        let Some(Commands::View {
+            cmd: ViewCmd::Open { mcp, .. },
+        }) = cli.command
+        else {
+            panic!("expected MCP view open");
         };
         assert_eq!(mcp, ["filesystem"]);
-        assert!(Cli::try_parse_from(["plexi", "app", "open", "--mcp", "npx", "server", "/tmp"]).is_err());
+        assert!(
+            Cli::try_parse_from(["plexi", "view", "open", "--mcp", "npx", "server", "/tmp"])
+                .is_err()
+        );
     }
 
     #[test]
-    fn app_open_path_accepts_trailing_launch_args() {
+    fn view_open_path_accepts_trailing_launch_args() {
         let cli = Cli::try_parse_from([
             "plexi",
-            "app",
+            "view",
             "open",
             "tests/wasm-fixtures/sysmon.wasm",
             "--",
@@ -3777,30 +3886,30 @@ mod tests {
         ])
         .unwrap();
 
-        let Some(Commands::App { cmd }) = cli.command else {
-            panic!("expected app command");
+        let Some(Commands::View { cmd }) = cli.command else {
+            panic!("expected view command");
         };
-        let AppCmd::Open {
+        let ViewCmd::Open {
             type_id,
             extra_args,
             ..
         } = cmd
         else {
-            panic!("expected app open command");
+            panic!("expected view open command");
         };
         assert_eq!(type_id.as_deref(), Some("tests/wasm-fixtures/sysmon.wasm"));
         assert_eq!(extra_args, ["--sample", "96"]);
     }
 
     #[test]
-    fn app_init_does_not_open_by_default() {
-        let cli = Cli::try_parse_from(["plexi", "app", "init", "counter"]).unwrap();
+    fn view_init_does_not_open_by_default() {
+        let cli = Cli::try_parse_from(["plexi", "plugin", "init", "counter"]).unwrap();
 
-        let Some(Commands::App { cmd }) = cli.command else {
-            panic!("expected app command");
+        let Some(Commands::Plugin { cmd }) = cli.command else {
+            panic!("expected plugin command");
         };
-        let AppCmd::Init { open, no_open, .. } = cmd else {
-            panic!("expected app init command");
+        let PluginCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected plugin init command");
         };
         assert!(!open);
         assert!(!no_open);
@@ -3820,45 +3929,45 @@ mod tests {
     }
 
     #[test]
-    fn app_init_open_flag_opts_into_launch() {
-        let cli = Cli::try_parse_from(["plexi", "app", "init", "counter", "--open"]).unwrap();
+    fn view_init_open_flag_opts_into_launch() {
+        let cli = Cli::try_parse_from(["plexi", "plugin", "init", "counter", "--open"]).unwrap();
 
-        let Some(Commands::App { cmd }) = cli.command else {
-            panic!("expected app command");
+        let Some(Commands::Plugin { cmd }) = cli.command else {
+            panic!("expected plugin command");
         };
-        let AppCmd::Init { open, no_open, .. } = cmd else {
-            panic!("expected app init command");
+        let PluginCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected plugin init command");
         };
         assert!(open);
         assert!(!no_open);
     }
 
     #[test]
-    fn app_init_accepts_legacy_no_open_flag() {
-        let cli = Cli::try_parse_from(["plexi", "app", "init", "--no-open", "counter"]).unwrap();
+    fn view_init_accepts_legacy_no_open_flag() {
+        let cli = Cli::try_parse_from(["plexi", "plugin", "init", "--no-open", "counter"]).unwrap();
 
-        let Some(Commands::App { cmd }) = cli.command else {
-            panic!("expected app command");
+        let Some(Commands::Plugin { cmd }) = cli.command else {
+            panic!("expected plugin command");
         };
-        let AppCmd::Init { open, no_open, .. } = cmd else {
-            panic!("expected app init command");
+        let PluginCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected plugin init command");
         };
         assert!(!open);
         assert!(no_open);
     }
 
     #[test]
-    fn app_init_wasm_accepts_name_as_flag_value() {
-        let cli = Cli::try_parse_from(["plexi", "app", "init", "--wasm", "counter"]).unwrap();
+    fn view_init_wasm_accepts_name_as_flag_value() {
+        let cli = Cli::try_parse_from(["plexi", "plugin", "init", "--wasm", "counter"]).unwrap();
 
-        let Some(Commands::App { cmd }) = cli.command else {
-            panic!("expected app command");
+        let Some(Commands::Plugin { cmd }) = cli.command else {
+            panic!("expected plugin command");
         };
-        let AppCmd::Init {
+        let PluginCmd::Init {
             name, wasm, lang, ..
         } = cmd
         else {
-            panic!("expected app init command");
+            panic!("expected plugin init command");
         };
         assert_eq!(name, None);
         assert_eq!(wasm.as_deref(), Some("counter"));
@@ -3866,24 +3975,24 @@ mod tests {
     }
 
     #[test]
-    fn app_init_adopt_accepts_dir_in_any_position_or_defaults_to_cwd() {
+    fn plugin_init_adopt_accepts_dir_in_any_position_or_defaults_to_cwd() {
         for (argv, expected_dir) in [
             (
-                vec!["plexi", "app", "init", "--adopt", "apps/calc"],
+                vec!["plexi", "plugin", "init", "--adopt", "apps/calc"],
                 Some("apps/calc"),
             ),
             (
-                vec!["plexi", "app", "init", "apps/calc", "--adopt"],
+                vec!["plexi", "plugin", "init", "apps/calc", "--adopt"],
                 Some("apps/calc"),
             ),
-            (vec!["plexi", "app", "init", "--adopt"], None),
+            (vec!["plexi", "plugin", "init", "--adopt"], None),
         ] {
-            let cli = Cli::try_parse_from(argv).expect("app init --adopt parses");
-            let Some(Commands::App {
-                cmd: AppCmd::Init { name, adopt, .. },
+            let cli = Cli::try_parse_from(argv).expect("plugin init --adopt parses");
+            let Some(Commands::Plugin {
+                cmd: PluginCmd::Init { name, adopt, .. },
             }) = cli.command
             else {
-                panic!("expected app init command");
+                panic!("expected plugin init command");
             };
             assert!(adopt);
             assert_eq!(name.as_deref(), expected_dir);
@@ -4048,7 +4157,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_help_distinguishes_interactive_start_spawn_from_script_jobs_without_capture_send_polling() {
+    fn agent_help_distinguishes_interactive_start_spawn_from_script_jobs_without_capture_send_polling(
+    ) {
         let mut root = <Cli as clap::CommandFactory>::command();
         let render_long_help = |path: &[&str], root: &mut clap::Command| -> String {
             let mut cmd = root
@@ -4100,7 +4210,12 @@ mod tests {
         let cli = parse(&["plexi", "pane", "info"]).expect("pane info");
         assert!(matches!(
             cli.command,
-            Some(Commands::Pane { cmd: PaneCmd::Info { pane_id: None, previous: None } })
+            Some(Commands::Pane {
+                cmd: PaneCmd::Info {
+                    pane_id: None,
+                    previous: None
+                }
+            })
         ));
         assert!(parse(&["plexi", "pane", "info", "42", "--previous"]).is_err());
     }
@@ -4142,11 +4257,17 @@ mod tests {
         ));
 
         // The write/schema verbs were folded into `plexi agent done`.
-        assert!(parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).is_err()
-            || matches!(
-                parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).unwrap().command,
-                Some(Commands::Pane { cmd: PaneCmd::Result { cmd: None, .. } })
-            ));
+        assert!(
+            parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#]).is_err()
+                || matches!(
+                    parse(&["plexi", "pane", "result", "write", r#"{"status":"pass"}"#])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Pane {
+                        cmd: PaneCmd::Result { cmd: None, .. }
+                    })
+                )
+        );
         assert!(parse(&["plexi", "pane", "result", "42", "--write", "{}"]).is_err());
         assert!(parse(&["plexi", "pane", "result", "--schema", "{}"]).is_err());
 
@@ -4185,10 +4306,7 @@ mod tests {
 
         // Numeric id resolves without consulting candidates.
         assert_eq!(ContextTarget::from("42").numeric_id(), Some(42));
-        assert_eq!(
-            resolve_target_from_candidates("context", "42", &[]),
-            Ok(42)
-        );
+        assert_eq!(resolve_target_from_candidates("context", "42", &[]), Ok(42));
 
         // Exact name match wins even when it is a prefix of other candidates.
         assert_eq!(
@@ -4255,7 +4373,11 @@ mod tests {
     fn every_leaf_subcommand_accepts_json_flag() {
         use clap::{ArgAction, CommandFactory};
 
-        fn collect_leaf_paths(cmd: &clap::Command, prefix: Vec<String>, out: &mut Vec<(Vec<String>, clap::Command)>) {
+        fn collect_leaf_paths(
+            cmd: &clap::Command,
+            prefix: Vec<String>,
+            out: &mut Vec<(Vec<String>, clap::Command)>,
+        ) {
             let subs: Vec<_> = cmd
                 .get_subcommands()
                 .filter(|s| s.get_name() != "help")
@@ -4287,11 +4409,15 @@ mod tests {
                     continue;
                 }
                 let needs_value = arg.is_required_set()
-                    || id == "text" && path.ends_with(&["assistant".to_string(), "send".to_string()])
-                    || id == "approve" && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
-                    || id == "name" && path.ends_with(&["app".to_string(), "init".to_string()])
-                    || id == "pane_id" && path.ends_with(&["pane".to_string(), "focus".to_string()])
-                    || id == "persona" && path.ends_with(&["agent".to_string(), "create".to_string()])
+                    || id == "text"
+                        && path.ends_with(&["assistant".to_string(), "send".to_string()])
+                    || id == "approve"
+                        && path.ends_with(&["needs-you".to_string(), "resolve".to_string()])
+                    || id == "name" && path.ends_with(&["plugin".to_string(), "init".to_string()])
+                    || id == "pane_id"
+                        && path.ends_with(&["pane".to_string(), "focus".to_string()])
+                    || id == "persona"
+                        && path.ends_with(&["agent".to_string(), "create".to_string()])
                     || id == "target"
                         && (path.ends_with(&[
                             "agent".to_string(),
@@ -4324,7 +4450,10 @@ mod tests {
             }
             argv.push("--json".to_string());
             let parsed = Cli::try_parse_from(&argv).unwrap_or_else(|e| {
-                panic!("leaf command {:?} failed to parse with --json (argv={argv:?}): {e}", path)
+                panic!(
+                    "leaf command {:?} failed to parse with --json (argv={argv:?}): {e}",
+                    path
+                )
             });
             assert!(
                 parsed.json,

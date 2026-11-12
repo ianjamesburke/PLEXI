@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 
 APP = Path(__file__).resolve().parent.parent / "main.py"
 
@@ -12,7 +12,7 @@ def _rendered(h):
 
 
 def test_view_follows_focus_and_visibility_events():
-    with AppHarness(APP, timeout=3.0) as h:
+    with PluginHarness(APP, timeout=3.0) as h:
         assert "not focused" in _rendered(h)
         h.set_visible(True)
         h.set_focus(True)

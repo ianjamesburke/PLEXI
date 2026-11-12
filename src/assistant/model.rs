@@ -2,13 +2,13 @@
 //!
 //! `AssistantModel` owns the active conversation, composer text, and
 //! streaming state. State transitions return `AssistantEffect`s; the pane
-//! shell (`AssistantApp`) executes them.
+//! shell (`AssistantView`) executes them.
 
 use std::collections::VecDeque;
 
 use super::commands::{self, ParsedCommand};
-use crate::protocol::ModelTier;
 use crate::plexi_ai::broker::ReasoningEffort;
+use crate::protocol::ModelTier;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -18,7 +18,7 @@ pub enum TurnRole {
     Assistant,
     Tool,
     Error,
-    /// An app event delivered through a granted subscription (Phase D3).
+    /// An plugin event delivered through a granted subscription (Phase D3).
     Event,
     /// Output of a slash command the user ran, shared with the model. It
     /// enters the next turn's history as clearly-labelled command output so
@@ -98,7 +98,7 @@ pub struct ActiveToolCall {
     /// Compact summary of the call's input, shown on the running row.
     pub input_summary: String,
     /// When the call started, so the running row can show elapsed time — a
-    /// long `app check` reads as progress instead of a hang (stint 0460).
+    /// long `plugin check` reads as progress instead of a hang (stint 0460).
     pub started: std::time::Instant,
 }
 
@@ -119,7 +119,7 @@ pub struct FinishedToolCall {
 }
 
 /// A permission sheet awaiting the user's decision (renderable state only —
-/// the worker reply channel lives in `AssistantApp`).
+/// the worker reply channel lives in `AssistantView`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPermission {
     pub tool: String,
@@ -194,7 +194,7 @@ pub struct StreamingState {
     /// this prefix from the broker's final text so only the tail commits.
     pub committed_answer: String,
     /// The model is currently generating a tool call (stint 0467) — the
-    /// longest otherwise-silent stretch of an app-build turn. Cleared when
+    /// longest otherwise-silent stretch of a plugin-build turn. Cleared when
     /// the finished call dispatches (`tool_call_started`) or the turn ends.
     pub tool_progress: Option<ToolArgProgress>,
 }
@@ -212,8 +212,7 @@ pub struct ToolArgProgress {
 /// Observable lifecycle for `/compact`. This deliberately records feedback,
 /// not compaction mechanics: raw history and checkpoint format remain owned
 /// by the store layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CompactionState {
     #[default]
     Idle,
@@ -223,7 +222,6 @@ pub enum CompactionState {
         checkpoint_id: String,
     },
 }
-
 
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
@@ -243,10 +241,10 @@ pub enum AssistantEffect {
     SessionWrite {
         conversation_id: String,
     },
-    /// `/tools`: list discovered app connector tools with broker decisions.
+    /// `/tools`: list discovered plugin connector tools with broker decisions.
     ListTools,
-    /// `/apps`: list running apps and their exposed connectors.
-    ListApps,
+    /// `/plugins`: list running plugins and their exposed connectors.
+    ListPlugins,
     ListSkills,
     ShowContext,
     ShowHooks,
@@ -844,7 +842,7 @@ impl AssistantModel {
             // Real Phase 2 views: the pane shell reads the broker/audit state
             // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
-            "apps" => vec![AssistantEffect::ListApps],
+            "plugins" => vec![AssistantEffect::ListPlugins],
             "skills" => vec![AssistantEffect::ListSkills],
             "context" => vec![AssistantEffect::ShowContext],
             "hooks" => vec![AssistantEffect::ShowHooks],
@@ -857,7 +855,7 @@ impl AssistantModel {
             "rewind" if cmd.args.is_empty() => {
                 self.turns.push(Turn::now(
                     TurnRole::Error,
-                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and apps are untouched.",
+                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and plugins are untouched.",
                 ));
                 vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
@@ -1150,7 +1148,9 @@ impl AssistantModel {
             return Vec::new();
         };
         match choice {
-            PermissionChoice::Deny | PermissionChoice::DenyAlways if pending.source.is_some() => Vec::new(),
+            PermissionChoice::Deny | PermissionChoice::DenyAlways if pending.source.is_some() => {
+                Vec::new()
+            }
             PermissionChoice::Deny | PermissionChoice::DenyAlways => {
                 let lead = if choice == PermissionChoice::DenyAlways {
                     "always denied by user"
@@ -1290,7 +1290,7 @@ mod tests {
             "progress outside an in-flight turn must be ignored"
         );
 
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me a plugin");
         m.apply_tool_progress(None, 12);
         let p = m.streaming.tool_progress.as_ref().expect("progress set");
         assert_eq!((p.name.as_deref(), p.arg_chars), (None, 12));
@@ -1341,9 +1341,12 @@ mod tests {
             Some("narrative".into()),
             Some("output".into()),
         );
-        assert!(matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
-            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output")));
-        let queued = m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
+        assert!(
+            matches!(&effects[1], AssistantEffect::AiQuery { client, kind, .. }
+            if client.as_deref() == Some("narrative") && kind.as_deref() == Some("output"))
+        );
+        let queued =
+            m.submit_prompt_tagged("later".into(), Some("du".into()), Some("system".into()));
         assert!(matches!(queued[0], AssistantEffect::SessionWrite { .. }));
         assert_eq!(queued.len(), 1);
         let _ = m.submit_prompt_tagged("after".into(), Some("personal".into()), None);
@@ -1837,7 +1840,7 @@ mod tests {
     #[test]
     fn tool_turn_detail_attaches_and_round_trips() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "edit the app");
+        submitted(&mut m, "edit the plugin");
         tool_started(&mut m, "host.files.edit");
         tool_finished(
             &mut m,
@@ -1860,7 +1863,7 @@ mod tests {
     #[test]
     fn tool_calls_and_queued_message_stay_in_chronological_order() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me a plugin");
 
         tool_started(&mut m, "host.files.write");
         tool_finished(&mut m, "host.files.write", None, None);
@@ -1870,20 +1873,20 @@ mod tests {
         submitted(&mut m, "also add a footer");
         assert_eq!(m.queued_user_turns, 1);
 
-        tool_started(&mut m, "plexi.app_check");
-        tool_finished(&mut m, "plexi.app_check", None, None);
+        tool_started(&mut m, "plexi.plugin_check");
+        tool_finished(&mut m, "plexi.plugin_check", None, None);
 
         let id = m.conversation_id.clone();
-        m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));
+        m.finish_turn(&id, Ok("Done — plugin scaffolded.".to_string()));
 
         let roles: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
         assert_eq!(
             roles,
             vec![
-                (TurnRole::User, "build me an app".to_string()),
+                (TurnRole::User, "build me a plugin".to_string()),
                 (TurnRole::Tool, "host.files.write".to_string()),
-                (TurnRole::Tool, "plexi.app_check".to_string()),
-                (TurnRole::Assistant, "Done — app scaffolded.".to_string()),
+                (TurnRole::Tool, "plexi.plugin_check".to_string()),
+                (TurnRole::Assistant, "Done — plugin scaffolded.".to_string()),
                 (TurnRole::User, "also add a footer".to_string()),
             ],
             "tool calls and the reply must commit before the queued follow-up, in the order they happened"
@@ -2032,7 +2035,7 @@ mod tests {
     #[test]
     fn streamed_text_flushes_before_tool_rows_and_tail_commits_at_finish() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build the app");
+        submitted(&mut m, "build the plugin");
 
         m.apply_answer_delta("Let me build this for you.");
         m.apply_reasoning_delta("plan the scaffold");
@@ -2064,7 +2067,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                (TurnRole::User, "build the app".to_string()),
+                (TurnRole::User, "build the plugin".to_string()),
                 (
                     TurnRole::Assistant,
                     "Let me build this for you.".to_string()

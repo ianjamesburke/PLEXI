@@ -1,10 +1,10 @@
-//! Crash-safe replacement of an installed app directory (stint 1175).
+//! Crash-safe replacement of an installed plugin directory (stint 1175).
 //!
-//! An update stages the complete new tree outside the apps directory, marks it
+//! An update stages the complete new tree outside the plugins directory, marks it
 //! complete, then swaps it into place. A crash at any point leaves either the
 //! old complete install or the new complete install at the destination, never
-//! a missing or half-copied app, and never a second manifest-bearing directory
-//! inside the apps directory for the registry to load. Grants bind package
+//! a missing or half-copied plugin, and never a second manifest-bearing directory
+//! inside the plugins directory for the registry to load. Grants bind package
 //! content (`package::content_digest`), so the swap itself needs no reapproval
 //! logic: new bytes are a new identity and ask again.
 
@@ -13,17 +13,17 @@ use std::path::{Path, PathBuf};
 
 use super::package::INSTALL_COMPLETE_MARKER;
 
-/// Where staged installs live. Outside `apps/` so the registry never scans them.
+/// Where staged installs live. Outside `plugins/` so the registry never scans them.
 pub(crate) fn staging_root() -> PathBuf {
     crate::config::config_dir()
         .join("run")
         .join("install-staging")
 }
 
-/// Remove staging directories an interrupted install of `app_id` left behind.
-pub(crate) fn clear_stale_staging(root: &Path, app_id: &str) {
+/// Remove staging directories an interrupted install of `plugin_id` left behind.
+pub(crate) fn clear_stale_staging(root: &Path, plugin_id: &str) {
     // App ids never contain '@', so one id cannot prefix another's staging.
-    let prefix = format!("{app_id}@");
+    let prefix = format!("{plugin_id}@");
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -31,12 +31,12 @@ pub(crate) fn clear_stale_staging(root: &Path, app_id: &str) {
         if entry.file_name().to_string_lossy().starts_with(&prefix) {
             if let Err(error) = std::fs::remove_dir_all(entry.path()) {
                 log::warn!(
-                    "app::install: could not remove stale staging {}: {error}",
+                    "plugin::install: could not remove stale staging {}: {error}",
                     entry.path().display()
                 );
             } else {
                 log::info!(
-                    "app::install: removed stale staging {} from an interrupted install",
+                    "plugin::install: removed stale staging {} from an interrupted install",
                     entry.path().display()
                 );
             }
@@ -44,9 +44,9 @@ pub(crate) fn clear_stale_staging(root: &Path, app_id: &str) {
     }
 }
 
-/// A new, unique staging directory path for `app_id` under `root`.
-pub(crate) fn new_staging_dir(root: &Path, app_id: &str) -> PathBuf {
-    root.join(format!("{app_id}@{}", uuid::Uuid::new_v4().simple()))
+/// A new, unique staging directory path for `plugin_id` under `root`.
+pub(crate) fn new_staging_dir(root: &Path, plugin_id: &str) -> PathBuf {
+    root.join(format!("{plugin_id}@{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// Mark a fully copied staging tree complete. Written last, before the swap.
@@ -68,7 +68,7 @@ pub(crate) fn replace_dir(staging: &Path, dest: &Path) -> io::Result<()> {
     // `staging` now holds the previous install.
     if let Err(error) = std::fs::remove_dir_all(staging) {
         log::warn!(
-            "app::install: could not remove replaced install {}: {error}",
+            "plugin::install: could not remove replaced install {}: {error}",
             staging.display()
         );
     }
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_staging_of_one_app_is_cleared_and_others_are_kept() {
+    fn stale_staging_of_one_plugin_is_cleared_and_others_are_kept() {
         let root = tempfile::tempdir().unwrap();
         let staging_root = root.path().join("staging");
         let mine = new_staging_dir(&staging_root, "x");
@@ -164,7 +164,7 @@ mod tests {
         assert!(!mine.exists());
         assert!(
             other.exists(),
-            "prefix match must not eat another app's staging"
+            "prefix match must not eat another plugin's staging"
         );
     }
 }

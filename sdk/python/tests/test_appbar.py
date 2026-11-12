@@ -1,19 +1,19 @@
-"""Tests for AppBar declarative component."""
+"""Tests for SurfaceHeader declarative component."""
 
 from plexi_sdk._adapter import _encode_uitree
-from plexi_sdk.ui import AppBar
+from plexi_sdk.ui import SurfaceHeader
 
 
 def test_appbar_to_node_and_wire_encoding() -> None:
-    bar = AppBar("Dashboard", "live metrics")
+    bar = SurfaceHeader("Dashboard", "live metrics")
     assert bar.to_node() == {
-        "type": "app_bar",
+        "type": "surface_header",
         "title": "Dashboard",
         "subtitle": "live metrics",
     }
     tree = _encode_uitree(bar)
     assert tree["nodes"][tree["root"]]["data"] == {
-        "type": "AppBar",
+        "type": "SurfaceHeader",
         "title": "Dashboard",
         "subtitle": "live metrics",
     }

@@ -87,7 +87,7 @@ fn assert_paint_contrast(shapes: &[egui::epaint::ClippedShape], label: &str) {
 }
 
 #[test]
-fn app_default_text_contrast_preset_sweep() {
+fn plugin_default_text_contrast_preset_sweep() {
     for name in preset_names() {
         let colors = Colors::from_config(&preset_colors(name).unwrap());
         assert_paint_contrast(&painted(&widget_tree(), &colors), name);
@@ -95,7 +95,7 @@ fn app_default_text_contrast_preset_sweep() {
 }
 
 #[test]
-fn app_default_text_contrast_light_overrides() {
+fn plugin_default_text_contrast_light_overrides() {
     let mut cfg = preset_colors("plexi-night").unwrap();
     cfg.terminal_bg = Some("#e3e3f0".into());
     cfg.bg_active = Some("#b0b0d0".into());
@@ -107,7 +107,7 @@ fn app_default_text_contrast_light_overrides() {
 }
 
 #[test]
-fn app_default_text_contrast_mode_follows_resolved_background() {
+fn plugin_default_text_contrast_mode_follows_resolved_background() {
     for (preset, background, expected_dark) in [
         ("plexi-night", "#eeeeff", false),
         ("plexi-day", "#101020", true),
@@ -126,7 +126,7 @@ fn app_default_text_contrast_mode_follows_resolved_background() {
 }
 
 #[test]
-fn app_default_text_contrast_preserves_authored_colors() {
+fn plugin_default_text_contrast_preserves_authored_colors() {
     let tree = crate::host::wasm_python::decode_ui_tree(&serde_json::json!({
         "root": 0, "nodes": [
             {"id":0,"key":"root","data":{"type":"Column","children":[1,2]}},
@@ -160,7 +160,7 @@ fn app_default_text_contrast_preserves_authored_colors() {
 }
 
 #[test]
-fn app_default_text_contrast_hover_and_press() {
+fn plugin_default_text_contrast_hover_and_press() {
     for name in preset_names() {
         let colors = Colors::from_config(&preset_colors(name).unwrap());
         let ctx = egui::Context::default();

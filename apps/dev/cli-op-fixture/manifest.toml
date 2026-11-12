@@ -1,16 +1,4 @@
-schema_version = 1
-
-[app]
-id = "cli-op-fixture"
-type = "app"
-name = "Cli Op Fixture"
-entry = "main.py"
-version = "0.1.0"
-description = "POC: approved typed CLI operations against a fixture program"
-watch = true
-
-[app.capabilities]
-capabilities = ["cli.operations"]
+schema_version = 2
 
 [launch]
 
@@ -64,3 +52,21 @@ mode = "read"
 type = "int"
 min = 0
 max = 20000
+
+[plugin]
+id = "cli-op-fixture"
+name = "Cli Op Fixture"
+version = "0.1.0"
+description = "POC: approved typed CLI operations against a fixture program"
+watch = true
+
+[plugin.capabilities]
+capabilities = ["cli.operations"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "cli-op-fixture.main"
+default = true

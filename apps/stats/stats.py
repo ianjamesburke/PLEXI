@@ -11,7 +11,7 @@ from typing import Any
 from plexi_sdk import log, state
 from plexi_sdk.effects import PersistState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import FocusChanged, KeyEvent, TimerFired
-from plexi_sdk.ui import AppBar, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, SelectList, Spacer, Text
 
 DAY_START_HOUR = 4
 IDLE_THRESHOLD_SECS = 15 * 60
@@ -73,7 +73,7 @@ def view():
     metrics = _metrics_from_state()
     if not metrics.has_data:
         return Column([
-            AppBar("Stats", "no focus events"),
+            SurfaceHeader("Stats", "no focus events"),
             Text("No focus events yet.", size=16.0, bold=True),
             Text("Stats will fill in as Plexi sends focus-change events.", size=12.0),
             Spacer(grow=True),
@@ -85,7 +85,7 @@ def view():
         for ctx in metrics.contexts
     ]
     return Column([
-        AppBar("Stats", _summary_text(metrics)),
+        SurfaceHeader("Stats", _summary_text(metrics)),
         Text(_activity_clock(metrics), size=14.0),
         Text(_summary_tiles(metrics), size=12.0),
         Text("Top contexts", size=12.0, bold=True),

@@ -396,7 +396,9 @@ plexi secret set openrouter-api-key --global
 
     println!("### Model modes (`[models.fast]`, `[models.slow]`)\n");
     println!("pi-plexi and the host AI broker read resolved targets with `plexi config get --json models`. Each field is optional and falls back to the built-in default independently. OpenRouter keys use the existing `OPENROUTER_API_KEY` secret lookup.\n");
-    if let Some(s) = structs.get("ModelModeConfig") { emit_table(&s.fields); }
+    if let Some(s) = structs.get("ModelModeConfig") {
+        emit_table(&s.fields);
+    }
 
     // ── Agents ───────────────────────────────────────────────────────────────
     print!(
@@ -465,15 +467,15 @@ Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<
     print!(
         r#"### File handlers (`[file_handlers]`)
 
-Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
+Choose which view opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
 
 | Value | Behavior |
 |---|---|
-| `app:<id>` | Open in a Plexi app by its registry id (e.g. `app:text-editor`) |
+| `app:<id>` | Stored config spelling: open a plugin default view by its registry id (e.g. `app:text-editor`) |
 | `os` | Hand to the OS default opener (`open` / `xdg-open`) |
 | `cmd:<command>` | Reserved; falls back to `os` until wired |
 
-A handler here overrides an app's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
+A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
 
 "#
     );

@@ -14,7 +14,7 @@ with ``mcp-probe:error:*`` / ``mcp-probe:closed:*`` terminal states.
 from plexi_sdk import state
 from plexi_sdk.effects import McpConnect, McpSend, SetState, SetTitle
 from plexi_sdk.events import McpClosed, McpConnected, McpMessage
-from plexi_sdk.ui import AppBar, Column, Text
+from plexi_sdk.ui import SurfaceHeader, Column, Text
 
 
 def init(size, args):
@@ -52,6 +52,6 @@ def update(event):
 
 def view():
     return Column(
-        [AppBar("MCP Hidden Probe"), Text(state.get("phase", "?"))],
+        [SurfaceHeader("MCP Hidden Probe"), Text(state.get("phase", "?"))],
         grow=True,
     )

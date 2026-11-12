@@ -3,7 +3,7 @@
 from plexi_sdk import state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import UiAction, UiValueChange
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, Label, TextEdit
+from plexi_sdk.ui import SurfaceHeader, Button, Column, FooterKeys, Label, TextEdit
 
 
 def init(_size, _args):
@@ -20,7 +20,7 @@ def update(event):
 
 def view():
     return Column([
-        AppBar("TextEdit Demo"),
+        SurfaceHeader("TextEdit Demo"),
         TextEdit("draft", value=state.get("draft", ""), multiline=True,
                  placeholder="Type here..."),
         Button("Submit", on_click="submit", style="primary"),

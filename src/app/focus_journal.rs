@@ -19,7 +19,7 @@ pub(crate) struct FocusJournalEntry {
     pub pty_title: Option<String>,
     #[serde(default, skip_serializing)]
     pub pane_name: Option<String>,
-    pub app_type_id: Option<String>,
+    pub plugin_type_id: Option<String>,
     /// ISO-8601 timestamp when this focus segment started.
     pub started_at: String,
     /// ISO-8601 timestamp of the last checkpoint write.
@@ -109,7 +109,7 @@ pub(crate) fn recover_from_focus_journal(path: &Path) {
             cwd: entry.cwd,
             pty_title: entry.pty_title,
             pane_name: entry.pane_name,
-            app_type_id: entry.app_type_id,
+            plugin_type_id: entry.plugin_type_id,
             reason: Some("crash_recovery".to_string()),
             duration_secs,
             timestamp: crate::host::event_log::now_timestamp(),
@@ -202,7 +202,7 @@ mod tests {
             cwd: Some("/Users/test/project".to_string()),
             pty_title: Some("nvim".to_string()),
             pane_name: None,
-            app_type_id: None,
+            plugin_type_id: None,
             started_at: started_at.to_string(),
             last_checkpoint_at: started_at.to_string(),
         }

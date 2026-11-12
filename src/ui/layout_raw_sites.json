@@ -2,12 +2,87 @@
   "base_commit": "c9bcffdf2410f3170639466e7711fd28303aab66",
   "policy": "Legacy syntax inventory is migration debt. New raw calls need a scoped rationale and a surface with a registered fixture. This syntax guard cannot establish runtime conformance. ComboBox construction is confined to src/ui/dropdown.rs and enforced by clippy.toml; migrated scope and descriptor options use ListRow.",
   "legacy": {
+    "src/app/attention_queue.rs": {
+      "draw_attention_queue_list_panel | ui.horizontal(|ui| {": 1,
+      "draw_attention_queue_list_panel | let (row_rect, resp) = ui.allocate_exact_size(": 1,
+      "draw_attention_queue_list_panel | let hit = ui.interact(": 1,
+      "draw_decision_overlay_modal | ui.horizontal(|ui| {": 1,
+      "draw_decision_overlay_modal | .interact(Sense::click());": 1
+    },
+    "src/app/card_gallery.rs": {
+      "draw_card_gallery | let (area, _) = ui.allocate_exact_size(Vec2::new(avail_w, plan.total_h), Sense::hover());": 1,
+      "draw_card_gallery | painter.text(": 3,
+      "draw_card_gallery | painter.text(plan.captions[i][0], Align2::LEFT_TOP, note.join(\"\"), note_font.clone(), colors.text_dim);": 1
+    },
+    "src/app/plugin_call.rs": {
+      "draw_keychain_recovery_banner | ui.horizontal_wrapped(|ui| {": 1
+    },
+    "src/app/zoom.rs": {
+      "draw_tree_atlas_canvas | painter.text(": 2,
+      "draw_tree_atlas_canvas | let resp = ui.interact(": 1,
+      "draw_tree_atlas_canvas | painter.with_clip_rect(peek_rect.shrink(1.0)).text(": 1,
+      "draw_tree_atlas_canvas | peek_painter.text(": 1
+    },
+    "src/overlays/confirmations.rs": {
+      "draw_quit_confirm_overlay | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1
+    },
+    "src/overlays/misc.rs": {
+      "draw_shortcuts_overlay | ui.horizontal(|ui| {": 1,
+      "draw_changelog_overlay | ui.horizontal(|ui| {": 2,
+      "draw_changelog_overlay | ui.with_layout(": 1,
+      "draw_text_input_overlay | ui.horizontal(|ui| {": 1
+    },
+    "src/overlays/mod.rs": {
+      "draw_contact_footer | f.layout_no_wrap(email.to_string(), font_id, colors.text_dim)": 1,
+      "draw_contact_footer | ui.horizontal(|ui| {": 1
+    },
+    "src/overlays/notes_picker.rs": {
+      "draw_notes_picker | let (status_rect, _) = ui.allocate_exact_size(": 1
+    },
+    "src/overlays/quick_note.rs": {
+      "draw_quick_note_modal | let (rect, _) = ui.allocate_exact_size(": 1,
+      "draw_quick_note_modal | .allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());": 1
+    },
+    "src/overlays/setup.rs": {
+      "draw_welcome_screen | f.layout_no_wrap(\"PLEXI\".to_string(), font_id, colors.text_primary)": 1,
+      "draw_welcome_screen | ui.horizontal(|ui| {": 1,
+      "draw_welcome_screen | let (logo_rect, _) = ui.allocate_exact_size(": 1
+    },
+    "src/overlays/toolbar.rs": {
+      "draw_toolbar | f.layout_no_wrap(": 1,
+      "draw_toolbar | let mailbox_rect = ui.horizontal(|ui| {": 1,
+      "draw_toolbar | ui.with_layout(Layout::right_to_left(Align::Center), |ui| {": 1,
+      "draw_toolbar | fonts.layout_no_wrap(visible.clone(), font, egui::Color32::PLACEHOLDER)": 1,
+      "draw_toolbar | ui.painter().galley(rect.min, galley, self.colors.text_dim);": 1
+    },
+    "src/overlays/ui_gallery.rs": {
+      "draw_ui_gallery | ui.horizontal_wrapped(|ui| {": 4,
+      "draw_ui_gallery | ui.horizontal(|ui| {": 2,
+      "token_strip | ui.horizontal_wrapped(|ui| {": 1
+    },
+    "src/render/cli_renderer_view.rs": {
+      "render_form | ui.horizontal(|ui| {": 5,
+      "ui | ui.horizontal(|ui| {": 2
+    },
+    "src/render/descriptor_widgets.rs": {
+      "render_field | ui.horizontal(|ui| {": 1
+    },
+    "src/render/mcp_renderer_view.rs": {
+      "ui | ui.horizontal(|ui| {": 2
+    },
+    "src/render/minimap.rs": {
+      "render_minimap | let cell_response = ui.interact(": 1
+    },
+    "src/render/terminal_pane.rs": {
+      "render | .layout_no_wrap(hint.to_owned(), font.clone(), colors.accent)": 1,
+      "render | ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {": 1
+    },
+    "src/render/view_pane.rs": {
+      "render | let (bar_rect, _) = ui.allocate_exact_size(": 2,
+      "render | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1
+    },
     "src/ui/activity.rs": {
       "paint_attention_effect | painter.text(": 1
-    },
-    "src/ui/app_chrome.rs": {
-      "paint_app_bar | let (rect, _) = ui.allocate_exact_size(": 1,
-      "paint_no_wrap_text | let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));": 1
     },
     "src/ui/badge.rs": {
       "badge_galley | ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), badge_font(), color))": 1,
@@ -15,6 +90,7 @@
       "badge | let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());": 1
     },
     "src/ui/button.rs": {
+      "choice_button | ui.allocate_exact_size(Vec2::new(width, style::BUTTON_H_LG), egui::Sense::click());": 1,
       "choice_button | let (rect, resp) = ui.allocate_exact_size(": 1
     },
     "src/ui/card_block.rs": {
@@ -100,106 +176,19 @@
       "action | ui.put(": 1,
       "show | let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 8.0), egui::Sense::hover());": 1
     },
-    "src/render/app_pane.rs": {
-      "render | let (bar_rect, _) = ui.allocate_exact_size(": 2,
-      "render | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1
-    },
-    "src/render/cli_renderer_app.rs": {
-      "render_form | ui.horizontal(|ui| {": 5,
-      "ui | ui.horizontal(|ui| {": 2
-    },
-    "src/render/descriptor_widgets.rs": {
-      "render_field | ui.horizontal(|ui| {": 1
-    },
-    "src/render/mcp_renderer_app.rs": {
-      "ui | ui.horizontal(|ui| {": 2
-    },
-    "src/render/minimap.rs": {
-      "render_minimap | let cell_response = ui.interact(": 1
-    },
-    "src/render/terminal_pane.rs": {
-      "render | .layout_no_wrap(hint.to_owned(), font.clone(), colors.accent)": 1,
-      "render | ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {": 1
-    },
-    "src/overlays/confirmations.rs": {
-      "draw_quit_confirm_overlay | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1
-    },
-    "src/overlays/misc.rs": {
-      "draw_shortcuts_overlay | ui.horizontal(|ui| {": 1,
-      "draw_changelog_overlay | ui.horizontal(|ui| {": 2,
-      "draw_changelog_overlay | ui.with_layout(": 1,
-      "draw_text_input_overlay | ui.horizontal(|ui| {": 1
-    },
-    "src/overlays/mod.rs": {
-      "draw_contact_footer | f.layout_no_wrap(email.to_string(), font_id, colors.text_dim)": 1,
-      "draw_contact_footer | ui.horizontal(|ui| {": 1
-    },
-    "src/overlays/notes_picker.rs": {
-      "draw_notes_picker | let (status_rect, _) = ui.allocate_exact_size(": 1
-    },
-    "src/overlays/quick_note.rs": {
-      "draw_quick_note_modal | .allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());": 1
-    },
-    "src/overlays/setup.rs": {
-      "draw_welcome_screen | f.layout_no_wrap(\"PLEXI\".to_string(), font_id, colors.text_primary)": 1,
-      "draw_welcome_screen | ui.horizontal(|ui| {": 1,
-      "draw_welcome_screen | let (logo_rect, _) = ui.allocate_exact_size(": 1
-    },
-    "src/overlays/toolbar.rs": {
-      "draw_toolbar | f.layout_no_wrap(": 1,
-      "draw_toolbar | let mailbox_rect = ui.horizontal(|ui| {": 1,
-      "draw_toolbar | ui.with_layout(Layout::right_to_left(Align::Center), |ui| {": 1,
-      "draw_toolbar | fonts.layout_no_wrap(visible.clone(), font, egui::Color32::PLACEHOLDER)": 1,
-      "draw_toolbar | ui.painter().galley(rect.min, galley, self.colors.text_dim);": 1
-    },
-    "src/overlays/ui_gallery.rs": {
-      "draw_ui_gallery | ui.horizontal_wrapped(|ui| {": 4,
-      "draw_ui_gallery | ui.horizontal(|ui| {": 2,
-      "token_strip | ui.horizontal_wrapped(|ui| {": 1
-    },
-    "src/app/app_call.rs": {
-      "draw_keychain_recovery_banner | ui.horizontal_wrapped(|ui| {": 1
-    },
-    "src/app/attention_queue.rs": {
-      "draw_attention_queue_list_panel | ui.horizontal(|ui| {": 1,
-      "draw_attention_queue_list_panel | let (row_rect, resp) = ui.allocate_exact_size(": 1,
-      "draw_attention_queue_list_panel | let hit = ui.interact(": 1,
-      "draw_decision_overlay_modal | ui.horizontal(|ui| {": 1,
-      "draw_decision_overlay_modal | .interact(Sense::click());": 1
-    },
-    "src/app/card_gallery.rs": {
-      "draw_card_gallery | let (area, _) = ui.allocate_exact_size(Vec2::new(avail_w, plan.total_h), Sense::hover());": 1,
-      "draw_card_gallery | painter.text(": 3,
-      "draw_card_gallery | painter.text(plan.captions[i][0], Align2::LEFT_TOP, note.join(\"\"), note_font.clone(), colors.text_dim);": 1
-    },
-    "src/app/zoom.rs": {
-      "draw_tree_atlas_canvas | painter.text(": 2,
-      "draw_tree_atlas_canvas | let resp = ui.interact(": 1,
-      "draw_tree_atlas_canvas | painter.with_clip_rect(peek_rect.shrink(1.0)).text(": 1,
-      "draw_tree_atlas_canvas | peek_painter.text(": 1
+    "src/ui/view_chrome.rs": {
+      "paint_view_bar | let (rect, _) = ui.allocate_exact_size(": 1,
+      "paint_no_wrap_text | let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));": 1,
+      "paint_app_bar | let (rect, _) = ui.allocate_exact_size(": 1
     }
   },
   "approved": [
-    {
-      "source": "src/overlays/toolbar.rs",
-      "site": "draw_toolbar | let response = ui.interact(",
-      "count": 1,
-      "surface": "src/overlays/toolbar.rs::draw_toolbar",
-      "rationale": "Window drag regions use measured toolbar and title bounds; titlebar fixtures and pointer tests cover their exclusions."
-    },
     {
       "source": "src/ui/dialog.rs",
       "site": "action_row | .galley_with_override_text_color(label_pos, galley, color);",
       "count": 1,
       "surface": "src/ui/dialog.rs",
       "rationale": "ActionModal owns measured shortcut columns and complete wrapped action labels with minimum named hit targets; production layout reports and rendered fixtures check the result."
-    },
-    {
-      "source": "src/ui/dialog.rs",
-      "site": "button_row | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {",
-      "count": 1,
-      "surface": "src/ui/dialog.rs",
-      "rationale": "ActionModal button rows right-align measured kit buttons, stack them full-width when the measured row does not fit, and emit modal_action layout reports; the unsaved-changes scene checks wide and narrow panes."
     },
     {
       "source": "src/ui/list.rs",
@@ -221,6 +210,20 @@
       "count": 1,
       "surface": "src/ui/toast.rs",
       "rationale": "The quit toast uses a content-sized row for its caption and progress dots; the registered toast fixture renders the quit state."
+    },
+    {
+      "source": "src/overlays/toolbar.rs",
+      "site": "draw_toolbar | let response = ui.interact(",
+      "count": 1,
+      "surface": "src/overlays/toolbar.rs::draw_toolbar",
+      "rationale": "Window drag regions use measured toolbar and title bounds; titlebar fixtures and pointer tests cover their exclusions."
+    },
+    {
+      "source": "src/ui/dialog.rs",
+      "site": "button_row | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {",
+      "count": 1,
+      "surface": "src/ui/dialog.rs",
+      "rationale": "ActionModal button rows right-align measured kit buttons, stack them full-width when the measured row does not fit, and emit modal_action layout reports; the unsaved-changes scene checks wide and narrow panes."
     },
     {
       "source": "src/overlays/ui_gallery.rs",

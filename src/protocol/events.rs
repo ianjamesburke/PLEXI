@@ -8,14 +8,14 @@ use std::path::PathBuf;
 pub enum PlexiEvent {
     /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
     Init {
-        /// Protocol version string, e.g. "pgap/3". App must refuse unknown versions.
+        /// Protocol version string, e.g. "pgap/4". App must refuse unknown versions.
         protocol: String,
-        /// Stable identifier for this app instance, e.g. "audio-recorder".
-        app_id: String,
-        /// The workspace root this app was launched from.
+        /// Stable identifier for this plugin instance, e.g. "audio-recorder".
+        plugin_id: String,
+        /// The workspace root this plugin was launched from.
         /// Hard invariant: all SecretGet calls are scoped to this directory.
         workspace_root: PathBuf,
-        /// Capabilities granted to this app (declared in manifest or runtime-prompted).
+        /// Capabilities granted to this plugin (declared in manifest or runtime-prompted).
         /// e.g. ["audio.record", "fs.read"]
         capabilities: Vec<String>,
         /// Additive feature flags. Unknown flags are ignored.
@@ -28,21 +28,21 @@ pub enum PlexiEvent {
         #[serde(default = "default_regular_threshold")]
         regular_threshold: f32,
         /// Active host theme as a `role -> #rrggbb` map (see `Colors::to_theme_map`).
-        /// Lets app-drawn chrome track the host theme (light/dark + user overrides).
-        /// Empty map ⇒ app falls back to its built-in dark constants.
+        /// Lets plugin-drawn chrome track the host theme (light/dark + user overrides).
+        /// Empty map ⇒ plugin falls back to its built-in dark constants.
         #[serde(default)]
         theme: std::collections::HashMap<String, String>,
-        /// Launch arguments passed via `plexi app open <id> -- <args>` or
+        /// Launch arguments passed via `plexi view open <id> -- <args>` or
         /// programmatic SpawnPane. Also forwarded as subprocess argv for
         /// backward compatibility. Empty when no args were provided.
         #[serde(default)]
         args: Vec<String>,
-        /// Pre-seeded app state for headless rendering (--state flag).
+        /// Pre-seeded plugin state for headless rendering (--state flag).
         /// When present, the SDK populates self.state before calling on_init.
         /// Omitted in live (non-headless) Init events.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<serde_json::Value>,
-        /// Initial pane width in logical pixels. Apps use this to size
+        /// Initial pane width in logical pixels. Plugins use this to size
         /// layout before the first Resize event arrives.
         #[serde(default)]
         width: f32,
@@ -53,15 +53,15 @@ pub enum PlexiEvent {
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {
         frame_id: u64,
-        /// Current surface rect the app should draw into.
+        /// Current surface rect the plugin should draw into.
         rect: Rect,
         /// Actual rendered canvas width from the previous frame's component tree.
-        /// Zero on the first frame (no prior render). Not SDK-exposed; apps that
+        /// Zero on the first frame (no prior render). Not SDK-exposed; plugins that
         /// need their own size track it themselves via `init(size)` + `Resize`.
         #[serde(default)]
         canvas_width: f32,
         /// Actual rendered canvas height from the previous frame's component tree.
-        /// Zero on the first frame (no prior render). Not SDK-exposed; apps that
+        /// Zero on the first frame (no prior render). Not SDK-exposed; plugins that
         /// need their own size track it themselves via `init(size)` + `Resize`.
         #[serde(default)]
         canvas_height: f32,
@@ -74,7 +74,7 @@ pub enum PlexiEvent {
         modifiers: Modifiers,
         pressed: bool,
     },
-    /// Mouse click at logical coordinates within the app surface.
+    /// Mouse click at logical coordinates within the plugin surface.
     Click {
         x: f32,
         y: f32,
@@ -96,7 +96,7 @@ pub enum PlexiEvent {
         button: MouseButton,
         modifiers: Modifiers,
     },
-    /// Pointer moved over the app surface. Only fires when the app has opted in
+    /// Pointer moved over the plugin surface. Only fires when the plugin has opted in
     /// via `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local
     /// coordinates; `buttons` lists which buttons are currently held.
     MouseMove {
@@ -107,8 +107,8 @@ pub enum PlexiEvent {
     },
     /// User submitted a command via the command bar.
     Command { text: String },
-    /// Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.
-    /// Apps receive this in `on_event` and dispatch on `action` name.
+    /// Semantic action dispatched by `plexi pane action <pane_id> <action> [args...]`.
+    /// Plugins receive this in `on_event` and dispatch on `action` name.
     /// `args` is empty when no extra arguments were provided.
     Action {
         /// Action name, e.g. "refresh", "navigate-to", "add-item".
@@ -125,14 +125,14 @@ pub enum PlexiEvent {
     },
     /// Secret broker response. value is None when denied.
     SecretValue { key: String, value: Option<String> },
-    /// Native WASM app runtime file read result.
+    /// Native WASM plugin runtime file read result.
     FileReadResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<Vec<u8>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Native WASM app runtime directory listing result.
+    /// Native WASM plugin runtime directory listing result.
     FileListResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entries: Option<Vec<FileListEntry>>,
@@ -152,10 +152,10 @@ pub enum PlexiEvent {
         payload: serde_json::Value,
     },
     /// Pane group CWD broadcast. **Declared, never constructed** — no host path
-    /// emits this today; `sync_app_cwd` reassigns `workspace_root` in place
+    /// emits this today; `sync_plugin_cwd` reassigns `workspace_root` in place
     /// instead. Do not cite it as the mechanism behind a cwd-scoping symptom.
     PathChanged { cwd: PathBuf },
-    /// App is being backgrounded (host window losing focus, app no longer visible).
+    /// App is being backgrounded (host window losing focus, plugin no longer visible).
     Suspend,
     /// App is being foregrounded again.
     Resume,
@@ -167,9 +167,9 @@ pub enum PlexiEvent {
         /// Updated role → #rrggbb map. Same roles as the Init `theme` field.
         colors: std::collections::HashMap<String, String>,
     },
-    /// Confirmation that a SpawnApp request succeeded.
-    AppSpawned {
-        /// The pane_id of the newly spawned app pane.
+    /// Confirmation that a SpawnView request succeeded.
+    ViewOpened {
+        /// The pane_id of the newly spawned view pane.
         pane_id: u64,
         type_id: String,
     },
@@ -185,11 +185,11 @@ pub enum PlexiEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
-    /// Response to `AppRequest::QueryContextState` (#1518).
+    /// Response to `HostRequest::QueryContextState` (#1518).
     ContextStateResponse {
         state: crate::host::context_state::ContextState,
     },
-    /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
+    /// Binary pipe opened — plugin connects to `socket_path` as a unix socket client.
     PipeOpened {
         pipe_id: String,
         socket_path: String,
@@ -199,12 +199,12 @@ pub enum PlexiEvent {
         pipe_id: String,
         dropped_frames: u64,
     },
-    /// Drop a JSON payload into the app's `on_inject` hook.
-    /// Sent at startup with persisted app state (workspace if available, else global).
+    /// Drop a JSON payload into the plugin's `on_inject` hook.
+    /// Sent at startup with persisted plugin state (workspace if available, else global).
     /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
-    /// A state scope's backing file changed outside the app's own persist
-    /// flow — an external edit, or a persist the app lost to a concurrent
+    /// A state scope's backing file changed outside the plugin's own persist
+    /// flow — an external edit, or a persist the plugin lost to a concurrent
     /// external write (disk wins; the dropped persist is answered with this
     /// event). `payload` is the scope's full on-disk value set; the SDK
     /// replaces the scope wholesale (deleted keys vanish — never a merge).
@@ -265,14 +265,14 @@ pub enum PlexiEvent {
     /// `height` is the pixel height of the text when wrapped at the requested width,
     /// clamped to `max_lines` rows if specified.
     TextWrappedMeasured { request_id: String, height: f32 },
-    /// Clipboard paste forwarded into the focused app pane.
+    /// Clipboard paste forwarded into the focused view pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
-    /// app pane has keyboard focus. The text is the OS clipboard contents at
-    /// paste time, already decoded to UTF-8 by egui. Apps receive this both
+    /// view pane has keyboard focus. The text is the OS clipboard contents at
+    /// paste time, already decoded to UTF-8 by egui. Plugins receive this both
     /// for Cmd+V chords and for OS-menu / right-click → Paste actions.
     ///
-    /// Pre-#200 apps shelled out to `pbpaste` for this; that workaround is
+    /// Pre-#200 plugins shelled out to `pbpaste` for this; that workaround is
     /// macOS-only and races with focus changes. This event is the portable
     /// path.
     Paste { text: String },
@@ -281,7 +281,7 @@ pub enum PlexiEvent {
     /// counts are zero on error.
     ///
     /// `error` is set when:
-    ///   - the app does not declare the `ai.query` capability ("capability denied")
+    ///   - the plugin does not declare the `ai.query` capability ("capability denied")
     ///   - the host backend cannot be reached (e.g. missing API key, Ollama not running)
     ///   - the upstream backend returned an error mid-stream
     AiResponse {
@@ -306,19 +306,19 @@ pub enum PlexiEvent {
         #[serde(default)]
         done: bool,
     },
-    /// Host-to-app tool invocation (#399). The broker calls a tool exposed via
+    /// Host-to-plugin tool invocation (#399). The broker calls a tool exposed via
     /// `DrawCommand::ExposeTools` by sending this event to the owning pane.
-    /// The app must reply with `DrawCommand::ToolResult { call_id, … }`.
+    /// The plugin must reply with `DrawCommand::ToolResult { call_id, … }`.
     ToolCall {
         call_id: String,
         name: String,
         input_json: String,
         /// Broker identity of the caller (e.g. `"agent:chess-opponent"` or
-        /// an app id). The SDK stamps `caused_by` on events emitted while
+        /// a plugin id). The SDK stamps `caused_by` on events emitted while
         /// this call is being serviced.
         caller_id: String,
         /// Host-stamped authorization envelope. Absent on legacy WASM guests;
-        /// Python apps receive it beside the model arguments.
+        /// Python plugins receive it beside the model arguments.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         authorization: Option<String>,
     },
@@ -336,7 +336,7 @@ pub enum PlexiEvent {
     /// Sent when a `DrawCommand::AudioCapture` successfully opened the device
     /// and started delivering PCM frames on `pipe_id`. The `sample_rate`,
     /// `channels`, and `buffer_size` are the actual negotiated values — the
-    /// app must use these (not its requested values) when interpreting frames.
+    /// plugin must use these (not its requested values) when interpreting frames.
     AudioCaptureStarted {
         pipe_id: String,
         sample_rate: u32,
@@ -361,7 +361,7 @@ pub enum PlexiEvent {
     /// Sent when a `DrawCommand::OpenMidiInput` successfully opened the port
     /// and started forwarding incoming MIDI byte streams to the binary pipe
     /// at `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`
-    /// just before this event so the app can connect to the socket.
+    /// just before this event so the plugin can connect to the socket.
     MidiInputOpened {
         pipe_id: String,
         port_id: String,
@@ -376,7 +376,7 @@ pub enum PlexiEvent {
     /// Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has
     /// allocated the binary pipe (look for the preceding `PipeOpened`),
     /// started the decoder, and is now pumping RGBA8 frames into the pipe.
-    /// `handle_id` is the opaque handle the app passes to subsequent
+    /// `handle_id` is the opaque handle the plugin passes to subsequent
     /// `SetVideoState` / `CloseVideo` commands.
     VideoOpenAck {
         request_id: String,
@@ -396,7 +396,7 @@ pub enum PlexiEvent {
     /// it. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses
     /// internally — pass it back verbatim.
     ///
-    /// Apps without `terminal.bindings` never receive this event; the
+    /// Plugins without `terminal.bindings` never receive this event; the
     /// request is dropped at the routing layer with a capability-denied
     /// log line.
     LinkedTerminalReady {
@@ -404,7 +404,7 @@ pub enum PlexiEvent {
         terminal_pane_id: u64,
     },
     /// Response to `DrawCommand::RequestCommandPreview` (#78). Returns the
-    /// command verbatim plus the linked terminal's current cwd so the app
+    /// command verbatim plus the linked terminal's current cwd so the plugin
     /// can render a confirmation modal that says "this would run in
     /// /tmp/foo". `would_run_in_cwd` is the host's best-effort snapshot of
     /// the terminal child's cwd at request time — never an expansion of
@@ -414,22 +414,22 @@ pub enum PlexiEvent {
         command: String,
         would_run_in_cwd: String,
     },
-    /// Emitted by host to app when Escape is pressed and the app's nav stack
-    /// depth is > 0. The app handles this by popping its own internal view
+    /// Emitted by host to plugin when Escape is pressed and the plugin's nav stack
+    /// depth is > 0. The plugin handles this by popping its own internal view
     /// and emitting `DrawCommand::PopNav` to decrement the host counter.
     NavBack { view_id: String },
 
     /// Response to `DrawCommand::OpenFilePicker`. At least one file was selected.
     /// `paths` contains the absolute, canonicalized paths chosen by the user.
     /// Each path is already registered as a scoped fs grant for this pane, so
-    /// the app can pass it verbatim to `file_read` / `file_write`.
+    /// the plugin can pass it verbatim to `file_read` / `file_write`.
     FilePicked {
         request_id: String,
         paths: Vec<String>,
     },
 
     /// Response to `DrawCommand::OpenFilePicker` when the user cancelled the
-    /// dialog without selecting a file, or the app lacks `fs.pick` capability.
+    /// dialog without selecting a file, or the plugin lacks `fs.pick` capability.
     FilePickCancelled { request_id: String },
 
     /// Chunk of stdout/stderr bytes from an active `DrawCommand::StreamProcess`
@@ -449,7 +449,7 @@ pub enum PlexiEvent {
     },
 
     /// Emitted by the host when the scroll offset for a `BeginScroll` region
-    /// changes (mouse wheel, drag). The app should re-render using `offset_y`
+    /// changes (mouse wheel, drag). The plugin should re-render using `offset_y`
     /// as the vertical translation applied to all content within that region.
     ///
     /// `id` matches the `id` from the `DrawCommand::BeginScroll` that declared
@@ -457,11 +457,11 @@ pub enum PlexiEvent {
     /// `max(0, content_height - viewport_height)`.
     ScrollOffset { id: String, offset_y: f32 },
 
-    /// Emitted when the mouse wheel moves over an app pane that has no
+    /// Emitted when the mouse wheel moves over a view pane that has no
     /// host-managed scroll region or list_view under the cursor.
     /// `delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =
     /// scroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from
-    /// the app's `on_scroll_delta` handler.
+    /// the plugin's `on_scroll_delta` handler.
     Scroll { delta_y: f32 },
 
     /// Emitted when j/k/up/down changes the list selection.
@@ -484,10 +484,10 @@ pub enum PlexiEvent {
         payload: Option<serde_json::Value>,
     },
 
-    // ── Undo rollback (src/host/app_timeline.rs, Phase B) ─────────────
-    /// Host asks the app whether `resource_id` is still at
-    /// `expected_revision` before rolling back a checkpoint. The app must
-    /// answer with `AppRequest::RollbackVerifyResult` carrying its current
+    // ── Undo rollback (src/host/plugin_timeline.rs, Phase B) ─────────────
+    /// Host asks the plugin whether `resource_id` is still at
+    /// `expected_revision` before rolling back a checkpoint. The plugin must
+    /// answer with `HostRequest::RollbackVerifyResult` carrying its current
     /// revision; rollback only proceeds on an exact match.
     RollbackVerify {
         checkpoint_id: String,
@@ -495,8 +495,8 @@ pub enum PlexiEvent {
         expected_revision: String,
     },
 
-    /// Host instructs the app to roll `resource_id` back using the
-    /// `rollback_token` the app supplied when it emitted the reversible
+    /// Host instructs the plugin to roll `resource_id` back using the
+    /// `rollback_token` the plugin supplied when it emitted the reversible
     /// event. Sent only after a successful `RollbackVerify` round-trip.
     RollbackApply {
         checkpoint_id: String,
@@ -504,9 +504,9 @@ pub enum PlexiEvent {
         rollback_token: String,
     },
 
-    /// Response to `AppRequest::SubscribeAppEvents`. Exactly one of
+    /// Response to `HostRequest::SubscribePluginEvents`. Exactly one of
     /// `subscription_id` / `error` is set.
-    AppEventsSubscribed {
+    PluginEventsSubscribed {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subscription_id: Option<String>,
@@ -514,7 +514,7 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::DeclareEventStreams`.
+    /// Response to `HostRequest::DeclareEventStreams`.
     DeclareEventStreamsResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         streams: Option<Vec<String>>,
@@ -522,7 +522,7 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::EmitEvent`.
+    /// Response to `HostRequest::EmitEvent`.
     EmitEventResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sequence: Option<u64>,
@@ -530,22 +530,22 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::UnsubscribeAppEvents`.
-    AppEventsUnsubscribed {
+    /// Response to `HostRequest::UnsubscribePluginEvents`.
+    PluginEventsUnsubscribed {
         request_id: String,
         removed: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
 
-    /// One subscribed app event, delivered to the subscriber pane. Content
+    /// One subscribed plugin event, delivered to the subscriber pane. Content
     /// beyond the event identity is shaped by the subscription's
     /// `payload_mode`; `trigger_mode` tells the subscriber (Phase C: the
     /// agent runtime) how it is allowed to react.
-    AppEvent {
+    PluginEvent {
         subscription_id: String,
-        /// Publisher app id.
-        app_id: String,
+        /// Publisher plugin id.
+        plugin_id: String,
         /// Stream name, e.g. `"move.played"`.
         event: String,
         /// Host-assigned timeline id of the underlying event.
@@ -562,7 +562,7 @@ pub enum PlexiEvent {
         created_at: String,
     },
 
-    /// Response to `AppRequest::ListUndoCheckpoints`: undo checkpoints,
+    /// Response to `HostRequest::ListUndoCheckpoints`: undo checkpoints,
     /// newest first, serialized with the spec's checkpoint metadata fields
     /// plus `status` (`active | verifying | rolled_back | conflict`).
     UndoCheckpoints {
@@ -588,8 +588,8 @@ mod tests {
     #[test]
     fn init_event_serializes_pane_dimensions() {
         let event = PlexiEvent::Init {
-            protocol: "pgap/3".to_string(),
-            app_id: "test".to_string(),
+            protocol: "pgap/4".to_string(),
+            plugin_id: "test".to_string(),
             workspace_root: std::path::PathBuf::from("/tmp"),
             capabilities: vec![],
             feature_flags: vec![],
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn init_event_deserializes_without_dimensions() {
-        let json = r#"{"type":"init","protocol":"pgap/3","app_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
+        let json = r#"{"type":"init","protocol":"pgap/4","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
         let event: PlexiEvent = serde_json::from_str(json).unwrap();
         match event {
             PlexiEvent::Init { width, height, .. } => {

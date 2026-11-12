@@ -1,19 +1,9 @@
-schema_version = 1
-
-[app]
-id = "logs"
-type = "app"
-name = "Logs"
-version = "0.3.0"
-description = "Live tail of the Plexi host log, color-coded by level, with level/app/search filters."
-entry = "logs.py"
-mouse_tracking = true
+schema_version = 2
 
 [runtime]
 python_compat = true
-
-[app.capabilities]
-capabilities = ["logs.read", "timer"]
+kind = "python"
+entry = "logs.py"
 
 [launch]
 # One live tail of the host log per context — relaunching focuses the open
@@ -24,3 +14,16 @@ on_launch = "focus_existing_in_context"
 visibility = "public"
 price = "free"
 publisher = "plexi"
+
+[plugin]
+id = "logs"
+name = "Logs"
+version = "0.3.0"
+description = "Live tail of the Plexi host log, color-coded by level, with level/app/search filters."
+
+[plugin.capabilities]
+capabilities = ["logs.read", "timer"]
+
+[[contributes.views]]
+id = "logs.main"
+default = true

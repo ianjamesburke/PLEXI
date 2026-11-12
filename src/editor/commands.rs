@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn down_at_document_end_is_a_noop_never_an_append() {
-        // Regression: the old TextEditorApp appended a newline when pressing
+        // Regression: the old TextEditorView appended a newline when pressing
         // Down at the end of the document.
         let mut d = doc("last line");
         d.apply(EditorCommand::Move {

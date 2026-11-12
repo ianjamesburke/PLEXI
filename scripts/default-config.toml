@@ -3,6 +3,9 @@
 
 config_version = 1
 
+# Start with no plugins. Profile-only; restart the host after changing.
+core_only = false
+
 font_size = 14.0
 # ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
@@ -120,12 +123,12 @@ tips = true
 # soft_grant_days = 30         # expiry window in days for `--grant tool=allow:soft` grants; after expiry they revert to `ask`
 
 # [file_handlers]
-# Choose which app opens each file type from the File Explorer (Enter / double-
+# Choose which plugin opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:
-#   "app:<id>"      open in a Plexi app by its registry id (e.g. text-editor)
+#   "app:<id>"      stored config spelling: open a plugin default view by its registry id (e.g. text-editor)
 #   "os"            hand to the OS default opener (open / xdg-open)
 #   "cmd:<command>" reserved for a future release; falls back to "os" for now
-# A handler here overrides an app's own file_types association. Unmapped types
+# A handler here overrides a plugin's own file_types association. Unmapped types
 # fall through to manifest associations, then builtin media players, then the OS.
 # md   = "app:text-editor"
 # txt  = "app:text-editor"
@@ -133,11 +136,11 @@ tips = true
 # py   = "os"
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. Unset / "none" = login/signup fail closed. An account is

@@ -279,11 +279,11 @@ if [[ "$HOST_RC" -ne 0 ]] || ! grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$
   exit 1
 fi
 "$BIN" context set-root "$WS" >/dev/null 2>&1 || true
-"$BIN" app install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
+"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
   record FAIL step5 "chess install failed"
   exit 1
 }
-"$BIN" app open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
+"$BIN" view open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
 
 TERM=""
 for _ in $(seq 1 30); do
@@ -333,7 +333,7 @@ PY
 )
 P=""
 for attempt in $(seq 1 12); do
-  in_pane "ask-$attempt" "\"$BIN\" app call chess chess.play --json --input '$PLAY' > '$EVID/logs/ask.json' 2> '$EVID/logs/ask.err'" || true
+  in_pane "ask-$attempt" "\"$BIN\" plugin call chess chess.play --json --input '$PLAY' > '$EVID/logs/ask.json' 2> '$EVID/logs/ask.err'" || true
   if grep -q 'tool_not_found' "$EVID/logs/ask.json" "$EVID/logs/ask.err" 2>/dev/null; then
     sleep 2
     continue

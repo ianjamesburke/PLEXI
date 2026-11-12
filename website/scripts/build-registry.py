@@ -30,14 +30,14 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APPS_DIR = REPO_ROOT / "apps"
+PLUGINS_SOURCE_DIR = REPO_ROOT / "apps"
 REGISTRY_DIR = REPO_ROOT / "website" / "public" / "registry" / "v1"
 PACKAGES_DIR = REGISTRY_DIR / "packages"
 INDEX_PATH = REGISTRY_DIR / "index.json"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # Mirrors TrustLabel::ReviewedNative::display_str() in src/app/package.rs.
-TRUST_LABEL = "Reviewed native process — human-reviewed; not sandboxed"
+TRUST_LABEL = "Reviewed Python plugin — human-reviewed"
 
 PLEXI_BIN = os.environ.get("PLEXI_BIN", str(REPO_ROOT / "target" / "debug" / "plexi"))
 
@@ -50,26 +50,26 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def package_app(app_dir: Path, out: Path) -> None:
+def package_plugin(plugin_dir: Path, out: Path) -> None:
     """Build a `.plexipkg` for one app dir (fail-closed)."""
     env = {**os.environ, "PLEXI_CHANNEL": os.environ.get("PLEXI_CHANNEL", "alpha")}
     result = subprocess.run(
-        [PLEXI_BIN, "app", "package", str(app_dir), "--out", str(out)],
+        [PLEXI_BIN, "plugin", "package", str(plugin_dir), "--out", str(out)],
         capture_output=True,
         text=True,
         env=env,
     )
     if result.returncode != 0 or not out.exists():
         raise SystemExit(
-            f"package failed for {app_dir.name}:\n{result.stdout}\n{result.stderr}"
+            f"package failed for {plugin_dir.name}:\n{result.stdout}\n{result.stderr}"
         )
 
 
-def entry_for(app_dir: Path, checksum: str) -> dict:
-    manifest = tomllib.loads((app_dir / "manifest.toml").read_text())
-    app = manifest["app"]
+def entry_for(plugin_dir: Path, checksum: str) -> dict:
+    manifest = tomllib.loads((plugin_dir / "manifest.toml").read_text())
+    app = manifest["plugin"]
     market = manifest["marketplace"]
-    caps = manifest.get("app", {}).get("capabilities", {}).get("capabilities", [])
+    caps = manifest.get("plugin", {}).get("capabilities", {}).get("capabilities", [])
     return {
         "id": app["id"],
         "name": app["name"],
@@ -86,8 +86,8 @@ def entry_for(app_dir: Path, checksum: str) -> dict:
     }
 
 
-def is_public(app_dir: Path) -> bool:
-    manifest_path = app_dir / "manifest.toml"
+def is_public(plugin_dir: Path) -> bool:
+    manifest_path = plugin_dir / "manifest.toml"
     if not manifest_path.is_file():
         return False
     manifest = tomllib.loads(manifest_path.read_text())
@@ -102,11 +102,11 @@ def main() -> None:
         )
 
     public_apps = sorted(
-        (d for d in APPS_DIR.iterdir() if d.is_dir() and is_public(d)),
+        (d for d in PLUGINS_SOURCE_DIR.iterdir() if d.is_dir() and is_public(d)),
         key=lambda d: d.name,
     )
     if not public_apps:
-        raise SystemExit(f"no public apps found under {APPS_DIR}")
+        raise SystemExit(f"no public apps found under {PLUGINS_SOURCE_DIR}")
 
     # Rebuild the artifact store from scratch so a delisted app leaves no
     # orphaned package behind.
@@ -116,17 +116,17 @@ def main() -> None:
 
     entries = []
     with tempfile.TemporaryDirectory() as tmp:
-        for app_dir in public_apps:
-            pkg = Path(tmp) / f"{app_dir.name}.plexipkg"
-            package_app(app_dir, pkg)
+        for plugin_dir in public_apps:
+            pkg = Path(tmp) / f"{plugin_dir.name}.plexipkg"
+            package_plugin(plugin_dir, pkg)
             checksum = sha256(pkg)
             shutil.copy2(pkg, PACKAGES_DIR / f"{checksum}.plexipkg")
-            entry = entry_for(app_dir, checksum)
+            entry = entry_for(plugin_dir, checksum)
             entries.append(entry)
             print(f"published {entry['id']} v{entry['version']} -> {checksum}")
 
     entries.sort(key=lambda e: e["id"])
-    index = {"schema_version": SCHEMA_VERSION, "apps": entries}
+    index = {"schema_version": SCHEMA_VERSION, "plugins": entries}
     INDEX_PATH.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n")
     print(f"wrote {INDEX_PATH.relative_to(REPO_ROOT)} with {len(entries)} apps")
 

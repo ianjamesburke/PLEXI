@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::app_trait::AppCommand;
+use crate::app::view_trait::ViewCommand;
 use crate::host::context::Window;
 use crate::testing::HostHarness;
 
@@ -48,7 +48,8 @@ fn snoozed_notification_invisible_then_visible() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: Some(wake_past), // already elapsed → visible
         origin_in_view: false,
     });
@@ -140,7 +141,8 @@ fn snoozed_notification_exempt_from_timeout() {
         timeout_secs: Some(60),
         on_dismiss: None,
         enqueued_at: std::time::Instant::now() - std::time::Duration::from_secs(600),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(300)),
         origin_in_view: false,
     });
@@ -179,7 +181,8 @@ fn persist_roundtrip() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     };
@@ -310,7 +313,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
 
     assert_eq!(h.app.active_window, 0);
     h.app
-        .dispatch_notify_action_cmds(vec![AppCommand::DeliverNotifyAction {
+        .dispatch_notify_action_cmds(vec![ViewCommand::DeliverNotifyAction {
             pane_id: sender_id,
             notify_id: "n1".into(),
             action_label: "Go".into(),
@@ -363,7 +366,8 @@ fn window_scoped_notification_visible_only_on_source_window() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -457,7 +461,8 @@ fn auto_dismiss_removes_message_when_sender_focused() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -586,7 +591,8 @@ fn auto_dismiss_spares_required_notifications() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -632,7 +638,8 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -738,7 +745,8 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     }
@@ -780,7 +788,7 @@ fn enqueue_notification_honours_master_switch() {
 
     for source in [
         crate::app::notifications::NotifySource::Cli,
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         crate::app::notifications::NotifySource::Wasm,
         crate::app::notifications::NotifySource::HostInternal,
     ] {
@@ -848,7 +856,7 @@ fn enqueue_notification_rejects_when_live_queue_is_full() {
         })
         .collect();
     assert!(!h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         PendingNotification {
             notify_id: "rejected-at-capacity".into(),
             ..Default::default()
@@ -892,7 +900,7 @@ fn enqueue_notification_only_interrupts_for_decisions() {
     h.app.notifications_enabled = true;
 
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         cue_test_notification("visible"),
     );
 
@@ -916,7 +924,7 @@ fn enqueue_notification_only_interrupts_for_decisions() {
         host_action: None,
     });
     h.app
-        .enqueue_notification(crate::app::notifications::NotifySource::App, choice);
+        .enqueue_notification(crate::app::notifications::NotifySource::View, choice);
 
     assert!(
         h.app.attention_queue.ask_count() >= 1,
@@ -1053,7 +1061,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     );
 }
 
-/// 0566: the session is held on the app — a local binding would drop at end of
+/// 0566: the session is held on the plugin — a local binding would drop at end of
 /// scope and cut playback off.
 #[test]
 fn enqueue_notification_holds_cue_session() {
@@ -1091,7 +1099,7 @@ fn disabled_notifications_never_play_a_cue() {
     );
 }
 
-/// Build the `AppRequest::Notify` a `plexi notify` invocation produces.
+/// Build the `HostRequest::Notify` a `plexi notify` invocation produces.
 /// `peer_pid` stands in for the host-established socket-peer identity
 /// (`None` reproduces an unresolvable/outside-pane caller). Internally
 /// expanded to the single-hop ancestry `resolve_socket_peer_pane` expects —
@@ -1102,8 +1110,8 @@ fn cli_notify_request(
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
     peer_pid: Option<u32>,
-) -> crate::protocol::AppRequest {
-    crate::protocol::AppRequest::Notify {
+) -> crate::protocol::HostRequest {
+    crate::protocol::HostRequest::Notify {
         title: "CLI notify".into(),
         body: "body".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1158,19 +1166,19 @@ fn spawn_real_terminal_pane(
     Some((pane_id, child_pid, ctx_id, window_id))
 }
 
-/// 0608: a parked app has no sender window. Window-scoped delivery must stay
+/// 0608: a parked plugin has no sender window. Window-scoped delivery must stay
 /// in its stamped context rather than inheriting whatever window is active at
 /// dispatch.
 #[test]
-fn parked_app_window_notification_narrows_without_active_window_provenance() {
+fn parked_view_window_notification_narrows_without_active_window_provenance() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
     let context_id = h.app.router.active().context_id;
     let (scope, source_window_id) = h
         .app
-        .resolve_app_notification_provenance(0, crate::protocol::NotifyScope::Window);
+        .resolve_plugin_notification_provenance(0, crate::protocol::NotifyScope::Window);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         PendingNotification {
             notify_id: "parked-window-scope".into(),
             sender_pane_id: 0,
@@ -1190,7 +1198,8 @@ fn parked_app_window_notification_narrows_without_active_window_provenance() {
             timeout_secs: None,
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
-            tombstoned: false, delivery_unknown: false,
+            tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         },
@@ -1224,7 +1233,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "sticky".into(),
         body: "body".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1260,7 +1269,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     // A different real pane (its own genuine socket peer) claims to be the
     // owner via the wire fields — those claims must be ignored; only the
     // resolved `peer_pid` decides ownership, and it names a stranger.
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(owner_pane_id), // forged claim
@@ -1274,7 +1283,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(foreign_pane_id), // forged claim, must be ignored
@@ -1303,7 +1312,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     // nothing.
     let unresolvable_peer = std::process::id();
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1337,7 +1346,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
 
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: "unresolvable-peer".into(),
         source_context_id: Some(real_context_id),
         source_pane_id: Some(424_242), // forged, irrelevant
@@ -1370,7 +1379,7 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
     };
     assert_ne!(real_ctx, forged_ctx);
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1724,7 +1733,8 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     }
@@ -1783,7 +1793,7 @@ fn resurfaces_when_origin_pane_window_comes_into_view() {
 
     let notify_id = "resurface-basic";
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification(notify_id, pane_id),
     );
     assert!(
@@ -1822,7 +1832,7 @@ fn resurfaces_for_unfocused_sibling_pane_in_multi_pane_window() {
 
     let notify_id = "resurface-sibling";
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification(notify_id, pane_b),
     );
     assert!(
@@ -1928,7 +1938,7 @@ fn resurface_runs_on_hidden_occluded_frames() {
     h.app.active_window = win1_idx;
     h.app.router.set_active(1);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-hidden", pane_id),
     );
     h.app.current_notify_id = None;
@@ -1977,7 +1987,7 @@ fn background_tab_pane_is_not_in_view() {
 
     // Switching the active tab brings pane_b into view and fires a resurface.
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-tab", pane_b),
     );
     assert!(!h.app.pending_notifications[0].origin_in_view);
@@ -2042,7 +2052,7 @@ fn focus_mode_suppresses_resurface() {
     h.app.active_window = win1_idx;
     h.app.router.set_active(1);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-focus-mode", pane_id),
     );
     h.app.current_notify_id = None;

@@ -3,7 +3,7 @@
 //! An idle, non-frontmost Plexi host is a nappable process: AppKit defers its
 //! CFRunLoop timer wakeups and coalesces cross-thread event-loop wakes, so a
 //! `request_repaint()` posted by the notify-socket thread can sit undelivered
-//! until some unrelated event un-naps the app. The observable symptom is a CLI
+//! until some unrelated event un-naps the plugin. The observable symptom is a CLI
 //! request against an idle host timing out, then a burst of queued requests all
 //! processing at once (stint 0479 installed-host qualification).
 //!

@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_removed_plexi_app_field() {
+    fn parse_rejects_removed_plexi_plugin_field() {
         let json = r#"{
             "plexi_version": "0.1",
             "name": "parallax",

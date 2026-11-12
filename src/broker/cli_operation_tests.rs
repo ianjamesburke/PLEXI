@@ -42,7 +42,7 @@ impl Call {
                 call_id: "call-1",
                 tool: self.tool,
                 input_json: &self.input(),
-                actor_type: ActorType::App,
+                actor_type: ActorType::Plugin,
                 actor_id: "board",
                 actor_scope: ActorScope::User,
                 trust_origin: "host",

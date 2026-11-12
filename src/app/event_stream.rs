@@ -1,15 +1,15 @@
 //! CLI consumers of the existing brokered event connection.
 use super::ui_mailbox::UiMailbox;
 use crate::broker::ActorType;
-use crate::host::app_timeline::{self, AppEventRecord, lifecycle_matches};
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
 use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
-use crate::protocol::{AppRequest, PayloadMode, TriggerMode};
-use serde_json::{Value, json};
-use std::io::{BufReader, Lines, Write};
+use crate::host::plugin_timeline::{self, lifecycle_matches, PluginEventRecord};
 use crate::platform::ipc::IpcStream;
+use crate::protocol::{HostRequest, PayloadMode, TriggerMode};
+use serde_json::{json, Value};
+use std::io::{BufReader, Lines, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 enum Consumer {
@@ -77,7 +77,7 @@ struct Connection {
     socket: IpcStream,
     cancelled: Arc<AtomicBool>,
     subscriber: String,
-    wake: UiMailbox<AppRequest>,
+    wake: UiMailbox<HostRequest>,
 }
 
 impl Drop for Connection {
@@ -88,14 +88,14 @@ impl Drop for Connection {
                 log::debug!("events: connection shutdown: {error}");
             }
         }
-        match app_timeline::global().lock() {
+        match plugin_timeline::global().lock() {
             Ok(mut timeline) => {
                 timeline.clear_subscriber(ActorType::Agent, &self.subscriber);
                 timeline.event_ready().notify_all();
             }
             Err(error) => log::error!("events: subscription cleanup failed: {error}"),
         }
-        if self.wake.send(AppRequest::Wake).is_err() {
+        if self.wake.send(HostRequest::Wake).is_err() {
             log::debug!("events: host stopped before cancellation wake");
         }
         log::info!("events: connection {} released", self.subscriber);
@@ -115,7 +115,7 @@ fn error(socket: &mut IpcStream, message: impl AsRef<str>) {
     send(socket, json!({"type":"error", "message":message.as_ref()}));
 }
 
-fn event_line(event: &AppEventRecord, subscription: &str) -> Value {
+fn event_line(event: &PluginEventRecord, subscription: &str) -> Value {
     let mut line = json!(event);
     line["type"] = json!("event");
     line["subscription_id"] = json!(subscription);
@@ -123,10 +123,10 @@ fn event_line(event: &AppEventRecord, subscription: &str) -> Value {
 }
 
 fn wait_match(
-    records: &[AppEventRecord],
-    snapshot: Result<Option<AppEventRecord>, String>,
+    records: &[PluginEventRecord],
+    snapshot: Result<Option<PluginEventRecord>, String>,
     predicate: &str,
-) -> Result<Option<AppEventRecord>, String> {
+) -> Result<Option<PluginEventRecord>, String> {
     match records
         .iter()
         .find(|event| lifecycle_matches(event, predicate))
@@ -141,7 +141,7 @@ pub(super) fn handle_events_subscribe(
     remaining: Lines<BufReader<IpcStream>>,
     val: Value,
     subscribe: &UiMailbox<HostSubscribeRequest>,
-    wake: &UiMailbox<AppRequest>,
+    wake: &UiMailbox<HostRequest>,
     peer_ancestry: Option<&[u32]>,
 ) {
     let consumer = match Consumer::parse(&val) {
@@ -178,21 +178,21 @@ pub(super) fn handle_events_subscribe(
             }
         }
         cancelled.store(true, Ordering::Release);
-        match app_timeline::global().lock() {
+        match plugin_timeline::global().lock() {
             Ok(timeline) => timeline.event_ready().notify_all(),
             Err(error) => log::error!("events: disconnect notification failed: {error}"),
         }
-        if disconnect_wake.send(AppRequest::Wake).is_err() {
+        if disconnect_wake.send(HostRequest::Wake).is_err() {
             log::debug!("events: host stopped before disconnect wake");
         }
     });
     let lifecycle = !matches!(consumer, Consumer::Events);
     let (reply, receiver) = mpsc::sync_channel(1);
     let request = HostSubscribeRequest {
-        publisher_app_id: if lifecycle {
+        publisher_plugin_id: if lifecycle {
             PUBLISHER.into()
         } else {
-            val["app_id"].as_str().unwrap_or_default().into()
+            val["plugin_id"].as_str().unwrap_or_default().into()
         },
         event_names: if lifecycle {
             vec![STREAM.into()]
@@ -233,7 +233,7 @@ pub(super) fn handle_events_subscribe(
         cancelled: Some(Arc::clone(&connection.cancelled)),
         reply,
     };
-    let app_id = request.publisher_app_id.clone();
+    let plugin_id = request.publisher_plugin_id.clone();
     if subscribe.send(request).is_err() {
         error(&mut socket, "host not accepting subscriptions");
         return;
@@ -268,8 +268,8 @@ pub(super) fn handle_events_subscribe(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
-    log::info!("events: registered {subscription_id} app={app_id} lifecycle={lifecycle}");
-    let timeline = app_timeline::global();
+    log::info!("events: registered {subscription_id} plugin={plugin_id} lifecycle={lifecycle}");
+    let timeline = plugin_timeline::global();
     let snapshot = {
         let timeline = match timeline.lock() {
             Ok(t) => t,
@@ -300,7 +300,7 @@ pub(super) fn handle_events_subscribe(
     if !matches!(consumer, Consumer::Wait { .. })
         && !send(
             &mut socket,
-            json!({"type":"subscribed", "subscription_id":subscription_id, "app_id":app_id}),
+            json!({"type":"subscribed", "subscription_id":subscription_id, "plugin_id":plugin_id}),
         )
     {
         return;
@@ -359,7 +359,7 @@ pub(super) fn handle_events_subscribe(
                 if !send(
                     &mut socket,
                     json!({"type":"event", "subscription_id":delivery.subscription_id,
-                    "app_id":delivery.app_id, "event":delivery.event, "event_id":delivery.event_id,
+                    "plugin_id":delivery.plugin_id, "event":delivery.event, "event_id":delivery.event_id,
                     "resource_id":delivery.resource_id, "trigger_mode":delivery.trigger_mode,
                     "summary":delivery.summary, "payload":delivery.payload, "state_ref":delivery.state_ref,
                     "created_at":delivery.created_at}),
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn pane_consumer_queued_match_survives_close_before_snapshot() {
         use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source};
-        let mut timeline = app_timeline::AppTimeline::default();
+        let mut timeline = plugin_timeline::PluginTimeline::default();
         let outcome = timeline
             .record_pane_lifecycle(
                 1,

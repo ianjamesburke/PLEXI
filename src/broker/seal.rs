@@ -701,7 +701,10 @@ pub(crate) fn remove_profile_credentials(dir: &Path) -> Result<(), String> {
         super::host_key::delete(&account)
             .map_err(|error| format!("remove profile credential {account}: {error}"))?;
     }
-    log::info!("uninstall: removed integrity credentials for {}", dir.display());
+    log::info!(
+        "uninstall: removed integrity credentials for {}",
+        dir.display()
+    );
     Ok(())
 }
 
@@ -1388,8 +1391,7 @@ mod tests {
             let audit = &audit;
             scope.spawn(|| {
                 for n in 0..40 {
-                    append_audit(audit, &serde_json::json!({"kind": "audit", "n": n}))
-                        .unwrap();
+                    append_audit(audit, &serde_json::json!({"kind": "audit", "n": n})).unwrap();
                 }
             });
             scope.spawn(|| {
@@ -1452,7 +1454,11 @@ mod tests {
         assert!(state_file.is_file());
 
         // Tamper with seal-state.json -> load_toml rejects and quarantines grants.toml.
-        std::fs::write(&state_file, b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n").unwrap();
+        std::fs::write(
+            &state_file,
+            b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n",
+        )
+        .unwrap();
         let loaded: LoadedToml<toml::Table> = load_toml(&grants);
         assert!(!loaded.trusted);
         assert!(loaded
@@ -1485,6 +1491,7 @@ mod tests {
                 &serde_json::json!({"kind": "pr_test"}),
             )
             .unwrap();
+            assert_eq!(crate::broker::host_key::backend_get_calls(), 0);
         });
 
         let pr_seal_file = dir.path().join("host").join("pr-host-seal.json");
@@ -1496,15 +1503,17 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&pr_seal_file).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&pr_seal_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600);
         }
         // The underlying shared Keychain backend was never written with this profile's MAC key.
         crate::broker::host_key::clear_session_mac_for_test();
-        assert!(
-            crate::broker::host_key::get(&mac_account(dir.path()))
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::broker::host_key::get(&mac_account(dir.path()))
+            .unwrap()
+            .is_none());
     }
 }

@@ -129,7 +129,7 @@ def test_top_chrome_is_present_in_list_and_add_views() -> None:
     for adding in (False, True):
         _set_state(_seeded(adding=adding))
         root = todo.view().to_node()
-        assert root["children"][0]["type"] == "app_bar"
+        assert root["children"][0]["type"] == "surface_header"
         assert root["children"][0]["title"] == "Todo"
 
 

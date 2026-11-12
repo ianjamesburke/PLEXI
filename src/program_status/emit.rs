@@ -13,7 +13,7 @@ use super::records::State;
 use base64::Engine;
 use std::io::{IsTerminal, Write};
 
-/// `app` value on every report Plexi agents emit.
+/// `plugin` value on every report Plexi agents emit.
 pub const APP: &str = "plexi-agent";
 const SEGMENT_MAX: usize = 32;
 const ID_DEPTH_MAX: usize = 8;
@@ -170,9 +170,6 @@ pub fn emit_agent_report(state: State, kind: Option<&str>, msg: Option<&str>) {
         return;
     };
     let bytes = encode_report(Some(&id), state, kind, APP, Some(&title), msg);
-    log::info!(
-        "program_status: emit id={id} state={}",
-        state.as_str()
-    );
+    log::info!("program_status: emit id={id} state={}", state.as_str());
     write_to_tty(&bytes);
 }

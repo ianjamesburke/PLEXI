@@ -73,7 +73,7 @@ def _collect_raw(proc, target_type="frame_done", timeout=3.0) -> list[dict]:
 def _init(proc, state=None):
     msg = {
         "type": "init",
-        "app_id": "delta-test",
+        "plugin_id": "delta-test",
         "workspace_root": "/tmp",
         "capabilities": [],
         "feature_flags": [],
@@ -364,7 +364,7 @@ class TestWireFraming:
         # serialises at most one encoding.
         from plexi_sdk import _v3_runtime as rt
 
-        runtime = rt.V3AppRuntime.__new__(rt.V3AppRuntime)
+        runtime = rt.PluginRuntime.__new__(rt.PluginRuntime)
         runtime._last_tree = None
         runtime._force_full_tree = True
         runtime._prefer_full_tree = False
@@ -500,7 +500,7 @@ class TestReconstruction:
     @staticmethod
     def _keyed_runtime() -> object:
         from plexi_sdk import _v3_runtime as rt
-        runtime = rt.V3AppRuntime.__new__(rt.V3AppRuntime)
+        runtime = rt.PluginRuntime.__new__(rt.PluginRuntime)
         runtime._last_tree = None
         runtime._force_full_tree = True
         runtime._prefer_full_tree = False

@@ -466,7 +466,7 @@ EOF
         fail "pane in folder A: secret exec survives clearing PLEXI_PANE_ID and PLEXI_SOCKET"
       fi
     fi
-    "$PLEXI" app open assistant --right >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
+    "$PLEXI" view open assistant --right >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
     unset PLEXI_SOCKET
   else
     fail "pane in folder A sees the env var (host did not become ready)"
@@ -537,7 +537,7 @@ fi
 rm -f "$audit_pat"
 
 # ── one human click, one read ────────────────────────────────────────────────
-# `app open assistant` is release-gated. A private HOME still isolates the
+# `view open assistant` is release-gated. A private HOME still isolates the
 # profile, but the binary name has to be an alpha, beta, or pr channel or
 # the Allow once button never appears.
 channel_base="$(basename "$PLEXI")"

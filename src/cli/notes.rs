@@ -118,7 +118,10 @@ fn run_note_cmd(cmd: super::args::NoteCmd) -> i32 {
 /// The notes directories visible from cwd — the exact set `plexi note list`
 /// prints from, so every path `list` produced resolves here.
 fn visible_note_tiers() -> Vec<std::path::PathBuf> {
-    cli_notes_scopes().into_iter().map(|scope| scope.dir).collect()
+    cli_notes_scopes()
+        .into_iter()
+        .map(|scope| scope.dir)
+        .collect()
 }
 
 /// `plexi note show <path>` — print one note's contents.
@@ -309,7 +312,7 @@ fn missing_picker_error(platform: InstallPlatform) -> String {
 
 /// Build the shell expression injected into the calling terminal pane.
 ///
-/// The binary path can contain spaces (notably an installed app bundle path on
+/// The binary path can contain spaces (notably an installed plugin bundle path on
 /// macOS), so it must be shell-quoted as one command argument rather than
 /// interpolated into the expression.
 fn notes_open_command(self_exe: &str, editor: &str) -> String {
@@ -333,9 +336,7 @@ mod tests {
 
     /// A tier-shaped temp dir plus one seeded note, so every show/rm test names a
     /// real path under a real `.plexi/notes`.
-    fn seeded_tier(
-        tag: &str,
-    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    fn seeded_tier(tag: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tier = tmp.path().join(".plexi").join("notes");
         std::fs::create_dir_all(&tier).expect("create tier");
@@ -358,7 +359,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("project");
         let own = root.join(".plexi").join("notes");
-        let nested = root.join("crates").join("engine").join(".plexi").join("notes");
+        let nested = root
+            .join("crates")
+            .join("engine")
+            .join(".plexi")
+            .join("notes");
         let global = tmp.path().join("global").join("notes");
         for tier in [&own, &nested, &global] {
             std::fs::create_dir_all(tier).expect("create tier");

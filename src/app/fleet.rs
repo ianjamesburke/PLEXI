@@ -243,10 +243,18 @@ impl PlexiApp {
                             )
                         })
                 });
-                let failure_detail = effective_detail.clone().filter(|s| !s.is_empty()).or_else(|| match t.exit_status {
-                    Some(crate::host::pane_lifecycle::ExitStatus::Code(0)) if state == AgentState::ExitedUnreported => Some("exited (0) without calling plexi agent done".into()),
-                    _ => None,
-                });
+                let failure_detail =
+                    effective_detail
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| match t.exit_status {
+                            Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
+                                if state == AgentState::ExitedUnreported =>
+                            {
+                                Some("exited (0) without calling plexi agent done".into())
+                            }
+                            _ => None,
+                        });
                 let raw_harness = t
                     .agent_harness
                     .clone()
@@ -282,17 +290,16 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        effective_detail
-                            .map(|reason| {
-                                format!(
-                                    "{}: {reason}",
-                                    if state == AgentState::Failed {
-                                        "failed"
-                                    } else {
-                                        "exited without report"
-                                    }
-                                )
-                            })
+                        effective_detail.map(|reason| {
+                            format!(
+                                "{}: {reason}",
+                                if state == AgentState::Failed {
+                                    "failed"
+                                } else {
+                                    "exited without report"
+                                }
+                            )
+                        })
                     } else {
                         t.capture_tail_preview()
                     },
@@ -389,7 +396,7 @@ impl PlexiApp {
             self.mark_agent_seen(id);
         }
         let has_agents_pane = self.windows.iter().flat_map(|w| w.panes.values()).any(
-            |p| matches!(p, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "agents"),
+            |p| matches!(p, crate::host::pane::Pane::View(a) if a.runtime.type_id() == "agents"),
         );
         if !has_agents_pane {
             return;
@@ -397,8 +404,8 @@ impl PlexiApp {
         let view = self.agents_view(FleetFilter::All);
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
-                if let crate::host::pane::Pane::App(a) = pane {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                if let crate::host::pane::Pane::View(a) = pane {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut a.runtime {
                         app.sync_agents_view(&view);
                     }
                 }
@@ -438,9 +445,12 @@ impl PlexiApp {
     }
 
     pub(crate) fn open_agents_pane(&mut self) {
+        if self.plugin_blocked("agents") {
+            return;
+        }
         log::info!("agents: open pane");
         if let Err(e) =
-            self.launch_app_by_id_with_layout("agents", Some("split_h".into()), &[], None)
+            self.launch_view_by_id_with_layout("agents", Some("split_h".into()), &[], None)
         {
             log::error!("agents: open failed: {e}");
         }
@@ -573,7 +583,10 @@ mod tests {
             before.tasks[0].rows[0].display_state,
             crate::agent::fleet::DisplayState::Failed
         );
-        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exited (3)"));
+        assert_eq!(
+            before.tasks[0].rows[0].reason.as_deref(),
+            Some("exited (3)")
+        );
 
         let dismissed = h.app.dismiss_fleet_agent(None, true);
         assert_eq!(dismissed, vec![pane_id]);
@@ -607,14 +620,17 @@ mod tests {
             t.agent_harness = Some("pi".into());
             t.name = Some("review-bot".into());
         }
-        let other_pane = h.app.split_focused(true, None, false, false, None).expect("second terminal");
+        let other_pane = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("second terminal");
         h.run_frames(3);
         h.focus_pane(other_pane);
 
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
 
         // 1. Working: Pi starts a turn
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Working,
@@ -638,7 +654,7 @@ mod tests {
         assert_eq!(view_working.tasks[0].title, "reviewer · Test");
 
         // 2. Waiting (Blocked on question): Pi asks user for input
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Blocked,
@@ -669,7 +685,7 @@ mod tests {
         assert_eq!(h.app.next_blocked_agent(), Some(pi_pane));
 
         // 3. Settling to Idle: Pi turn finishes
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Idle,
@@ -691,7 +707,7 @@ mod tests {
         assert_eq!(row_idle.blocked_on, None);
 
         // 4. Failed: Pi reports failure
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Failed,
@@ -722,7 +738,7 @@ mod tests {
         assert!(h.app.pane_navigate(other_pane));
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
         // 5. Done (Completed): Pi completes
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Completed,
@@ -735,9 +751,17 @@ mod tests {
         h.hidden_frame();
 
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
-        let terminal = h.app.windows[0].panes.get(&pi_pane).unwrap().as_terminal().unwrap();
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pi_pane)
+            .unwrap()
+            .as_terminal()
+            .unwrap();
         assert!(!terminal.fleet_seen, "agent should remain unseen");
-        assert_eq!(terminal.effective_agent_state().0, crate::protocol::AgentState::Completed);
+        assert_eq!(
+            terminal.effective_agent_state().0,
+            crate::protocol::AgentState::Completed
+        );
         let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
         assert_eq!(
             view_done.tasks[0].rows[0].display_state,
@@ -786,10 +810,7 @@ mod tests {
         let row = &view_live.tasks[0].rows[0];
         assert_eq!(row.role, "build-runner");
         assert_eq!(row.harness, "pi");
-        assert_eq!(
-            row.display_state,
-            crate::agent::fleet::DisplayState::Failed
-        );
+        assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Failed);
         assert_eq!(row.reason.as_deref(), Some("exited (3)"));
 
         // Close pane: record_closed_agent_pane archives it into history
@@ -894,7 +915,7 @@ mod tests {
 #[cfg(test)]
 mod attention_tests {
     use crate::{
-        protocol::{AgentState, AppRequest},
+        protocol::{AgentState, HostRequest},
         testing::HostHarness,
     };
 
@@ -959,7 +980,7 @@ mod attention_tests {
         h.focus_pane(other);
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(AppRequest::AgentNext {
+        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -975,7 +996,7 @@ mod attention_tests {
         let agent = h.add_focused_terminal();
         let other = h.add_test_pane();
         h.focus_pane(other);
-        let report = AppRequest::SetAgentState {
+        let report = HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
@@ -1021,7 +1042,7 @@ mod attention_tests {
         h.focus_pane(other);
 
         // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
@@ -1040,7 +1061,7 @@ mod attention_tests {
 
         // 2. Agent reports idle -> withdraws its attention item without recording an approval,
         // clears the attention notification, and removes the agent from `agent next`.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Idle,
@@ -1074,7 +1095,7 @@ mod attention_tests {
 
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(AppRequest::AgentNext {
+        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -1091,7 +1112,7 @@ mod attention_tests {
 
         // 3. Also verify working and completed withdraw blocked/needs_you items,
         // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Blocked,
@@ -1122,7 +1143,7 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 2);
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Working,
@@ -1154,7 +1175,7 @@ mod attention_tests {
                 crate::broker::gate::ResolveSurface::Desktop,
             )
             .unwrap();
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
@@ -1167,7 +1188,7 @@ mod attention_tests {
         h.hidden_frame();
         assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 1);
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Completed,
@@ -1361,7 +1382,7 @@ impl PlexiApp {
             });
         if let Some(ref path) = result_path {
             let path_str = path.to_string_lossy().into_owned();
-            if let Err(e) = self.launch_app_by_id_with_layout(
+            if let Err(e) = self.launch_view_by_id_with_layout(
                 "text-editor",
                 Some("split_h".into()),
                 &[path_str],

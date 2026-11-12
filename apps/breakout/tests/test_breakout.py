@@ -126,7 +126,7 @@ def test_view_returns_canvas_with_correct_structure() -> None:
     assert node is not None
     assert node.get("padding") is None
     header = node["children"][0]
-    assert header["type"] == "app_bar"
+    assert header["type"] == "surface_header"
     assert header["title"] == "Breakout"
     assert "score 0" in header["subtitle"]
     canvas = node["children"][1]

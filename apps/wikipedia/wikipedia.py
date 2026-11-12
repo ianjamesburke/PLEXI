@@ -19,7 +19,7 @@ from plexi_sdk.effects import (
 )
 from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction, UiValueChange
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Badge,
     Banner,
     Card,
@@ -370,7 +370,7 @@ def _list_view(data: dict[str, Any]) -> Component:
         )
 
     children: list[Component] = [
-        AppBar("Wikipedia", _list_subtitle(data)),
+        SurfaceHeader("Wikipedia", _list_subtitle(data)),
         search_bar,
     ]
     if data["error"]:
@@ -418,7 +418,7 @@ def _article_view(data: dict[str, Any]) -> Component:
     meta_row = Row(meta_children, gap=8.0, align="center")
 
     children: list[Component] = [
-        AppBar(title, subtitle),
+        SurfaceHeader(title, subtitle),
         meta_row,
         Divider(),
     ]

@@ -1,14 +1,20 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "canvas-sidebar"
-type = "app"
 name = "Canvas Sidebar"
 version = "0.1.0"
 description = "POC: Canvas as a grow child of a horizontal HStack beside a fixed-width Sized sidebar."
-entry = "canvas_sidebar.py"
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
-[launch]
+[runtime]
+kind = "python"
+entry = "canvas_sidebar.py"
+
+[[contributes.views]]
+id = "canvas-sidebar.main"
+default = true

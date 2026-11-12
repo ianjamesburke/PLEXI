@@ -387,7 +387,7 @@ mod tests {
         v.set_scroll_y(1e9, 50);
         assert_eq!(v.scroll_y, 440.0); // includes four rows of bottom space
 
-        // Content shorter than viewport pins to 0.
+        // Content shorter tha viewport pins to 0.
         v.set_scroll_y(1e9, 5);
         assert_eq!(v.scroll_y, 0.0);
     }
@@ -461,7 +461,7 @@ mod tests {
         // Document shrinks to 30 lines; the anchor's line no longer exists.
         v.resolve_scroll(30);
         let max = v.max_scroll(30);
-        assert!(max > 0.0, "sanity: content still taller than viewport");
+        assert!(max > 0.0, "sanity: content still taller tha viewport");
         assert_eq!(v.scroll_y, max, "clamped to the new document's max scroll");
     }
 

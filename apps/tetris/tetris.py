@@ -6,10 +6,10 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from plexi_sdk import AppPalette, dim, log, state, theme
+from plexi_sdk import PluginPalette, dim, log, state, theme
 from plexi_sdk.effects import SetSchedulerMode, SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame
-from plexi_sdk.ui import AppBar, Canvas, CanvasRect, CanvasText, Column, FooterKeys
+from plexi_sdk.ui import SurfaceHeader, Canvas, CanvasRect, CanvasText, Column, FooterKeys
 
 ROWS = 20
 COLS = 10
@@ -18,7 +18,7 @@ CANVAS_W = 360.0
 CANVAS_H = 440.0
 TARGET_FPS = 10
 
-TETRIS_PALETTE = AppPalette(
+TETRIS_PALETTE = PluginPalette(
     dark={
         "playfield_bg": "#16161e",
         "highlight": dim("#ffffff", 68),
@@ -281,7 +281,7 @@ def view():
         keys = [("arrows", "move"), ("space", "drop"), ("p", "pause")]
     return Column(
         [
-            AppBar("Tetris", _status(data)),
+            SurfaceHeader("Tetris", _status(data)),
             Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             FooterKeys(keys),
         ],

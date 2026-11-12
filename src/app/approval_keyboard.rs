@@ -1,6 +1,6 @@
 //! Explicit desktop keyboard ownership for the permission banner.
-use super::app_trait::KeyDisposition;
 use super::input_router::PlexiInput;
+use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use std::collections::HashSet;
@@ -616,7 +616,7 @@ mod tests {
         h.app.agent_attention.pending_os.clear();
 
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
             peer_ancestry: None,
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
@@ -691,7 +691,7 @@ mod tests {
                 .windows
                 .iter()
                 .flat_map(|w| w.panes.values())
-                .any(|p| matches!(p, crate::host::pane::Pane::App(app) if app.manifest_id == "text-editor")),
+                .any(|p| matches!(p, crate::host::pane::Pane::View(app) if app.manifest_id == "text-editor")),
             "Enter must open RESULT.md in a text-editor viewer pane"
         );
 
@@ -749,7 +749,7 @@ mod tests {
             )
             .unwrap();
         let child_reply = root.join("child_done.json");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
             peer_ancestry: None,
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
@@ -819,7 +819,14 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(!is_open(&monitor, &req));
-        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+        assert!(h
+            .app
+            .approval_keyboard
+            .last_error
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("unknown"));
         h.app.leave_approval();
 
         let change = file_item(&monitor, K::PermissionChange, "run-b", &[]);

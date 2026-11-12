@@ -151,8 +151,8 @@ wait_for_socket "$WORK/host.log"
 export PLEXI_SOCKET="$SOCKET"
 
 echo "opening chess"
-"$BIN" app open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
-  echo "error: app open failed" >&2
+"$BIN" view open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
+  echo "error: view open failed" >&2
   cat "$WORK/open.log" >&2
   exit 1
 }
@@ -183,7 +183,7 @@ echo "terminal pane $PANE"
 echo "creating approval"
 asked=0
 for _ in $(seq 1 40); do
-  if ! run_in_pane "$WORK/call1.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call1.out' 2>&1"; then
+  if ! run_in_pane "$WORK/call1.out" "$BIN plugin call chess chess.play --json --input '$INPUT' > '$WORK/call1.out' 2>&1"; then
     sleep 1
     continue
   fi
@@ -328,7 +328,7 @@ EOF
 chmod +x "$WORK/overwrite.sh"
 # The restart dropped the old pane. Open a terminal by listing after a fresh
 # chess open so the agent write happens inside a pane.
-"$BIN" app open "$ROOT/apps/chess" >"$WORK/open2.log" 2>&1 || true
+"$BIN" view open "$ROOT/apps/chess" >"$WORK/open2.log" 2>&1 || true
 for _ in $(seq 1 40); do
   if "$BIN" pane list >"$WORK/panes2.txt" 2>/dev/null && grep -q . "$WORK/panes2.txt"; then
     break

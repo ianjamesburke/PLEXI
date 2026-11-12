@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Canvas Click Probe — HostHarness click-injection e2e fixture (stint 0398).
 
-`view()` returns a bare `Canvas` as the tree root, with no `AppBar`/`Column`/
+`view()` returns a bare `Canvas` as the tree root, with no `SurfaceHeader`/`Column`/
 `FooterKeys` chrome around it. That makes the canvas widget's on-screen rect
 exactly equal the pane's own rect, so a test injecting a click at a known
 PANE-PIXEL coordinate can predict the resulting canvas-space coordinate by

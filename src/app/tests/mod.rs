@@ -12,3 +12,5 @@ mod strip_regression_tests;
 mod zoom_tests;
 
 mod wrap_tests;
+
+mod core_only_tests;

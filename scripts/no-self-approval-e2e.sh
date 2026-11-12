@@ -130,13 +130,13 @@ SOCK="$(python3 -c 'import json; print(json.load(open("'"$EVID/logs/host-status.
 [[ -n "$SOCK" ]] || { record FAIL boot "host status has no socket"; exit 1; }
 "$BIN" context set-root "$WS" >"$EVID/logs/set-root.out" 2>"$EVID/logs/set-root.err" || true
 
-"$BIN" app install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
+"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
   record FAIL chess-install "$(tail -20 "$EVID/logs/app-install.err")"
   exit 1
 }
-"$BIN" app open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
-"$BIN" app open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
-"$BIN" app open permissions >"$EVID/logs/open-permissions.out" 2>"$EVID/logs/open-permissions.err" || true
+"$BIN" view open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
+"$BIN" view open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
+"$BIN" view open permissions >"$EVID/logs/open-permissions.out" 2>"$EVID/logs/open-permissions.err" || true
 
 # Opens from outside a pane are queued. Wait until the host has applied them.
 TERM=""
@@ -206,7 +206,7 @@ printf '%s\n' "$PLAY" >"$EVID/logs/play.json"
 # ── 1. Agent pane asks for the move and gets a pending id ───────────────────
 P=""
 for attempt in $(seq 1 12); do
-  in_pane "ask-$attempt" "\"$BIN\" app call chess chess.play --json --input '$PLAY' > '$EVID/logs/ask.json' 2> '$EVID/logs/ask.err'" || true
+  in_pane "ask-$attempt" "\"$BIN\" plugin call chess chess.play --json --input '$PLAY' > '$EVID/logs/ask.json' 2> '$EVID/logs/ask.err'" || true
   if grep -q 'tool_not_found' "$EVID/logs/ask.json" "$EVID/logs/ask.err" 2>/dev/null; then
     sleep 2
     continue
@@ -355,7 +355,7 @@ ROWS_NAMED="${ROWS_NAMED:-0}"
 ROWS_OTHER="${ROWS_OTHER:-0}"
 ROWS=$((ROWS_NAMED + ROWS_OTHER))
 note "refuse rows named=$ROWS_NAMED other=$ROWS_OTHER"
-in_pane "state" "\"$BIN\" app state get chess > '$EVID/logs/state-before.json' 2> '$EVID/logs/state-before.err' || true" || true
+in_pane "state" "\"$BIN\" plugin state get chess > '$EVID/logs/state-before.json' 2> '$EVID/logs/state-before.err' || true" || true
 STATE_BEFORE="$(cat "$EVID/logs/state-before.json" 2>/dev/null || true)"
 LOG_PLAYED=0
 if [[ -f "$LOG" ]] && tail -c +"$((LOG_AT + 1))" "$LOG" | grep -q 'played e2e4'; then
@@ -387,7 +387,7 @@ if ! HUMAN_APPROVE "$P"; then
   record FAIL step9 "HUMAN_APPROVE did not resolve $P"
   exit 1
 fi
-in_pane "retry" "\"$BIN\" app call chess chess.play --json --input '$PLAY' > '$EVID/logs/retry.json' 2> '$EVID/logs/retry.err'" || true
+in_pane "retry" "\"$BIN\" plugin call chess chess.play --json --input '$PLAY' > '$EVID/logs/retry.json' 2> '$EVID/logs/retry.err'" || true
 RETRY="$(cat "$EVID/logs/retry.json" 2>/dev/null || true)"
 if python3 - "$EVID/logs/retry.json" <<'PY'
 import json, sys

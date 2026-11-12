@@ -7,7 +7,7 @@ suite = false
 open = { kind = "process", path = "apps/dev/component-gallery", as = "gallery" }
 
 [[steps]]
-wait_app_frame = { target = "gallery", timeout_s = 15.0 }
+wait_view_frame = { target = "gallery", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 5

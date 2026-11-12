@@ -1,12 +1,18 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "keymap-probe"
-type = "app"
 name = "KeyMap Probe"
 version = "0.1.0"
 description = "POC proving KeyMap shortcut helper receives events via both Event::Text (printable) and Event::Key (chords) paths."
+
+[plugin.capabilities]
+capabilities = []
+
+[runtime]
+kind = "python"
 entry = "keymap_probe.py"
 
-[app.capabilities]
-capabilities = []
+[[contributes.views]]
+id = "keymap-probe.main"
+default = true

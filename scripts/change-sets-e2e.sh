@@ -202,7 +202,7 @@ fi
 export PLEXI_SOCKET="$PROFILE/notify.sock"
 
 "$BIN" context set-root "$WS" >/dev/null
-PANE="$("$BIN" app open text-editor "$FILE")"
+PANE="$("$BIN" view open text-editor "$FILE")"
 echo "editor pane $PANE file $FILE"
 
 EDITORS="$(run_tool host.editors.list '{}')"

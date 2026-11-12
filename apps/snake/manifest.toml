@@ -1,18 +1,9 @@
-schema_version = 1
-
-[app]
-id = "snake"
-type = "app"
-name = "Snake"
-version = "0.1.0"
-description = "Classic snake game — proves input + draw primitives."
-entry = "snake.py"
-
-[app.capabilities]
-capabilities = ["timer"]
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "snake.py"
 
 [launch]
 
@@ -21,3 +12,16 @@ python_compat = true
 # visibility = "public"   # public | unlisted | private
 # price = "free"          # "free", or a price like "4.99"
 # publisher = "plexi"     # first-party Plexi app
+
+[plugin]
+id = "snake"
+name = "Snake"
+version = "0.1.0"
+description = "Classic snake game — proves input + draw primitives."
+
+[plugin.capabilities]
+capabilities = ["timer"]
+
+[[contributes.views]]
+id = "snake.main"
+default = true

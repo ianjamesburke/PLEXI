@@ -4,7 +4,7 @@
 # The binary is plexi-pr-<PR>. The model is scripts/e2e/lead_mock.py.
 # An ungranted host.files.write stops at permission_required. The script
 # then clicks Allow once with HUMAN_APPROVE (scripts/e2e/human.sh). It never
-# calls assistant permission resolve or command-view resolve.
+# calls assistant permission resolve or agents-dashboard resolve.
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
@@ -142,7 +142,7 @@ print("transcripts are separate files")
 PY
 
 echo "STEP command view lists both heads"
-VIEW="$(cli command-view --json)"
+VIEW="$(cli agents-dashboard --json)"
 python3 - "$VIEW" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -150,7 +150,7 @@ ids = [head.get("id") for head in body.get("heads", [])]
 assert "lead-a" in ids and "lead-b" in ids, body
 print("command view heads", ids)
 PY
-OPEN_VIEW="$(cli command-view open)"
+OPEN_VIEW="$(cli agents-dashboard open)"
 must_ok "open command view" "$OPEN_VIEW"
 VIEW_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pane_id"])' "$OPEN_VIEW")"
 STATE="$(cli pane state "$VIEW_ID")"

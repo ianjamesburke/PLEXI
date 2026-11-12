@@ -30,7 +30,7 @@ Preview uses a shared media clock for synchronized angles and the selected refer
 
 Source media stays untouched. Save a named XML revision with atomic writes and permission-scoped file access. Watch the document for external agent edits: a valid change reloads a clean editor and updates the preview. If local edits are dirty or the base revision changed, retain both versions and offer reload or Save As. Invalid external XML leaves the last valid preview intact and shows the error. Bind undo and agent mutations to a document revision so stale work cannot overwrite new decisions.
 
-Structured app events and control continue through Plexi's existing app protocol and event bus. Video/audio frames use typed binary pipes or host-owned surfaces. XML defines the edit; it does not replace Plexi's runtime transports or permission model.
+Structured plugin events and control continue through Plexi's existing plugin protocol and event bus. Video/audio frames use typed binary pipes or host-owned surfaces. XML defines the edit; it does not replace Plexi's runtime transports or permission model.
 
 ## Creative editing
 

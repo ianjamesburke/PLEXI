@@ -1,4 +1,4 @@
-//! Publish pane facts through the same timeline used by app event streams.
+//! Publish pane facts through the same timeline used by plugin event streams.
 use crate::app::PlexiApp;
 use crate::host::pane_lifecycle::{PaneLifecycleEvent, PaneLifecycleState, Provenance};
 
@@ -6,7 +6,7 @@ impl PlexiApp {
     /// Register panes from all creation/restoration paths before servicing events.
     /// Called in the logic pass, including while the window is hidden.
     pub(crate) fn observe_pane_spawns(&mut self) {
-        match crate::host::app_timeline::global().lock() {
+        match crate::host::plugin_timeline::global().lock() {
             Ok(mut timeline) => {
                 for pane_id in self.host.pane_lifecycle.keys() {
                     if !self
@@ -38,15 +38,12 @@ impl PlexiApp {
     }
 
     pub(crate) fn ensure_pane_lifecycle(&mut self, pane_id: u64) -> Option<u64> {
-        let (context_id, parent_pane_id) = self
-            .windows
-            .iter()
-            .find_map(|win| {
-                win.panes.get(&pane_id).map(|pane| {
-                    let parent_id = pane.as_terminal().and_then(|t| t.parent_pane_id);
-                    (win.context_id, parent_id)
-                })
-            })?;
+        let (context_id, parent_pane_id) = self.windows.iter().find_map(|win| {
+            win.panes.get(&pane_id).map(|pane| {
+                let parent_id = pane.as_terminal().and_then(|t| t.parent_pane_id);
+                (win.context_id, parent_id)
+            })
+        })?;
         if let Some(state) = self.host.pane_lifecycle.get_mut(&pane_id) {
             state.context_id = context_id;
             if parent_pane_id.is_some() {
@@ -88,7 +85,7 @@ impl PlexiApp {
         pane_id: u64,
         event: PaneLifecycleEvent,
     ) -> bool {
-        let timeline = crate::host::app_timeline::global();
+        let timeline = crate::host::plugin_timeline::global();
         let result = match timeline.lock() {
             Ok(mut timeline) => timeline.record_pane_lifecycle(context_id, pane_id, &event),
             Err(error) => {

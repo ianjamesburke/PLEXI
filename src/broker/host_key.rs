@@ -23,7 +23,7 @@
 //!   disables keychain prompts so `host start` cannot block on Allow. A
 //!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
 //!   and the same class) is rotated: the old item is deleted without reading
-//!   its secret, and a new key is created. New items trust this app's
+//!   its secret, and a new key is created. New items trust this plugin's
 //!   designated requirement, attached when the item is created, so a
 //!   same-signer rebuild keeps access when that requirement is stable. An
 //!   ad-hoc signature changes every build, so the next launch rotates again.
@@ -375,7 +375,9 @@ where
             remember_abandoned(handle);
             #[cfg(not(test))]
             drop(handle);
-            Err(key_unreadable("keychain call exceeded the startup deadline"))
+            Err(key_unreadable(
+                "keychain call exceeded the startup deadline",
+            ))
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
             Ok(()) => Err(key_unreadable("keychain call ended without a result")),
@@ -996,6 +998,14 @@ fn pr_isolation_active() -> bool {
     let compiled = option_env!("PLEXI_BUILD_TEST_CHANNEL").map(str::to_string);
     let runtime = crate::config::build_channel();
     let keychain_path = std::env::var("PLEXI_KEYCHAIN_PATH").ok();
+    #[cfg(test)]
+    let keychain_path = if compiled.is_some() {
+        // with_pr_channel_seal_isolation models a PR without an explicit keychain.
+        // Do not let an outer subprocess-safety override change this fixture.
+        None
+    } else {
+        keychain_path
+    };
     should_use_pr_profile_seal_store(
         compiled.as_deref(),
         runtime.as_deref(),
@@ -1056,7 +1066,10 @@ impl PrProfileBackend {
         }
         let path = host_dir.join("pr-host-seal.json");
         if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(format!("pr host seal store {} is a symlink", path.display()));
+            return Err(format!(
+                "pr host seal store {} is a symlink",
+                path.display()
+            ));
         }
         Ok(path)
     }
@@ -1370,12 +1383,12 @@ impl HostKeyBackend for UnsupportedBackend {
 mod linux {
     use super::plaintext_seal_refusal;
     use std::collections::HashMap;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
-    use zeroize::Zeroizing;
     use zbus::blocking::Connection;
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
+    use zeroize::Zeroizing;
 
     const SCHEMA: &str = "com.plexi.HostSeal";
     /// Bound for the session handshake and for Secret Service method calls.
@@ -1680,8 +1693,8 @@ mod mac {
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-    // Not in security-framework-sys. A null path is the calling app's designated
-    // requirement. A null trusted list would trust every app, so this code never
+    // Not in security-framework-sys. A null path is the calling plugin's designated
+    // requirement. A null trusted list would trust every plugin, so this code never
     // passes one.
     #[link(name = "Security", kind = "framework")]
     extern "C" {
@@ -1831,7 +1844,7 @@ mod mac {
         let chain = keychain()?;
         // The creating binary is the trusted application. `security` is not,
         // so a direct keychain read does not return the secret. The ACL is
-        // then widened to this app's designated requirement, never to any app.
+        // then widened to this plugin's designated requirement, never to any plugin.
         create_with_access(&chain, account, value)?;
         log::info!("permission_seal: stored host item {account} in the macOS keychain");
         Ok(())
@@ -1887,20 +1900,39 @@ mod mac {
                 search: core_foundation::base::CFTypeRef,
                 item: *mut security_framework_sys::base::SecKeychainItemRef,
             ) -> i32;
-            fn SecKeychainItemDelete(item: security_framework_sys::base::SecKeychainItemRef) -> i32;
+            fn SecKeychainItemDelete(item: security_framework_sys::base::SecKeychainItemRef)
+                -> i32;
         }
         let mut service = HOST_SERVICE.as_bytes().to_vec();
         let mut account_bytes = account.as_bytes().to_vec();
         let mut attrs = [
-            KcAttribute { tag: four_cc(b"svce"), length: service.len() as u32, data: service.as_mut_ptr().cast() },
-            KcAttribute { tag: four_cc(b"acct"), length: account_bytes.len() as u32, data: account_bytes.as_mut_ptr().cast() },
+            KcAttribute {
+                tag: four_cc(b"svce"),
+                length: service.len() as u32,
+                data: service.as_mut_ptr().cast(),
+            },
+            KcAttribute {
+                tag: four_cc(b"acct"),
+                length: account_bytes.len() as u32,
+                data: account_bytes.as_mut_ptr().cast(),
+            },
         ];
-        let list = KcAttributeList { count: attrs.len() as u32, attr: attrs.as_mut_ptr() };
+        let list = KcAttributeList {
+            count: attrs.len() as u32,
+            attr: attrs.as_mut_ptr(),
+        };
         let mut search = std::ptr::null();
         let status = unsafe {
-            SecKeychainSearchCreateFromAttributes(chain.as_CFTypeRef(), four_cc(b"genp"), &list, &mut search)
+            SecKeychainSearchCreateFromAttributes(
+                chain.as_CFTypeRef(),
+                four_cc(b"genp"),
+                &list,
+                &mut search,
+            )
         };
-        if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
+        if status == ERR_SEC_ITEM_NOT_FOUND {
+            return Ok(());
+        }
         if status != errSecSuccess {
             return Err(map_keychain_error(account, Error::from_code(status)));
         }
@@ -1908,7 +1940,9 @@ mod mac {
         loop {
             let mut item = std::ptr::null_mut();
             let status = unsafe { SecKeychainSearchCopyNext(search.as_CFTypeRef(), &mut item) };
-            if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
+            if status == ERR_SEC_ITEM_NOT_FOUND {
+                return Ok(());
+            }
             if status != errSecSuccess {
                 return Err(map_keychain_error(account, Error::from_code(status)));
             }
@@ -2016,7 +2050,7 @@ mod mac {
         }
         if access.is_ok() && super::is_mac_account(account) {
             log::info!(
-                "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
+                "permission_seal: keychain ACL for {account} trusts this plugin's designated requirement"
             );
         }
         Ok(())
@@ -2146,10 +2180,7 @@ struct RestoreMacItem {
 #[cfg(test)]
 impl RestoreMacItem {
     fn take() -> Self {
-        let previous = get(MAC_ITEM)
-            .ok()
-            .flatten()
-            .map(|value| value.to_string());
+        let previous = get(MAC_ITEM).ok().flatten().map(|value| value.to_string());
         let _ = delete(MAC_ITEM);
         Self { previous }
     }
@@ -2268,7 +2299,11 @@ mod tests {
         let result = done_rx
             .recv_timeout(bound)
             .expect("the unlocked keychain call never returned");
-        assert_eq!(result, Ok(None), "the unlocked caller observed another test's block");
+        assert_eq!(
+            result,
+            Ok(None),
+            "the unlocked caller observed another test's block"
+        );
     }
 
     #[test]

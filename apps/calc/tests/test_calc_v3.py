@@ -165,7 +165,7 @@ def test_view_renders_app_bar_and_muted_pending_expression() -> None:
     _set_state(dict(calc.DEFAULT_STATE, display="5", pending=7.0, op="+", fresh=False))
     node = calc.view().to_node()
     header = node["children"][0]
-    assert header["type"] == "app_bar"
+    assert header["type"] == "surface_header"
     assert header["title"] == "Calculator"
     assert header["subtitle"] == "7 +"
     calc_card = node["children"][1]

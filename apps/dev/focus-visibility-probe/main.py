@@ -8,7 +8,7 @@ zoom and watch the state and the event history change.
 from plexi_sdk import state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import FocusGained, FocusLost, PaneHidden, PaneShown
-from plexi_sdk.ui import AppBar, Column, Text
+from plexi_sdk.ui import SurfaceHeader, Column, Text
 
 _EVENTS = {
     PaneShown: ("visible", True, "shown"),
@@ -39,7 +39,7 @@ def view():
     focused = state.get("focused", False)
     visible = state.get("visible", False)
     return Column([
-        AppBar("Focus Visibility Probe"),
+        SurfaceHeader("Focus Visibility Probe"),
         Text("focused" if focused else "not focused", bold=True),
         Text("visible" if visible else "hidden"),
         Text("history: " + (", ".join(state.get("history", [])) or "none")),

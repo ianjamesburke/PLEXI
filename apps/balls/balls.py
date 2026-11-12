@@ -12,10 +12,10 @@ from __future__ import annotations
 import math
 import random
 
-from plexi_sdk import AppPalette, dim, log, theme
+from plexi_sdk import PluginPalette, dim, log, theme
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import MouseEvent, RenderFrame, Resize
-from plexi_sdk.ui import AppBar, Canvas, CanvasCircle, CanvasRect, Column, FooterKeys
+from plexi_sdk.ui import SurfaceHeader, Canvas, CanvasCircle, CanvasRect, Column, FooterKeys
 
 TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
@@ -25,7 +25,7 @@ DAMPING = 0.78  # energy retained on wall bounce
 FRICTION = 0.995  # per-frame horizontal friction on floor contact
 MAX_BALLS = 50
 
-BALL_PALETTE = AppPalette(
+BALL_PALETTE = PluginPalette(
     dark={
         "c0": "#f7768e",
         "c1": "#9ece6a",
@@ -230,7 +230,7 @@ def view():
     balls = data["balls"]
     return Column(
         [
-            AppBar("Balls", f"{len(balls)} balls"),
+            SurfaceHeader("Balls", f"{len(balls)} balls"),
             Canvas(_draw(data), width=w, height=h, grow=True),
             FooterKeys([("click", "add ball"), ("click ball", "remove")]),
         ],

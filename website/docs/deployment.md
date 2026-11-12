@@ -4,7 +4,7 @@
 
 Production deploys from the **`alpha` branch** via the Railway GitHub
 integration — every merged website change ships automatically. The website is
-not the app binary (downloads redirect to GitHub releases), so it does not
+not the plugin binary (downloads redirect to GitHub releases), so it does not
 wait on `main` release promotions. Changed 2026-07-02; before that the
 service tracked `main` and prod drifted weeks behind alpha.
 

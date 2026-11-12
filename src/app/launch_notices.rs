@@ -1,5 +1,5 @@
 //! One-time launch checks: is this binary the channel's installed build, and
-//! are old copies of the app lying around? Both are reported, never acted on.
+//! are old copies of the plugin lying around? Both are reported, never acted on.
 use super::PlexiApp;
 
 impl PlexiApp {
@@ -42,21 +42,34 @@ impl PlexiApp {
     /// are privacy-protected and reading them at launch would prompt. The
     /// installer scans every candidate directory.
     #[cfg(target_os = "macos")]
-    fn surface_stray_bundles(&mut self, receipt: Option<&plexi_distribution::transaction::Receipt>) {
+    fn surface_stray_bundles(
+        &mut self,
+        receipt: Option<&plexi_distribution::transaction::Receipt>,
+    ) {
         use plexi_distribution::{release, strays};
         let Some(home) = dirs::home_dir() else {
             return;
         };
         let channel = crate::config::build_channel().unwrap_or_else(|| "stable".into());
         let channel = release::normalized_channel(&channel);
-        let dirs = [std::path::PathBuf::from("/Applications"), home.join("Applications")];
+        let dirs = [
+            std::path::PathBuf::from("/Applications"),
+            home.join("Applications"),
+        ];
         let found = strays::find_for_installation(channel, &home, receipt, &dirs);
         if found.is_empty() {
             log::info!("launch identity: no stray {channel} bundles");
             return;
         }
-        log::warn!("launch identity: {} stray {channel} bundles: {found:?}", found.len());
-        let list = found.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+        log::warn!(
+            "launch identity: {} stray {channel} bundles: {found:?}",
+            found.len()
+        );
+        let list = found
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         self.queue_launch_notice(
             "Old Plexi copies found",
             format!("These copies are not the managed installation and may launch an old build:\n{list}"),

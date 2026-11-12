@@ -7,8 +7,9 @@ pub(crate) fn app_focused(ctx: &egui::Context) -> bool {
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             let active = objc2_app_kit::NSApplication::sharedApplication(mtm).isActive();
             static OBSERVED: std::sync::Once = std::sync::Once::new();
-            OBSERVED
-                .call_once(|| log::info!("attention: native app focus observed active={active}"));
+            OBSERVED.call_once(|| {
+                log::info!("attention: native plugin focus observed active={active}")
+            });
             return active;
         }
     }
@@ -41,15 +42,31 @@ pub(crate) fn dock_badge(count: usize, mode: crate::config::AttentionDock) -> Op
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct DockPlan { changed: bool, cancel: bool, bounce: bool }
+struct DockPlan {
+    changed: bool,
+    cancel: bool,
+    bounce: bool,
+}
 
-fn dock_plan(previous: &[String], items: &[String], old_mode: crate::config::AttentionDock, mode: crate::config::AttentionDock, focused: bool) -> DockPlan {
+fn dock_plan(
+    previous: &[String],
+    items: &[String],
+    old_mode: crate::config::AttentionDock,
+    mode: crate::config::AttentionDock,
+    focused: bool,
+) -> DockPlan {
     let new_item = items.iter().any(|id| !previous.contains(id));
     DockPlan {
         changed: items != previous || mode != old_mode,
         cancel: focused || items.is_empty() || mode != old_mode,
-        bounce: !focused && !items.is_empty() && (new_item || mode != old_mode)
-            && matches!(mode, crate::config::AttentionDock::BounceOnce | crate::config::AttentionDock::BounceUntilFocused),
+        bounce: !focused
+            && !items.is_empty()
+            && (new_item || mode != old_mode)
+            && matches!(
+                mode,
+                crate::config::AttentionDock::BounceOnce
+                    | crate::config::AttentionDock::BounceUntilFocused
+            ),
     }
 }
 
@@ -61,7 +78,11 @@ impl DockState {
         focused: bool,
     ) {
         items.sort();
-        let DockPlan { changed, cancel, bounce } = dock_plan(&self.items, &items, self.mode, mode, focused);
+        let DockPlan {
+            changed,
+            cancel,
+            bounce,
+        } = dock_plan(&self.items, &items, self.mode, mode, focused);
         if changed || (cancel && self.request.is_some()) {
             log::info!(
                 "attention: Dock open={} mode={mode:?} focused={focused}",
@@ -117,16 +138,19 @@ mod dock_tests {
         let mode = AttentionDock::BounceUntilFocused;
         let one = vec!["request-a".to_string()];
         let replacement = vec!["request-b".to_string()];
-        assert!(dock_plan(&[],&one,mode,mode,false).bounce);
-        assert!(!dock_plan(&one,&one,mode,mode,false).bounce);
-        assert!(dock_plan(&one,&replacement,mode,mode,false).bounce);
-        let focused = dock_plan(&one,&replacement,mode,mode,true);
-        assert!(focused.cancel); assert!(!focused.bounce);
-        let empty = dock_plan(&one,&[],mode,mode,false);
-        assert!(empty.cancel); assert!(!empty.bounce);
-        let disabled = dock_plan(&one,&one,mode,AttentionDock::None,false);
-        assert!(disabled.cancel); assert!(!disabled.bounce);
-        assert!(!dock_plan(&[],&one,AttentionDock::Badge,AttentionDock::Badge,false).bounce);
+        assert!(dock_plan(&[], &one, mode, mode, false).bounce);
+        assert!(!dock_plan(&one, &one, mode, mode, false).bounce);
+        assert!(dock_plan(&one, &replacement, mode, mode, false).bounce);
+        let focused = dock_plan(&one, &replacement, mode, mode, true);
+        assert!(focused.cancel);
+        assert!(!focused.bounce);
+        let empty = dock_plan(&one, &[], mode, mode, false);
+        assert!(empty.cancel);
+        assert!(!empty.bounce);
+        let disabled = dock_plan(&one, &one, mode, AttentionDock::None, false);
+        assert!(disabled.cancel);
+        assert!(!disabled.bounce);
+        assert!(!dock_plan(&[], &one, AttentionDock::Badge, AttentionDock::Badge, false).bounce);
     }
 
     #[test]
@@ -239,7 +263,7 @@ mod mac {
         // UNUserNotificationCenter aborts for an unbundled command-line executable.
         if NSBundle::mainBundle().bundleIdentifier().is_none() {
             log::warn!(
-                "attention: notification unavailable outside an installed app bundle pane={id}"
+                "attention: notification unavailable outside an installed plugin bundle pane={id}"
             );
             return;
         }

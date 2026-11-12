@@ -1,18 +1,24 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "com.plexi.counter"
-type = "wasm"
 name = "Counter"
-entry = "../../../target/wasm32-wasip1/release/counter.wasm"
 version = "0.1.0"
 description = "Counter POC for typed WASM UI actions."
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
-[app.capabilities.wasm]
+[plugin.capabilities.wasm]
 required = []
 optional = []
 
-[launch]
+[runtime]
+kind = "wasm"
+entry = "../../../target/wasm32-wasip1/release/counter.wasm"
+
+[[contributes.views]]
+id = "com.plexi.counter.main"
+default = true

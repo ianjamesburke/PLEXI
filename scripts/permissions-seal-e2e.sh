@@ -396,12 +396,12 @@ PY
     cat "$WORK/set-root.err" >&2
     exit 1
   }
-  "$BIN" app install "$ROOT/apps/permissions" --yes >"$WORK/perm-install.out" 2>"$WORK/perm-install.err" || {
-    echo "error: Permissions app install failed" >&2
+  "$BIN" plugin install "$ROOT/apps/permissions" --yes >"$WORK/perm-install.out" 2>"$WORK/perm-install.err" || {
+    echo "error: Permissions plugin install failed" >&2
     cat "$WORK/perm-install.err" >&2
     exit 1
   }
-  "$BIN" app open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
+  "$BIN" view open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
   local assist=""
   for _ in $(seq 1 20); do
     "$BIN" pane list >"$WORK/panes.json" 2>/dev/null || true
@@ -478,7 +478,7 @@ PY
     cat "$WORK/grant-list.json" >&2 || true
     exit 1
   fi
-  "$BIN" app open permissions >"$WORK/open-permissions.out" 2>"$WORK/open-permissions.err" || true
+  "$BIN" view open permissions >"$WORK/open-permissions.out" 2>"$WORK/open-permissions.err" || true
   local saw_app=0
   for _ in $(seq 1 30); do
     "$BIN" pane list >"$WORK/perm-panes.json" 2>/dev/null || true

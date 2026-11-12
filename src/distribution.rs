@@ -13,15 +13,23 @@ pub fn version_text() -> &'static str {
 /// The same rendering for an installed generation; its build id starts with
 /// the full source commit.
 pub fn generation_version_text(tag: &str, build_id: &str) -> String {
-    let version = Some(tag.trim_start_matches('v')).filter(|t| !t.is_empty()).unwrap_or("unknown");
-    let commit = build_id.get(..7).filter(|c| !c.contains('-')).unwrap_or("unknown");
+    let version = Some(tag.trim_start_matches('v'))
+        .filter(|t| !t.is_empty())
+        .unwrap_or("unknown");
+    let commit = build_id
+        .get(..7)
+        .filter(|c| !c.contains('-'))
+        .unwrap_or("unknown");
     format!("{version} ({commit})")
 }
 /// Where a user relaunches the managed build: the Applications bundle on
 /// macOS, the active executable elsewhere.
 pub fn relaunch_path(receipt: &plexi_distribution::transaction::Receipt) -> PathBuf {
     if cfg!(target_os = "macos") {
-        receipt.applications_dir.join(format!("{}.app", plexi_distribution::transaction::display_name(&receipt.channel)))
+        receipt.applications_dir.join(format!(
+            "{}.app",
+            plexi_distribution::transaction::display_name(&receipt.channel)
+        ))
     } else {
         receipt.active.executable()
     }
@@ -74,7 +82,7 @@ pub fn check_runtime() -> Result<(), String> {
         &resources.join("smoke-app"),
     )
     .map_err(|e| e.to_string())?
-    .ok_or("package smoke app has no Python entry")?;
+    .ok_or("package smoke plugin has no Python entry")?;
     let tree = crate::host::wasm_python::run_headless_frame(&config, (800.0, 600.0), None)
         .map_err(|e| e.to_string())?;
     if tree.nodes.is_empty() {
@@ -163,8 +171,8 @@ fn seed_profile_from(resources: &std::path::Path, profile: &std::path::Path) -> 
         true,
     )?;
     copy_tree(
-        &resources.join("maintained-apps"),
-        &profile.join("apps"),
+        &resources.join("maintained-plugins"),
+        &profile.join("plugins"),
         true,
     )?;
     std::fs::write(stamp, env!("PLEXI_BUILD_ID"))
@@ -203,9 +211,16 @@ mod tests {
     fn version_text_is_compiled_build_info() {
         use clap::CommandFactory;
         let text = super::version_text();
-        assert!(text.ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))), "{text}");
+        assert!(
+            text.ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))),
+            "{text}"
+        );
         let tag = env!("PLEXI_BUILD_TAG").trim_start_matches('v');
-        assert!(text.starts_with(if tag.is_empty() { env!("CARGO_PKG_VERSION") } else { tag }));
+        assert!(text.starts_with(if tag.is_empty() {
+            env!("CARGO_PKG_VERSION")
+        } else {
+            tag
+        }));
         assert_eq!(crate::cli::args::Cli::command().get_version(), Some(text));
         assert_eq!(super::build_info()["version_text"], text);
     }
@@ -214,12 +229,19 @@ mod tests {
     fn mismatch_compares_build_ids_and_names_the_relaunch_path() {
         let installed = "def5678aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1234";
         let receipt = receipt("v0.4.1", installed);
-        assert_eq!(super::installation_mismatch(installed, "0.4.1 (def5678)", &receipt), None);
-        let notice = super::installation_mismatch("abc1234-x", "0.4.2 (abc1234)", &receipt).unwrap();
+        assert_eq!(
+            super::installation_mismatch(installed, "0.4.1 (def5678)", &receipt),
+            None
+        );
+        let notice =
+            super::installation_mismatch("abc1234-x", "0.4.2 (abc1234)", &receipt).unwrap();
         assert!(notice.starts_with("Running 0.4.2 (abc1234) but Plexi Beta's installed build is 0.4.1 (def5678) — relaunch from "), "{notice}");
         assert!(notice.ends_with(&super::relaunch_path(&receipt).display().to_string()));
         assert!(!notice.contains('\n'));
-        assert_eq!(super::generation_version_text("", "-hash-only"), "unknown (unknown)");
+        assert_eq!(
+            super::generation_version_text("", "-hash-only"),
+            "unknown (unknown)"
+        );
     }
 
     #[test]

@@ -1,12 +1,12 @@
-//! Pane / app / agent creation and launch entry points.
+//! Pane / plugin / agent creation and launch entry points.
 //!
 //! These methods own the "make a new pane appear" side of the pane API —
-//! WASM app runtime wiring, builtin app wiring, single-pane tree creation for new
+//! WASM plugin runtime wiring, builtin plugin wiring, single-pane tree creation for new
 //! contexts, and the launch helpers called from the command palette and
-//! AppRequest routing. The actual tile-tree mutation is delegated to
+//! HostRequest routing. The actual tile-tree mutation is delegated to
 //! [`PlexiApp::split_with_new_pane_at`] in [`super::layout`].
 
-use crate::app::app_trait::App;
+use crate::app::view_trait::View;
 use crate::app::PlexiApp;
 use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
@@ -85,7 +85,7 @@ pub(crate) struct SpawnTerminalAtSpec<'a> {
     pub options: TerminalSpawnOptions<'a>,
 }
 
-pub(crate) struct IdAppLaunchOptions {
+pub(crate) struct IdViewLaunchOptions {
     pub target_win: usize,
     pub bypass_on_launch: bool,
     pub follow_file_browser_cwd: bool,
@@ -97,13 +97,13 @@ struct BuiltinPlacement<'a> {
     share: Option<f32>,
 }
 
-struct WasmAppInstanceSpec<'a> {
+struct WasmViewInstanceSpec<'a> {
     target_win: usize,
-    app_id: &'a str,
-    app: crate::host::wasm_app::WasmApp,
-    snapshot: crate::host::wasm_app::StateSnapshot,
+    plugin_id: &'a str,
+    app: crate::host::wasm_view::WasmView,
+    snapshot: crate::host::wasm_view::StateSnapshot,
     workspace_root: PathBuf,
-    permissions: crate::app::permissions::AppPermissions,
+    permissions: crate::app::permissions::PluginPermissions,
     remembered: Option<(
         crate::app::permissions::PermissionStore,
         HashSet<String>,
@@ -117,30 +117,30 @@ struct WasmAppInstanceSpec<'a> {
 /// Instantiate a builtin `App` by id, checked before the process registry.
 ///
 /// Builtins are compiled-in and never require disk access. Add one line here
-/// when introducing a new builtin app type; the dispatch path in
-/// `launch_app_by_id_with_layout` requires no further changes.
+/// when introducing a new builtin plugin type; the dispatch path in
+/// `open_view_by_id_with_layout` requires no further changes.
 ///
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
-pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
+pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn View>> {
     match id {
-        "agents" => Some(Box::new(crate::app::agents_app::AgentsApp::default())),
+        "agents" => Some(Box::new(crate::app::agents_view::AgentsPaneView::default())),
         "image-viewer" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::image_viewer_app::ImageViewerApp::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::image_viewer_view::ImageViewerView::new(path),
+            ))
         }
         "video-player" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::video_player_app::VideoPlayerApp::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::video_player_view::VideoPlayerView::new(path),
+            ))
         }
         "audio-player" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::audio_player_app::AudioPlayerApp::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::audio_player_view::AudioPlayerView::new(path),
+            ))
         }
         "text-editor" => {
             // No explicit path → a fresh scratch note in the global tier. The
@@ -153,40 +153,42 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
             let ws_root = crate::cli::resolve_commands_workspace_root(cwd)
                 .or_else(|| Some(cwd.to_path_buf()));
             Some(Box::new(
-                crate::app::text_editor_app::TextEditorApp::new_with_workspace(path, ws_root),
+                crate::app::text_editor_view::TextEditorView::new_with_workspace(path, ws_root),
             ))
         }
-        "mcp-renderer" => Some(Box::new(crate::render::mcp_renderer_app::McpRendererApp::new(args, cwd.to_path_buf()))),
+        "mcp-renderer" => Some(Box::new(
+            crate::render::mcp_renderer_view::McpRendererView::new(args, cwd.to_path_buf()),
+        )),
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
             Some(Box::new(
-                crate::render::cli_renderer_app::CliRendererApp::new(path),
+                crate::render::cli_renderer_view::CliRendererView::new(path),
             ))
         }
-        "file_browser" => Some(Box::new(crate::file_browser::FileBrowserApp::new(
+        "file_browser" => Some(Box::new(crate::file_browser::FileBrowserView::new(
             cwd.to_path_buf(),
         ))),
-        "secrets_manager" => Some(Box::new(crate::app::secrets_app::SecretsApp::new(
+        "secrets_manager" => Some(Box::new(crate::app::secrets_view::SecretsView::new(
             cwd.to_path_buf(),
         ))),
-        "command" | "command-view" => Some(Box::new(
-            crate::app::command_view_app::CommandViewApp::new(cwd.to_path_buf()),
+        "agents-dashboard" => Some(Box::new(
+            crate::app::agents_dashboard_view::AgentsDashboardView::new(cwd.to_path_buf()),
         )),
         _ => None,
     }
 }
 
-fn release_feature_for_app_id(id: &str) -> Option<crate::release::ReleaseFeature> {
+fn release_feature_for_plugin_id(id: &str) -> Option<crate::release::ReleaseFeature> {
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
         "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
-        "command" | "command-view" => Some(crate::release::ReleaseFeature::CommandView),
+        "agents-dashboard" => Some(crate::release::ReleaseFeature::AgentsDashboard),
         "mcp-renderer" => Some(crate::release::ReleaseFeature::McpClient),
         _ => None,
     }
 }
 
-/// Native WASM component apps (`AppRuntime::Wasm`) are an experiment. The
+/// Native WASM component plugins (`ViewRuntime::Wasm`) are an experiment. The
 /// Python runtime also runs in Wasmtime but is core, so it never calls this.
 fn require_wasm_experiment() -> Result<(), String> {
     if crate::release::feature_enabled(crate::release::ReleaseFeature::WasmApps) {
@@ -208,48 +210,48 @@ fn builtin_default_group(type_id: &str) -> Option<String> {
 }
 
 fn builtin_restore_args(
-    app_id: &str,
-    app_state: Option<&serde_json::Value>,
+    plugin_id: &str,
+    plugin_state: Option<&serde_json::Value>,
 ) -> Option<Vec<String>> {
-    match app_id {
-        "text-editor" | "image-viewer" | "video-player" | "audio-player" => app_state
+    match plugin_id {
+        "text-editor" | "image-viewer" | "video-player" | "audio-player" => plugin_state
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
-        "agents" | "file_browser" | "secrets_manager" | "command" | "command-view" => Some(vec![]),
+        "agents" | "file_browser" | "secrets_manager" | "agents-dashboard" => Some(vec![]),
         _ => None,
     }
 }
 
-pub(crate) fn restore_builtin_app_pane(
-    app_id: &str,
+pub(crate) fn restore_builtin_view_pane(
+    plugin_id: &str,
     pane_id: PaneId,
     cwd: PathBuf,
-    app_state: Option<&serde_json::Value>,
+    plugin_state: Option<&serde_json::Value>,
 ) -> Option<Pane> {
-    if let Some(feature) = release_feature_for_app_id(app_id) {
+    if let Some(feature) = release_feature_for_plugin_id(plugin_id) {
         if !crate::release::feature_enabled(feature) {
             crate::release::log_feature_blocked(feature);
             return None;
         }
     }
-    let args = builtin_restore_args(app_id, app_state)?;
-    let mut app = builtin_factory(app_id, &cwd, &args)?;
-    if let Some(state) = app_state {
+    let args = builtin_restore_args(plugin_id, plugin_state)?;
+    let mut app = builtin_factory(plugin_id, &cwd, &args)?;
+    if let Some(state) = plugin_state {
         app.restore_state(state);
     }
     let runtime_id = app.type_id().to_string();
     let name = app.display_name();
     log::info!(
-        "workspace_restore: restored builtin app_id={app_id} runtime_id={runtime_id} pane_id={pane_id} cwd={}",
+        "workspace_restore: restored builtin plugin_id={plugin_id} runtime_id={runtime_id} pane_id={pane_id} cwd={}",
         cwd.display()
     );
-    Some(Pane::App(Box::new(crate::host::pane::AppPane {
+    Some(Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(app),
+        runtime: crate::host::pane::ViewRuntime::Builtin(app),
         workspace_root: cwd,
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: runtime_id.clone(),
         name,
         pane_group: builtin_default_group(&runtime_id),
@@ -262,12 +264,12 @@ pub(crate) fn restore_builtin_app_pane(
     })))
 }
 
-/// Rebuild the Assistant pane during workspace restore so a reopened app comes
+/// Rebuild the Assistant pane during workspace restore so a reopened plugin comes
 /// back to the same conversation, focused. The Assistant is a builtin that
 /// needs a broker and profile dir, so the broker-free [`builtin_factory`]
 /// cannot construct it — the caller supplies the broker (built from
-/// `config.ai`). `AssistantApp::new` auto-resumes the active conversation from
-/// disk, so no `app_state` is required.
+/// `config.ai`). `AssistantView::new` auto-resumes the active conversation from
+/// disk, so no `plugin_state` is required.
 pub(crate) fn restore_assistant_pane(
     pane_id: PaneId,
     workspace_root: PathBuf,
@@ -275,7 +277,7 @@ pub(crate) fn restore_assistant_pane(
     profile_dir: &std::path::Path,
     context_id: u64,
 ) -> Pane {
-    let app = Box::new(crate::assistant::AssistantApp::new(
+    let app = Box::new(crate::assistant::AssistantView::new(
         workspace_root.clone(),
         broker,
         profile_dir,
@@ -287,12 +289,12 @@ pub(crate) fn restore_assistant_pane(
         "workspace_restore: restored assistant pane {pane_id} cwd={}",
         workspace_root.display()
     );
-    Pane::App(Box::new(crate::host::pane::AppPane {
+    Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(app),
+        runtime: crate::host::pane::ViewRuntime::Builtin(app),
         workspace_root,
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: runtime_id.clone(),
         name,
         pane_group: None,
@@ -309,7 +311,7 @@ pub(crate) fn restore_assistant_pane(
 /// manifest-parsed [`PythonLaunchConfig`] with the launch-time fields only the
 /// caller knows (workspace root, live context root, launch args, granted
 /// permissions, theme) and launches it. Both a fresh open
-/// (`open_python_wasm_app_pane`) and a workspace restore (`restore_app_pane`)
+/// (`open_python_wasm_view_pane`) and a workspace restore (`restore_view_pane`)
 /// call this so there is exactly one place that builds the runtime — the
 /// caller-specific parts (where `PythonLaunchConfig` and `permissions` come
 /// from) stay in each caller.
@@ -318,7 +320,7 @@ fn build_python_runtime(
     workspace_root: PathBuf,
     context_root: PathBuf,
     launch_args: Vec<String>,
-    permissions: &crate::app::permissions::AppPermissions,
+    permissions: &crate::app::permissions::PluginPermissions,
     theme: &crate::ui::theme::Colors,
 ) -> Result<(crate::host::wasm_python::LivePythonPane, String), String> {
     config.workspace_root = workspace_root;
@@ -332,13 +334,13 @@ fn build_python_runtime(
         .collect();
     config.allowed_hosts = permissions.allowed_hosts.clone();
     config.theme = theme.to_theme_map();
-    let app_id = config.app_id.clone();
+    let plugin_id = config.plugin_id.clone();
     let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
         .map_err(|error| error.to_string())?;
-    Ok((runtime, app_id))
+    Ok((runtime, plugin_id))
 }
 
-/// The saved identity a restored app pane keeps: the caller owns the pane id,
+/// The saved identity a restored view pane keeps: the caller owns the pane id,
 /// context, and placement; restore only rebuilds the runtime behind them.
 pub(crate) struct RestoreTarget<'a> {
     pub pane_id: PaneId,
@@ -348,32 +350,32 @@ pub(crate) struct RestoreTarget<'a> {
     pub saved_name: Option<&'a str>,
 }
 
-/// What a saved app pane relaunches as.
-pub(crate) struct RestoredAppPane {
+/// What a saved view pane relaunches as.
+pub(crate) struct RestoredViewPane {
     pub pane: Pane,
     pub state_paths: Vec<(crate::host::state_scope::StateScope, PathBuf)>,
-    /// Hot-reload watch target (the Python `app_dir`); empty for WASM.
+    /// Hot-reload watch target (the Python `plugin_dir`); empty for WASM.
     pub hot_reload_dir: PathBuf,
 }
 
-/// Restore a saved Python or WASM app pane by relaunching it through the same
+/// Restore a saved Python or WASM view pane by relaunching it through the same
 /// runtime-construction path a fresh open uses — never through
-/// `place_app_pane`, which allocates a new pane id and mutates the tile tree.
+/// `place_view_pane`, which allocates a new pane id and mutates the tile tree.
 /// The caller (the restore loop in `restore_workspace`) keeps the saved pane id,
-/// tree, and placement; this only builds the runtime and its `AppPane`
+/// tree, and placement; this only builds the runtime and its `ViewPane`
 /// envelope.
 ///
-/// `Err` means the app no longer resolves (manifest gone, permission review
+/// `Err` means the plugin no longer resolves (manifest gone, permission review
 /// required, component failed to load) — the caller must render a
 /// launch-failed pane, never silently substitute a terminal.
 #[cfg(test)]
-pub(crate) fn restore_app_pane(
+pub(crate) fn restore_view_pane(
     manifest_id: &str,
-    launch: &crate::workspace::SavedAppLaunch,
+    launch: &crate::workspace::SavedViewLaunch,
     target: RestoreTarget<'_>,
     theme: &crate::ui::theme::Colors,
-) -> Result<RestoredAppPane, String> {
-    restore_app_pane_in_profile(
+) -> Result<RestoredViewPane, String> {
+    restore_view_pane_in_profile(
         manifest_id,
         launch,
         target,
@@ -382,15 +384,15 @@ pub(crate) fn restore_app_pane(
     )
 }
 
-/// Profile-explicit variant of [`restore_app_pane`] used by [`crate::app::restore_workspace`]
+/// Profile-explicit variant of [`restore_view_pane`] used by [`crate::app::restore_workspace`]
 /// so workspace restore does not read an ambient `config_dir()`.
-pub(crate) fn restore_app_pane_in_profile(
+pub(crate) fn restore_view_pane_in_profile(
     manifest_id: &str,
-    launch: &crate::workspace::SavedAppLaunch,
+    launch: &crate::workspace::SavedViewLaunch,
     target: RestoreTarget<'_>,
     theme: &crate::ui::theme::Colors,
     profile_dir: &Path,
-) -> Result<RestoredAppPane, String> {
+) -> Result<RestoredViewPane, String> {
     let RestoreTarget {
         pane_id,
         context_id,
@@ -399,25 +401,25 @@ pub(crate) fn restore_app_pane_in_profile(
         saved_name,
     } = target;
     match launch {
-        crate::workspace::SavedAppLaunch::Python { app_dir, args } => {
-            if !app_dir.is_dir() {
+        crate::workspace::SavedViewLaunch::Python { plugin_dir, args } => {
+            if !plugin_dir.is_dir() {
                 return Err(format!(
-                    "app directory not found at {}",
-                    app_dir.display()
+                    "plugin directory not found at {}",
+                    plugin_dir.display()
                 ));
             }
             let config =
-                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(plugin_dir)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
-            let permissions = gate_app_permissions_in_profile(
+            let permissions = gate_plugin_permissions_in_profile(
                 profile_dir,
-                &config.app_id,
+                &config.plugin_id,
                 &workspace_root,
                 &config.capabilities,
                 config.allowed_hosts.clone(),
             );
-            let (mut runtime, app_id) = build_python_runtime(
+            let (mut runtime, plugin_id) = build_python_runtime(
                 config,
                 workspace_root.clone(),
                 context_root.to_path_buf(),
@@ -434,15 +436,15 @@ pub(crate) fn restore_app_pane_in_profile(
                 .map(String::from)
                 .unwrap_or_else(|| runtime.display_name());
             log::info!(
-                "workspace_restore: restored python app_id={app_id} pane_id={pane_id}"
+                "workspace_restore: restored python plugin_id={plugin_id} pane_id={pane_id}"
             );
-            let pane = Pane::App(Box::new(crate::host::pane::AppPane {
+            let pane = Pane::View(Box::new(crate::host::pane::ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: crate::host::pane::AppRuntime::Python(Box::new(runtime)),
+                runtime: crate::host::pane::ViewRuntime::Python(Box::new(runtime)),
                 workspace_root,
                 permissions,
-                manifest_id: app_id,
+                manifest_id: plugin_id,
                 name,
                 pane_group: None,
                 linked_pane_id: None,
@@ -452,18 +454,18 @@ pub(crate) fn restore_app_pane_in_profile(
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
             }));
-            Ok(RestoredAppPane {
+            Ok(RestoredViewPane {
                 pane,
                 state_paths,
-                hot_reload_dir: app_dir.clone(),
+                hot_reload_dir: plugin_dir.clone(),
             })
         }
-        crate::workspace::SavedAppLaunch::Wasm { wasm_path, args } => {
-            use crate::host::wasm_app::{StateStore, WasmApp};
+        crate::workspace::SavedViewLaunch::Wasm { wasm_path, args } => {
             use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+            use crate::host::wasm_view::{StateStore, WasmView};
 
             require_wasm_experiment()?;
-            if let Some(feature) = release_feature_for_app_id(manifest_id) {
+            if let Some(feature) = release_feature_for_plugin_id(manifest_id) {
                 if !crate::release::feature_enabled(feature) {
                     return Err(crate::release::feature_unavailable_message(feature));
                 }
@@ -476,7 +478,7 @@ pub(crate) fn restore_app_pane_in_profile(
             }
             let permission_store =
                 crate::app::permissions::PermissionStore::load_or_default(profile_dir);
-            let required_grants = WasmApp::inspect_required_grants(wasm_path)
+            let required_grants = WasmView::inspect_required_grants(wasm_path)
                 .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
             let required_caps = required_grants.capability_ids();
             let declared: std::collections::HashSet<String> =
@@ -495,7 +497,7 @@ pub(crate) fn restore_app_pane_in_profile(
                 ));
             }
             // Persistent, not ephemeral — restore must re-address the same
-            // state file a fresh installed-app launch would (stint 0678).
+            // state file a fresh installed-plugin launch would (stint 0678).
             let store = StateStore::persistent(wasm_state_path_in_profile(
                 profile_dir,
                 manifest_id,
@@ -503,7 +505,7 @@ pub(crate) fn restore_app_pane_in_profile(
             ))
             .map_err(|e| format!("open wasm state for {manifest_id}: {e}"))?;
             let snapshot = store.snapshot();
-            let app = WasmApp::load_with_grants(manifest_id, wasm_path, store, required_grants)
+            let app = WasmView::load_with_grants(manifest_id, wasm_path, store, required_grants)
                 .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
             let pane = WasmPane::new(app, Box::new(SysinfoStats::new()))
                 .with_remembered_capabilities(
@@ -520,14 +522,14 @@ pub(crate) fn restore_app_pane_in_profile(
                 .map(String::from)
                 .unwrap_or_else(|| live.display_name());
             log::info!(
-                "workspace_restore: restored wasm app_id={manifest_id} pane_id={pane_id}"
+                "workspace_restore: restored wasm plugin_id={manifest_id} pane_id={pane_id}"
             );
-            let pane = Pane::App(Box::new(crate::host::pane::AppPane {
+            let pane = Pane::View(Box::new(crate::host::pane::ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+                runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
                 workspace_root,
-                permissions: crate::app::permissions::AppPermissions::default(),
+                permissions: crate::app::permissions::PluginPermissions::default(),
                 manifest_id: manifest_id.to_string(),
                 name,
                 pane_group: None,
@@ -538,7 +540,7 @@ pub(crate) fn restore_app_pane_in_profile(
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
             }));
-            Ok(RestoredAppPane {
+            Ok(RestoredViewPane {
                 pane,
                 state_paths: Vec::new(),
                 hot_reload_dir: PathBuf::new(),
@@ -547,31 +549,33 @@ pub(crate) fn restore_app_pane_in_profile(
     }
 }
 
-/// Build a `launch_failed` builtin pane for a saved app that no longer
+/// Build a `launch_failed` builtin pane for a saved plugin that no longer
 /// resolves (uninstalled, manifest gone, permission review required). Mirrors
-/// `PlexiApp::open_launch_failed_pane`'s `AppPane` literal, minus the
+/// `PlexiApp::open_launch_failed_pane`'s `ViewPane` literal, minus the
 /// placement/tile-tree mutation — the restore loop keeps the saved pane id
 /// and tree, so this only builds the `Pane` to slot in.
 pub(crate) fn restore_launch_failed_pane(
-    app_id: &str,
+    plugin_id: &str,
     pane_id: PaneId,
     workspace_root: PathBuf,
     reason: String,
 ) -> Pane {
-    log::info!("workspace_restore: launch failed for app_id={app_id} pane_id={pane_id}: {reason}");
-    Pane::App(Box::new(crate::host::pane::AppPane {
+    log::info!(
+        "workspace_restore: launch failed for plugin_id={plugin_id} pane_id={pane_id}: {reason}"
+    );
+    Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-            crate::host::launch_failed::LaunchFailedApp {
-                app_id: app_id.to_string(),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::host::launch_failed::LaunchFailedView {
+                plugin_id: plugin_id.to_string(),
                 missing: vec![reason],
             },
         )),
         workspace_root,
-        permissions: crate::app::permissions::AppPermissions::default(),
-        manifest_id: app_id.to_string(),
-        name: format!("Cannot launch {app_id}"),
+        permissions: crate::app::permissions::PluginPermissions::default(),
+        manifest_id: plugin_id.to_string(),
+        name: format!("Cannot launch {plugin_id}"),
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
@@ -605,11 +609,11 @@ impl PlexiApp {
     }
     /// Convert a manifest-declared share fraction (0.0..1.0 exclusive) to a `ShareRatio`.
     /// Validates the range and falls back to 0.5 (1:1) on invalid input, logging a warning.
-    fn share_ratio_from_fraction(app_id: &str, fraction: Option<f32>) -> ShareRatio {
+    fn share_ratio_from_fraction(plugin_id: &str, fraction: Option<f32>) -> ShareRatio {
         let f = fraction.unwrap_or(0.5);
         if f <= 0.0 || f >= 1.0 {
             log::warn!(
-                "open_pane_layout({app_id}): initial_share {f} out of range (0.0, 1.0); defaulting to 0.5"
+                "open_pane_layout({plugin_id}): initial_share {f} out of range (0.0, 1.0); defaulting to 0.5"
             );
             ShareRatio::new(1.0, 1.0).expect("1:1 is valid")
         } else {
@@ -618,7 +622,7 @@ impl PlexiApp {
     }
 
     /// Return the focused terminal's PaneId, if the currently focused pane is a terminal.
-    /// Used to record which terminal an app was spawned alongside, so CdRequest can
+    /// Used to record which terminal a plugin was spawned alongside, so CdRequest can
     /// route directly to it without a tile-tree walk.
     fn focused_terminal_id(&self, active: usize) -> Option<PaneId> {
         let ctx = &self.windows[active];
@@ -640,7 +644,7 @@ impl PlexiApp {
     /// returned (should not happen in practice).
     fn open_pane_layout(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         group: Option<String>,
         hint: Option<&str>,
         share: ShareRatio,
@@ -656,8 +660,8 @@ impl PlexiApp {
             Placement::Below
         };
         let req = OpenPaneRequest {
-            runtime: PaneRuntimeKind::App {
-                app_id: app_id.to_string(),
+            runtime: PaneRuntimeKind::View {
+                plugin_id: plugin_id.to_string(),
             },
             placement,
             share,
@@ -665,7 +669,7 @@ impl PlexiApp {
             declared_capabilities: vec![],
         };
         let effects = self.submit(HostAction::OpenPane(req));
-        log::debug!("open_pane_layout({app_id}) effects: {:?}", effects);
+        log::debug!("open_pane_layout({plugin_id}) effects: {:?}", effects);
         effects
             .iter()
             .find_map(|e| {
@@ -679,7 +683,7 @@ impl PlexiApp {
             .unwrap_or_else(|| {
                 let fallback = self.host.alloc_pane_id();
                 log::warn!(
-                    "open_pane_layout({app_id}): no PaneOpened effect — allocating fallback id={fallback}"
+                    "open_pane_layout({plugin_id}): no PaneOpened effect — allocating fallback id={fallback}"
                 );
                 (
                     fallback,
@@ -690,13 +694,13 @@ impl PlexiApp {
             })
     }
 
-    /// Single placement authority for a freshly-built app pane. Honors the
+    /// Single placement authority for a freshly-built view pane. Honors the
     /// layout `hint` identically for every runtime (builtin, Python-WASM, native
     /// WASM) so no open path can silently diverge:
     ///
     /// * `Some("overlay")` — replace the focused pane in place, reusing its pane
     ///   id and stashing the displaced pane in `overlay_replaced` so closing the
-    ///   app restores it (see `restore_overlay_replacement`). Falls through to
+    ///   plugin restores it (see `restore_overlay_replacement`). Falls through to
     ///   the root/split path when the context is empty.
     /// * any other hint — split beside the focused pane, or install as the tree
     ///   root when no pane is focused.
@@ -708,10 +712,10 @@ impl PlexiApp {
     /// an overlay was requested against a degenerate focus target (the focused
     /// tile is not a pane, or its pane is missing from the map); callers treat
     /// that as a failed launch.
-    fn place_app_pane<F>(
+    fn place_view_pane<F>(
         &mut self,
         target_win: usize,
-        app_id: &str,
+        plugin_id: &str,
         group: Option<String>,
         hint: Option<&str>,
         share_hint: Option<f32>,
@@ -728,48 +732,52 @@ impl PlexiApp {
                     self.windows[active].tree.tiles.get(focused_tile)
                 else {
                     log::warn!(
-                        "app::{app_id}: overlay launch skipped — focused tile is not a pane"
+                        "plugin::{plugin_id}: overlay launch skipped — focused tile is not a pane"
                     );
                     return None;
                 };
                 let pane_id = *focused_pane_id;
                 let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
                     log::warn!(
-                        "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
+                        "plugin::{plugin_id}: overlay launch skipped — pane {pane_id} missing from pane map"
                     );
                     return None;
                 };
                 let pane = build(pane_id, None, Some(Box::new(replaced_pane)));
                 self.windows[active].panes.insert(pane_id, pane);
                 self.set_window_focused_pane(active, focused_tile);
-                log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+                log::info!("plugin::{plugin_id}: launched as overlay on pane {pane_id}");
                 return Some(pane_id);
             }
             log::info!(
-                "app::{app_id}: overlay requested but empty context — launching as root pane"
+                "plugin::{plugin_id}: overlay requested but empty context — launching as root pane"
             );
             // fall through to the root/split path below
         }
 
         if let Some(focused) = self.windows[active].focused_pane {
             let window = &self.windows[active];
-            let valid = window.find_first_pane_in(focused).and_then(|tile| window.tree.tiles.get(tile))
-                .is_some_and(|tile| matches!(tile, Tile::Pane(id) if window.panes.contains_key(id)));
+            let valid = window
+                .find_first_pane_in(focused)
+                .and_then(|tile| window.tree.tiles.get(tile))
+                .is_some_and(
+                    |tile| matches!(tile, Tile::Pane(id) if window.panes.contains_key(id)),
+                );
             if !valid {
-                log::warn!("app::{app_id}: launch skipped — stale focus target");
+                log::warn!("plugin::{plugin_id}: launch skipped — stale focus target");
                 return None;
             }
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
-            log::info!("app::{app_id}: cleared zoom before launch");
+            log::info!("plugin::{plugin_id}: cleared zoom before launch");
         }
 
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
-        let share = Self::share_ratio_from_fraction(app_id, share_hint);
+        let share = Self::share_ratio_from_fraction(plugin_id, share_hint);
         let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(app_id, group, hint, share);
+            self.open_pane_layout(plugin_id, group, hint, share);
         let pane = build(new_id, linked_pane_id, None);
         self.windows[active].panes.insert(new_id, pane);
 
@@ -780,44 +788,44 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
-            log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
+            log::info!("plugin::{plugin_id}: launched as root pane {new_id} (empty context)");
             return Some(new_id);
         }
         let _ =
             self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
-        log::info!("app::{app_id}: launched as split pane {new_id}");
+        log::info!("plugin::{plugin_id}: launched as split pane {new_id}");
         Some(new_id)
     }
 
     /// Open a built-in error tile pane when a capability pre-flight check fails.
-    /// Uses `AppRuntime::Builtin` — no app runtime is spawned.
+    /// Uses `ViewRuntime::Builtin` — no plugin runtime is spawned.
     fn open_launch_failed_pane(
         &mut self,
         target_win: usize,
-        app_id: &str,
+        plugin_id: &str,
         hint: Option<&str>,
         missing: Vec<String>,
         workspace_root: std::path::PathBuf,
     ) {
         let active = target_win;
-        let share = Self::share_ratio_from_fraction(app_id, None);
+        let share = Self::share_ratio_from_fraction(plugin_id, None);
         let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(app_id, None, hint, share);
+            self.open_pane_layout(plugin_id, None, hint, share);
         self.windows[active].panes.insert(
             new_id,
-            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
                 pip_status: None,
                 id: new_id,
-                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                    crate::host::launch_failed::LaunchFailedApp {
-                        app_id: app_id.to_string(),
+                runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                    crate::host::launch_failed::LaunchFailedView {
+                        plugin_id: plugin_id.to_string(),
                         missing,
                     },
                 )),
                 workspace_root,
-                permissions: crate::app::permissions::AppPermissions::default(),
-                manifest_id: app_id.to_string(),
-                name: format!("Cannot launch {app_id}"),
+                permissions: crate::app::permissions::PluginPermissions::default(),
+                manifest_id: plugin_id.to_string(),
+                name: format!("Cannot launch {plugin_id}"),
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
@@ -832,32 +840,33 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
-            log::info!("app::{app_id}: launch-failed tile inserted as root pane {new_id}");
+            log::info!("plugin::{plugin_id}: launch-failed tile inserted as root pane {new_id}");
             return;
         }
         let _ =
             self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
-        log::info!("app::{app_id}: launch-failed tile inserted as pane {new_id}");
+        log::info!("plugin::{plugin_id}: launch-failed tile inserted as pane {new_id}");
     }
 
-    /// Open a sandboxed WASM component app in a new pane (the `run` primitive,
+    /// Open a sandboxed WASM component plugin in a new pane (the `run` primitive,
     /// G6). Loads `wasm_path` into a per-pane `wasmtime::Store`, links only the
     /// standard grants, and drives it through the synchronous effect loop.
     /// State is ephemeral — the namespace lives only as long as the pane, per
     /// the spec's default `run` lifecycle (`--persist` is a later addition).
     /// Returns the new pane id, or an error string if the component fails to
     /// load or instantiate (surfaced to the caller rather than crashing).
-    pub(crate) fn open_wasm_app_pane(
+    pub(crate) fn open_wasm_view_pane(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         wasm_path: &std::path::Path,
         workspace_root: PathBuf,
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
-        use crate::host::wasm_app::{StateStore, WasmApp};
+        self.require_plugin(plugin_id)?;
+        use crate::host::wasm_view::{StateStore, WasmView};
 
         require_wasm_experiment()?;
-        if let Some(feature) = release_feature_for_app_id(app_id) {
+        if let Some(feature) = release_feature_for_plugin_id(plugin_id) {
             if !crate::release::feature_enabled(feature) {
                 return Err(crate::release::feature_unavailable_message(feature));
             }
@@ -867,12 +876,12 @@ impl PlexiApp {
         let snapshot = store.snapshot();
         let permission_store =
             crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
-        let required_grants = WasmApp::inspect_required_grants(wasm_path)
+        let required_grants = WasmView::inspect_required_grants(wasm_path)
             .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
         let required_caps = required_grants.capability_ids();
         let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
         let (remembered_grants, remembered_blocks) =
-            gate_wasm_sets(app_id, &workspace_root, &declared);
+            gate_wasm_sets(plugin_id, &workspace_root, &declared);
         let missing: Vec<String> = required_caps
             .iter()
             .filter(|cap| !remembered_grants.contains(*cap))
@@ -880,7 +889,7 @@ impl PlexiApp {
             .collect();
         if !missing.is_empty() {
             log::warn!(
-                "app::{app_id}: raw wasm launch requires review for {missing:?} path={}",
+                "plugin::{plugin_id}: raw wasm launch requires review for {missing:?} path={}",
                 wasm_path.display()
             );
             return Err(format!(
@@ -888,15 +897,15 @@ impl PlexiApp {
                 missing.join(", ")
             ));
         }
-        let app = WasmApp::load_with_grants(app_id, wasm_path, store, required_grants)
+        let app = WasmView::load_with_grants(plugin_id, wasm_path, store, required_grants)
             .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
-        self.open_wasm_app_instance(WasmAppInstanceSpec {
+        self.open_wasm_view_instance(WasmViewInstanceSpec {
             target_win: self.active_window,
-            app_id,
+            plugin_id,
             app,
             snapshot,
             workspace_root,
-            permissions: crate::app::permissions::AppPermissions::default(),
+            permissions: crate::app::permissions::PluginPermissions::default(),
             remembered: Some((permission_store, remembered_grants, remembered_blocks)),
             layout: None,
             launch_args,
@@ -904,16 +913,16 @@ impl PlexiApp {
         })
     }
 
-    fn open_python_wasm_app_pane(
+    fn open_python_wasm_view_pane(
         &mut self,
         target_win: usize,
-        app_dir: &std::path::Path,
+        plugin_dir: &std::path::Path,
         workspace_root: PathBuf,
-        permissions: crate::app::permissions::AppPermissions,
+        permissions: crate::app::permissions::PluginPermissions,
         layout: Option<&str>,
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
-        let config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(app_dir)
+        let config = crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(plugin_dir)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
         // Seed the pane's live context root from the launching context; the
@@ -921,7 +930,7 @@ impl PlexiApp {
         let context_root = self
             .context_root_for(self.windows[target_win].context_id)
             .ok_or_else(|| "launch context not found".to_string())?;
-        let (mut runtime, app_id) = build_python_runtime(
+        let (mut runtime, plugin_id) = build_python_runtime(
             config,
             workspace_root.clone(),
             context_root,
@@ -932,13 +941,13 @@ impl PlexiApp {
         // Captured before the runtime moves into the pane closure; the drain
         // pass re-syncs these if the pane's context root changes later.
         let state_paths = runtime.state_paths();
-        let manifest_id = app_id.clone();
-        let name = app_id.clone();
+        let manifest_id = plugin_id.clone();
+        let name = plugin_id.clone();
         let context_id = self.windows[target_win].context_id;
         let new_id = self
-            .place_app_pane(
+            .place_view_pane(
                 target_win,
-                &app_id,
+                &plugin_id,
                 None,
                 layout,
                 None,
@@ -947,10 +956,10 @@ impl PlexiApp {
                         pane_id: new_id,
                         context_id,
                     });
-                    Pane::App(Box::new(crate::host::pane::AppPane {
+                    Pane::View(Box::new(crate::host::pane::ViewPane {
                         pip_status: None,
                         id: new_id,
-                        runtime: crate::host::pane::AppRuntime::Python(Box::new(runtime)),
+                        runtime: crate::host::pane::ViewRuntime::Python(Box::new(runtime)),
                         workspace_root,
                         permissions,
                         manifest_id,
@@ -965,40 +974,41 @@ impl PlexiApp {
                     }))
                 },
             )
-            .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
-        self.hot_reload.watch(new_id, app_dir);
+            .ok_or_else(|| format!("overlay launch target unavailable for {plugin_id}"))?;
+        self.hot_reload.watch(new_id, plugin_dir);
         // State files (stint 0644): watch for external writes so CLI/agent
-        // edits reach the running app without a relaunch.
+        // edits reach the running plugin without a relaunch.
         self.state_watch.watch(new_id, &state_paths);
         let context_root = self
             .origin_for_pane(new_id)
             .map(|origin| origin.context_root);
         crate::host::event_log::emit_scoped(
-            crate::host::event_log::HostEvent::AppSpawned {
-                app_id: app_id.clone(),
+            crate::host::event_log::HostEvent::ViewOpened {
+                plugin_id: plugin_id.clone(),
                 type_id: "python-wasm".to_string(),
                 pane_id: new_id,
                 timestamp: crate::host::event_log::now_timestamp(),
             },
             context_root.as_deref(),
         );
-        log::info!("app::{app_id}: launched CPython WASM pane {new_id}");
+        log::info!("plugin::{plugin_id}: launched CPython WASM pane {new_id}");
         Ok(new_id)
     }
 
-    fn review_or_open_raw_wasm_app_pane(
+    fn review_or_open_raw_wasm_view_pane(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         wasm_path: &std::path::Path,
         workspace_root: PathBuf,
         launch_args: Vec<String>,
     ) -> Result<(), String> {
-        let required_grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+        self.require_plugin(plugin_id)?;
+        let required_grants = crate::host::wasm_view::WasmView::inspect_required_grants(wasm_path)
             .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
         let required_caps = required_grants.capability_ids();
         let declared: HashSet<String> = required_caps.iter().cloned().collect();
         let (remembered_grants, remembered_blocks) =
-            gate_wasm_sets(app_id, &workspace_root, &declared);
+            gate_wasm_sets(plugin_id, &workspace_root, &declared);
 
         let blocked: Vec<String> = required_caps
             .iter()
@@ -1007,7 +1017,7 @@ impl PlexiApp {
             .collect();
         if !blocked.is_empty() {
             log::warn!(
-                "raw_wasm_review: launch blocked by remembered denial app_id={app_id} path={} blocked={blocked:?}",
+                "raw_wasm_review: launch blocked by remembered denial plugin_id={plugin_id} path={} blocked={blocked:?}",
                 wasm_path.display()
             );
             return Err(format!(
@@ -1023,23 +1033,23 @@ impl PlexiApp {
             .collect();
         if missing.is_empty() {
             return self
-                .open_wasm_app_pane(app_id, wasm_path, workspace_root, launch_args)
+                .open_wasm_view_pane(plugin_id, wasm_path, workspace_root, launch_args)
                 .map(|_| ());
         }
 
         let already_pending = self.pending_raw_wasm_launches.iter().any(|pending| {
-            pending.app_id == app_id
+            pending.plugin_id == plugin_id
                 && pending.wasm_path == wasm_path
                 && pending.workspace_root == workspace_root
         });
         if !already_pending {
             log::info!(
-                "raw_wasm_review: queued app_id={app_id} path={} missing={missing:?}",
+                "raw_wasm_review: queued plugin_id={plugin_id} path={} missing={missing:?}",
                 wasm_path.display()
             );
             self.pending_raw_wasm_launches
                 .push_back(crate::app::PendingRawWasmLaunch {
-                    app_id: app_id.to_string(),
+                    plugin_id: plugin_id.to_string(),
                     wasm_path: wasm_path.to_path_buf(),
                     workspace_root,
                     missing_capabilities: missing,
@@ -1049,14 +1059,14 @@ impl PlexiApp {
         Ok(())
     }
 
-    fn open_wasm_app_instance(
+    fn open_wasm_view_instance(
         &mut self,
-        spec: WasmAppInstanceSpec<'_>,
+        spec: WasmViewInstanceSpec<'_>,
     ) -> Result<PaneId, String> {
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
-        let WasmAppInstanceSpec {
+        let WasmViewInstanceSpec {
             target_win,
-            app_id,
+            plugin_id,
             app,
             snapshot,
             workspace_root,
@@ -1073,26 +1083,26 @@ impl PlexiApp {
         } else {
             pane
         };
-        let mut live = LiveWasmPane::new(pane, app_id, snapshot, launch_args, wasm_path);
+        let mut live = LiveWasmPane::new(pane, plugin_id, snapshot, launch_args, wasm_path);
 
-        let manifest_id = app_id.to_string();
-        let name = app_id.to_string();
+        let manifest_id = plugin_id.to_string();
+        let name = plugin_id.to_string();
         // Runtime scope and pane placement share the explicit target.
         let context_id = self.windows[target_win].context_id;
         let new_id = self
-            .place_app_pane(
+            .place_view_pane(
                 target_win,
-                app_id,
+                plugin_id,
                 None,
                 layout,
                 None,
                 move |new_id, linked_pane_id, overlay_replaced| {
                     live.set_pane_id(new_id);
                     live.set_context_id(context_id);
-                    Pane::App(Box::new(crate::host::pane::AppPane {
+                    Pane::View(Box::new(crate::host::pane::ViewPane {
                         pip_status: None,
                         id: new_id,
-                        runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+                        runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
                         workspace_root,
                         permissions,
                         manifest_id,
@@ -1107,38 +1117,38 @@ impl PlexiApp {
                     }))
                 },
             )
-            .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
+            .ok_or_else(|| format!("overlay launch target unavailable for {plugin_id}"))?;
         let context_root = self
             .origin_for_pane(new_id)
             .map(|origin| origin.context_root);
         crate::host::event_log::emit_scoped(
-            crate::host::event_log::HostEvent::AppSpawned {
-                app_id: app_id.to_string(),
+            crate::host::event_log::HostEvent::ViewOpened {
+                plugin_id: plugin_id.to_string(),
                 type_id: "wasm".to_string(),
                 pane_id: new_id,
                 timestamp: crate::host::event_log::now_timestamp(),
             },
             context_root.as_deref(),
         );
-        log::info!("wasm::{app_id}: spawned pane {new_id}");
+        log::info!("wasm::{plugin_id}: spawned pane {new_id}");
         Ok(new_id)
     }
 
-    fn open_installed_wasm_app_pane(
+    fn open_installed_wasm_view_pane(
         &mut self,
         target_win: usize,
-        installed: crate::app::registry::InstalledApp,
+        installed: crate::app::registry::InstalledPlugin,
         workspace_root: PathBuf,
         layout: Option<&str>,
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
         use crate::app::permissions::{Capability, PermissionStore};
-        use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+        use crate::host::wasm_view::{Grants, StateStore, WasmView};
 
-        let app_id = installed.manifest.id.clone();
+        let plugin_id = installed.manifest.id.clone();
 
         require_wasm_experiment()?;
-        if let Some(feature) = release_feature_for_app_id(&app_id) {
+        if let Some(feature) = release_feature_for_plugin_id(&plugin_id) {
             if !crate::release::feature_enabled(feature) {
                 return Err(crate::release::feature_unavailable_message(feature));
             }
@@ -1147,12 +1157,12 @@ impl PlexiApp {
         // Cloud/remote execution is future work (stints 0286/0287): no
         // server-side wasmtime runtime or thin-client streaming exists yet.
         // Fail loudly at the launch boundary rather than silently running a
-        // `execution = "cloud"`/`"preferred-local"` app locally — the Python
+        // `execution = "cloud"`/`"preferred-local"` plugin locally — the Python
         // launch path already rejects the same shape in
         // `PythonLaunchConfig::from_manifest_file`.
         if installed.runtime.execution != crate::app::registry::RuntimeExecution::Local {
             return Err(format!(
-                "app '{app_id}' declares runtime execution '{}', which is not available yet — \
+                "plugin '{plugin_id}' declares runtime execution '{}', which is not available yet — \
                  only local execution is supported (cloud streaming is future work)",
                 installed.runtime.execution.as_str()
             ));
@@ -1164,13 +1174,13 @@ impl PlexiApp {
         )
         .map_err(|e| format!("manifest lists {e}"))?;
         let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
-            .materialize_app_permissions(
-                &app_id,
+            .materialize_plugin_permissions(
+                &plugin_id,
                 &workspace_root,
                 &declared_caps,
                 installed.manifest.capabilities.allowed_hosts.clone(),
             );
-        apply_media_release_gate(&app_id, &mut permissions);
+        apply_media_release_gate(&plugin_id, &mut permissions);
         permissions
             .capabilities
             .retain(|cap| !permissions.blocked.contains(cap));
@@ -1178,7 +1188,7 @@ impl PlexiApp {
         let wasm_declared =
             wasm_runtime_capabilities_from_permissions(&permissions, &workspace_root);
         let (remembered_grants, remembered_blocks) =
-            gate_wasm_sets(&app_id, &workspace_root, &wasm_declared);
+            gate_wasm_sets(&plugin_id, &workspace_root, &wasm_declared);
 
         let grants = Grants {
             state: true,
@@ -1188,21 +1198,21 @@ impl PlexiApp {
                 .capabilities
                 .contains(&Capability::AudioPlayback),
         };
-        let store = StateStore::persistent(wasm_state_path(&app_id, &workspace_root))
-            .map_err(|e| format!("open wasm state for {app_id}: {e}"))?;
+        let store = StateStore::persistent(wasm_state_path(&plugin_id, &workspace_root))
+            .map_err(|e| format!("open wasm state for {plugin_id}: {e}"))?;
         let snapshot = store.snapshot();
-        let app = WasmApp::load_with_grants(&app_id, &installed.bin_path, store, grants)
+        let app = WasmView::load_with_grants(&plugin_id, &installed.bin_path, store, grants)
             .map_err(|e| format!("load {}: {e}", installed.bin_path.display()))?;
 
         log::info!(
-            "wasm::{app_id}: manifest-backed launch entry={} remembered_grants={} remembered_blocks={}",
+            "wasm::{plugin_id}: manifest-backed launch entry={} remembered_grants={} remembered_blocks={}",
             installed.bin_path.display(),
             remembered_grants.len(),
             remembered_blocks.len()
         );
-        self.open_wasm_app_instance(WasmAppInstanceSpec {
+        self.open_wasm_view_instance(WasmViewInstanceSpec {
             target_win,
-            app_id: &app_id,
+            plugin_id: &plugin_id,
             app,
             snapshot,
             workspace_root,
@@ -1215,21 +1225,21 @@ impl PlexiApp {
     }
 
     /// Relaunch a CPython-in-WASM pane while preserving its pane envelope.
-    pub(crate) fn reload_app_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
+    pub(crate) fn reload_view_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
         let active = self.active_window;
-        let Some(app_pane) = self.windows[active]
+        let Some(view_pane) = self.windows[active]
             .panes
             .get_mut(&pane_id)
-            .and_then(|pane| pane.as_app_mut())
+            .and_then(|pane| pane.as_view_mut())
         else {
             return false;
         };
-        let crate::host::pane::AppRuntime::Python(runtime) = &mut app_pane.runtime else {
+        let crate::host::pane::ViewRuntime::Python(runtime) = &mut view_pane.runtime else {
             return false;
         };
         log::info!(
-            "app::{} reload triggered ({reason}) for CPython WASM pane {pane_id}",
-            app_pane.manifest_id
+            "plugin::{} reload triggered ({reason}) for CPython WASM pane {pane_id}",
+            view_pane.manifest_id
         );
         runtime.relaunch().is_ok()
     }
@@ -1238,7 +1248,7 @@ impl PlexiApp {
     /// the matching panes. Called once per frame from the host update loop.
     pub(crate) fn drain_hot_reload_requests(&mut self) {
         while let Ok(req) = self.hot_reload_rx.try_recv() {
-            self.reload_app_pane(req.pane_id, "watcher");
+            self.reload_view_pane(req.pane_id, "watcher");
         }
     }
 
@@ -1252,18 +1262,18 @@ impl PlexiApp {
         while let Ok(notice) = self.state_watch_rx.try_recv() {
             let mut found = false;
             for window in &mut self.windows {
-                if let Some(app_pane) = window
+                if let Some(view_pane) = window
                     .panes
                     .get_mut(&notice.pane_id)
-                    .and_then(|pane| pane.as_app_mut())
+                    .and_then(|pane| pane.as_view_mut())
                 {
                     log::info!(
-                        "state_watch: external change → pane {} app {} scope={}",
+                        "state_watch: external change → pane {} plugin {} scope={}",
                         notice.pane_id,
-                        app_pane.manifest_id,
+                        view_pane.manifest_id,
                         notice.scope.as_str()
                     );
-                    app_pane.runtime.apply_external_state(notice.scope);
+                    view_pane.runtime.apply_external_state(notice.scope);
                     found = true;
                     break;
                 }
@@ -1285,15 +1295,15 @@ impl PlexiApp {
         )> = Vec::new();
         for window in &self.windows {
             for pane in window.panes.values() {
-                let Some(app_pane) = pane.as_app() else {
+                let Some(view_pane) = pane.as_view() else {
                     continue;
                 };
-                let current = app_pane.runtime.state_paths();
+                let current = view_pane.runtime.state_paths();
                 if current.is_empty() {
                     continue;
                 }
-                if self.state_watch.watched_entries(app_pane.id) != current.as_slice() {
-                    stale.push((app_pane.id, current));
+                if self.state_watch.watched_entries(view_pane.id) != current.as_slice() {
+                    stale.push((view_pane.id, current));
                 }
             }
         }
@@ -1305,13 +1315,13 @@ impl PlexiApp {
 
     /// Detect crashes on watched panes and restart them after a brief delay
     /// so the developer can read the crash overlay. Only applies to panes
-    /// that opted in via `[app] watch = true` — production installs are
+    /// that opted in via `[plugin] watch = true` — production installs are
     /// unaffected. Called once per frame alongside `drain_hot_reload_requests`.
     pub(crate) fn drain_crash_restarts(&mut self) {}
 
-    /// Force-reload the focused app pane (manual trigger via Cmd+Option+R).
-    /// No-op when the focused pane isn't a process-backed AppPane.
-    pub(crate) fn force_reload_focused_app(&mut self) {
+    /// Force-reload the focused view pane (manual trigger via Cmd+Option+R).
+    /// No-op when the focused pane isn't a process-backed ViewPane.
+    pub(crate) fn force_reload_focused_view(&mut self) {
         let active = self.active_window;
         let Some(focused_tile) = self.windows[active].focused_pane else {
             return;
@@ -1320,19 +1330,30 @@ impl PlexiApp {
             return;
         };
         let pane_id = *pane_id;
-        self.reload_app_pane(pane_id, "manual");
+        if self.config.core_only.unwrap_or(false) {
+            if let Some(plugin) = self.windows[active]
+                .panes
+                .get(&pane_id)
+                .and_then(|pane| pane.as_view())
+                .map(|pane| pane.manifest_id.clone())
+            {
+                self.plugin_blocked(&plugin);
+                return;
+            }
+        }
+        self.reload_view_pane(pane_id, "manual");
     }
 
-    pub(crate) fn open_builtin_app_pane(
+    pub(crate) fn open_builtin_view_pane(
         &mut self,
-        app: Box<dyn App>,
-        permissions: crate::app::permissions::AppPermissions,
+        app: Box<dyn View>,
+        permissions: crate::app::permissions::PluginPermissions,
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
         share: Option<f32>,
     ) {
-        self.open_builtin_app_pane_at(
+        self.open_builtin_view_pane_at(
             BuiltinPlacement {
                 window: self.active_window,
                 hint,
@@ -1345,36 +1366,39 @@ impl PlexiApp {
         );
     }
 
-    fn open_builtin_app_pane_at(
+    fn open_builtin_view_pane_at(
         &mut self,
         placement: BuiltinPlacement<'_>,
-        mut app: Box<dyn App>,
-        permissions: crate::app::permissions::AppPermissions,
+        mut app: Box<dyn View>,
+        permissions: crate::app::permissions::PluginPermissions,
         workspace_root: PathBuf,
         group: Option<String>,
     ) {
+        if self.plugin_blocked(app.type_id()) {
+            return;
+        }
         let BuiltinPlacement {
             window: target_win,
             hint,
             share,
         } = placement;
-        let app_type_id = app.type_id().to_string();
+        let plugin_type_id = app.type_id().to_string();
         let app_name = app.display_name();
-        let manifest_id = app_type_id.clone();
+        let manifest_id = plugin_type_id.clone();
         let group_for_pane = group.clone();
         let context_id = self.windows[target_win].context_id;
-        let placed = self.place_app_pane(
+        let placed = self.place_view_pane(
             target_win,
-            &app_type_id,
+            &plugin_type_id,
             group,
             hint,
             share,
             move |id, linked_pane_id, overlay_replaced| {
                 app.bind_host_identity(id, context_id);
-                Pane::App(Box::new(crate::host::pane::AppPane {
+                Pane::View(Box::new(crate::host::pane::ViewPane {
                     pip_status: None,
                     id,
-                    runtime: crate::host::pane::AppRuntime::Builtin(app),
+                    runtime: crate::host::pane::ViewRuntime::Builtin(app),
                     workspace_root,
                     permissions,
                     manifest_id,
@@ -1394,9 +1418,9 @@ impl PlexiApp {
                 .origin_for_pane(pane_id)
                 .map(|origin| origin.context_root);
             crate::host::event_log::emit_scoped(
-                crate::host::event_log::HostEvent::AppSpawned {
-                    app_id: app_type_id.clone(),
-                    type_id: app_type_id.clone(),
+                crate::host::event_log::HostEvent::ViewOpened {
+                    plugin_id: plugin_type_id.clone(),
+                    type_id: plugin_type_id.clone(),
                     pane_id,
                     timestamp: crate::host::event_log::now_timestamp(),
                 },
@@ -1505,16 +1529,12 @@ impl PlexiApp {
         inject_folder_secrets: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            context,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, context, agent_pane);
         if let Some(cmd) = initial_cmd {
             log::info!(
-                "create_single_pane_tree: initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count()
+                "create_single_pane_tree: initial_cmd_chars={} close_on_exit={close_on_exit}",
+                cmd.chars().count()
             );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1573,13 +1593,8 @@ impl PlexiApp {
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus}"
         );
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context, agent_pane);
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1925,15 +1940,12 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(target_win_idx);
         let effective_cwd_for_schema = effective_cwd.clone();
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            Some(effective_cwd),
-            &self.colors,
-            &context,
-            true,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, Some(effective_cwd), &self.colors, &context, true);
         if let Some(token) = run_token {
-            settings.env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
+            settings
+                .env
+                .insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
         }
         if let Some(pid) = parent_pane_id {
             settings
@@ -1959,9 +1971,16 @@ impl PlexiApp {
             .env
             .insert("PLEXI_AGENT_TASK".into(), task.to_string());
         let supervised;
-        let worker_command = if harness == "team" { cmd } else {
-            let exe = std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
-            let reporter = format!("{} --socket {}", crate::host::shell::shell_quote(&exe.to_string_lossy()), crate::host::shell::shell_quote(&crate::platform::ipc::endpoint()));
+        let worker_command = if harness == "team" {
+            cmd
+        } else {
+            let exe =
+                std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
+            let reporter = format!(
+                "{} --socket {}",
+                crate::host::shell::shell_quote(&exe.to_string_lossy()),
+                crate::host::shell::shell_quote(&crate::platform::ipc::endpoint())
+            );
             supervised = crate::cli::agent::supervised_worker_command(cmd, &reporter, harness);
             &supervised
         };
@@ -1976,16 +1995,17 @@ impl PlexiApp {
             settings,
             self.default_font_size,
         ) else {
-            return Err(format!("failed to create terminal pane for agent role '{role}'"));
+            return Err(format!(
+                "failed to create terminal pane for agent role '{role}'"
+            ));
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;
         pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
-        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(
-            &effective_cwd_for_schema,
-        );
+        let lookup_root =
+            crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
         pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
             role,
             &crate::config::config_dir(),
@@ -1999,9 +2019,7 @@ impl PlexiApp {
                 .unwrap_or(child)
         })
         .map_err(|error| {
-            log::info!(
-                "agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}"
-            );
+            log::info!("agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}");
             error
         })
         .ok();
@@ -2048,7 +2066,9 @@ impl PlexiApp {
                 .or_default()
                 .set_schema(schema.clone(), Some(&effective_cwd_for_schema))
             {
-                log::warn!("agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}");
+                log::warn!(
+                    "agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}"
+                );
                 self.pane_results.entry(new_id).or_default().schema = Some(schema);
             }
         }
@@ -2086,16 +2106,19 @@ impl PlexiApp {
     /// Toggle the file browser: if the focused pane has a file browser open,
     /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {
-        // Check if the focused pane (or its linked app pane above) already has
+        if self.plugin_blocked("file_browser") {
+            return;
+        }
+        // Check if the focused pane (or its linked view pane above) already has
         // a file browser open. If so, close it.
         let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 let pane_id = *pane_id;
                 if let Some(pane) = ctx.panes.get(&pane_id) {
-                    if let Some(a) = pane.as_app() {
+                    if let Some(a) = pane.as_view() {
                         if a.runtime.type_id() == "file_browser" {
-                            self.close_focused_app();
+                            self.close_focused_view();
                             return;
                         }
                     }
@@ -2113,11 +2136,11 @@ impl PlexiApp {
             });
         let cwd = self.file_browser_start_directory(caller, ctx.context_id);
 
-        let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
+        let app: Box<dyn View> = Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
 
         // Track only the invoking terminal, including its overlay replacement.
-        let perms = crate::app::permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(
+        let perms = crate::app::permissions::PluginPermissions::builtin();
+        self.open_builtin_view_pane(
             app,
             perms,
             cwd,
@@ -2177,7 +2200,7 @@ impl PlexiApp {
         cwd
     }
 
-    /// Locate an open instance of app `manifest_id`, including one currently
+    /// Locate an open instance of plugin `manifest_id`, including one currently
     /// buried under overlay replacements. When `context_id` is `Some`, only
     /// panes whose owning window belongs to that context match; `None` searches
     /// every window in every context. Returns `(window_index, slot_pane_id,
@@ -2185,12 +2208,12 @@ impl PlexiApp {
     /// slot, depth N means N overlays sit on top of it and must be popped to
     /// reveal it. Backs the `[launch] on_launch` resolver (#0336).
     ///
-    /// Identity is `AppPane::manifest_id`, not `runtime.type_id()`: WASM panes
+    /// Identity is `ViewPane::manifest_id`, not `runtime.type_id()`: WASM panes
     /// all report `type_id() == "wasm"`, so only the manifest id is a stable,
     /// runtime-agnostic identity that equals the launch id across process,
-    /// WASM, and builtin apps. Pane lookup is global by design (#878); context
+    /// WASM, and builtin plugins. Pane lookup is global by design (#878); context
     /// scoping comes purely from the owning window's `context_id`.
-    pub(crate) fn locate_app_instance(
+    pub(crate) fn locate_view_instance(
         &self,
         manifest_id: &str,
         context_id: Option<u64>,
@@ -2198,12 +2221,12 @@ impl PlexiApp {
         // Walk a pane's overlay-replacement chain, returning how many overlays
         // sit above the first pane whose manifest id matches (`0` = the pane
         // itself matches). The replaced pane an overlay stores can be any
-        // variant; only app panes carry an id and a further chain.
+        // variant; only view panes carry an id and a further chain.
         fn overlay_depth(pane: &Pane, manifest_id: &str) -> Option<usize> {
             let mut current = pane;
             let mut depth = 0;
             loop {
-                let app = current.as_app()?;
+                let app = current.as_view()?;
                 if app.manifest_id == manifest_id {
                     return Some(depth);
                 }
@@ -2226,16 +2249,16 @@ impl PlexiApp {
     /// first open instance of `manifest_id`, discarding overlay depth. Used by
     /// tests that only assert which instance was matched.
     #[cfg(test)]
-    pub(crate) fn find_app_pane_by_type(
+    pub(crate) fn find_view_pane_by_type(
         &self,
         manifest_id: &str,
         context_id: Option<u64>,
     ) -> Option<(PaneId, usize)> {
-        self.locate_app_instance(manifest_id, context_id)
+        self.locate_view_instance(manifest_id, context_id)
             .map(|(win_idx, slot, _)| (slot, win_idx))
     }
 
-    /// Resolve an app's `[launch] on_launch` policy (#0336) against currently
+    /// Resolve a plugin's `[launch] on_launch` policy (#0336) against currently
     /// open panes before spawning. Returns `Some(existing_pane_id)` when the
     /// launch was satisfied by focusing a live instance — the caller must then
     /// NOT spawn, and must report *that* pane id (never a predicted one).
@@ -2248,12 +2271,12 @@ impl PlexiApp {
     /// buried under overlays is revealed by popping those overlays via the
     /// sanctioned [`restore_overlay_replacement`](super::layout::restore_overlay_replacement)
     /// path — the same restore Esc performs — before focusing. Revealing a
-    /// buried instance therefore pops (and closes) every app overlay stacked
+    /// buried instance therefore pops (and closes) every plugin overlay stacked
     /// above it, exactly as pressing Esc that many times would; this is
     /// intentional, not incidental.
     ///
     /// `args`/`cwd_override` are the relaunch payload. When a dedup focuses an
-    /// existing instance they are *dropped* — the running app never receives
+    /// existing instance they are *dropped* — the running plugin never receives
     /// them (delivering relaunch args to a live instance via a bus event is
     /// future work). The drop is logged at `warn` so it is observable.
     pub(crate) fn resolve_on_launch_policy(
@@ -2282,10 +2305,12 @@ impl PlexiApp {
         use crate::app::registry::OnLaunchPolicy;
         let (scope, target) = match on_launch {
             OnLaunchPolicy::AlwaysNew => return None,
-            OnLaunchPolicy::FocusExisting => ("focus_existing", self.locate_app_instance(id, None)),
+            OnLaunchPolicy::FocusExisting => {
+                ("focus_existing", self.locate_view_instance(id, None))
+            }
             OnLaunchPolicy::FocusExistingInContext => (
                 "focus_existing_in_context",
-                self.locate_app_instance(id, Some(caller_context_id)),
+                self.locate_view_instance(id, Some(caller_context_id)),
             ),
         };
         let Some((win_idx, slot, overlay_depth)) = target else {
@@ -2302,19 +2327,20 @@ impl PlexiApp {
             log::warn!(
                 "on_launch[{scope}]: '{id}' relaunch carried argc={} cwd={cwd_override:?} \
                  but the policy focused the existing instance — these are NOT delivered to it \
-                 (relaunch arg delivery to a running instance is future work)", args.len()
+                 (relaunch arg delivery to a running instance is future work)",
+                args.len()
             );
         }
         self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
         Some(slot)
     }
 
-    /// Reveal a located app instance and focus it: pop any overlays covering
+    /// Reveal a located plugin instance and focus it: pop any overlays covering
     /// it, unhide it (it may have been hidden rather than overlaid), and jump
     /// to its window via the sanctioned
     /// [`jump_to_context`](Self::jump_to_context) path — never by mutating
     /// `active_window`/`router.active` directly. Popping overlays closes every
-    /// app overlay stacked above the instance, exactly as pressing Esc that
+    /// plugin overlay stacked above the instance, exactly as pressing Esc that
     /// many times would.
     fn reveal_and_focus_instance(&mut self, win_idx: usize, slot: PaneId, overlay_depth: usize) {
         let win_id = self.windows[win_idx].window_id;
@@ -2327,9 +2353,9 @@ impl PlexiApp {
         self.jump_to_context(win_idx, win_id, Some(slot));
     }
 
-    /// Launch an installed app by id in the focused pane.
-    pub(crate) fn launch_app_by_id(&mut self, id: &str) {
-        let _ = self.launch_app_by_id_with_layout(id, None, &[], None);
+    /// Launch an installed plugin by id in the focused pane.
+    pub(crate) fn launch_view_by_id(&mut self, id: &str) {
+        let _ = self.launch_view_by_id_with_layout(id, None, &[], None);
     }
 
     /// Open a config file (global or workspace) in a Plexi text-editor pane
@@ -2347,6 +2373,9 @@ impl PlexiApp {
         path: PathBuf,
         cwd_override: Option<PathBuf>,
     ) {
+        if self.plugin_blocked("text-editor") {
+            return;
+        }
         if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
             log::info!(
                 "open_config: {} already open in pane {pane_id}, focusing",
@@ -2357,7 +2386,7 @@ impl PlexiApp {
         }
         let args = [path.display().to_string()];
         let pane_id = self.host.next_pane_id();
-        match self.launch_app_by_id_with_layout(
+        match self.launch_view_by_id_with_layout(
             "text-editor",
             Some("split_h".to_string()),
             &args,
@@ -2379,31 +2408,31 @@ impl PlexiApp {
         let Some(pane_id) = self.focused_pane_id() else {
             return false;
         };
-        let Some(app_pane) = self.windows[self.active_window]
+        let Some(view_pane) = self.windows[self.active_window]
             .panes
             .get_mut(&pane_id)
-            .and_then(|p| p.as_app_mut())
+            .and_then(|p| p.as_view_mut())
         else {
             return false;
         };
-        let switched = app_pane.runtime.switch_commands_scope();
+        let switched = view_pane.runtime.switch_commands_scope();
         if switched {
-            app_pane.name = app_pane.runtime.display_name();
+            view_pane.name = view_pane.runtime.display_name();
             self.mark_workspace_dirty();
         }
         switched
     }
 
-    /// Launch an installed app with an explicit layout and args override.
+    /// Launch an installed plugin with an explicit layout and args override.
     ///   "overlay" (default) — full pane takeover; Esc restores the original pane
     ///   "split_h"           — horizontal split, new pane to the right
     ///   "split_v"           — vertical split, new pane below
     ///
-    /// Honors the app's `[launch] on_launch` dedup policy: returns
+    /// Honors the plugin's `[launch] on_launch` dedup policy: returns
     /// `Ok(Some(existing_pane_id))` when a live instance satisfied the launch
     /// (nothing was spawned), and `Ok(None)` when a fresh pane was spawned (the
     /// caller's predicted `next_pane_id()` is then the real id).
-    pub(crate) fn launch_app_by_id_with_layout(
+    pub(crate) fn launch_view_by_id_with_layout(
         &mut self,
         id: &str,
         layout: Option<String>,
@@ -2411,8 +2440,8 @@ impl PlexiApp {
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
         let follow_file_browser_cwd = cwd_override.is_none();
-        self.launch_app_by_id_with_layout_at(
-            IdAppLaunchOptions {
+        self.launch_view_by_id_with_layout_at(
+            IdViewLaunchOptions {
                 target_win: self.active_window,
                 bypass_on_launch: false,
                 follow_file_browser_cwd,
@@ -2424,12 +2453,12 @@ impl PlexiApp {
         )
     }
 
-    /// Like [`launch_app_by_id_with_layout`](Self::launch_app_by_id_with_layout)
+    /// Like [`open_view_by_id_with_layout`](Self::open_view_by_id_with_layout)
     /// but bypasses the `[launch] on_launch` dedup policy so a fresh instance is
     /// always spawned. Used by the split-mirror path (#0336), whose whole point
-    /// is to duplicate a pane — with a singleton app the policy would otherwise
+    /// is to duplicate a pane — with a singleton plugin the policy would otherwise
     /// silently no-op the mirror.
-    pub(crate) fn launch_app_by_id_with_layout_forced(
+    pub(crate) fn launch_view_by_id_with_layout_forced(
         &mut self,
         id: &str,
         layout: Option<String>,
@@ -2437,8 +2466,8 @@ impl PlexiApp {
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
         let follow_file_browser_cwd = cwd_override.is_none();
-        self.launch_app_by_id_with_layout_at(
-            IdAppLaunchOptions {
+        self.launch_view_by_id_with_layout_at(
+            IdViewLaunchOptions {
                 target_win: self.active_window,
                 bypass_on_launch: true,
                 follow_file_browser_cwd,
@@ -2450,19 +2479,45 @@ impl PlexiApp {
         )
     }
 
-    pub(crate) fn launch_app_by_id_with_layout_at(
+    pub(crate) fn launch_view_by_id_with_layout_at(
         &mut self,
-        options: IdAppLaunchOptions,
+        options: IdViewLaunchOptions,
         id: &str,
         layout: Option<String>,
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        let IdAppLaunchOptions {
+        if id != "terminal" {
+            self.require_plugin(id)?;
+        }
+        let IdViewLaunchOptions {
             target_win,
             bypass_on_launch,
             follow_file_browser_cwd,
         } = options;
+        let context_id = self.windows[target_win].context_id;
+        let resolved_plugin = {
+            let registry = self.registries.view_for_context(context_id, &self.router);
+            let installed = registry.get(id).or_else(|| {
+                registry
+                    .list()
+                    .into_iter()
+                    .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id))
+            });
+            match installed {
+                Some(plugin) => {
+                    let view = plugin.contributes.resolve_view(&plugin.manifest.id, id)?;
+                    log::info!(
+                        "view_open: plugin_id={} view_id={} context_id={context_id}",
+                        plugin.manifest.id,
+                        view.id
+                    );
+                    Some(plugin.manifest.id.clone())
+                }
+                None => None,
+            }
+        };
+        let id = resolved_plugin.as_deref().unwrap_or(id);
         // Resolve an implicit Explorer caller before on-launch policy can move focus.
         let cwd_override =
             if id == "file_browser" && follow_file_browser_cwd && cwd_override.is_none() {
@@ -2473,9 +2528,9 @@ impl PlexiApp {
             } else {
                 cwd_override
             };
-        // "terminal" is a builtin pane type, not in the app registry.
-        // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
-        // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
+        // "terminal" is a builtin pane type, not in the plugin registry.
+        // Reached via SDK ViewCommand::SpawnView("terminal", ...) and legacy paths.
+        // Socket IPC and spawn-queue handle terminal inline in plugin/mod.rs.
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_h");
             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
@@ -2498,11 +2553,11 @@ impl PlexiApp {
             return Ok(None);
         }
 
-        // The Assistant is a compiled-in app whose constructor needs the live
+        // The Assistant is a compiled-in plugin whose constructor needs the live
         // broker and channel profile, so it cannot participate in the
-        // broker-free `builtin_factory`. Keep it on the same generic app-open
+        // broker-free `builtin_factory`. Keep it on the same generic plugin-open
         // route as every other builtin so scene and CLI callers do not need an
-        // app-specific command.
+        // plugin-specific command.
         if id == "assistant" {
             if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
                 crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
@@ -2517,12 +2572,12 @@ impl PlexiApp {
                 )
                 .ok_or_else(|| "assistant pane could not be opened".to_string())?;
             log::info!(
-                "launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
+                "open_view_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
             );
             return Ok(Some(pane_id));
         }
 
-        if let Some(feature) = release_feature_for_app_id(id) {
+        if let Some(feature) = release_feature_for_plugin_id(id) {
             if !crate::release::feature_enabled(feature) {
                 return Err(crate::release::feature_unavailable_message(feature));
             }
@@ -2531,7 +2586,7 @@ impl PlexiApp {
         // The caller resolves ownership before entering this launch pipeline.
         let context_id = self.windows[target_win].context_id;
 
-        // When the caller does not specify a placement, fall back to the app's
+        // When the caller does not specify a placement, fall back to the plugin's
         // manifest-declared `[launch] placement` before the host default
         // (`overlay`). One resolution point so every downstream hint inherits
         // it (#2283). Builtins are not in the registry → None → `overlay`.
@@ -2541,13 +2596,13 @@ impl PlexiApp {
                 .placement_for(id)
         });
 
-        // #0336: honor the app's `[launch] on_launch` dedup policy before any
+        // #0336: honor the plugin's `[launch] on_launch` dedup policy before any
         // spawn path (unless the caller forces a fresh instance, e.g. the
         // split-mirror). If a live instance already satisfies the policy we
         // focus it and return its real pane id; otherwise we fall through and
         // spawn as usual. This sits ahead of the background re-attach below on
         // purpose: the policy only matches *open* panes, so a `focus_existing`
-        // app whose pane was closed (its process parked in `background_apps`)
+        // plugin whose pane was closed (its process parked in `background_apps`)
         // finds no pane here, falls through, and re-attaches — the two compose.
         if !bypass_on_launch {
             if let Some(existing_id) =
@@ -2562,14 +2617,14 @@ impl PlexiApp {
             .or_else(|| self.context_root_for(context_id))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         log::info!(
-            "launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
+            "open_view_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
             self.context_root_for(context_id)
         );
 
-        // Builtin app factory — resolved before the process registry; builtins never touch disk.
+        // Builtin plugin factory — resolved before the process registry; builtins never touch disk.
         if let Some(app) = builtin_factory(id, &cwd, args) {
-            log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
+            log::info!("open_view_by_id_with_layout: '{id}' resolved as builtin");
             let group = if id == "file_browser" && !follow_file_browser_cwd {
                 None
             } else {
@@ -2579,8 +2634,8 @@ impl PlexiApp {
                     .or_else(|| builtin_default_group(app.type_id()))
             };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
-            let perms = crate::app::permissions::AppPermissions::builtin();
-            self.open_builtin_app_pane_at(
+            let perms = crate::app::permissions::PluginPermissions::builtin();
+            self.open_builtin_view_pane_at(
                 BuiltinPlacement {
                     window: target_win,
                     hint: Some(&hint),
@@ -2594,17 +2649,17 @@ impl PlexiApp {
             return Ok(None);
         }
 
-        // Ensure the registry is up-to-date: rescan if the app was added mid-session
-        // via `plexi app init` and wasn't present at startup.
+        // Ensure the registry is up-to-date: rescan if the plugin was added mid-session
+        // via `plexi plugin init` and wasn't present at startup.
         if self
             .registries
             .view_for_context(context_id, &self.router)
             .get(id)
             .is_none()
         {
-            log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
+            log::info!("open_view_by_id: '{id}' not in startup registry — rescanning from disk");
             // Rescan the CONTEXT's own root, not `cwd` — `view_for_context`
-            // below looks the app up by that same key, so rescanning any
+            // below looks the plugin up by that same key, so rescanning any
             // other path (even one that happens to resolve to the same
             // workspace via `cwd`'s internal walk-up) would leave the cache
             // entry `view_for_context` actually reads unchanged.
@@ -2627,7 +2682,7 @@ impl PlexiApp {
         }
 
         // Query group/hint after any registry reload so metadata reflects the
-        // actual registry that found the app.
+        // actual registry that found the plugin.
         let hint = layout.or_else(|| Some("overlay".to_string()));
         let installed = self
             .registries
@@ -2640,7 +2695,7 @@ impl PlexiApp {
                     .workspace_root
                     .clone()
                     .unwrap_or_else(|| cwd.clone());
-                self.open_installed_wasm_app_pane(
+                self.open_installed_wasm_view_pane(
                     target_win,
                     installed.clone(),
                     workspace_root,
@@ -2657,15 +2712,15 @@ impl PlexiApp {
                     .workspace_root
                     .clone()
                     .unwrap_or_else(|| cwd.clone());
-                let permissions = gate_app_permissions(
+                let permissions = gate_plugin_permissions(
                     id,
                     &workspace_root,
                     &installed.manifest.capabilities.capabilities,
                     installed.manifest.capabilities.allowed_hosts.clone(),
                 );
-                self.open_python_wasm_app_pane(
+                self.open_python_wasm_view_pane(
                     target_win,
-                    &installed.app_dir,
+                    &installed.plugin_dir,
                     workspace_root,
                     permissions,
                     hint.as_deref(),
@@ -2675,8 +2730,8 @@ impl PlexiApp {
             }
         }
 
-        // Dev-pack apps (apps/dev/*) are intentionally excluded from the
-        // id-addressable registry (apps/AGENTS.md) — install.sh never syncs
+        // Dev-pack plugins (apps/dev/*) are intentionally excluded from the
+        // id-addressable registry (plugins/AGENTS.md) — install.sh never syncs
         // them into a profile. When the caller passed an explicit cwd, `cwd`
         // already is that value; otherwise prefer the focused pane's actual
         // cwd over `cwd` (which may have resolved to the context root ahead
@@ -2690,49 +2745,52 @@ impl PlexiApp {
                 .and_then(|f| self.windows[target_win].get_focused_pane_cwd(f))
                 .unwrap_or_else(|| cwd.clone())
         };
-        if let Some(dev_app_dir) = crate::app::registry::find_dev_pack_app(id, &search_start) {
+        if let Some(dev_plugin_dir) = crate::app::registry::find_dev_pack_plugin(id, &search_start)
+        {
             log::warn!(
-                "launch_app_by_id: '{id}' is a dev-pack app ({dev_app_dir:?}) — not id-openable"
+                "open_view_by_id: '{id}' is a dev-pack plugin ({dev_plugin_dir:?}) — not id-openable"
             );
             return Err(format!(
-                "'{id}' is a dev-pack app ({}) — dev apps are path-open only. Use `plexi app open {}` instead.",
-                dev_app_dir.display(),
-                dev_app_dir.display()
+                "'{id}' is a dev-pack plugin ({}) — dev plugins are path-open only. Use `plexi view open {}` instead.",
+                dev_plugin_dir.display(),
+                dev_plugin_dir.display()
             ));
         }
 
         match installed {
             None => {
                 log::warn!(
-                    "launch_app_by_id: app '{id}' not found in context_id={context_id}'s registry"
+                    "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry"
                 );
-                Err(format!("app '{id}' not found in this context's registry"))
+                Err(format!(
+                    "plugin '{id}' not found in this context's registry"
+                ))
             }
             Some(installed) => {
                 log::warn!(
-                    "launch_app_by_id: app '{id}' has manifest type {:?} with no launch runtime for it",
+                    "open_view_by_id: plugin '{id}' has manifest type {:?} with no launch runtime for it",
                     installed.manifest.manifest_type
                 );
                 Err(format!(
-                    "app '{id}' has manifest type {:?} with no launch runtime for it",
+                    "plugin '{id}' has manifest type {:?} with no launch runtime for it",
                     installed.manifest.manifest_type
                 ))
             }
         }
     }
 
-    /// Launch an app directly from a filesystem path without looking it up in the registry.
+    /// Launch a plugin directly from a filesystem path without looking it up in the registry.
     ///
-    /// The app runs in-place; its own directory is used as `workspace_root`.
+    /// The plugin runs in-place; its own directory is used as `workspace_root`.
     #[cfg(test)]
-    pub(crate) fn launch_app_by_path_with_layout(
+    pub(crate) fn launch_view_by_path_with_layout(
         &mut self,
         app_path: &str,
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_path_with_layout_inner(
+        self.launch_view_by_path_with_layout_inner(
             app_path,
             layout,
             workspace_root_override,
@@ -2745,13 +2803,13 @@ impl PlexiApp {
     /// Spawn another instance even when the manifest says to focus the open one.
     /// The split-mirror and the multi-instance routing test use this.
     #[cfg(test)]
-    pub(crate) fn launch_app_by_path_forced(
+    pub(crate) fn launch_view_by_path_forced(
         &mut self,
         app_path: &str,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_path_with_layout_inner(
+        self.launch_view_by_path_with_layout_inner(
             app_path,
             None,
             workspace_root_override,
@@ -2761,14 +2819,14 @@ impl PlexiApp {
         )
     }
 
-    pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
+    pub(crate) fn launch_view_by_path_with_layout_no_review_modal(
         &mut self,
         app_path: &str,
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_path_with_layout_inner(
+        self.launch_view_by_path_with_layout_inner(
             app_path,
             layout,
             workspace_root_override,
@@ -2778,7 +2836,7 @@ impl PlexiApp {
         )
     }
 
-    fn launch_app_by_path_with_layout_inner(
+    fn launch_view_by_path_with_layout_inner(
         &mut self,
         app_path: &str,
         layout: Option<String>,
@@ -2787,70 +2845,79 @@ impl PlexiApp {
         queue_raw_wasm_review: bool,
         honor_on_launch: bool,
     ) -> Result<Option<PaneId>, String> {
-        let app_dir = PathBuf::from(app_path);
-        log::info!("launch_app_by_path_with_layout: path={app_path}");
+        self.require_plugin(app_path)?;
+        let plugin_dir = PathBuf::from(app_path);
+        log::info!("open_view_by_path_with_layout: path={app_path}");
         // Path-open launches resolve against the active window's context —
         // there is no explicit target context for this entry point.
         let context_id = self.windows[self.active_window].context_id;
 
-        // A `.wasm` file is a sandboxed component app (the run primitive, G6),
-        // not a manifest-backed process app. Route it to the wasmtime path.
-        if app_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
+        // A `.wasm` file is a sandboxed component plugin (the run primitive, G6),
+        // not a manifest-backed process plugin. Route it to the wasmtime path.
+        if plugin_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
             require_wasm_experiment()?;
-            let app_id = self
+            let plugin_id = self
                 .registries
                 .view_for_context(context_id, &self.router)
-                .manifest_id_for_wasm_path(&app_dir)
+                .manifest_id_for_wasm_path(&plugin_dir)
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
-                    app_dir
+                    plugin_dir
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("wasm")
                         .to_string()
                 });
             let workspace_root = workspace_root_override.unwrap_or_else(|| {
-                app_dir
+                plugin_dir
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."))
             });
             if queue_raw_wasm_review {
                 return self
-                    .review_or_open_raw_wasm_app_pane(
-                        &app_id,
-                        &app_dir,
+                    .review_or_open_raw_wasm_view_pane(
+                        &plugin_id,
+                        &plugin_dir,
                         workspace_root,
                         args.to_vec(),
                     )
                     .map(|_| None);
             }
             return self
-                .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
+                .open_wasm_view_pane(&plugin_id, &plugin_dir, workspace_root, args.to_vec())
                 .map(Some);
         }
 
         let installed = match self
             .registries
             .view_for_context(context_id, &self.router)
-            .load_app(&app_dir)
+            .load_plugin(&plugin_dir)
         {
             Ok(a) => a,
             Err(e) => {
                 log::warn!(
-                    "launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}"
+                    "open_view_by_path_with_layout: failed to load manifest at {app_path}: {e}"
                 );
-                return Err(format!("failed to load app at '{app_path}': {e}"));
+                return Err(format!("failed to load plugin at '{app_path}': {e}"));
             }
         };
 
-        let perms = gate_app_permissions(
+        let view = installed
+            .contributes
+            .resolve_view(&installed.manifest.id, &installed.manifest.id)?;
+        log::info!(
+            "view_open_path: plugin_id={} view_id={} context_id={context_id}",
+            installed.manifest.id,
+            view.id
+        );
+        let perms = gate_plugin_permissions(
             &installed.manifest.id,
-            workspace_root_override.as_deref().unwrap_or(&app_dir),
+            workspace_root_override.as_deref().unwrap_or(&plugin_dir),
             &installed.manifest.capabilities.capabilities,
             installed.manifest.capabilities.allowed_hosts.clone(),
         );
-        let app_id = installed.manifest.id.clone();
+        let plugin_id = installed.manifest.id.clone();
 
         let manifest_placement = installed
             .launch
@@ -2859,9 +2926,9 @@ impl PlexiApp {
             .filter(|p| crate::app::registry::VALID_PLACEMENTS.contains(&p.as_str()));
         let layout_hint = Some(cli_open_placement(layout, manifest_placement));
 
-        let workspace_root = workspace_root_override.unwrap_or_else(|| app_dir.clone());
+        let workspace_root = workspace_root_override.unwrap_or_else(|| plugin_dir.clone());
         log::info!(
-            "launch_app_by_path_with_layout: workspace_root={}",
+            "open_view_by_path_with_layout: workspace_root={}",
             workspace_root.display()
         );
         if honor_on_launch {
@@ -2872,16 +2939,16 @@ impl PlexiApp {
                 .and_then(|mode| crate::app::registry::OnLaunchPolicy::parse(mode).ok())
                 .unwrap_or_default();
             if let Some(existing) =
-                self.focus_for_on_launch(policy, &app_id, context_id, args, None)
+                self.focus_for_on_launch(policy, &plugin_id, context_id, args, None)
             {
                 log::info!(
-                    "launch_app_by_path_with_layout: focused existing {app_id} pane {existing}"
+                    "open_view_by_path_with_layout: focused existing {plugin_id} pane {existing}"
                 );
                 return Ok(Some(existing));
             }
         }
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
-            let pane_id = self.open_installed_wasm_app_pane(
+            let pane_id = self.open_installed_wasm_view_pane(
                 self.active_window,
                 installed,
                 workspace_root,
@@ -2894,9 +2961,9 @@ impl PlexiApp {
             || installed.bin_path.extension().and_then(|ext| ext.to_str()) == Some("pyc")
         {
             return self
-                .open_python_wasm_app_pane(
+                .open_python_wasm_view_pane(
                     self.active_window,
-                    &app_dir,
+                    &plugin_dir,
                     workspace_root,
                     perms,
                     layout_hint.as_deref(),
@@ -2904,19 +2971,22 @@ impl PlexiApp {
                 )
                 .map(Some);
         }
-        Err(format!("app '{app_id}' has no WASM runtime"))
+        Err(format!("plugin '{plugin_id}' has no WASM runtime"))
     }
 
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
+        if self.plugin_blocked("secrets_manager") {
+            return;
+        }
         // Toggle: if already open, close it.
         let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
                 if let Some(pane) = ctx.panes.get(pane_id) {
-                    if let Some(a) = pane.as_app() {
+                    if let Some(a) = pane.as_view() {
                         if a.runtime.type_id() == "secrets_manager" {
-                            self.close_focused_app();
+                            self.close_focused_view();
                             return;
                         }
                     }
@@ -2931,35 +3001,47 @@ impl PlexiApp {
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         };
 
-        let app = Box::new(crate::app::secrets_app::SecretsApp::new(cwd.clone()));
-        let perms = crate::app::permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
+        let app = Box::new(crate::app::secrets_view::SecretsView::new(cwd.clone()));
+        let perms = crate::app::permissions::PluginPermissions::builtin();
+        self.open_builtin_view_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
     /// Open the command view pane for `workspace`. One pane per context.
     pub(crate) fn open_command_view(&mut self, workspace: &std::path::Path) -> Result<u64, String> {
+        self.require_plugin("agents-dashboard")?;
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             return Err(crate::release::feature_unavailable_text(
-                    crate::release::ReleaseFeature::Assistant,
-                ));
+                crate::release::ReleaseFeature::Assistant,
+            ));
         }
         let context_id = self.windows[self.active_window].context_id;
-        if let Some((win_idx, slot, depth)) = self.locate_app_instance("command-view", Some(context_id)) {
+        if let Some((win_idx, slot, depth)) =
+            self.locate_view_instance("agents-dashboard", Some(context_id))
+        {
             self.reveal_and_focus_instance(win_idx, slot, depth);
             return Ok(slot);
         }
-        let app = Box::new(crate::app::command_view_app::CommandViewApp::new(workspace.to_path_buf()));
-        let perms = crate::app::permissions::AppPermissions::builtin();
+        let app = Box::new(crate::app::agents_dashboard_view::AgentsDashboardView::new(
+            workspace.to_path_buf(),
+        ));
+        let perms = crate::app::permissions::PluginPermissions::builtin();
         let predicted = self.host.next_pane_id();
         log::info!("command_view: opening pane for {}", workspace.display());
-        self.open_builtin_app_pane(app, perms, workspace.to_path_buf(), None, Some("split_h"), None);
+        self.open_builtin_view_pane(
+            app,
+            perms,
+            workspace.to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
         Ok(predicted)
     }
 
     /// Open (or focus) the host Assistant pane (Phase 1 of
-    /// `docs/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the
+    /// `docs/assistant-host-plugin.md`, reachable via Cmd+Ctrl+A and the
     /// Cmd+P palette). Opens as an overlay — it overtakes the focused pane
-    /// like every other app launch. One Assistant pane per *context*: if one
+    /// like every other plugin launch. One Assistant pane per *context*: if one
     /// already exists in any window of the caller's context it is revealed
     /// and focused (cross-window) instead of spawning a duplicate.
     /// Conversation state is persisted per context on disk, so
@@ -2984,6 +3066,9 @@ impl PlexiApp {
         target_win: usize,
         hint: &str,
     ) -> Option<PaneId> {
+        if self.plugin_blocked("assistant") {
+            return None;
+        }
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return None;
@@ -2992,7 +3077,7 @@ impl PlexiApp {
         // Focus an existing Assistant pane anywhere in this context instead
         // of opening a second one.
         if let Some((win_idx, slot, overlay_depth)) =
-            self.locate_app_instance("assistant", Some(caller_context_id))
+            self.locate_view_instance("assistant", Some(caller_context_id))
         {
             log::info!(
                 "assistant: focusing existing instance at pane {slot} in context {caller_context_id}"
@@ -3009,18 +3094,20 @@ impl PlexiApp {
             "assistant: opening pane for workspace {} in context {caller_context_id}",
             workspace_root.display()
         );
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
-        );
-        let app = Box::new(crate::assistant::AssistantApp::new(
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                self.config.ai.clone(),
+                self.config.resolved_model_modes(),
+            ));
+        let app = Box::new(crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
             &crate::config::config_dir(),
             caller_context_id,
         ));
-        let perms = crate::app::permissions::AppPermissions::builtin();
+        let perms = crate::app::permissions::PluginPermissions::builtin();
         let predicted = self.host.next_pane_id();
-        self.open_builtin_app_pane_at(
+        self.open_builtin_view_pane_at(
             BuiltinPlacement {
                 window: target_win,
                 hint: Some(hint),
@@ -3036,18 +3123,24 @@ impl PlexiApp {
 
     /// Reuse an Assistant in `context_id` (or the active window's context), or
     /// insert a hidden one that is not in the tile tree. CLI sends call this when they did not name a pane, so `assistant send`
-    /// works without `app open assistant`. A caller that names a missing pane
+    /// works without `view open assistant`. A caller that names a missing pane
     /// must not land here — that stays `assistant_pane_not_found`.
     ///
     /// Returns `None` when the Assistant feature is off or the context has no
     /// window.
     pub(crate) fn ensure_headless_assistant(&mut self, context_id: Option<u64>) -> Option<PaneId> {
+        if self.plugin_blocked("assistant") {
+            return None;
+        }
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return None;
         }
         let win_idx = match context_id {
-            Some(id) => self.windows.iter().position(|window| window.context_id == id)?,
+            Some(id) => self
+                .windows
+                .iter()
+                .position(|window| window.context_id == id)?,
             None => self.active_window,
         };
         let caller_context_id = self.windows[win_idx].context_id;
@@ -3057,7 +3150,7 @@ impl PlexiApp {
             }
             for (id, pane) in &window.panes {
                 if pane
-                    .as_app()
+                    .as_view()
                     .is_some_and(|app| app.runtime.type_id() == "assistant")
                 {
                     log::info!(
@@ -3072,10 +3165,12 @@ impl PlexiApp {
             .context_root_for(caller_context_id)
             .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
-        );
-        let app = Box::new(crate::assistant::AssistantApp::new(
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                self.config.ai.clone(),
+                self.config.resolved_model_modes(),
+            ));
+        let app = Box::new(crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
             &crate::config::config_dir(),
@@ -3088,12 +3183,12 @@ impl PlexiApp {
         );
         self.windows[win_idx].panes.insert(
             id,
-            Pane::App(Box::new(crate::host::pane::AppPane {
+            Pane::View(Box::new(crate::host::pane::ViewPane {
                 pip_status: None,
                 id,
-                runtime: crate::host::pane::AppRuntime::Builtin(app),
+                runtime: crate::host::pane::ViewRuntime::Builtin(app),
                 workspace_root,
-                permissions: crate::app::permissions::AppPermissions::builtin(),
+                permissions: crate::app::permissions::PluginPermissions::builtin(),
                 manifest_id: "assistant".to_string(),
                 name: "Assistant".to_string(),
                 pane_group: None,
@@ -3107,8 +3202,8 @@ impl PlexiApp {
         );
         let context_root = self.context_root_for(caller_context_id);
         crate::host::event_log::emit_scoped(
-            crate::host::event_log::HostEvent::AppSpawned {
-                app_id: "assistant".to_string(),
+            crate::host::event_log::HostEvent::ViewOpened {
+                plugin_id: "assistant".to_string(),
                 type_id: "assistant".to_string(),
                 pane_id: id,
                 timestamp: crate::host::event_log::now_timestamp(),
@@ -3123,8 +3218,11 @@ impl PlexiApp {
     /// the inbox with quick notes and flow through the same triage. Notes whose
     /// body is still empty on close are deleted by the editor.
     ///
-    /// Works from any focused pane type (terminal, app, file browser).
+    /// Works from any focused pane type (terminal, plugin, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
+        if self.plugin_blocked("notes") {
+            return;
+        }
         log::info!("scratchpad: opening new scratch note");
         let active = self.active_window;
         let target_pane_id = self.windows[active].focused_pane.and_then(|tile_id| {
@@ -3152,7 +3250,7 @@ impl PlexiApp {
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        match self.launch_app_by_id_with_layout(
+        match self.launch_view_by_id_with_layout(
             "text-editor",
             None,
             std::slice::from_ref(&path_str),
@@ -3191,6 +3289,9 @@ impl PlexiApp {
 
     /// Open the quick note modal: capture context and push FocusKind::QuickNote.
     pub(crate) fn open_quick_note_modal(&mut self) {
+        if self.plugin_blocked("notes") {
+            return;
+        }
         let active = self.active_window;
         let cwd = self.windows[active]
             .focused_pane
@@ -3502,11 +3603,11 @@ fn quick_note_asset_stem(source: &Path) -> String {
     }
 }
 
-/// Resolve the pane placement for a CLI- or spawn-request-initiated app open.
+/// Resolve the pane placement for a CLI- or spawn-request-initiated view open.
 ///
 /// The caller's pane is typically the agent's own terminal, so a CLI open must
 /// never take over it (`overlay`). Precedence: an explicit layout from the
-/// command flag, then the app's manifest `[launch] placement`, then a sibling
+/// command flag, then the plugin's manifest `[launch] placement`, then a sibling
 /// split (`split_h`). Manifest placement still overrides the default; only the
 /// fallback changed from `overlay` to `split_h` (stint 0330). `manifest_placement`
 /// must already be validated against [`crate::app::registry::VALID_PLACEMENTS`].
@@ -3523,7 +3624,7 @@ pub(crate) fn cli_open_placement(
 /// the file.
 ///
 /// The global tier, not a context tier, because the only caller is
-/// `builtin_factory` — which resolves an app id with no host state to consult, so
+/// `builtin_factory` — which resolves a plugin id with no host state to consult, so
 /// it has no context to anchor to. `open_scratchpad` does have one and writes to
 /// the active context's tier instead.
 fn new_scratch_note_path() -> PathBuf {
@@ -3531,28 +3632,28 @@ fn new_scratch_note_path() -> PathBuf {
     crate::notes::global_notes_dir().join(filename)
 }
 
-fn gate_app_permissions(
-    app_id: &str,
+fn gate_plugin_permissions(
+    plugin_id: &str,
     workspace_root: &std::path::Path,
     capability_strings: &[String],
     allowed_hosts: Vec<String>,
-) -> crate::app::permissions::AppPermissions {
-    gate_app_permissions_in_profile(
+) -> crate::app::permissions::PluginPermissions {
+    gate_plugin_permissions_in_profile(
         &crate::config::config_dir(),
-        app_id,
+        plugin_id,
         workspace_root,
         capability_strings,
         allowed_hosts,
     )
 }
 
-fn gate_app_permissions_in_profile(
+fn gate_plugin_permissions_in_profile(
     profile_dir: &std::path::Path,
-    app_id: &str,
+    plugin_id: &str,
     workspace_root: &std::path::Path,
     capability_strings: &[String],
     allowed_hosts: Vec<String>,
-) -> crate::app::permissions::AppPermissions {
+) -> crate::app::permissions::PluginPermissions {
     let declared = capability_strings
         .iter()
         .filter_map(|capability| {
@@ -3560,32 +3661,35 @@ fn gate_app_permissions_in_profile(
         })
         .collect();
     let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .materialize_app_permissions(app_id, workspace_root, &declared, allowed_hosts);
-    apply_media_release_gate(app_id, &mut permissions);
+        .materialize_plugin_permissions(plugin_id, workspace_root, &declared, allowed_hosts);
+    apply_media_release_gate(plugin_id, &mut permissions);
     permissions
 }
 
 /// The one release policy for protocol media operations: unless the
 /// `media_io` experiment is on, every media capability is withheld before the
-/// app's permissions reach any dispatch path. Additive to the capability
+/// plugin's permissions reach any dispatch path. Additive to the capability
 /// model — it only removes grants.
-fn apply_media_release_gate(app_id: &str, permissions: &mut crate::app::permissions::AppPermissions) {
-    if permissions.is_builtin || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
+fn apply_media_release_gate(
+    plugin_id: &str,
+    permissions: &mut crate::app::permissions::PluginPermissions,
+) {
+    if permissions.is_builtin
+        || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
     {
         return;
     }
     let withheld = permissions.withhold_media_io();
     if !withheld.is_empty() {
         log::info!(
-            "release_gate: withheld media capabilities {withheld:?} from {app_id} (media_io off)"
+            "release_gate: withheld media capabilities {withheld:?} from {plugin_id} (media_io off)"
         );
         crate::release::log_feature_blocked(crate::release::ReleaseFeature::MediaIo);
     }
 }
 
-
 fn gate_wasm_sets(
-    app_id: &str,
+    plugin_id: &str,
     workspace_root: &std::path::Path,
     declared: &std::collections::HashSet<String>,
 ) -> (
@@ -3594,7 +3698,7 @@ fn gate_wasm_sets(
 ) {
     gate_wasm_sets_in_profile(
         &crate::config::config_dir(),
-        app_id,
+        plugin_id,
         workspace_root,
         declared,
     )
@@ -3602,19 +3706,22 @@ fn gate_wasm_sets(
 
 fn gate_wasm_sets_in_profile(
     profile_dir: &std::path::Path,
-    app_id: &str,
+    plugin_id: &str,
     workspace_root: &std::path::Path,
     declared: &std::collections::HashSet<String>,
 ) -> (
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .materialize_wasm_sets(app_id, workspace_root, declared)
+    crate::broker::gate::PermissionMonitor::for_profile(profile_dir).materialize_wasm_sets(
+        plugin_id,
+        workspace_root,
+        declared,
+    )
 }
 
 fn wasm_runtime_capabilities_from_permissions(
-    permissions: &crate::app::permissions::AppPermissions,
+    permissions: &crate::app::permissions::PluginPermissions,
     workspace_root: &std::path::Path,
 ) -> std::collections::HashSet<String> {
     use crate::app::permissions::Capability;
@@ -3644,18 +3751,18 @@ fn wasm_runtime_capabilities_from_permissions(
     caps
 }
 
-fn wasm_state_path(app_id: &str, workspace_root: &std::path::Path) -> PathBuf {
-    wasm_state_path_in_profile(&crate::config::config_dir(), app_id, workspace_root)
+fn wasm_state_path(plugin_id: &str, workspace_root: &std::path::Path) -> PathBuf {
+    wasm_state_path_in_profile(&crate::config::config_dir(), plugin_id, workspace_root)
 }
 
 fn wasm_state_path_in_profile(
     profile_dir: &std::path::Path,
-    app_id: &str,
+    plugin_id: &str,
     workspace_root: &std::path::Path,
 ) -> PathBuf {
     profile_dir
         .join("wasm-state")
-        .join(sanitize_wasm_path_component(app_id))
+        .join(sanitize_wasm_path_component(plugin_id))
         .join(format!(
             "{}.json",
             sanitize_wasm_path_component(&workspace_root.display().to_string())
@@ -3681,9 +3788,9 @@ fn sanitize_wasm_path_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::permissions::AppPermissions;
-    use crate::app::registry::AppRegistry;
-    use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
+    use crate::app::permissions::PluginPermissions;
+    use crate::app::registry::PluginRegistry;
+    use crate::host::wasm_view::{StateSnapshot, StateStore, WasmView};
     use crate::testing::HostHarness;
 
     fn counter_fixture() -> PathBuf {
@@ -3691,19 +3798,19 @@ mod tests {
     }
 
     /// A loadable native-WASM component and the state snapshot the pane opens
-    /// with. Snapshot is taken before the store moves into the app, mirroring the
+    /// with. Snapshot is taken before the store moves into the plugin, mirroring the
     /// production launch path.
-    fn load_counter() -> (WasmApp, StateSnapshot) {
+    fn load_counter() -> (WasmView, StateSnapshot) {
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
-        let app = WasmApp::load_ephemeral_run("counter-pane", &counter_fixture(), store)
+        let app = WasmView::load_ephemeral_run("counter-pane", &counter_fixture(), store)
             .expect("load counter fixture");
         (app, snapshot)
     }
 
-    fn media_permissions() -> AppPermissions {
+    fn media_permissions() -> PluginPermissions {
         use crate::app::permissions::Capability;
-        let mut permissions = AppPermissions::default();
+        let mut permissions = PluginPermissions::default();
         permissions
             .capabilities
             .extend(Capability::MEDIA_IO.iter().copied());
@@ -3740,7 +3847,7 @@ mod tests {
     #[test]
     fn media_gate_leaves_builtin_apps_alone() {
         let _experiments = crate::release::set_test_experiments(&[]);
-        let mut permissions = AppPermissions::builtin();
+        let mut permissions = PluginPermissions::builtin();
         apply_media_release_gate("builtin", &mut permissions);
         assert!(permissions.blocked.is_empty());
     }
@@ -3748,31 +3855,25 @@ mod tests {
     #[test]
     fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
         let _channel = crate::config::set_test_channel("main");
-        // WasmApps on so the launch reaches the manifest-identity gate; DAW stays off.
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
-        let global_apps = tempfile::tempdir().expect("global apps");
-        let app_dir = global_apps.path().join("daw");
-        std::fs::create_dir_all(&app_dir).expect("create app dir");
-        let wasm_path = app_dir.join("renamed-component.wasm");
+        // WasmViews on so the launch reaches the manifest-identity gate; DAW stays off.
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let global_apps = tempfile::tempdir().expect("global plugins");
+        let plugin_dir = global_apps.path().join("daw");
+        std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        let wasm_path = plugin_dir.join("renamed-component.wasm");
         std::fs::copy(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/daw-engine.wasm"),
             &wasm_path,
         )
         .expect("copy DAW fixture");
         std::fs::write(
-            app_dir.join("manifest.toml"),
-            "schema_version = 1\n\
-             \n\
-             [app]\n\
-             id = \"com.plexi.daw-engine-poc\"\n\
-             type = \"wasm\"\n\
-             name = \"DAW Engine\"\n\
-             version = \"0.1.0\"\n\
-             entry = \"renamed-component.wasm\"\n",
+            plugin_dir.join("manifest.toml"),
+            "schema_version = 2\n\n[plugin]\nid = \"com.plexi.daw-engine-poc\"\nname = \"DAW Engine\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"wasm\"\nentry = \"renamed-component.wasm\"\n\n[[contributes.views]]\nid = \"com.plexi.daw-engine-poc.main\"\ndefault = true\n",
         )
         .expect("write manifest");
         let bare = tempfile::tempdir().expect("bare cwd");
-        let registry = AppRegistry::load_with_global(bare.path(), global_apps.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global_apps.path());
         assert!(registry.get("com.plexi.daw-engine-poc").is_some());
 
         let mut h = HostHarness::new();
@@ -3780,7 +3881,7 @@ mod tests {
         h.app.registries.set_view_for_test(&ctx1_root, registry);
         let error = h
             .app
-            .launch_app_by_path_with_layout_no_review_modal(
+            .launch_view_by_path_with_layout_no_review_modal(
                 wasm_path.to_str().expect("UTF-8 fixture path"),
                 None,
                 None,
@@ -3798,9 +3899,9 @@ mod tests {
     /// placement hint (the layout Cmd+P uses) — replace the focused pane in
     /// place, reusing its id and stashing the displaced pane for restore — not
     /// unconditionally split a new pane below. Regression:
-    /// `open_wasm_app_instance` ignored the hint and always split.
+    /// `open_wasm_plugin_instance` ignored the hint and always split.
     #[test]
-    fn open_wasm_app_instance_overlay_replaces_focused_pane_in_place() {
+    fn open_wasm_view_instance_overlay_replaces_focused_pane_in_place() {
         let mut h = HostHarness::new();
         let focused = h.add_test_pane();
         h.focus_pane(focused);
@@ -3809,13 +3910,13 @@ mod tests {
         let (app, snapshot) = load_counter();
         let pane_id = h
             .app
-            .open_wasm_app_instance(super::WasmAppInstanceSpec {
+            .open_wasm_view_instance(super::WasmViewInstanceSpec {
                 target_win: 0,
-                app_id: "counter-pane",
+                plugin_id: "counter-pane",
                 app,
                 snapshot,
                 workspace_root: std::env::temp_dir(),
-                permissions: AppPermissions::default(),
+                permissions: PluginPermissions::default(),
                 remembered: None,
                 layout: Some("overlay"),
                 launch_args: Vec::new(),
@@ -3832,7 +3933,7 @@ mod tests {
         let stashed_replacement = h.app.windows[0]
             .panes
             .get(&focused)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|app| app.overlay_replaced.is_some())
             .unwrap_or(false);
         assert!(
@@ -3842,10 +3943,10 @@ mod tests {
     }
 
     /// Stint 0431: an overlay launch into an empty context (no focused pane)
-    /// must fall through to the root-pane path and install the app as the tree
+    /// must fall through to the root-pane path and install the plugin as the tree
     /// root — never a silent no-op.
     #[test]
-    fn open_wasm_app_instance_overlay_no_focused_pane_launches_root() {
+    fn open_wasm_view_instance_overlay_no_focused_pane_launches_root() {
         let mut h = HostHarness::new();
         assert!(
             h.app.windows[0].focused_pane.is_none(),
@@ -3855,13 +3956,13 @@ mod tests {
         let (app, snapshot) = load_counter();
         let pane_id = h
             .app
-            .open_wasm_app_instance(super::WasmAppInstanceSpec {
+            .open_wasm_view_instance(super::WasmViewInstanceSpec {
                 target_win: 0,
-                app_id: "counter-pane",
+                plugin_id: "counter-pane",
                 app,
                 snapshot,
                 workspace_root: std::env::temp_dir(),
-                permissions: AppPermissions::default(),
+                permissions: PluginPermissions::default(),
                 remembered: None,
                 layout: Some("overlay"),
                 launch_args: Vec::new(),

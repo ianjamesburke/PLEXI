@@ -8,7 +8,10 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Workspace",
         &["run", "workspace", "secret", "routine", "agent", "context"],
     ),
-    ("Apps", &["app", "account", "registry", "events"]),
+    (
+        "Plugins",
+        &["plugin", "view", "account", "registry", "events"],
+    ),
     ("Panes", &["pane", "notify"]),
     (
         "AI",
@@ -16,7 +19,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "assistant",
             "ai",
             "changes",
-            "command-view",
+            "agents-dashboard",
             "ledger",
             "needs-you",
             "permissions",
@@ -145,7 +148,11 @@ pub fn blocked_incomplete_arg(
     fn relax(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
         match path.split_first() {
             Some((head, rest)) => cmd.mut_subcommand(*head, |sub| relax(sub, rest, id)),
-            None => cmd.mut_arg(id, |arg| arg.num_args(0..=1).value_parser(clap::builder::StringValueParser::new()).default_missing_value("missing-experiment-value")),
+            None => cmd.mut_arg(id, |arg| {
+                arg.num_args(0..=1)
+                    .value_parser(clap::builder::StringValueParser::new())
+                    .default_missing_value("missing-experiment-value")
+            }),
         }
     }
     let mut cmd = Cli::command();
@@ -289,9 +296,7 @@ pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<Stri
     }
     let bin = invoked_bin_name(args);
     let suggestion = closest_subcommand_suggestion(word, cmd);
-    log::info!(
-        "cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}"
-    );
+    log::info!("cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}");
     let headline = match suggestion {
         Some(matched) => format!("error: unknown command '{word}'. Did you mean `{matched}`?"),
         None => format!("error: unknown command '{word}'"),
@@ -517,7 +522,7 @@ mod tests {
             "assistant",
             "changes",
             "ledger",
-            "command-view",
+            "agents-dashboard",
             "account",
             "routine",
         ] {
@@ -533,14 +538,14 @@ mod tests {
             ],
             "{agent:?}"
         );
-        let app = visible_subs(cmd.find_subcommand("app").unwrap());
+        let app = visible_subs(cmd.find_subcommand("plugin").unwrap());
         for gated in ["publish", "browse", "search"] {
             assert!(!app.contains(&gated.to_string()), "{app:?}");
         }
-        for core in ["open", "install", "list", "render", "check"] {
+        for core in ["install", "list", "check"] {
             assert!(app.contains(&core.to_string()), "{app:?}");
         }
-        let open = sub_at(&cmd, &["app", "open"]);
+        let open = sub_at(&cmd, &["view", "open"]);
         let hidden = |id: &str| {
             open.get_arguments()
                 .find(|a| a.get_id() == id)
@@ -617,8 +622,8 @@ mod tests {
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
             (
-                &["plexi", "command-view", "--json"],
-                ReleaseFeature::CommandView,
+                &["plexi", "agents-dashboard", "--json"],
+                ReleaseFeature::AgentsDashboard,
             ),
             (
                 &["plexi", "changes", "refresh", "x"],
@@ -638,11 +643,11 @@ mod tests {
                 ReleaseFeature::FolderSecrets,
             ),
             (
-                &["plexi", "app", "open", "--mcp", "x"],
+                &["plexi", "view", "open", "--mcp", "x"],
                 ReleaseFeature::McpClient,
             ),
             (
-                &["plexi", "app", "search", "x"],
+                &["plexi", "plugin", "search", "x"],
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
@@ -677,7 +682,7 @@ mod tests {
             &["plexi", "agent", "ask", "q"],
             &["plexi", "agent", "hook", "install"],
             &["plexi", "ai", "doctor"],
-            &["plexi", "app", "open", "--cli", "htop"],
+            &["plexi", "view", "open", "--cli", "htop"],
             &["plexi", "secret", "set", "A"],
             &["plexi", "secret", "get", "A"],
             &["plexi", "needs-you", "list"],
@@ -776,7 +781,9 @@ mod tests {
                 "arg0={arg0:?} output={out}"
             );
             assert!(
-                out.contains(&format!("For more information, try '{expected_bin} --help'.")),
+                out.contains(&format!(
+                    "For more information, try '{expected_bin} --help'."
+                )),
                 "arg0={arg0:?} output={out}"
             );
         }

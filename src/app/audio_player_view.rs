@@ -1,0 +1,202 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::app::view_trait::{View, ViewRenderContext};
+use crate::media::audio::{PlaybackRequest, PlaybackSession};
+use crate::ui::{
+    button::{self, ButtonKind},
+    style,
+    view_chrome::ViewChrome,
+};
+
+pub struct AudioPlayerView {
+    path: PathBuf,
+    session: Option<PlaybackSession>,
+    duration_ms: Option<u64>,
+    position_ms: u64,
+    playing: bool,
+    volume: f32,
+    error: Option<String>,
+}
+
+impl AudioPlayerView {
+    pub fn new(path: PathBuf) -> Self {
+        log::info!(
+            "AudioPlayerView: launch plugin_id=audio-player path={}",
+            path.display()
+        );
+        let duration_ms = crate::media::audio::source_duration_ms(&path.to_string_lossy());
+        Self {
+            path,
+            session: None,
+            duration_ms,
+            position_ms: 0,
+            playing: false,
+            volume: 1.0,
+            error: None,
+        }
+    }
+
+    fn filename(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Audio")
+            .to_string()
+    }
+
+    fn ensure_session(&mut self) -> bool {
+        if self.session.is_some() {
+            return true;
+        }
+        let request = PlaybackRequest {
+            source: self.path.to_string_lossy().to_string(),
+            volume: self.volume,
+        };
+        match crate::media::audio::start_playback(request) {
+            Ok(session) => {
+                self.session = Some(session);
+                true
+            }
+            Err(err) => {
+                let msg = format!("Unable to play audio: {err}");
+                log::warn!("AudioPlayerView: {} path={}", msg, self.path.display());
+                self.error = Some(msg);
+                false
+            }
+        }
+    }
+
+    fn set_playing(&mut self, playing: bool) {
+        if playing && !self.ensure_session() {
+            return;
+        }
+        if let Some(session) = &self.session {
+            if playing {
+                session.resume();
+            } else {
+                session.pause();
+            }
+        }
+        self.playing = playing;
+    }
+
+    fn seek(&mut self, position_ms: u64) {
+        self.position_ms = self
+            .duration_ms
+            .map(|duration| position_ms.min(duration))
+            .unwrap_or(position_ms);
+        if let Some(session) = &self.session {
+            if let Err(err) = session.seek(Duration::from_millis(self.position_ms)) {
+                self.error = Some(format!("Seek failed: {err}"));
+            }
+        }
+    }
+
+    fn sync_position(&mut self) {
+        if let Some(session) = &self.session {
+            self.position_ms = session.position().as_millis() as u64;
+        }
+    }
+}
+
+impl View for AudioPlayerView {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn type_id(&self) -> &'static str {
+        "audio-player"
+    }
+
+    fn display_name(&self) -> String {
+        format!("Audio - {}", self.filename())
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &ViewRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        self.sync_position();
+        if self.playing {
+            ui.ctx().request_repaint();
+        }
+        let colors = ctx.colors;
+        ViewChrome::new(colors).paint_view_bar(ui, &self.filename(), "Audio Player");
+
+        ui.add_space(style::SPACE_MD);
+        ui.horizontal(|ui| {
+            ui.add_space(style::SPACE_MD);
+            let label = if self.playing { "Pause" } else { "Play" };
+            if ui.add(button::KitButton::new(label, colors).kind(ButtonKind::Primary).min_width(64.0)).clicked() {
+                self.set_playing(!self.playing);
+            }
+            ui.add_space(style::SPACE_SM);
+            let duration = self.duration_ms.unwrap_or(0).max(self.position_ms);
+            let mut pos = self.position_ms.min(duration);
+            let response = ui.add(egui::Slider::new(&mut pos, 0..=duration).show_value(false));
+            if response.changed() {
+                self.seek(pos);
+            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {}",
+                    format_time(self.position_ms),
+                    self.duration_ms
+                        .map(format_time)
+                        .unwrap_or_else(|| "--:--".to_string())
+                ))
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim)
+                .monospace(),
+            );
+        });
+        ui.add_space(style::SPACE_SM);
+        ui.horizontal(|ui| {
+            ui.add_space(style::SPACE_MD);
+            ui.label(
+                egui::RichText::new("Volume")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+            );
+            if ui
+                .add(egui::Slider::new(&mut self.volume, 0.0..=2.0))
+                .changed()
+            {
+                if let Some(session) = &self.session {
+                    session.set_volume(self.volume);
+                }
+            }
+        });
+        if let Some(error) = &self.error {
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.danger),
+                );
+            });
+        }
+    }
+
+    fn serialize_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "path": self.path.display().to_string(),
+            "position_ms": self.position_ms,
+            "duration_ms": self.duration_ms,
+            "volume": self.volume,
+        }))
+    }
+}
+
+fn format_time(ms: u64) -> String {
+    let total_seconds = ms / 1000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes:02}:{seconds:02}")
+}

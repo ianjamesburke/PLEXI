@@ -18,7 +18,7 @@
 //! Experiment gate rule: a gate guards only the experiment's own surface,
 //! never a shared servicing path that also does core work. An off experiment
 //! preserves the established contract of every core command; it must not turn
-//! that command into a different fallback behavior. Core app I/O must run with
+//! that command into a different fallback behavior. Core plugin I/O must run with
 //! every experiment off, including during hidden-window logic passes.
 //!
 //! The enabled set is read from the *global* config only. A workspace config
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn unavailable_text_names_the_enable_command() {
         assert_eq!(
-            feature_unavailable_text(ReleaseFeature::CommandView),
+            feature_unavailable_text(ReleaseFeature::AgentsDashboard),
             "command_view is an experiment. Turn it on with: plexi experiments enable command_view"
         );
     }

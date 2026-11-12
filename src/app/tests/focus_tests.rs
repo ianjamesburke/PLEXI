@@ -6,7 +6,7 @@ struct ThemeEventRecorder {
     events: Arc<Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
-impl crate::app::app_trait::App for ThemeEventRecorder {
+impl crate::app::view_trait::View for ThemeEventRecorder {
     fn type_id(&self) -> &'static str {
         "theme-event-recorder"
     }
@@ -22,7 +22,7 @@ impl crate::app::app_trait::App for ThemeEventRecorder {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
@@ -39,14 +39,14 @@ fn add_theme_event_recorder(
 ) -> Arc<Mutex<Vec<crate::protocol::PlexiEvent>>> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
-    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+    let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(ThemeEventRecorder {
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(ThemeEventRecorder {
             events: events.clone(),
         })),
         workspace_root: "/tmp".into(),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "theme-event-recorder".to_string(),
         name: "theme-event-recorder".to_string(),
         pane_group: None,
@@ -100,7 +100,10 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
     for events in [background_events, inactive_events, parked_events] {
         let events = events.lock().expect("event recorder");
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], crate::protocol::PlexiEvent::Theme { .. }));
+        assert!(matches!(
+            events[0],
+            crate::protocol::PlexiEvent::Theme { .. }
+        ));
     }
 }
 
@@ -729,14 +732,14 @@ fn navigate_to_activates_ancestor_tabs() {
 /// Install a text editor pane on `path` in window 0.
 fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::AppPane {
+    let view_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.to_path_buf()),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::app::text_editor_view::TextEditorView::new_for_test_note(path.to_path_buf()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
         pane_group: None,
@@ -749,7 +752,7 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     };
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
 }
 
 /// Cmd+P lists the notes you have open, not every note on disk. A note
@@ -789,7 +792,10 @@ fn open_note_entries_lists_only_notes_open_in_a_pane() {
         2,
         "one entry per open note, deduped across panes: {paths:?}"
     );
-    assert!(paths.contains(&opened), "open note must be listed: {paths:?}");
+    assert!(
+        paths.contains(&opened),
+        "open note must be listed: {paths:?}"
+    );
     assert!(
         paths.contains(&opened_twice),
         "note open in two panes must be listed once: {paths:?}"
@@ -813,14 +819,14 @@ fn open_note_entries_ignores_non_note_editor_panes() {
     std::fs::write(&source, "fn main() {}").expect("write source");
 
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::AppPane {
+    let view_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorApp::new(source.clone()),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::app::text_editor_view::TextEditorView::new(source.clone()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
         pane_group: None,
@@ -833,7 +839,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
     };
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
 
     assert!(
         app.open_note_entries().is_empty(),
@@ -861,14 +867,14 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     let pane_id = app.host.alloc_pane_id();
     panes.insert(
         pane_id,
-        crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone()),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::app::text_editor_view::TextEditorView::new_for_test_note(note.clone()),
             )),
             workspace_root: crate::testing::scratch_context_root("focus"),
-            permissions: crate::app::permissions::AppPermissions::builtin(),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
             pane_group: None,

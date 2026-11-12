@@ -62,9 +62,7 @@ fn key_label(token: &str, mac: bool) -> String {
         "left" | "arrowleft" | "\u{2190}" => "\u{2190}".into(),
         "right" | "arrowright" | "\u{2192}" => "\u{2192}".into(),
         "tab" => "Tab".into(),
-        "space" | "\u{2423}" => {
-            if mac { "\u{2423}" } else { "Space" }.into()
-        }
+        "space" | "\u{2423}" => if mac { "\u{2423}" } else { "Space" }.into(),
         _ if token.chars().count() == 1 => token.to_uppercase(),
         _ => token.to_string(),
     }
@@ -165,7 +163,7 @@ pub(crate) fn shortcut_hint_label(text: &str, colors: &Colors) -> egui::RichText
 /// Size of one key chip around an already-laid-out label. The width floors at
 /// the chip height, so a single glyph stays square rather than reading as a
 /// sliver, and again at `KEYCHIP_MIN_W`. Every measure and paint site — the
-/// live kit, the app chrome footer, and the headless renderer — goes through
+/// live kit, the plugin chrome footer, and the headless renderer — goes through
 /// here so the three can never drift apart again.
 pub(crate) fn chip_size(text_size: Vec2) -> Vec2 {
     let h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
@@ -469,7 +467,10 @@ mod tests {
 
     #[test]
     fn chord_text_joins_per_platform() {
-        assert_eq!(chord_text(&["cmd", "shift", "n"], true), "\u{2318}\u{21e7}N");
+        assert_eq!(
+            chord_text(&["cmd", "shift", "n"], true),
+            "\u{2318}\u{21e7}N"
+        );
         assert_eq!(chord_text(&["cmd", "shift", "n"], false), "Ctrl+Shift+N");
         assert_eq!(chord_text(&["cmd", "down"], false), "Ctrl+\u{2193}");
     }

@@ -1,6 +1,6 @@
 use plexi_wasm_sdk::{
-    effects, ui, Alignment, App, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
-    UiNodeData,
+    effects, ui, Alignment, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl, UiNodeData,
+    View,
 };
 
 #[test]
@@ -55,7 +55,7 @@ fn effect_helpers_cover_host_effects() {
         effects::spawn("files"),
         effects::subscribe_event_streams(SubscribeEventStreamsEffect {
             request_id: "subscribe-1".into(),
-            app_id: "notes".into(),
+            plugin_id: "notes".into(),
             event_names: vec!["note.saved".into()],
             payload_mode: "full".into(),
             trigger_mode: "conversation".into(),
@@ -82,7 +82,7 @@ fn effect_helpers_cover_host_effects() {
 #[derive(Default)]
 struct Example;
 
-impl App for Example {
+impl View for Example {
     fn update(&mut self, _event: InputEvent) -> Vec<Effect> {
         Vec::new()
     }

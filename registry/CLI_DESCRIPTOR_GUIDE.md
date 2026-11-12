@@ -1,6 +1,6 @@
 # CLI Descriptor Authoring Guide (`--plexi`)
 
-Plexi discovers how to render a UI for any CLI by running `<cli> --plexi` and parsing the JSON it prints. A CLI that responds with a valid descriptor gets a rendered interface automatically — form inputs, live state polling, or a full PGAP app — with no Plexi-specific SDK required.
+Plexi discovers how to render a UI for any CLI by running `<cli> --plexi` and parsing the JSON it prints. A CLI that responds with a valid descriptor gets a rendered interface automatically — form inputs, live state polling, or a full PGAP plugin — with no Plexi-specific SDK required.
 
 This guide explains how to write that descriptor.
 

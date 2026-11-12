@@ -16,8 +16,8 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   - Single-sourced platform WIT: each POC `wit/world.wit` is a symlink to `wit/plexi.wit`.
   - sysmon has 4 pure-function tests (`cargo test`, no host) — commit `df3e74fc`.
 - **M2 — Host wasmtime integration (G3, G5): DONE.**
-  - `src/host/wasm_app.rs`: `wasmtime` 43 + `wasmtime-wasi` 43; `bindgen!` the
-    `plexi-app` world; host imports `host-log` (→ `log::app::<id>`), `host-state`
+  - `src/host/wasm_view.rs`: `wasmtime` 43 + `wasmtime-wasi` 43; `bindgen!` the
+    `plexi-plugin` world; host imports `host-log` (→ `log::plugin::<id>`), `host-state`
     (→ file-backed `StateStore`), `pipes` (stub until M4). Baseline WASI 0.2
     (clocks+random, no env/fs/net) linked so Rust-std components instantiate.
   - Capability linker: `host-log` always linked; `host-state`/`pipes` linked
@@ -48,14 +48,14 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
        clock, lazy `init` on first frame, egui key translation (printable-vs-named
        split mirroring `process_app`), per-frame `tick`+`view`+`render_ui_tree`,
        timer-scheduled repaints (`request_repaint_after` off `next_deadline_ms`),
-       and fatal-error capture (a bad app shows an error in place, never crashes
+       and fatal-error capture (a bad plugin shows an error in place, never crashes
        the host).
     4. `open_wasm_app_pane` (`pane_ops/create.rs`): ephemeral spawn path, one
        `wasmtime::Store` per pane.
-    5. Run primitive: `.wasm` paths route through the existing `app open <path>`
+    5. Run primitive: `.wasm` paths route through the existing `view open <path>`
        -> `spawn_pane{path}` socket flow; `launch_app_by_path_with_layout`
        detects the `.wasm` extension and calls `open_wasm_app_pane`. No new
-       top-level command (`plexi run` is the project-command runner; `plexi app
+       top-level command (`plexi run` is the project-command runner; `plexi plugin
        open ./x.wasm` is the launch surface). State is ephemeral; `--persist` is
        deferred to M4.
     6. Gates: **G4** `tests/scenes/wasm-sysmon.toml` (live render of the sysmon
@@ -74,7 +74,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   with Python, perf, agentic) is articulated in the
   [Next Steps section of `wasm-runtime.md`](wasm-runtime.md#next-steps-2026-06-18):
   lanes A (GPU readback perf), B (UI interaction), C (fs/net effects),
-  D (capability grant flow), E (`ai-query` + app events), then deferred
+  D (capability grant flow), E (`ai-query` + plugin events), then deferred
   gates G8/G9/G10.
 - **Lane A — GPU surface readback perf bounded pass: DONE.** `read_texture`
   now logs encode/submit, map wait, row-pack, total time, dimensions, and byte
@@ -97,14 +97,14 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   for scoped `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>`
   strings. Remembered install/package grants now live in Lane F; Lane D remains
   the session enforcement layer.
-- **Lane E — agentic surface (`ai-query`, app events, and tools): DONE.** WIT now
+- **Lane E — agentic surface (`ai-query`, plugin events, and tools): DONE.** WIT now
   exposes `ai-query`, `ai-stream-chunk`, `ai-response`,
   event declaration/emission/subscription, and typed tool declaration/results.
   `WasmPane` gates AI on the session `ai.query` grant, dispatches through the
   injected `AiBroker`, routes cross-runtime events through `AppTimeline`, and
   exposes component tools through the shared connector permission broker.
-- **Lane F — manifest-backed WASM apps + remembered scoped grants: DONE for current surfaces.**
-  `[app] type = "wasm"` manifests now load through the registry/path launch
+- **Lane F — manifest-backed WASM plugins + remembered scoped grants: DONE for current surfaces.**
+  `[plugin] type = "wasm"` manifests now load through the registry/path launch
   surfaces, use persistent per-app/per-workspace WASM state, derive explicit
   link-time host grants from manifest capabilities, and restore/persist raw
   scoped WASM decisions in `permissions.toml`. `.plexipkg` validation and the
@@ -114,7 +114,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   Interactive installs persist workspace-scoped required and selected optional
   raw WASM decisions after install succeeds; `--yes` defers optional grants. Raw
   `.wasm` launches inspect required link-time imports, fail closed without
-  remembered Green decisions, and `plexi app open ./x.wasm` prompts once and
+  remembered Green decisions, and `plexi view open ./x.wasm` prompts once and
   remembers approved imports for the path scope. Native GUI path launches queue
   a pre-launch review modal, persist approved imports, then replay the same
   fail-closed launch path.
@@ -133,13 +133,13 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   (→ GPU/surface path for M4), `crossbeam-queue` 0.3 (→ pipes ArrayQueue, already used by
   `src/host/typed_pipes.rs`). **No tokio** — effects execute synchronously, not async.
 - **Component output path:** cargo-component emits the component at
-  `target/wasm32-wasip1/debug/<app>.wasm` (builds a wasip1 core module + adapts to a wasip2
+  `target/wasm32-wasip1/debug/<plugin>.wasm` (builds a wasip1 core module + adapts to a wasip2
   component). The gate docs say `wasm32-wasip2/` — tests must use the actual `wasip1` path.
 
 ## Integration decisions (reversible engineering calls, already made)
 
 - **Host bindings:** `wasmtime::component::bindgen!` against `wit/plexi.wit`, per world.
-  Start with `plexi-app` (sysmon); add `plexi-gpu-app` / `plexi-audio-app` in M4.
+  Start with `plexi-plugin` (sysmon); add `plexi-gpu-plugin` / `plexi-audio-plugin` in M4.
 - **Runtime crate:** `wasmtime` (component-model + cranelift, sync). One `Store` per pane.
 - **State store (G5):** minimal host-owned `StateStore` — `HashMap<String, Vec<u8>>` with
   get/set/delete/list-prefix/snapshot, persisted to a per-namespace file on write. No `sled`
@@ -155,7 +155,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
 
 - **M2 — Host wasmtime integration (G3, G5)**
   1. Add `wasmtime` dep; `mod wasm_app;` in `src/main.rs`.
-  2. `bindgen!` the `plexi-app` world; implement host imports: `host-log` (→ `log::`),
+  2. `bindgen!` the `plexi-plugin` world; implement host imports: `host-log` (→ `log::`),
      `host-state` (→ `StateStore`), `pipes` (→ `TypedPipeRegistry`, stub ok until M4).
   3. `WasmApp` struct: Store + instance + grants + StateStore + pending events. API:
      `load(path, grants)`, `init(snapshot, size) -> Vec<Effect>`, `update(event) -> Vec<Effect>`,
@@ -172,7 +172,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   3. `plexi run ./x.wasm` CLI (ephemeral temp namespace, deleted on close).
   4. G4 scene/screenshot test; G6 CLI + scene (open → populate → `q` closes, no namespace).
 - **M4 — Surface/GPU + RT audio + pipes (G7, G11, G12, G13)**
-  - DONE (commit `c165eba6`) **pipes host side**: `HostCtx` owns a per-app
+  - DONE (commit `c165eba6`) **pipes host side**: `HostCtx` owns a per-plugin
     `TypedPipeRegistry` + handle map; `open`/`send-binary`/`send-json`/`close`/
     `is-connected` implemented; binary sends push the lock-free ring and report
     overrun as `Err` (no block/panic); registry `Drop` closes pipes on Store
@@ -180,9 +180,9 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     `g13_json_pipe_validation`). The full guest round-trip is below (needs the
     audio world).
   - DONE (commit `2ec7db69`) **world generalization + audio (G12)**: one
-    `bindgen!` on `plexi-full-app` generates all shared types; the loader
+    `bindgen!` on `plexi-full-plugin` generates all shared types; the loader
     instantiates raw and builds per-interface export Guests (`lifecycle` always,
-    `audio-rt-process` probed), so standard and audio apps share one path with no
+    `audio-rt-process` probed), so standard and audio plugins share one path with no
     type duplication and no all-or-nothing world struct. `audio-rt-control`
     import backed by an `AudioStreams` registry; `WasmApp::audio_process_output`
     pulls the guest's RT export. **G12** (`g12_audio_process_output_produces_sound`):
@@ -220,7 +220,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     end to end on Metal — surface-ready -> setup_gpu -> render -> readback shows
     the game; `w` + 60 ticks moves the left paddle up (observable in the
     surface). No pixel buffer crosses the WASM boundary (no render-to-texture
-    effect exists — apps issue gpu commands only).
+    effect exists — plugins issue gpu commands only).
 - ~~**M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.~~ **DONE** (PR #2291 + #2292, alpha `9da192d8`).
 
 ## Done definition

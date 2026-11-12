@@ -2,9 +2,40 @@ Plexi reads config.toml from the active channel profile. Alpha uses ~/.plexi-alp
 
 Changes take effect on the next launch unless a command says otherwise.
 
+The plugin rename preserves permanent user-data keys: workspace secrets use
+`[apps.<plugin-id>]`, agent event subscriptions use `app`, connector authority
+targets keep `app.<tool>`, and AI budgets keep `per_app_daily_usd`. These are the
+single stored representations, not alternate plugin command or manifest forms.
+Existing routes, subscriptions, sealed grants and denials remain bound to the
+same identities.
+
 ## Channel discipline
 
 See the [configuration reference](../website/src/content/docs/config.md#channel-discipline) for channel profiles and installation behavior.
+
+## Core-only startup
+
+Set `core_only = true` at the top level of the channel-global config to start
+with every plugin disabled. The default is false. Workspace overrides are
+ignored for this key. Changes require a host restart, including changes made
+with config reload.
+
+For a PR profile, use `plexi-pr-<N> config set -g core_only=true`, then restart
+that PR host. `plexi-pr-<N> host status --json` reports the running value in
+`core_only` and `running.core_only`; a stopped host reports null.
+Use `plexi-pr-<N> config set -g core_only=false` and restart to return to normal.
+The terminal remains available to edit config with `$EDITOR`.
+
+Core-only startup skips plugin seeding, registry discovery and every plugin
+launch, including native views and direct paths. Plugin commands and shortcuts
+report which plugin is unavailable. Notes capture/picker and UI gallery are
+also withheld; trusted attention and consent remain host services.
+
+Restored plugin panes show an inert “Core-only mode” view. Saving preserves the
+original plugin identity, launch arguments, working folder and serialized state.
+A later normal startup restores the original plugin. Closing a placeholder is
+an explicit layout edit and removes that pane, as closing a normal pane would.
+Plugin packages and user documents stay on disk.
 
 ## Experiments
 
@@ -157,7 +188,7 @@ Modifiers: cmd, shift, ctrl, alt. Aliases: command, control, opt, option.
 
 Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down, left, right, open_bracket, close_bracket, backslash, slash, comma, period, equals, minus.
 
-Known actions: select_pane_left, select_pane_down, select_pane_up, select_pane_right, focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, reset_font_size, ui_scale_up, ui_scale_down, ui_scale_reset, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
+Known actions: select_pane_left, select_pane_down, select_pane_up, select_pane_right, focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, reset_font_size, ui_scale_up, ui_scale_down, ui_scale_reset, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_plugin, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
 
 Unknown keys or conflicting overrides log a warning at startup and keep the default binding.
 
@@ -179,7 +210,7 @@ Scope decides which contexts a notification is visible in: `window` (only the or
 **A notification that does not request a scope is `context`.** It belongs to the context that produced it; following the user into unrelated contexts is the deliberate, opt-in case. Precedence, highest first:
 
 1. An explicitly requested scope — `plexi notify --scope global|context|window`.
-2. For app panes, the app's own `manifest.toml` `[launch] notification_scope`, which is a per-app policy declared by the app author and defaults to `window`.
+2. For plugin panes, the plugin's own `manifest.toml` `[launch] notification_scope`, which is a per-plugin policy declared by the plugin author and defaults to `window`.
 3. Otherwise the shared default, `context`.
 
 A `context`- or `window`-scoped notification needs a sender to attach to. `plexi notify` stamps the caller's own identity (`PLEXI_CONTEXT_ID` / `PLEXI_PANE_ID`) onto the request; the host attaches the notification to that context — never to whichever context happens to be active when the request is handled. When the sender cannot support the requested scope, the host resolves to the nearest wider scope it can honor (logged): `window` with a resolvable context but no live window narrows to `context`; a caller with no resolvable identity at all (a script running outside any pane with `PLEXI_SOCKET` exported, or a stale id) has no home context, so an explicit `--scope context|window` fails with an error at the CLI and an unscoped notification escalates to `global` — reachable everywhere rather than attached to a context that never produced it.
@@ -242,10 +273,10 @@ A server runs in its own process group and is killed — including anything an
 that never produces output, or never completes the MCP handshake, is
 disconnected after a deadline with a visible error rather than left running.
 
-An app never supplies a command: it names a server id and the host resolves the
+A plugin never supplies a command: it names a server id and the host resolves the
 rest here, so the `mcp.client` capability means "talk to a server you
 configured", not "run this command". Servers reach the assistant through the
-bridge app (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
+bridge plugin (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
 connector tools. Format and process contract: `src/host/mcp_client.rs`.
 
 ## Default config.toml
@@ -259,7 +290,7 @@ This is the built-in template Plexi writes when it creates or resets the active 
 config_version = 1
 
 font_size = 14.0
-# ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
+# ui_scale = 1.0               # host-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
 # pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
@@ -335,11 +366,11 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 tips = true
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =

@@ -1,16 +1,16 @@
 """Tests for Cli Op Fixture.
 
-Run with:  plexi app test          (from the app directory)
+Run with:  plexi plugin test          (from the app directory)
        or:  uv run --no-project --with pytest pytest tests/
 
-AppHarness spawns this app as a real subprocess and speaks the PGAP protocol
+PluginHarness spawns this app as a real subprocess and speaks the PGAP protocol
 over stdin/stdout, with no running Plexi host or display required.
 """
 from pathlib import Path
 
 import pytest
 
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 
 APP = Path(__file__).resolve().parent.parent / "main.py"
 FORBIDDEN = ("executable", "argv", "env", "cwd", "command", "shell", "workspace")
@@ -19,7 +19,7 @@ FORBIDDEN = ("executable", "argv", "env", "cwd", "command", "shell", "workspace"
 @pytest.mark.parametrize("size", [(300, 200), (800, 600)])
 def test_renders_without_overlap(size):
     width, height = size
-    with AppHarness(str(APP), width=width, height=height) as h:
+    with PluginHarness(str(APP), width=width, height=height) as h:
         h.run(1)
         h.assert_no_overlap()
 
@@ -33,7 +33,7 @@ def test_renders_without_overlap(size):
     ],
 )
 def test_key_requests_one_typed_operation_and_nothing_else(key, operation_id, values):
-    with AppHarness(str(APP)) as h:
+    with PluginHarness(str(APP)) as h:
         h.run(1)
         h.key(key)
         sent = [e for e in h.run(1) if e.get("type") == "cli_operation"]
@@ -45,7 +45,7 @@ def test_key_requests_one_typed_operation_and_nothing_else(key, operation_id, va
 
 
 def test_a_second_request_waits_for_the_first_and_cancel_targets_it():
-    with AppHarness(str(APP)) as h:
+    with PluginHarness(str(APP)) as h:
         h.run(1)
         h.key("s")
         h.run(1)
@@ -58,7 +58,7 @@ def test_a_second_request_waits_for_the_first_and_cancel_targets_it():
 
 
 def test_result_is_shown_and_frees_the_slot():
-    with AppHarness(str(APP)) as h:
+    with PluginHarness(str(APP)) as h:
         h.run(1)
         h.key("r")
         h.run(1)
@@ -74,7 +74,7 @@ def test_result_is_shown_and_frees_the_slot():
 
 
 def test_denial_is_shown_without_a_result():
-    with AppHarness(str(APP)) as h:
+    with PluginHarness(str(APP)) as h:
         h.run(1)
         h.key("m")
         h.run(1)

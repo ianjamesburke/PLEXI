@@ -34,7 +34,7 @@ SECTIONS: list[tuple[str, str]] = [
 
 # Classes whose public methods are expanded with individual subsections.
 EXPAND_CLASSES = {
-    "Theme", "AppPalette", "StateProxy", "LogProxy",
+    "Theme", "PluginPalette", "StateProxy", "LogProxy",
 }
 
 # Methods to skip even on expanded classes (internal plumbing).

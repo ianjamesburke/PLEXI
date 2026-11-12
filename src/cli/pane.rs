@@ -5,7 +5,10 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}", name.chars().count());
+    log::info!(
+        "pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}",
+        name.chars().count()
+    );
     send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,
@@ -404,9 +407,7 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_message_recv",
@@ -457,14 +458,8 @@ fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
 #[derive(Debug, PartialEq)]
 pub enum PaneResultReadOutcome {
     Validated(Vec<u8>),
-    NoResultYet {
-        error_code: String,
-        message: String,
-    },
-    InvalidResult {
-        error_code: String,
-        message: String,
-    },
+    NoResultYet { error_code: String, message: String },
+    InvalidResult { error_code: String, message: String },
     Failed(String),
 }
 
@@ -548,9 +543,7 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_result_read",
@@ -591,7 +584,11 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Returns 0 on success, 1 on error.
 pub fn pane_layout_cli() -> i32 {
     log::info!("pane_layout:cli: requesting workspace snapshot");
-    match super::request(serde_json::json!({"type":"workspace_snapshot"}), "pane-layout-response", "pane layout") {
+    match super::request(
+        serde_json::json!({"type":"workspace_snapshot"}),
+        "pane-layout-response",
+        "pane layout",
+    ) {
         Ok(content) => match super::check_reply_error(&content) {
             Ok(()) => print_json_output(&content),
             Err(code) => code,
@@ -693,7 +690,9 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .or_else(|| {
-                pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                pane.get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
             })
             .unwrap_or("pane");
         let role = pane
@@ -745,7 +744,13 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             for (idx, child) in kids.iter().enumerate() {
                 let is_last = idx + 1 == kids.len();
                 let child_branch = if is_last { "└── " } else { "├── " };
-                walk(child, &child_prefix, child_branch, children_by_parent, lines);
+                walk(
+                    child,
+                    &child_prefix,
+                    child_branch,
+                    children_by_parent,
+                    lines,
+                );
             }
         }
     }
@@ -967,7 +972,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to a terminal pane's PTY stdin, or focuses an app pane and
+/// Writes text to a terminal pane's PTY stdin, or focuses a view pane and
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
@@ -1216,7 +1221,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            // Native app panes report whether the app's key handler consumed
+            // Native view panes report whether the plugin's key handler consumed
             // the key — surface a miss so driving agents don't assume the
             // key acted.
             if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
@@ -1231,7 +1236,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                          surface (applied next frame)"
                     ),
                     _ => eprintln!(
-                        "note: key delivered but not consumed by the app \
+                        "note: key delivered but not consumed by the plugin \
                          (disposition: {d})"
                     ),
                 }
@@ -1513,13 +1518,13 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 
 /// `plexi pane state <id> [--stale-after <secs>]`
 ///
-/// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
+/// Sends a `get_pane_state` command to PLEXI_SOCKET. For view panes, the host
 /// writes a JSON object containing a versioned normalized `semantic` tree.
-/// Process apps also retain the compatible `frame` RenderCommand array.
+/// Process plugins also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Every response also
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
-/// `AppRequest::GetPaneState`. Returns 0 on success, 1 on error.
+/// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
@@ -1561,7 +1566,7 @@ pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&st
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
-/// passing the user's workspace root so app state is scoped correctly.
+/// passing the user's workspace root so plugin state is scoped correctly.
 pub(super) fn open_github_ephemeral(
     source: &str,
     layout: Option<&str>,
@@ -1818,11 +1823,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 
@@ -1932,12 +1935,12 @@ mod submit_tests {
         assert_eq!(outcome.exit_code(), 1);
     }
 
-    /// A refusal (app pane, submit already in flight, pane gone) carries no
+    /// A refusal (view pane, submit already in flight, pane gone) carries no
     /// input line and is still a non-zero exit: nothing was submitted.
     #[test]
     fn refusal_reply_exits_one() {
         let outcome = submit_outcome(
-            r#"{"error":"pane 7 is an app pane; --submit only applies to terminal panes"}"#,
+            r#"{"error":"pane 7 is a view pane; --submit only applies to terminal panes"}"#,
         );
         assert_eq!(outcome.exit_code(), 1);
         assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));
@@ -1956,7 +1959,12 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for (submit, paste, operation_id) in [(true, false, None), (false, false, None), (false, true, None), (false, false, Some("explicit-id"))] {
+        for (submit, paste, operation_id) in [
+            (true, false, None),
+            (false, false, None),
+            (false, true, None),
+            (false, false, Some("explicit-id")),
+        ] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -1994,7 +2002,12 @@ mod submit_tests {
             if let Some(id) = operation_id {
                 assert_eq!(payload["operation_id"], id);
             } else {
-                assert!(payload["operation_id"].as_str().is_some_and(|id| id.starts_with("pane-send-")), "payload was {payload}");
+                assert!(
+                    payload["operation_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("pane-send-")),
+                    "payload was {payload}"
+                );
             }
         }
     }
@@ -2332,7 +2345,9 @@ mod pane_result_tests {
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
-        let focus_pane = PaneTarget::from("tester").resolve().expect("resolve tester");
+        let focus_pane = PaneTarget::from("tester")
+            .resolve()
+            .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);
 

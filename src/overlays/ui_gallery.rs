@@ -43,7 +43,7 @@ impl UiGalleryDataMode {
                 detail: "Secondary metadata",
                 command: "plexi completions zsh",
                 code: "fn main() {\n    println!(\"hello from Plexi\");\n}\n",
-                tags: &["app", "ws"],
+                tags: &["view", "ws"],
                 count: 3,
                 pips: 3,
                 status: "running",
@@ -99,7 +99,7 @@ impl UiGalleryDataMode {
                 detail: "One item",
                 command: "plexi --help",
                 code: "J",
-                tags: &["app"],
+                tags: &["view"],
                 count: 1,
                 pips: 1,
                 status: "running",
@@ -157,7 +157,7 @@ fn gallery_row(
     selected: bool,
 ) -> egui::Response {
     let row = ListRow::new(name)
-        .chip("app")
+        .chip("view")
         .trailing_action(if index == 2 { "Delete" } else { "Open" })
         .selected(selected);
     let row = if dense {
@@ -521,6 +521,9 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
 
 impl PlexiApp {
     pub(crate) fn draw_ui_gallery(&mut self, ctx: &egui::Context) {
+        if self.show_ui_gallery && self.plugin_blocked("ui-gallery") {
+            self.show_ui_gallery = false;
+        }
         if !self.show_ui_gallery {
             return;
         }
@@ -736,7 +739,7 @@ impl PlexiApp {
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal_wrapped(|ui| {
-                                KitSpecimen::KeyChip.show(ui, &colors, false, "app", "");
+                                KitSpecimen::KeyChip.show(ui, &colors, false, "view", "");
                                 KitSpecimen::KeyChip.show(ui, &colors, false, "term", "");
                                 KitSpecimen::StatusChip.show(ui, &colors, false, data.status, "");
                                 KitSpecimen::Badge.show(

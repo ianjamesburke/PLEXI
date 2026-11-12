@@ -149,7 +149,7 @@ impl ProgramStatusStore {
         self.records.iter().map(|(k, v)| (k.as_str(), v))
     }
 
-    /// `app` of the record, or of its nearest ancestor that has one.
+    /// `plugin` of the record, or of its nearest ancestor that has one.
     pub fn effective_app(&self, id: &str) -> Option<&str> {
         let mut cur = id;
         loop {

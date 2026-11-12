@@ -1,13 +1,19 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "ui-gallery"
-type = "app"
 name = "UI Gallery"
-entry = "main.py"
 version = "0.1.0"
 description = "Reference implementation of every SDK component."
 watch = true
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "ui-gallery.main"
+default = true

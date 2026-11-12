@@ -53,7 +53,7 @@ impl QuitCoordinator {
     }
 }
 
-/// Process-local monotonic clock. Input reception is the app callback boundary,
+/// Process-local monotonic clock. Input reception is the plugin callback boundary,
 /// not physical input or compositor presentation. External observers measure
 /// those boundaries and actual process death using the logged PID.
 pub(crate) fn trace(phase: &str) {
@@ -301,7 +301,7 @@ impl super::PlexiApp {
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
         let veto = self.windows.iter_mut().find_map(|window| {
             window.panes.iter_mut().find_map(|(id, pane)| {
-                pane.as_app_mut()
+                pane.as_view_mut()
                     .and_then(|app| (!app.runtime.request_close()).then_some(*id))
             })
         });
@@ -809,7 +809,7 @@ mod tests {
         h.add_test_pane();
         h.app.workspace_dirty = true;
         h.app.last_workspace_save = Instant::now() - Duration::from_secs(2);
-        h.inject_ipc(crate::protocol::AppRequest::Shutdown);
+        h.inject_ipc(crate::protocol::HostRequest::Shutdown);
         h.hidden_frame(); // coordinator saves and hides, but does not exit yet
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         assert!(path.exists());

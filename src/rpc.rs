@@ -49,7 +49,9 @@ fn client_reply_streams() -> &'static StreamMap {
 
 fn prune_expired(map: &mut HashMap<String, (Instant, IpcStream)>) {
     let now = Instant::now();
-    map.retain(|_, (registered_at, _)| now.saturating_duration_since(*registered_at) <= SWEEP_MAX_AGE);
+    map.retain(|_, (registered_at, _)| {
+        now.saturating_duration_since(*registered_at) <= SWEEP_MAX_AGE
+    });
 }
 
 /// Host-side registry of open `notify.sock` streams awaiting a reply, keyed by
@@ -59,8 +61,12 @@ pub(crate) struct ReplyRegistry;
 impl ReplyRegistry {
     /// Observe connection closure without taking or consuming the reply stream.
     pub(crate) fn connected(response_file: &str) -> Option<bool> {
-        let guard = host_reply_streams().lock().unwrap_or_else(|e| e.into_inner());
-        guard.get(response_file).map(|(_, stream)| crate::platform::ipc::peer_connected(stream))
+        let guard = host_reply_streams()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(response_file)
+            .map(|(_, stream)| crate::platform::ipc::peer_connected(stream))
     }
     /// Associate `stream` with `response_file` so the subsequent
     /// [`write_response`] / [`write_json_response`] call answers over the open
@@ -395,7 +401,10 @@ pub(crate) fn request_json_with_prefix(
 ) -> Result<serde_json::Value, PollError> {
     let rf = response_file(prefix, "json");
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("response_file".to_string(), serde_json::Value::String(rf.clone()));
+        obj.insert(
+            "response_file".to_string(),
+            serde_json::Value::String(rf.clone()),
+        );
     }
     #[cfg(unix)]
     let mut stream = IpcStream::connect(socket_path).map_err(PollError::Unreadable)?;
@@ -488,10 +497,7 @@ mod tests {
         let path = dir.path().join("w-response.json");
         let path_str = path.to_str().unwrap();
         assert!(write_response(path_str, b"{\"ok\":true}"));
-        assert_eq!(
-            std::fs::read(&path).expect("read back"),
-            b"{\"ok\":true}"
-        );
+        assert_eq!(std::fs::read(&path).expect("read back"), b"{\"ok\":true}");
         assert!(
             !Path::new(&format!("{path_str}.tmp")).exists(),
             "temp file must be renamed away"
@@ -547,7 +553,9 @@ mod tests {
             let stream = listener.incoming().next().unwrap().expect("accept");
             let mut write_half = stream.try_clone().expect("clone");
             let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).expect("read request");
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read request");
             crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut write_half);
             drop(write_half);
             h.hidden_frame();
@@ -582,10 +590,11 @@ mod tests {
         let pane_id = h.add_focused_terminal();
 
         let wait_token = response_file_in(dir.path(), "slot-wait", "txt");
-        let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().expect("pair");
+        let (mut server_stream, client_stream) =
+            std::os::unix::net::UnixStream::pair().expect("pair");
         register_client_stream(wait_token.clone(), client_stream);
 
-        let wait_req = crate::protocol::AppRequest::SlotWait {
+        let wait_req = crate::protocol::HostRequest::SlotWait {
             pane_id,
             slot_name: "status".to_string(),
             pattern: "^done:".to_string(),
@@ -604,14 +613,17 @@ mod tests {
         // Multiple App::logic frames run while the waiter is parked; stream stays open.
         for _ in 0..4 {
             h.hidden_frame();
-            assert!(!client.is_finished(), "waiter must stay blocked before slot matches");
+            assert!(
+                !client.is_finished(),
+                "waiter must stay blocked before slot matches"
+            );
         }
 
         // Now write a matching slot value; the parked waiter wakes and receives payload + EOF.
         let write_token = response_file_in(dir.path(), "slot-write", "json");
         let (mut write_srv, write_cli) = std::os::unix::net::UnixStream::pair().expect("pair");
         register_client_stream(write_token.clone(), write_cli);
-        let write_req = crate::protocol::AppRequest::SlotWrite {
+        let write_req = crate::protocol::HostRequest::SlotWrite {
             pane_id,
             slot_name: "status".to_string(),
             content: b"done:ok".to_vec(),

@@ -1,18 +1,24 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "com.plexi.python-shim"
-type = "wasm"
 name = "Python Shim"
-entry = "../../../target/wasm32-wasip1/release/python_shim.wasm"
 version = "0.1.0"
 description = "CPython lifecycle shim boundary POC for SDK v3 JSON bridge."
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
-[app.capabilities.wasm]
+[plugin.capabilities.wasm]
 required = ["state:read-write"]
 optional = []
 
-[launch]
+[runtime]
+kind = "wasm"
+entry = "../../../target/wasm32-wasip1/release/python_shim.wasm"
+
+[[contributes.views]]
+id = "com.plexi.python-shim.main"
+default = true

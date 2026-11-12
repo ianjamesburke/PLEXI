@@ -13,7 +13,7 @@ pub enum GatePath {
 pub enum ReleaseFeature {
     Assistant,
     AiSetup,
-    CommandView,
+    AgentsDashboard,
     ChangeSets,
     Ledger,
     CloudAccount,
@@ -35,7 +35,7 @@ impl ReleaseFeature {
     pub const ALL: &'static [ReleaseFeature] = &[
         Self::Assistant,
         Self::AiSetup,
-        Self::CommandView,
+        Self::AgentsDashboard,
         Self::ChangeSets,
         Self::Ledger,
         Self::CloudAccount,
@@ -58,7 +58,7 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => "assistant",
             Self::AiSetup => "ai_setup",
-            Self::CommandView => "command_view",
+            Self::AgentsDashboard => "command_view",
             Self::ChangeSets => "change_sets",
             Self::Ledger => "ledger",
             Self::CloudAccount => "cloud_account",
@@ -85,20 +85,20 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => "Host AI assistant pane and the `assistant` commands",
             Self::AiSetup => "Guided AI backend setup (`ai setup`, `ai onboard`)",
-            Self::CommandView => "Agent runs dashboard pane and `command-view`",
+            Self::AgentsDashboard => "Agent runs dashboard pane and `agents-dashboard`",
             Self::ChangeSets => "Preview and accept agent edits (`changes`)",
             Self::Ledger => "Token and cost summary (`ledger`)",
             Self::CloudAccount => "Optional cloud account and history retention",
             Self::FolderSecrets => "Secrets injected per folder, with grants",
-            Self::WasmApps => "Native Rust/WASM apps and the GPU canvas",
+            Self::WasmApps => "Native Rust/WASM plugins and the GPU canvas",
             Self::PageGrid => "Reserved page-grid experiment",
             Self::TreeAtlas => "Context tree overview at root with Cmd+Escape",
             Self::Marketplace => "App marketplace: browse, search, publish",
             Self::Daw => "DAW engine proof of concept",
             Self::MediaIo => "Audio and video player panes",
             Self::Accessibility => "AccessKit accessibility tree",
-            Self::McpClient => "MCP client: host MCP config and `app open --mcp`",
-            Self::CliOperations => "Approved typed CLI operations for sandboxed apps",
+            Self::McpClient => "MCP client: host MCP config and `view open --mcp`",
+            Self::CliOperations => "Approved typed CLI operations for sandboxed plugins",
             Self::Routines => "Scheduled commands (`routine`)",
             Self::AgentMesh => "Agent roles, spawning, teams and fleet control (`agent` beyond status hooks and worker completion)",
         }
@@ -118,7 +118,7 @@ impl ReleaseFeature {
         match self {
             Self::Assistant => &[Sub(&["assistant"])],
             Self::AiSetup => &[Sub(&["ai", "setup"]), Sub(&["ai", "onboard"])],
-            Self::CommandView => &[Sub(&["command-view"])],
+            Self::AgentsDashboard => &[Sub(&["agents-dashboard"])],
             Self::ChangeSets => &[Sub(&["changes"])],
             Self::Ledger => &[Sub(&["ledger"])],
             Self::CloudAccount => &[Sub(&["account"])],
@@ -130,11 +130,14 @@ impl ReleaseFeature {
                 Arg(&["secret", "set"], "folder"),
             ],
             Self::Marketplace => &[
-                Sub(&["app", "publish"]),
-                Sub(&["app", "browse"]),
-                Sub(&["app", "search"]),
+                Sub(&["plugin", "publish"]),
+                Sub(&["plugin", "browse"]),
+                Sub(&["plugin", "search"]),
             ],
-            Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["app", "open"], "mcp")],
+            Self::McpClient => &[
+                Sub(&["events", "mcp-config"]),
+                Arg(&["view", "open"], "mcp"),
+            ],
             Self::Routines => &[Sub(&["routine"])],
             Self::AgentMesh => &[
                 Sub(&["agent", "create"]),
@@ -149,10 +152,13 @@ impl ReleaseFeature {
                 Sub(&["agent", "team"]),
                 Sub(&["agent", "wait"]),
             ],
-            Self::CliOperations | Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
-                &[]
-            }
+            Self::CliOperations
+            | Self::WasmApps
+            | Self::PageGrid
+            | Self::TreeAtlas
+            | Self::Daw
+            | Self::MediaIo
+            | Self::Accessibility => &[],
         }
     }
 }
-

@@ -16,14 +16,14 @@ from . import events as event_types
 _module = None
 
 
-def load_app(module_name: str) -> None:
+def load_plugin(module_name: str) -> None:
     global _module
     _module = importlib.import_module(module_name)
 
 
 def call_lifecycle(fn_name: str, json_arg: str) -> str:
     if _module is None:
-        raise RuntimeError("no Plexi app module loaded")
+        raise RuntimeError("no Plexi plugin module loaded")
     fn = getattr(_module, fn_name)
     arg = json.loads(json_arg) if json_arg else {}
 
@@ -205,9 +205,9 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "entries": data.get("entries", []),
             "divider": data.get("divider", True),
         }
-    if node_type == "app_bar":
+    if node_type == "surface_header":
         return {
-            "type": "AppBar",
+            "type": "SurfaceHeader",
             "title": data.get("title", ""),
             "subtitle": data.get("subtitle", ""),
         }

@@ -8,8 +8,8 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 |---|---|---|
 | `SplitHorizontal` | `plexi pane new --right` | CLI creates a sibling directly. The zoomed desktop shortcut first wraps the pane into a child context. |
 | `SplitVertical` | `plexi pane new --down` |  |
-| `SplitRight` | `plexi pane new --right` | CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type. |
-| `SplitDown` | `plexi pane new --down` | CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type. |
+| `SplitRight` | `plexi pane new --right` | CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type. |
+| `SplitDown` | `plexi pane new --down` | CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type. |
 | `Navigate` | `plexi pane focus 42` | Select the destination by pane id rather than relative direction. |
 | `SelectPane` | ui-only: Extends the transient desktop selection highlight; selection gestures have no CLI state. |  |
 | `CancelPaneSelection` | ui-only: Clears transient desktop selection without changing pane ownership or layout. |  |
@@ -37,28 +37,28 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `UiScaleReset` | ui-only: Resets the app-wide UI scale to 1.0; the persistent equivalent is the `ui_scale` config key. |  |
 | `ScrollUp` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
 | `ScrollDown` | ui-only: Moves the visible viewport; agents read pane capture output. |  |
-| `CloseApp` | `plexi pane close 42` |  |
-| `OpenFileBrowser` | `plexi app open file_browser` |  |
+| `CloseView` | `plexi pane close 42` |  |
+| `OpenFileBrowser` | `plexi view open file_browser` |  |
 | `OpenAgents` | `plexi pane new agents` |  |
 | `NextBlockedAgent` | `plexi agent next` |  |
 | `FocusApproval` | ui-only: Focuses the oldest desktop approval banner for its keyboard-only decision flow. |  |
 | `OpenQuickNote` | `plexi note add text` | CLI supplies text directly instead of opening the entry overlay. |
 | `OpenConfig` | `plexi config edit` |  |
-| `OpenSecretsManager` | `plexi app open secrets_manager` |  |
-| `OpenAssistant` | `plexi app open assistant` |  |
+| `OpenSecretsManager` | `plexi view open secrets_manager` |  |
+| `OpenAssistant` | `plexi view open assistant` |  |
 | `RenameContext` | `plexi context rename name --context-id 42` |  |
 | `ToggleAttentionQueue` | ui-only: Toggles the desktop attention queue list; agents inspect needs-you and notification records. |  |
 | `ZoomIn` | `plexi context zoom 42` | CLI targets an existing context id. The desktop shortcut also wraps multiple selected panes or toggles pane zoom; those selection gestures are UI-only. |
-| `ForceReloadApp` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |
+| `ForceReloadView` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |
 | `NewPageRight` | `plexi pane new --window` |  |
 | `NewContext` | `plexi context new name` |  |
 | `ToggleMinimap` | ui-only: Toggles a visual navigation overlay. |  |
 | `ReloadConfig` | `plexi config reload` |  |
-| `NavBackApp` | `plexi pane focus --back` | CLI traverses host focus history; app-local navigation remains owned by each app. |
+| `NavBackView` | `plexi pane focus --back` | CLI traverses host focus history; app-local navigation remains owned by each app. |
 | `FocusHistoryForward` | `plexi pane focus --forward` |  |
 | `SwapPane` | `plexi pane swap left --pane-id 42` |  |
 | `SendPane` | ui-only: Focus-preserving spatial layout gesture; pane swap exposes the corresponding layout move with focus following. |  |
-| `OpenScratchpad` | `plexi app open text-editor` |  |
+| `OpenScratchpad` | `plexi view open text-editor` |  |
 | `PushPaneToSubcontext` | `plexi context push name --pane-id 42` |  |
 | `NewChildContext` | `plexi context new name --parent --focus` |  |
 | `ContextZoomOut` | `plexi context zoom-out` |  |

@@ -124,7 +124,7 @@ fn which_on_path(name: &str) -> Option<String> {
 /// macOS GUI bundles (launched from LaunchServices / Dock / Spotlight) inherit
 /// a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) with no Homebrew, no
 /// `~/.local/bin`, no asdf/nvm/pyenv shims. Every subprocess Plexi spawns
-/// (process apps, terminals, `gh` calls from apps) inherits that broken PATH
+/// (process plugins, terminals, `gh` calls from plugins) inherits that broken PATH
 /// too, so `shutil.which("gh") == None` even when `gh` is installed.
 ///
 /// Fix: at startup, ask the user's login shell what its PATH is and adopt it
@@ -195,7 +195,7 @@ pub fn scrub_launcher_color_overrides() {
 ///
 /// macOS GUI bundles only inherit a minimal environment — API keys, tokens,
 /// and other secrets set in `~/.zshrc` or `~/.zsh_secrets` are invisible to
-/// Plexi and every app it spawns. This probes the login shell for its full
+/// Plexi and every plugin it spawns. This probes the login shell for its full
 /// `env` output and sets any var not already present in the process env.
 ///
 /// Skips system vars (HOME, USER, SHELL, PWD, etc.) and vars already set —
@@ -400,15 +400,16 @@ fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
     }
     let components: Vec<_> = trimmed.split('/').collect();
     components.windows(3).any(|parts| {
-        parts[0].starts_with(".plexi")
-            && parts[1] == "shell-integration"
-            && parts[2] == "zsh"
+        parts[0].starts_with(".plexi") && parts[1] == "shell-integration" && parts[2] == "zsh"
     })
 }
 
 /// Decide injection before resolving any values: restored agent panes must
 /// not read Keychain secrets only to remove them immediately afterwards.
-pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: bool) -> HashMap<String, String> {
+pub(crate) fn build_env_with_secrets(
+    working_directory: Option<&Path>,
+    inject: bool,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     env.insert("TERM".into(), "xterm-256color".into());
@@ -494,7 +495,9 @@ pub(crate) fn build_env_with_secrets(working_directory: Option<&Path>, inject: b
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if let Some(dir) = working_directory.filter(|_| inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)) {
+    if let Some(dir) = working_directory.filter(|_| {
+        inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
+    }) {
         match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
         {
             Ok(resolved) => {
@@ -599,7 +602,10 @@ pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Op
         let dir = crate::platform::path::canonical_or_self(dir);
         let resolved: Vec<_> = crate::workspace::secrets::list_folder_secrets(
             crate::workspace::secrets::folder_store(),
-        ).into_iter().filter(|meta| dir.starts_with(&meta.folder)).collect();
+        )
+        .into_iter()
+        .filter(|meta| dir.starts_with(&meta.folder))
+        .collect();
         if resolved.is_empty() {
             return;
         }
@@ -1684,11 +1690,19 @@ mod tests {
             "/Users/tester/.config/zsh"
         );
         assert_eq!(
-            resolve_orig_zdotdir(Some("/Users/tester/.plexi-alpha/shell-integration/zsh"), None, home),
+            resolve_orig_zdotdir(
+                Some("/Users/tester/.plexi-alpha/shell-integration/zsh"),
+                None,
+                home
+            ),
             home
         );
         assert_eq!(
-            resolve_orig_zdotdir(None, Some("/Users/tester/.plexi-beta/shell-integration/zsh/"), home),
+            resolve_orig_zdotdir(
+                None,
+                Some("/Users/tester/.plexi-beta/shell-integration/zsh/"),
+                home
+            ),
             home
         );
         assert_eq!(

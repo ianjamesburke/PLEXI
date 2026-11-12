@@ -7,12 +7,12 @@ order: 6
 Plexi has a built-in secrets store scoped to each workspace. On macOS, secrets
 are stored through the system keychain. On Linux, global, workspace, and
 folder secrets share the backend described under [Linux storage](#linux-storage).
-For app access, see [Using Secrets in an App](#using-secrets-in-an-app).
+For plugin access, see [Using Secrets in an App](#using-secrets-in-an-plugin).
 
 ## Set a Secret
 
 Open **Secrets** with Cmd+Shift+S or choose **Open Secrets** in the command
-palette. The app lists global and current-workspace secrets. Folder secrets
+palette. The plugin lists global and current-workspace secrets. Folder secrets
 appear when the `folder_secrets` experiment is on.
 
 Use `j`/`k` to select, `Enter` to replace a value, `a` to add, and `d` to
@@ -22,7 +22,7 @@ field.
 
 Each row shows its scope, last audited successful read, and current
 actor-specific grants for that resource. Older reads without timestamps show
-**unknown**. The grant list reports existing decisions; agent and app-tool
+**unknown**. The grant list reports existing decisions; agent and plugin-tool
 reads retain their existing permission gates.
 
 Usage timestamps cover successful permission-audited reads for that scope.
@@ -99,7 +99,7 @@ another context. An agent needs an exact `secret.list` grant for that context;
 a refusal points to the host's Needs you approval. This does not grant value
 access.
 
-`plexi secret list --json` returns the app's names-only inventory, including
+`plexi secret list --json` returns the plugin's names-only inventory, including
 `scope`, `last_used` (Unix seconds or `null` when unknown), and `grant`
 (actor-specific permission descriptions). Add `--global` to restrict it to
 global secrets.
@@ -133,7 +133,7 @@ experiment on. `--global` excludes folder entries.
 
 Folder-secret grants are not supported in V1. The experimental `secret grant`
 and `secret read` commands exist behind the off-by-default `folder_secrets`
-gate, but they are not a supported V1 agent/app access flow. The experimental
+gate, but they are not a supported V1 agent/plugin access flow. The experimental
 `secret rm` and `secret exec` commands are gated too. Grant/read support is
 post-V1.
 
@@ -150,12 +150,12 @@ To update a secret, run `plexi secret set` again with the new value. The old val
 Declaring `secrets.get` reserves the capability in the manifest and protocol:
 
 ```toml
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["secrets.get"]
 ```
 
 The Python SDK does not expose a guest secret-read effect in V1. Declaring the
-capability alone does not give a Python app a way to read a secret. AI keys
+capability alone does not give a Python plugin a way to read a secret. AI keys
 resolve host-side in the broker. Human terminals can receive workspace secrets
 through the injection setting described above; agent panes have those values
 withheld and must use permission-controlled reads.

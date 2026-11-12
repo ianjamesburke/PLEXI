@@ -1,12 +1,18 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "counter"
-type = "app"
 name = "Counter"
-entry = "main.py"
 version = "0.1.0"
 description = "V3 scaffold counter"
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "counter.main"
+default = true

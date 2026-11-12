@@ -34,6 +34,7 @@ A key with a wrong value type, a retired key, or an unknown key never discards t
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `core_only` | bool | — | Disable all plugins for this host session. Profile-only; restart required. |
 | `config_version` | integer | — | — |
 | `font_size` | float | — | — |
 | `ui_scale` | float | 1.0 | App-wide UI scale (browser-style zoom). Default 1.0; clamped on use. |
@@ -132,7 +133,7 @@ Visible notifications open the modal unless `focus_mode` is enabled. There is on
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | true | Master switch. If false, incoming notifications are silently dropped — apps still send them, but the modal never appears and the queue stays empty. Defaults to true. |
+| `enabled` | bool | true | Master switch. If false, incoming notifications are silently dropped — plugins still send them, but the modal never appears and the queue stays empty. Defaults to true. |
 | `focus_mode` | bool | false | Focus mode. When true, no notification auto-surfaces. Everything queues silently; the user reviews via Cmd+Shift+A. Defaults to false. |
 | `sound` | string | — | Path to an audio file (WAV, MP3, FLAC, OGG) played once when a notification arrives, so an agent waiting on input can pull a human back while Plexi is in the background. Unset (the default) means no sound; an explicitly empty string also means no sound, so a workspace overlay can set `sound = ""` to silence a globally configured cue. The cue only fires for a notification that may interrupt: `enabled = false` drops it before the cue, `focus_mode = true` suppresses it, and an invisible notification arrives silently. |
 
@@ -146,8 +147,8 @@ plexi secret set openrouter-api-key --global
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `per_app_daily_usd` | float | $1.00 | Per-app daily spend cap in USD. Default $1.00. |
-| `global_daily_usd` | float | $10.00 | Global daily spend cap across all apps in USD. Default $10.00. |
+| `per_plugin_daily_usd` | float | $1.00 | Per-plugin daily spend cap in USD. Default $1.00. |
+| `global_daily_usd` | float | $10.00 | Global daily spend cap across all plugins in USD. Default $10.00. |
 | `client` | string | — | Default ledger client tag for Assistant and agent runs that do not set one. Free-form (`narrative`, `du`, `personal`). A blank or missing value leaves the row's client null. |
 
 ### Model modes (`[models.fast]`, `[models.slow]`)
@@ -235,7 +236,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `reset_font_size` | Reset the focused pane's text size (default Cmd+Alt+0). |
 | `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+Shift+=). |
 | `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+Shift+-). |
-| `ui_scale_reset` | Reset app-wide UI scale (default Cmd+Shift+0). |
+| `ui_scale_reset` | Reset host-wide UI scale (default Cmd+Shift+0). |
 | `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
 | `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
 | `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
@@ -245,7 +246,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `reload_config` | reload config |
 | `open_secrets_manager` | open secrets manager |
 | `open_assistant` | open assistant (beta-gated; not part of stable v1) |
-| `force_reload_app` | force reload app |
+| `force_reload_view` | force reload view |
 | `toggle_attention_queue` | toggle attention queue |
 | `zoom_in` | zoom in |
 | `open_scratchpad` | open scratchpad |
@@ -275,15 +276,15 @@ Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<
 
 ### File handlers (`[file_handlers]`)
 
-Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
+Choose which view opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
 
 | Value | Behavior |
 |---|---|
-| `app:<id>` | Open in a Plexi app by its registry id (e.g. `app:text-editor`) |
+| `app:<id>` | Stored config spelling: open a plugin default view by its registry id (e.g. `app:text-editor`) |
 | `os` | Hand to the OS default opener (`open` / `xdg-open`) |
 | `cmd:<command>` | Reserved; falls back to `os` until wired |
 
-A handler here overrides an app's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
+A handler here overrides a plugin's own `file_types` association. Unmapped extensions fall through to manifest associations, then builtin media players, then the OS default.
 
 ### Marketplace (`[marketplace]`)
 
@@ -307,6 +308,9 @@ This is the built-in template Plexi writes when it creates or resets the active 
 # Edit: plexi config edit  |  Check: plexi config check  |  Reset: plexi config reset
 
 config_version = 1
+
+# Start with no plugins. Profile-only; restart the host after changing.
+core_only = false
 
 font_size = 14.0
 # ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
@@ -425,12 +429,12 @@ tips = true
 # soft_grant_days = 30         # expiry window in days for `--grant tool=allow:soft` grants; after expiry they revert to `ask`
 
 # [file_handlers]
-# Choose which app opens each file type from the File Explorer (Enter / double-
+# Choose which plugin opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:
-#   "app:<id>"      open in a Plexi app by its registry id (e.g. text-editor)
+#   "app:<id>"      stored config spelling: open a plugin default view by its registry id (e.g. text-editor)
 #   "os"            hand to the OS default opener (open / xdg-open)
 #   "cmd:<command>" reserved for a future release; falls back to "os" for now
-# A handler here overrides an app's own file_types association. Unmapped types
+# A handler here overrides a plugin's own file_types association. Unmapped types
 # fall through to manifest associations, then builtin media players, then the OS.
 # md   = "app:text-editor"
 # txt  = "app:text-editor"
@@ -438,11 +442,11 @@ tips = true
 # py   = "os"
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. Unset / "none" = login/signup fail closed. An account is

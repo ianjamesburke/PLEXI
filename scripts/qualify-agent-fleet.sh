@@ -52,7 +52,7 @@ Surfaces:
     plexi agent fleet dismiss --all-failed
     plexi agent history
   Host UI:
-    Agents pane (`plexi app open agents`)
+    Agents pane (`plexi view open agents`)
     Command Palette (Cmd+P) agent entries
     Needs-you attention bar and pane border escalation
 

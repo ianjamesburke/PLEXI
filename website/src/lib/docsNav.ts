@@ -22,7 +22,7 @@ export const docsNav: DocNavSection[] = [
     items: [
       { slug: 'pgap', title: 'PGAP' },
       { slug: 'panes', title: 'Panes & Pages' },
-      { slug: 'apps', title: 'Apps' },
+      { slug: 'plugins', title: 'Plugins' },
       { slug: 'secrets', title: 'Secrets' },
     ],
   },

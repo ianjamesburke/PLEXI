@@ -103,7 +103,7 @@ impl PlexiApp {
                     .as_terminal()
                     .and_then(|t| t.name.clone())
             })
-            .or_else(|| parent.panes[&anchor].as_app().map(|a| a.name.clone()))
+            .or_else(|| parent.panes[&anchor].as_view().map(|a| a.name.clone()))
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
         let Some(anchor_tile) = parent.tree.tiles.find_pane(&anchor) else {
             return self.reject_pane_wrap("The anchor pane is no longer available.");

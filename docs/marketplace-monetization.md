@@ -2,9 +2,9 @@
 
 Status: active.
 Stint: 0338–0341 + 0344 (execution), 0322 (re-scoped), 0323/0325 (downstream).
-Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md). Supersedes §4 of [`marketplace-hosted.md`](marketplace-hosted.md) (the 0021 paid-apps section) and fills the named billing placeholders in its §5.4. Everything else in `marketplace-hosted.md` stands.
+Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md). Supersedes §4 of [`marketplace-hosted.md`](marketplace-hosted.md) (the 0021 paid-plugins section) and fills the named billing placeholders in its §5.4. Everything else in `marketplace-hosted.md` stands.
 
-This is the commercial-launch design doc: how paid apps are sold, how accounts work, how money moves, and why there is no client-side licensing. It resolves every open decision in stint 0315.
+This is the commercial-launch design doc: how paid plugins are sold, how accounts work, how money moves, and why there is no client-side licensing. It resolves every open decision in stint 0315.
 
 ## Decisions at a Glance
 
@@ -27,18 +27,18 @@ Buy it, get the files, they are yours like a book. A purchase is a server-side f
 
 1. **Gated downloads** — paid artifacts (initial install *and* every update) download only for accounts with the purchase row. Pirated copies work forever but rot: they can read update metadata, they cannot pull the files. Primary lever.
 2. **Convenience asymmetry** — one-click buy vs. finding/trusting a pirated copy. Pirated copies don't list, don't get the trust sheet, don't get support.
-3. **WASM obfuscation tier** — paid apps may ship compiled WASM instead of Python source. Raises "copy a .py" to "reverse-engineer a module."
-4. **Selective server-brokered value** — opt-in per app; never the default. Costs local-first purity.
+3. **WASM obfuscation tier** — paid plugins may ship compiled WASM instead of Python source. Raises "copy a .py" to "reverse-engineer a module."
+4. **Selective server-brokered value** — opt-in per plugin; never the default. Costs local-first purity.
 5. **Curated review + trust labels + ToS/DMCA takedowns** against bulk redistributors.
 
-Hard DRM remains rejected: installed code and user state live on disk; nothing the server does can ever delete or disable what a user already has. True anti-forking is impossible for plain-text local apps and we do not attempt it. We monetize the relationship and the update stream, not the bits.
+Hard DRM remains rejected: installed code and user state live on disk; nothing the server does can ever delete or disable what a user already has. True anti-forking is impossible for plain-text local plugins and we do not attempt it. We monetize the relationship and the update stream, not the bits.
 
 ## Client-Side Licensing: Rejected, and Why
 
 A license file on disk can only ever prove to *someone* that *you* bought the app. Every possible asker, audited:
 
 - **The host at run time** — never asks; founding constraint.
-- **The host at install time** — pointless; whoever can copy the app folder skips the install step entirely. The check only inconveniences the buyer.
+- **The host at install time** — pointless; whoever can copy the plugin folder skips the install step entirely. The check only inconveniences the buyer.
 - **The server at download time** — already holds the purchase record it issued; the license file is a second copy of a fact the server owns.
 - **Against a reseller** — nothing technical survives `cp -r`. The real levers (delisting, update rot, DMCA) are all server-side and social.
 
@@ -56,17 +56,17 @@ The one thing a signed license enables — verifying a paid bundle fully offline
 
 Polar owns the checkout page, the card data, global sales tax/VAT, chargebacks, and publisher payouts. **Card entry always happens in the browser — no flow ever puts a payment form inside a pane.** Plexi's database stores accounts and entitlements only; payment instruments never touch our infrastructure.
 
-Money path: buyer pays Polar → Polar webhook → plexiapp.com writes the purchase row. All apps are products on Plexi's single Polar org (Polar is merchant of record for Plexi, not per-publisher); per-publisher revenue accrues in our database from webhook data, and publishers receive 85% of net as operator-run monthly transfers recorded in a payouts ledger — manual-first at launch volume. Publisher onboarding collects payout details and tax info before the first paid listing. Publishers see aggregate installs and revenue, never buyer identities. Sales do not switch on publicly until the legal surface (ToS, privacy, refund policy — stint 0347) is live.
+Money path: buyer pays Polar → Polar webhook → plexiapp.com writes the purchase row. All plugins are products on Plexi's single Polar org (Polar is merchant of record for Plexi, not per-publisher); per-publisher revenue accrues in our database from webhook data, and publishers receive 85% of net as operator-run monthly transfers recorded in a payouts ledger — manual-first at launch volume. Publisher onboarding collects payout details and tax info before the first paid listing. Publishers see aggregate installs and revenue, never buyer identities. Sales do not switch on publicly until the legal surface (ToS, privacy, refund policy — stint 0347) is live.
 
 ## Purchase Flow
 
 In-pane (`PLEXI_SOCKET` set — the normal case):
 
-1. `plexi app install <app>` → registry returns the 402 envelope (checkout URL + purchase id).
-2. CLI subscribes to the `marketplace::purchase` event stream, asks the host to spawn the marketplace app (sibling split) with `args = {app, intent: "purchase", purchase_id}`, and blocks with a timeout.
-3. The marketplace pane opens on that app's detail view: trust sheet, price, buy button. Buy → browser → Polar checkout → webhook → purchase row.
+1. `plexi plugin install <plugin>` → registry returns the 402 envelope (checkout URL + purchase id).
+2. CLI subscribes to the `marketplace::purchase` event stream, asks the host to spawn the marketplace plugin (sibling split) with `args = {plugin, intent: "purchase", purchase_id}`, and blocks with a timeout.
+3. The marketplace pane opens on that plugin's detail view: trust sheet, price, buy button. Buy → browser → Polar checkout → webhook → purchase row.
 4. The pane polls purchase state via `HttpFetch`; on purchase it asks the **host** to install (install logic lives in exactly one place, idempotent) and shows "installed — launch?".
-5. `marketplace::install_completed {app_id, ok}` is emitted on the bus; the waiting CLI reports and exits 0. Timeout/abandon → nonzero exit, "purchase pending — re-run to resume." Re-running is safe: the server row is the state.
+5. `marketplace::install_completed {plugin_id, ok}` is emitted on the bus; the waiting CLI reports and exits 0. Timeout/abandon → nonzero exit, "purchase pending — re-run to resume." Re-running is safe: the server row is the state.
 
 Headless (no `PLEXI_SOCKET` — SSH, CI, bare agent): the CLI prints the checkout URL, polls the server, and installs when the purchase lands. Same API, same exit semantics, no pane. Socket presence selects the mode.
 
@@ -85,8 +85,8 @@ Clients render options generically and ignore unknown types. A future server may
 
 ## Refunds and Takedowns
 
-- 14 days, no questions asked. Polar reverses the charge; the purchase row is deleted; the installed app keeps working but no longer re-downloads or updates.
-- Delisting removes an app from the catalog and stops new sales. Existing installs keep working and — unlike refunds — existing purchasers keep their download/update access unless the takedown is for malware, in which case downloads stop and users are notified (never uninstalled).
+- 14 days, no questions asked. Polar reverses the charge; the purchase row is deleted; the installed plugin keeps working but no longer re-downloads or updates.
+- Delisting removes a plugin from the catalog and stops new sales. Existing installs keep working and — unlike refunds — existing purchasers keep their download/update access unless the takedown is for malware, in which case downloads stop and users are notified (never uninstalled).
 
 ## Plexi AI Subscription: The Numbers
 
@@ -99,22 +99,22 @@ Fills the named placeholders in `marketplace-hosted.md` §5.4 (mechanics live th
 
 ## Publishing and Review
 
-Review policy lives in `marketplace-hosted.md` §3 and is unchanged (one validator, two call sites; mandatory human review; submitted → in review → approved / changes requested / rejected). What this spec adds is the enforcement shape: **no path exists from a publisher to the registry except through approval.** `plexi app publish` (account required) uploads to a private submissions area; the server re-runs the validator; the operator approves in an allowlisted admin surface on plexiapp.com; approval is the only registry write, for free and paid apps alike. The registry index is served from the database at the existing URL; the git-committed registry remains as the bootstrap/smoke fixture. Stint: 0344.
+Review policy lives in `marketplace-hosted.md` §3 and is unchanged (one validator, two call sites; mandatory human review; submitted → in review → approved / changes requested / rejected). What this spec adds is the enforcement shape: **no path exists from a publisher to the registry except through approval.** `plexi plugin publish` (account required) uploads to a private submissions area; the server re-runs the validator; the operator approves in an allowlisted admin surface on plexiapp.com; approval is the only registry write, for free and paid plugins alike. The registry index is served from the database at the existing URL; the git-committed registry remains as the bootstrap/smoke fixture. Stint: 0344.
 
 ## Future: Credits (Penciled In, Not Built)
 
-Closed-loop credits — bought via Polar, spendable only inside Plexi, non-withdrawable, non-transferable — for micro-transactions that don't warrant a checkout hop (per-use app features, AI overage). Never a "wallet" in the money-transmission sense. Requires only: a server-side balance table, Polar top-up products, and a `credits` option in the 402 envelope. No host changes, no stint until real demand exists.
+Closed-loop credits — bought via Polar, spendable only inside Plexi, non-withdrawable, non-transferable — for micro-transactions that don't warrant a checkout hop (per-use plugin features, AI overage). Never a "wallet" in the money-transmission sense. Requires only: a server-side balance table, Polar top-up products, and a `credits` option in the 402 envelope. No host changes, no stint until real demand exists.
 
 ## Infrastructure Summary
 
 - **plexiapp.com (Astro/Node on Railway):** Postgres replaces the single-file SQLite; tables for accounts, auth tokens (hashed), purchases, subscriptions, publishers. API: device-flow auth, Polar webhooks, purchase-state reads, gated artifact downloads, the `ai.query` proxy endpoint.
 - **Artifact storage split:** free artifacts live as checksum-addressed files in `website/public/registry/v1/packages/` — plain files in the public git repo, served statically; git is the audit trail. Paid artifacts live in Railway object storage, uploaded at publish time, served only through the gated download endpoint — never committed to the repo (the repo is public; a committed paid artifact is a published one).
 - **Host:** `plexi account login/logout/status`, a real `AccountProvider`, bearer token on paid artifact downloads, 402 envelope handling, license machinery deleted.
-- **Marketplace app:** a Core app on SDK v3 (`RegistryClient` catalog, trust sheet, purchase flow, event emission). The store itself is just an app.
+- **Marketplace plugin:** a Core plugin on SDK v3 (`RegistryClient` catalog, trust sheet, purchase flow, event emission). The store itself is just an app.
 
 ## Done When
 
-- A stranger can buy a paid app end-to-end (browser or in-pane) and re-install it on a second machine by logging in.
+- A stranger can buy a paid plugin end-to-end (browser or in-pane) and re-install it on a second machine by logging in.
 - No card data, license file, or client-side entitlement exists anywhere in the repo.
 - A refunded purchase stops downloading but keeps running.
 - The AI subscription free tier and Pro tier are purchasable and metered server-side.

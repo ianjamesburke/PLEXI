@@ -26,14 +26,14 @@ fn workspace_save_due(last: std::time::Instant, now: std::time::Instant) -> bool
 }
 
 impl PlexiApp {
-    /// Keep app runtime state truthful before serving pane IPC. This lives in
+    /// Keep plugin runtime state truthful before serving pane IPC. This lives in
     /// the logic preamble because eframe can skip `ui()` while a host is
     /// minimized or occluded.
-    fn poll_app_runtime_state(&mut self) {
+    fn poll_plugin_runtime_state(&mut self) {
         for window in &mut self.windows {
             for pane in window.panes.values_mut() {
-                if let Some(app_pane) = pane.as_app_mut() {
-                    app_pane.runtime.poll_runtime_state();
+                if let Some(view_pane) = pane.as_view_mut() {
+                    view_pane.runtime.poll_runtime_state();
                 }
             }
         }
@@ -119,8 +119,8 @@ impl PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::PreambleRuntimePoll,
         );
-        crate::platform::logging::time_drain("poll_app_runtime_state", || {
-            self.poll_app_runtime_state()
+        crate::platform::logging::time_drain("poll_plugin_runtime_state", || {
+            self.poll_plugin_runtime_state()
         });
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -397,16 +397,16 @@ impl PlexiApp {
                                         _ => None,
                                     };
                                     let kind = match pane_ref {
-                                        Some(p) if p.as_app().is_some_and(|a| a.manifest_id == "text-editor") => {
+                                        Some(p) if p.as_view().is_some_and(|a| a.manifest_id == "text-editor") => {
                                             crate::spatial::tiling::PaneKind::TextEditor
                                         }
-                                        Some(p) if p.as_app().is_some() => crate::spatial::tiling::PaneKind::App,
+                                        Some(p) if p.as_view().is_some() => crate::spatial::tiling::PaneKind::View,
                                         Some(p) if p.as_portal().is_some() => crate::spatial::tiling::PaneKind::Portal,
                                         _ => crate::spatial::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
                                         p.as_terminal().and_then(|t| t.display_name().map(str::to_string))
-                                            .or_else(|| p.as_app().map(|a| a.name.clone()))
+                                            .or_else(|| p.as_view().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
                                     let is_exited = pane_ref
@@ -541,7 +541,7 @@ impl PlexiApp {
 
                 // Computed before the mutable borrow of `ctx`. Visual focus
                 // follows host pane focus, not OS window focus: a blurred
-                // window (Xvfb, another app in front) still paints the
+                // window (Xvfb, another plugin in front) still paints the
                 // focused pane at full color, so a waiting line stays the
                 // theme warning color. `None` while an overlay owns input,
                 // so every pane renders unfocused under a modal. Key routing
@@ -642,7 +642,7 @@ impl PlexiApp {
                         } else {
                             match p {
                                 crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
-                                crate::host::pane::Pane::App(a) => a.name.clone(),
+                                crate::host::pane::Pane::View(a) => a.name.clone(),
                                 crate::host::pane::Pane::Portal(_) => portal_info.get(&id)
                                     .map(|preview| preview.context_name.clone())
                                     .unwrap_or_else(|| "Portal".to_string()),
@@ -713,13 +713,13 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(hover_id, false));
                 }
 
-                // Propagate pre-computed notification counts into each app pane so
+                // Propagate pre-computed notification counts into each view pane so
                 // App runtimes can render the per-pane chrome badge without
                 // holding a reference to PlexiApp.
                 for pane in ctx.panes.values_mut() {
-                    if let Some(app_pane) = pane.as_app_mut() {
-                        let count = notify_counts.get(&app_pane.id).copied().unwrap_or(0);
-                        app_pane.runtime.set_pending_notification_count(count);
+                    if let Some(view_pane) = pane.as_view_mut() {
+                        let count = notify_counts.get(&view_pane.id).copied().unwrap_or(0);
+                        view_pane.runtime.set_pending_notification_count(count);
                     }
                 }
 
@@ -981,10 +981,10 @@ impl PlexiApp {
                         // is no cursor/spacing gap between them.
                         let has_name = zoomed_pane_name.is_some();
                         let has_tabs = zoomed_tab_info.is_some();
-                        let is_overtaken_app = ctx
+                        let is_overtaken_plugin = ctx
                             .panes
                             .get(&pane_id)
-                            .and_then(|p| p.as_app())
+                            .and_then(|p| p.as_view())
                             .is_some_and(|a| a.overlay_replaced.is_some());
                         let has_top_bar = has_name || has_tabs;
                         const NAME_BAR_HEIGHT: f32 = 20.0;
@@ -1009,7 +1009,7 @@ impl PlexiApp {
                                         tab_activities: &zoomed_tab_activities,
                                         colors: &self.colors,
                                         font_size: self.config.pane_title_font_size.unwrap_or(12.0),
-                                        overtake_hint: is_overtaken_app,
+                                        overtake_hint: is_overtaken_plugin,
                                     },
                                 ) {
                                     zoomed_tab_action = Some((group.container_tile, action));
@@ -1029,35 +1029,35 @@ impl PlexiApp {
                         } else {
                             inner_rect
                         };
-                        // Branch on pane type BEFORE the Frame. PGAP app runtimes
+                        // Branch on pane type BEFORE the Frame. PGAP plugin runtimes
                         // paint via `ui.painter()` WITHOUT allocating UI space, so
                         // wrapping them in an `egui::Frame` collapses it to ~16x16
                         // at the top-left (see src/host/wasm_pane.rs docs). Mirror
-                        // the tiling path (tiling.rs pane_ui) for app panes instead:
-                        // full-rect background fill + child Ui + app_pane::render,
+                        // the tiling path (tiling.rs pane_ui) for view panes instead:
+                        // full-rect background fill + child Ui + view_pane::render,
                         // which also restores the overtake bar and nav-back chrome.
-                        let is_app_pane = ctx
+                        let is_view_pane = ctx
                             .panes
                             .get(&pane_id)
-                            .is_some_and(|p| p.as_app().is_some());
-                        if is_app_pane {
+                            .is_some_and(|p| p.as_view().is_some());
+                        if is_view_pane {
                             ui.painter()
                                 .rect_filled(frame_rect, 0.0, self.colors.bg_darkest);
                             let mut app_ui =
                                 ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
                             app_ui.set_opacity(0.88);
-                            if let Some(app_pane) =
-                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_app_mut())
+                            if let Some(view_pane) =
+                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_view_mut())
                             {
                                 if dropped_to_zoom {
-                                    crate::spatial::tiling::deliver_dropped_files_to_app(
-                                        &app_ui, pane_id, app_pane,
+                                    crate::spatial::tiling::deliver_dropped_files_to_plugin(
+                                        &app_ui, pane_id, view_pane,
                                     );
                                 }
                                 let pending_click = pending_pane_clicks.remove(&pane_id);
-                                crate::render::app_pane::render(
+                                crate::render::view_pane::render(
                                     &mut app_ui,
-                                    app_pane,
+                                    view_pane,
                                     &self.colors,
                                     has_tabs,
                                     pending_click,
@@ -1289,6 +1289,7 @@ impl PlexiApp {
 
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
+        self.draw_plugin_notice(&ctx);
 
         self.draw_minimap_overlay(&ctx);
 

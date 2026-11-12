@@ -148,7 +148,7 @@ pub struct PaneNewCliArgs<'a> {
     pub cwd: Option<&'a str>,
     pub ephemeral: bool,
     pub no_focus: bool,
-    pub app: Option<&'a str>,
+    pub plugin: Option<&'a str>,
     pub mcp: &'a [String],
     pub extra_args: &'a [String],
     pub context_name: Option<&'a str>,
@@ -171,7 +171,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         cwd,
         ephemeral,
         no_focus,
-        app,
+        plugin,
         mcp,
         extra_args,
         context_name,
@@ -197,11 +197,11 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         None => None,
     };
 
-    // `agents` is the built-in fleet surface, also available via app open.
-    let app = app.or_else(|| (cmd == Some("agents") && agent.is_none()).then_some("agents"));
-    // Determine mode: app or terminal
-    let is_app = app.is_some() || !mcp.is_empty();
-    let type_id = if let Some(a) = app {
+    // `agents` is the built-in fleet surface, also available via view open.
+    let plugin = plugin.or_else(|| (cmd == Some("agents") && agent.is_none()).then_some("agents"));
+    // Determine mode: plugin or terminal
+    let is_plugin = plugin.is_some() || !mcp.is_empty();
+    let type_id = if let Some(a) = plugin {
         a.to_string()
     } else if !mcp.is_empty() {
         "mcp-renderer".to_string()
@@ -211,7 +211,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
 
     let args: Vec<String> = if !mcp.is_empty() {
         mcp.to_vec()
-    } else if is_app {
+    } else if is_plugin {
         extra_args.to_vec()
     } else if let Some(c) = cmd {
         let command = std::iter::once(c)
@@ -374,22 +374,22 @@ pub fn mcp_pane_title(args: &[String]) -> String {
     format!("mcp: {}", args.first().map(String::as_str).unwrap_or("mcp"))
 }
 
-/// Parsed prefix from a `type_id` string like `app:snake`, `cli:git`, `mcp:filesystem`.
+/// Parsed prefix from a `type_id` string like `view:snake`, `cli:git`, `mcp:filesystem`.
 pub enum OpenPrefix {
-    /// `app:<name>` -- explicit app registry lookup
-    App(String),
+    /// `view:<name>` -- explicit plugin registry lookup
+    View(String),
     /// `cli:<name>` -- CLI registry/crawl lookup
     Cli(String),
     /// `mcp:<name>` -- MCP registry lookup
     Mcp(String),
-    /// No prefix -- backwards compat (try app registry, then CLI registry)
+    /// No prefix -- backwards compat (try plugin registry, then CLI registry)
     Bare(String),
 }
 
 /// Parse a `type_id` argument into an `OpenPrefix`.
 pub fn parse_prefix(type_id: &str) -> OpenPrefix {
-    if let Some(name) = type_id.strip_prefix("app:") {
-        OpenPrefix::App(name.to_string())
+    if let Some(name) = type_id.strip_prefix("view:") {
+        OpenPrefix::View(name.to_string())
     } else if let Some(name) = type_id.strip_prefix("cli:") {
         OpenPrefix::Cli(name.to_string())
     } else if let Some(name) = type_id.strip_prefix("mcp:") {
@@ -429,7 +429,7 @@ fn open_descriptor_in_renderer(
         layout,
         from_pane_id,
         cwd,
-        app: Some("cli-renderer"),
+        plugin: Some("cli-renderer"),
         extra_args: &[path],
         ..Default::default()
     })
@@ -468,13 +468,17 @@ pub fn open_mcp_by_name(
 
     let title = format!("mcp: {name}");
     pane_new_cli(PaneNewCliArgs {
-        name: Some(&title), layout, from_pane_id, cwd,
-        app: Some("mcp-renderer"), mcp: &[name.to_string()],
+        name: Some(&title),
+        layout,
+        from_pane_id,
+        cwd,
+        plugin: Some("mcp-renderer"),
+        mcp: &[name.to_string()],
         ..Default::default()
     })
 }
 
-fn raw_wasm_app_id(path: &Path) -> String {
+fn raw_wasm_plugin_id(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("wasm")
@@ -488,7 +492,7 @@ fn raw_wasm_workspace_root(path: &Path) -> PathBuf {
 }
 
 fn prompt_raw_wasm_review(
-    app_id: &str,
+    plugin_id: &str,
     workspace_root: &Path,
     missing: &[String],
     is_tty: bool,
@@ -499,12 +503,12 @@ fn prompt_raw_wasm_review(
     }
     if !is_tty {
         return Err(format!(
-            "raw WASM launch requires review for: {}. Run `plexi app open` from a terminal to approve these imports.",
+            "raw WASM launch requires review for: {}. Run `plexi view open` from a terminal to approve these imports.",
             missing.join(", ")
         ));
     }
 
-    eprintln!("Raw WASM component '{app_id}' requests host imports:");
+    eprintln!("Raw WASM component '{plugin_id}' requests host imports:");
     for capability_id in missing {
         eprintln!(
             "  - {capability_id}: {}",
@@ -532,10 +536,10 @@ fn review_raw_wasm_open_with_reader(
     is_tty: bool,
     reader: &mut dyn BufRead,
 ) -> Result<(), String> {
-    let app_id = raw_wasm_app_id(path);
+    let plugin_id = raw_wasm_plugin_id(path);
     let workspace_root = raw_wasm_workspace_root(path);
     let required_grants =
-        crate::host::wasm_app::WasmApp::inspect_required_grants(path).map_err(|e| {
+        crate::host::wasm_view::WasmView::inspect_required_grants(path).map_err(|e| {
             format!(
                 "could not inspect WASM imports for '{}': {e}",
                 path.display()
@@ -550,7 +554,7 @@ fn review_raw_wasm_open_with_reader(
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
     let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
     let (granted, blocked) = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
-        .materialize_wasm_sets(&app_id, &workspace_root, &declared);
+        .materialize_wasm_sets(&plugin_id, &workspace_root, &declared);
     let blocked_required: Vec<String> = required_caps
         .iter()
         .filter(|cap| blocked.contains(*cap))
@@ -567,12 +571,12 @@ fn review_raw_wasm_open_with_reader(
         .filter(|cap| !granted.contains(*cap))
         .cloned()
         .collect();
-    if !prompt_raw_wasm_review(&app_id, &workspace_root, &missing, is_tty, reader)? {
+    if !prompt_raw_wasm_review(&plugin_id, &workspace_root, &missing, is_tty, reader)? {
         return Err("raw WASM launch cancelled".to_string());
     }
     for capability_id in &missing {
         store.set_wasm(
-            &app_id,
+            &plugin_id,
             &workspace_root,
             capability_id,
             crate::app::permissions::PermissionState::Green,
@@ -582,7 +586,7 @@ fn review_raw_wasm_open_with_reader(
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
     for capability_id in &missing {
         monitor.grant_capability_id(
-            &app_id,
+            &plugin_id,
             &workspace_root,
             capability_id,
             crate::broker::Decision::Allow,
@@ -590,8 +594,8 @@ fn review_raw_wasm_open_with_reader(
         );
     }
     log::info!(
-        "open:cli: raw wasm review app={} path={} workspace={} grants={:?}",
-        app_id,
+        "open:cli: raw wasm review plugin={} path={} workspace={} grants={:?}",
+        plugin_id,
         path.display(),
         workspace_root.display(),
         required_caps
@@ -605,86 +609,7 @@ fn review_raw_wasm_open(path: &Path) -> Result<(), String> {
     review_raw_wasm_open_with_reader(path, is_tty, &mut stdin)
 }
 
-/// Non-interactive raw-WASM pre-approval (`plexi app trust`): persist Green
-/// grants for every host interface the component imports, plus `fs.pick`
-/// (a runtime picker gate, not an import), scoped to the wasm's parent dir —
-/// the same store, app id, and scope the interactive review and the host use.
-/// Never opens a pane. Idempotent. Grants only what the component declares, so
-/// a caller vouches for a specific vetted file, not a blanket allow.
-fn trust_raw_wasm_open(path: &Path) -> Result<(), String> {
-    let app_id = raw_wasm_app_id(path);
-    let workspace_root = raw_wasm_workspace_root(path);
-    let required_grants =
-        crate::host::wasm_app::WasmApp::inspect_required_grants(path).map_err(|e| {
-            format!(
-                "could not inspect WASM imports for '{}': {e}",
-                path.display()
-            )
-        })?;
-    let config_dir = crate::config::config_dir();
-    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
-    let mut granted: Vec<String> = required_grants.capability_ids();
-    // `fs.pick` gates the file picker at runtime rather than being a component
-    // import, so it never appears in the inspected grants; a fixture that
-    // drives the picker still needs it pre-approved.
-    granted.push("fs.pick".to_string());
-    for capability_id in &granted {
-        store.set_wasm(
-            &app_id,
-            &workspace_root,
-            capability_id,
-            crate::app::permissions::PermissionState::Green,
-        );
-    }
-    store.save();
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
-    for capability_id in &granted {
-        monitor.grant_capability_id(
-            &app_id,
-            &workspace_root,
-            capability_id,
-            crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
-        );
-    }
-    log::info!(
-        "open:cli: app trust granted app={} path={} workspace={} grants={:?}",
-        app_id,
-        path.display(),
-        workspace_root.display(),
-        granted
-    );
-    Ok(())
-}
-
-/// `plexi app trust <file.wasm>` — see [`AppCmd::Trust`](crate::cli::args::AppCmd).
-pub fn app_trust_cli(path: &str) -> i32 {
-    let raw = std::path::Path::new(path);
-    let resolved = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(raw)
-    };
-    if resolved.extension().and_then(|e| e.to_str()) != Some("wasm") || !resolved.is_file() {
-        eprintln!(
-            "error: `plexi app trust` expects a path to a .wasm component file; got {}",
-            resolved.display()
-        );
-        return 1;
-    }
-    match trust_raw_wasm_open(&resolved) {
-        Ok(()) => {
-            println!("trusted raw WASM imports for {}", resolved.display());
-            0
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
-        }
-    }
-}
-
-/// Thin wrapper preserving the existing `plexi app open` call site.
+/// Thin wrapper preserving the existing `plexi view open` call site.
 pub fn open_cli(
     type_id: &str,
     args: &[String],
@@ -699,12 +624,14 @@ pub fn open_cli(
 
     if type_id == "terminal" {
         log::warn!(
-            "open:cli: 'plexi app open terminal' is deprecated, use 'plexi pane new' instead"
+            "open:cli: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead"
         );
-        eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi pane new' instead");
+        eprintln!(
+            "warning: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead"
+        );
     }
 
-    // If type_id looks like a path to an app directory (contains manifest.toml), open by path.
+    // If type_id looks like a path to a plugin directory (contains manifest.toml), open by path.
     let path = std::path::Path::new(type_id);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
@@ -714,11 +641,11 @@ pub fn open_cli(
     if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
-    // A `.wasm` file is a sandboxed component app launched through the same
-    // path-spawn flow as a local app dir (the run primitive, G6).
+    // A `.wasm` file is a sandboxed component plugin launched through the same
+    // path-spawn flow as a local plugin dir (the run primitive, G6).
     if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
         if let Err(e) = review_raw_wasm_open(&resolved) {
             log::warn!(
@@ -730,21 +657,21 @@ pub fn open_cli(
         }
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
     pane_new_cli(PaneNewCliArgs {
         layout,
         from_pane_id,
         cwd,
-        app: Some(type_id),
+        plugin: Some(type_id),
         extra_args: args,
         ..Default::default()
     })
 }
 
-/// Open an app from a local directory path (replaces the old `app run` command).
-fn open_app_by_path(
+/// Open a plugin from a local directory path (replaces the old `plugin run` command).
+fn open_view_by_path(
     abs_path: &str,
     args: &[String],
     layout: Option<&str>,
@@ -774,7 +701,7 @@ fn open_app_by_path(
         let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let spec = spec.with_response_file(Some(response_file.clone()));
         let payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-            log::error!("open_app_by_path: failed to serialize spawn request: {e}");
+            log::error!("open_view_by_path: failed to serialize spawn request: {e}");
             serde_json::json!({
                 "type": "spawn_pane",
                 "type_id": "",
@@ -784,7 +711,7 @@ fn open_app_by_path(
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} argc={} layout={layout:?} from_pane_id={from_pane_id:?}", args.len());
+        log::info!("open_view_by_path: sending via socket path={abs_path} argc={} layout={layout:?} from_pane_id={from_pane_id:?}", args.len());
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -799,7 +726,7 @@ fn open_app_by_path(
         return code;
     }
     let queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-        log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
+        log::error!("open_view_by_path: failed to serialize queued spawn request: {e}");
         serde_json::json!({
             "type_id": "",
             "path": abs_path,
@@ -807,7 +734,7 @@ fn open_app_by_path(
             "layout": layout,
         })
     });
-    log::info!("open_app_by_path: queued path={abs_path}");
+    log::info!("open_view_by_path: queued path={abs_path}");
     match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
         Ok(_) => 0,
         Err(code) => code,
@@ -858,7 +785,7 @@ mod open_cli_tests {
     }
 
     #[test]
-    fn app_open_omits_layout_so_host_applies_split_default() {
+    fn view_open_omits_layout_so_host_applies_split_default() {
         // With no directional flag the CLI must leave `layout` unset so the host
         // applies its placement default (manifest `[launch] placement`, else a
         // sibling split) rather than forcing an overlay takeover (stint 0330).
@@ -877,7 +804,7 @@ mod open_cli_tests {
     }
 
     #[test]
-    fn app_open_explicit_tab_layout_is_preserved() {
+    fn view_open_explicit_tab_layout_is_preserved() {
         let env = socket_env_guard();
         let (code, payload) = capture_spawn_payload(&env, || {
             open_cli("file_browser", &[], Some("tab"), None, None)
@@ -899,21 +826,21 @@ mod open_cli_tests {
         // and wasmtime will reject it before the socket payload is ever sent.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
-        let app_id = fixture
+        let plugin_id = fixture
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
 
         // Pre-approve all required grants so review does not prompt stdin.
-        let required = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         let mut store =
             crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
         for cap in required {
             store.set_wasm(
-                app_id,
+                plugin_id,
                 workspace_root,
                 &cap,
                 crate::app::permissions::PermissionState::Green,
@@ -953,12 +880,12 @@ mod open_cli_tests {
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
-        let app_id = fixture
+        let plugin_id = fixture
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
-        let required = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         let mut reader = Cursor::new(b"yes\n".to_vec());
@@ -971,7 +898,7 @@ mod open_cli_tests {
         let store = monitor.store();
         for capability_id in required {
             let decision = store.records().iter().find_map(|record| {
-                (record.actor_id == app_id
+                (record.actor_id == plugin_id
                     && record.target_id == capability_id
                     && record.workspace_root.as_deref() == Some(workspace.as_path()))
                 .then_some(record.decision)
@@ -980,46 +907,6 @@ mod open_cli_tests {
                 decision,
                 Some(crate::broker::Decision::Allow),
                 "{capability_id} should be remembered"
-            );
-        }
-    }
-
-    #[test]
-    fn app_trust_persists_grants_without_tty() {
-        // `plexi app trust` is the automation path: no reader, no TTY, yet it
-        // must persist Green grants for every imported interface plus `fs.pick`
-        // at the wasm's parent-dir scope — exactly what an installed host
-        // checks, so a raw wasm scene opens without review.
-        let config_dir = tempfile::tempdir().expect("temp config dir");
-        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/wasm-fixtures/sysmon.wasm");
-        let app_id = fixture
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("wasm");
-        let workspace_root = fixture.parent().expect("fixture parent");
-
-        super::trust_raw_wasm_open(&fixture).expect("trust should persist grants");
-
-        let monitor = crate::broker::gate::PermissionMonitor::open_profile(config_dir.path());
-        let workspace = crate::platform::path::canonical_or_self(workspace_root);
-        let store = monitor.store();
-        let mut expected = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
-            .expect("inspect fixture grants")
-            .capability_ids();
-        expected.push("fs.pick".to_string());
-        for capability_id in expected {
-            let decision = store.records().iter().find_map(|record| {
-                (record.actor_id == app_id
-                    && record.target_id == capability_id
-                    && record.workspace_root.as_deref() == Some(workspace.as_path()))
-                .then_some(record.decision)
-            });
-            assert_eq!(
-                decision,
-                Some(crate::broker::Decision::Allow),
-                "{capability_id} should be trusted"
             );
         }
     }
@@ -1058,9 +945,9 @@ mod tests {
     }
 
     #[test]
-    fn prefix_app() {
-        match parse_prefix("app:snake") {
-            OpenPrefix::App(name) => assert_eq!(name, "snake"),
+    fn prefix_plugin() {
+        match parse_prefix("view:snake") {
+            OpenPrefix::View(name) => assert_eq!(name, "snake"),
             _ => panic!("expected App prefix"),
         }
     }

@@ -106,13 +106,13 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 echo "opening assistant"
-if ! "$BIN" app open assistant >"${PROFILE}/e2e-open-assistant.log" 2>&1; then
-  echo "FAIL: app open assistant" >&2
+if ! "$BIN" view open assistant >"${PROFILE}/e2e-open-assistant.log" 2>&1; then
+  echo "FAIL: view open assistant" >&2
   cat "${PROFILE}/e2e-open-assistant.log" >&2 || true
   exit 1
 fi
 # The spawn queue is drained from the host logic loop, about once a second.
-# `app open` from outside a pane only queues the request.
+# `view open` from outside a pane only queues the request.
 assistant_ready=0
 for _ in $(seq 1 30); do
   if "$BIN" pane list 2>/dev/null | grep -q '"title": "Assistant"'; then

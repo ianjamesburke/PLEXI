@@ -1,6 +1,6 @@
-//! Typed one-shot CLI operation definitions declared by an app package.
+//! Typed one-shot CLI operation definitions declared by a plugin package.
 //!
-//! Contract: `docs/approved-app-cli-v1.md`. A package declares each operation in
+//! Contract: `docs/approved-plugin-cli-v1.md`. A package declares each operation in
 //! `[[cli_operation]]`: stable id, fixed executable, a fixed argv template whose
 //! dynamic elements are typed slots, an output contract, and the intended
 //! authority. This module is pure: it validates definitions, hashes them and

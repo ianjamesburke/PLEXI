@@ -11,7 +11,7 @@ macOS. macOS behavior is unchanged: every Linux affordance is added behind
 `cfg(target_os = ...)`, never by deleting a macOS path.
 
 Linux is a **second host platform**, not a port. The three scope models, the
-CLI surface, the pane model, and the app runtime are platform-neutral already;
+CLI surface, the pane model, and the plugin runtime are platform-neutral already;
 only the platform seam (`src/platform/`, secrets, menus, video decode, shell
 probes, window activation) is macOS-shaped and needs Linux arms.
 
@@ -209,7 +209,7 @@ a skipped test. A test that is silently absent on Linux is invisible rot.
 
 `install.sh` and `scripts/install.sh` take a Linux branch rather than
 refusing. Same script, same channel/suffix rules, same profile seeding; only
-the artifact and its placement differ, because Linux has no `.app` bundle.
+the artifact and its placement differ, because Linux has no `.plugin` bundle.
 
 | | macOS | Linux |
 |---|---|---|

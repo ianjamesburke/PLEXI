@@ -24,30 +24,28 @@ CAP_RE = re.compile(r"(?:[Rr]equires?|[Gg]ated on)\s*`([^`]+)`(?:\s+capability)?
 FRONTMATTER = """\
 ---
 title: PGAP
-description: The Plexi Generic App Protocol — how apps communicate with the host.
+description: The Plexi Generic API Protocol — how plugins communicate with the host.
 order: 3
 ---
 """
 
 INTRO = """\
-PGAP (Plexi Generic App Protocol) is the communication layer between app
-processes and the Plexi host. It runs as newline-delimited JSON over a child
-process's stdin/stdout.
+PGAP (Plexi Generic API Protocol) describes messages between plugins and the
+Plexi host. The Python adapter bridges these JSON messages into host services.
+Rust WASM components use the typed contract in `wit/plexi.wit`.
 
 ## How It Works
 
-When you run a Plexi app, the host spawns it as a child process and
-establishes a bidirectional message channel over stdio. The app sends draw
-commands describing what to render; the host sends events when the user
-interacts with the pane.
+Opening a view starts its plugin runtime. The plugin returns a UI tree;
+the host paints it and delivers input events for the containing pane.
 
 ```
-Host ──render request──► App
-Host ◄──draw commands─── App
-Host ──input event──────► App
+Host ──render request──► Plugin
+Host ◄──UI tree───────── Plugin
+Host ──input event──────► Plugin
 ```
 
-The host owns the render loop. Each frame tick, the host asks each app pane
+The host owns the render loop. When a view needs rendering, the host asks its runtime
 for a fresh set of draw commands and composites them into the UI.
 
 Every message is a JSON object with a `type` discriminant field. The schema
@@ -56,25 +54,25 @@ machine-readable definition.
 
 ## Capabilities
 
-Every app declares its capabilities in `manifest.toml`. The host enforces
+Every plugin declares its capabilities in `manifest.toml`. The host enforces
 these at runtime:
 
 ```toml
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate PGAP host APIs on top of the sandbox, not instead of it: every
-app — Python or Rust — runs as a WASM component in its own `wasmtime::Store`, so
-there is no ambient process access outside PGAP to restrict. The **Cap** column
-in the tables below shows which capability is required. Requests without a cap
-are available to all apps.
+Capabilities gate host APIs. Python uses the CPython WASI adapter; Rust
+components use typed WIT imports. These are distinct runtime paths with their
+own admission and permission checks. The **Cap** column shows the declared
+capability associated with each request; other scope and broker checks can
+still apply. See [the runtime contract](https://github.com/IanBurke/PLEXI/blob/alpha/docs/wasm-runtime.md).
 
 ## The Python SDK
 
-The recommended way to write a Plexi app is with the Python SDK. It wraps
-PGAP into idiomatic Python — subclass `App`, implement `view()`, and return
-a component tree. See the [SDK reference](/docs/sdk) for the full API.
+The Python SDK uses module-level `init`, `update`, and `view` functions.
+`view()` returns a component tree; `PluginHarness` exercises the lifecycle.
+See the [SDK reference](/docs/sdk) for the full API.
 """
 
 
@@ -184,7 +182,7 @@ def generate(schema_path: Path = SCHEMA_PATH) -> str:
     out.append("")
 
     sections: list[tuple[str, str, str]] = [
-        ("AppRequest",     "App → Host Requests",  "Messages the app sends to request host services."),
+        ("HostRequest",     "App → Host Requests",  "Messages the app sends to request host services."),
         ("PlexiEvent",     "Host → App Events",    "Messages the host sends to the app."),
         ("RenderCommand",  "Render Commands",       "Draw primitives the app emits each frame."),
         ("ControlCommand", "Control Commands",      "Inline commands processed outside the render loop."),

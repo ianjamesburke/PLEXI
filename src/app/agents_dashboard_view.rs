@@ -1,0 +1,65 @@
+//! Command view pane. It paints the agents API projection: active runs and
+//! pending permission requests. Steering stays on the CLI so a click here
+//! cannot skip the gate.
+
+use std::path::PathBuf;
+
+use crate::app::view_trait::{View, ViewRenderContext};
+
+pub struct AgentsDashboardView {
+    workspace: PathBuf,
+}
+
+impl AgentsDashboardView {
+    pub fn new(workspace: PathBuf) -> Self {
+        Self { workspace }
+    }
+}
+
+impl View for AgentsDashboardView {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn type_id(&self) -> &'static str {
+        "agents-dashboard"
+    }
+
+    fn display_name(&self) -> String {
+        "Agents dashboard".to_string()
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &ViewRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let colors = ctx.colors;
+        let lines = crate::agent::runs::pane_lines(&self.workspace);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt("agents-dashboard")
+            .show(ui, |ui| {
+                for line in lines {
+                    let attention = line.starts_with("waiting");
+                    let color = if attention {
+                        colors.warning
+                    } else {
+                        colors.text_primary
+                    };
+                    ui.label(
+                        egui::RichText::new(line)
+                            .family(egui::FontFamily::Monospace)
+                            .size(crate::ui::style::TEXT_BODY)
+                            .color(color),
+                    );
+                }
+            });
+    }
+
+    fn semantic_state(&self) -> Option<serde_json::Value> {
+        Some(crate::agent::runs::projection(&self.workspace))
+    }
+}

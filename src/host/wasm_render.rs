@@ -1,4 +1,4 @@
-// Scene-graph renderer — maps a WASM app's arena `UiTree` onto egui widgets.
+// Scene-graph renderer — maps a WASM plugin's arena `UiTree` onto egui widgets.
 //
 // The tree is a flat list of `IndexedNode`s referenced by u32 id (the WIT model
 // avoids recursive types). Rendering walks from `tree.root`, looking children
@@ -12,12 +12,14 @@ use std::collections::{HashMap, VecDeque};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-use super::wasm_app::bindings::plexi::platform::types::{
+use super::wasm_view::bindings::plexi::platform::types::{
     CanvasCommand, FooterKeysNode, PinnedEdge,
 };
-use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
+use super::wasm_view::{
+    Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree,
+};
 
-use crate::render::app_chrome::{self, AppChrome};
+use crate::render::view_chrome::{self, ViewChrome};
 
 mod text_role;
 pub(crate) use text_role::TextRole;
@@ -31,7 +33,7 @@ pub enum CanvasFit {
     Contain,
 }
 
-/// A canvas click reported in the app's own declared canvas coordinate
+/// A canvas click reported in the plugin's own declared canvas coordinate
 /// space (post `canvas_transform` inversion), not screen pixels. See
 /// `MouseEvent` in `sdk/python/plexi_sdk/events.py`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,7 +51,7 @@ pub struct RenderResult {
     pub actions: Vec<String>,
     /// `(on_change action, new value)` pairs from edited text inputs.
     pub value_changes: Vec<(String, String)>,
-    /// Canvas clicks, already inverted into the app's declared canvas space.
+    /// Canvas clicks, already inverted into the plugin's declared canvas space.
     pub canvas_clicks: Vec<CanvasClick>,
     pub canvas_time: std::time::Duration,
     authored_paint: Vec<std::ops::Range<usize>>,
@@ -61,7 +63,7 @@ pub struct RenderResult {
 /// `tree_seq` identifies the *generation* of the tree being painted: callers
 /// bump it every time they swap in a newly committed guest tree, and repaint
 /// the same tree under the same value. Host-owned edit buffers use it to tell
-/// "the app pushed me a new value" apart from "I am painting the same stale
+/// "the plugin pushed me a new value" apart from "I am painting the same stale
 /// tree again" — see `reconcile_text_input_buffer`.
 pub fn render_ui_tree_with_surface(
     ui: &mut egui::Ui,
@@ -110,20 +112,20 @@ pub fn render_ui_tree_with_canvas_fits(
     let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
         render_node(ui, env, tree.root, out, 0);
     };
-    // Good-by-default spacing (stint 0445): a declarative app with no layout
+    // Good-by-default spacing (stint 0445): a declarative plugin with no layout
     // code should not render flush against the pane edge. Wrap the whole tree
-    // in the host UI kit's standard content inset so body content, app bars,
-    // and footers all get comfortable breathing room. Full-bleed pixel apps (a
+    // in the host UI kit's standard content inset so body content, plugin bars,
+    // and footers all get comfortable breathing room. Full-bleed pixel plugins (a
     // grow Canvas or a GPU Surface anywhere in the tree) own their own layout
     // and are exempt.
-    // Paint the app-surface fill (`theme.bg`, the color apps are told their
-    // container is) across the entire pane rect first so both inset flow apps
-    // and full-bleed Canvas apps share the host theme backdrop.
+    // Paint the plugin-surface fill (`theme.bg`, the color plugins are told their
+    // container is) across the entire pane rect first so both inset flow plugins
+    // and full-bleed Canvas plugins share the host theme backdrop.
     ui.painter()
         .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
     if tree_wants_content_padding(&tree.nodes) {
-        // Stint 0674: chrome bands are exempt from the inset. A leading AppBar
-        // and a trailing FooterKeys are the app's *edges*, not its content —
+        // Stint 0674: chrome bands are exempt from the inset. A leading SurfaceHeader
+        // and a trailing FooterKeys are the plugin's *edges*, not its content —
         // insetting them floats the title bar off the pane's top-left corner
         // with a strip of background above and beside it. Render those bands
         // against the pane rect and inset only the body between them.
@@ -226,7 +228,7 @@ fn resolve_default_text(
     });
 }
 
-/// Render a root `Column` whose leading `AppBar`s and trailing `FooterKeys`
+/// Render a root `Column` whose leading `SurfaceHeader`s and trailing `FooterKeys`
 /// paint full-bleed while its body carries the standard content inset.
 /// Returns false when the tree is not a column (the caller then insets the
 /// whole tree, which is correct for a bare root widget).
@@ -247,7 +249,7 @@ fn render_root_with_chrome_bands(
         .take_while(|id| {
             matches!(
                 find_node(nodes, **id).map(|n| &n.data),
-                Some(UiNodeData::AppBar(_))
+                Some(UiNodeData::SurfaceHeader(_))
             )
         })
         .count();
@@ -281,7 +283,7 @@ fn render_root_with_chrome_bands(
     };
 
     let footer_h = trailing
-        .map(|(_, f)| app_chrome::footer_keys_height(ui, &f.entries, f.divider))
+        .map(|(_, f)| view_chrome::footer_keys_height(ui, &f.entries, f.divider))
         .unwrap_or(0.0);
     let body_end = c.children.len() - usize::from(trailing.is_some());
     let body_rect = egui::Rect::from_min_max(
@@ -299,7 +301,15 @@ fn render_root_with_chrome_bands(
             ui.set_clip_rect(body_inner);
             ui.set_min_height(body_inner.height());
             ui.set_max_height(body_inner.height());
-            render_column_children(ui, env, &c.children[leading..body_end], c.gap, c.align, out, 0);
+            render_column_children(
+                ui,
+                env,
+                &c.children[leading..body_end],
+                c.gap,
+                c.align,
+                out,
+                0,
+            );
         });
     }
 
@@ -316,9 +326,9 @@ fn render_root_with_chrome_bands(
     true
 }
 
-/// The host UI kit's standard content inset for a declarative app's root.
+/// The host UI kit's standard content inset for a declarative plugin's root.
 /// `SPACE_XL` horizontal matches the breathing room modal bodies get; the
-/// slightly tighter `SPACE_MD` top/bottom keeps short apps from feeling
+/// slightly tighter `SPACE_MD` top/bottom keeps short plugins from feeling
 /// bottom-heavy. All values come from `crate::ui::style` design tokens.
 fn root_content_inset() -> egui::Margin {
     egui::Margin {
@@ -329,9 +339,9 @@ fn root_content_inset() -> egui::Margin {
     }
 }
 
-/// A tree earns the default content inset unless it is a full-bleed pixel app:
+/// A tree earns the default content inset unless it is a full-bleed pixel plugin:
 /// a grow `Canvas` (games, visualizers) or a GPU `Surface` (video/3D output)
-/// anywhere in the tree signals the app owns every pixel, so the host must not
+/// anywhere in the tree signals the plugin owns every pixel, so the host must not
 /// inset it. A fixed-size `Canvas` is treated as ordinary flow content.
 fn tree_wants_content_padding(nodes: &[IndexedNode]) -> bool {
     !nodes.iter().any(|n| match &n.data {
@@ -343,8 +353,8 @@ fn tree_wants_content_padding(nodes: &[IndexedNode]) -> bool {
 
 /// Headless render of a `UiTree` to PNG bytes via `egui_kittest`'s wgpu
 /// offscreen backend — the same rasterization path `PlexiUiHarness` uses for
-/// screenshot tests, reused here for `plexi app render --png` /
-/// `plexi app check --png-dir` so the CLI renders exactly what the live host
+/// screenshot tests, reused here for `plexi view render --png` /
+/// `plexi plugin check --png-dir` so the CLI renders exactly what the live host
 /// would paint instead of hand-rolling a second rasterizer for widget chrome
 /// (buttons, fonts, footer key chips) that has no flat-primitive form.
 /// `pixels_per_point` is explicit: the CLI renders at 1.0; HiDPI screenshot
@@ -366,7 +376,7 @@ pub fn render_ui_tree_to_png(
     // frame and render the tree only once they are live — otherwise laying out
     // any button label on the first frame panics in epaint. The live host does
     // not hit this because `setup_fonts` runs once at startup, long before any
-    // app frame.
+    // plugin frame.
     let mut fonts_ready = false;
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
@@ -443,7 +453,7 @@ fn cross_align(a: Alignment) -> egui::Align {
     }
 }
 
-/// True when `pending_click` (from `AppRequest::ClickPaneNode`/
+/// True when `pending_click` (from `HostRequest::ClickPaneNode`/
 /// `HostHarness::inject_node_click`) targets this frame's node `id` by its
 /// arena id — the same honest match `PaneClickTarget::Pos` does by rect
 /// containment, just keyed on identity instead of geometry.
@@ -468,8 +478,8 @@ struct TextInputEditState {
     /// The last `ti.value` adopted from or echoed by the guest. Used to tell a
     /// pre-echo guest frame (carrying the same pre-edit value the widget had
     /// before an in-flight `on_change` took effect) apart from an external
-    /// app-side `SetState` reset.
-    last_app_value: String,
+    /// plugin-side `SetState` reset.
+    last_plugin_value: String,
     /// Generation of the committed guest tree this state last reconciled
     /// against. Equal generations mean the same tree is being repainted.
     seen_seq: u64,
@@ -489,17 +499,17 @@ struct TextInputEditState {
 enum TextInputReconcile {
     /// The local draft survived this frame.
     KeptDraft,
-    /// The app's value replaced the local draft.
+    /// The plugin's value replaced the local draft.
     Adopted,
 }
 
 /// Resolve a `TextInput`'s edit buffer for this frame (stints 0456, 0720).
 ///
-/// The app's `value` is a controlled input that round-trips asynchronously: a
+/// The plugin's `value` is a controlled input that round-trips asynchronously: a
 /// keystroke goes out as `on_change` and only comes back one or more guest
 /// frames later. Meanwhile the host repaints the *last committed* tree every
 /// frame, so the same stale `value` is presented over and over. Comparing
-/// values alone cannot separate that stale repaint from a genuine app-side
+/// values alone cannot separate that stale repaint from a genuine plugin-side
 /// reset, which is why typing faster than the guest's round trip used to drop
 /// characters. Three signals fix it:
 ///
@@ -509,27 +519,27 @@ enum TextInputReconcile {
 /// - `pending` — the values we sent out and are still waiting to see echoed. A
 ///   new tree whose value is one of them is our own echo (possibly several
 ///   keystrokes behind), so the draft is kept and the queue drained past it.
-/// - `last_app_value` — the baseline guest value before our un-echoed edits. A
+/// - `last_plugin_value` — the baseline guest value before our un-echoed edits. A
 ///   new tree that arrives while `pending` is non-empty and still carries that
 ///   unchanged baseline was rendered before our `on_change` took effect (e.g. a
 ///   startup resize or timer frame in flight), so the draft is kept.
 ///
-/// Anything else on a new tree is genuine app news (`SetState`, a post-submit
+/// Anything else on a new tree is genuine plugin news (`SetState`, a post-submit
 /// reset) and is adopted.
 ///
-/// Accepted residual: an app that *transforms* the value (uppercasing,
+/// Accepted residual: a plugin that *transforms* the value (uppercasing,
 /// filtering characters) emits a tree value that was never in `pending`, so it
 /// is adopted and the caret can jump to the end. Transforming controlled inputs
-/// are not supported by this contract; an app that needs one must own its own
+/// are not supported by this contract; a plugin that needs one must own its own
 /// key handling.
 fn reconcile_text_input_buffer(
     stored: Option<TextInputEditState>,
-    app_value: &str,
+    plugin_value: &str,
     seq: u64,
 ) -> (TextInputEditState, TextInputReconcile) {
     let adopt = |mut state: TextInputEditState| {
-        state.buf = app_value.to_string();
-        state.last_app_value = app_value.to_string();
+        state.buf = plugin_value.to_string();
+        state.last_plugin_value = plugin_value.to_string();
         state.seen_seq = seq;
         state.pending.clear();
         state.awaiting_submit = false;
@@ -546,32 +556,32 @@ fn reconcile_text_input_buffer(
     }
     state.seen_seq = seq;
 
-    // A submit hands the value back to the app — unless the user has already
-    // started a fresh draft in the gap, which outranks the app's answer.
+    // A submit hands the value back to the plugin — unless the user has already
+    // started a fresh draft in the gap, which outranks the plugin's answer.
     if state.awaiting_submit {
         state.awaiting_submit = false;
         if state.buf.is_empty() {
             return adopt(state);
         }
-        if let Some(index) = state.pending.iter().position(|value| value == app_value) {
+        if let Some(index) = state.pending.iter().position(|value| value == plugin_value) {
             state.pending.drain(..=index);
-            state.last_app_value = app_value.to_string();
+            state.last_plugin_value = plugin_value.to_string();
         }
         return (state, TextInputReconcile::KeptDraft);
     }
 
     // Our own echo, possibly lagging several keystrokes behind.
-    if let Some(index) = state.pending.iter().position(|value| value == app_value) {
+    if let Some(index) = state.pending.iter().position(|value| value == plugin_value) {
         state.pending.drain(..=index);
-        state.last_app_value = app_value.to_string();
+        state.last_plugin_value = plugin_value.to_string();
         return (state, TextInputReconcile::KeptDraft);
     }
 
     // A newly committed guest tree that still carries the exact baseline value
     // from before our un-echoed edits is a pre-echo frame (e.g. a resize or
     // timer render that was already in flight when the user typed), not an
-    // app-pushed reset.
-    if !state.pending.is_empty() && app_value == state.last_app_value {
+    // plugin-pushed reset.
+    if !state.pending.is_empty() && plugin_value == state.last_plugin_value {
         return (state, TextInputReconcile::KeptDraft);
     }
 
@@ -630,10 +640,12 @@ fn is_button_row(nodes: &[IndexedNode], row_id: u32) -> Option<(usize, f32)> {
     if r.children.is_empty() {
         return None;
     }
-    let all_buttons = r
-        .children
-        .iter()
-        .all(|cid| matches!(find_node(nodes, *cid).map(|n| &n.data), Some(UiNodeData::Button(_))));
+    let all_buttons = r.children.iter().all(|cid| {
+        matches!(
+            find_node(nodes, *cid).map(|n| &n.data),
+            Some(UiNodeData::Button(_))
+        )
+    });
     all_buttons.then_some((r.children.len(), r.gap))
 }
 
@@ -688,9 +700,18 @@ fn subtree_contains(nodes: &[IndexedNode], root_id: u32, target_id: u32) -> bool
         return false;
     };
     match &node.data {
-        UiNodeData::Row(r) => r.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::Column(c) => c.children.iter().any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::ListView(l) => l.items.iter().any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Row(r) => r
+            .children
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::Column(c) => c
+            .children
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
+        UiNodeData::ListView(l) => l
+            .items
+            .iter()
+            .any(|&c| subtree_contains(nodes, c, target_id)),
         UiNodeData::Scroll(s) => subtree_contains(nodes, s.child, target_id),
         UiNodeData::Padding(p) => subtree_contains(nodes, p.child, target_id),
         UiNodeData::Pinned(p) => subtree_contains(nodes, p.child, target_id),
@@ -712,7 +733,7 @@ fn is_nested_card(nodes: &[IndexedNode], card_id: u32) -> bool {
 fn render_button_node(
     ui: &mut egui::Ui,
     id: u32,
-    b: &super::wasm_app::bindings::plexi::platform::types::ButtonNode,
+    b: &super::wasm_view::bindings::plexi::platform::types::ButtonNode,
     min_size: egui::Vec2,
     colors: &Colors,
     out: &mut RenderResult,
@@ -747,7 +768,7 @@ fn render_button_node(
 /// A grow `Space` renders as `ui.add_space(available_height())`, which consumes
 /// every remaining pixel — so before this split, *every* child declared after a
 /// `Spacer(grow=True)` was pushed past the clip edge and silently vanished (the
-/// todo app's Add/Toggle/Delete controls). Splitting at the spacer and running
+/// todo plugin's Add/Toggle/Delete controls). Splitting at the spacer and running
 /// the tail bottom-up puts those children flush against the bottom with no
 /// measurement pass, and they can never overlap the head: the two layouts grow
 /// toward each other and stop.
@@ -901,12 +922,12 @@ fn render_node(
         }
 
         UiNodeData::TextInput(ti) => {
-            // Host-owned edit buffer (stint 0456): the app's `value` is a
+            // Host-owned edit buffer (stint 0456): the plugin's `value` is a
             // controlled input that round-trips asynchronously (on_change →
             // guest update → SetState → next tree), so painting `ti.value`
             // directly would clobber keystrokes typed while the echo is in
             // flight. The buffer lives in egui temp memory keyed by the
-            // widget id; an app-pushed value change (reset after submit,
+            // widget id; a plugin-pushed value change (reset after submit,
             // external SetState) still wins over any local draft.
             let widget_id = stable_node_id(ui, "l1_text_input", node);
             let state_id = widget_id.with("edit_state");
@@ -917,7 +938,7 @@ fn render_node(
             if outcome == TextInputReconcile::Adopted {
                 if let Some(draft) = previous_draft.filter(|d| !d.is_empty() && *d != ti.value) {
                     log::info!(
-                        "l1_text_input: adopting app value node={id} app={:?} discarding draft={draft:?}",
+                        "l1_text_input: adopting plugin value node={id} plugin={:?} discarding draft={draft:?}",
                         ti.value
                     );
                 }
@@ -930,7 +951,7 @@ fn render_node(
             if let Some(key) = surface_key {
                 // `autofocus` declares this field the pane's default text
                 // surface: the reconciler focuses it when the pane owns input
-                // and holds no focused surface, so an app that reveals an
+                // and holds no focused surface, so a plugin that reveals an
                 // entry form gets a live cursor with no imperative focus
                 // command and no key-routing code of its own (stint 0674).
                 if ti.autofocus {
@@ -955,7 +976,7 @@ fn render_node(
                 }
                 // Node-targeted clicks focus the field; once focused, the
                 // dispatch gate (`focused_pane_text_surface`, stint 0456)
-                // routes keystrokes here instead of the app's KeyEvent path.
+                // routes keystrokes here instead of the plugin's KeyEvent path.
                 // The claim routes through the reconciler (stint 0429), which
                 // grants it while this pane owns input.
                 if node_click_matches(pending_click, id) {
@@ -966,7 +987,7 @@ fn render_node(
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
                 // Remember what we sent so the guest's echo — however many
                 // keystrokes behind it arrives — is recognized as ours and
-                // never mistaken for an app-pushed reset.
+                // never mistaken for a plugin-pushed reset.
                 if state.pending.len() >= TEXT_INPUT_PENDING_LIMIT {
                     state.pending.pop_front();
                 }
@@ -974,21 +995,21 @@ fn render_node(
             }
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.actions.push(ti.on_submit.clone());
-                // Submitting hands the value back to the app, so the draft
+                // Submitting hands the value back to the plugin, so the draft
                 // ends here: clearing it locally means a character typed
                 // before the guest's cleared tree arrives starts the next
-                // entry instead of re-extending the submitted one. If the app
+                // entry instead of re-extending the submitted one. If the plugin
                 // keeps its value instead of clearing it (a search field), the
                 // next committed tree is adopted and restores it.
                 buf.clear();
-                state.last_app_value.clear();
+                state.last_plugin_value.clear();
                 state.pending.clear();
                 state.awaiting_submit = true;
                 // Keep focus for consecutive entries — Enter submits, it
                 // doesn't dismiss the field. Escape leaves the field via
                 // egui's native focus surrender in `begin_pass`; the
                 // dispatch gate swallows that same-frame Escape so it
-                // can't fire the AppActive CloseApp binding.
+                // can't fire the ViewActive CloseView binding.
                 if let Some(key) = surface_key {
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
@@ -1042,7 +1063,7 @@ fn render_node(
                 .and_then(|last_id| column_bottom_pin(nodes, last_id));
             if let Some((footer_id, footer_data)) = footer {
                 let footer_h =
-                    app_chrome::footer_keys_height(ui, &footer_data.entries, footer_data.divider);
+                    view_chrome::footer_keys_height(ui, &footer_data.entries, footer_data.divider);
                 let stack_size = egui::vec2(ui.available_width(), ui.available_height());
                 let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
                 let body_h = (stack_rect.height() - footer_h).max(0.0);
@@ -1148,12 +1169,20 @@ fn render_node(
                             );
                             ui.painter().set(
                                 bar_idx,
-                                egui::Shape::rect_filled(bar_rect, crate::ui::style::radius_fit(bar_rect), colors.accent),
+                                egui::Shape::rect_filled(
+                                    bar_rect,
+                                    crate::ui::style::radius_fit(bar_rect),
+                                    colors.accent,
+                                ),
                             );
                         } else if resp.hovered() && has_on_select {
                             ui.painter().set(
                                 bg_idx,
-                                egui::Shape::rect_filled(row_rect, crate::ui::style::radius_fit(row_rect), colors.bg_hover),
+                                egui::Shape::rect_filled(
+                                    row_rect,
+                                    crate::ui::style::radius_fit(row_rect),
+                                    colors.bg_hover,
+                                ),
                             );
                         }
                         let list_clicked = i == 0 && node_click_matches(pending_click, id);
@@ -1183,9 +1212,7 @@ fn render_node(
         UiNodeData::Padding(p) => {
             let is_card = node.key.starts_with(CARD_NODE_KEY_PREFIX);
             let nested_card = is_card && is_nested_card(nodes, id);
-            let keypad_w = is_card
-                .then(|| card_keypad_width(nodes, p.child))
-                .flatten();
+            let keypad_w = is_card.then(|| card_keypad_width(nodes, p.child)).flatten();
             let mut frame = egui::Frame::new().inner_margin(egui::Margin {
                 left: p.left as i8,
                 right: p.right as i8,
@@ -1241,14 +1268,13 @@ fn render_node(
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
-            let to_canvas = |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| {
-                CanvasClick {
+            let to_canvas =
+                |pos: egui::Pos2, button: Option<&'static str>, pressed: bool| CanvasClick {
                     x: (pos.x - origin.x) / sx,
                     y: (pos.y - origin.y) / sy,
                     button,
                     pressed,
-                }
-            };
+                };
             // A real click is detected by egui's own `Sense` resolution
             // (resolved once per pass, inside `Context::begin_pass`, from that
             // pass's actual `RawInput` — it cannot be faked by mutating
@@ -1277,7 +1303,7 @@ fn render_node(
                 }
             }
             // Real pointer interactions, through egui's own hit-testing. A
-            // plain click stays a single pressed=true event (the existing app
+            // plain click stays a single pressed=true event (the existing plugin
             // contract); a genuine drag delivers press → move… → release so
             // scrub/trim interactions work with a physical mouse too.
             let real_button = [
@@ -1292,14 +1318,12 @@ fn render_node(
                         .find(|(b, _)| resp.clicked_by(*b))
                         .map_or("left", |(_, name)| *name);
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_started_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_started_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), true));
-                } else if let Some((_, button)) = real_button
-                    .iter()
-                    .find(|(b, _)| resp.drag_stopped_by(*b))
+                } else if let Some((_, button)) =
+                    real_button.iter().find(|(b, _)| resp.drag_stopped_by(*b))
                 {
                     out.canvas_clicks.push(to_canvas(pos, Some(button), false));
                 } else if resp.dragged() {
@@ -1407,12 +1431,12 @@ fn render_node(
             }
         }
 
-        UiNodeData::AppBar(a) => {
-            AppChrome::new(colors).paint_app_bar(ui, &a.title, &a.subtitle);
+        UiNodeData::SurfaceHeader(a) => {
+            ViewChrome::new(colors).paint_view_bar(ui, &a.title, &a.subtitle);
         }
 
         UiNodeData::FooterKeys(f) => {
-            AppChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
+            ViewChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
         }
 
         // Bottom-pinned nodes are partitioned and rendered by the enclosing
@@ -1442,10 +1466,10 @@ fn render_node(
                 }
                 if !sp.label.is_empty() {
                     ui.add_space(style::SPACE_SM);
-                    AppChrome::new(colors).text_label(
+                    ViewChrome::new(colors).text_label(
                         ui,
                         &sp.label,
-                        app_chrome::TextLabelStyle {
+                        view_chrome::TextLabelStyle {
                             size: style::TEXT_CAPTION,
                             color: colors.text_dim,
                             bold: false,
@@ -1584,11 +1608,11 @@ fn render_data_table_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::wasm_app::bindings::plexi::platform::types::{
-        AppBarNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, FooterKeyEntry,
-        FooterKeysNode, RowNode, SpaceNode, SurfaceNode, TextInputNode, TextNode,
+    use crate::host::wasm_view::bindings::plexi::platform::types::{
+        ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, FooterKeyEntry, FooterKeysNode,
+        RowNode, SpaceNode, SurfaceHeaderNode, SurfaceNode, TextInputNode, TextNode,
     };
-    use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
+    use crate::host::wasm_view::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmView};
 
     #[test]
     fn plain_text_uses_host_theme_when_egui_visuals_differ() {
@@ -1600,25 +1624,39 @@ mod tests {
         );
         let tree = UiTree {
             root: 0,
-            nodes: vec![node(0, UiNodeData::Text(TextNode {
-                text: "Calculator".into(),
-                size: None,
-                bold: false,
-                color: None,
-                truncate: false,
-                align: Alignment::Start,
-            }))],
+            nodes: vec![node(
+                0,
+                UiNodeData::Text(TextNode {
+                    text: "Calculator".into(),
+                    size: None,
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            )],
         };
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
         });
-        let text = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
-            _ => None,
-        }).expect("painted Calculator text");
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Calculator" => Some(text),
+                _ => None,
+            })
+            .expect("painted Calculator text");
         let color = text.galley.job.sections[0].format.color;
-        let color = if color == Color32::PLACEHOLDER { text.fallback_color } else { color };
-        assert_eq!(color, colors.text_primary, "app text must follow the host palette");
+        let color = if color == Color32::PLACEHOLDER {
+            text.fallback_color
+        } else {
+            color
+        };
+        assert_eq!(
+            color, colors.text_primary,
+            "plugin text must follow the host palette"
+        );
 
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(420.0, 160.0))
@@ -1631,8 +1669,11 @@ mod tests {
                     });
             });
         harness.run();
-        harness.render().expect("theme regression render")
-            .save("/tmp/plexi-distribution-text-theme.png").expect("theme screenshot");
+        harness
+            .render()
+            .expect("theme regression render")
+            .save("/tmp/plexi-distribution-text-theme.png")
+            .expect("theme screenshot");
     }
 
     /// Stint 0456: the declarative TextInput renders through the styled
@@ -1682,14 +1723,14 @@ mod tests {
             .expect("write screenshot for visual review");
     }
 
-    /// Stints 0527/0528/0530 evidence: a text-heavy app (AppBar with
+    /// Stints 0527/0528/0530 evidence: a text-heavy plugin (SurfaceHeader with
     /// title+subtitle, flow text, canvas text commands) rendered at ppp 1.0
     /// and 2.0. The ppp-2.0 capture must show 2× pixel detail — crisp canvas
-    /// text at the snapped effective size, pixel-grid AppBar galleys, and the
+    /// text at the snapped effective size, pixel-grid SurfaceHeader galleys, and the
     /// contrast-floored subtitle tone. Review artifacts:
-    /// /tmp/plexi-render-0527-app-text-ppp{1,2}.png.
+    /// /tmp/plexi-render-0527-plugin-text-ppp{1,2}.png.
     #[test]
-    fn screenshot_text_heavy_app_at_ppp_1_and_2() {
+    fn screenshot_text_heavy_plugin_at_ppp_1_and_2() {
         let white = Color {
             r: 0xe6,
             g: 0xe6,
@@ -1721,7 +1762,7 @@ mod tests {
                 ),
                 node(
                     1,
-                    UiNodeData::AppBar(AppBarNode {
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
                         title: "Pixel Grid Fixture".to_string(),
                         subtitle: "surface resolution · typography evidence".to_string(),
                     }),
@@ -1729,8 +1770,7 @@ mod tests {
                 node(
                     2,
                     UiNodeData::Text(TextNode {
-                        text: "The quick brown fox jumps over the lazy dog 0123456789"
-                            .to_string(),
+                        text: "The quick brown fox jumps over the lazy dog 0123456789".to_string(),
                         size: None,
                         bold: false,
                         color: None,
@@ -1775,7 +1815,7 @@ mod tests {
             node(
                 id,
                 UiNodeData::Badge(
-                    crate::host::wasm_app::bindings::plexi::platform::types::BadgeNode {
+                    crate::host::wasm_view::bindings::plexi::platform::types::BadgeNode {
                         text: text.to_string(),
                         color,
                     },
@@ -1831,33 +1871,33 @@ mod tests {
     /// Build an edit state as the render arm would leave it.
     fn edit_state(
         buf: &str,
-        last_app_value: &str,
+        last_plugin_value: &str,
         seen_seq: u64,
         pending: &[&str],
     ) -> TextInputEditState {
         TextInputEditState {
             buf: buf.to_string(),
-            last_app_value: last_app_value.to_string(),
+            last_plugin_value: last_plugin_value.to_string(),
             seen_seq,
             pending: pending.iter().map(|v| v.to_string()).collect(),
             awaiting_submit: false,
         }
     }
 
-    /// Stints 0456/0720/0864: the TextInput edit buffer only resets when the app
+    /// Stints 0456/0720/0864: the TextInput edit buffer only resets when the plugin
     /// pushes news — a repaint of the same committed tree, a pre-echo guest
     /// frame carrying the unchanged baseline value, and the echo of our own
     /// `on_change` never clobber a local draft mid-round-trip.
     #[test]
     fn text_input_buffer_reconciliation() {
-        // Fresh widget: adopt the app's value.
+        // Fresh widget: adopt the plugin's value.
         let (state, outcome) = reconcile_text_input_buffer(None, "seed", 7);
         assert_eq!(outcome, TextInputReconcile::Adopted);
         assert_eq!(state, edit_state("seed", "seed", 7, &[]));
 
         // Stint 0720 regression: the SAME committed tree repainted, carrying a
         // value that differs from the draft because the guest has not echoed
-        // yet. Value comparison alone called this an app reset and dropped the
+        // yet. Value comparison alone called this a plugin reset and dropped the
         // keystroke; the generation says there is no news.
         let (state, outcome) =
             reconcile_text_input_buffer(Some(edit_state("hi", "", 3, &["h", "hi"])), "", 3);
@@ -1872,7 +1912,7 @@ mod tests {
         // render that was already in flight before `on_change("h")` reached the
         // guest) commits with the same baseline value (`""`) the widget had
         // before the pending edits started. That is a pre-echo frame, not an
-        // app-pushed reset.
+        // plugin-pushed reset.
         let (state, outcome) =
             reconcile_text_input_buffer(Some(edit_state("hi", "", 3, &["h", "hi"])), "", 4);
         assert_eq!(
@@ -1889,7 +1929,7 @@ mod tests {
         assert_eq!(state, edit_state("hi", "h", 5, &["hi"]));
 
         // A new tree with a value we never sent and that differs from the
-        // baseline is genuine app news (external SetState, post-submit reset)
+        // baseline is genuine plugin news (external SetState, post-submit reset)
         // and wins over the draft.
         let (state, outcome) =
             reconcile_text_input_buffer(Some(edit_state("typed", "seed", 3, &["typed"])), "", 4);
@@ -1897,27 +1937,27 @@ mod tests {
         assert_eq!(state, edit_state("", "", 4, &[]));
     }
 
-    /// Stint 0720: after `on_submit` the app redefines the value, but a
+    /// Stint 0720: after `on_submit` the plugin redefines the value, but a
     /// character typed before its tree lands starts the next entry rather than
     /// re-extending the submitted one.
     #[test]
     fn text_input_submit_hands_the_value_back_unless_the_user_typed_first() {
         let submitted = TextInputEditState {
             buf: String::new(),
-            last_app_value: String::new(),
+            last_plugin_value: String::new(),
             seen_seq: 3,
             pending: VecDeque::new(),
             awaiting_submit: true,
         };
 
-        // Untouched since submit: whatever the app decided is authoritative —
+        // Untouched since submit: whatever the plugin decided is authoritative —
         // cleared here, but a search field that keeps its query is restored the
         // same way.
         let (state, outcome) = reconcile_text_input_buffer(Some(submitted.clone()), "query", 4);
         assert_eq!(outcome, TextInputReconcile::Adopted);
         assert_eq!(state, edit_state("query", "query", 4, &[]));
 
-        // Typed in the gap: the fresh draft outranks the app's answer.
+        // Typed in the gap: the fresh draft outranks the plugin's answer.
         let mut typed_after = submitted;
         typed_after.buf = "z".to_string();
         typed_after.pending.push_back("z".to_string());
@@ -1942,18 +1982,26 @@ mod tests {
         let mut after = egui::Id::NULL;
         ctx.begin_pass(egui::RawInput::default());
         egui::Area::new(egui::Id::new("keyed-id-test")).show(&ctx, |ui| {
-            before = stable_node_id(ui, "l1_text_input", &IndexedNode {
-                id: 2,
-                key: "0/@row-b/0".to_string(),
-                data: UiNodeData::Empty,
-            });
+            before = stable_node_id(
+                ui,
+                "l1_text_input",
+                &IndexedNode {
+                    id: 2,
+                    key: "0/@row-b/0".to_string(),
+                    data: UiNodeData::Empty,
+                },
+            );
             // A keyed row can occupy another arena slot after its siblings
             // move; its path stays the same and so does the egui state id.
-            after = stable_node_id(ui, "l1_text_input", &IndexedNode {
-                id: 19,
-                key: "0/@row-b/0".to_string(),
-                data: UiNodeData::Empty,
-            });
+            after = stable_node_id(
+                ui,
+                "l1_text_input",
+                &IndexedNode {
+                    id: 19,
+                    key: "0/@row-b/0".to_string(),
+                    data: UiNodeData::Empty,
+                },
+            );
         });
         let _ = ctx.end_pass();
         assert_eq!(before, after);
@@ -1961,7 +2009,7 @@ mod tests {
 
     /// Bounding box of everything painted when `tree` renders into a `pane`-sized
     /// screen. Used to observe where the good-by-default content inset places
-    /// real content vs. where a full-bleed app draws.
+    /// real content vs. where a full-bleed plugin draws.
     fn painted_bounds(tree: &UiTree, pane: egui::Vec2) -> egui::Rect {
         let mut bounds = egui::Rect::NOTHING;
         for r in painted_shapes(tree, pane) {
@@ -2020,7 +2068,7 @@ mod tests {
         (surface, content)
     }
 
-    // Stint 0445: a declarative flow app (no grow Canvas / Surface) earns the
+    // Stint 0445: a declarative flow plugin (no grow Canvas / Surface) earns the
     // host's standard content inset, so its content never renders flush against
     // the pane edge, and buttons get a comfortable minimum click target.
     #[test]
@@ -2039,8 +2087,8 @@ mod tests {
         };
         let pane = egui::vec2(400.0, 300.0);
         let (surface, content) = surface_and_content(&tree, pane);
-        // Stint 0448: the app surface fills the whole pane; only content insets.
-        let surface = surface.expect("flow app must paint a pane-filling surface");
+        // Stint 0448: the plugin surface fills the whole pane; only content insets.
+        let surface = surface.expect("flow plugin must paint a pane-filling surface");
         assert!(
             surface.min.x <= 0.5
                 && surface.min.y <= 0.5
@@ -2068,7 +2116,7 @@ mod tests {
         );
     }
 
-    // Stint 0448: a flow app's surface/background fill must span the entire
+    // Stint 0448: a flow plugin's surface/background fill must span the entire
     // pane rect — the content inset moves only the layout cursor, never the
     // visible surface. Regression guard against the 0445 black-border bug.
     #[test]
@@ -2100,7 +2148,7 @@ mod tests {
         };
         let pane = egui::vec2(400.0, 300.0);
         let (surface, content) = surface_and_content(&tree, pane);
-        let surface = surface.expect("flow app must paint a pane-filling surface");
+        let surface = surface.expect("flow plugin must paint a pane-filling surface");
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, pane);
         assert!(
             surface.min.x <= 0.5
@@ -2116,10 +2164,10 @@ mod tests {
         );
     }
 
-    // A grow Canvas signals a full-bleed pixel app; the host must not inset it,
+    // A grow Canvas signals a full-bleed pixel plugin; the host must not inset it,
     // so its drawing reaches the pane edge.
     #[test]
-    fn grow_canvas_app_is_not_inset() {
+    fn grow_canvas_plugin_is_not_inset() {
         let fill = Color {
             r: 255,
             g: 0,
@@ -2194,7 +2242,7 @@ mod tests {
         );
         assert!(
             !tree_wants_content_padding(&with_grow_canvas),
-            "a grow canvas makes the app full-bleed"
+            "a grow canvas makes the plugin full-bleed"
         );
 
         let mut with_fixed_canvas = flow.clone();
@@ -2223,7 +2271,7 @@ mod tests {
         );
         assert!(
             !tree_wants_content_padding(&with_surface),
-            "a GPU surface makes the app full-bleed"
+            "a GPU surface makes the plugin full-bleed"
         );
     }
 
@@ -2236,7 +2284,7 @@ mod tests {
         assert_eq!(inset.bottom, style::SPACE_MD as i8);
     }
 
-    /// A `Column([AppBar, body…, FooterKeys])` — the shape every flow app has.
+    /// A `Column([SurfaceHeader, body…, FooterKeys])` — the shape every flow plugin has.
     fn chrome_tree() -> UiTree {
         UiTree {
             root: 0,
@@ -2252,7 +2300,7 @@ mod tests {
                 ),
                 node(
                     1,
-                    UiNodeData::AppBar(AppBarNode {
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
                         title: "Todo".to_string(),
                         subtitle: "2 open".to_string(),
                     }),
@@ -2268,7 +2316,13 @@ mod tests {
                         align: Alignment::Start,
                     }),
                 ),
-                node(3, UiNodeData::Space(SpaceNode { size: 0.0, grow: true })),
+                node(
+                    3,
+                    UiNodeData::Space(SpaceNode {
+                        size: 0.0,
+                        grow: true,
+                    }),
+                ),
                 // The tail is a Row of buttons — an `Actions` bar, the shape the
                 // overflow bug actually took (a bare child never reproduced it).
                 node(
@@ -2312,12 +2366,12 @@ mod tests {
         }
     }
 
-    /// Stint 0674: an `AppBar` is the app's top edge, not its content. Insetting
+    /// Stint 0674: an `SurfaceHeader` is the plugin's top edge, not its content. Insetting
     /// it floated the title band off the pane's corner — a strip of background
-    /// above and beside every flow app's chrome. The band paints against the
+    /// above and beside every flow plugin's chrome. The band paints against the
     /// pane rect while the body below it keeps the standard inset.
     #[test]
-    fn leading_app_bar_paints_full_bleed_while_body_stays_inset() {
+    fn leading_view_bar_paints_full_bleed_while_body_stays_inset() {
         let pane = egui::vec2(400.0, 300.0);
         let shapes = painted_shapes(&chrome_tree(), pane);
         let fills_pane = |r: &egui::Rect| r.max.y >= pane.y - 0.5;
@@ -2325,17 +2379,15 @@ mod tests {
         let band = shapes
             .iter()
             .filter(|r| !fills_pane(r))
-            .find(|r| {
-                r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5
-            })
+            .find(|r| r.min.y <= 0.5 && r.min.x <= 0.5 && r.max.x >= pane.x - 0.5)
             .copied();
         assert!(
             band.is_some(),
-            "app bar should paint a full-width band at the pane's top edge; painted {shapes:?}"
+            "plugin bar should paint a full-width band at the pane's top edge; painted {shapes:?}"
         );
 
         // Body content is everything that is not a full-width chrome band
-        // (the app bar's own band, the footer's band, its divider rule).
+        // (the plugin bar's own band, the footer's band, its divider rule).
         let body_top = band.expect("band").max.y;
         let body = shapes
             .iter()
@@ -2435,8 +2487,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {
-                        let _ =
-                            render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
+                        let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, Some(key), 0);
                     });
             });
             let registry = crate::ui::focus::drain_text_surfaces(&ctx);
@@ -2481,7 +2532,7 @@ mod tests {
     }
 
     // Stint 0390: a grow canvas's height must track the pane like its width
-    // does, not stay floored at the app's declared height. Shrinking the pane
+    // does, not stay floored at the plugin's declared height. Shrinking the pane
     // below the declared height previously left the canvas rect taller than
     // the pane, painting content below the visible edge.
     #[test]
@@ -2661,7 +2712,7 @@ mod tests {
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
         let mut app =
-            WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
+            WasmView::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
         app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), &[])?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
@@ -2717,7 +2768,7 @@ mod tests {
                         "id": 1,
                         "key": "bar",
                         "data": {
-                            "type": "AppBar",
+                            "type": "SurfaceHeader",
                             "title": "SDK v3 Hardening",
                             "subtitle": "Card · DataTable · SelectList · Text"
                         }
@@ -2830,7 +2881,10 @@ mod tests {
             }
             _ => false,
         });
-        assert!(has_card_surface, "Card node must paint bg_active surface with border stroke");
+        assert!(
+            has_card_surface,
+            "Card node must paint bg_active surface with border stroke"
+        );
 
         let mut list_click = RenderResult::default();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -2953,7 +3007,9 @@ mod tests {
 
         let selected_fill = colors.accent.gamma_multiply(0.18);
         assert!(
-            rects.iter().any(|r| r.fill == selected_fill && r.rect.width() > 20.0),
+            rects
+                .iter()
+                .any(|r| r.fill == selected_fill && r.rect.width() > 20.0),
             "selected ListView row must paint accent-tinted background fill"
         );
         assert!(
@@ -3185,7 +3241,11 @@ mod tests {
             .iter()
             .filter(|r| r.fill == colors.accent && (r.rect.height() - KEYPAD_BUTTON_H).abs() < 1.0)
             .collect();
-        assert_eq!(primary_btns.len(), 2, "expected '+' and '=' primary buttons");
+        assert_eq!(
+            primary_btns.len(),
+            2,
+            "expected '+' and '=' primary buttons"
+        );
         assert!(
             (primary_btns[0].rect.left() - primary_btns[1].rect.left()).abs() < 1.0,
             "'=' button in 3-button bottom row must align with '+' in column 4"

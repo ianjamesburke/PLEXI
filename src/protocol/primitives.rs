@@ -77,7 +77,7 @@ pub struct AiMessage {
 }
 
 /// Tool definition for the tool-use turn loop (#398).
-/// Apps declare callable tools via `DrawCommand::ExposeTools`.
+/// Plugins declare callable tools via `DrawCommand::ExposeTools`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct AiTool {
     pub name: String,
@@ -94,7 +94,7 @@ pub struct AiTool {
     pub read_only: bool,
 }
 
-/// Coarse model tier requested by the app. The host maps each tier to a
+/// Coarse model tier requested by the plugin. The host maps each tier to a
 /// concrete model identifier per backend (spec §ai.query):
 ///   - `Low`    → Haiku
 ///   - `Medium` → Sonnet

@@ -50,19 +50,19 @@ export const POST: APIRoute = async ({ request }) => {
     switch (event.type) {
       case 'order.paid': {
         const order = event.data;
-        const appId = metaStr(order.metadata, 'app_id');
+        const pluginId = metaStr(order.metadata, 'plugin_id');
         const purchaseId = metaStr(order.metadata, 'purchase_id');
         // Subscription-cycle orders also arrive as order.paid but carry no app
         // purchase metadata — those are handled by the subscription events.
-        if (!appId && !purchaseId) {
-          console.info('[api/commerce/webhook/polar] order.paid without app metadata — skipped');
+        if (!pluginId && !purchaseId) {
+          console.info('[api/commerce/webhook/polar] order.paid without plugin metadata — skipped');
           break;
         }
         await recordPaidOrder({
           polarOrderId: order.id,
           purchaseId,
           accountId: metaStr(order.metadata, 'account_id'),
-          appId,
+          pluginId,
           publisher: metaStr(order.metadata, 'publisher'),
           amountCents: order.totalAmount,
           netCents: order.netAmount - order.platformFeeAmount,

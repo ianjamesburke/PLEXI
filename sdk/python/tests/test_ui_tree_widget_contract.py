@@ -22,7 +22,7 @@ from plexi_sdk._adapter import _encode_uitree
 ACCEPTED_NODE_TYPES = frozenset({
     "Empty",
     "Text", "text", "label",
-    "AppBar", "app_bar", "app-bar",
+    "SurfaceHeader", "surface_header", "app-bar",
     "FooterKeys", "footer_keys", "footer-keys",
     "Pinned", "pinned",
     "Spinner", "spinner",
@@ -76,7 +76,7 @@ _FACTORIES = {
     "Row": lambda: ui.Row([]),
     "Actions": lambda: ui.Actions([]),
     "ActionBar": lambda: ui.ActionBar([]),
-    "AppBar": lambda: ui.AppBar("Title"),
+    "SurfaceHeader": lambda: ui.SurfaceHeader("Title"),
     "Section": lambda: ui.Section("Title"),
     "Heading": lambda: ui.Heading("Title"),
     "Label": lambda: ui.Label("Body"),

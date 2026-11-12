@@ -9,7 +9,7 @@ open = { kind = "builtin", id = "image-viewer", as = "image", args = ["assets/ap
 run_steps = 4
 
 [[steps]]
-assert = { target = "image", lifecycle = "running", layout_valid = true, layout_surfaces = ["app_bar"] }
+assert = { target = "image", lifecycle = "running", layout_valid = true, layout_surfaces = ["surface_header"] }
 
 [[steps]]
 shot = "adoption-appbar.png"

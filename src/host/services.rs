@@ -1,8 +1,8 @@
 //! HostServices — host side-effect plumbing.
 //!
 //! `EventSink` is the only production field right now; fs/secrets/net/spawn
-//! trait seams live in the app runtimes (`host::wasm_python`, `host::wasm_app`)
-//! and `app_registry` until HostModel owns their routing.
+//! trait seams live in the plugin runtimes (`host::wasm_python`, `host::wasm_view`)
+//! and `plugin_registry` until HostModel owns their routing.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;
@@ -36,12 +36,13 @@ impl FileEventSink {
         let mut sink = Self { path, writer };
         // Startup heartbeat so the post-install smoke test can assert the
         // sink opened the file for write (non-empty file means the wiring
-        // is live, even before the first AppRequest fires).
+        // is live, even before the first HostRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
             let now = crate::platform::clock::now_secs();
             let ts = crate::platform::clock::now_rfc3339();
-            let line = format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now},\"ts\":\"{ts}\"}}\n");
+            let line =
+                format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now},\"ts\":\"{ts}\"}}\n");
             if let Err(e) = writer
                 .write_all(line.as_bytes())
                 .and_then(|()| writer.flush())
@@ -177,7 +178,7 @@ pub trait NetService: Send + Sync {
 }
 
 /// Production impl — blocking HTTP via `ureq`. Pure-Rust, no tokio.
-/// 10s connect timeout, 30s total timeout so apps cannot wedge the host
+/// 10s connect timeout, 30s total timeout so plugins cannot wedge the host
 /// forever on a hung peer.
 pub struct UreqNetService {
     agent: ureq::Agent,
@@ -262,7 +263,10 @@ impl NetService for UreqNetService {
             // bodies or GitHub's JSON error payloads).
             Err(ureq::Error::Status(_, resp)) => Self::finish(resp, max_body_bytes),
             Err(ureq::Error::Transport(t)) => {
-                log::warn!("UreqNetService: transport error method={method} error_chars={}", t.to_string().chars().count());
+                log::warn!(
+                    "UreqNetService: transport error method={method} error_chars={}",
+                    t.to_string().chars().count()
+                );
                 HttpResponse {
                     status: 0,
                     body: String::new(),
@@ -320,14 +324,13 @@ impl PickerService for RfdPickerService {
             dialog = dialog.add_filter("files", &extensions);
         }
         let paths: Vec<std::path::PathBuf> = match request.mode {
-            FilePickerMode::Open if request.multiple => {
-                block_on_dialog(dialog.pick_files()).map_or_else(Vec::new, |handles| {
+            FilePickerMode::Open if request.multiple => block_on_dialog(dialog.pick_files())
+                .map_or_else(Vec::new, |handles| {
                     handles
                         .iter()
                         .map(|handle| handle.path().to_path_buf())
                         .collect()
-                })
-            }
+                }),
             FilePickerMode::Open => block_on_dialog(dialog.pick_file())
                 .map_or_else(Vec::new, |handle| vec![handle.path().to_path_buf()]),
             FilePickerMode::Folder => block_on_dialog(dialog.pick_folder())
@@ -448,7 +451,7 @@ impl PickerService for ScriptedPickerService {
     }
 }
 
-/// The picker backend a newly launched app pane should use. Priority:
+/// The picker backend a newly launched view pane should use. Priority:
 /// in-process override (scenes, tests) → `PLEXI_PICKER_SCRIPT` env (live
 /// hosts driven by tester agents) → native `rfd` dialog.
 pub fn default_picker_service() -> std::sync::Arc<dyn PickerService> {
@@ -495,8 +498,7 @@ fn picker_override() -> Option<std::sync::Arc<dyn PickerService>> {
 }
 
 #[cfg(test)]
-fn picker_override_slot()
--> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
+fn picker_override_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>> {
     static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>>> =
         std::sync::OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(None))
@@ -606,6 +608,9 @@ mod tests {
         let error = ScriptedPickerService::from_script_file(&script)
             .err()
             .expect("malformed script entry must fail");
-        assert!(error.contains("picks.json"), "error names the file: {error}");
+        assert!(
+            error.contains("picks.json"),
+            "error names the file: {error}"
+        );
     }
 }

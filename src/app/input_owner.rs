@@ -69,7 +69,7 @@ impl PlexiApp {
     /// Derive this frame's input owner from host state. Precedence:
     /// OS window focus > overlay surfaces > the focused pane.
     ///
-    /// The OS-focus gate applies to key *routing* (`dispatch_app_key_events`,
+    /// The OS-focus gate applies to key *routing* (`dispatch_plugin_key_events`,
     /// the terminal steal): while another window owns the keyboard, no pane
     /// receives keys. It does not apply to egui-focus *projection* — see
     /// [`Self::host_input_owner`].
@@ -246,8 +246,8 @@ impl PlexiApp {
 /// `pane_id` on the previous frame. Key dispatch runs before the render
 /// pass, so the current frame's registry is still empty — the previous
 /// frame's registrations are the freshest complete picture. Used by
-/// `dispatch_app_key_events` to keep keystrokes with a focused declarative
-/// `TextInput` instead of forwarding them to the app as raw key events
+/// `dispatch_plugin_key_events` to keep keystrokes with a focused declarative
+/// `TextInput` instead of forwarding them to the plugin as raw key events
 /// (stint 0456).
 pub(crate) fn focused_pane_text_surface(ctx: &egui::Context, pane_id: PaneId) -> bool {
     let id = Id::new(PREVIOUS_SURFACES_ID);

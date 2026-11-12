@@ -15,7 +15,7 @@ pub struct AuditEvent {
     pub actor: String,
     /// `tool_call` | `permission_decision` | `revoke`.
     pub kind: String,
-    /// Broker target id, e.g. `app.csv.write_range`.
+    /// Broker target id, e.g. `plugin.csv.write_range`.
     pub target: String,
     /// Outcome: `ok`, `error`, `allow_once`, `allow_session`, `allow_always`,
     /// `deny`, `revoked`.
@@ -149,11 +149,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
         let log = AuditLog::new(path.clone());
-        log.append(&AuditEvent::now("agent:assistant", "tool_call", "app.x", "ok", "")).unwrap();
+        log.append(&AuditEvent::now(
+            "agent:assistant",
+            "tool_call",
+            "app.x",
+            "ok",
+            "",
+        ))
+        .unwrap();
         let mut raw = std::fs::read_to_string(&path).unwrap();
         raw.push_str("not json\n");
         std::fs::write(&path, raw).unwrap();
-        log.append(&AuditEvent::now("agent:assistant", "tool_call", "app.y", "error", "boom")).unwrap();
+        log.append(&AuditEvent::now(
+            "agent:assistant",
+            "tool_call",
+            "app.y",
+            "error",
+            "boom",
+        ))
+        .unwrap();
         let events = log.tail(10);
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].target, "app.y");

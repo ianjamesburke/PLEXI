@@ -1,4 +1,4 @@
-//! End-to-end proof of approved CLI operations: a real sandboxed Python app
+//! End-to-end proof of approved CLI operations: a real sandboxed Python plugin
 //! requests an operation, a person decides, and a real compiled fixture CLI runs
 //! (or provably does not). Hidden-window and inactive-context servicing included.
 
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use crate::host::cli_ops::fixture;
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{Pane, ViewRuntime};
 use crate::release::ReleaseFeature;
 
 use super::HostHarness;
@@ -54,18 +54,7 @@ def view():
     return Column([Text("cli operation fixture")])
 "#;
 
-const MANIFEST: &str = r#"schema_version = 1
-
-[app]
-id = "cliop-e2e"
-type = "app"
-name = "Cli Op E2E"
-entry = "main.py"
-version = "0.1.0"
-description = "approved operation end-to-end fixture"
-
-[app.capabilities]
-capabilities = ["cli.operations"]
+const MANIFEST: &str = r#"schema_version = 2
 
 [[cli_operation]]
 id = "fixture.echo"
@@ -91,11 +80,28 @@ format = "json"
 max_bytes = 4096
 [cli_operation.authority]
 mode = "read"
+
+[plugin]
+id = "cliop-e2e"
+name = "Cli Op E2E"
+version = "0.1.0"
+description = "approved operation end-to-end fixture"
+
+[plugin.capabilities]
+capabilities = ["cli.operations"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "cliop-e2e.main"
+default = true
 "#;
 
 struct E2e {
     _root: tempfile::TempDir,
-    app_dir: PathBuf,
+    plugin_dir: PathBuf,
     workspace: PathBuf,
     _search: crate::host::cli_ops::TestSearchDirsGuard,
     _experiments: Option<crate::release::TestExperimentsGuard>,
@@ -105,12 +111,12 @@ struct E2e {
 impl E2e {
     fn new(enabled: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let app_dir = root.path().join("app");
+        let plugin_dir = root.path().join("app");
         let workspace = root.path().join("ws");
-        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(app_dir.join("manifest.toml"), MANIFEST).unwrap();
-        std::fs::write(app_dir.join("main.py"), MAIN_PY).unwrap();
+        std::fs::write(plugin_dir.join("manifest.toml"), MANIFEST).unwrap();
+        std::fs::write(plugin_dir.join("main.py"), MAIN_PY).unwrap();
         let bin = fixture::install("a", &root.path().join("bin/fixturecli"));
         let search =
             crate::host::cli_ops::set_test_search_dirs(vec![bin.parent().unwrap().to_path_buf()]);
@@ -119,7 +125,7 @@ impl E2e {
         Self {
             h: HostHarness::new(),
             _root: root,
-            app_dir,
+            plugin_dir,
             workspace,
             _search: search,
             _experiments: experiments,
@@ -130,13 +136,13 @@ impl E2e {
         let before = self.h.state().open_panes;
         self.h
             .app
-            .launch_app_by_path_with_layout(
-                &self.app_dir.to_string_lossy(),
+            .launch_view_by_path_with_layout(
+                &self.plugin_dir.to_string_lossy(),
                 None,
                 Some(self.workspace.clone()),
                 &[plan.to_string()],
             )
-            .expect("launch fixture app");
+            .expect("launch fixture plugin");
         self.h
             .state()
             .open_panes
@@ -151,9 +157,9 @@ impl E2e {
             .windows
             .iter()
             .find_map(|w| w.panes.get(&pane))
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|p| match &p.runtime {
-                AppRuntime::Python(py) => Some(py.display_name()),
+                ViewRuntime::Python(py) => Some(py.display_name()),
                 _ => None,
             })
     }
@@ -212,7 +218,7 @@ impl E2e {
 const ECHO_PLAN: &str = r#"[{"id":"r1","op":"fixture.echo","values":{"word":"hi"}}]"#;
 
 #[test]
-fn sandboxed_app_gets_a_correlated_result_after_approval_while_the_window_is_hidden() {
+fn sandboxed_plugin_gets_a_correlated_result_after_approval_while_the_window_is_hidden() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
@@ -239,7 +245,7 @@ fn result_arrives_while_the_apps_context_is_inactive_and_the_window_hidden() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
-    // Move the person to another context: the app's window is now inactive.
+    // Move the person to another context: the plugin's window is now inactive.
     let other = tempfile::tempdir().unwrap();
     let ctx_id = crate::testing::reserve_test_context_id();
     let idx = super::harness_tests::push_secondary_context(&mut e2e.h, ctx_id, other.path());
@@ -258,7 +264,7 @@ fn result_arrives_while_the_apps_context_is_inactive_and_the_window_hidden() {
 }
 
 #[test]
-fn denial_reaches_the_app_and_launches_nothing() {
+fn denial_reaches_the_plugin_and_launches_nothing() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
@@ -286,7 +292,7 @@ fn experiment_off_refuses_before_any_approval_or_launch() {
 }
 
 #[test]
-fn closing_the_app_kills_a_running_operation_and_its_children() {
+fn closing_the_plugin_kills_a_running_operation_and_its_children() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(r#"[{"id":"k","op":"fixture.children","values":{}}]"#);
     let id = e2e.wait_for_approval(pane, false);
@@ -303,7 +309,7 @@ fn closing_the_app_kills_a_running_operation_and_its_children() {
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
             start.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(5)),
-            "grandchild {pid} survived closing the app"
+            "grandchild {pid} survived closing the plugin"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

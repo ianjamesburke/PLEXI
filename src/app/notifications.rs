@@ -3,7 +3,7 @@
 use super::PlexiApp;
 
 /// Stable terminal values returned to notification producers. These are values
-/// so CLI response files and app `NotifyAction` events share one contract.
+/// so CLI response files and plugin `NotifyAction` events share one contract.
 pub(crate) const NOTIFY_OUTCOME_CANCELLED: &str = "cancelled";
 pub(crate) const NOTIFY_OUTCOME_DISABLED: &str = "disabled";
 pub(crate) const NOTIFY_OUTCOME_INVALID: &str = "invalid_choice";
@@ -68,7 +68,7 @@ pub(crate) struct PendingNotification {
     pub on_dismiss: Option<String>,
     /// When the notification was pushed to the queue. Used for timeout tracking.
     pub enqueued_at: std::time::Instant,
-    /// True when the originating app pane has exited. The notification stays
+    /// True when the originating view pane has exited. The notification stays
     /// in the queue so the user can read it, but action buttons are hidden.
     pub tombstoned: bool,
     /// Persisted before attempting an action; prevents replay after a crash.
@@ -235,7 +235,10 @@ pub(crate) fn try_save_pending_notifications_to(
         .collect();
     let json = serde_json::to_string(&persisted).map_err(|e| e.to_string())?;
     crate::platform::fs::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string())?;
-    log::info!("notify:persist: saved {} notification(s)", notifications.len());
+    log::info!(
+        "notify:persist: saved {} notification(s)",
+        notifications.len()
+    );
     Ok(())
 }
 
@@ -289,7 +292,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 timeout_secs: p.timeout_secs,
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
-                tombstoned: true,      // source pane is gone
+                tombstoned: true, // source pane is gone
                 delivery_unknown: p.delivery_unknown,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
@@ -309,8 +312,8 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
 pub(crate) enum NotifySource {
     /// `plexi notify` over the command socket.
     Cli,
-    /// An app pane's `ShowNotification` command.
-    App,
+    /// An view pane's `ShowNotification` command.
+    View,
     /// A WASM guest's `Notify` host effect.
     Wasm,
     /// Raised by the host itself (config errors and the like).
@@ -321,7 +324,7 @@ impl NotifySource {
     fn as_str(self) -> &'static str {
         match self {
             NotifySource::Cli => "cli",
-            NotifySource::App => "app",
+            NotifySource::View => "view",
             NotifySource::Wasm => "wasm",
             NotifySource::HostInternal => "host",
         }
@@ -372,7 +375,7 @@ pub(crate) fn notification_counts_toward_context(
 impl PlexiApp {
     /// Execute a `DeliverNotifyAction`: record the event, run the host-side
     /// action, unblock any waiting CLI through its response file, then hand
-    /// the action to the sender app. Both drain paths — `dispatch.rs`'s
+    /// the action to the sender plugin. Both drain paths — `dispatch.rs`'s
     /// command loop and `dispatch_notify_action_cmds` — route through here.
     pub(crate) fn deliver_notify_action(
         &mut self,
@@ -438,24 +441,27 @@ impl PlexiApp {
             .position(|w| w.panes.contains_key(&pane_id));
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
-                if let Some(app) = pane.as_app_mut() {
-                    match app.runtime
-                        .try_queue_notify_action(crate::protocol::PlexiEvent::NotifyAction {
+                if let Some(app) = pane.as_view_mut() {
+                    match app.runtime.try_queue_notify_action(
+                        crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        }) {
+                        },
+                    ) {
                         Some(Ok(())) => delivered = true,
                         Some(Err(crate::host::wasm_python::OutboundEventError::Encode(error))) => {
-                            log::warn!("notify:action: app event encoding failed: {error}");
+                            log::warn!("notify:action: plugin event encoding failed: {error}");
                             failed = true;
                         }
                         Some(Err(crate::host::wasm_python::OutboundEventError::Send(error))) => {
-                            log::warn!("notify:action: app delivery failed: {error}");
+                            log::warn!("notify:action: plugin delivery failed: {error}");
                             failed = true;
                             uncertain = true;
                         }
-                        None => log::info!("notify:action: app runtime does not support notification responses"),
+                        None => log::info!(
+                            "notify:action: plugin runtime does not support notification responses"
+                        ),
                     }
                 }
             }
@@ -471,11 +477,11 @@ impl PlexiApp {
         }
     }
 
-    /// Resolve app-notification provenance without consulting focus. A live
+    /// Resolve plugin-notification provenance without consulting focus. A live
     /// sender pane supplies its window; a parked or gone sender has only the
     /// context stamped on the command, so window visibility narrows to that
     /// context rather than borrowing the currently active window.
-    pub(crate) fn resolve_app_notification_provenance(
+    pub(crate) fn resolve_plugin_notification_provenance(
         &self,
         sender_pane_id: u64,
         scope: crate::protocol::NotifyScope,
@@ -488,7 +494,7 @@ impl PlexiApp {
         }
         if scope == crate::protocol::NotifyScope::Window {
             log::info!(
-                "notify: app sender pane_id={} has no live window — narrowing window scope to context",
+                "notify: plugin sender pane_id={} has no live window — narrowing window scope to context",
                 sender_pane_id
             );
             return (crate::protocol::NotifyScope::Context, 0);
@@ -721,7 +727,7 @@ impl PlexiApp {
         let source = request.source.clone();
         match crate::media::audio::start_playback(request) {
             Ok(session) => {
-                // Held on the app: dropping the session stops playback.
+                // Held on the plugin: dropping the session stops playback.
                 self.notification_cue_playback = Some(session);
                 true
             }
@@ -743,7 +749,10 @@ impl PlexiApp {
 
     pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
         self.prune_notification_images();
-        try_save_pending_notifications_to(&self.pending_notifications, &crate::config::config_dir().join("notifications.json"))
+        try_save_pending_notifications_to(
+            &self.pending_notifications,
+            &crate::config::config_dir().join("notifications.json"),
+        )
     }
 
     /// Drop decoded image state as soon as its notification leaves the live
@@ -965,7 +974,7 @@ impl PlexiApp {
                 dismiss_value
             );
             if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
-                let cmds = vec![crate::app::app_trait::AppCommand::DeliverNotifyAction {
+                let cmds = vec![crate::app::view_trait::ViewCommand::DeliverNotifyAction {
                     pane_id: n.sender_pane_id,
                     notify_id: n.notify_id.clone(),
                     action_label: "timeout".to_string(),

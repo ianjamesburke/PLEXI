@@ -171,6 +171,6 @@ mod tests {
         // generator. Dropping it here re-enabled automatic model selection on the
         // next regeneration and failed `just check-skill-docs` (stint 1050).
         assert_eq!(header["disable-model-invocation"].as_bool(), Some(true));
-        assert!(output.contains("<!-- experiment: mcp_client -->\n  - `plexi app open --mcp`"));
+        assert!(output.contains("<!-- experiment: mcp_client -->\n  - `plexi view open --mcp`"));
     }
 }

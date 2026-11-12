@@ -10,6 +10,55 @@ Stable v1 covers the tiling host, panes, subcontexts, status hooks, Quick Note, 
 
 Each channel has its own binary, profile (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-beta`), and workspace directory (`<repo>/.plexi`, `<repo>/.plexi-alpha`, `<repo>/.plexi-beta`). A channel-named binary always targets its own profile and workspace directory; the bare `plexi` binary honors an explicit `PLEXI_SOCKET` / `PLEXI_CHANNEL` when run inside a Plexi pane.
 
+## `plexi view`
+
+Discover, open, and render plugin views
+
+| Subcommand | Description |
+|---|---|
+| `list` | List declared views of installed plugins |
+| `open` | Open a plugin or tool in a new pane |
+| `render` | Render a plugin headlessly (JSON frame tree by default, or PNG with --png) |
+
+### `plexi view list`
+
+List declared views of installed plugins
+
+### `plexi view open`
+
+Open a plugin or tool in a new pane.
+
+Pass a plugin id (e.g. `plexi view open calc`) or a path to a plugin directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+
+Default placement is a sibling split to the right — the calling pane is never taken over. Pass a direction flag (--down/--left/--up/--right), --tab, or --window to override; the plugin's manifest `[launch] placement` applies when no flag is given.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<type_id>` | string | no | View id, default plugin id, or local path to open (mutually exclusive with --mcp and --cli) |
+| `--mcp` | string (repeatable) | no | Explore a configured stdio MCP server in a Plexi pane.  Example: plexi view open --mcp filesystem |
+| `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi view open --cli git |
+| `--down` / `-d` | flag | no | Split below |
+| `--left` / `-l` | flag | no | Split left |
+| `--up` / `-u` | flag | no | Split up |
+| `--right` / `-r` | flag | no | Split right |
+| `--tab` | flag | no | New tab |
+| `--window` | flag | no | New window |
+| `--split` | string | no | Split direction or placement (down, left, up, right, tab, window) |
+| `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
+| `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the plugin (only valid with a plugin id) |
+
+### `plexi view render`
+
+Render a plugin headlessly (JSON frame tree by default, or PNG with --png)
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<plugin>` | string | yes | View id, default plugin id, or local path to render (e.g. "calc" or "./my-plugin") |
+| `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
+| `--state` | string | no | Pre-seed the plugin's state from a JSON file before rendering |
+| `--output` | string | no | Where to save the output (default: stdout) |
+| `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
+
 ## `plexi lease`
 
 Acquire process-lifetime capacity before starting work. Pauses exit with code 2
@@ -106,13 +155,13 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
 
-## `plexi command-view`
+## `plexi agents-dashboard`
 
 Show every registered agent and its runs. Cancel finishes an active run.
 
 The rows come from the agents API agent records and runs. `open` shows the same projection in a pane. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
 
-Example: plexi command-view --json Example: plexi command-view --follow Example: plexi command-view open Example: plexi command-view cancel run_example
+Example: plexi agents-dashboard --json Example: plexi agents-dashboard --follow Example: plexi agents-dashboard open Example: plexi agents-dashboard cancel run_example
 
 | Subcommand | Description |
 |---|---|
@@ -121,35 +170,35 @@ Example: plexi command-view --json Example: plexi command-view --follow Example:
 | `resolve` | Resolve a pending approval. An agent pane is refused, and this command does not grant |
 | `allow` | Record an allow. An agent pane is refused, and this command does not grant |
 
-### `plexi command-view open`
+### `plexi agents-dashboard open`
 
 Open the command view pane in the active context
 
-### `plexi command-view cancel`
+### `plexi agents-dashboard cancel`
 
 Stop a live run before its next tool call.
 
-Example: plexi command-view cancel run_example
+Example: plexi agents-dashboard cancel run_example
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<run>` | string | yes | Run id from `command-view --json` |
+| `<run>` | string | yes | Run id from `agents-dashboard --json` |
 
-### `plexi command-view resolve`
+### `plexi agents-dashboard resolve`
 
 Resolve a pending approval. An agent pane is refused, and this command does not grant.
 
-Example: plexi command-view resolve pending_example
+Example: plexi agents-dashboard resolve pending_example
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Pending request id |
 
-### `plexi command-view allow`
+### `plexi agents-dashboard allow`
 
 Record an allow. An agent pane is refused, and this command does not grant.
 
-Example: plexi command-view allow --tool assistant.turn
+Example: plexi agents-dashboard allow --tool assistant.turn
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -195,7 +244,7 @@ Run this once inside your project directory to enable workspace-scoped secrets a
 
 Set up a .plexi/ workspace in the current directory.
 
-Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `apps.toml`, and `commands.toml` so that secrets, apps, and commands are scoped to this project.
+Run this once inside your project folder. It creates `<repo>/.plexi-<channel>/` (or `<repo>/.plexi/` on stable) with `workspace.toml`, `secrets.toml`, `plugins.toml`, and `commands.toml` so that secrets, plugins, and commands are scoped to this project.
 
 ### `plexi workspace clean`
 
@@ -297,7 +346,7 @@ Same-user native processes are not isolated from each other. A process running a
 | `delete` | Delete a stored secret |
 | `rm` | Remove a folder-scoped secret |
 | `grant` | Ask for an allow on a folder secret. This command does not record one |
-| `read` | Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
+| `read` | Read a folder secret as an agent or plugin. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
 | `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
 ### `plexi secret set`
@@ -368,18 +417,18 @@ Returns `permission_denied` and writes an audit row with the secret name and fol
 |---|---|---|---|
 | `<name>` | string | yes | Environment variable name |
 | `--agent` | string | no | Agent id. Stored as `agent:<id>` |
-| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--plugin` | string | no | Plugin id. Stored as `plugin:<id>` |
 | `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
 
 ### `plexi secret read`
 
-Read a folder secret as an agent or app. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
+Read a folder secret as an agent or plugin. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Environment variable name |
 | `--agent` | string | no | Agent id. Stored as `agent:<id>` |
-| `--app` | string | no | App id. Stored as `app:<id>` |
+| `--plugin` | string | no | Plugin id. Stored as `plugin:<id>` |
 | `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
 
 ### `plexi secret exec`
@@ -1046,247 +1095,198 @@ Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pa
 
 List all open contexts as a JSON array
 
-## `plexi app`
+## `plexi plugin`
 
-Manage your Plexi apps — open, install, list, scaffold, and inspect
+Manage your Plexi plugins — open, install, list, scaffold, and inspect
 
 | Subcommand | Description |
 |---|---|
-| `open` | Open an app or tool in a new pane |
-| `trust` | Pre-approve a raw `.wasm` component's host imports without a prompt |
-| `install` | Install an app from a local path, a remote source, or a pack file |
-| `uninstall` | Remove an installed app by id |
-| `list` | Show all installed apps with their versions |
-| `prune` | Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines |
-| `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
-| `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
-| `test` | Run an app's AppHarness tests with `uv run --with pytest pytest tests/` |
-| `info` | Show details about an installed app: manifest fields and tool status |
-| `state` | Read or replace a file-backed app's state document |
-| `init` | Create a new app from a template, or adopt an existing app directory |
-| `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
-| `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
-| `package` | Build a distributable .plexipkg package from an app directory |
-| `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
-| `publish` | Validate, package, and submit an app to the Plexi marketplace |
-| `browse` | Browse every public app in the hosted marketplace |
+| `install` | Install a plugin from a local path, a remote source, or a pack file |
+| `uninstall` | Remove an installed plugin by id |
+| `list` | Show all installed plugins with their versions |
+| `prune` | Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines |
+| `check` | Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks |
+| `test` | Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/` |
+| `info` | Show details about an installed plugin: manifest fields and tool status |
+| `state` | Read or replace a file-backed plugin's state document |
+| `init` | Create a new plugin from a template, or adopt an existing plugin directory |
+| `validate` | Check a Plexi plugin directory or .plexipkg package for errors before publishing or installing |
+| `inspect` | Show the trust sheet for a local plugin directory or .plexipkg package |
+| `package` | Build a distributable .plexipkg package from a plugin directory |
+| `freeze` | Export your currently installed plugins as a single TOML snapshot for sharing or backup |
+| `publish` | Validate, package, and submit a plugin to the Plexi marketplace |
+| `browse` | Browse every public plugin in the hosted marketplace |
 | `search` | Search the public marketplace catalog |
-| `update` | Pull git-backed installed apps to their latest source revision |
-| `action` | Send a semantic action to a running app pane |
-| `call` | Call a tool an app exposes and print its JSON result |
-| `tools` | Snapshot the live tool registry exposed by running app panes in the current context |
+| `update` | Pull git-backed installed plugins to their latest source revision |
+| `call` | Call a tool a plugin exposes and print its JSON result |
+| `tools` | Snapshot the live tool registry exposed by running view panes in the current context |
 
-### `plexi app open`
+### `plexi plugin install`
 
-Open an app or tool in a new pane.
+Install a plugin from a local path, a remote source, or a pack file.
 
-Pass an app id (e.g. `plexi app open calc`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
-
-Default placement is a sibling split to the right — the calling pane is never taken over. Pass a direction flag (--down/--left/--up/--right), --tab, or --window to override; the app's manifest `[launch] placement` applies when no flag is given.
+Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store. Remote source: `plexi plugin install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi plugin install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi plugin install` (no args) — installs from `<repo>/.plexi-<channel>/plugins.toml` (or `<repo>/.plexi/plugins.toml` on stable).
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<type_id>` | string | no | App id or path to open (mutually exclusive with --mcp and --cli) |
-| `--mcp` | string (repeatable) | no | Explore a configured stdio MCP server in a Plexi pane.  Example: plexi app open --mcp filesystem |
-| `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
-| `--down` / `-d` | flag | no | Split below |
-| `--left` / `-l` | flag | no | Split left |
-| `--up` / `-u` | flag | no | Split up |
-| `--right` / `-r` | flag | no | Split right |
-| `--tab` | flag | no | New tab |
-| `--window` | flag | no | New window |
-| `--split` | string | no | Split direction or placement (down, left, up, right, tab, window) |
-| `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
-| `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
-
-### `plexi app trust`
-
-Pre-approve a raw `.wasm` component's host imports without a prompt.
-
-The non-interactive form of the review `plexi app open <file.wasm>` runs at a TTY: it persists Green grants for every host interface the component imports, scoped to the wasm's parent directory — the same store and scope an installed host checks at open time. Meant for automation (release gates, scene runners) pre-approving a vetted, repo-committed fixture so an installed host opens it without a human at a terminal. It never opens a pane; production interactive review is unchanged.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the `.wasm` component to trust |
-
-### `plexi app install`
-
-Install an app from a local path, a remote source, or a pack file.
-
-Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi app install` (no args) — installs from `<repo>/.plexi-<channel>/apps.toml` (or `<repo>/.plexi/apps.toml` on stable).
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/apps.toml`, or `<repo>/.plexi/apps.toml` on stable) |
+| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare plugin id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable) |
 | `--pack` | string | no | Install from a pack file or 'core' |
-| `--refresh` | flag | no | With --pack: re-extract already-installed `local:` apps from this binary's embedded tree, replacing the installed copy. The update path for bundled core apps on stable channels |
+| `--refresh` | flag | no | With --pack: re-extract already-installed `local:` plugins from this binary's embedded tree, replacing the installed copy. The update path for bundled core plugins on stable channels |
 | `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
 
-### `plexi app uninstall`
+### `plexi plugin uninstall`
 
-Remove an installed app by id.
+Remove an installed plugin by id.
 
-Example: plexi app uninstall github-tree
+Example: plexi plugin uninstall github-tree
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | yes | App id to remove (use `plexi app list` to see installed ids) |
+| `<id>` | string | yes | Plugin id to remove (use `plexi plugin list` to see installed ids) |
 | `--yes` / `-y` | flag | no | Skip the confirmation prompt |
 
-### `plexi app list`
+### `plexi plugin list`
 
-Show all installed apps with their versions
+Show all installed plugins with their versions
 
-### `plexi app prune`
+### `plexi plugin prune`
 
-Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines
+Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--dry-run` | flag | no | Show candidates without removing anything |
 
-### `plexi app render`
+### `plexi plugin check`
 
-Render an app headlessly (JSON frame tree by default, or PNG with --png)
+Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks.
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<app>` | string | yes | App id or local path to render (e.g. "calc" or "./my-app") |
-| `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
-| `--state` | string | no | Pre-seed the app's state from a JSON file before rendering |
-| `--output` | string | no | Where to save the output (default: stdout) |
-| `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
-
-### `plexi app check`
-
-Check a local app with manifest, scaffold metadata, SDK, and render-size checks.
-
-This is the compiler-like gate for generated Plexi apps. It checks the manifest, warns on missing or stale `plexi.scaffold.toml`, inspects Python SDK usage without importing app code, and renders the app at small and normal pane sizes. Run it with an explicit alpha or PR channel so the SDK/profile under test is not ambient.
+This is the compiler-like gate for generated Plexi plugins. It checks the manifest, warns on missing or stale `plexi.scaffold.toml`, inspects Python SDK usage without importing plugin code, and renders the plugin at small and normal pane sizes. Run it with an explicit alpha or PR channel so the SDK/profile under test is not ambient.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | Local app directory to check (default: current directory) Default: `.`. |
+| `<path>` | string | no | Local plugin directory to check (default: current directory) Default: `.`. |
 | `--size` | string (repeatable) | no | Render size to check as WxH. Repeat to override the default matrix |
 | `--png-dir` | string | no | Write PNG snapshots for each checked size into this directory |
 
-### `plexi app test`
+### `plexi plugin test`
 
-Run an app's AppHarness tests with `uv run --with pytest pytest tests/`.
+Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/`.
 
-Runs the Python tests in the app's `tests/` directory (the `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns the app as a real subprocess and checks it renders without overlap; see `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
+Runs the Python tests in the plugin's `tests/` directory (the `tests/test_plugin.py` scaffolded by `plexi plugin init`). PluginHarness spawns the plugin as a real subprocess and checks it renders without overlap; see `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory to test (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory to test (default: current directory) Default: `.`. |
 | `--snapshot` | flag | no | Update stored snapshots instead of comparing against them |
 
-### `plexi app info`
+### `plexi plugin info`
 
-Show details about an installed app: manifest fields and tool status.
+Show details about an installed plugin: manifest fields and tool status.
 
-Populates `tools` from the live tool registry when a pane of this app is running in the current context; otherwise labels the section as manifest-only (or static source scan) so an unopened app is never misreported as declaring no tools. Run `plexi app tools` to snapshot all live tools in the current context.
+Populates `tools` from the live tool registry when a pane of this plugin is running in the current context; otherwise labels the section as manifest-only (or static source scan) so an unopened plugin is never misreported as declaring no tools. Run `plexi plugin tools` to snapshot all live tools in the current context.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes |  |
 
-### `plexi app state`
+### `plexi plugin state`
 
-Read or replace a file-backed app's state document.
+Read or replace a file-backed plugin's state document.
 
-Only apps that declare a `[state]` section are addressable. The state path uses the pane's current host context. Outside a pane, context scope uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error. Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
+Only plugins that declare a `[state]` section are addressable. The state path uses the pane's current host context. Outside a pane, context scope uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error. Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
 
 | Subcommand | Description |
 |---|---|
-| `get` | Print an app's current state document to stdout |
-| `set` | Replace an app's state document, reading from a file or stdin |
+| `get` | Print a plugin's current state document to stdout |
+| `set` | Replace a plugin's state document, reading from a file or stdin |
 
-#### `plexi app state get`
+#### `plexi plugin state get`
 
-Print an app's current state document to stdout
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<app>` | string | yes | App id (from `plexi app list`) |
-| `--scope` | string | no | Which declared scope to read. Defaults to the app's first declared scope; a scope the app did not declare is an error |
-
-#### `plexi app state set`
-
-Replace an app's state document, reading from a file or stdin
+Print a plugin's current state document to stdout
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app>` | string | yes | App id (from `plexi app list`) |
+| `<plugin>` | string | yes | Plugin id (from `plexi plugin list`) |
+| `--scope` | string | no | Which declared scope to read. Defaults to the plugin's first declared scope; a scope the plugin did not declare is an error |
+
+#### `plexi plugin state set`
+
+Replace a plugin's state document, reading from a file or stdin
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<plugin>` | string | yes | Plugin id (from `plexi plugin list`) |
 | `<file>` | string | no | File to read the new document from. Reads stdin when omitted |
-| `--scope` | string | no | Which declared scope to write. Defaults to the app's first declared scope; a scope the app did not declare is an error |
+| `--scope` | string | no | Which declared scope to write. Defaults to the plugin's first declared scope; a scope the plugin did not declare is an error |
 
-### `plexi app init`
+### `plexi plugin init`
 
-Create a new app from a template, or adopt an existing app directory.
+Create a new plugin from a template, or adopt an existing plugin directory.
 
-Scaffolds the folder structure and files you need to build a Plexi app: manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and plexi.scaffold.toml drift metadata.
+Scaffolds the folder structure and files you need to build a Plexi view: manifest.toml, main.py, tests/test_plugin.py, AGENTS.md, .gitignore, and plexi.scaffold.toml drift metadata.
 
-Pass `--adopt <dir>` (or `--adopt` inside an app directory) to write or refresh `plexi.scaffold.toml` for a pre-existing app without creating or modifying any source files.
+Pass `--adopt <dir>` (or `--adopt` inside a plugin directory) to write or refresh `plexi.scaffold.toml` for a pre-existing plugin without creating or modifying any source files.
 
-By default, a newly scaffolded app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
+By default, a newly scaffolded plugin is placed in your workspace's plugin directory. If no workspace is detected, pass --global to scaffold into the global registry.
 
 Use --open to launch it in a split-right pane after scaffolding. See `sdk/python/AUTHORING.md` for the canonical authoring guide.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no |  |
-| `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing app directory without altering source files |
-| `--wasm` | string | no | Create a Rust WASM component app with the Plexi WASM SDK |
-| `--lang` | string | no | App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
-| `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
-| `--open` | flag | no | Open the app in a split-right pane after scaffolding |
-| `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
+| `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing plugin directory without altering source files |
+| `--wasm` | string | no | Create a Rust WASM component plugin with the Plexi WASM SDK |
+| `--lang` | string | no | Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
+| `--global` | flag | no | Scaffold into the global plugin registry instead of the workspace |
+| `--open` | flag | no | Open the plugin in a split-right pane after scaffolding |
+| `--no-open` | flag | no | Deprecated compatibility flag. Plugin init no longer opens by default |
 | `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
-### `plexi app validate`
+### `plexi plugin validate`
 
-Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
+Check a Plexi plugin directory or .plexipkg package for errors before publishing or installing.
 
 A directory is validated in place. A `.plexipkg` file is extracted to a temp dir with path-safety checks and verified end-to-end: descriptor, content hashes, manifest, entry point, and capability strings.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory or .plexipkg file to check (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory or .plexipkg file to check (default: current directory) Default: `.`. |
 
-### `plexi app inspect`
+### `plexi plugin inspect`
 
-Show the trust sheet for a local app directory or .plexipkg package.
+Show the trust sheet for a local plugin directory or .plexipkg package.
 
-Validates first (fail-closed), then prints what the app is, what runtime it uses with a blunt trust label, and every capability it declares — the same sheet shown before `plexi app install` proceeds.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | App directory or .plexipkg file to inspect |
-
-### `plexi app package`
-
-Build a distributable .plexipkg package from an app directory.
-
-Validates the directory first (fail-closed), then writes `<id>-<version>.plexipkg` containing the app files plus a generated PACKAGE.toml with per-file sha256 checksums.
+Validates first (fail-closed), then prints what the plugin is, what runtime it uses with a blunt trust label, and every capability it declares — the same sheet shown before `plexi plugin install` proceeds.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | yes | App directory to package |
+| `<path>` | string | yes | Plugin directory or .plexipkg file to inspect |
+
+### `plexi plugin package`
+
+Build a distributable .plexipkg package from a plugin directory.
+
+Validates the directory first (fail-closed), then writes `<id>-<version>.plexipkg` containing the plugin files plus a generated PACKAGE.toml with per-file sha256 checksums.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Plugin directory to package |
 | `--out` | string | no | Output file path (default: ./<id>-<version>.plexipkg) |
 
-### `plexi app freeze`
+### `plexi plugin freeze`
 
-Export your currently installed apps as a single TOML snapshot for sharing or backup.
+Export your currently installed plugins as a single TOML snapshot for sharing or backup.
 
-Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi app install`.
+Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi plugin install`.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Destination path for the TOML snapshot file |
 
-### `plexi app publish`
+### `plexi plugin publish`
 
-Validate, package, and submit an app to the Plexi marketplace.
+Validate, package, and submit a plugin to the Plexi marketplace.
 
 Reads the `[marketplace]` manifest section (publisher, visibility, price), validates the directory, builds a `.plexipkg`, and submits it. Without a configured `[marketplace].submit_url` the package is prepared locally but not uploaded — the artifact path is printed.
 
@@ -1294,15 +1294,15 @@ Reads the `[marketplace]` manifest section (publisher, visibility, price), valid
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory to publish (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory to publish (default: current directory) Default: `.`. |
 
-### `plexi app browse`
+### `plexi plugin browse`
 
-Browse every public app in the hosted marketplace
+Browse every public plugin in the hosted marketplace
 
 > **Beta-gated:** Marketplace publishing and catalog browsing are beta surfaces. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
-### `plexi app search`
+### `plexi plugin search`
 
 Search the public marketplace catalog
 
@@ -1310,66 +1310,52 @@ Search the public marketplace catalog
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<query>` | string | yes | Substring matched against app id, name, description, and tags |
+| `<query>` | string | yes | Substring matched against plugin id, name, description, and tags |
 
-### `plexi app update`
+### `plexi plugin update`
 
-Pull git-backed installed apps to their latest source revision.
+Pull git-backed installed plugins to their latest source revision.
 
-Canonical app update command. Resolves workspace-local apps when run inside a workspace, and skips installed apps that are not git checkouts.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | no | App id to update (omit to update all installed apps visible here) |
-
-### `plexi app action`
-
-Send a semantic action to a running app pane.
-
-Unlike `pane command` (which sends raw text), `app action` delivers a structured semantic event directly to the app's event handler — no keystroke simulation.
-
-Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /some/path
+Canonical plugin update command. Resolves workspace-local plugins when run inside a workspace, and skips installed plugins that are not git checkouts.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id or name of the target app pane (from `plexi pane list`) |
-| `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
-| `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
+| `<id>` | string | no | Plugin id to update (omit to update all installed plugins visible here) |
 
-### `plexi app call`
+### `plexi plugin call`
 
-Call a tool an app exposes and print its JSON result.
+Call a tool a plugin exposes and print its JSON result.
 
-Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The app sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the app rejects the call.
+Runs through the same tool dispatcher the Assistant uses, scoped to the calling pane's context (the active context when run outside a pane). The host stamps the caller identity from the pane credential or peer ancestry (`pane:<id>`). A missing pane is never the human `user`. The plugin sees that identity, never one taken from the input. Exits 1 with `error: <message>` when the tool or the plugin rejects the call.
 
-Example: plexi app call chess chess.state Example: plexi app call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
+Example: plexi plugin call chess chess.state Example: plexi plugin call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app_id>` | string | yes | App id that exposes the tool (from `plexi app info`) |
-| `<tool>` | string | yes | Tool name as the app declares it (e.g. `chess.state`) |
+| `<plugin_id>` | string | yes | Plugin id that exposes the tool (from `plexi plugin info`) |
+| `<tool>` | string | yes | Tool name as the plugin declares it (e.g. `chess.state`) |
 | `--input` | string | no | Tool input as a JSON object Default: `{}`. |
-| `--pane` | string | no | Pane id or name that owns the tool when more than one instance of the app is open |
+| `--pane` | string | no | Pane id or name that owns the tool when more than one instance of the plugin is open |
 | `--wait-approved` | flag | no | Wait up to two minutes for desktop approval, then execute once |
 
-### `plexi app tools`
+### `plexi plugin tools`
 
-Snapshot the live tool registry exposed by running app panes in the current context.
+Snapshot the live tool registry exposed by running view panes in the current context.
 
-Reads the same context-scoped `ToolDispatcher` registry that agents and `plexi app call` see: exposed tool name (including `<name>@<pane_id>` disambiguation when multiple panes expose the same tool), owning app id and pane id, description, and full JSON input/output schemas.
+Reads the same context-scoped `ToolDispatcher` registry that agents and `plexi plugin call` see: exposed tool name (including `<name>@<pane_id>` disambiguation when multiple panes expose the same tool), owning plugin id and pane id, description, and full JSON input/output schemas.
 
-Example: plexi app tools Example: plexi app tools --json Example: plexi app tools --app calc --json
+Example: plexi plugin tools Example: plexi plugin tools --json Example: plexi plugin tools --plugin calc --json
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--app` | string | no | Filter to tools exposed by this app id |
+| `--plugin` | string | no | Filter to tools exposed by this plugin id |
 | `--context` | string | no | Inspect a specific context id or name instead of the caller's context |
 
 ## `plexi account`
 
 Optional account that links this desktop to cloud features.
 
-Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
+Free plugins install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
 > **Beta-gated:** Marketplace account management is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
@@ -1429,6 +1415,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 
 | Subcommand | Description |
 |---|---|
+| `action` | Send a semantic action to a running view pane |
 | `layout` | Show active workspace strip membership and geometry |
 | `hide` | Hide a pane (defaults to the calling pane) |
 | `reveal` | Reveal a hidden pane (defaults to the calling pane) |
@@ -1450,13 +1437,27 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `status` | Report one composite working, idle, blocked, or unknown verdict as JSON |
 | `key` | Send a key press to a pane |
 | `drop` | Drop a local file or image URL onto a pane |
-| `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
-| `drag` | Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time |
+| `click` | Inject a synthetic pointer click into a view pane, for driving canvas interaction without OS-level automation |
+| `drag` | Drag the pointer across a view pane through the production input path: press, N intermediate moves, release — delivered one frame at a time |
 | `command` | Send an ordinary shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
 | `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
 | `result` | Read a pane's validated structured result |
+
+### `plexi pane action`
+
+Send a semantic action to a running view pane.
+
+Unlike `pane command` (which sends raw text), `pane action` delivers a structured semantic event directly to the plugin's event handler — no keystroke simulation.
+
+Example: plexi pane action 42 refresh Example: plexi pane action 42 navigate-to /some/path
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id or name of the target view pane (from `plexi pane list`) |
+| `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
+| `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
 
 ### `plexi pane layout`
 
@@ -1522,7 +1523,7 @@ Open a terminal pane, the Agents pane (`agents`), or launch an agent with `--age
 
 Examples: plexi pane new --agent c-large -n "worker" --no-focus   # agent pane, id printed once ready-to-brief plexi pane new --worktree feature/0668-test             # terminal in isolated wtp worktree plexi pane new                                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"                   # terminal with command, named plexi pane new -d                                       # split below
 
-For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
+For plugins use `plexi view open`. For MCP servers use `plexi view open --mcp`.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1621,7 +1622,7 @@ Type text into another pane as if it came from the keyboard, or pass `--submit` 
 
 Pass `--submit` (`-s`) when briefing an agent or submitting a prompt in a terminal pane: the host settles the pane, presses Enter (re-sending once if the text was parked as a collapsed paste), and exits 0 only once the prompt has left the input line — no `sleep` or `pane key <id> enter` needed.
 
-Without `--submit`, terminal panes receive raw PTY bytes and app panes receive one egui text input event after the host focuses the target pane. For an ordinary shell command, see also `plexi pane command <id> "<cmd>" --enter`.
+Without `--submit`, terminal panes receive raw PTY bytes and view panes receive one egui text input event after the host focuses the target pane. For an ordinary shell command, see also `plexi pane command <id> "<cmd>" --enter`.
 
 Examples: plexi pane send 42 "Read the brief and implement the fix" --submit plexi pane send 42 "partial text"
 
@@ -1630,7 +1631,7 @@ Examples: plexi pane send 42 "Read the brief and implement the fix" --submit ple
 | `<pane_id>` | string | yes | Pane id or name to send text to (from `plexi pane list`) |
 | `<text>` | string | yes | Text to type into the pane (prefer `--submit` to submit with confirmation) |
 | `--submit` / `-s` | flag | no | Press Enter for you and wait until the host confirms the prompt left the pane's input line.  The host settles the pane, submits, and re-sends Enter once if the text is still parked as a collapsed paste. Exits 0 only when the submission is confirmed; on an unconfirmed submit it exits non-zero and prints the observed input line to stderr. Terminal panes only. |
-| `--paste` | flag | no | Paste literal text, including newlines, as one edit. App panes only; does not read or change the system clipboard |
+| `--paste` | flag | no | Paste literal text, including newlines, as one edit. View panes only; does not read or change the system clipboard |
 | `--operation-id` | string | no | Reuse an operation identity for a brokered agent send. Human and unidentified callers are refused before sending when this is set |
 
 ### `plexi pane self`
@@ -1678,7 +1679,7 @@ Report one composite working, idle, blocked, or unknown verdict as JSON
 
 Send a key press to a pane.
 
-For terminal panes, injects the keystroke into the terminal. For app panes, delivers a structured key event.
+For terminal panes, injects the keystroke into the terminal. For view panes, delivers a structured key event.
 
 To submit a prompt or command with host confirmation, prefer `plexi pane send <id> "<text>" --submit` (or `plexi pane command <id> "<cmd>" --enter`) instead of chaining `pane send` + `pane key <id> enter`: `--submit` settles the pane, handles collapsed-paste Enter, and exits 0 only once the host confirms the input line cleared.
 
@@ -1702,7 +1703,7 @@ Drop a local file or image URL onto a pane
 
 ### `plexi pane click`
 
-Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation.
+Inject a synthetic pointer click into a view pane, for driving canvas interaction without OS-level automation.
 
 Two mutually exclusive targeting modes:
 
@@ -1710,7 +1711,7 @@ PANE-PIXEL coordinates (origin at the pane's top-left) — the honest primitive,
 
 `--node <node_id>` — targets a specific Button/TextInput/ListView node by the id `plexi pane state` reports, so a caller never has to compute pixel geometry. The host resolves the node's on-screen rect during the next render pass and fails loudly if the id is missing or not an interactive role.
 
-Only app panes accept clicks today.
+Only view panes accept clicks today.
 
 Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
 
@@ -1724,7 +1725,7 @@ Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
 
 ### `plexi pane drag`
 
-Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time.
+Drag the pointer across a view pane through the production input path: press, N intermediate moves, release — delivered one frame at a time.
 
 Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left) or semantic node ids from `plexi pane state` (the drag targets the node's rendered bounds center).
 
@@ -1760,7 +1761,7 @@ Example: plexi pane command 42 "git status" --enter
 
 Return the current UI state of a pane as JSON.
 
-For app panes: returns a versioned, runtime-neutral `semantic` tree. Process apps also retain the compatible `frame` RenderCommand array. Agents can use the semantic nodes to inspect what any app runtime is currently displaying.
+For view panes: returns a versioned, runtime-neutral `semantic` tree. Process plugins also retain the compatible `frame` RenderCommand array. Agents can use the semantic nodes to inspect what any plugin runtime is currently displaying.
 
 For terminal panes: returns a simple status object (type, title, pane_id).
 
@@ -1920,21 +1921,21 @@ Agent spawn returns immediately. Wait in bounded slices with `plexi pane result 
 
 ## `plexi events`
 
-Subscribe to a Plexi app's event streams and receive brokered deliveries.
+Subscribe to a Plexi plugin's event streams and receive brokered deliveries.
 
-Apps declare named event streams (e.g. `probe.tick`) and emit events on them. `plexi events subscribe <app_id> <stream>` opens a long-lived connection and prints one JSON line per delivered event to stdout (NDJSON) until interrupted. Subscriptions are brokered: the host stamps your identity from the pane you run in and checks permission before any event is delivered.
+Plugins declare named event streams (e.g. `probe.tick`) and emit events on them. `plexi events subscribe <plugin_id> <stream>` opens a long-lived connection and prints one JSON line per delivered event to stdout (NDJSON) until interrupted. Subscriptions are brokered: the host stamps your identity from the pane you run in and checks permission before any event is delivered.
 
 | Subcommand | Description |
 |---|---|
-| `subscribe` | Subscribe to an app's event stream and print delivered events as NDJSON |
+| `subscribe` | Subscribe to a plugin's event stream and print delivered events as NDJSON |
 | `declare` | Declare an event stream so it can be emitted on and subscribed to |
 | `emit` | Emit an event onto a declared stream |
-| `list` | List event streams currently declared by running apps |
+| `list` | List event streams currently declared by running plugins |
 | `mcp-config` | Print the host MCP server config for an MCP-aware agent |
 
 ### `plexi events subscribe`
 
-Subscribe to an app's event stream and print delivered events as NDJSON.
+Subscribe to a plugin's event stream and print delivered events as NDJSON.
 
 Opens a long-lived connection to the running Plexi instance and streams one JSON object per line to stdout: first a `subscribed` acknowledgement, then one line per delivered event. Runs until interrupted (Ctrl-C), at which point the host drops the subscription and its queued deliveries.
 
@@ -1942,9 +1943,9 @@ Example: plexi events subscribe event-probe probe.tick --payload full
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app_id>` | string | yes | App id that publishes the stream (e.g. `event-probe`) |
-| `<stream>` | string | no | Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to subscribe to every stream the app declares |
-| `--all` | flag | no | Subscribe to all of the app's declared streams instead of one |
+| `<plugin_id>` | string | yes | Plugin id that publishes the stream (e.g. `event-probe`) |
+| `<stream>` | string | no | Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to subscribe to every stream the plugin declares |
+| `--all` | flag | no | Subscribe to all of the plugin's declared streams instead of one |
 | `--payload` | string | no | How much of each event to deliver: off, summary, full, or state-ref Default: `full`. |
 | `--trigger` | string | no | Trigger mode recorded on the subscription: never, conversation, ambient, or ask Default: `conversation`. |
 | `--resource` | string | no | Only deliver events for this resource id (document/game/pane). Omit for any |
@@ -1953,13 +1954,13 @@ Example: plexi events subscribe event-probe probe.tick --payload full
 
 Declare an event stream so it can be emitted on and subscribed to.
 
-Registers a named stream under an app-id namespace with a JSON-Schema object describing its payload. Declaring is a prerequisite for `emit`. Re-declaring a stream replaces its previous schema. The first declare under a namespace you do not own prompts for host consent.
+Registers a named stream under a plugin-id namespace with a JSON-Schema object describing its payload. Declaring is a prerequisite for `emit`. Re-declaring a stream replaces its previous schema. The first declare under a namespace you do not own prompts for host consent.
 
 Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app_id>` | string | yes | App-id namespace to declare the stream under (e.g. `my-agent`) |
+| `<plugin_id>` | string | yes | Plugin-id namespace to declare the stream under (e.g. `my-agent`) |
 | `<stream>` | string | yes | Stream name to declare (e.g. `task.done`) |
 | `--schema` | string | no | JSON-Schema object describing the event payload Default: `{"type":"object"}`. |
 | `--description` | string | no | Human-readable description of when this event fires |
@@ -1974,7 +1975,7 @@ Example: plexi events emit my-agent task.done --summary "Build finished" --resou
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app_id>` | string | yes | App-id namespace the stream lives under (e.g. `my-agent`) |
+| `<plugin_id>` | string | yes | Plugin-id namespace the stream lives under (e.g. `my-agent`) |
 | `<event>` | string | yes | Declared stream name to emit on (e.g. `task.done`) |
 | `--summary` | string | yes | One-line human-readable description of what happened |
 | `--resource` | string | yes | Id of the document/game/pane/resource the event is about |
@@ -1989,13 +1990,13 @@ Example: plexi events emit my-agent task.done --summary "Build finished" --resou
 
 ### `plexi events list`
 
-List event streams currently declared by running apps
+List event streams currently declared by running plugins
 
 ### `plexi events mcp-config`
 
 Print the host MCP server config for an MCP-aware agent.
 
-Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace app tools and subscribe to app events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
+Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can call workspace plugin tools and subscribe to plugin events natively over MCP. The emitted credential is valid only while the originating pane remains alive.
 
 > **Beta-gated:** MCP client configuration is a beta surface. This reference is included for beta and worktree testing; it is not available from the stable v1 channel.
 
@@ -2003,7 +2004,7 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 List everything waiting on you.
 
-One host record covers click approvals, agent questions, and blocked runs. The desktop badge reads that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge reads that record. `resolve --pluginrove` on a click approval is refused. `--deny` still denies.
 
 | Subcommand | Description |
 |---|---|
@@ -2150,15 +2151,15 @@ AI configuration and diagnostics — scan hardware, check integrations, recommen
 
 | Subcommand | Description |
 |---|---|
-| `onboard` | Guide first-run AI setup and the next app install step |
+| `onboard` | Guide first-run AI setup and the next plugin install step |
 | `doctor` | Scan hardware and report recommended AI models |
 | `setup` | Interactive wizard to configure a local AI model via Ollama |
 
 ### `plexi ai onboard`
 
-Guide first-run AI setup and the next app install step.
+Guide first-run AI setup and the next plugin install step.
 
-Runs the same checks as `plexi ai doctor`, then prints the shortest path to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI for now. Ends with the app install command to try next.
+Runs the same checks as `plexi ai doctor`, then prints the shortest path to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI for now. Ends with the plugin install command to try next.
 
 Example: plexi ai onboard
 
@@ -2174,7 +2175,7 @@ Example: plexi ai doctor
 
 Interactive wizard to configure a local AI model via Ollama.
 
-Walks through Ollama installation detection, model recommendation based on your hardware, pulling the recommended model, and writing the [ai.ollama] section to your config.toml so Plexi apps can use it immediately.
+Walks through Ollama installation detection, model recommendation based on your hardware, pulling the recommended model, and writing the [ai.ollama] section to your config.toml so Plexi plugins can use it immediately.
 
 Example: plexi ai setup
 
@@ -2226,7 +2227,7 @@ List recorded host sessions with start/last time, contexts, panes, and attached 
 
 Show one session as a single chronological timeline.
 
-With `--join-agents`, recorded agent session ids are resolved to their transcripts under `~/.pi/agent/sessions` and `~/.claude/projects`, and agent prompts and tool calls are interleaved with host permission and app events.
+With `--join-agents`, recorded agent session ids are resolved to their transcripts under `~/.pi/agent/sessions` and `~/.claude/projects`, and agent prompts and tool calls are interleaved with host permission and plugin events.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2492,9 +2493,9 @@ Example: plexi note rm ~/.plexi/notes/20260101T000000.000Z.md
 
 ## `plexi doctor`
 
-Audit all installed apps for capability and config gaps.
+Audit all installed plugins for capability and config gaps.
 
-Checks every installed app's declared capabilities against your current config.toml and reports what's working and what needs to be configured. Use --json for scripting.
+Checks every installed plugin's declared capabilities against your current config.toml and reports what's working and what needs to be configured. Use --json for scripting.
 
 ## `plexi demo`
 
@@ -2526,13 +2527,13 @@ Files outside the installation receipt, including development binaries and other
 
 Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
-`host start` launches this channel's app bundle detached from the calling shell, optionally seeding panes from a `--layout` TOML file or repeated `--pane` flags, then blocks until the host confirms it's ready. Works identically on alpha, beta, main, and PR builds — the channel is resolved from the running CLI binary's own name.
+`host start` launches this channel's plugin bundle detached from the calling shell, optionally seeding panes from a `--layout` TOML file or repeated `--pane` flags, then blocks until the host confirms it's ready. Works identically on alpha, beta, main, and PR builds — the channel is resolved from the running CLI binary's own name.
 
 | Subcommand | Description |
 |---|---|
 | `workspace-rollback` | Export the preserved v2 workspace to a new isolated channel |
 | `restart` | Restart this channel, restoring the saved workspace |
-| `start` | Launch this channel's app bundle detached and wait for readiness |
+| `start` | Launch this channel's plugin bundle detached and wait for readiness |
 | `stop` | Stop the running host and every pane agent for this channel |
 | `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
@@ -2557,9 +2558,9 @@ Restart this channel, restoring the saved workspace
 
 ### `plexi host start`
 
-Launch this channel's app bundle detached and wait for readiness.
+Launch this channel's plugin bundle detached and wait for readiness.
 
-Errors if a host for this channel is already running. Seeds any declared panes via the spawn-queue before the app boots, so they appear on its first frame.
+Errors if a host for this channel is already running. Seeds any declared panes via the spawn-queue before the plugin boots, so they appear on its first frame.
 
 Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
 

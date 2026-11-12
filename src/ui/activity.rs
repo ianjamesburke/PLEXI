@@ -44,19 +44,30 @@ pub fn escalation_color(
     }
 }
 
-/// State color shared by terminal and app pane outlines.
+/// State color shared by terminal and view pane outlines.
 pub fn pane_state_color(pane: &crate::host::pane::Pane, colors: &Colors) -> Option<egui::Color32> {
     // Quiet states (Idle, Completed) paint no ring: a gray ring just inside an unfocused
     // pane's edge reads as a stray line, and the header glyph already carries the state.
-    let ring = |state: &AgentState| (!matches!(state, AgentState::Idle | AgentState::Completed)).then(|| dot_color_from_time(state, colors, 0.0, 0));
+    let ring = |state: &AgentState| {
+        (!matches!(state, AgentState::Idle | AgentState::Completed))
+            .then(|| dot_color_from_time(state, colors, 0.0, 0))
+    };
     if let Some(terminal) = pane.as_terminal() {
-        if terminal.exited && terminal.exit_status.as_ref().is_some_and(|status| status.is_failure()) {
+        if terminal.exited
+            && terminal
+                .exit_status
+                .as_ref()
+                .is_some_and(|status| status.is_failure())
+        {
             return Some(colors.state_error);
         }
         if terminal.standby_session.is_some() {
             return Some(colors.state_needs_you);
         }
-        if terminal.agent.is_some() || terminal.reported_7501.is_some() || terminal.observed_agent.is_some() {
+        if terminal.agent.is_some()
+            || terminal.reported_7501.is_some()
+            || terminal.observed_agent.is_some()
+        {
             return ring(&terminal.effective_agent_state().0);
         }
     }
@@ -253,7 +264,9 @@ pub fn paint_pip(
                     Vec2::splat(radius * 2.0 + stroke.width),
                 )) {
                     let predicted = ctx.input(|i| i.predicted_dt).max(0.0);
-                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(1.0 / 30.0 + predicted));
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(
+                        1.0 / 30.0 + predicted,
+                    ));
                 }
                 (ctx.input(|i| i.time).rem_euclid(2.0) * std::f64::consts::PI) as f32
             };
@@ -340,7 +353,12 @@ pub fn paint_attention_chrome(
 }
 
 pub fn paint_attention_effect(
-    painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, identity: egui::Id, needs_you: bool, ring: bool,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    color: egui::Color32,
+    identity: egui::Id,
+    needs_you: bool,
+    ring: bool,
 ) {
     let key = identity.with("attention_entered");
     let time = painter.ctx().input(|i| i.time);
@@ -390,14 +408,37 @@ mod tests {
     #[test]
     fn static_health_pip_keeps_color_without_animation() {
         let ctx = egui::Context::default();
-        let frame = |time| ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| {
-            paint_pip(ui.painter(), egui::pos2(30.0, 30.0), 4.0, None, egui::Color32::YELLOW, false);
-        });
-        for n in 0..4 { frame(n as f64); }
+        let frame = |time| {
+            ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    paint_pip(
+                        ui.painter(),
+                        egui::pos2(30.0, 30.0),
+                        4.0,
+                        None,
+                        egui::Color32::YELLOW,
+                        false,
+                    );
+                },
+            )
+        };
+        for n in 0..4 {
+            frame(n as f64);
+        }
         let first = frame(4.0);
         let second = frame(4.5);
-        assert_eq!(format!("{:?}", first.shapes), format!("{:?}", second.shapes));
-        assert_eq!(first.viewport_output[&egui::ViewportId::ROOT].repaint_delay, std::time::Duration::MAX);
+        assert_eq!(
+            format!("{:?}", first.shapes),
+            format!("{:?}", second.shapes)
+        );
+        assert_eq!(
+            first.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            std::time::Duration::MAX
+        );
     }
 
     #[test]

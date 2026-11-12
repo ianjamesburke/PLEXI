@@ -1,5 +1,5 @@
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::app::permissions::AppPermissions;
+use crate::app::permissions::PluginPermissions;
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::HashMap;
@@ -24,7 +24,10 @@ fn standby_session_line(
 ) -> String {
     match (
         crate::cli::AgentHarness::parse(&session.harness),
-        session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
+        session
+            .session_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty()),
     ) {
         (Some(harness), Some(id))
             if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
@@ -146,8 +149,8 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_app::UiTree) -> Self {
-        use crate::host::wasm_app::UiNodeData;
+    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_view::UiTree) -> Self {
+        use crate::host::wasm_view::UiNodeData;
 
         let nodes = tree
             .nodes
@@ -221,10 +224,11 @@ impl SemanticPaneState {
                         Some(format!("{}x{}", canvas.width, canvas.height)),
                         Vec::new(),
                     ),
-                    UiNodeData::AppBar(app_bar) => (
-                        "app_bar",
-                        Some(app_bar.title.clone()),
-                        (!app_bar.subtitle.is_empty()).then(|| app_bar.subtitle.clone()),
+                    UiNodeData::SurfaceHeader(surface_header) => (
+                        "surface_header",
+                        Some(surface_header.title.clone()),
+                        (!surface_header.subtitle.is_empty())
+                            .then(|| surface_header.subtitle.clone()),
                         Vec::new(),
                     ),
                     UiNodeData::FooterKeys(footer_keys) => (
@@ -265,8 +269,8 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn expose_canvas_commands(&mut self, tree: &crate::host::wasm_app::UiTree) {
-        use crate::host::wasm_app::UiNodeData;
+    pub(crate) fn expose_canvas_commands(&mut self, tree: &crate::host::wasm_view::UiTree) {
+        use crate::host::wasm_view::UiNodeData;
 
         for (state_node, tree_node) in self.nodes.iter_mut().zip(&tree.nodes) {
             if let UiNodeData::Canvas(canvas) = &tree_node.data {
@@ -355,9 +359,9 @@ fn collect_process_semantics(
 }
 
 fn semantic_canvas_command(
-    command: &crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand,
+    command: &crate::host::wasm_view::bindings::plexi::platform::types::CanvasCommand,
 ) -> serde_json::Value {
-    use crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand;
+    use crate::host::wasm_view::bindings::plexi::platform::types::CanvasCommand;
 
     match command {
         CanvasCommand::Rect(rect) => serde_json::json!({
@@ -399,7 +403,7 @@ fn semantic_canvas_command(
 }
 
 fn semantic_color(
-    color: &crate::host::wasm_app::bindings::plexi::platform::types::Color,
+    color: &crate::host::wasm_view::bindings::plexi::platform::types::Color,
 ) -> String {
     if color.a == u8::MAX {
         format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
@@ -433,7 +437,7 @@ fn process_command_bounds(object: &serde_json::Map<String, serde_json::Value>) -
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
-    App(Box<AppPane>),
+    View(Box<ViewPane>),
     /// A tile that represents a child context nested inside this one.
     /// Renders a summary card with pane count, status, and per-pane summaries.
     /// Cmd+Enter zooms into the sub-context when this tile has focus.
@@ -491,7 +495,7 @@ impl Pane {
     pub fn id(&self) -> PaneId {
         match self {
             Pane::Terminal(t) => t.id,
-            Pane::App(a) => a.id,
+            Pane::View(a) => a.id,
             Pane::Portal(p) => p.pane_id,
         }
     }
@@ -499,7 +503,7 @@ impl Pane {
     pub fn is_hidden(&self) -> bool {
         match self {
             Pane::Terminal(t) => t.hidden,
-            Pane::App(a) => a.hidden,
+            Pane::View(a) => a.hidden,
             Pane::Portal(p) => p.hidden,
         }
     }
@@ -507,7 +511,7 @@ impl Pane {
     pub fn set_hidden(&mut self, val: bool) {
         match self {
             Pane::Terminal(t) => t.hidden = val,
-            Pane::App(a) => a.hidden = val,
+            Pane::View(a) => a.hidden = val,
             Pane::Portal(p) => p.hidden = val,
         }
     }
@@ -526,16 +530,16 @@ impl Pane {
         }
     }
 
-    pub fn as_app(&self) -> Option<&AppPane> {
+    pub fn as_view(&self) -> Option<&ViewPane> {
         match self {
-            Pane::App(a) => Some(a),
+            Pane::View(a) => Some(a),
             _ => None,
         }
     }
 
-    pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
+    pub fn as_view_mut(&mut self) -> Option<&mut ViewPane> {
         match self {
-            Pane::App(a) => Some(a),
+            Pane::View(a) => Some(a),
             _ => None,
         }
     }
@@ -554,11 +558,11 @@ impl Pane {
         }
     }
 
-    /// True if this pane is an active agent pane (terminal agent or app agent).
+    /// True if this pane is an active agent pane (terminal agent or plugin agent).
     pub fn is_agent_pane(&self) -> bool {
         match self {
             Pane::Terminal(t) => t.is_agent_pane(),
-            Pane::App(a) => a.agent.is_some(),
+            Pane::View(a) => a.agent.is_some(),
             Pane::Portal(_) => false,
         }
     }
@@ -580,7 +584,7 @@ impl Pane {
                 t.observed_agent.as_ref(),
                 std::time::Instant::now(),
             ),
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .agent
                 .as_ref()
                 .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::agent)),
@@ -596,7 +600,11 @@ impl Pane {
                     t.is_agent_pane().then(|| crate::protocol::PaneAgentState {
                         pane_id: t.id,
                         state: crate::protocol::AgentState::Idle,
-                        agent: t.agent_harness.clone().or_else(|| t.standby_session.as_ref().map(|s| s.harness.clone())).unwrap_or_default(),
+                        agent: t
+                            .agent_harness
+                            .clone()
+                            .or_else(|| t.standby_session.as_ref().map(|s| s.harness.clone()))
+                            .unwrap_or_default(),
                         detail: None,
                         session_id: t.agent_session_id.clone(),
                     })
@@ -604,26 +612,28 @@ impl Pane {
                 (report.state, report.detail) = t.effective_agent_state();
                 Some(report)
             }
-            Pane::App(_) => self.agent().cloned(),
+            Pane::View(_) => self.agent().cloned(),
             Pane::Portal(_) => None,
         }
     }
 
-    /// App-reported pip status, checking the outer app then any overlay-replaced
+    /// App-reported pip status, checking the outer plugin then any overlay-replaced
     /// pane underneath (mirrors `agent()`).
     pub fn pip_status(&self) -> Option<crate::protocol::PipStatus> {
         match self {
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .pip_status
                 .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::pip_status)),
             Pane::Terminal(_) | Pane::Portal(_) => None,
         }
     }
 
-    /// An app's yellow health pip keeps its color without implying agent work.
+    /// An plugin's yellow health pip keeps its color without implying agent work.
     pub fn static_health_pip(&self) -> bool {
         self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
-            && !self.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+            && !self
+                .agent()
+                .is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
     }
 
     /// Activity state for the unified activity dot. Generic terminal process
@@ -633,7 +643,9 @@ impl Pane {
             return Some(pip.as_agent_state());
         }
         if let Pane::Terminal(t) = self {
-            if t.is_agent_pane() && (t.exited || t.agent_completed || t.slots.contains_key("completed")) {
+            if t.is_agent_pane()
+                && (t.exited || t.agent_completed || t.slots.contains_key("completed"))
+            {
                 use crate::protocol::AgentState;
                 return Some(match t.effective_agent_state().0 {
                     AgentState::Working => &AgentState::Working,
@@ -652,7 +664,7 @@ impl Pane {
         }
         match self {
             Pane::Terminal(_) => None,
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .overlay_replaced
                 .as_deref()
                 .and_then(Pane::effective_activity),
@@ -698,7 +710,10 @@ impl Pane {
                     if let Some(ref mut standby) = t.standby_session {
                         standby.last_state = a.state.clone();
                         standby.last_detail = a.detail.clone();
-                        if a.session_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                        if a.session_id
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                        {
                             standby.session_id = a.session_id.clone();
                         }
                     }
@@ -714,7 +729,7 @@ impl Pane {
                 t.agent = agent;
                 (true, changed)
             }
-            Pane::App(a) => {
+            Pane::View(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
                     replaced.set_agent_with_dirty(agent)
                 } else {
@@ -731,11 +746,11 @@ impl Pane {
         }
     }
 
-    /// Set the app-reported pip status. App panes only (mirrors `set_agent`'s
+    /// Set the plugin-reported pip status. View panes only (mirrors `set_agent`'s
     /// overlay delegation). Terminals and portals have no pip surface → false.
     pub fn set_pip_status(&mut self, status: Option<crate::protocol::PipStatus>) -> bool {
         match self {
-            Pane::App(a) => {
+            Pane::View(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
                     replaced.set_pip_status(status)
                 } else {
@@ -750,7 +765,7 @@ impl Pane {
     pub fn slots(&self) -> Option<&HashMap<String, PathBuf>> {
         match self {
             Pane::Terminal(t) => Some(&t.slots),
-            Pane::App(a) => Some(&a.slots),
+            Pane::View(a) => Some(&a.slots),
             Pane::Portal(_) => None,
         }
     }
@@ -758,7 +773,7 @@ impl Pane {
     pub fn slots_mut(&mut self) -> Option<&mut HashMap<String, PathBuf>> {
         match self {
             Pane::Terminal(t) => Some(&mut t.slots),
-            Pane::App(a) => Some(&mut a.slots),
+            Pane::View(a) => Some(&mut a.slots),
             Pane::Portal(_) => None,
         }
     }
@@ -775,7 +790,7 @@ impl Pane {
     pub fn resume_from_standby(&mut self) -> bool {
         match self {
             Pane::Terminal(t) => t.resume_from_standby().is_some(),
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .overlay_replaced
                 .as_deref_mut()
                 .is_some_and(|r| r.resume_from_standby()),
@@ -901,7 +916,10 @@ impl TerminalPane {
         mut settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
-        settings.env.insert(super::process_cleanup::SESSION_ENV.into(), super::process_cleanup::session_marker().into());
+        settings.env.insert(
+            super::process_cleanup::SESSION_ENV.into(),
+            super::process_cleanup::session_marker().into(),
+        );
         let ephemeral = settings
             .env
             .get("PLEXI_EPHEMERAL")
@@ -1159,10 +1177,11 @@ impl TerminalPane {
     /// any previously preserved `tail_preview`.
     pub fn capture_tail_preview(&self) -> Option<String> {
         if self.is_standby() {
-            return self
-                .tail_preview
-                .clone()
-                .or_else(|| self.standby_session.as_ref().and_then(|s| s.tail_preview.clone()));
+            return self.tail_preview.clone().or_else(|| {
+                self.standby_session
+                    .as_ref()
+                    .and_then(|s| s.tail_preview.clone())
+            });
         }
         let lines: Vec<String> = self
             .backend
@@ -1191,11 +1210,19 @@ impl TerminalPane {
         (!tail.is_empty()).then_some(tail)
     }
 
-    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
+    fn update_fleet_transition(
+        &mut self,
+        previous: Option<&crate::protocol::AgentState>,
+        next: Option<&crate::protocol::AgentState>,
+    ) {
         use crate::protocol::AgentState;
-        if previous == next { return; }
+        if previous == next {
+            return;
+        }
         self.fleet_since = crate::platform::clock::now_secs();
-        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
+        if next == Some(&AgentState::Completed)
+            || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle))
+        {
             self.fleet_done_unseen = true;
             self.fleet_seen = false;
             self.fleet_dismissed = false;
@@ -1211,29 +1238,80 @@ impl TerminalPane {
 
     pub(crate) fn set_reported_7501(&mut self, reported: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.reported_7501 = reported;
-        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
     /// Completion takes precedence over a failed process exit, then the report.
     pub(crate) fn effective_agent_state(&self) -> (crate::protocol::AgentState, Option<String>) {
-        let report = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), std::time::Instant::now());
-        let state = report.map(|a| a.state.clone()).or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone())).unwrap_or(crate::protocol::AgentState::Idle);
-        let detail = report.and_then(|a| a.detail.clone()).or_else(|| self.standby_session.as_ref().and_then(|s| s.last_detail.clone()));
-        Self::resolve_agent_state(self.agent_completed || self.slots.contains_key("completed"), self.exited.then_some(self.exit_status).flatten(), state, detail)
+        let report = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            std::time::Instant::now(),
+        );
+        let state = report
+            .map(|a| a.state.clone())
+            .or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone()))
+            .unwrap_or(crate::protocol::AgentState::Idle);
+        let detail = report.and_then(|a| a.detail.clone()).or_else(|| {
+            self.standby_session
+                .as_ref()
+                .and_then(|s| s.last_detail.clone())
+        });
+        Self::resolve_agent_state(
+            self.agent_completed || self.slots.contains_key("completed"),
+            self.exited.then_some(self.exit_status).flatten(),
+            state,
+            detail,
+        )
     }
 
-    fn resolve_agent_state(completed: bool, exit: Option<crate::host::pane_lifecycle::ExitStatus>, state: crate::protocol::AgentState, detail: Option<String>) -> (crate::protocol::AgentState, Option<String>) {
+    fn resolve_agent_state(
+        completed: bool,
+        exit: Option<crate::host::pane_lifecycle::ExitStatus>,
+        state: crate::protocol::AgentState,
+        detail: Option<String>,
+    ) -> (crate::protocol::AgentState, Option<String>) {
         if completed || state == crate::protocol::AgentState::Completed {
             (crate::protocol::AgentState::Completed, detail)
         } else if let Some(status) = exit.filter(|s| s.is_failure()) {
@@ -1460,20 +1538,58 @@ mod agent_source_tests {
     fn effective_agent_state_precedence_table() {
         use crate::host::pane_lifecycle::ExitStatus;
         for (completed, exit, reported, expected, detail) in [
-            (true, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Completed, "report"),
-            (false, Some(ExitStatus::Code(3)), AgentState::Completed, AgentState::Completed, "report"),
-            (false, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Failed, "exited (3)"),
-            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Interrupted, "report"),
-            (false, None, AgentState::Blocked, AgentState::Blocked, "report"),
+            (
+                true,
+                Some(ExitStatus::Code(3)),
+                AgentState::Working,
+                AgentState::Completed,
+                "report",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(3)),
+                AgentState::Completed,
+                AgentState::Completed,
+                "report",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(3)),
+                AgentState::Working,
+                AgentState::Failed,
+                "exited (3)",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(0)),
+                AgentState::Working,
+                AgentState::Interrupted,
+                "report",
+            ),
+            (
+                false,
+                None,
+                AgentState::Blocked,
+                AgentState::Blocked,
+                "report",
+            ),
         ] {
-            let actual = super::TerminalPane::resolve_agent_state(completed, exit, reported, Some("report".into()));
+            let actual = super::TerminalPane::resolve_agent_state(
+                completed,
+                exit,
+                reported,
+                Some("report".into()),
+            );
             assert_eq!(actual, (expected, Some(detail.into())));
         }
     }
 
     use std::time::{Duration, Instant};
 
-    fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
+    fn saved_session(
+        harness: &str,
+        session_id: Option<&str>,
+    ) -> crate::workspace::SavedAgentSession {
         crate::workspace::SavedAgentSession {
             fleet_result: None,
             fleet_seen: false,
@@ -1551,11 +1667,12 @@ mod agent_source_tests {
         let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
 
         let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now).expect("agent");
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now)
+                .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now).expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
     }
 
@@ -1581,10 +1698,11 @@ mod agent_source_tests {
         let now = Instant::now();
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now).expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
-        let selected = select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
+        let selected =
+            select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
         assert!(select_terminal_agent(None, None, None, None, now).is_none());
     }
@@ -1607,7 +1725,7 @@ mod agent_source_tests {
 }
 
 // ---------------------------------------------------------------------------
-// AppPane — dedicated app runtime (process or in-process builtin)
+// ViewPane — dedicated plugin runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
 /// What a `PendingPaneClick` is aimed at: a raw screen position (the pixel
@@ -1621,14 +1739,14 @@ pub(crate) enum PaneClickTarget {
     Node(u64),
 }
 
-/// A pointer click injected by `AppRequest::ClickPane`/`ClickPaneNode`
+/// A pointer click injected by `HostRequest::ClickPane`/`ClickPaneNode`
 /// (`plexi pane click`, or `HostHarness::inject_click`/`inject_node_click`),
 /// queued on `PlexiApp` and consumed by the canvas render pass for the
 /// target pane on the next frame it renders.
 ///
 /// egui's own click detection (`Response::clicked()`) resolves
 /// `viewport.interact_widgets` once, inside `Context::begin_pass`, strictly
-/// before host/app code runs — so a click cannot be faked by mutating
+/// before host/plugin code runs — so a click cannot be faked by mutating
 /// `ctx.input_mut()` mid-pass the way `KeyPane` replays keys (key checks
 /// re-scan `InputState.events` live at widget-render time; pointer-click
 /// detection does not). `PendingPaneClick` is delivered instead through the
@@ -1644,7 +1762,7 @@ pub(crate) struct PendingPaneClick {
     /// Which pointer transition this sample delivers. `Click` (the default,
     /// what `ClickPane`/`ClickPaneNode` queue) is a press+release pair;
     /// `Press`/`Move`/`Release` are the per-frame samples of an
-    /// `AppRequest::DragPane` schedule (stint 0510) — one sample per frame,
+    /// `HostRequest::DragPane` schedule (stint 0510) — one sample per frame,
     /// resolved against that frame's live canvas rect like any click.
     pub phase: PointerPhase,
 }
@@ -1661,7 +1779,7 @@ pub(crate) enum PointerPhase {
 impl PendingPaneClick {
     /// True when this pending click's target identity-matches `id` — the same
     /// honest node-id equality check `node_click_matches` (wasm_render.rs)
-    /// uses on the WASM/Python path, applied to a Builtin app's own `egui::Id`
+    /// uses on the WASM/Python path, applied to a Builtin plugin's own `egui::Id`
     /// instead of a WASM arena index. Drag-phase samples never activate a
     /// node — only a real `Click` does.
     pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
@@ -1670,112 +1788,112 @@ impl PendingPaneClick {
     }
 }
 
-pub enum AppRuntime {
-    Builtin(Box<dyn App>),
+pub enum ViewRuntime {
+    Builtin(Box<dyn View>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
-    /// A sandboxed WASM component app driven by the synchronous effect loop.
+    /// A sandboxed WASM component plugin driven by the synchronous effect loop.
     /// Neither a subprocess nor a native in-process builtin — it runs inside a
     /// per-pane `wasmtime::Store`.
     Wasm(Box<crate::host::wasm_pane::LiveWasmPane>),
 }
 
-impl AppRuntime {
+impl ViewRuntime {
     pub fn submit_external_turn(
         &mut self,
         text: String,
         request_id: String,
         response_file: String,
-        opts: crate::app::app_trait::ExternalTurnOpts,
+        opts: crate::app::view_trait::ExternalTurnOpts,
     ) -> Result<(), String> {
         match self {
-            AppRuntime::Builtin(app) => {
+            ViewRuntime::Builtin(app) => {
                 app.submit_external_turn(text, request_id, response_file, opts)
             }
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
-                Err("this app does not accept external turns".to_string())
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
+                Err("this plugin does not accept external turns".to_string())
             }
         }
     }
 
     pub fn take_config_saved(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.take_config_saved(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.take_config_saved(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn switch_commands_scope(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.switch_commands_scope(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.switch_commands_scope(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn captures_editor_shortcuts(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.captures_editor_shortcuts(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.captures_editor_shortcuts(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         pending_click: Option<PendingPaneClick>,
     ) {
         match self {
-            AppRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
-            AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
-            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+            ViewRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
+            ViewRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+            ViewRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
         }
     }
 
     pub fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         match self {
-            AppRuntime::Builtin(app) => app.handle_key(input),
-            AppRuntime::Python(app) => app.handle_key(input),
-            AppRuntime::Wasm(app) => app.handle_key(input),
+            ViewRuntime::Builtin(app) => app.handle_key(input),
+            ViewRuntime::Python(app) => app.handle_key(input),
+            ViewRuntime::Wasm(app) => app.handle_key(input),
         }
     }
 
     /// Deliver the one bare Escape that just surrendered a declarative
     /// `TextInput`'s egui focus. Ordinary key routing reserves Escape for the
-    /// host CloseApp binding; this narrowly-scoped path lets the field's app
+    /// host CloseView binding; this narrowly-scoped path lets the field's plugin
     /// react to its own focus-loss Escape before that binding is suppressed.
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         match self {
             // Preserve the existing builtin TextInput Escape behavior. The
-            // caller consumes this one focus-loss Escape before CloseApp runs.
-            AppRuntime::Builtin(app) => app.handle_key(input),
-            AppRuntime::Python(app) => app.handle_text_input_escape(input),
-            AppRuntime::Wasm(app) => app.handle_text_input_escape(input),
+            // caller consumes this one focus-loss Escape before CloseView runs.
+            ViewRuntime::Builtin(app) => app.handle_key(input),
+            ViewRuntime::Python(app) => app.handle_text_input_escape(input),
+            ViewRuntime::Wasm(app) => app.handle_text_input_escape(input),
         }
     }
 
-    pub fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    pub fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         match self {
-            AppRuntime::Builtin(app) => app.take_pending_commands(),
-            AppRuntime::Python(app) => app.take_pending_commands(),
-            AppRuntime::Wasm(app) => app
+            ViewRuntime::Builtin(app) => app.take_pending_commands(),
+            ViewRuntime::Python(app) => app.take_pending_commands(),
+            ViewRuntime::Wasm(app) => app
                 .take_host_effects()
                 .into_iter()
-                .map(|effect| AppCommand::WasmHostEffect { pane_id: 0, effect })
+                .map(|effect| ViewCommand::WasmHostEffect { pane_id: 0, effect })
                 .collect(),
         }
     }
 
     pub fn keyboard_capture(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.keyboard_capture(),
-            AppRuntime::Python(_) => false,
-            AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.keyboard_capture(),
+            ViewRuntime::Python(_) => false,
+            ViewRuntime::Wasm(_) => false,
         }
     }
 
@@ -1783,16 +1901,16 @@ impl AppRuntime {
     /// handler while a declarative text input has focus.
     pub fn submit_on_focused_text_input_enter(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.submit_on_focused_text_input_enter(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.submit_on_focused_text_input_enter(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn wants_close(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.wants_close(),
-            AppRuntime::Python(app) => app.wants_close(),
-            AppRuntime::Wasm(app) => app.wants_close(),
+            ViewRuntime::Builtin(app) => app.wants_close(),
+            ViewRuntime::Python(app) => app.wants_close(),
+            ViewRuntime::Wasm(app) => app.wants_close(),
         }
     }
 
@@ -1800,8 +1918,8 @@ impl AppRuntime {
     /// context root. Only file-backed runtimes (Python today) have any.
     pub fn state_paths(&self) -> Vec<(crate::host::state_scope::StateScope, std::path::PathBuf)> {
         match self {
-            AppRuntime::Python(app) => app.state_paths(),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => Vec::new(),
+            ViewRuntime::Python(app) => app.state_paths(),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => Vec::new(),
         }
     }
 
@@ -1810,82 +1928,86 @@ impl AppRuntime {
     /// file-backed state.
     pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
         match self {
-            AppRuntime::Python(app) => app.apply_external_state(scope),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => {}
+            ViewRuntime::Python(app) => app.apply_external_state(scope),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => {}
         }
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         match self {
-            AppRuntime::Builtin(app) => app.queue_outbound_event(event),
-            AppRuntime::Python(app) => app.queue_outbound_event(event),
-            AppRuntime::Wasm(app) => app.queue_outbound_event(event),
+            ViewRuntime::Builtin(app) => app.queue_outbound_event(event),
+            ViewRuntime::Python(app) => app.queue_outbound_event(event),
+            ViewRuntime::Wasm(app) => app.queue_outbound_event(event),
         }
     }
 
     /// Returns None when this runtime does not support NotifyAction.
-    pub(crate) fn try_queue_notify_action(&mut self, event: crate::protocol::PlexiEvent) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
+    pub(crate) fn try_queue_notify_action(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
         if !self.supports_notify_action() {
             return None;
         }
         match self {
-            AppRuntime::Python(app) => Some(app.try_queue_outbound_event(event)),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Python(app) => Some(app.try_queue_outbound_event(event)),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     pub(crate) fn supports_notify_action(&self) -> bool {
-        matches!(self, AppRuntime::Python(_)) && matches!(self.lifecycle().0, "starting" | "running")
+        matches!(self, ViewRuntime::Python(_))
+            && matches!(self.lifecycle().0, "starting" | "running")
     }
 
     /// Register a directed pipe on this runtime's local pipe registry so
     /// `has_pipe_reader` reflects the connection on the target runtime.
     pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
         match self {
-            AppRuntime::Builtin(_) => false,
-            AppRuntime::Python(app) => app.register_directed_pipe(pipe_id),
-            AppRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Builtin(_) => false,
+            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
         }
     }
 
     /// True when `pipe_id` is open on this runtime's local pipe registry.
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         match self {
-            AppRuntime::Builtin(_) => false,
-            AppRuntime::Python(app) => app.has_pipe_reader(pipe_id),
-            AppRuntime::Wasm(app) => app.has_pipe_reader(pipe_id),
+            ViewRuntime::Builtin(_) => false,
+            ViewRuntime::Python(app) => app.has_pipe_reader(pipe_id),
+            ViewRuntime::Wasm(app) => app.has_pipe_reader(pipe_id),
         }
     }
 
     pub fn runtime_kind(&self) -> &'static str {
         match self {
-            AppRuntime::Builtin(_) => "builtin",
-            AppRuntime::Python(_) => "python",
-            AppRuntime::Wasm(_) => "wasm",
+            ViewRuntime::Builtin(_) => "builtin",
+            ViewRuntime::Python(_) => "python",
+            ViewRuntime::Wasm(_) => "wasm",
         }
     }
 
-    /// Deliver the CLI/host semantic action contract to every app runtime.
+    /// Deliver the CLI/host semantic action contract to every plugin runtime.
     pub fn approval_request_id(&self) -> Option<String> {
         match self {
-            AppRuntime::Builtin(app) => app.approval_request_id(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.approval_request_id(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
-    pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
+    pub fn send_plugin_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
-            AppRuntime::Wasm(app) => {
+            ViewRuntime::Wasm(app) => {
                 if !args.is_empty() {
                     return Err("WASM UI actions do not accept positional arguments".to_string());
                 }
                 app.dispatch_ui_action(action)
             }
-            AppRuntime::Builtin(app) => {
+            ViewRuntime::Builtin(app) => {
                 app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
-            AppRuntime::Python(app) => {
+            ViewRuntime::Python(app) => {
                 app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
@@ -1895,37 +2017,37 @@ impl AppRuntime {
     pub(crate) fn tool_event_sender(
         &self,
         repaint: egui::Context,
-    ) -> Option<crate::plexi_ai::tool_dispatch::AppEventSender> {
+    ) -> Option<crate::plexi_ai::tool_dispatch::PluginEventSender> {
         match self {
-            AppRuntime::Python(app) => Some(
-                crate::plexi_ai::tool_dispatch::AppEventSender::Python(app.tool_event_sender()),
+            ViewRuntime::Python(app) => Some(
+                crate::plexi_ai::tool_dispatch::PluginEventSender::Python(app.tool_event_sender()),
             ),
-            AppRuntime::Wasm(app) => Some(crate::plexi_ai::tool_dispatch::AppEventSender::Wasm(
-                app.input_sender(repaint),
-            )),
-            AppRuntime::Builtin(_) => None,
+            ViewRuntime::Wasm(app) => Some(
+                crate::plexi_ai::tool_dispatch::PluginEventSender::Wasm(app.input_sender(repaint)),
+            ),
+            ViewRuntime::Builtin(_) => None,
         }
     }
 
     pub fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         match self {
-            AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
-            AppRuntime::Python(_) => {}
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(app) => app.sync_cwd(new_cwd),
+            ViewRuntime::Python(_) => {}
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
     pub(crate) fn semantic_details(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(app) => app.semantic_state(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.semantic_state(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     pub(crate) fn request_close(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.request_close(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => true,
+            ViewRuntime::Builtin(app) => app.request_close(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => true,
         }
     }
 
@@ -1934,105 +2056,105 @@ impl AppRuntime {
         wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
     ) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.service_external(wake),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.service_external(wake),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub(crate) fn sync_change_set(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.sync_change_set(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.sync_change_set(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         match self {
-            AppRuntime::Builtin(app) => app.editor_buffer(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.editor_buffer(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     /// Lifecycle is an observation of the runtime, not a pane-existence flag.
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
         match self {
-            AppRuntime::Builtin(_) => ("running", None),
-            AppRuntime::Python(app) => app.lifecycle(),
-            AppRuntime::Wasm(app) if app.is_running() => ("running", None),
-            AppRuntime::Wasm(_) => ("exited", None),
+            ViewRuntime::Builtin(_) => ("running", None),
+            ViewRuntime::Python(app) => app.lifecycle(),
+            ViewRuntime::Wasm(app) if app.is_running() => ("running", None),
+            ViewRuntime::Wasm(_) => ("exited", None),
         }
     }
 
     /// Poll state that must stay current even when eframe skips rendering an
     /// occluded host window.
     pub(crate) fn poll_runtime_state(&mut self) {
-        if let AppRuntime::Python(app) = self {
+        if let ViewRuntime::Python(app) = self {
             app.poll_runtime_state();
         }
     }
 
     pub(crate) fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
         match self {
-            AppRuntime::Builtin(app) => app.drop_file(path_or_url),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
-                Err("target app does not accept file drops".to_string())
+            ViewRuntime::Builtin(app) => app.drop_file(path_or_url),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
+                Err("target plugin does not accept file drops".to_string())
             }
         }
     }
 
     pub fn type_id(&self) -> &'static str {
         match self {
-            AppRuntime::Builtin(app) => app.type_id(),
-            AppRuntime::Python(_) => "python-wasm",
-            AppRuntime::Wasm(_) => "wasm",
+            ViewRuntime::Builtin(app) => app.type_id(),
+            ViewRuntime::Python(_) => "python-wasm",
+            ViewRuntime::Wasm(_) => "wasm",
         }
     }
 
     pub fn serialize_state(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(app) => app.serialize_state(),
-            AppRuntime::Python(_) => None,
-            // WASM app state is persisted host-side via the file-backed
+            ViewRuntime::Builtin(app) => app.serialize_state(),
+            ViewRuntime::Python(_) => None,
+            // WASM plugin state is persisted host-side via the file-backed
             // StateStore, not through workspace JSON.
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
-    /// Enough launch context to relaunch this exact app through the normal
+    /// Enough launch context to relaunch this exact plugin through the normal
     /// open path on a workspace restore (stint 0680). `None` for builtins —
-    /// they restore through `restore_builtin_app_pane`'s `builtin_factory`
+    /// they restore through `restore_builtin_view_pane`'s `builtin_factory`
     /// lookup instead, which needs no relaunch context.
-    pub fn launch_spec(&self) -> Option<crate::workspace::SavedAppLaunch> {
+    pub fn launch_spec(&self) -> Option<crate::workspace::SavedViewLaunch> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(app) => Some(app.launch_spec()),
-            AppRuntime::Wasm(app) => Some(app.launch_spec()),
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(app) => Some(app.launch_spec()),
+            ViewRuntime::Wasm(app) => Some(app.launch_spec()),
         }
     }
 
     pub fn display_name(&self) -> String {
         match self {
-            AppRuntime::Builtin(app) => app.display_name(),
-            AppRuntime::Python(app) => app.display_name(),
-            AppRuntime::Wasm(app) => app.display_name(),
+            ViewRuntime::Builtin(app) => app.display_name(),
+            ViewRuntime::Python(app) => app.display_name(),
+            ViewRuntime::Wasm(app) => app.display_name(),
         }
     }
 
     /// Seed text for the rename-pane overlay. See [`App::rename_seed`].
     pub fn rename_seed(&self) -> Option<String> {
         match self {
-            AppRuntime::Builtin(app) => app.rename_seed(),
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.rename_seed(),
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
-    /// Notify the app that its pane was renamed. See [`App::on_pane_renamed`].
+    /// Notify the plugin that its pane was renamed. See [`App::on_pane_renamed`].
     pub fn on_pane_renamed(&mut self, name: &str) {
         match self {
-            AppRuntime::Builtin(app) => app.on_pane_renamed(name),
-            AppRuntime::Python(_) => {}
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(app) => app.on_pane_renamed(name),
+            ViewRuntime::Python(_) => {}
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
@@ -2041,18 +2163,18 @@ impl AppRuntime {
     /// their existing schemes and ignore it.
     pub fn refresh_context_root(&mut self, root: &std::path::Path) {
         match self {
-            AppRuntime::Builtin(_) => {}
-            AppRuntime::Python(app) => app.set_context_root(root),
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(_) => {}
+            ViewRuntime::Python(app) => app.set_context_root(root),
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
     /// Pump event I/O for a pane not in the active context.
     pub fn background_tick(&mut self) {
         match self {
-            AppRuntime::Builtin(app) => app.background_tick(),
-            AppRuntime::Python(app) => app.background_tick(),
-            AppRuntime::Wasm(app) => app.background_tick(),
+            ViewRuntime::Builtin(app) => app.background_tick(),
+            ViewRuntime::Python(app) => app.background_tick(),
+            ViewRuntime::Wasm(app) => app.background_tick(),
         }
     }
 
@@ -2060,19 +2182,19 @@ impl AppRuntime {
     /// would make progress on?
     pub fn needs_background_tick(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.needs_background_tick(),
-            AppRuntime::Python(app) => app.needs_background_tick(),
-            AppRuntime::Wasm(app) => app.needs_background_tick(),
+            ViewRuntime::Builtin(app) => app.needs_background_tick(),
+            ViewRuntime::Python(app) => app.needs_background_tick(),
+            ViewRuntime::Wasm(app) => app.needs_background_tick(),
         }
     }
 
-    /// Current nav stack depth as reported by the app via `PushNav`/`PopNav`.
-    /// Always 0 for builtin apps — they manage their own internal navigation.
+    /// Current nav stack depth as reported by the plugin via `PushNav`/`PopNav`.
+    /// Always 0 for builtin plugins — they manage their own internal navigation.
     pub fn nav_stack_depth(&self) -> usize {
         match self {
-            AppRuntime::Builtin(_) => 0,
-            AppRuntime::Python(_) => 0,
-            AppRuntime::Wasm(_) => 0,
+            ViewRuntime::Builtin(_) => 0,
+            ViewRuntime::Python(_) => 0,
+            ViewRuntime::Wasm(_) => 0,
         }
     }
 
@@ -2080,19 +2202,19 @@ impl AppRuntime {
     /// `None` when the stack is empty (root view — no back arrow shown).
     pub fn nav_top_title(&self) -> Option<&str> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
-    /// The `view_id` the app should navigate back to (the entry below current
+    /// The `view_id` the plugin should navigate back to (the entry below current
     /// top, or empty string for root). Used to populate `NavBack { view_id }`.
     pub fn nav_back_view_id(&self) -> String {
         match self {
-            AppRuntime::Builtin(_) => String::new(),
-            AppRuntime::Python(_) => String::new(),
-            AppRuntime::Wasm(_) => String::new(),
+            ViewRuntime::Builtin(_) => String::new(),
+            ViewRuntime::Python(_) => String::new(),
+            ViewRuntime::Wasm(_) => String::new(),
         }
     }
 
@@ -2101,30 +2223,30 @@ impl AppRuntime {
     }
 
     /// Serialize the last-rendered frame (Vec<RenderCommand>) as a JSON array.
-    /// Returns `None` for builtin apps (no accessible frame).
+    /// Returns `None` for builtin plugins (no accessible frame).
     pub(crate) fn frame_json(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 }
 
-pub struct AppPane {
+pub struct ViewPane {
     pub id: PaneId,
-    pub runtime: AppRuntime,
+    pub runtime: ViewRuntime,
     pub workspace_root: PathBuf,
-    pub permissions: AppPermissions,
+    pub permissions: PluginPermissions,
     pub manifest_id: String,
     pub name: String,
-    /// Pane group this app joined at spawn. Only `sync_app_cwd` reads it, and
+    /// Pane group this plugin joined at spawn. Only `sync_plugin_cwd` reads it, and
     /// only builtin panes are ever assigned one — see `LaunchSection::join_group`.
     pub pane_group: Option<String>,
-    /// The terminal pane this app was spawned alongside. CdRequest routes here
+    /// The terminal pane this plugin was spawned alongside. CdRequest routes here
     /// directly — no tile-tree walk needed.
     pub linked_pane_id: Option<PaneId>,
-    /// Pane hidden by an overlay app. Closing the app restores this pane instead
+    /// Pane hidden by an overlay plugin. Closing the plugin restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
@@ -2134,41 +2256,41 @@ pub struct AppPane {
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.
     pub pip_status: Option<crate::protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
-    /// Last semantics committed by the production render path for native apps.
+    /// Last semantics committed by the production render path for native plugins.
     pub(crate) semantic_state: SemanticPaneState,
 }
 
-impl AppPane {
+impl ViewPane {
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {
         match &self.runtime {
-            AppRuntime::Builtin(_) => self.semantic_state.clone(),
-            AppRuntime::Python(app) => app.semantic_state(),
-            AppRuntime::Wasm(app) => app.semantic_state().clone(),
+            ViewRuntime::Builtin(_) => self.semantic_state.clone(),
+            ViewRuntime::Python(app) => app.semantic_state(),
+            ViewRuntime::Wasm(app) => app.semantic_state().clone(),
         }
     }
 }
 
-impl Drop for AppPane {
+impl Drop for ViewPane {
     fn drop(&mut self) {
-        // Overlay apps reuse the replaced pane's id. Restoring the boxed pane
+        // Overlay plugins reuse the replaced pane's id. Restoring the boxed pane
         // must preserve that pane's connector and subscription registrations.
         if self.overlay_replaced.is_some() {
             log::info!(
-                "app pane: dropped overlay pane={} without clearing restored pane registrations",
+                "view pane: dropped overlay pane={} without clearing restored pane registrations",
                 self.id
             );
             return;
         }
         crate::plexi_ai::tool_dispatch::unregister(self.id);
-        let (subscriptions, deliveries) = crate::host::app_timeline::global()
+        let (subscriptions, deliveries) = crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
             .clear_subscriber(
-                crate::broker::ActorType::App,
-                &crate::host::event_subscriptions::app_subscriber_id(self.id),
+                crate::broker::ActorType::Plugin,
+                &crate::host::event_subscriptions::plugin_subscriber_id(self.id),
             );
         log::info!(
-            "app pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
+            "view pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
             self.id,
             subscriptions,
             deliveries

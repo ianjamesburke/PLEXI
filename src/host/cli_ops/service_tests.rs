@@ -12,18 +12,7 @@ use super::fixture;
 use super::service::*;
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 
-const MANIFEST: &str = r#"schema_version = 1
-
-[app]
-id = "ops-app"
-type = "app"
-name = "Ops App"
-entry = "main.py"
-version = "0.1.0"
-description = "approved operation fixture"
-
-[app.capabilities]
-capabilities = ["cli.operations"]
+const MANIFEST: &str = r#"schema_version = 2
 
 [[cli_operation]]
 id = "fixture.echo"
@@ -219,12 +208,29 @@ format = "json"
 max_bytes = 4096
 [cli_operation.authority]
 mode = "read"
+
+[plugin]
+id = "ops-app"
+name = "Ops App"
+version = "0.1.0"
+description = "approved operation fixture"
+
+[plugin.capabilities]
+capabilities = ["cli.operations"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "ops-app.main"
+default = true
 "#;
 
 struct Rig {
     root: tempfile::TempDir,
     profile: tempfile::TempDir,
-    app_dir: PathBuf,
+    plugin_dir: PathBuf,
     workspace: PathBuf,
     bin: PathBuf,
     seal_base: PathBuf,
@@ -244,17 +250,17 @@ impl Rig {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         let profile = tempfile::tempdir().unwrap();
-        let app_dir = root.path().join("app");
+        let plugin_dir = root.path().join("app");
         let workspace = root.path().join("ws");
-        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(app_dir.join("manifest.toml"), MANIFEST).unwrap();
-        std::fs::write(app_dir.join("main.py"), "# entry\n").unwrap();
+        std::fs::write(plugin_dir.join("manifest.toml"), MANIFEST).unwrap();
+        std::fs::write(plugin_dir.join("main.py"), "# entry\n").unwrap();
         let bin = fixture::install("a", &root.path().join("bin/fixturecli"));
         let monitor = PermissionMonitor::for_profile(profile.path());
         let who = PaneIdentity {
-            app_id: "ops-app".into(),
-            app_dir: app_dir.clone(),
+            plugin_id: "ops-app".into(),
+            plugin_dir: plugin_dir.clone(),
             workspace_root: workspace.clone(),
             pane_id: 4,
             context_id: 9,
@@ -264,7 +270,7 @@ impl Rig {
             seal_base: root.path().join("sealed"),
             root,
             profile,
-            app_dir,
+            plugin_dir,
             workspace,
             bin,
             monitor,
@@ -276,24 +282,24 @@ impl Rig {
         }
     }
 
-    /// A rig whose app was put in place by the real installer, so it lives in
-    /// the registry's apps directory with an install-complete marker.
+    /// A rig whose plugin was put in place by the real installer, so it lives in
+    /// the registry's plugins directory with an install-complete marker.
     fn installed() -> Self {
         let mut rig = Self::new();
         rig._profile_guard = Some(crate::config::set_test_profile_dir(
             rig.profile.path().to_path_buf(),
         ));
-        rig.install_from(&rig.app_dir.clone());
-        rig.app_dir = crate::app::registry::apps_dir().join("ops-app");
-        rig.who.app_dir = rig.app_dir.clone();
+        rig.install_from(&rig.plugin_dir.clone());
+        rig.plugin_dir = crate::app::registry::plugins_dir().join("ops-app");
+        rig.who.plugin_dir = rig.plugin_dir.clone();
         rig
     }
 
     fn install_from(&self, source: &std::path::Path) -> i32 {
-        crate::cli::app::app_install_with_pin(
+        crate::cli::plugin::plugin_install_with_pin(
             &source.to_string_lossy(),
             None,
-            crate::cli::app::InstallConfirm::PreApproved,
+            crate::cli::plugin::InstallConfirm::PreApproved,
             true,
         )
     }
@@ -483,7 +489,7 @@ fn timeout_output_limit_nonzero_and_bad_output_are_typed_and_bounded() {
 }
 
 #[test]
-fn concurrency_is_capped_per_app() {
+fn concurrency_is_capped_per_plugin() {
     let mut rig = Rig::new();
     assert!(rig
         .submit("a", "fixture.long", json!({"ms": 20000}))
@@ -530,7 +536,7 @@ fn cancel_kills_a_running_operation_and_fails_a_parked_one() {
 }
 
 #[test]
-fn closing_the_app_kills_every_process() {
+fn closing_the_plugin_kills_every_process() {
     let mut rig = Rig::new();
     assert!(rig.submit("kids", "fixture.children", json!({})).is_empty());
     rig.decide(ApprovalChoice::Once);
@@ -552,7 +558,7 @@ fn closing_the_app_kills_every_process() {
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
             Instant::now() < deadline,
-            "grandchild {pid} survived app close"
+            "grandchild {pid} survived plugin close"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -918,7 +924,11 @@ fn package_content_change_requires_reapproval() {
     let mut rig = Rig::new();
     rig.remember(ApprovalChoice::Always);
     let launched = rig.launches().len();
-    std::fs::write(rig.app_dir.join("main.py"), "# entry\nprint('changed')\n").unwrap();
+    std::fs::write(
+        rig.plugin_dir.join("main.py"),
+        "# entry\nprint('changed')\n",
+    )
+    .unwrap();
     assert!(rig
         .submit("p", "fixture.echo", json!({"word": "x"}))
         .is_empty());
@@ -934,7 +944,7 @@ fn operation_definition_change_requires_reapproval() {
     let launched = rig.launches().len();
     // Widen only the declared timeout of the approved operation.
     let widened = MANIFEST.replacen("timeout_ms = 10000", "timeout_ms = 20000", 1);
-    std::fs::write(rig.app_dir.join("manifest.toml"), widened).unwrap();
+    std::fs::write(rig.plugin_dir.join("manifest.toml"), widened).unwrap();
     assert!(rig
         .submit("d", "fixture.echo", json!({"word": "x"}))
         .is_empty());
@@ -1106,14 +1116,14 @@ fn consent_is_not_confinement() {
 fn an_installed_package_runs_and_a_missing_install_marker_fails_closed() {
     let mut rig = Rig::installed();
     assert!(rig
-        .app_dir
+        .plugin_dir
         .join(crate::app::package::INSTALL_COMPLETE_MARKER)
         .is_file());
     assert_eq!(rig.run_once_pair()["ok"], true);
     let launched = rig.launches().len();
     // An interrupted or pre-marker install has no completion marker.
     std::fs::remove_file(
-        rig.app_dir
+        rig.plugin_dir
             .join(crate::app::package::INSTALL_COMPLETE_MARKER),
     )
     .unwrap();
@@ -1161,7 +1171,7 @@ fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
     use std::os::unix::fs::PermissionsExt;
     let mut rig = Rig::installed();
     rig.remember(ApprovalChoice::Always);
-    let before = crate::app::package::content_digest(&rig.app_dir).unwrap();
+    let before = crate::app::package::content_digest(&rig.plugin_dir).unwrap();
 
     let broken = rig.root.path().join("broken");
     std::fs::create_dir_all(&broken).unwrap();
@@ -1175,12 +1185,12 @@ fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
     assert_eq!(code, 1, "a copy that fails part way must fail the install");
 
     assert_eq!(
-        crate::app::package::content_digest(&rig.app_dir).unwrap(),
+        crate::app::package::content_digest(&rig.plugin_dir).unwrap(),
         before,
         "the previous install is untouched"
     );
     assert!(rig
-        .app_dir
+        .plugin_dir
         .join(crate::app::package::INSTALL_COMPLETE_MARKER)
         .is_file());
     let staging_root = crate::app::install_swap::staging_root();
@@ -1193,30 +1203,32 @@ fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
 }
 
 #[test]
-fn uninstalling_an_app_removes_its_sealed_program_copies_and_only_its_own() {
+fn uninstalling_an_plugin_removes_its_sealed_program_copies_and_only_its_own() {
     let mut rig = Rig::installed();
     rig.seal_base = crate::host::cli_ops::seal_base();
     assert_eq!(rig.run_once_pair()["ok"], true);
     let mine = rig.seal_base.join("ops-app");
-    assert!(mine.is_dir(), "the app has a sealed copy after a launch");
+    assert!(mine.is_dir(), "the plugin has a sealed copy after a launch");
     let other = rig.seal_base.join("other-app/prog/abc");
     std::fs::create_dir_all(&other).unwrap();
-    let target_root = rig.app_dir.parent().unwrap().to_path_buf();
+    let target_root = rig.plugin_dir.parent().unwrap().to_path_buf();
     crate::cli::install_host::uninstall_one("ops-app", &target_root).unwrap();
-    assert!(!rig.app_dir.exists());
+    assert!(!rig.plugin_dir.exists());
     assert!(
         !mine.exists(),
         "uninstall must not leave executable copies behind"
     );
-    assert!(other.exists(), "another app's copies are untouched");
+    assert!(other.exists(), "another plugin's copies are untouched");
 }
 
 #[test]
-fn an_app_id_that_could_escape_its_directory_is_refused() {
+fn an_plugin_id_that_could_escape_its_directory_is_refused() {
     let mut rig = Rig::new();
-    rig.who.app_id = "../escape".into();
+    rig.who.plugin_id = "../escape".into();
     let reply = rig.submit("e", "fixture.echo", json!({"word": "x"}));
     assert_eq!(code_of(&reply[0]), "package_invalid", "{}", reply[0]);
-    assert!(!crate::host::cli_ops::app_id_is_path_safe(".."));
-    assert!(crate::host::cli_ops::app_id_is_path_safe("stint-board.v2"));
+    assert!(!crate::host::cli_ops::plugin_id_is_path_safe(".."));
+    assert!(crate::host::cli_ops::plugin_id_is_path_safe(
+        "stint-board.v2"
+    ));
 }

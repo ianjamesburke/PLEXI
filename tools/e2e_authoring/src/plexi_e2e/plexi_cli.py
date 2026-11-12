@@ -154,7 +154,7 @@ class PlexiCli:
 
     # -- events -----------------------------------------------------------
 
-    def events_subscribe_argv(self, app_id: str, stream: str) -> list[str]:
+    def events_subscribe_argv(self, plugin_id: str, stream: str) -> list[str]:
         """The argv for a streaming subscribe. Streaming is caller-driven
         (Popen), so return the argv + env rather than block here."""
-        return [self.binary, "events", "subscribe", app_id, stream]
+        return [self.binary, "events", "subscribe", plugin_id, stream]

@@ -1,19 +1,19 @@
-//! Host version compatibility — does this Plexi build satisfy an app's declared
+//! Host version compatibility — does this Plexi build satisfy a plugin's declared
 //! version requirement?
 //!
-//! Apps declare `[requires]` in their manifest:
+//! Plugins declare `[requires]` in their manifest:
 //!
 //! ```toml
 //! [requires]
 //! plexi_min = "0.0.760"   # hard floor — host below this refuses to install/run
-//! plexi_max = "0.1.0"     # soft ceiling — host above this warns (app may be superseded)
+//! plexi_max = "0.1.0"     # soft ceiling — host above this warns (plugin may be superseded)
 //! ```
 //!
-//! The split is deliberate. `plexi_min` is an enforced gate: an app that needs a
+//! The split is deliberate. `plexi_min` is an enforced gate: a plugin that needs a
 //! capability added in 0.0.760 must not silently misbehave on 0.0.700. `plexi_max`
-//! is advisory: an app built for today's Plexi keeps running on a newer host, but
+//! is advisory: a plugin built for today's Plexi keeps running on a newer host, but
 //! the user is warned that it predates this build and may need an update. Blocking
-//! on the ceiling would brick every installed app on each release, so we never do.
+//! on the ceiling would brick every installed plugin on each release, so we never do.
 //!
 //! Versions are simple `major.minor.patch` triples (Plexi's scheme). No range
 //! syntax, no pre-release tags — keep the contract obvious.
@@ -90,12 +90,12 @@ impl VersionVerdict {
         match self {
             VersionVerdict::Ok => None,
             VersionVerdict::TooOld { required_min, host } => Some(format!(
-                "this app requires Plexi >= {required_min}, but this build is {host}. \
+                "this plugin requires Plexi >= {required_min}, but this build is {host}. \
                  Update Plexi to install it."
             )),
             VersionVerdict::TooNew { declared_max, host } => Some(format!(
-                "this app was built for Plexi <= {declared_max}; this build is {host}. \
-                 It may be superseded — update the app if it misbehaves."
+                "this plugin was built for Plexi <= {declared_max}; this build is {host}. \
+                 It may be superseded — update the plugin if it misbehaves."
             )),
             VersionVerdict::Malformed { field, value } => Some(format!(
                 "manifest [requires].{field} = \"{value}\" is not a valid major.minor.patch version"

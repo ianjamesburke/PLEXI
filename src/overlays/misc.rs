@@ -180,7 +180,7 @@ impl PlexiApp {
                         // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
                             ui.set_width(column_width);
-                            section_label(ui, "APPS & TOOLS", colors);
+                            section_label(ui, "PLUGINS & TOOLS", colors);
                             egui::Grid::new("shortcuts_apps")
                                 .num_columns(2)
                                 .min_col_width(0.0)
@@ -313,11 +313,11 @@ impl PlexiApp {
     pub(crate) fn changelog_handle_key(
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             self.close_changelog();
         }
-        crate::app::app_trait::KeyDisposition::Consumed
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
@@ -476,8 +476,13 @@ impl PlexiApp {
                 if show_browse {
                     ui.add_space(style::SPACE_SM);
                     ui.horizontal(|ui| {
-                        if ui.add(crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors).kind(crate::ui::button::ButtonKind::Secondary).min_width(80.0))
-                        .clicked()
+                        if ui
+                            .add(
+                                crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors)
+                                    .kind(crate::ui::button::ButtonKind::Secondary)
+                                    .min_width(80.0),
+                            )
+                            .clicked()
                         {
                             browse_clicked = true;
                         }
@@ -633,8 +638,8 @@ impl PlexiApp {
                         log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
                         Some(new_name.clone())
                     };
-                } else if let Some(a) = pane.as_app_mut() {
-                    // Let the app react first — TextEditorApp persists the new
+                } else if let Some(a) = pane.as_view_mut() {
+                    // Let the plugin react first — TextEditorView persists the new
                     // name into the note's frontmatter title.
                     a.runtime.on_pane_renamed(&new_name);
                     a.name = if new_name.is_empty() {
@@ -642,7 +647,7 @@ impl PlexiApp {
                     } else {
                         new_name.clone()
                     };
-                    log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
+                    log::info!("rename_pane: view pane {pane_id} named {:?}", a.name);
                 }
             }
             let context_root = self
@@ -755,36 +760,36 @@ impl PlexiApp {
     pub(crate) fn rename_pane_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_rename_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_description_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn text_input_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn command_palette_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 }
 
@@ -808,7 +813,7 @@ mod tests {
         assert!(should_show_changelog_line("## [0.1.0] — 2026-06-11"));
         assert!(should_show_changelog_line("### Changes"));
         assert!(should_show_changelog_line("- fix: route update checks"));
-        assert!(should_show_changelog_line("- feature: add app launcher"));
+        assert!(should_show_changelog_line("- feature: add plugin launcher"));
     }
 
     #[test]

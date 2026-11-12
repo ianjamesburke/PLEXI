@@ -1,7 +1,7 @@
 //! Pane-operation methods on `PlexiApp`, decomposed by concern:
 //!
-//! - [`create`] — pane / tile / app / agent creation, plus the app-launch
-//!   entry points used by the command palette and AppRequest routing.
+//! - [`create`] — pane / tile / plugin / agent creation, plus the plugin-launch
+//!   entry points used by the command palette and HostRequest routing.
 //! - [`layout`] — splits, tabs, close, navigation, zoom-free tree
 //!   manipulation on already-created panes.
 //! - [`workspace`] — multi-context management and on-disk workspace
@@ -18,19 +18,19 @@ mod workspace;
 mod wrap;
 
 pub(crate) use create::cli_open_placement;
-#[cfg(test)]
-pub(crate) use create::restore_app_pane;
-pub(crate) use create::{restore_app_pane_in_profile, RestoreTarget, RestoredAppPane};
 pub(crate) use create::restore_assistant_pane;
-pub(crate) use create::restore_builtin_app_pane;
+pub(crate) use create::restore_builtin_view_pane;
 pub(crate) use create::restore_launch_failed_pane;
+#[cfg(test)]
+pub(crate) use create::restore_view_pane;
+pub(crate) use create::{restore_view_pane_in_profile, RestoreTarget, RestoredViewPane};
 pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
 pub(crate) use workspace::ChildContextSpec;
-pub(crate) use workspace::NewContextTiming;
 #[cfg(test)]
 pub(crate) use workspace::NewContextKind;
+pub(crate) use workspace::NewContextTiming;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.

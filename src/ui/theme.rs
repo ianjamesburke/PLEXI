@@ -106,7 +106,7 @@ pub struct Colors {
 }
 
 impl Colors {
-    /// Egui and window mode follow the resolved app backdrop, including overrides.
+    /// Egui and window mode follow the resolved plugin backdrop, including overrides.
     pub fn is_dark(&self) -> bool {
         luminance(self.terminal_bg) < 0.179
     }
@@ -137,7 +137,7 @@ impl Colors {
     }
 
     /// Foreground for *primary* labels that used to render in `text_dim`
-    /// (sidebar context names, app-bar subtitles, pane-name bars). `text_dim`
+    /// (sidebar context names, surface-header subtitles, pane-name bars). `text_dim`
     /// sits around 3:1 on most presets — fine for true-secondary metadata,
     /// too faint for a label the user reads constantly. Blends `text_dim`
     /// toward `text_primary` just far enough to reach WCAG 4.5:1 on `bg`
@@ -286,16 +286,16 @@ impl Colors {
     }
 
     /// Serialize the semantic color roles to a `role -> #rrggbb` map for the
-    /// SDK `Init` payload. Apps read these via `ctx.theme.<role>` so app-drawn
+    /// SDK `Init` payload. Plugins read these via `ctx.theme.<role>` so plugin-drawn
     /// chrome tracks the host theme (light/dark + user `[theme]` overrides).
     /// Both the SDK-semantic names (bg/surface/muted/...) and ANSI aliases
-    /// (red/green/yellow) are emitted so apps can pull whichever they need.
+    /// (red/green/yellow) are emitted so plugins can pull whichever they need.
     pub fn to_theme_map(self) -> std::collections::HashMap<String, String> {
         fn hex(c: Color32) -> String {
             format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
         }
-        // `bg` is the color the host paints behind the app pane (terminal_bg),
-        // so an app that clears to theme.bg matches its container in any theme.
+        // `bg` is the color the host paints behind the view pane (terminal_bg),
+        // so a plugin that clears to theme.bg matches its container in any theme.
         [
             ("bg", self.terminal_bg),
             ("bg_darkest", self.bg_darkest),
@@ -412,7 +412,7 @@ pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::confi
 }
 
 /// Resolve the active `Colors` from a loaded config. Shared by the GUI and
-/// the headless `app render` path.
+/// the headless `view render` path.
 pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
     Colors::from_config(&resolve_theme_config(config))
 }
@@ -1218,7 +1218,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
 
     style.spacing.item_spacing = egui::vec2(tokens::SPACE_SM, tokens::SPACE_XS);
     // Default egui button padding is (4, 1) — the single biggest "default
-    // egui" tell. Real apps give labels room to breathe.
+    // egui" tell. Real plugins give labels room to breathe.
     style.spacing.button_padding = egui::vec2(tokens::SPACE_MD, 6.0);
     style.spacing.menu_margin = egui::Margin::same(tokens::SPACE_SM as i8);
     style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);
@@ -1497,7 +1497,7 @@ mod tests {
     }
 
     /// Stint 0528 contrast floor: primary labels rendered in the secondary
-    /// tone (inactive sidebar context names, app-bar subtitles, pane-name
+    /// tone (inactive sidebar context names, surface-header subtitles, pane-name
     /// bars) must reach WCAG 4.5:1 on their actual backgrounds for every
     /// preset. `text_dim` alone sits near 3:1 on most presets.
     #[test]

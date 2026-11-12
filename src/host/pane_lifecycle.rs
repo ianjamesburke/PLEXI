@@ -1,4 +1,4 @@
-//! Pane lifecycle facts carried on the existing app event timeline.
+//! Pane lifecycle facts carried on the existing plugin event timeline.
 //!
 //! Publisher `plexi.host.panes` is reserved to the host. The `pane.lifecycle`
 //! stream uses schema_version=1, pane/context IDs, and the tagged payload below.
@@ -9,7 +9,7 @@
 //! provider failure is not an OS crash. PTY exit status carries the observed
 //! kernel exit code or signal, or is explicitly unknown when unavailable. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
-//! or restart contract. CLI wait/follow consumers use `app::event_stream`.
+//! or restart contract. CLI wait/follow consumers use `plugin::event_stream`.
 use crate::protocol::{AgentBlockedReason, AgentState};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -68,7 +68,6 @@ impl From<egui_term::PtyExitStatus> for ExitStatus {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -170,12 +169,12 @@ impl PaneLifecycleEvent {
 mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
-    use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
-    use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+    use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
+    use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 
     #[test]
     fn pane_lifecycle_uses_scoped_resource_filtered_bus_and_reserves_publisher() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         timeline
             .record_pane_lifecycle(41, 7, &PaneLifecycleEvent::Spawned)
             .unwrap();
@@ -188,7 +187,7 @@ mod tests {
                 subscription_id: name.into(),
                 subscriber_id: name.into(),
                 subscriber_type: ActorType::Agent,
-                app_id: PUBLISHER.into(),
+                plugin_id: PUBLISHER.into(),
                 event_names: vec![STREAM.into()],
                 resource_id: Some(resource.into()),
                 subscriber_context_id: context,
@@ -214,7 +213,7 @@ mod tests {
         assert_eq!(payload["kind"], "exited");
         assert_eq!(payload["status"], "unknown");
         assert_eq!(payload["schema_version"], 1);
-        assert_eq!(deliveries[0].actor, AppEventActor::System);
+        assert_eq!(deliveries[0].actor, PluginEventActor::System);
         assert!(timeline
             .take_deliveries_for(ActorType::Agent, "other-pane")
             .is_empty());
@@ -240,7 +239,7 @@ mod tests {
                 7,
                 EmittedEvent {
                     event: STREAM.into(),
-                    actor: AppEventActor::System,
+                    actor: PluginEventActor::System,
                     actor_id: Some(PUBLISHER.into()),
                     caused_by: None,
                     summary: "forged clean exit".into(),
@@ -266,7 +265,7 @@ mod tests {
 
     #[test]
     fn exit_status_serializes_code_signal_and_unknown_without_defaulting_to_zero() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         for (pty_status, expected_status) in [
             (
                 egui_term::PtyExitStatus::Code(0),

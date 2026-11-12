@@ -1,7 +1,7 @@
 //! AI backend abstraction for the Plexi AI broker.
 //!
 //! Concrete backend: `OpenRouterBackend` (SSE streaming via OpenRouter). The
-//! host reads API keys from the environment at dispatch time; apps never see
+//! host reads API keys from the environment at dispatch time; plugins never see
 //! keys.
 //!
 //! Backends deliver events through an `mpsc::Sender<StreamEvent>` so the

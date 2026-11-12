@@ -17,7 +17,7 @@
 //!
 //! Every run writes a schema-v3 `SceneReport` JSON to the out dir: backend,
 //! channel, pass/fail per step, resolved pane ids, host state, teardown result,
-//! and the last-opened app's available state/semantic snapshot. Screenshots are
+//! and the last-opened plugin's available state/semantic snapshot. Screenshots are
 //! an optional headless artifact (`shot` steps; suppressed by
 //! `PLEXI_SCENE_NO_SHOTS=1`).
 //!
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{Pane, ViewRuntime};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
@@ -203,25 +203,32 @@ fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json:
 }
 
 fn live_context_pane_count(panes: &serde_json::Value, target: PaneId) -> Result<usize, SceneError> {
-    let entries = panes.as_array().ok_or_else(|| {
-        SceneError::new("live_json_invalid", "pane list did not return an array")
-    })?;
+    let entries = panes
+        .as_array()
+        .ok_or_else(|| SceneError::new("live_json_invalid", "pane list did not return an array"))?;
     if entries.iter().any(|pane| {
         pane.get("id").and_then(serde_json::Value::as_u64).is_none()
-            || pane.get("context_id").and_then(serde_json::Value::as_u64).is_none()
+            || pane
+                .get("context_id")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
     }) {
         return Err(SceneError::new(
             "live_json_invalid",
             "pane list contains a pane without an id or owning context",
         ));
     }
-    let context_id = entries.iter()
+    let context_id = entries
+        .iter()
         .find(|pane| pane.get("id").and_then(serde_json::Value::as_u64) == Some(target))
         .and_then(|pane| pane.get("context_id").and_then(serde_json::Value::as_u64))
         .ok_or_else(|| SceneError::new("missing_target", "target pane has no live context"))?;
-    Ok(entries.iter().filter(|pane| {
-        pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
-    }).count())
+    Ok(entries
+        .iter()
+        .filter(|pane| {
+            pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
+        })
+        .count())
 }
 
 fn live_seed_to_clear(
@@ -237,7 +244,10 @@ fn live_seed_to_clear(
         ));
     }
     let Some(entries) = panes.as_array() else {
-        return Err(SceneError::new("live_json_invalid", "pane list did not return an array"));
+        return Err(SceneError::new(
+            "live_json_invalid",
+            "pane list did not return an array",
+        ));
     };
     if entries.len() != 1
         || entries[0].get("type").and_then(serde_json::Value::as_str) != Some("terminal")
@@ -247,20 +257,24 @@ fn live_seed_to_clear(
             "clear_seed requires exactly one initial terminal pane",
         ));
     }
-    entries[0].get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
-        SceneError::new("live_json_invalid", "initial terminal has no pane id")
-    })
+    entries[0]
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| SceneError::new("live_json_invalid", "initial terminal has no pane id"))
 }
 
 fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError> {
-    let entries = panes.as_array().ok_or_else(|| {
-        SceneError::new("live_json_invalid", "pane list did not return an array")
-    })?;
-    let mut focused = entries.iter().filter(|pane| {
-        pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true)
-    });
+    let entries = panes
+        .as_array()
+        .ok_or_else(|| SceneError::new("live_json_invalid", "pane list did not return an array"))?;
+    let mut focused = entries
+        .iter()
+        .filter(|pane| pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true));
     let pane = focused.next().ok_or_else(|| {
-        SceneError::new("missing_target", "push_to_subcontext requires a focused pane")
+        SceneError::new(
+            "missing_target",
+            "push_to_subcontext requires a focused pane",
+        )
     })?;
     if focused.next().is_some() {
         return Err(SceneError::new(
@@ -268,9 +282,9 @@ fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError>
             "pane list reported more than one focused pane",
         ));
     }
-    pane.get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
-        SceneError::new("live_json_invalid", "focused pane has no pane id")
-    })
+    pane.get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| SceneError::new("live_json_invalid", "focused pane has no pane id"))
 }
 
 fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
@@ -299,6 +313,9 @@ fn resolve_live_pane_target(
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Scene {
+    /// Headless startup policy; live scenes use the installed profile.
+    #[serde(default)]
+    pub core_only: bool,
     /// Harness surface size in points. Defaults to 1280x800. Mutually
     /// exclusive with `sizes`.
     #[serde(default)]
@@ -318,7 +335,7 @@ pub struct Scene {
     #[serde(default)]
     pub reduced_motion: Vec<bool>,
     /// When false, `scene_suite` skips this scene (run it via `just scene`).
-    /// Use for scenes that spawn real app processes or need wall-clock time.
+    /// Use for scenes that spawn real plugin processes or need wall-clock time.
     #[serde(default = "default_true")]
     pub suite: bool,
     /// When true, `scene_suite` runs this scene only on macOS. Use for chords
@@ -327,7 +344,7 @@ pub struct Scene {
     #[serde(default)]
     pub macos_only: bool,
     /// Scripted file-picker outcomes (stint 0508), consumed in order by
-    /// `OpenFilePicker` requests from apps this scene opens. Each entry is
+    /// `OpenFilePicker` requests from plugins this scene opens. Each entry is
     /// `{ paths = ["..."] }` or `{ cancel = true }`; a literal `{out}` prefix
     /// in a path resolves to the scene's out dir. Headless-only: a live host
     /// scripts its picker through `PLEXI_PICKER_SCRIPT` at host launch.
@@ -383,65 +400,115 @@ fn default_true() -> bool {
 #[serde(untagged)]
 pub enum Step {
     /// Start empty: close only a runner-owned live host's sole seed terminal.
-    ClearSeed { clear_seed: bool },
-    /// Open one process, WASM, or builtin app and bind its pane id to a handle.
-    Open { open: OpenSpec },
+    ClearSeed {
+        clear_seed: bool,
+    },
+    /// Open one process, WASM, or builtin plugin and bind its pane id to a handle.
+    Open {
+        open: OpenSpec,
+    },
     /// Insert text through egui's normal text-input event path. Printable
     /// characters only: the editor drops control-character `Event::Text`
     /// echoes, so multi-line content must arrive as `paste`.
-    Text { text: TextSpec },
+    Text {
+        text: TextSpec,
+    },
     /// Deliver text through egui's paste event path — the production route
     /// for multi-line content (`pane send --paste` on the live backend).
-    Paste { paste: TextSpec },
+    Paste {
+        paste: TextSpec,
+    },
     /// Press a key combo against a pane handle or the whole host.
-    Key { key: KeySpec },
+    Key {
+        key: KeySpec,
+    },
     /// Deliver a local file or image URL through the production pane drop path.
-    DropFile { drop_file: DropFileSpec },
+    DropFile {
+        drop_file: DropFileSpec,
+    },
     /// Drag the pointer across a pane through the production input path:
     /// press, N moves, release — one frame each (stint 0510).
-    Drag { drag: DragSpec },
+    Drag {
+        drag: DragSpec,
+    },
     /// Focus an opened pane through the production pane-navigation path.
-    Focus { focus: String },
+    Focus {
+        focus: String,
+    },
     /// Close an opened pane through the production pane-close path.
-    Close { close: String },
+    Close {
+        close: String,
+    },
     /// Toggle the host sidebar.
-    Sidebar { sidebar: bool },
+    Sidebar {
+        sidebar: bool,
+    },
     /// Make the isolated harness workspace the active context (headless only).
-    SeedWorkspace { seed_workspace: bool },
+    SeedWorkspace {
+        seed_workspace: bool,
+    },
     /// Seed one message notification through the real host modal render path.
-    /// Headless-only: live scenes must create notifications through an app.
+    /// Headless-only: live scenes must create notifications through a plugin.
     SeedNotification {
         seed_notification: NotificationSeedSpec,
     },
     /// Seed a pane-send approval whose caller has stopped waiting (headless).
-    SeedPaneSendTimeout { seed_pane_send_timeout: bool },
+    SeedPaneSendTimeout {
+        seed_pane_send_timeout: bool,
+    },
     /// Seed a typed CLI operation approval with the production disclosure text
     /// (headless).
-    SeedCliOperationApproval { seed_cli_operation_approval: bool },
-    SeedFailedAgent { seed_failed_agent: bool },
+    SeedCliOperationApproval {
+        seed_cli_operation_approval: bool,
+    },
+    SeedFailedAgent {
+        seed_failed_agent: bool,
+    },
     /// A real terminal agent for the dashboard fixture, on a background tab.
-    SeedAgentDashboard { seed_agent_dashboard: bool },
+    SeedAgentDashboard {
+        seed_agent_dashboard: bool,
+    },
     /// Switch to the context at this router index.
-    SwitchContext { switch_context: usize },
+    SwitchContext {
+        switch_context: usize,
+    },
     /// Push the focused pane into a new subcontext with this name.
-    PushToSubcontext { push_to_subcontext: String },
-    /// Block until a process app handle commits its first real frame.
-    WaitAppFrame { wait_app_frame: WaitSpec },
+    PushToSubcontext {
+        push_to_subcontext: String,
+    },
+    /// Block until a process plugin handle commits its first real frame.
+    WaitViewFrame {
+        wait_view_frame: WaitSpec,
+    },
     /// Advance N harness frames.
-    RunSteps { run_steps: usize },
+    RunSteps {
+        run_steps: usize,
+    },
     /// Structured assertions — every present key must match.
-    Assert { assert: AssertSpec },
+    Assert {
+        assert: AssertSpec,
+    },
     /// Eventual semantic assertion, optionally after normal input delivery.
-    Expect { expect: ExpectSpec },
+    Expect {
+        expect: ExpectSpec,
+    },
     /// Assert that the headless host accessibility tree contains an exact label.
-    AssertLabel { assert_label: AssertLabelSpec },
+    AssertLabel {
+        assert_label: AssertLabelSpec,
+    },
     /// Save a headless screenshot to `<out_dir>/<name>`.
-    Shot { shot: String },
+    Shot {
+        shot: String,
+    },
     /// Chess approval through the production assistant turn, plus a human
     /// move through `KeyPane` when `phase` is `human`.
-    ChessApproval { chess_approval: ChessApprovalSpec },
+    ChessApproval {
+        chess_approval: ChessApprovalSpec,
+    },
     /// Seed or complete a deterministic conjoined agent family.
-    AgentChildren { agent_children: String },
+    AgentChildren {
+        agent_children: String,
+    },
 }
 
 /// One phase of the chess approval scene. `pending` queues a scripted
@@ -477,12 +544,12 @@ pub struct NotificationSeedSpec {
     pub focused_source: bool,
 }
 
-/// One generic app-opening request. `kind` determines which production launch
+/// One generic plugin-opening request. `kind` determines which production launch
 /// path runs; `as` binds the resulting pane id for later steps.
 #[derive(Deserialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpenSpec {
-    /// Launch a real PGAP process from an app directory.
+    /// Launch a real PGAP process from a plugin directory.
     Process {
         path: String,
         #[serde(rename = "as")]
@@ -498,7 +565,7 @@ pub enum OpenSpec {
         #[serde(default)]
         args: Vec<String>,
     },
-    /// Open a compiled-in app by its production builtin id.
+    /// Open a compiled-in plugin by its production builtin id.
     Builtin {
         id: String,
         #[serde(rename = "as")]
@@ -601,7 +668,7 @@ pub struct WaitSpec {
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AssertSpec {
-    /// Pane handle used by app lifecycle and tree assertions.
+    /// Pane handle used by plugin lifecycle and tree assertions.
     pub target: Option<String>,
     pub pane_count: Option<usize>,
     /// All owned panes across pages in the target pane's context.
@@ -617,9 +684,9 @@ pub struct AssertSpec {
     pub exists: Option<bool>,
     /// Whether the target pane is the active focused pane.
     pub focused: Option<bool>,
-    /// Lifecycle of the target app pane, lowercase (e.g. "running").
+    /// Lifecycle of the target view pane, lowercase (e.g. "running").
     pub lifecycle: Option<String>,
-    /// Substring match against the target app's serialized L1 tree.
+    /// Substring match against the target plugin's serialized L1 tree.
     pub tree_contains: Option<String>,
     pub fit: Option<String>,
     pub aspect: Option<[f64; 2]>,
@@ -662,16 +729,16 @@ pub struct ExpectSpec {
     pub timeout_s: f32,
 }
 
-/// True when the recorded app-event expectation (if any) is satisfied: some
+/// True when the recorded plugin-event expectation (if any) is satisfied: some
 /// emitted event on `event_stream` whose serialized payload contains
-/// `event_payload_contains` (when set). Reads the same global `AppTimeline`
+/// `event_payload_contains` (when set). Reads the same global `PluginTimeline`
 /// the production event bus records into.
-fn app_event_expectation_match(spec: &ExpectSpec) -> bool {
+fn plugin_event_expectation_match(spec: &ExpectSpec) -> bool {
     let Some(stream) = &spec.event_stream else {
         return true;
     };
-    let timeline = crate::host::app_timeline::global();
-    let timeline = timeline.lock().expect("app timeline lock");
+    let timeline = crate::host::plugin_timeline::global();
+    let timeline = timeline.lock().expect("plugin timeline lock");
     timeline.events().iter().any(|record| {
         &record.event == stream
             && spec.event_payload_contains.as_ref().is_none_or(|needle| {
@@ -771,8 +838,8 @@ pub struct SceneReport {
     /// Symbolic pane handles resolved during this run.
     pub handles: BTreeMap<String, PaneId>,
     pub host: HostState,
-    /// Last-opened app pane state, when a scene opened one.
-    pub app: Option<AppState>,
+    /// Last-opened view pane state, when a scene opened one.
+    pub app: Option<PluginState>,
     pub teardown: TeardownResult,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_bundle: Option<String>,
@@ -877,10 +944,10 @@ pub struct HostState {
 }
 
 #[derive(Serialize, Debug)]
-pub struct AppState {
+pub struct PluginState {
     pub pane_id: PaneId,
     pub lifecycle: String,
-    /// Committed L1 render tree (the app's UI state), as JSON.
+    /// Committed L1 render tree (the plugin's UI state), as JSON.
     pub tree: serde_json::Value,
 }
 
@@ -953,7 +1020,7 @@ impl PaneHandles {
 
 pub struct HeadlessBackend {
     h: PlexiUiHarness,
-    last_app_pane: Option<PaneId>,
+    last_view_pane: Option<PaneId>,
     handles: PaneHandles,
     out_dir: PathBuf,
     no_shots: bool,
@@ -967,7 +1034,9 @@ impl Drop for HeadlessBackend {
     fn drop(&mut self) {
         if let Some((profile, id)) = self.seeded_approval.take() {
             let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
-            if let Err(error) = monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny) {
+            if let Err(error) =
+                monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny)
+            {
                 log::warn!("scene: failed to clear seeded approval: {error}");
             }
         }
@@ -1096,25 +1165,54 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         Ok(sizes) => sizes,
         Err(e) => return failed_report(scene_name, e),
     };
-    let scales = if scene.scales.is_empty() { vec![1.0] } else { scene.scales.clone() };
-    let themes = if scene.themes.is_empty() { vec!["plexi-dusk".to_string()] } else { scene.themes.clone() };
-    let motions = if scene.reduced_motion.is_empty() { vec![false] } else { scene.reduced_motion.clone() };
-    if scales.iter().any(|s| !s.is_finite() || !(0.6..=2.0).contains(s))
-        || themes.iter().any(|t| crate::ui::theme::preset_colors(t).is_none())
-        || size_matrix.iter().flatten().any(|s| !s.is_finite() || *s <= 0.0)
+    let scales = if scene.scales.is_empty() {
+        vec![1.0]
+    } else {
+        scene.scales.clone()
+    };
+    let themes = if scene.themes.is_empty() {
+        vec!["plexi-dusk".to_string()]
+    } else {
+        scene.themes.clone()
+    };
+    let motions = if scene.reduced_motion.is_empty() {
+        vec![false]
+    } else {
+        scene.reduced_motion.clone()
+    };
+    if scales
+        .iter()
+        .any(|s| !s.is_finite() || !(0.6..=2.0).contains(s))
+        || themes
+            .iter()
+            .any(|t| crate::ui::theme::preset_colors(t).is_none())
+        || size_matrix
+            .iter()
+            .flatten()
+            .any(|s| !s.is_finite() || *s <= 0.0)
     {
-        return failed_report(scene_name, SceneError::new("scene_parse", "invalid layout matrix dimensions"));
+        return failed_report(
+            scene_name,
+            SceneError::new("scene_parse", "invalid layout matrix dimensions"),
+        );
     }
-    let styled = !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty();
+    let styled =
+        !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty();
     let mut cases = Vec::new();
-    for size in &size_matrix { for scale in &scales { for theme in &themes { for motion in &motions {
-        cases.push((*size, *scale, theme.clone(), *motion));
-    }}}}
+    for size in &size_matrix {
+        for scale in &scales {
+            for theme in &themes {
+                for motion in &motions {
+                    cases.push((*size, *scale, theme.clone(), *motion));
+                }
+            }
+        }
+    }
     let is_matrix = cases.len() > 1 || styled;
 
     std::fs::create_dir_all(out_dir).ok();
 
-    // Install the scene's scripted picker before any app opens, and clear it
+    // Install the scene's scripted picker before any view opens, and clear it
     // however this run ends so no override leaks into the next scene.
     let _picker_guard = match scene.picker_script.as_deref() {
         Some(entries) => match install_scene_picker(entries, out_dir) {
@@ -1133,7 +1231,16 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     let mut index = 0usize;
     let mut runner = None;
     for (size, scale, theme, reduced_motion) in &cases {
-        let suffix = is_matrix.then(|| if styled { format!("-{}x{}-s{scale}-{theme}-motion{}", size[0] as i64, size[1] as i64, !reduced_motion) } else { format!("-{}x{}", size[0] as i64, size[1] as i64) });
+        let suffix = is_matrix.then(|| {
+            if styled {
+                format!(
+                    "-{}x{}-s{scale}-{theme}-motion{}",
+                    size[0] as i64, size[1] as i64, !reduced_motion
+                )
+            } else {
+                format!("-{}x{}", size[0] as i64, size[1] as i64)
+            }
+        });
         let size_label = suffix
             .as_ref()
             .map(|suffix| format!("[{suffix}] "))
@@ -1141,28 +1248,49 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         // Release the previous case's thread-local profile before constructing
         // the next harness; overlapping guards would reuse a deleted profile.
         drop(runner.take());
-        let mut h = PlexiUiHarness::new_sized_scaled(size[0], size[1], *scale);
+        let mut h = PlexiUiHarness::new_sized_scaled_with_config(
+            size[0],
+            size[1],
+            *scale,
+            crate::config::PlexiConfig {
+                core_only: Some(scene.core_only),
+                ..Default::default()
+            },
+        );
         if styled {
             // Pane focus reloads configuration. Persist the matrix selection in
             // the harness-owned profile so a reload cannot restore the default.
             let config_path = crate::config::config_path();
-            if let Err(error) = std::fs::write(&config_path,
-                format!("ui_scale = {scale}\n[theme]\npreset = {theme:?}\n")) {
-                log::error!("scene: write matrix config {}: {error}", config_path.display());
-                return failed_report(scene_name, SceneError::new("scene_config", error.to_string()));
+            if let Err(error) = std::fs::write(
+                &config_path,
+                format!("ui_scale = {scale}\n[theme]\npreset = {theme:?}\n"),
+            ) {
+                log::error!(
+                    "scene: write matrix config {}: {error}",
+                    config_path.display()
+                );
+                return failed_report(
+                    scene_name,
+                    SceneError::new("scene_config", error.to_string()),
+                );
             }
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                app.ctx.global_style_mut(|s| s.animation_time = if *reduced_motion { 0.0 } else { 0.15 });
+                app.ctx.global_style_mut(|s| {
+                    s.animation_time = if *reduced_motion { 0.0 } else { 0.15 }
+                });
             });
         }
         h.step();
         let pass = runner.insert(HeadlessBackend {
             h,
-            last_app_pane: None,
+            last_view_pane: None,
             handles: PaneHandles::default(),
             out_dir: out_dir.to_path_buf(),
             no_shots,
@@ -1190,7 +1318,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                         index - 1,
                         "headless",
                         &e,
-                        pass.app_state(),
+                        pass.plugin_state(),
                         Some(pass),
                     );
                     // Replay only the failing case and the prefix needed to reach it.
@@ -1198,13 +1326,30 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                         if let Some(table) = replay.as_table_mut() {
                             table.remove("sizes");
                             table.insert("size".into(), toml::Value::try_from(size).expect("size"));
-                            table.insert("scales".into(), toml::Value::try_from(vec![scale]).expect("scale"));
-                            table.insert("themes".into(), toml::Value::try_from(vec![theme]).expect("theme"));
-                            table.insert("reduced_motion".into(), toml::Value::try_from(vec![reduced_motion]).expect("motion"));
-                            if let Some(steps) = table.get_mut("steps").and_then(toml::Value::as_array_mut) { steps.truncate((index - 1) % scene.steps.len() + 1); }
+                            table.insert(
+                                "scales".into(),
+                                toml::Value::try_from(vec![scale]).expect("scale"),
+                            );
+                            table.insert(
+                                "themes".into(),
+                                toml::Value::try_from(vec![theme]).expect("theme"),
+                            );
+                            table.insert(
+                                "reduced_motion".into(),
+                                toml::Value::try_from(vec![reduced_motion]).expect("motion"),
+                            );
+                            if let Some(steps) =
+                                table.get_mut("steps").and_then(toml::Value::as_array_mut)
+                            {
+                                steps.truncate((index - 1) % scene.steps.len() + 1);
+                            }
                         }
                         if let Ok(replay) = toml::to_string_pretty(&replay) {
-                            if let Err(error) = std::fs::write(Path::new(&bundle).join("replay.toml"), replay) { log::warn!("scene replay: {error}"); }
+                            if let Err(error) =
+                                std::fs::write(Path::new(&bundle).join("replay.toml"), replay)
+                            {
+                                log::warn!("scene replay: {error}");
+                            }
                         }
                     }
                     steps.push(StepResult {
@@ -1238,7 +1383,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         shots,
         handles: runner.handles.report(),
         host: runner.host_state(),
-        app: runner.app_state(),
+        app: runner.plugin_state(),
         teardown: TeardownResult::headless(),
         failure_bundle,
     };
@@ -1293,15 +1438,22 @@ fn write_failure_bundle(
     step: usize,
     backend: &str,
     error: &SceneError,
-    app: Option<AppState>,
+    app: Option<PluginState>,
     mut headless: Option<&mut HeadlessBackend>,
 ) -> String {
     let dir = out_dir.join(format!("{scene}.failure-{step}"));
     let _ = std::fs::create_dir_all(&dir);
     let screenshot = if let Some(runner) = headless.as_mut() {
-        let reports = runner.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+        let reports = runner
+            .h
+            .with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
         let value: Vec<_> = reports.iter().map(|r| r.json()).collect();
-        if let Err(error) = std::fs::write(dir.join("layout.json"), serde_json::to_vec_pretty(&value).unwrap_or_default()) { log::warn!("scene layout report: {error}"); }
+        if let Err(error) = std::fs::write(
+            dir.join("layout.json"),
+            serde_json::to_vec_pretty(&value).unwrap_or_default(),
+        ) {
+            log::warn!("scene layout report: {error}");
+        }
         let path = dir.join("screenshot.png");
         runner
             .h
@@ -1377,7 +1529,7 @@ struct LiveBackend {
     owned_host: bool,
     attached_host: bool,
     handles: PaneHandles,
-    last_app_pane: Option<PaneId>,
+    last_view_pane: Option<PaneId>,
     teardown: TeardownResult,
     owner_file: Option<PathBuf>,
     out_dir: PathBuf,
@@ -1416,7 +1568,7 @@ impl LiveBackend {
             owned_host: false,
             attached_host: false,
             handles: PaneHandles::default(),
-            last_app_pane: None,
+            last_view_pane: None,
             teardown: TeardownResult {
                 attempted: false,
                 ok: false,
@@ -1632,7 +1784,7 @@ impl LiveBackend {
     /// (`PlexiUiHarness::save_screenshot`), which never crops to a pane
     /// either (`TESTING.md`'s host-surface-coverage table: "shot captures
     /// the entire ... framebuffer, so pane type does not require a separate
-    /// capture path"). Cropping to `last_app_pane` was tried and reverted: it
+    /// capture path"). Cropping to `last_view_pane` was tried and reverted: it
     /// tracks the last *opened* pane, not the last *live* one, so a scene
     /// that opens, closes, and refocuses before its `shot` step (as
     /// `pane-lifecycle.toml` does) handed the CLI a pane id that no longer
@@ -1693,7 +1845,10 @@ impl LiveBackend {
         match step {
             Step::ClearSeed { clear_seed } => {
                 if !clear_seed {
-                    return Err(SceneError::new("invalid_seed_clear", "clear_seed must be true"));
+                    return Err(SceneError::new(
+                        "invalid_seed_clear",
+                        "clear_seed must be true",
+                    ));
                 }
                 if !self.owned_host || self.attached_host || !self.handles.by_name.is_empty() {
                     return Err(SceneError::new(
@@ -1711,11 +1866,16 @@ impl LiveBackend {
                 self.command(&["pane".into(), "close".into(), pane_id.to_string()], true)?;
                 poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
                     Ok(self.json(&["pane", "list"]).ok().and_then(|panes| {
-                        panes.as_array().filter(|panes| panes.is_empty()).map(|_| ())
+                        panes
+                            .as_array()
+                            .filter(|panes| panes.is_empty())
+                            .map(|_| ())
                     }))
                 })?;
                 log::info!("scene_live: cleared runner-owned seed pane={pane_id}");
-                Ok(Some(StepDetail::Message { message: format!("cleared seed pane {pane_id}") }))
+                Ok(Some(StepDetail::Message {
+                    message: format!("cleared seed pane {pane_id}"),
+                }))
             }
             Step::Open { open } => {
                 self.handles.ensure_available(open.handle())?;
@@ -1725,17 +1885,9 @@ impl LiveBackend {
                     }
                     OpenSpec::Builtin { id, .. } => id.clone(),
                 };
-                // A live wasm open shells `plexi app open`, whose raw-WASM
-                // review would block on a human at a TTY. Pre-approve through
-                // the real channel binary first (`plexi app trust`), which
-                // persists the fixture's import grants into the channel profile
-                // the attached host reads — the scene-runner test process is
-                // walled off from real profiles, so it cannot do this itself.
-                if let OpenSpec::Wasm { path, .. } = open {
-                    let resolved = resolve(path).display().to_string();
-                    self.command(&["app".to_string(), "trust".to_string(), resolved], false)?;
-                }
-                let mut args = vec!["app".to_string(), "open".to_string(), target];
+                // Live opens use the ordinary admission route. The scene runner
+                // never preapproves capabilities or changes the host's grants.
+                let mut args = vec!["view".to_string(), "open".to_string(), target];
                 match open {
                     OpenSpec::Process {
                         args: launch_args, ..
@@ -1755,11 +1907,11 @@ impl LiveBackend {
                     .map_err(|error| {
                         SceneError::new(
                             "open_response_invalid",
-                            format!("app open did not return a pane id: {error}"),
+                            format!("view open did not return a pane id: {error}"),
                         )
                     })?;
                 self.handles.bind(open.handle(), pane_id)?;
-                self.last_app_pane = Some(pane_id);
+                self.last_view_pane = Some(pane_id);
                 let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
                 log::info!(
                     "scene_live: step=open channel={} kind={} pane_id={pane_id}",
@@ -1918,13 +2070,13 @@ impl LiveBackend {
                     message: format!("closed {close} (pane {pane_id})"),
                 }))
             }
-            Step::WaitAppFrame { wait_app_frame } => {
-                let pane_id = self.handles.resolve(&wait_app_frame.target)?;
-                let _ = self.settled_state(pane_id, scene_timeout(wait_app_frame.timeout_s))?;
+            Step::WaitViewFrame { wait_view_frame } => {
+                let pane_id = self.handles.resolve(&wait_view_frame.target)?;
+                let _ = self.settled_state(pane_id, scene_timeout(wait_view_frame.timeout_s))?;
                 Ok(None)
             }
             Step::RunSteps { .. } => {
-                if let Some(pane_id) = self.last_app_pane {
+                if let Some(pane_id) = self.last_view_pane {
                     let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
                 }
                 Ok(None)
@@ -1963,7 +2115,8 @@ impl LiveBackend {
                             "label_not_found",
                             format!(
                                 "assert_label: {:?} not found in live pane {}",
-                                assert_label.expected_label(), pane_id
+                                assert_label.expected_label(),
+                                pane_id
                             ),
                         )
                     } else {
@@ -2054,17 +2207,20 @@ impl LiveBackend {
                 "sidebar mutation has no sanctioned live CLI/IPC command",
             )),
             Step::SeedWorkspace { .. } => Err(SceneError::new(
-                "unsupported_live_verb", "seed_workspace is headless-only",
+                "unsupported_live_verb",
+                "seed_workspace is headless-only",
             )),
             Step::SeedNotification { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
-                "seed_notification is headless-only; live scenes must notify through an app",
+                "seed_notification is headless-only; live scenes must notify through a plugin",
             )),
             Step::SeedAgentDashboard { .. } => Err(SceneError::new(
-                "unsupported_live_verb", "seed_agent_dashboard is headless-only",
+                "unsupported_live_verb",
+                "seed_agent_dashboard is headless-only",
             )),
             Step::SeedFailedAgent { .. } => Err(SceneError::new(
-                "unsupported_live_verb", "seed_failed_agent is headless-only",
+                "unsupported_live_verb",
+                "seed_failed_agent is headless-only",
             )),
             Step::SeedPaneSendTimeout { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
@@ -2104,15 +2260,15 @@ impl LiveBackend {
         }
     }
 
-    fn app_state(&self) -> Option<AppState> {
-        let pane_id = self.last_app_pane?;
+    fn plugin_state(&self) -> Option<PluginState> {
+        let pane_id = self.last_view_pane?;
         let tree = self.pane_state(pane_id).ok()?;
         let lifecycle = tree
             .get("lifecycle")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unavailable")
             .to_string();
-        Some(AppState {
+        Some(PluginState {
             pane_id,
             lifecycle,
             tree,
@@ -2121,7 +2277,10 @@ impl LiveBackend {
 
     fn check(&self, spec: &AssertSpec) -> Result<(), SceneError> {
         if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
-            return Err(SceneError::new("unsupported_live_verb", "layout reports are not exposed by live host IPC"));
+            return Err(SceneError::new(
+                "unsupported_live_verb",
+                "layout reports are not exposed by live host IPC",
+            ));
         }
         if spec.sidebar.is_some() {
             return Err(SceneError::new(
@@ -2148,12 +2307,17 @@ impl LiveBackend {
         }
         if let Some(expected) = spec.context_pane_count {
             let target = spec.target.as_deref().ok_or_else(|| {
-                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert context_pane_count requires target",
+                )
             })?;
             let pane_id = self.handles.resolve(target)?;
             let actual = live_context_pane_count(&self.json(&["pane", "list"])?, pane_id)?;
             if actual != expected {
-                failures.push(format!("context_pane_count: expected {expected}, got {actual}"));
+                failures.push(format!(
+                    "context_pane_count: expected {expected}, got {actual}"
+                ));
             }
         }
         if let Some(expected) = spec
@@ -2239,7 +2403,9 @@ impl LiveBackend {
             }
             if let Some(needle) = &spec.tree_contains {
                 if !state.to_string().contains(needle) {
-                    failures.push(format!("tree_contains: {needle:?} not found in app tree"));
+                    failures.push(format!(
+                        "tree_contains: {needle:?} not found in plugin tree"
+                    ));
                 }
             }
             geometry_failures(spec, &state, &mut failures);
@@ -2428,6 +2594,9 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     if !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty() {
         return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "layout matrices require the headless backend; installed zoom/theme must be validated independently"));
     }
+    if scene.core_only {
+        return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "core_only scene startup is headless-only; configure the installed profile explicitly"));
+    }
     if scene.picker_script.is_some() {
         return live_failed_report(
             scene_name,
@@ -2477,10 +2646,10 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                         index,
                         "live",
                         &error,
-                        backend.app_state(),
+                        backend.plugin_state(),
                         None,
                     );
-                    if let Some(pane_id) = backend.last_app_pane {
+                    if let Some(pane_id) = backend.last_view_pane {
                         let screenshot = PathBuf::from(&bundle).join("screenshot.png");
                         let _ = backend.command(
                             &[
@@ -2519,7 +2688,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     }
     let handles = backend.handles.report();
     let host = backend.host_state();
-    let app = backend.app_state();
+    let app = backend.plugin_state();
     backend.teardown();
     passed &= backend.teardown.ok;
     let failure_bundle = steps.iter().find_map(|step| step.failure_bundle.clone());
@@ -2584,18 +2753,26 @@ fn step_label(step: &Step) -> String {
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
-        Step::SeedAgentDashboard { seed_agent_dashboard } => format!("seed_agent_dashboard {seed_agent_dashboard}"),
-        Step::SeedFailedAgent { seed_failed_agent } => format!("seed_failed_agent {seed_failed_agent}"),
-        Step::SeedPaneSendTimeout { seed_pane_send_timeout } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
-        Step::SeedCliOperationApproval { seed_cli_operation_approval } => format!("seed_cli_operation_approval {seed_cli_operation_approval}"),
+        Step::SeedAgentDashboard {
+            seed_agent_dashboard,
+        } => format!("seed_agent_dashboard {seed_agent_dashboard}"),
+        Step::SeedFailedAgent { seed_failed_agent } => {
+            format!("seed_failed_agent {seed_failed_agent}")
+        }
+        Step::SeedPaneSendTimeout {
+            seed_pane_send_timeout,
+        } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
+        Step::SeedCliOperationApproval {
+            seed_cli_operation_approval,
+        } => format!("seed_cli_operation_approval {seed_cli_operation_approval}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
         }
-        Step::WaitAppFrame { wait_app_frame } => {
+        Step::WaitViewFrame { wait_view_frame } => {
             format!(
-                "wait_app_frame {} {}s",
-                wait_app_frame.target, wait_app_frame.timeout_s
+                "wait_view_frame {} {}s",
+                wait_view_frame.target, wait_view_frame.timeout_s
             )
         }
         Step::RunSteps { run_steps } => format!("run_steps {run_steps}"),
@@ -2604,7 +2781,8 @@ fn step_label(step: &Step) -> String {
         Step::AssertLabel { assert_label } => {
             format!(
                 "assert_label {} {:?}",
-                assert_label.target, assert_label.expected_label()
+                assert_label.target,
+                assert_label.expected_label()
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
@@ -2634,14 +2812,14 @@ fn resolve(path: &str) -> PathBuf {
 /// same (test-isolated) profile. The live backend cannot use this — a
 /// `#[cfg(test)]` binary is walled off from real channel profiles
 /// (`assert_test_profile_is_isolated`) — so it pre-approves through the real
-/// channel binary with `plexi app trust` instead.
+/// channel binary with `plexi plugin trust` instead.
 fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
-    let app_id = wasm_path
+    let plugin_id = wasm_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("wasm");
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+    let grants = crate::host::wasm_view::WasmView::inspect_required_grants(wasm_path)
         .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
     let config_dir = crate::config::config_dir();
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
@@ -2659,13 +2837,13 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
         .chain(std::iter::once("fs.pick".to_string()))
     {
         store.set_wasm(
-            app_id,
+            plugin_id,
             &workspace_root,
             &capability_id,
             crate::app::permissions::PermissionState::Green,
         );
         monitor.grant_capability_id(
-            app_id,
+            plugin_id,
             &workspace_root,
             &capability_id,
             crate::broker::Decision::Allow,
@@ -2674,8 +2852,8 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     }
     store.save();
     log::info!(
-        "scene: preapproved raw wasm grants app={} path={} workspace={}",
-        app_id,
+        "scene: preapproved raw wasm grants plugin={} path={} workspace={}",
+        plugin_id,
         wasm_path.display(),
         workspace_root.display()
     );
@@ -2691,7 +2869,10 @@ impl HeadlessBackend {
         match step {
             Step::ClearSeed { clear_seed } => {
                 let pane_count = self.h.with_app(|app| {
-                    app.windows.iter().map(|window| window.panes.len()).sum::<usize>()
+                    app.windows
+                        .iter()
+                        .map(|window| window.panes.len())
+                        .sum::<usize>()
                 });
                 if !clear_seed || pane_count != 0 || !self.handles.by_name.is_empty() {
                     return Err(SceneError::new(
@@ -2699,7 +2880,9 @@ impl HeadlessBackend {
                         "headless clear_seed requires a fresh empty scene",
                     ));
                 }
-                Ok(Some(StepDetail::Message { message: "headless host already empty".into() }))
+                Ok(Some(StepDetail::Message {
+                    message: "headless host already empty".into(),
+                }))
             }
             Step::Open { open } => {
                 let handle = open.handle();
@@ -2739,7 +2922,7 @@ impl HeadlessBackend {
                 }
                 .map_err(|message| SceneError::new("open_failed", message))?;
                 self.handles.bind(handle, pane_id)?;
-                self.last_app_pane = Some(pane_id);
+                self.last_view_pane = Some(pane_id);
                 self.h.step();
                 log::info!(
                     "scene: open kind={} handle={} pane_id={pane_id}",
@@ -2797,7 +2980,7 @@ impl HeadlessBackend {
                 // Live Plexi delivers these via egui::Event::Text, not Event::Key
                 // (the host suppresses Event::Key for printable chars to avoid
                 // double-dispatch, relying on Event::Text for OS-resolved chars).
-                // Mirror that path here so scene injection reaches the app the
+                // Mirror that path here so scene injection reaches the plugin the
                 // same way a real keypress does.
                 //
                 // A single non-control character is unambiguously a bare key:
@@ -2864,7 +3047,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -2899,7 +3082,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -2987,7 +3170,11 @@ impl HeadlessBackend {
                 let focused_source = seed_notification.focused_source;
                 let id = self.h.with_app_mut(|app| {
                     let id = format!("__scene_notification_{}", app.pending_notifications.len());
-                    let sender_pane_id = if focused_source { app.active_focused_pane_id().unwrap_or(0) } else { 0 };
+                    let sender_pane_id = if focused_source {
+                        app.active_focused_pane_id().unwrap_or(0)
+                    } else {
+                        0
+                    };
                     app.pending_notifications
                         .push(crate::app::PendingNotification {
                             notify_id: id.clone(),
@@ -3008,7 +3195,8 @@ impl HeadlessBackend {
                             timeout_secs: None,
                             on_dismiss: None,
                             enqueued_at: std::time::Instant::now(),
-                            tombstoned: false, delivery_unknown: false,
+                            tombstoned: false,
+                            delivery_unknown: false,
                             deliver_after: None,
                             origin_in_view: false,
                         });
@@ -3024,32 +3212,50 @@ impl HeadlessBackend {
                     message: format!("seeded notification {id}"),
                 }))
             }
-            Step::SeedAgentDashboard { seed_agent_dashboard } => {
+            Step::SeedAgentDashboard {
+                seed_agent_dashboard,
+            } => {
                 if !seed_agent_dashboard {
-                    return Err(SceneError::new("seed_failed", "seed_agent_dashboard must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_agent_dashboard must be true",
+                    ));
                 }
                 let cwd = self.h.workspace_root().to_path_buf();
                 self.h.with_app_mut(|app| {
                     let pane_id = app.host.alloc_pane_id();
                     let mut terminal = crate::host::pane::TerminalPane::new(
-                        pane_id, app.ctx.clone(), app.pty_event_tx.clone(),
+                        pane_id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
                         egui_term::BackendSettings {
-                            shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()],
-                            working_directory: Some(cwd), ..Default::default()
-                        }, 14.0,
-                    ).ok_or_else(|| {
+                            shell: "/bin/sh".into(),
+                            args: vec!["-c".into(), "sleep 300".into()],
+                            working_directory: Some(cwd),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .ok_or_else(|| {
                         log::error!("scene: could not create dashboard terminal");
                         SceneError::new("seed_failed", "could not create dashboard terminal")
                     })?;
                     terminal.agent_role = Some("Reviewer".into());
                     terminal.agent_harness = Some("scene-agent".into());
                     terminal.agent = Some(crate::protocol::PaneAgentState {
-                        pane_id, state: crate::protocol::AgentState::Failed,
-                        agent: "scene-agent".into(), detail: Some("Review command failed".into()), session_id: None,
+                        pane_id,
+                        state: crate::protocol::AgentState::Failed,
+                        agent: "scene-agent".into(),
+                        detail: Some("Review command failed".into()),
+                        session_id: None,
                     });
-                    terminal.tail_preview = Some("Review stopped; inspect output and retry.".into());
+                    terminal.tail_preview =
+                        Some("Review stopped; inspect output and retry.".into());
                     let window = &mut app.windows[app.active_window];
-                    window.panes.insert(pane_id, crate::host::pane::Pane::Terminal(Box::new(terminal)));
+                    window.panes.insert(
+                        pane_id,
+                        crate::host::pane::Pane::Terminal(Box::new(terminal)),
+                    );
                     let terminal_tile = window.tree.tiles.insert_pane(pane_id);
                     window.tree.root = Some(match window.tree.root {
                         Some(root) => window.tree.tiles.insert_tab_tile(vec![root, terminal_tile]),
@@ -3063,56 +3269,111 @@ impl HeadlessBackend {
             }
             Step::SeedFailedAgent { seed_failed_agent } => {
                 if !seed_failed_agent {
-                    return Err(SceneError::new("seed_failed", "seed_failed_agent must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_failed_agent must be true",
+                    ));
                 }
                 let seeded = self.h.with_app_mut(|app| {
-                    let Some(pane_id) = app.active_focused_pane_id() else { return false; };
-                    let Some(pane) = app.windows.iter_mut().find_map(|w| w.panes.get_mut(&pane_id)) else { return false; };
+                    let Some(pane_id) = app.active_focused_pane_id() else {
+                        return false;
+                    };
+                    let Some(pane) = app
+                        .windows
+                        .iter_mut()
+                        .find_map(|w| w.panes.get_mut(&pane_id))
+                    else {
+                        return false;
+                    };
                     if !pane.set_agent(Some(crate::protocol::PaneAgentState {
-                        pane_id, state: crate::protocol::AgentState::Failed,
-                        agent: "scene-agent".into(), detail: Some("Scene agent failed".into()), session_id: None,
-                    })) { return false; }
+                        pane_id,
+                        state: crate::protocol::AgentState::Failed,
+                        agent: "scene-agent".into(),
+                        detail: Some("Scene agent failed".into()),
+                        session_id: None,
+                    })) {
+                        return false;
+                    }
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
-                    app.attention_queue.items.iter().any(|bar| bar.id == format!("agent-failed-{pane_id}"))
+                    app.attention_queue
+                        .items
+                        .iter()
+                        .any(|bar| bar.id == format!("agent-failed-{pane_id}"))
                 });
-                if !seeded { return Err(SceneError::new("seed_failed", "failed agent bar was not created")); }
+                if !seeded {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "failed agent bar was not created",
+                    ));
+                }
                 self.h.run_steps(2);
                 Ok(None)
             }
-            Step::SeedPaneSendTimeout { seed_pane_send_timeout } => {
+            Step::SeedPaneSendTimeout {
+                seed_pane_send_timeout,
+            } => {
                 if !seed_pane_send_timeout {
-                    return Err(SceneError::new("seed_failed", "seed_pane_send_timeout must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_pane_send_timeout must be true",
+                    ));
                 }
-                let (pane_id, context_id) = self.h.with_app(|app| (
-                    app.active_focused_pane_id().unwrap_or(0), app.windows[app.active_window].context_id,
-                ));
+                let (pane_id, context_id) = self.h.with_app(|app| {
+                    (
+                        app.active_focused_pane_id().unwrap_or(0),
+                        app.windows[app.active_window].context_id,
+                    )
+                });
                 let profile = crate::config::config_dir();
                 let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
                 let actor = format!("pane:{pane_id}");
                 let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
-                    call_id: "pane-send", tool: "pane.send",
+                    call_id: "pane-send",
+                    tool: "pane.send",
                     input_json: r#"{"pane_id":42,"operation_id":"scene-retry"}"#,
                     actor_type: crate::broker::ActorType::Agent,
-                    actor_id: &actor, actor_scope: crate::broker::ActorScope::Workspace,
-                    trust_origin: "host", workspace_root: &profile, package_id: "", instance_id: 0,
-                    context_id, target_type: crate::broker::TargetType::Capability,
+                    actor_id: &actor,
+                    actor_scope: crate::broker::ActorScope::Workspace,
+                    trust_origin: "host",
+                    workspace_root: &profile,
+                    package_id: "",
+                    instance_id: 0,
+                    context_id,
+                    target_type: crate::broker::TargetType::Capability,
                 });
-                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
-                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted
+                else {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "expected an approval request",
+                    ));
                 };
-                monitor.detach_pane_send_waiter(&pending_request_id)
+                monitor
+                    .detach_pane_send_waiter(&pending_request_id)
                     .map_err(|error| SceneError::new("seed_failed", error))?;
                 self.seeded_approval = Some((profile, pending_request_id));
-                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.with_app_mut(|app| {
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
+                });
                 self.h.run_steps(2);
-                Ok(Some(StepDetail::Message { message: "seeded timed-out pane send".to_string() }))
+                Ok(Some(StepDetail::Message {
+                    message: "seeded timed-out pane send".to_string(),
+                }))
             }
-            Step::SeedCliOperationApproval { seed_cli_operation_approval } => {
+            Step::SeedCliOperationApproval {
+                seed_cli_operation_approval,
+            } => {
                 if !seed_cli_operation_approval {
-                    return Err(SceneError::new("seed_failed", "seed_cli_operation_approval must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_cli_operation_approval must be true",
+                    ));
                 }
-                let context_id = self.h.with_app(|app| app.windows[app.active_window].context_id);
+                let context_id = self
+                    .h
+                    .with_app(|app| app.windows[app.active_window].context_id);
                 let profile = crate::config::config_dir();
                 let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
                 let authority = crate::app::cli_operation::AuthorityDecl {
@@ -3123,7 +3384,7 @@ impl HeadlessBackend {
                 };
                 let workspace = std::path::Path::new("/Users/demo/projects/plexi");
                 let disclosure = crate::host::cli_ops::service::Disclosure {
-                    app_id: "stint-board",
+                    plugin_id: "stint-board",
                     operation_id: "task.set_priority",
                     mode: authority.mode,
                     workspace,
@@ -3137,19 +3398,28 @@ impl HeadlessBackend {
                     call_id: "scene-cli-operation",
                     tool: "cli.op.mutate",
                     input_json: r#"{"cli_operation_id":"task.set_priority","binding":"task.set_priority#scene","values":{"priority":"p1","task":"1175"}}"#,
-                    actor_type: crate::broker::ActorType::App,
+                    actor_type: crate::broker::ActorType::Plugin,
                     actor_id: "stint-board",
                     actor_scope: crate::broker::ActorScope::User,
                     trust_origin: "host", workspace_root: &profile, package_id: "scene-package",
                     instance_id: 0, context_id, target_type: crate::broker::TargetType::CliOperation,
                 }, &disclosure);
-                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
-                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted
+                else {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "expected an approval request",
+                    ));
                 };
                 self.seeded_approval = Some((profile, pending_request_id));
-                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.with_app_mut(|app| {
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
+                });
                 self.h.run_steps(2);
-                Ok(Some(StepDetail::Message { message: "seeded cli operation approval".to_string() }))
+                Ok(Some(StepDetail::Message {
+                    message: "seeded cli operation approval".to_string(),
+                }))
             }
             Step::SwitchContext { switch_context } => {
                 let idx = *switch_context;
@@ -3170,11 +3440,11 @@ impl HeadlessBackend {
                 self.h.step();
                 Ok(None)
             }
-            Step::WaitAppFrame { wait_app_frame } => {
-                let pane_id = self.handles.resolve(&wait_app_frame.target)?;
+            Step::WaitViewFrame { wait_view_frame } => {
+                let pane_id = self.handles.resolve(&wait_view_frame.target)?;
                 self.h
-                    .wait_for_app_frame(pane_id, scene_timeout(wait_app_frame.timeout_s))
-                    .map_err(|message| SceneError::new("wait_app_frame_failed", message))?;
+                    .wait_for_view_frame(pane_id, scene_timeout(wait_view_frame.timeout_s))
+                    .map_err(|message| SceneError::new("wait_view_frame_failed", message))?;
                 Ok(None)
             }
             Step::RunSteps { run_steps } => {
@@ -3299,7 +3569,7 @@ impl HeadlessBackend {
                         .to_string_lossy()
                         .into_owned();
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
+                        app.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
                             peer_ancestry: None,
                             pane_id: id,
                             result: Some("{}".into()),
@@ -3343,7 +3613,7 @@ impl HeadlessBackend {
         &mut self,
         spec: &ChessApprovalSpec,
     ) -> Result<Option<StepDetail>, SceneError> {
-        use crate::app::app_trait::App;
+        use crate::app::view_trait::View;
         let chess = self.handles.resolve(&spec.chess)?;
         let assistant = self.handles.resolve(&spec.assistant)?;
         match spec.phase.as_str() {
@@ -3372,7 +3642,7 @@ impl HeadlessBackend {
                     context_id,
                     package_id: "chess",
                     instance_id: chess,
-                    target_type: crate::broker::TargetType::AppConnector,
+                    target_type: crate::broker::TargetType::PluginConnector,
                 });
                 if !matches!(admission, crate::broker::gate::Admission::Required { .. }) {
                     return Err(SceneError::new(
@@ -3433,21 +3703,21 @@ impl HeadlessBackend {
                         .iter_mut()
                         .find_map(|window| window.panes.get_mut(&assistant))
                         .expect("assistant pane");
-                    let app_pane = pane.as_app_mut().expect("assistant is an app");
-                    let AppRuntime::Builtin(builtin) = &mut app_pane.runtime else {
+                    let view_pane = pane.as_view_mut().expect("assistant is a plugin");
+                    let ViewRuntime::Builtin(builtin) = &mut view_pane.runtime else {
                         panic!("assistant is not a builtin");
                     };
-                    let assistant_app = builtin
+                    let assistant_plugin = builtin
                         .as_any_mut()
-                        .downcast_mut::<crate::assistant::AssistantApp>()
-                        .expect("assistant app");
-                    assistant_app.queue_scripted_tool("chess.play", &input.to_string());
-                    assistant_app
+                        .downcast_mut::<crate::assistant::AssistantView>()
+                        .expect("assistant plugin");
+                    assistant_plugin.queue_scripted_tool("chess.play", &input.to_string());
+                    assistant_plugin
                         .submit_external_turn(
                             format!("play {mv}"),
                             format!("scene-{revision}-{mv}"),
                             reply.display().to_string(),
-                            crate::app::app_trait::ExternalTurnOpts {
+                            crate::app::view_trait::ExternalTurnOpts {
                                 conversation_id: None,
                                 join_desktop: true,
                                 status_for: None,
@@ -3486,7 +3756,7 @@ impl HeadlessBackend {
                         .workspace_root()
                         .join(format!("chess-key-{key}-{}.json", uuid::Uuid::new_v4()));
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+                        app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
                             pane_id: chess,
                             key: (*key).to_string(),
                             response_file: Some(response.to_string_lossy().into_owned()),
@@ -3546,12 +3816,29 @@ impl HeadlessBackend {
 
     fn check(&mut self, spec: &AssertSpec) -> Result<(), SceneError> {
         if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
-            let reports = self.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+            let reports = self
+                .h
+                .with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
             let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
-            if reports.is_empty() || spec.layout_surfaces.iter().any(|surface| !reports.iter().any(|r| &r.surface == surface)) {
-                return Err(SceneError::new("layout_missing", format!("required surfaces {:?}; recorded {:?}", spec.layout_surfaces, reports.iter().map(|r| &r.surface).collect::<Vec<_>>())));
+            if reports.is_empty()
+                || spec
+                    .layout_surfaces
+                    .iter()
+                    .any(|surface| !reports.iter().any(|r| &r.surface == surface))
+            {
+                return Err(SceneError::new(
+                    "layout_missing",
+                    format!(
+                        "required surfaces {:?}; recorded {:?}",
+                        spec.layout_surfaces,
+                        reports.iter().map(|r| &r.surface).collect::<Vec<_>>()
+                    ),
+                ));
             }
-            if spec.layout_valid.is_some_and(|expected| expected != errors.is_empty()) {
+            if spec
+                .layout_valid
+                .is_some_and(|expected| expected != errors.is_empty())
+            {
                 return Err(SceneError::new("layout_failed", errors.join("; ")));
             }
         }
@@ -3567,16 +3854,34 @@ impl HeadlessBackend {
         }
         if let Some(expected) = spec.context_pane_count {
             let target = spec.target.as_deref().ok_or_else(|| {
-                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert context_pane_count requires target",
+                )
             })?;
             let pane_id = self.handles.resolve(target)?;
-            let actual = self.h.with_app(|app| {
-                let context_id = app.windows.iter()
-                    .find(|window| window.panes.contains_key(&pane_id))?.context_id;
-                Some(app.windows.iter().filter(|window| window.context_id == context_id)
-                    .map(|window| window.panes.len()).sum::<usize>())
-            }).ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
-            expect("context_pane_count", expected.to_string(), actual.to_string());
+            let actual = self
+                .h
+                .with_app(|app| {
+                    let context_id = app
+                        .windows
+                        .iter()
+                        .find(|window| window.panes.contains_key(&pane_id))?
+                        .context_id;
+                    Some(
+                        app.windows
+                            .iter()
+                            .filter(|window| window.context_id == context_id)
+                            .map(|window| window.panes.len())
+                            .sum::<usize>(),
+                    )
+                })
+                .ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
+            expect(
+                "context_pane_count",
+                expected.to_string(),
+                actual.to_string(),
+            );
         }
         if let Some(v) = spec.window_count {
             expect("window_count", v.to_string(), host.window_count.to_string());
@@ -3649,11 +3954,11 @@ impl HeadlessBackend {
                 )
             })?;
             let pane_id = self.handles.resolve(target)?;
-            let app = self.app_state_for(pane_id).ok_or_else(|| {
+            let app = self.plugin_state_for(pane_id).ok_or_else(|| {
                 SceneError::new(
                     "app_state_unavailable",
                     format!(
-                        "assert target '{target}' has no process or WASM app state; use assert_label for native UI"
+                        "assert target '{target}' has no process or WASM plugin state; use assert_label for native UI"
                     ),
                 )
             })?;
@@ -3663,7 +3968,9 @@ impl HeadlessBackend {
             if let Some(needle) = &spec.tree_contains {
                 let haystack = app.tree.to_string();
                 if !haystack.contains(needle.as_str()) {
-                    failures.push(format!("tree_contains: \"{needle}\" not found in app tree"));
+                    failures.push(format!(
+                        "tree_contains: \"{needle}\" not found in plugin tree"
+                    ));
                 }
             }
             if spec.fit.is_some() || spec.aspect.is_some() {
@@ -3680,8 +3987,10 @@ impl HeadlessBackend {
     fn expect(&mut self, spec: &ExpectSpec) -> Result<Option<StepDetail>, SceneError> {
         let pane_id = self.handles.resolve(&spec.target)?;
         let before = self
-            .app_state_for(pane_id)
-            .ok_or_else(|| SceneError::new("app_state_unavailable", "expect requires app state"))?
+            .plugin_state_for(pane_id)
+            .ok_or_else(|| {
+                SceneError::new("app_state_unavailable", "expect requires plugin state")
+            })?
             .tree;
         if let Some(key) = &spec.after_key {
             self.exec(
@@ -3711,9 +4020,9 @@ impl HeadlessBackend {
         loop {
             self.h.step();
             let state = self
-                .app_state_for(pane_id)
+                .plugin_state_for(pane_id)
                 .ok_or_else(|| {
-                    SceneError::new("app_state_unavailable", "expect requires app state")
+                    SceneError::new("app_state_unavailable", "expect requires plugin state")
                 })?
                 .tree;
             history.push(PollSample {
@@ -3731,7 +4040,7 @@ impl HeadlessBackend {
             if changed
                 && contains
                 && notes_expectations_match(spec, &state)
-                && app_event_expectation_match(spec)
+                && plugin_event_expectation_match(spec)
             {
                 return Ok(None);
             }
@@ -3767,34 +4076,34 @@ impl HeadlessBackend {
         })
     }
 
-    fn app_state(&self) -> Option<AppState> {
-        let pane_id = self.last_app_pane?;
-        self.app_state_for(pane_id)
+    fn plugin_state(&self) -> Option<PluginState> {
+        let pane_id = self.last_view_pane?;
+        self.plugin_state_for(pane_id)
     }
 
-    fn app_state_for(&self, pane_id: PaneId) -> Option<AppState> {
+    fn plugin_state_for(&self, pane_id: PaneId) -> Option<PluginState> {
         self.h.with_app(|app| {
             for win in &app.windows {
-                if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
-                    let tree = match &app_pane.runtime {
-                        AppRuntime::Builtin(_) => serde_json::json!({
-                            "semantic": app_pane.semantic_state(),
-                            "app_state": app_pane.runtime.semantic_details(),
+                if let Some(Pane::View(view_pane)) = win.panes.get(&pane_id) {
+                    let (lifecycle, guest_error) = view_pane.runtime.lifecycle();
+                    let tree = match &view_pane.runtime {
+                        ViewRuntime::Builtin(_) => serde_json::json!({
+                            "semantic": view_pane.semantic_state(),
+                            "app_state": view_pane.runtime.semantic_details(),
                         }),
-                        AppRuntime::Python(_) => serde_json::json!({
-                            "semantic": app_pane.semantic_state(),
+                        ViewRuntime::Python(_) => serde_json::json!({
+                            "semantic": view_pane.semantic_state(),
                             // Same nested shape as the get_pane_state IPC
                             // response, so scene assertions exercise what
                             // agents actually read.
                             "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
                         }),
-                        AppRuntime::Wasm(w) => serde_json::json!({
+                        ViewRuntime::Wasm(w) => serde_json::json!({
                             "frame": w.last_render_text(),
-                            "semantic": app_pane.semantic_state(),
+                            "semantic": view_pane.semantic_state(),
                         }),
                     };
-                    return Some(AppState {
+                    return Some(PluginState {
                         pane_id,
                         lifecycle: lifecycle.to_string(),
                         tree,
@@ -3951,7 +4260,9 @@ mod tests {
     fn scene_matrix_theme_survives_open() {
         let directory = tempfile::tempdir().unwrap();
         let scene = directory.path().join("theme-persistence.toml");
-        std::fs::write(&scene, r#"
+        std::fs::write(
+            &scene,
+            r#"
 size = [600.0, 400.0]
 themes = ["plexi-dusk", "plexi-dawn"]
 [[steps]]
@@ -3960,7 +4271,9 @@ open = { kind = "builtin", id = "button-gallery-fixture", as = "gallery" }
 run_steps = 3
 [[steps]]
 shot = "theme.png"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let report = run_scene(&scene, directory.path(), false);
         assert!(report.passed);
         assert_eq!(report.shots.len(), 2);
@@ -3968,9 +4281,13 @@ shot = "theme.png"
             let image = image::open(shot).unwrap().into_rgba8();
             let expected = crate::ui::theme::Colors::from_config(
                 &crate::ui::theme::preset_colors(name).unwrap(),
-            ).bg_darkest;
-            assert_eq!(image.get_pixel(400, 350).0, expected.to_array(),
-                "{name}: opening a pane must retain the requested scene theme");
+            )
+            .bg_darkest;
+            assert_eq!(
+                image.get_pixel(400, 350).0,
+                expected.to_array(),
+                "{name}: opening a pane must retain the requested scene theme"
+            );
         }
     }
 
@@ -3978,7 +4295,9 @@ shot = "theme.png"
     fn layout_matrix_failure_has_minimal_replay_and_painted_report() {
         let directory = tempfile::tempdir().unwrap();
         let scene = directory.path().join("layout-failure.toml");
-        std::fs::write(&scene, r#"
+        std::fs::write(
+            &scene,
+            r#"
 size = [520.0, 800.0]
 scales = [1.0, 2.0]
 themes = ["plexi-dusk", "plexi-dawn"]
@@ -3989,19 +4308,25 @@ run_steps = 2
 assert = { layout_valid = true, layout_surfaces = ["deliberately-missing-surface"] }
 [[steps]]
 run_steps = 100
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let report = run_scene(&scene, directory.path(), true);
         assert!(!report.passed);
         let bundle = Path::new(report.failure_bundle.as_ref().unwrap());
         for file in ["layout.json", "screenshot.png", "replay.toml"] {
             assert!(bundle.join(file).is_file(), "missing {file}");
         }
-        let replay: Scene = toml::from_str(&std::fs::read_to_string(bundle.join("replay.toml")).unwrap()).unwrap();
+        let replay: Scene =
+            toml::from_str(&std::fs::read_to_string(bundle.join("replay.toml")).unwrap()).unwrap();
         assert_eq!(replay.steps.len(), 2);
         assert_eq!(replay.scales, vec![1.0]);
         let live = run_live_scene(&scene, directory.path(), true);
         assert!(!live.passed);
-        assert_eq!(live.steps[0].error.as_ref().unwrap().code, "unsupported_live_verb");
+        assert_eq!(
+            live.steps[0].error.as_ref().unwrap().code,
+            "unsupported_live_verb"
+        );
     }
 
     #[test]
@@ -4038,7 +4363,8 @@ run_steps = 100
     fn geometry_fit_rejects_contain_for_committed_fill_canvas() {
         let tree = serde_json::json!({"semantic":{"nodes":[{"role":"canvas","value":"1280x720 fit=fill","canvas_commands":[]}]}});
         let spec = AssertSpec {
-            layout_valid: None, layout_surfaces: Vec::new(),
+            layout_valid: None,
+            layout_surfaces: Vec::new(),
             fit: Some("contain".to_string()),
             ..Default::default()
         };
@@ -4236,10 +4562,25 @@ run_steps = 100
             (true, true, true, seed.clone()),
             (true, false, false, seed.clone()),
             (true, false, true, serde_json::json!([])),
-            (true, false, true, serde_json::json!([{"id": 1, "type": "app"}])),
-            (true, false, true, serde_json::json!([{"id": 1, "type": "terminal"}, {"id": 2, "type": "terminal"}])),
+            (
+                true,
+                false,
+                true,
+                serde_json::json!([{"id": 1, "type": "view"}]),
+            ),
+            (
+                true,
+                false,
+                true,
+                serde_json::json!([{"id": 1, "type": "terminal"}, {"id": 2, "type": "terminal"}]),
+            ),
         ] {
-            assert_eq!(live_seed_to_clear(owned, attached, empty, &panes).unwrap_err().code, "unsafe_seed_clear");
+            assert_eq!(
+                live_seed_to_clear(owned, attached, empty, &panes)
+                    .unwrap_err()
+                    .code,
+                "unsafe_seed_clear"
+            );
         }
     }
 
@@ -4250,7 +4591,9 @@ run_steps = 100
         let mut backend = LiveBackend::from_env(&std::env::temp_dir(), true).unwrap();
         backend.binary = "/nonexistent/should-not-run".into();
         backend.attached_host = true;
-        let error = backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap_err();
+        let error = backend
+            .exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new())
+            .unwrap_err();
         assert_eq!(error.code, "unsafe_seed_clear");
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
     }
@@ -4273,8 +4616,15 @@ run_steps = 100
         let mut backend = LiveBackend::from_env(temp.path(), true).unwrap();
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         backend.binary = binary.to_string_lossy().into_owned();
-        backend.last_app_pane = Some(3);
-        backend.exec(&Step::PushToSubcontext { push_to_subcontext: "child".into() }, &mut Vec::new()).unwrap();
+        backend.last_view_pane = Some(3);
+        backend
+            .exec(
+                &Step::PushToSubcontext {
+                    push_to_subcontext: "child".into(),
+                },
+                &mut Vec::new(),
+            )
+            .unwrap();
         assert!(marker.exists());
     }
 
@@ -4282,18 +4632,22 @@ run_steps = 100
     fn live_push_rejects_missing_or_ambiguous_focus() {
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([{"id": 1, "focused": false}]))
-                .unwrap_err().code,
+                .unwrap_err()
+                .code,
             "missing_target"
         );
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([
                 {"id": 1, "focused": true}, {"id": 2, "focused": true}
-            ])).unwrap_err().code,
+            ]))
+            .unwrap_err()
+            .code,
             "live_focus_ambiguous"
         );
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([{"focused": true}]))
-                .unwrap_err().code,
+                .unwrap_err()
+                .code,
             "live_json_invalid"
         );
     }
@@ -4308,10 +4662,19 @@ run_steps = 100
         assert_ne!(modified, source);
         std::fs::write(&scene, modified).unwrap();
         let report = run_scene(&scene, temp.path(), true);
-        assert!(!report.passed, "an extra parent pane must prevent a scene pass");
-        assert!(report.steps.iter().any(|step| step.error.as_ref().is_some_and(|error| {
-            error.code == "assertion_failed" && error.message.contains("context_pane_count")
-        })), "the pre-close topology assertion must catch the extra pane: {report:?}");
+        assert!(
+            !report.passed,
+            "an extra parent pane must prevent a scene pass"
+        );
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|step| step.error.as_ref().is_some_and(|error| {
+                    error.code == "assertion_failed" && error.message.contains("context_pane_count")
+                })),
+            "the pre-close topology assertion must catch the extra pane: {report:?}"
+        );
     }
 
     #[test]
@@ -4319,14 +4682,21 @@ run_steps = 100
         let panes = serde_json::json!([
             {"id": 1, "context_id": 8, "window_id": 10, "type": "terminal"},
             {"id": 2, "context_id": 8, "window_id": 11, "type": "portal"},
-            {"id": 3, "context_id": 9, "window_id": 12, "type": "app"}
+            {"id": 3, "context_id": 9, "window_id": 12, "type": "view"}
         ]);
         assert_eq!(live_context_pane_count(&panes, 1).unwrap(), 2);
         assert_eq!(live_context_pane_count(&panes, 3).unwrap(), 1);
-        assert_eq!(live_context_pane_count(&panes, 99).unwrap_err().code, "missing_target");
         assert_eq!(
-            live_context_pane_count(&serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]), 1)
-                .unwrap_err().code,
+            live_context_pane_count(&panes, 99).unwrap_err().code,
+            "missing_target"
+        );
+        assert_eq!(
+            live_context_pane_count(
+                &serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]),
+                1
+            )
+            .unwrap_err()
+            .code,
             "live_json_invalid"
         );
     }
@@ -4350,7 +4720,9 @@ run_steps = 100
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         backend.binary = binary.to_string_lossy().into_owned();
         backend.owned_host = true;
-        backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap();
+        backend
+            .exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new())
+            .unwrap();
         assert!(marker.exists());
     }
 
@@ -4451,7 +4823,11 @@ exit 1
         let state_dir = tempfile::tempdir().unwrap();
         let out_dir = tempfile::tempdir().unwrap();
         let mut backend = fake_live_backend(
-            "test-single-seed", script_dir.path(), state_dir.path(), out_dir.path(), true,
+            "test-single-seed",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            true,
         );
         backend.start_or_attach().unwrap();
         let args = std::fs::read_to_string(state_dir.path().join("start-args")).unwrap();
@@ -4494,7 +4870,7 @@ exit 1
 
     #[test]
     fn live_shot_step_never_crops_to_a_pane_even_when_one_was_last_opened() {
-        // Regression for a live-testing find: `last_app_pane` tracks the last
+        // Regression for a live-testing find: `last_view_pane` tracks the last
         // *opened* pane, not the last *live* one. A scene that opens, closes,
         // and refocuses before its `shot` step (`pane-lifecycle.toml`) left a
         // stale pane id here; passing it to `--pane` failed the capture with
@@ -4516,7 +4892,7 @@ exit 1
             out_dir.path(),
             false,
         );
-        backend.last_app_pane = Some(999); // stale: not a pane on this host
+        backend.last_view_pane = Some(999); // stale: not a pane on this host
         let mut shots = Vec::new();
 
         backend

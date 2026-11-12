@@ -96,10 +96,14 @@ impl std::fmt::Display for ConfigDiagnostic {
             ),
             Self::UnknownKey { path, table, key } => {
                 if table.is_empty() {
-                    write!(f, "{path}: unknown key `{key}`")
+                    write!(f, "{path}: unknown key `{key}`")?;
                 } else {
-                    write!(f, "{path}: unknown key `{key}` in [{table}]")
+                    write!(f, "{path}: unknown key `{key}` in [{table}]")?;
                 }
+                if let Some(new_key) = renamed_key(table, key) {
+                    write!(f, "; renamed, use `{new_key}` instead")?;
+                }
+                Ok(())
             }
             Self::DeprecatedSection {
                 path,
@@ -115,6 +119,7 @@ impl std::fmt::Display for ConfigDiagnostic {
 }
 
 const KNOWN_TOP_LEVEL: &[&str] = &[
+    "core_only",
     "config_version",
     "font_size",
     "ui_scale",
@@ -277,7 +282,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "reload_config",
     "open_secrets_manager",
     "open_assistant",
-    "force_reload_app",
+    "force_reload_plugin",
     "toggle_attention_queue",
     "zoom_in",
     "open_scratchpad",
@@ -746,6 +751,14 @@ pub fn validate_commands_from_str(data: &str, path: &Path) -> Vec<ConfigDiagnost
     diags
 }
 
+/// Keys removed by the plugin rename. Never accepted; only named in diagnostics.
+fn renamed_key(table: &str, key: &str) -> Option<&'static str> {
+    match (table, key) {
+        ("keybindings", "force_reload_app") => Some("force_reload_plugin"),
+        _ => None,
+    }
+}
+
 fn check_unknown_keys(
     table: &toml::map::Map<String, toml::Value>,
     section: &str,
@@ -837,7 +850,7 @@ pub struct KeybindingsConfig {
     pub ui_scale_up: Option<String>,
     /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
     pub ui_scale_down: Option<String>,
-    /// Reset app-wide UI scale (default Cmd+Shift+0).
+    /// Reset host-wide UI scale (default Cmd+Shift+0).
     pub ui_scale_reset: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
@@ -851,7 +864,7 @@ pub struct KeybindingsConfig {
     pub reload_config: Option<String>,
     pub open_secrets_manager: Option<String>,
     pub open_assistant: Option<String>,
-    pub force_reload_app: Option<String>,
+    pub force_reload_view: Option<String>,
     pub toggle_attention_queue: Option<String>,
     pub zoom_in: Option<String>,
     pub open_scratchpad: Option<String>,
@@ -930,7 +943,7 @@ impl KeybindingsConfig {
         overlay_field!(reload_config);
         overlay_field!(open_secrets_manager);
         overlay_field!(open_assistant);
-        overlay_field!(force_reload_app);
+        overlay_field!(force_reload_view);
         overlay_field!(toggle_attention_queue);
         overlay_field!(zoom_in);
         overlay_field!(open_scratchpad);
@@ -947,6 +960,8 @@ impl KeybindingsConfig {
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
+    /// Disable all plugins for this host session. Profile-only; restart required.
+    pub core_only: Option<bool>,
     pub config_version: Option<u32>,
     pub font_size: Option<f32>,
     /// App-wide UI scale (browser-style zoom). Default 1.0; clamped on use.
@@ -992,7 +1007,7 @@ pub struct PlexiConfig {
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
-    ///   `app:<id>` — open in a Plexi app by registry id
+    ///   `plugin:<id>` — open in a Plexi plugin by registry id
     ///   `os`       — hand to the OS default opener (`open` / `xdg-open`)
     ///   `cmd:<command>` — reserved; falls back to OS open until wired
     /// A user entry overrides any manifest-declared `file_types` association.
@@ -1174,9 +1189,11 @@ impl PermissionsConfig {
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Per-app daily spend cap in USD. Default $1.00.
-    pub per_app_daily_usd: Option<f64>,
-    /// Global daily spend cap across all apps in USD. Default $10.00.
+    /// Per-plugin daily spend cap in USD. Default $1.00.
+    // Keep the existing on-disk setting so a vocabulary change cannot reset a spend limit.
+    #[serde(rename = "per_app_daily_usd")]
+    pub per_plugin_daily_usd: Option<f64>,
+    /// Global daily spend cap across all plugins in USD. Default $10.00.
     pub global_daily_usd: Option<f64>,
     /// Default ledger client tag for Assistant and agent runs that do not set
     /// one. Free-form (`narrative`, `du`, `personal`). A blank or missing
@@ -1185,9 +1202,9 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    /// Resolved per-app daily spend cap. Falls back to $1.00 if unset.
-    pub fn effective_per_app_daily_usd(&self) -> f64 {
-        self.per_app_daily_usd.unwrap_or(1.0)
+    /// Resolved per-plugin daily spend cap. Falls back to $1.00 if unset.
+    pub fn effective_per_plugin_daily_usd(&self) -> f64 {
+        self.per_plugin_daily_usd.unwrap_or(1.0)
     }
 
     /// Resolved global daily spend cap. Falls back to $10.00 if unset.
@@ -1199,8 +1216,8 @@ impl AiConfig {
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
-        if other.per_app_daily_usd.is_some() {
-            self.per_app_daily_usd = other.per_app_daily_usd;
+        if other.per_plugin_daily_usd.is_some() {
+            self.per_plugin_daily_usd = other.per_plugin_daily_usd;
         }
         if other.global_daily_usd.is_some() {
             self.global_daily_usd = other.global_daily_usd;
@@ -1294,7 +1311,7 @@ impl AgentsConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct NotificationsConfig {
     /// Master switch. If false, incoming notifications are silently dropped —
-    /// apps still send them, but the modal never appears and the queue stays
+    /// plugins still send them, but the modal never appears and the queue stays
     /// empty. Defaults to true.
     pub enabled: Option<bool>,
     /// Focus mode. When true, no notification auto-surfaces. Everything queues
@@ -1550,13 +1567,13 @@ pub fn set_profile(name: Option<String>) {
 fn profile_initialization_needed() -> Result<bool, String> {
     let dir = config_dir();
     let sdk = dir.join("sdk");
-    Ok(!dir.join("apps").is_dir()
+    Ok(!dir.join("plugins").is_dir()
         || !sdk.join("plexi_sdk").is_dir()
         || !sdk.join("pyproject.toml").is_file()
         || !std::fs::read_to_string(sdk.join(".sdk_version"))
             .is_ok_and(|version| version.trim() == env!("PLEXI_BUILD_ID"))
-        || crate::cli::install_host::core_pack_needs_seeding(&dir.join("apps"))
-        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("apps"))
+        || crate::cli::install_host::core_pack_needs_seeding(&dir.join("plugins"))
+        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("plugins"))
             .is_empty()
         || crate::distribution::profile_needs_seeding()?)
 }
@@ -1581,17 +1598,18 @@ pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
     if !profile_initialization_needed()? {
         return Ok(None);
     }
+    crate::app::plugin_migration::migrate(&dir)?;
     Ok(Some(lock))
 }
 
-/// Ensure the apps directory and embedded SDK exist. Caller holds the initialization lock.
-/// Returns whether this is the first launch (no apps directory yet).
+/// Ensure the plugins directory and embedded SDK exist. Caller holds the initialization lock.
+/// Returns whether this is the first launch (no plugins directory yet).
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
-    // Install metadata may have created the profile before the first app launch.
-    let is_new = !dir.join("apps").is_dir();
-    if let Err(e) = std::fs::create_dir_all(dir.join("apps")) {
-        eprintln!("profile init: failed to create apps directory: {e}");
+    // Install metadata may have created the profile before the first plugin launch.
+    let is_new = !dir.join("plugins").is_dir();
+    if let Err(e) = std::fs::create_dir_all(dir.join("plugins")) {
+        eprintln!("profile init: failed to create plugins directory: {e}");
         return false;
     }
 
@@ -1969,11 +1987,11 @@ pub fn experiments_from_path(
         entries.remove("relay");
     }
     let table: std::collections::BTreeMap<String, bool> = table.try_into().map_err(|e| {
-            format!(
-                "[experiments] in {} must map names to true/false: {e}",
-                path.display()
-            )
-        })?;
+        format!(
+            "[experiments] in {} must map names to true/false: {e}",
+            path.display()
+        )
+    })?;
     crate::release::parse_experiments(&table).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -2072,7 +2090,7 @@ fn workspace_config_path_for_channel(workspace_root: &Path, channel_dir: &str) -
     workspace_root.join(channel_dir).join("config.toml")
 }
 
-/// Dev override: when `PLEXI_SDK_PATH` is set, Python apps import the SDK from
+/// Dev override: when `PLEXI_SDK_PATH` is set, Python plugins import the SDK from
 /// that directory (which must contain the `plexi_sdk` package) instead of the
 /// binary-embedded copy. This enables live SDK iteration — edit
 /// `sdk/python/plexi_sdk/*.py`, re-render, no rebuild. Returns the path only if
@@ -2093,7 +2111,7 @@ pub fn sdk_path_override() -> Option<PathBuf> {
     }
 }
 
-/// Builds the `PYTHONPATH` value for Python app subprocesses.
+/// Builds the `PYTHONPATH` value for Python plugin subprocesses.
 ///
 /// This is the single source for how PYTHONPATH is constructed. Both
 /// WASM launch and static render paths call this so the
@@ -2345,7 +2363,7 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
             "reload_config" => global.reload_config == effective.reload_config,
             "open_secrets_manager" => global.open_secrets_manager == effective.open_secrets_manager,
             "open_assistant" => global.open_assistant == effective.open_assistant,
-            "force_reload_app" => global.force_reload_app == effective.force_reload_app,
+            "force_reload_plugin" => global.force_reload_view == effective.force_reload_view,
             "toggle_attention_queue" => global.toggle_attention_queue == effective.toggle_attention_queue,
             "zoom_in" => global.zoom_in == effective.zoom_in,
             "open_scratchpad" => global.open_scratchpad == effective.open_scratchpad,
@@ -2454,7 +2472,7 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
         ("effects", "ghost_opacity", toml::Value::Float(EffectsConfig::default().unfocused_opacity().unwrap_or(0.75) as f64)),
         ("notifications", "enabled", toml::Value::Boolean(true)),
         ("notifications", "focus_mode", toml::Value::Boolean(false)),
-        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_app_daily_usd())),
+        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_plugin_daily_usd())),
         ("ai", "global_daily_usd", toml::Value::Float(ai_defaults.effective_global_daily_usd())),
         ("terminal", "minimum_contrast", toml::Value::Float(DEFAULT_TERMINAL_MINIMUM_CONTRAST as f64)),
         ("permissions", "soft_grant_days", toml::Value::Integer(DEFAULT_SOFT_GRANT_DAYS as i64)),
@@ -2706,6 +2724,7 @@ impl PlexiConfig {
     /// `other` replaces the corresponding field in `self`. Nested structs
     /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
+        // core_only is host-wide startup policy from the profile, never a workspace override.
         if let Some(attention) = other.attention {
             self.attention
                 .get_or_insert_with(Default::default)
@@ -3444,6 +3463,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_old_force_reload_app_names_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[keybindings]\nforce_reload_app = \"cmd+r\"\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        let message = diags[0].to_string();
+        assert!(message.contains("unknown key `force_reload_app` in [keybindings]"), "{message}");
+        assert!(message.contains("use `force_reload_plugin`"), "{message}");
+    }
+
+    #[test]
     fn validate_beta_section_is_unknown_after_effects_rename() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -3928,14 +3959,14 @@ soft_grant_days = 9
     /// test used to assert the opposite — that public docs deny Python
     /// sandboxing — which kept a false security claim pinned in place. The
     /// invariant it guards now is the true one: no public doc may tell a
-    /// reader that Python apps run unsandboxed as native processes.
+    /// reader that Python plugins run unsandboxed as native processes.
     #[test]
     fn public_security_docs_do_not_deny_python_sandboxing() {
         for (name, doc) in [
             ("README.md", include_str!("../../README.md")),
             (
                 "apps.md",
-                include_str!("../../website/src/content/docs/apps.md"),
+                include_str!("../../website/src/content/docs/plugins.md"),
             ),
             (
                 "sdk.md",
@@ -3947,15 +3978,15 @@ soft_grant_days = 9
             ),
         ] {
             for claim in [
-                "Python apps are native processes",
-                "Python apps are native subprocesses",
+                "Python plugins are native processes",
+                "Python plugins are native subprocesses",
                 "not sandboxed",
                 "not a Python process sandbox",
                 "do not sandbox",
             ] {
                 assert!(
                     !doc.contains(claim),
-                    "{name} claims {claim:?}; Python apps run sandboxed through the \
+                    "{name} claims {claim:?}; Python plugins run sandboxed through the \
                      CPython-in-WASM adapter (docs/wasm-runtime.md § Security Model)"
                 );
             }
@@ -4211,7 +4242,7 @@ mod distribution_profile_tests {
         super::ensure_profile_initialized();
         crate::cli::install_host::apply_core_pack_always(
             &crate::cli::install_host::GitCloner,
-            &dir.path().join("apps"),
+            &dir.path().join("plugins"),
         );
         // A directory at the lock path makes any read-write open fail, even as root.
         std::fs::create_dir(dir.path().join("initialization.lock")).unwrap();
@@ -4239,7 +4270,7 @@ mod distribution_profile_tests {
         super::ensure_profile_initialized();
         crate::cli::install_host::apply_core_pack_always(
             &crate::cli::install_host::GitCloner,
-            &dir.path().join("apps"),
+            &dir.path().join("plugins"),
         );
         assert!(super::lock_profile_initialization().unwrap().is_none());
         std::fs::write(dir.path().join("sdk/.sdk_version"), "old-build").unwrap();

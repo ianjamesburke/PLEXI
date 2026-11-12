@@ -1066,7 +1066,7 @@ wait
             }
             let profile = h.profile_dir().to_path_buf();
             if mode == "host-stop" {
-                h.inject_ipc(crate::protocol::AppRequest::Shutdown);
+                h.inject_ipc(crate::protocol::HostRequest::Shutdown);
                 h.run_hidden_frames(3);
                 panic!("host stop returned instead of exiting");
             } else if mode == "update" {

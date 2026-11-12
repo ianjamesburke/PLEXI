@@ -26,7 +26,7 @@ def test_render_frame_steps_physics_and_view_has_app_bar_canvas_and_footer() -> 
     node = balls.view().to_node()
     assert node.get("padding") is None
     header = node["children"][0]
-    assert header["type"] == "app_bar"
+    assert header["type"] == "surface_header"
     assert header["title"] == "Balls"
     assert header["subtitle"] == "2 balls"
     canvas = node["children"][1]

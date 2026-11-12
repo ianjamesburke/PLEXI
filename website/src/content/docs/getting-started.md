@@ -6,7 +6,7 @@ order: 1
 
 Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
 Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
-Quick Note, and the local app runtime.
+Quick Note, and the local plugin runtime.
 
 ## Install
 
@@ -36,14 +36,14 @@ notarized. Follow the [unsigned build opening guide](https://github.com/ianjames
 before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
 archive manually may need `chmod +x plexi`.
 
-Plexi does not request Accessibility permission on first launch. Its app bundle
+Plexi does not request Accessibility permission on first launch. Its plugin bundle
 declares camera and microphone permissions for video rooms, which macOS requests
 only when a feature uses them.
 
 ## Script the Host
 
 The CLI is designed for scripts and tools that need to control a running host.
-It covers panes, contexts, status reporting, notes, and local apps. The v1
+It covers panes, contexts, status reporting, notes, and local plugins. The v1
 surface exposes agent status hooks; it does not ship a full Assistant product.
 
 If you use a tool that supports [skills](https://skills.sh/), you can install
@@ -79,7 +79,7 @@ Plexi opens with a single terminal pane. From there:
 
 ## Build Channels
 
-Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and app bundle — you can run all three simultaneously.
+Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and plugin bundle — you can run all three simultaneously.
 
 | Channel | Binary | Profile | Workspace Dir |
 |---------|--------|---------|---------------|
@@ -94,5 +94,5 @@ beta or worktree channel only when you are explicitly testing those features.
 
 - [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
 - [Panes & Pages](/docs/panes) — understand the layout model
-- [Apps](/docs/apps) — build and run Plexi apps
-- [Python SDK](/docs/sdk) — author apps for the local runtime
+- [Plugins](/docs/plugins) — build and run Plexi plugins
+- [Python SDK](/docs/sdk) — author plugins for the local runtime

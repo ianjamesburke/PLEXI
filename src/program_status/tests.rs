@@ -23,10 +23,7 @@ fn feed(t: &mut ProgramStatusTap, bytes: &[u8]) -> Vec<u8> {
     t.on_bytes(bytes)
 }
 
-fn rec(
-    store: &Arc<Mutex<ProgramStatusStore>>,
-    id: &str,
-) -> Option<super::records::Record> {
+fn rec(store: &Arc<Mutex<ProgramStatusStore>>, id: &str) -> Option<super::records::Record> {
     store.lock().unwrap().get(id).cloned()
 }
 
@@ -167,7 +164,10 @@ fn ps7501_oversize_sequence_dropped_by_scanner() {
 #[test]
 fn ps7501_kind_only_with_blocked() {
     assert_eq!(set("state=blocked:kind=auth").1.kind, Some(Kind::Auth));
-    assert_eq!(set("state=blocked:kind=question").1.kind, Some(Kind::Question));
+    assert_eq!(
+        set("state=blocked:kind=question").1.kind,
+        Some(Kind::Question)
+    );
     assert_eq!(set("state=working:kind=permission").1.kind, None);
     assert_eq!(set("state=blocked:kind=bogus").1.kind, None);
     assert_eq!(set("state=blocked:kind=bogus").1.state, State::Blocked);
@@ -188,8 +188,11 @@ fn ps7501_progress_range() {
 }
 
 #[test]
-fn ps7501_invalid_app_treated_as_absent() {
-    assert_eq!(set("state=idle:app=a.b_c+d-e").1.app.as_deref(), Some("a.b_c+d-e"));
+fn ps7501_invalid_view_treated_as_absent() {
+    assert_eq!(
+        set("state=idle:app=a.b_c+d-e").1.app.as_deref(),
+        Some("a.b_c+d-e")
+    );
     assert_eq!(set("state=idle:app=a/b").1.app, None);
     let long = "a".repeat(33);
     assert_eq!(set(&format!("state=idle:app={long}")).1.app, None);
@@ -235,7 +238,10 @@ fn ps7501_bad_id_never_falls_back_to_root() {
 #[test]
 fn ps7501_report_replaces_record_whole() {
     let (mut t, s) = tap();
-    feed(&mut t, &osc(&format!("state=working:app=x:progress=3:msg={}", b64("hi"))));
+    feed(
+        &mut t,
+        &osc(&format!("state=working:app=x:progress=3:msg={}", b64("hi"))),
+    );
     feed(&mut t, &osc("state=working"));
     let r = rec(&s, "").unwrap();
     assert_eq!((r.app, r.progress, r.msg), (None, None, None));
@@ -249,14 +255,19 @@ fn ps7501_clear_subtree_and_clear_all() {
     }
     feed(&mut t, &osc("state=working"));
     feed(&mut t, &osc("state=clear:id=a"));
-    let ids: Vec<String> = s.lock().unwrap().iter().map(|(k, _)| k.to_string()).collect();
+    let ids: Vec<String> = s
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .collect();
     assert_eq!(ids, ["", "ab", "z"]); // prefix match is per segment, not per char
     feed(&mut t, &osc("state=clear"));
     assert!(s.lock().unwrap().is_empty());
 }
 
 #[test]
-fn ps7501_app_inheritance() {
+fn ps7501_plugin_inheritance() {
     let (mut t, s) = tap();
     feed(&mut t, &osc("state=working:app=deploy"));
     feed(&mut t, &osc("state=working:id=us/east"));
@@ -316,7 +327,10 @@ fn ps7501_lifetime_exit_and_prompt() {
 fn ps7501_osc133_a_variants() {
     let mut sc = Osc7501Scanner::new();
     assert_eq!(sc.feed(b"\x1b]133;A\x1b\\"), [ScanEvent::PromptStart]);
-    assert_eq!(sc.feed(b"\x1b]133;A;cl=m;aid=1\x07"), [ScanEvent::PromptStart]);
+    assert_eq!(
+        sc.feed(b"\x1b]133;A;cl=m;aid=1\x07"),
+        [ScanEvent::PromptStart]
+    );
     assert!(sc.feed(b"\x1b]133;B\x07").is_empty());
     assert!(sc.feed(b"\x1b]133;C\x07").is_empty());
     assert!(sc.feed(b"\x1b]133;D;0\x07").is_empty());
@@ -375,7 +389,10 @@ fn ps7501_can_sub_abort_and_recovery() {
     }
     // ESC not followed by `\` aborts the string; a new OSC may start right away.
     let (mut t, s) = tap();
-    feed(&mut t, b"\x1b]7501;state=working\x1b\x1b]7501;state=idle\x07");
+    feed(
+        &mut t,
+        b"\x1b]7501;state=working\x1b\x1b]7501;state=idle\x07",
+    );
     assert_eq!(rec(&s, "").unwrap().state, State::Idle);
 }
 
@@ -442,7 +459,11 @@ fn ps7501_tap_reader_forwards_bytes_unchanged() {
 
 #[test]
 fn ps7501_tap_reader_without_tap_is_passthrough() {
-    let mut reader = TapReader::new(std::io::Cursor::new(b"abc".to_vec()), None, Box::new(|_| {}));
+    let mut reader = TapReader::new(
+        std::io::Cursor::new(b"abc".to_vec()),
+        None,
+        Box::new(|_| {}),
+    );
     let mut s = String::new();
     reader.read_to_string(&mut s).unwrap();
     assert_eq!(s, "abc");
@@ -486,7 +507,10 @@ fn ps7501_mapping_detail_text() {
     // msg = "run rm"
     let m = "msg=cnVuIHJt";
     let d = |p: &str| mapped(&[p]).unwrap().detail;
-    assert_eq!(d(&format!("state=blocked:kind=permission:{m}")).as_deref(), Some("permission: run rm"));
+    assert_eq!(
+        d(&format!("state=blocked:kind=permission:{m}")).as_deref(),
+        Some("permission: run rm")
+    );
     assert_eq!(d(&format!("state=blocked:{m}")).as_deref(), Some("run rm"));
     assert_eq!(d("state=blocked:kind=auth").as_deref(), Some("auth"));
     assert_eq!(d("state=blocked"), None);
@@ -494,10 +518,14 @@ fn ps7501_mapping_detail_text() {
 }
 
 #[test]
-fn ps7501_mapping_priority_and_app_inheritance() {
+fn ps7501_mapping_priority_and_plugin_inheritance() {
     use crate::protocol::AgentState as A;
-    // A blocked child beats a working root and inherits the root's app.
-    let got = mapped(&["state=working:app=claude", "state=blocked:kind=question:id=sub"]).unwrap();
+    // A blocked child beats a working root and inherits the root's plugin.
+    let got = mapped(&[
+        "state=working:app=claude",
+        "state=blocked:kind=question:id=sub",
+    ])
+    .unwrap();
     assert_eq!(got.state, A::NeedsYou);
     assert_eq!(got.agent, "claude");
     // blocked > error > working > done > idle
@@ -514,7 +542,7 @@ fn ps7501_mapping_priority_and_app_inheritance() {
     // Tie goes to the most recently updated record.
     let got = mapped(&["state=working:app=old", "state=working:id=b:app=new"]).unwrap();
     assert_eq!(got.agent, "new");
-    // An app on the record itself beats the ancestor's.
+    // An plugin on the record itself beats the ancestor's.
     let got = mapped(&["state=idle:app=root", "state=working:id=a:app=own"]).unwrap();
     assert_eq!(got.agent, "own");
 }
@@ -562,7 +590,10 @@ fn ps7501_encode_report_round_trips_tree_ids() {
 #[test]
 fn ps7501_tree_id_sanitizes_and_limits() {
     use super::emit::tree_id;
-    assert_eq!(tree_id(&["my agent:1", "ok"]).as_deref(), Some("my-agent-1/ok"));
+    assert_eq!(
+        tree_id(&["my agent:1", "ok"]).as_deref(),
+        Some("my-agent-1/ok")
+    );
     assert_eq!(tree_id(&["", "  "]), None);
     let long = "x".repeat(80);
     assert_eq!(tree_id(&[&long]).unwrap().len(), 32);
