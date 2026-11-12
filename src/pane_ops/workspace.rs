@@ -2471,6 +2471,8 @@ impl PlexiApp {
         );
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();
+        // Sealed beside the layout: the JSON below cannot carry authority.
+        let mut terminal_authority = Vec::new();
 
         for ctx in self.router.iter() {
             saved_contexts.push(ctx.clone());
@@ -2487,6 +2489,7 @@ impl PlexiApp {
                         .clone()
                         .or_else(|| shell::get_pid_cwd(t.backend.child_pid()))
                         .unwrap_or_else(|| win.path.clone());
+                    terminal_authority.push(t.authority_record());
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
                         kind: crate::workspace::SavedPaneKind::Terminal,
@@ -2624,7 +2627,7 @@ impl PlexiApp {
             context_active_window: self.context_active_window.clone(),
         };
 
-        ws.save()
+        ws.save_sealing_terminals(move || terminal_authority)
             .inspect_err(|e| log::error!("Failed to save workspace: {e}"))?;
         let save_duration = save_start.elapsed();
         log::info!("save_workspace_now: saved workspace in {save_duration:?}");

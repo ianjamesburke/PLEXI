@@ -1058,6 +1058,31 @@ impl TerminalPane {
         !self.is_agent_pane() && !self.agent_spawned && self.parent_pane_id.is_none()
     }
 
+    /// The authority facts sealed beside the saved layout
+    /// (`workspace::terminal_authority`). They are what a restart may give
+    /// this terminal back; the layout JSON is never asked.
+    pub fn authority_record(
+        &self,
+    ) -> crate::workspace::terminal_authority::TerminalAuthorityRecord {
+        use crate::workspace::terminal_authority::{TerminalAuthorityRecord, TerminalOpener};
+        let opener = if self.agent_spawned || self.parent_pane_id.is_some() {
+            TerminalOpener::Request
+        } else {
+            TerminalOpener::Desktop
+        };
+        TerminalAuthorityRecord {
+            pane_id: self.id,
+            opener,
+            parent_pane_id: self.parent_pane_id,
+            spawned_by: self.spawned_by.clone(),
+            posture: self.agent_permission_posture.clone().or_else(|| {
+                self.standby_session
+                    .as_ref()
+                    .and_then(|session| session.permission_posture.clone())
+            }),
+        }
+    }
+
     /// Human-readable provenance badge for GUI headers (`"spawned by you"`, `"spawned by researcher"`, etc.).
     pub fn spawned_by_badge(&self) -> Option<String> {
         format_spawned_by_badge(self.spawned_by.as_deref())
@@ -1502,6 +1527,13 @@ impl TerminalPane {
 /// never forces one: every plain shell is human-spawned.
 pub const SPAWNED_BY_HUMAN_BADGE: &str = "spawned by you";
 
+/// `spawned_by` of a terminal restored without a sealed authority record
+/// (`workspace::terminal_authority`). It is never treated as the person's.
+pub const SPAWNED_BY_UNVERIFIED: &str = "unverified";
+
+/// Badge for a terminal restored without a sealed authority record.
+pub const SPAWNED_BY_UNVERIFIED_BADGE: &str = "owner not verified";
+
 /// Format an unspoofable `spawned_by` provenance string into a concise GUI badge.
 pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
     let s = raw?.trim();
@@ -1525,6 +1557,9 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
     }
     if s == "system" {
         return Some("spawned by system".to_string());
+    }
+    if s == SPAWNED_BY_UNVERIFIED {
+        return Some(SPAWNED_BY_UNVERIFIED_BADGE.to_string());
     }
     Some(format!("spawned by {s}"))
 }

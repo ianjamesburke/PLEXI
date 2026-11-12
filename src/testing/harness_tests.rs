@@ -1371,6 +1371,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
             hot_reload: &mut hr_watcher,
             state_watch: &mut sw_watcher,
             terminal_spawner: None,
+            layout_sha256: None,
         },
     )
     .expect("restore_workspace succeeds");
@@ -13243,6 +13244,7 @@ mod agent_state_restoration_tests {
         };
 
         ws.save_to(profile_dir.path()).expect("save workspace");
+        crate::workspace::terminal_authority::seal_layout_for_test(profile_dir.path());
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
 
         // 1. Ephemeral Completed pane (30) and its empty sub-context (3) + portal (12) are pruned.
@@ -13864,6 +13866,7 @@ mod agent_state_restoration_tests {
         };
 
         ws.save_to(profile_dir.path()).expect("save workspace");
+        crate::workspace::terminal_authority::seal_layout_for_test(profile_dir.path());
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
 
         let term10 = h.app.windows[0].panes[&10].as_terminal().expect("pane 10");
@@ -15890,6 +15893,7 @@ ask = ["pane.send"]
         context_active_window: std::collections::HashMap::from([(1, 1)]),
     };
     ws.save_to(profile_dir.path()).expect("save workspace");
+    crate::workspace::terminal_authority::seal_layout_for_test(profile_dir.path());
 
     let mut h = HostHarness::from_profile_dir(profile_dir.path());
     let restored_posture = h
@@ -16662,6 +16666,7 @@ mod restore_followups_0983b {
             context_active_window: HashMap::from([(1, 1)]),
         };
         ws.save_to(profile_dir.path()).expect("save workspace");
+        crate::workspace::terminal_authority::seal_layout_for_test(profile_dir.path());
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
 
         let (win_idx, _) = h.app.find_pane_in_any_window(30).expect("pane 30");

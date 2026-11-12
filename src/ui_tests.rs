@@ -8128,7 +8128,9 @@ open(out + ".done", "w").close()
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.with_app_mut(|app| {
             let profile = crate::config::config_dir();
-            let ws = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+            let (ws, layout_sha256) =
+                crate::workspace::WorkspaceFile::load_with_digest_from(&profile)
+                    .expect("saved workspace");
             let cfg = app.config.clone();
             let colors = app.colors.clone();
             let pty_event_tx = app.pty_event_tx.clone();
@@ -8142,6 +8144,7 @@ open(out + ".done", "w").close()
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
                     terminal_spawner: Some((&ctx, &pty_event_tx)),
+                    layout_sha256: Some(&layout_sha256),
                 },
             )
             .expect("restore workspace");
@@ -13664,7 +13667,9 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_multi_window")).unwrap();
         h.with_app_mut(|app| app.save_workspace_now());
         let profile = h._profile_dir.path().to_path_buf();
-        let saved = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+        let (saved, layout_sha256) =
+            crate::workspace::WorkspaceFile::load_with_digest_from(&profile)
+                .expect("saved workspace");
         let mut restored = PlexiUiHarness::new_sized(1200.0, 700.0);
         restored.with_app_mut(|app| {
             let config = app.config.clone();
@@ -13680,6 +13685,7 @@ open(out + ".done", "w").close()
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
                     terminal_spawner: Some((&context, &sender)),
+                    layout_sha256: Some(&layout_sha256),
                 },
             )
             .expect("restore workspace");
