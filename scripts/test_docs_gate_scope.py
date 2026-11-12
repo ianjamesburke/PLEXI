@@ -404,11 +404,13 @@ class RealRepoSanityTests(unittest.TestCase):
                      "apps/AGENTS.md", "apps/brand-new-app/README.md",
                      "sdk/python/plexi_sdk/templates/plugin-contract.md",
                      "sdk/python/plexi_sdk/NEW.md", "registry/NEW.md",
-                     "skills/plexi-cli/SKILL.md", "docs/cli/PARITY.md"):
+                     "skills/plexi-cli/SKILL.md", "docs/cli/PARITY.md",
+                     "website/src/content/docs/config.md", "CHANGELOG.md"):
             with self.subTest(path=path):
                 self.assertFalse(scope.decide_with([path], bindings)[0], path)
         # Narrowed groups: file-level includes and .rs-only walks leave their siblings skippable.
-        for path in ("AGENTS.md", "NORTH_STAR.md", "docs/AGENTS.md", "src/testing/TESTING.md",
+        for path in ("AGENTS.md", "NORTH_STAR.md", "docs/AGENTS.md", "docs/notes-editor.md",
+                     "website/src/content/docs/getting-started.md", "src/testing/TESTING.md",
                      "src/cli/AGENTS.md", "website/src/content/docs/NEW.md"):
             with self.subTest(path=path):
                 self.assertTrue(scope.decide_with([path], bindings)[0], path)
