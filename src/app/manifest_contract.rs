@@ -197,7 +197,8 @@ impl Contributions {
 }
 
 impl PluginManifest {
-    /// Parse the wire shape without erasing typed contract errors into Serde text.
+    /// The single manifest parse path. Typed contract errors survive; a legacy
+    /// `[app]` table is never accepted and the error only says what to rename.
     pub fn parse(raw: &str) -> Result<Self, ManifestError> {
         let value: toml::Value = toml::from_str(raw).map_err(|e| {
             ManifestError::reject(
@@ -212,12 +213,16 @@ impl PluginManifest {
             .and_then(toml::Value::as_str)
             .unwrap_or("<unknown>")
             .to_owned();
+        let legacy = value.get("app").is_some();
         let wire: PluginManifestWire = value.try_into().map_err(|e: toml::de::Error| {
-            ManifestError::reject(
-                &plugin,
-                "manifest",
-                ManifestErrorKind::InvalidField(e.to_string()),
-            )
+            let message = if legacy {
+                format!(
+                    "schema 1 `[app]` manifests are no longer accepted; rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
+                )
+            } else {
+                e.to_string()
+            };
+            ManifestError::reject(&plugin, "manifest", ManifestErrorKind::InvalidField(message))
         })?;
         Self::try_from(wire)
     }

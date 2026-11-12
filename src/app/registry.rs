@@ -258,23 +258,6 @@ pub struct StateSection {
 }
 
 impl PluginManifest {
-    /// Parse a manifest. A legacy `[app]` table is never accepted; the error
-    /// only says what to rename. The probe below is diagnostic, not a loader.
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        toml::from_str::<Self>(raw).map_err(|error| {
-            let legacy = toml::from_str::<toml::Value>(raw)
-                .ok()
-                .is_some_and(|value| value.get("app").is_some());
-            if legacy {
-                format!(
-                    "schema 1 `[app]` manifests are no longer accepted; rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {error})"
-                )
-            } else {
-                error.to_string()
-            }
-        })
-    }
-
     /// The validated `[state] scopes` list. An omitted `[state]` section
     /// yields the default scope list; any invalid declaration is an error.
     pub fn state_scopes(&self) -> Result<Vec<crate::host::state_scope::StateScope>, String> {
@@ -1523,7 +1506,9 @@ mod tests {
             "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
             "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
         ] {
-            let error = super::PluginManifest::parse(raw).expect_err("legacy must fail");
+            let error = super::PluginManifest::parse(raw)
+                .expect_err("legacy must fail")
+                .to_string();
             assert!(
                 error.contains("schema 1 `[app]` manifests are no longer accepted"),
                 "{error}"
@@ -1531,7 +1516,9 @@ mod tests {
             assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
             assert!(error.contains("schema_version = 2"), "{error}");
         }
-        let plain = super::PluginManifest::parse("schema_version = 2\n").expect_err("incomplete");
+        let plain = super::PluginManifest::parse("schema_version = 2\n")
+            .expect_err("incomplete")
+            .to_string();
         assert!(!plain.contains("no longer accepted"), "{plain}");
     }
 
