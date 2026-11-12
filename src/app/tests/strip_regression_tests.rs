@@ -206,6 +206,43 @@ fn invalid_legacy_tree_is_rejected_without_replacing_original() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
+/// Stint 1312: a version 2 layout is no longer converted. The host boots with
+/// nothing from it restored, every save refuses to replace it, and nothing is
+/// written beside it.
+#[test]
+fn retired_v2_layout_boots_empty_and_is_never_rewritten() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    h.app.save_workspace_now();
+    let profile = h.profile_dir().to_path_buf();
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 2.into();
+    legacy.as_object_mut().unwrap().remove("strips");
+    legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+    let original = serde_json::to_vec_pretty(&legacy).unwrap();
+    std::fs::write(&path, &original).unwrap();
+
+    assert!(
+        !h.app.save_workspace_now(),
+        "a save must not replace a version 2 layout"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let restored = HostHarness::from_profile_dir(&profile);
+    assert!(
+        restored.app.find_pane_in_any_window(pane).is_none(),
+        "nothing from a version 2 layout is restored"
+    );
+    // `h` owns the profile directory, so only the restored harness is dropped.
+    drop(restored);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(!path.with_extension("v2.rollback.json").exists());
+}
+
 #[test]
 fn restored_strip_keeps_scroll_after_first_frame() {
     let mut h = HostHarness::new();

@@ -1147,6 +1147,84 @@ mod ledger_tests {
         assert!(summary(SummaryBy::Client, Some("yesterday")).is_err());
     }
 
+    /// Stint 1312: the `agent-ledger.jsonl` rename is deleted. A ledger still
+    /// under the old name, with no current ledger beside it, stops appends and
+    /// summaries with an error naming both files and the fix. Nothing renames
+    /// or rewrites it, and no new ledger is started that would orphan it.
+    #[test]
+    fn pre_october_ledger_name_is_a_loud_error_and_is_never_moved() {
+        let (_dir, _guard) = isolated_ledger();
+        let old = crate::config::config_dir().join("agent-ledger.jsonl");
+        let original = "{\"ts\":\"2026-09-01T00:00:00Z\",\"backend\":\"openrouter\",\"cost_usd\":0.5,\"cost_cents\":50}\n";
+        std::fs::write(&old, original).unwrap();
+        let row = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            None,
+            None,
+            Some(1),
+            Some(1),
+            Some(0.1),
+        );
+
+        let appended = append_result(&row).expect_err("an old-name ledger must stop the append");
+        let summarized = match summary(SummaryBy::Client, None) {
+            Ok(report) => panic!("an old-name ledger must stop the summary: {report:?}"),
+            Err(error) => error,
+        };
+        for message in [appended, summarized] {
+            assert!(message.contains(&old.display().to_string()), "{message}");
+            assert!(
+                message.contains(&ledger_file().display().to_string()),
+                "{message}"
+            );
+            assert!(message.contains("left unchanged"), "{message}");
+            assert!(
+                message.contains("Rename"),
+                "the fix names the rename: {message}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), original);
+        assert!(
+            !ledger_file().exists(),
+            "no new ledger may orphan the old one"
+        );
+    }
+
+    /// Stint 1312: the null-tag rewrite is deleted. A row written before run
+    /// tags existed is read as it is: a missing `client` or `kind` counts as
+    /// null, and neither a summary nor an append rewrites an earlier line.
+    #[test]
+    fn untagged_rows_count_as_null_and_are_never_rewritten() {
+        let (_dir, _guard) = isolated_ledger();
+        let original = "\
+{\"ts\":\"2026-04-16T12:00:00Z\",\"backend\":\"openrouter\",\"billing\":\"metered\",\"input_tokens\":234,\"output_tokens\":512,\"cost_usd\":0.5,\"cost_cents\":50}\n";
+        std::fs::write(ledger_file(), original).unwrap();
+
+        let report = summary(SummaryBy::Client, None).expect("summary");
+        assert_eq!(report.groups.len(), 1, "{report:?}");
+        assert!(report.groups[0].key.is_none(), "{report:?}");
+        assert_eq!(report.groups[0].runs, 1);
+        assert_eq!(report.groups[0].input_tokens, Some(234));
+        assert_eq!(std::fs::read_to_string(ledger_file()).unwrap(), original);
+
+        let row = LedgerRow::with_attribution(
+            "openrouter",
+            BillingModel::Metered,
+            None,
+            None,
+            Some(1),
+            Some(1),
+            Some(0.1),
+        );
+        append_result(&row).expect("append");
+        let text = std::fs::read_to_string(ledger_file()).unwrap();
+        assert!(
+            text.starts_with(original),
+            "an append must leave earlier lines byte for byte: {text}"
+        );
+    }
+
     #[test]
     fn migrate_null_tags_preserves_usage_and_is_idempotent() {
         let (_dir, _guard) = isolated_ledger();
