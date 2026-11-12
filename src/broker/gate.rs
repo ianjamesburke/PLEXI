@@ -531,8 +531,8 @@ pub struct AdmitRequest<'a> {
     pub call_id: &'a str,
     pub tool: &'a str,
     pub input_json: &'a str,
-    pub actor_type: ActorType,
-    pub actor_id: &'a str,
+    /// Host-stamped requester. Its stored form is the binding's actor type and id.
+    pub principal: &'a super::principal::Principal,
     pub actor_scope: ActorScope,
     pub trust_origin: &'a str,
     pub workspace_root: &'a Path,
@@ -981,25 +981,35 @@ impl PermissionMonitor {
         posture: Option<&crate::broker::PermissionPosture>,
         disclosure: Option<&str>,
     ) -> Admission {
+        let resource_class = snake(&req.target_type);
+        let trace = |decision: &str, mechanism: &str, outcome_ref: &str| {
+            super::principal::AdmissionTrace {
+                principal: req.principal,
+                effect: req.tool,
+                resource_class: &resource_class,
+                decision,
+                mechanism,
+                call_id: req.call_id,
+                outcome_ref,
+            }
+            .emit();
+        };
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
-            log::info!(
-                "permission_monitor: deny invalid arguments tool={} call_id={}",
-                req.tool,
-                req.call_id
-            );
+            trace("deny", "invalid_arguments", "code=invalid_argument");
             return Admission::Denied {
                 code: "invalid_argument",
             };
         };
         if req.workspace_root.as_os_str().is_empty() {
+            trace("deny", "missing_workspace", "code=permission_denied");
             return Admission::Denied {
                 code: "permission_denied",
             };
         }
         let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
         let binding = ExactBinding {
-            actor_type: req.actor_type,
-            actor_id: req.actor_id.to_string(),
+            actor_type: req.principal.actor_type(),
+            actor_id: req.principal.actor_id().to_string(),
             actor_scope: req.actor_scope,
             trust_origin: req.trust_origin.to_string(),
             workspace_root: req.workspace_root.to_path_buf(),
@@ -1019,16 +1029,14 @@ impl PermissionMonitor {
         self.expire_soft_grants();
         let now = self.now_secs();
         let decision = self.store().evaluate_at(&request, posture, now);
-        log::info!(
-            "permission_monitor: admit actor={} tool={} resource={:?} call_id={} -> {}",
-            binding.actor_id,
-            binding.target_id,
-            binding.resource_id,
-            binding.call_id,
-            decision.as_str()
-        );
+        let mechanism = if posture.is_some() {
+            "grant_store+posture"
+        } else {
+            "grant_store"
+        };
         match decision {
             Decision::Deny => {
+                trace("deny", mechanism, "code=permission_denied");
                 self.note_denial(
                     &binding.actor_id,
                     &binding.call_id,
@@ -1048,6 +1056,7 @@ impl PermissionMonitor {
                     .find(|record| record.matches(&request, now))
                     .map(|record| record.grant_id.clone())
                     .unwrap_or_default();
+                trace("allow", mechanism, &format!("grant={grant_id}"));
                 Admission::Proceed {
                     grant_id,
                     fingerprint: binding.args_fingerprint.clone(),
@@ -1057,6 +1066,7 @@ impl PermissionMonitor {
             }
             Decision::Ask => {
                 let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
+                trace("ask", mechanism, &format!("pending={id}"));
                 let _ = self.audit_with(
                     &AuditFact {
                         kind: "ask".to_string(),
@@ -3281,7 +3291,7 @@ impl PermissionMonitor {
     /// Sensitive capabilities stay withheld until a human grant exists.
     pub fn materialize_plugin_permissions(
         &self,
-        plugin_id: &str,
+        plugin: &super::principal::PluginInstance,
         workspace_root: &Path,
         declared: &std::collections::HashSet<crate::app::permissions::Capability>,
         allowed_hosts: Vec<String>,
@@ -3290,7 +3300,7 @@ impl PermissionMonitor {
             .iter()
             .map(|cap| cap.as_str().to_string())
             .collect();
-        let (granted, blocked) = self.materialize_capability_ids(plugin_id, workspace_root, &ids);
+        let (granted, blocked) = self.materialize_capability_ids(plugin, workspace_root, &ids);
         let mut capabilities = std::collections::HashSet::new();
         let mut blocked_caps = std::collections::HashSet::new();
         for id in granted {
@@ -3314,7 +3324,7 @@ impl PermissionMonitor {
     /// Raw WASM capability ids, same auto-grant rule as manifest capabilities.
     pub fn materialize_wasm_sets(
         &self,
-        plugin_id: &str,
+        plugin: &super::principal::PluginInstance,
         workspace_root: &Path,
         declared: &std::collections::HashSet<String>,
     ) -> (
@@ -3322,19 +3332,33 @@ impl PermissionMonitor {
         std::collections::HashSet<String>,
     ) {
         let ids: Vec<String> = declared.iter().cloned().collect();
-        let (granted, blocked) = self.materialize_capability_ids(plugin_id, workspace_root, &ids);
+        let (granted, blocked) = self.materialize_capability_ids(plugin, workspace_root, &ids);
         (granted.into_iter().collect(), blocked.into_iter().collect())
     }
 
     fn materialize_capability_ids(
         &self,
-        plugin_id: &str,
+        plugin: &super::principal::PluginInstance,
         workspace_root: &Path,
         declared: &[String],
     ) -> (
         std::collections::HashSet<String>,
         std::collections::HashSet<String>,
     ) {
+        let plugin_id = plugin.plugin_id.as_str();
+        let principal = super::principal::Principal::Plugin(plugin.clone());
+        let trace = |capability_id: &str, decision: &str, mechanism: &str| {
+            super::principal::AdmissionTrace {
+                principal: &principal,
+                effect: capability_id,
+                resource_class: "capability",
+                decision,
+                mechanism,
+                call_id: "",
+                outcome_ref: "",
+            }
+            .emit();
+        };
         let ws = crate::platform::path::canonical_or_self(workspace_root);
         let now = self.now_secs();
         let mut granted = std::collections::HashSet::new();
@@ -3345,16 +3369,16 @@ impl PermissionMonitor {
             for capability_id in declared {
                 match stored_capability_decision(&store, plugin_id, &ws, capability_id, now) {
                     Some(Decision::Deny) => {
+                        trace(capability_id, "deny", "launch_row");
                         blocked.insert(capability_id.clone());
                     }
                     Some(Decision::Allow) => {
+                        trace(capability_id, "allow", "launch_row");
                         granted.insert(capability_id.clone());
                     }
-                    Some(Decision::Ask) => {}
+                    Some(Decision::Ask) => trace(capability_id, "ask", "launch_row"),
                     None if declared_capability_needs_click(capability_id) => {
-                        log::info!(
-                            "permission_monitor: withheld {capability_id} for {plugin_id} until a human grants it"
-                        );
+                        trace(capability_id, "ask", "withheld_sensitive");
                     }
                     None => {
                         store.upsert_capability(
@@ -3366,9 +3390,7 @@ impl PermissionMonitor {
                         );
                         granted.insert(capability_id.clone());
                         dirty = true;
-                        log::info!(
-                            "permission_monitor: auto-granted {capability_id} for {plugin_id}"
-                        );
+                        trace(capability_id, "allow", "manifest_mint");
                     }
                 }
             }
@@ -3388,6 +3410,7 @@ impl PermissionMonitor {
                 .map(|record| (record.target_id.clone(), record.decision))
                 .collect();
             for (capability_id, decision) in extras {
+                trace(&capability_id, decision.as_str(), "undeclared_launch_row");
                 match decision {
                     Decision::Allow => {
                         granted.insert(capability_id);
@@ -4288,8 +4311,10 @@ pub fn trace_gate(line: impl AsRef<str>) {
         let mut buf = gate_log_buf()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if buf.len() > 400 {
-            buf.drain(0..200);
+        // Every admission now traces; keep enough lines that a parallel suite
+        // cannot drain a test's line between its emit and its assertion.
+        if buf.len() > 20_000 {
+            buf.drain(0..10_000);
         }
         buf.push(line.to_string());
     }
@@ -4879,8 +4904,12 @@ mod tests {
             call_id: &binding.call_id,
             tool: &binding.target_id,
             input_json: args,
-            actor_type: binding.actor_type,
-            actor_id: &binding.actor_id,
+            principal: &crate::broker::principal::Principal::from_actor(
+                binding.actor_type,
+                &binding.actor_id,
+                None,
+            )
+            .expect("test binding names a requesting principal"),
             actor_scope: binding.actor_scope,
             trust_origin: &binding.trust_origin,
             workspace_root: &binding.workspace_root,
@@ -6482,8 +6511,7 @@ mod tests {
             call_id: "c-rotate",
             tool: "host.files.read",
             input_json: "{}",
-            actor_type: ActorType::Agent,
-            actor_id: "agent:test",
+            principal: &crate::broker::principal::Principal::agent("agent:test"),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: ws.path(),
@@ -6527,8 +6555,7 @@ mod tests {
             call_id: "c-save",
             tool: "host.files.read",
             input_json: "{}",
-            actor_type: ActorType::Agent,
-            actor_id: "agent:test",
+            principal: &crate::broker::principal::Principal::agent("agent:test"),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: ws.path(),
@@ -6932,8 +6959,7 @@ mod tests {
                 call_id,
                 tool: "clip-editor-probe__clip.crop",
                 input_json: &input,
-                actor_type: ActorType::Agent,
-                actor_id: "pane:1",
+                principal: &crate::broker::principal::Principal::agent("pane:1"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: workspace.path(),

@@ -3707,8 +3707,17 @@ impl LivePythonPane {
         }
     }
 
+    /// The principal is this pane's plugin and the host-stamped pane owner
+    /// (`set_pipe_owner`), the same identity `cli_identity` uses.
     fn has_capability(&self, capability: &str) -> bool {
-        manifest_declares(&self.config.capabilities, capability)
+        launch_set_admits(
+            &crate::broker::principal::Principal::plugin_in_pane(
+                self.plugin_id.as_str(),
+                self.pane_owner.map_or(0, |(pane, _)| pane),
+            ),
+            &self.config.capabilities,
+            capability,
+        )
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
@@ -5647,6 +5656,27 @@ fn required_capability_for_python_plugin_command(
 /// and its tests.
 fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
+}
+
+/// Runtime capability check against the launch snapshot, traced with the
+/// requesting principal.
+fn launch_set_admits(
+    principal: &crate::broker::principal::Principal,
+    launch_set: &[String],
+    capability: &str,
+) -> bool {
+    let admitted = manifest_declares(launch_set, capability);
+    crate::broker::principal::AdmissionTrace {
+        principal,
+        effect: capability,
+        resource_class: "capability",
+        decision: if admitted { "allow" } else { "deny" },
+        mechanism: "python_launch_set",
+        call_id: "",
+        outcome_ref: "",
+    }
+    .emit();
+    admitted
 }
 
 fn plugin_command_from_python_message(
@@ -10915,8 +10945,7 @@ default = true
             call_id: call,
             tool,
             input_json: "{}",
-            actor_type: crate::broker::ActorType::Agent,
-            actor_id: "agent:bridge-test",
+            principal: &crate::broker::principal::Principal::agent("agent:bridge-test"),
             actor_scope: crate::broker::ActorScope::User,
             trust_origin: "host",
             workspace_root: Path::new("/ws"),
@@ -11154,7 +11183,7 @@ default = true
         use crate::app::permissions::Capability;
         use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
         use crate::broker::gate::{AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
 
         const PLUGIN: &str = "matrix.python";
         let profile = tempdir().unwrap();
@@ -11181,8 +11210,12 @@ default = true
             if family != Family::CliExec {
                 matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
             }
-            let permissions =
-                monitor.materialize_plugin_permissions(PLUGIN, ws, &declared, Vec::new());
+            let permissions = monitor.materialize_plugin_permissions(
+                &crate::broker::principal::PluginInstance::new(PLUGIN, None),
+                ws,
+                &declared,
+                Vec::new(),
+            );
             let launch_set: Vec<String> = permissions
                 .capabilities
                 .iter()
@@ -11200,8 +11233,10 @@ default = true
                             call_id: "call-1",
                             tool: "cli.op.mutate",
                             input_json: input,
-                            actor_type: ActorType::Plugin,
-                            actor_id: PLUGIN,
+                            principal: &crate::broker::principal::Principal::plugin(
+                                PLUGIN,
+                                Some(4),
+                            ),
                             actor_scope: ActorScope::User,
                             trust_origin: "host",
                             workspace_root: ws,
@@ -11233,6 +11268,95 @@ default = true
             }
         });
         assert_eq!(checked, 14 * matrix::STATES.len());
+    }
+
+    /// Characterisation pin (stint 1238 step 1 review): `insert_path_token` and
+    /// `command_preview` have no capability gate. They stay refused only because
+    /// the Python bridge emits `sender_pane_id: 0`, which the dispatch link check
+    /// (`dispatch_insert_path_token`, `dispatch_command_preview`) rejects. Tracing
+    /// the principal from `pane_owner` must not change either.
+    #[test]
+    fn python_path_token_and_command_preview_keep_sender_zero_and_no_gate() {
+        use crate::app::view_trait::ViewCommand;
+
+        let insert = plugin_command_from_python_message(&json!({
+            "type": "insert_path_token", "terminal_pane_id": 7, "path": "/tmp/x"
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(required_capability_for_python_plugin_command(&insert).is_none());
+        assert!(matches!(
+            insert,
+            ViewCommand::InsertPathToken {
+                sender_pane_id: 0,
+                terminal_pane_id: 7,
+                ..
+            }
+        ));
+        let preview = plugin_command_from_python_message(&json!({
+            "type": "command_preview", "terminal_pane_id": 7, "request_id": "r", "command": "ls"
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(required_capability_for_python_plugin_command(&preview).is_none());
+        assert!(matches!(
+            preview,
+            ViewCommand::RequestCommandPreview {
+                sender_pane_id: 0,
+                terminal_pane_id: 7,
+                ..
+            }
+        ));
+    }
+
+    /// Stint 1238 step 1: a Python pane's runtime capability check traces the
+    /// pane's own plugin as the requesting principal, and its launch
+    /// materialization traces the same plugin.
+    #[test]
+    fn python_runtime_check_traces_its_plugin_principal() {
+        use crate::broker::gate::{gate_log_contains, PermissionMonitor};
+        use crate::broker::principal::PluginInstance;
+
+        let plugin_id = format!("test.principal-{}", uuid::Uuid::new_v4().simple());
+        let app = tempdir().expect("plugin dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "def init(size, args): return []\n",
+        )
+        .expect("write plugin");
+        let mut config = state_test_config(app.path(), &plugin_id);
+        config.capabilities = vec!["fs.read".to_string()];
+        let pane = LivePythonPane::launch(config).expect("launch pane");
+        assert!(pane.has_capability("fs.read"));
+        assert!(!pane.has_capability("net.http"));
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=fs.read resource_class=capability decision=allow mechanism=python_launch_set"
+        )));
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=net.http resource_class=capability decision=deny mechanism=python_launch_set"
+        )));
+        // A guest-chosen capability string cannot forge a second trace line.
+        let forged = format!("fs.write\nadmission: principal=user/local effect=forged-{plugin_id}");
+        assert!(!pane.has_capability(&forged));
+        assert!(gate_log_contains(&format!(
+            "effect=fs.write\\nadmission: principal=user/local effect=forged-{plugin_id} resource_class=capability decision=deny"
+        )));
+        assert!(!gate_log_contains(&format!(
+            "\nadmission: principal=user/local effect=forged-{plugin_id}"
+        )));
+
+        let monitor = PermissionMonitor::ephemeral();
+        let declared =
+            std::collections::HashSet::from([crate::app::permissions::Capability::FsRead]);
+        monitor.materialize_plugin_permissions(
+            &PluginInstance::new(plugin_id.as_str(), None),
+            app.path(),
+            &declared,
+            Vec::new(),
+        );
+        assert!(gate_log_contains(&format!(
+            "admission: principal=plugin/{plugin_id} effect=fs.read resource_class=capability decision=allow mechanism=manifest_mint"
+        )));
     }
 
     #[test]
@@ -11531,7 +11655,7 @@ default = true
     #[test]
     fn python_permission_bridge_never_approves_a_pending_ask_as_human() {
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, ActorType, TargetType};
+        use crate::broker::{ActorScope, TargetType};
 
         let monitor = PermissionMonitor::ephemeral();
         let ws = tempdir().unwrap();
@@ -11540,8 +11664,7 @@ default = true
                 call_id: "call-1",
                 tool: "probe.add",
                 input_json: "{}",
-                actor_type: ActorType::Agent,
-                actor_id: "agent:caller",
+                principal: &crate::broker::principal::Principal::agent("agent:caller"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: ws.path(),

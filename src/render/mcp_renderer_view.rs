@@ -3,7 +3,7 @@ use super::{descriptor_widgets, mcp_descriptor};
 use crate::app::plexi_descriptor::Command;
 use crate::app::view_trait::{KeyDisposition, View, ViewRenderContext};
 use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-use crate::broker::{ActorScope, ActorType, TargetType};
+use crate::broker::{ActorScope, TargetType};
 use crate::host::mcp_client::{self, McpConnection, McpLine, McpServerConfig, McpServerRegistry};
 use serde_json::{json, Value};
 use std::{
@@ -110,8 +110,7 @@ impl McpRendererView {
             call_id: &call,
             tool: &tool,
             input_json: &input,
-            actor_type: ActorType::Plugin,
-            actor_id: &actor,
+            principal: &crate::broker::principal::Principal::plugin_in_pane(&actor, pane),
             actor_scope: ActorScope::BuiltIn,
             trust_origin: "host",
             workspace_root: &self.workspace,

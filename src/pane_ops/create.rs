@@ -1179,7 +1179,7 @@ impl PlexiApp {
         let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
             .map_err(|error| error.to_string())?
             .materialize_plugin_permissions(
-                &plugin_id,
+                &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
                 &workspace_root,
                 &declared_caps,
                 installed.manifest.capabilities.allowed_hosts.clone(),
@@ -3668,7 +3668,7 @@ fn gate_plugin_permissions_in_profile(
     // Outside the host nothing is granted (stint 1291).
     let mut permissions = match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
         Ok(monitor) => monitor.materialize_plugin_permissions(
-            plugin_id,
+            &crate::broker::principal::PluginInstance::new(plugin_id, None),
             workspace_root,
             &declared,
             allowed_hosts,
@@ -3730,7 +3730,11 @@ fn gate_wasm_sets_in_profile(
     std::collections::HashSet<String>,
 ) {
     match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
-        Ok(monitor) => monitor.materialize_wasm_sets(plugin_id, workspace_root, declared),
+        Ok(monitor) => monitor.materialize_wasm_sets(
+            &crate::broker::principal::PluginInstance::new(plugin_id, None),
+            workspace_root,
+            declared,
+        ),
         Err(error) => {
             log::error!("plugin::{plugin_id}: no remembered WASM grants: {error}");
             Default::default()

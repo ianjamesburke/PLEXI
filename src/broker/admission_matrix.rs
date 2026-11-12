@@ -809,8 +809,7 @@ fn agent_adapter_admission_matrix() {
                         call_id: "call-1",
                         tool,
                         input_json: input,
-                        actor_type: ActorType::Agent,
-                        actor_id,
+                        principal: &super::principal::Principal::agent(actor_id),
                         actor_scope,
                         trust_origin: "host",
                         workspace_root: ws,
@@ -875,8 +874,8 @@ fn evaluate_stream(
         posture,
         Some(ws),
         PUBLISHER,
-        actor_type,
-        actor_id,
+        &super::principal::Principal::from_actor(actor_type, actor_id, None)
+            .expect("matrix subscriber is a requesting principal"),
         ActorScope::User,
         None,
         &[EVENT.to_string()],
@@ -1142,7 +1141,12 @@ fn install_yes_probe() {
                     let cap = crate::app::permissions::Capability::try_from(*probe).unwrap();
                     let declared = std::iter::once(cap).collect();
                     let granted = monitor
-                        .materialize_plugin_permissions(&id, &cwd, &declared, Vec::new())
+                        .materialize_plugin_permissions(
+                            &super::principal::PluginInstance::new(id.as_str(), None),
+                            &cwd,
+                            &declared,
+                            Vec::new(),
+                        )
                         .capabilities
                         .contains(&cap);
                     if granted {
@@ -1153,7 +1157,11 @@ fn install_yes_probe() {
                 }
                 _ => {
                     let declared = std::iter::once(probe.to_string()).collect();
-                    let (granted, blocked) = monitor.materialize_wasm_sets(&id, &cwd, &declared);
+                    let (granted, blocked) = monitor.materialize_wasm_sets(
+                        &super::principal::PluginInstance::new(id.as_str(), None),
+                        &cwd,
+                        &declared,
+                    );
                     if blocked.contains(*probe) {
                         Outcome::Deny
                     } else if granted.contains(*probe) {

@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
+use crate::broker::principal::Principal;
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest,
@@ -66,8 +67,8 @@ pub fn evaluate_and_record_subscription(
         posture,
         workspace_root,
         publisher_plugin_id,
-        subscriber_type,
-        subscriber_id,
+        &Principal::from_actor(subscriber_type, subscriber_id, None)
+            .expect("test subscriber is a requesting principal"),
         ActorScope::User,
         None,
         &event_names,
@@ -133,8 +134,7 @@ pub fn evaluate_subscription(
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
     publisher_plugin_id: &str,
-    subscriber_type: ActorType,
-    subscriber_id: &str,
+    subscriber: &Principal,
     actor_scope: ActorScope,
     session_id: Option<&str>,
     event_names: &[String],
@@ -143,10 +143,10 @@ pub fn evaluate_subscription(
         grant_store,
         posture,
         workspace_root,
-        subscriber_type,
-        subscriber_id,
+        subscriber,
         actor_scope,
         session_id,
+        "event.subscribe",
         &subscription_targets(publisher_plugin_id, event_names),
     )
 }
@@ -159,8 +159,7 @@ fn evaluate_publish(
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
     plugin_id: &str,
-    actor_type: ActorType,
-    actor_id: &str,
+    publisher: &Principal,
     actor_scope: ActorScope,
     session_id: Option<&str>,
     event_names: &[String],
@@ -169,10 +168,10 @@ fn evaluate_publish(
         grant_store,
         posture,
         workspace_root,
-        actor_type,
-        actor_id,
+        publisher,
         actor_scope,
         session_id,
+        "event.publish",
         &publish_targets(plugin_id, event_names),
     )
 }
@@ -186,28 +185,49 @@ fn evaluate_targets(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
-    actor_type: ActorType,
-    actor_id: &str,
+    principal: &Principal,
     actor_scope: ActorScope,
     session_id: Option<&str>,
+    operation: &str,
     targets: &[String],
 ) -> Decision {
+    let trace = |target: &str, decision: Decision, mechanism: &str| {
+        crate::broker::principal::AdmissionTrace {
+            principal,
+            effect: &format!("{operation}:{target}"),
+            resource_class: "app_event_stream",
+            decision: decision.as_str(),
+            mechanism,
+            call_id: "",
+            outcome_ref: "",
+        }
+        .emit();
+    };
     let Some(workspace) = workspace_root else {
-        log::info!("event_subscriptions: deny actor={actor_id} — event grants require a workspace");
+        for target in targets {
+            trace(target, Decision::Deny, "missing_workspace");
+        }
         return Decision::Deny;
+    };
+    let mechanism = if posture.is_some() {
+        "grant_store+posture"
+    } else {
+        "grant_store"
     };
     let mut strictest = Decision::Allow;
     for target in targets {
         let binding = crate::broker::ExactBinding::event_stream(
-            actor_type,
-            actor_id,
+            principal.actor_type(),
+            principal.actor_id(),
             actor_scope,
             target,
             workspace,
             session_id.map(str::to_string),
         );
         let req = PermissionRequest::exact(&binding);
-        match grant_store.evaluate(&req, posture) {
+        let decision = grant_store.evaluate(&req, posture);
+        trace(target, decision, mechanism);
+        match decision {
             Decision::Allow => {}
             Decision::Deny => strictest = Decision::Deny,
             Decision::Ask => {
@@ -638,13 +658,23 @@ impl HostSubscriptionService {
             });
             return None;
         }
+        let Some(subscriber) =
+            Principal::from_actor(subscriber_type, &broker_actor_id, req.from_pane_id)
+        else {
+            log::info!(
+                "event_subscriptions: deny {subscriber_type:?} '{broker_actor_id}': not a requesting principal"
+            );
+            let _ = req.reply.send(HostSubscribeReply::Err {
+                message: format!("'{broker_actor_id}' cannot request event subscriptions"),
+            });
+            return None;
+        };
         let decision = evaluate_subscription(
             &self.grant_store,
             self.posture.as_ref(),
             req.workspace_root_override.as_deref(),
             &req.publisher_plugin_id,
-            subscriber_type,
-            &broker_actor_id,
+            &subscriber,
             ActorScope::User,
             None,
             &req.event_names,
@@ -971,13 +1001,21 @@ impl HostSubscriptionService {
                 return None;
             }
         }
+        let Some(publisher) = Principal::from_actor(actor_type, &actor_id, req.from_pane_id) else {
+            log::info!(
+                "event_subscriptions: deny publish by {actor_type:?} '{actor_id}': not a requesting principal"
+            );
+            let _ = req.reply.send(HostPublishReply::Err {
+                message: format!("'{actor_id}' cannot publish events"),
+            });
+            return None;
+        };
         let decision = evaluate_publish(
             &self.grant_store,
             self.posture.as_ref(),
             req.workspace_root_override.as_deref(),
             &req.plugin_id,
-            actor_type,
-            &actor_id,
+            &publisher,
             ActorScope::User,
             None,
             &event_names,

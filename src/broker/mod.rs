@@ -14,6 +14,7 @@ pub mod gate;
 pub(crate) mod host_key;
 pub mod integrity;
 mod needs_you_store;
+pub mod principal;
 pub(crate) mod seal;
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
@@ -38,6 +39,8 @@ pub enum ActorType {
     Agent,
     System,
     ManagedPolicy,
+    /// The local user (`principal::LOCAL_USER_ID`). No existing row carries it.
+    User,
 }
 
 /// What kind of thing is being accessed.
@@ -1790,8 +1793,12 @@ mod tests {
         let monitor = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
         let declared =
             std::collections::HashSet::from([Capability::Timer, Capability::PermissionsManage]);
-        let perms =
-            monitor.materialize_plugin_permissions("sample", ws.path(), &declared, Vec::new());
+        let perms = monitor.materialize_plugin_permissions(
+            &principal::PluginInstance::new("sample", None),
+            ws.path(),
+            &declared,
+            Vec::new(),
+        );
         assert!(perms.capabilities.contains(&Capability::Timer));
         assert!(!perms.capabilities.contains(&Capability::PermissionsManage));
         let listed = monitor.list_entries();
@@ -1799,8 +1806,12 @@ mod tests {
         assert!(listed
             .iter()
             .all(|entry| entry.id != "cap:sample:permissions.manage"));
-        let again =
-            monitor.materialize_plugin_permissions("sample", ws.path(), &declared, Vec::new());
+        let again = monitor.materialize_plugin_permissions(
+            &principal::PluginInstance::new("sample", None),
+            ws.path(),
+            &declared,
+            Vec::new(),
+        );
         assert_eq!(again.capabilities, perms.capabilities);
         assert_eq!(
             monitor

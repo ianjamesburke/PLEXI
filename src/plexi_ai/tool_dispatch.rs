@@ -869,6 +869,17 @@ impl ToolDispatcher {
             ));
             return self.dispatch_inner(call_id, name, input_json, None);
         }
+        let Some(principal) = crate::broker::principal::Principal::from_actor(
+            self.scope.actor_type,
+            &self.scope.caller_plugin_id,
+            Some(self.scope.caller_pane_id),
+        ) else {
+            crate::broker::gate::trace_gate(format!(
+                "tool_dispatch: deny caller={} tool={name} call_id={call_id}: not a requesting principal",
+                self.caller_plugin_id
+            ));
+            return ToolCallResult::coded("permission_denied", &call_id, None);
+        };
         let (package, instance) = self.provider_of(name);
         let target_type = if self.host_tools.contains_key(name) {
             crate::broker::TargetType::HostTool
@@ -880,8 +891,7 @@ impl ToolDispatcher {
                 call_id: &call_id,
                 tool: name,
                 input_json: &input_json,
-                actor_type: self.scope.actor_type,
-                actor_id: &self.scope.caller_plugin_id,
+                principal: &principal,
                 actor_scope: self.scope.actor_scope,
                 trust_origin: &self.scope.trust_origin,
                 workspace_root: &self.scope.workspace_root,
@@ -946,8 +956,7 @@ impl ToolDispatcher {
                         call_id: &call_id,
                         tool: name,
                         input_json: &input_json,
-                        actor_type: self.scope.actor_type,
-                        actor_id: &self.scope.caller_plugin_id,
+                        principal: &principal,
                         actor_scope: self.scope.actor_scope,
                         trust_origin: &self.scope.trust_origin,
                         workspace_root: &self.scope.workspace_root,

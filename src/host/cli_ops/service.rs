@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::cli_operation::{hex, ArgError, CliOperationDecl, OperationMode, OutputFormat};
 use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
-use crate::broker::{ActorScope, ActorType, TargetType};
+use crate::broker::{ActorScope, TargetType};
 
 use super::exec::{
     self, Completion, ExecError, LaunchSpec, Limits, Outcome, RunningOperation, Wake,
@@ -471,8 +471,10 @@ impl CliOpService {
                 call_id: &call_id,
                 tool,
                 input_json: &input,
-                actor_type: ActorType::Plugin,
-                actor_id: &who.plugin_id,
+                principal: &crate::broker::principal::Principal::plugin_in_pane(
+                    &who.plugin_id,
+                    who.pane_id,
+                ),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: &admitted.workspace,

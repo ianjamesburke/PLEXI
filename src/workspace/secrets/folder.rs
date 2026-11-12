@@ -294,14 +294,22 @@ pub(super) fn admitted_read_with_posture(
 ) -> Result<ReadResult, String> {
     static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let admission_guard = ADMISSION.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(principal) =
+        crate::broker::principal::Principal::from_actor(actor.kind, &actor.id, None)
+    else {
+        log::info!(
+            "secrets: {tool} denied {label} actor={}: not a requesting principal",
+            actor.id
+        );
+        return Ok(ReadResult::Denied);
+    };
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
     let admission = monitor.admit_with_posture(
         AdmitRequest {
             call_id: &call_id,
             tool,
             input_json: input,
-            actor_type: actor.kind,
-            actor_id: &actor.id,
+            principal: &principal,
             actor_scope: ActorScope::User,
             trust_origin: TRUST_ORIGIN,
             workspace_root,
@@ -835,6 +843,7 @@ fn proxy_read(
         ActorType::Plugin => "app",
         ActorType::System => "system",
         ActorType::ManagedPolicy => "policy",
+        ActorType::User => "user",
     };
     let request = serde_json::json!({
         "kind": kind,
