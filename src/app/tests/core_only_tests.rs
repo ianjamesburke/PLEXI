@@ -280,3 +280,46 @@ fn core_only_terminal_executes_and_splits() {
         .values()
         .all(|p| p.as_view().is_none()));
 }
+
+/// Stint 1210: the core-only notice owns the keyboard while it is up, Esc and
+/// Enter each dismiss it, and input returns to the pane it came from.
+#[test]
+fn core_only_notice_takes_focus_and_escape_or_enter_dismisses_it() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    for key in [egui::Key::Escape, egui::Key::Enter] {
+        let profile = profile(true);
+        let mut h = HostHarness::from_profile_dir(profile.path());
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        h.run_frames(1);
+        let ctx = h.app.ctx.clone();
+        assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+
+        h.app.open_notes_picker();
+        h.run_frames(1);
+        assert!(
+            h.app.plugin_notice.is_some(),
+            "Notes is refused in core-only mode"
+        );
+        assert_eq!(
+            h.app.input_owner(&ctx),
+            InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::PluginNotice)),
+            "the notice owns the keyboard while it is up"
+        );
+
+        h.press_key(key, egui::Modifiers::NONE);
+        assert!(
+            h.app.plugin_notice.is_none(),
+            "{key:?} must dismiss the notice"
+        );
+        assert!(!h
+            .app
+            .focus_stack
+            .contains(&crate::app::FocusKind::PluginNotice));
+        assert_eq!(
+            h.app.input_owner(&ctx),
+            InputOwner::Pane(pane),
+            "{key:?}: input returns to the pane under the notice"
+        );
+    }
+}
