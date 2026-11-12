@@ -43,12 +43,11 @@ This scaffolds a new plugin folder with:
 
 ```text
 my-plugin/
-  manifest.toml        ← capabilities, entry point, metadata
-  main.py              ← the plugin: init, update, view
-  tests/test_plugin.py ← PluginHarness tests
-  fixtures/state.json  ← seed state for plugin check
-  AGENTS.md            ← file list and build loop
-  .venv/               ← local development environment
+  manifest.toml    ← capabilities, entry point, metadata
+  main.py          ← entry point
+  tests/           ← PluginHarness smoke tests
+  fixtures/        ← seed state for plugin check
+  AGENTS.md        ← notes for coding agents working on the plugin
 ```
 
 Validate the plugin and write screenshots:

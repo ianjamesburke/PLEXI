@@ -3,6 +3,7 @@
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import re
 import shlex
@@ -14,6 +15,10 @@ from pathlib import Path
 
 CONFIG = Path(__file__).resolve().parents[1] / ".agents/skills/babysitter-v3/RUN_CONFIG.toml"
 REQUIRED_LOCAL = {"build", "test", "clippy"}
+_scope_spec = importlib.util.spec_from_file_location(
+    "docs_gate_scope", Path(__file__).with_name("docs_gate_scope.py"))
+docs_gate_scope = importlib.util.module_from_spec(_scope_spec)
+_scope_spec.loader.exec_module(docs_gate_scope)
 
 
 class PolicyError(ValueError):
@@ -81,6 +86,27 @@ def ledger_summary(run_dir):
     return summary
 
 
+def required_local(record):
+    """Local booleans a record must carry. A verified docs-only diff runs none."""
+    return set() if record.get("local", {}).get("test_scope") == "docs-only" else REQUIRED_LOCAL
+
+
+def check_docs_only(record, paths):
+    """Structural check of the docs_gate_scope proof; verify_changed_paths recomputes it."""
+    code = [path for path in paths if not path.lower().endswith(".md")]
+    if code:
+        raise PolicyError(f"docs-only scope contains a non-markdown path: {', '.join(code)}")
+    proof = record["local"].get("docs_proof")
+    digests = proof.get("digests") if isinstance(proof, dict) else None
+    if (not isinstance(proof, dict) or proof.get("head") != record.get("head")
+            or proof.get("base") != record.get("base_head")
+            or proof.get("paths") != sorted(paths) or proof.get("skip") is not True
+            or proof.get("reasons") != [] or not isinstance(digests, dict)
+            or sorted(digests) != ["base", "head"]
+            or not all(re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in digests.values())):
+        raise PolicyError("docs-only scope requires the computed docs_gate_scope proof for the PR head and base")
+
+
 def check_test_scope(record, phase):
     """Bind batch selections to their base; reserve full-suite evidence for final."""
     local = record.get("local", {})
@@ -89,13 +115,18 @@ def check_test_scope(record, phase):
         raise PolicyError("final candidate requires full local suite evidence")
     if scope == "full":
         return scope
-    if scope != "scoped" or local.get("test_base") != record.get("base_head"):
+    if scope not in ("scoped", "docs-only") or local.get("test_base") != record.get("base_head"):
         raise PolicyError("missing or stale scoped test evidence")
-    paths, evidence = local.get("test_paths"), local.get("test_evidence")
+    paths = local.get("test_paths")
     if (not isinstance(paths, list) or not paths or len(paths) != len(set(paths))
             or any(not isinstance(path, str) or not path or Path(path).is_absolute()
-                   or ".." in Path(path).parts for path in paths)
-            or not isinstance(evidence, list) or not evidence):
+                   or ".." in Path(path).parts for path in paths)):
+        raise PolicyError("scoped evidence must identify changed paths")
+    if scope == "docs-only":
+        check_docs_only(record, paths)
+        return check_affected_behavior(record, scope)
+    evidence = local.get("test_evidence")
+    if not isinstance(evidence, list) or not evidence:
         raise PolicyError("scoped evidence must identify changed paths and passing commands")
     covered = set()
     for item in evidence:
@@ -113,19 +144,36 @@ def check_test_scope(record, phase):
         covered.update(item["covers"])
     if covered != set(paths):
         raise PolicyError("scoped command coverage differs from changed paths")
+    return check_affected_behavior(record, scope)
+
+
+def check_affected_behavior(record, scope):
     behavior = record.get("validation", {}).get("affected_behavior")
     if not isinstance(behavior, str) or not behavior.strip():
-        raise PolicyError("scoped batch requires independent installed affected-behavior evidence")
+        raise PolicyError(f"{scope} batch requires independent installed affected-behavior evidence")
     return scope
 
 
-def verify_scoped_paths(record, worktree):
-    if record.get("local", {}).get("test_scope") != "scoped":
+def verify_changed_paths(record, worktree):
+    """Bind scoped and docs-only evidence to the real diff; recompute the docs-only proof."""
+    scope = record.get("local", {}).get("test_scope")
+    if scope not in ("scoped", "docs-only"):
         return
     changed = command("git", "-C", str(worktree), "diff", "--name-only", "--no-renames", "-z",
                       f"{record['base_head']}...{record['head']}")
     if set(changed.rstrip("\0").split("\0")) != set(record["local"]["test_paths"]):
         raise PolicyError("scoped evidence differs from the actual PR diff")
+    if scope == "docs-only":
+        try:
+            actual = docs_gate_scope.proof(record["local"]["test_paths"], Path(worktree),
+                                           record["head"], record["base_head"])
+        except docs_gate_scope.ScopeError as error:
+            raise PolicyError(f"cannot recompute docs-only proof: {error}") from error
+        if not actual["skip"]:
+            raise PolicyError("docs-only scope includes a path Rust source can observe: "
+                              + "; ".join(actual["reasons"]))
+        if actual != record["local"]["docs_proof"]:
+            raise PolicyError("docs-only proof differs from the proof recomputed at the PR head and base")
 
 
 def check_gate(settings, record, pr, checks, base_head, phase):
@@ -148,7 +196,7 @@ def check_gate(settings, record, pr, checks, base_head, phase):
     if (record.get("worker_alias") != assigned["worker"]
             or record.get("tester_alias") != assigned["tester"]):
         raise PolicyError("recorded route differs from policy")
-    if record.get("local", {}).get("head") != head or not REQUIRED_LOCAL.issubset(
+    if record.get("local", {}).get("head") != head or not required_local(record).issubset(
         {key for key, value in record.get("local", {}).items() if value is True}
     ):
         raise PolicyError("local build, test, and clippy must pass at PR head")
@@ -277,11 +325,11 @@ def integrated_prerequisites(settings, manifest_path, expected_tip=None, merged_
             raise PolicyError("missing or ambiguous preserved batch evidence")
         record = matches[0]
         check_test_scope(record, "batch")
-        verify_scoped_paths(record, worktree)
+        verify_changed_paths(record, worktree)
         validation = record["validation"]
         if (record.get("checks_head") != record["head"] or record.get("waivers")
                 or record["local"].get("head") != record["head"]
-                or any(record["local"].get(key) is not True for key in REQUIRED_LOCAL)
+                or any(record["local"].get(key) is not True for key in required_local(record))
                 or validation.get("head") != record["head"]
                 or validation.get("install_head") != record["head"]
                 or validation.get("verdict") != "PASS"
@@ -402,8 +450,8 @@ def live_gate(settings, record, pr_number, phase, manifest=None, allow_unresolve
     base_head = command("git", "ls-remote", "origin", f"refs/heads/{before['baseRefName']}").split()[0]
     checks = read_checks(pr_number, before["headRefOid"])
     head = check_gate(settings, record, before, checks, base_head, phase)
-    if record.get("local", {}).get("test_scope") == "scoped":
-        verify_scoped_paths(record, alpha_root())
+    if record.get("local", {}).get("test_scope") in ("scoped", "docs-only"):
+        verify_changed_paths(record, alpha_root())
     if phase == "final":
         if manifest is None:
             raise PolicyError("final gate requires the aggregate manifest")
@@ -515,7 +563,7 @@ def integrate_locked(settings, record, pr_number, manifest_path):
         # Recover a merge that succeeded before the caller could write its manifest.
         remote_before = record["base_head"]
         head = check_gate(settings, record, snapshot, read_checks(pr_number, snapshot["headRefOid"]), remote_before, "batch")
-        verify_scoped_paths(record, worktree)
+        verify_changed_paths(record, worktree)
         merged = snapshot
     elif snapshot.get("state") == "OPEN":
         remote_before = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
