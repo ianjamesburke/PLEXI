@@ -4124,7 +4124,9 @@ impl PermissionMonitor {
     }
 }
 
-fn declared_capability_needs_click(capability_id: &str) -> bool {
+/// Whether a declared capability with no stored decision is withheld at
+/// launch until a person grants it (otherwise it is auto-granted).
+pub(crate) fn declared_capability_needs_click(capability_id: &str) -> bool {
     match crate::app::permissions::Capability::try_from(capability_id) {
         Ok(cap) => cap.is_sensitive(),
         Err(_) => crate::app::permissions::wasm_capability_requires_consent(capability_id),

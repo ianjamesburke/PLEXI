@@ -42,7 +42,12 @@ pub struct Prepared {
 
 #[derive(Debug)]
 pub enum GateStop {
-    Required { pending_request_id: String },
+    Required {
+        pending_request_id: String,
+    },
+    /// This process is not the host and no host route exists for the
+    /// command, so nothing was filed (stint 1291).
+    NoHostRoute,
     Failed(String),
 }
 
@@ -228,7 +233,7 @@ struct AdmissionOk {
 
 fn admit_edit(edit: &BoundEdit) -> Result<AdmissionOk, GateStop> {
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let mon = monitor().map_err(GateStop::Failed)?;
+    let mon = monitor().map_err(|_| GateStop::NoHostRoute)?;
     let admission = mon.admit(AdmitRequest {
         call_id: &call_id,
         tool: TOOL,
@@ -1053,6 +1058,7 @@ mod tests {
         match refused {
             GateStop::Failed(message) => assert!(message.starts_with("stale:"), "{message}"),
             GateStop::Required { .. } => panic!("accept should be granted"),
+            GateStop::NoHostRoute => panic!("tests run as the host"),
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\nextra\n");
         assert!(preview(&prepared.id).unwrap().starts_with("status=stale\n"));
@@ -1080,6 +1086,7 @@ mod tests {
         match refused {
             GateStop::Failed(message) => assert!(message.starts_with("stale:"), "{message}"),
             GateStop::Required { .. } => panic!("accept should be granted"),
+            GateStop::NoHostRoute => panic!("tests run as the host"),
         }
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
         assert!(preview(&prepared.id).unwrap().starts_with("status=stale\n"));

@@ -10,6 +10,10 @@ use crate::host::changes::{self, GateStop};
 
 fn stop(error: GateStop) -> i32 {
     match error {
+        GateStop::NoHostRoute => {
+            eprintln!("error: {NO_HOST_ROUTE}");
+            1
+        }
         GateStop::Required { pending_request_id } => {
             println!("permission_required");
             println!("pending_request_id={pending_request_id}");
@@ -27,6 +31,10 @@ fn stop(error: GateStop) -> i32 {
     }
 }
 
+/// Stint 1291: change commands need the permission broker, which only the
+/// host holds, and the host has no request route for them yet.
+const NO_HOST_ROUTE: &str = "this plexi changes command cannot run from the terminal: permission decisions are made only by the Plexi host, and it has no route for this command yet. Nothing was filed and there is nothing to approve";
+
 pub fn changes_profile_cli() -> i32 {
     println!("{}", crate::config::config_dir().display());
     0
@@ -40,9 +48,7 @@ pub fn changes_allow_cli(agent: &str, file: &Path, _old: &str, _new: &str) -> i3
         "changes: allow refused in the CLI process agent={agent} path={}",
         file.display()
     );
-    eprintln!(
-        "error: plexi changes allow cannot grant from the terminal. Only a click in the Plexi window allows an edit; nothing was recorded"
-    );
+    eprintln!("error: {NO_HOST_ROUTE}");
     1
 }
 
@@ -128,11 +134,8 @@ mod tests {
         });
 
         match result {
-            Err(crate::host::changes::GateStop::Failed(message)) => assert!(
-                message.contains("this process is not the host"),
-                "{message}"
-            ),
-            Err(other) => panic!("expected the not-host refusal, got {other:?}"),
+            Err(crate::host::changes::GateStop::NoHostRoute) => {}
+            Err(other) => panic!("expected the no-host-route refusal, got {other:?}"),
             Ok(_) => panic!("propose must not run outside the host"),
         }
         assert!(!profile.join("grants.toml").exists());

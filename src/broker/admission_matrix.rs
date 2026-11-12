@@ -358,10 +358,14 @@ pub(crate) const TABLE: &[Line] = &[
 ];
 
 /// Persistence probe `InstallYes` (stint 1291): what a plugin gets at first
-/// launch after `plexi plugin install --yes`, for a package that declares the
-/// ids. On alpha before stint 1291 both admitted (install sealed an Allow row
-/// from the CLI process). Install now writes no grant, so the result is the
-/// same as declared-and-nothing-stored. Driven by `install_yes_probe`.
+/// launch after `plexi plugin install --yes`. On alpha before stint 1291 the
+/// CLI sealed an Allow row for every id in `[plugin.capabilities.wasm]`
+/// `required`, for any runtime: a WASM package listing these ids, or a Python
+/// package listing `spawn.plugin` in that table, admitted with no click. (A
+/// Python package declaring `spawn.plugin` only under `[plugin.capabilities]`
+/// got no row and was withheld, then as now.) Now install writes no grant and
+/// a Python package carrying the table is refused at validation, so each line
+/// is declared-and-nothing-stored. Driven by `install_yes_probe`.
 pub(crate) const INSTALL_YES: &[(Runtime, Family, &[&str], Cell)] = &[
     (
         R::Python,
@@ -1089,6 +1093,32 @@ fn install_yes_probe() {
         .unwrap();
         std::fs::write(src.path().join(entry), b"\0asm").unwrap();
         let cwd = std::env::current_dir().unwrap();
+        if *runtime == Runtime::Python {
+            // The alpha route: the same ids in the WASM table of a Python
+            // package. Refused now, and nothing is stored.
+            let table = tempfile::tempdir().unwrap();
+            std::fs::write(
+                table.path().join("manifest.toml"),
+                format!(
+                    "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{id}-table\"\nname = \"Probe\"\nversion = \"0.1.0\"\ndescription = \"Probe\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [{quoted}]\n\n[runtime]\n{runtime_table}\n\n[[contributes.views]]\nid = \"{id}-table.main\"\ndefault = true\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(table.path().join(entry), b"\0asm").unwrap();
+            let refused = crate::cli::plugin::plugin_install_with_pin(
+                &table.path().to_string_lossy(),
+                None,
+                crate::cli::plugin::InstallConfirm::Interactive,
+                true,
+            );
+            assert_eq!(
+                refused, 1,
+                "a Python package with a WASM table must be refused"
+            );
+            let grants =
+                std::fs::read_to_string(profile.path().join("grants.toml")).unwrap_or_default();
+            assert!(!grants.contains(&format!("{id}-table")), "{grants}");
+        }
         let code = crate::cli::plugin::plugin_install_with_pin(
             &src.path().to_string_lossy(),
             None,

@@ -1202,24 +1202,60 @@ fn plugin_install_with_pin_inner(
 }
 
 /// Install writes no permission (stint 1291): the CLI process is not the
-/// host, and `--yes` confirms the install only. Declared capabilities stay
-/// unanswered until the plugin runs and the host asks in its window.
+/// host, and `--yes` confirms the install only. Says, per runtime, what the
+/// first launch gives automatically and what waits for a person.
 fn announce_capabilities_ask_at_launch(report: &crate::app::package::PackageReport) {
-    let declared = report.capabilities.len()
-        + report.wasm_required_capabilities.len()
-        + report.wasm_optional_capabilities.len();
-    if declared == 0 {
-        return;
+    if let Some(line) = install_permission_line(report) {
+        log::info!(
+            "plugin::install: no grant written for {}: {line}",
+            report.id
+        );
+        println!("{line}");
     }
-    log::info!(
-        "plugin::install: no grant written for {} ({declared} declared capabilities); the host asks at first launch",
-        report.id
-    );
-    println!(
-        "Installing grants no permissions. '{}' asks for its capabilities in the Plexi window when it first runs.",
-        report.id
-    );
 }
+
+fn install_permission_line(report: &crate::app::package::PackageReport) -> Option<String> {
+    use crate::app::package::PackageRuntime;
+    // The same rule the host applies at first launch.
+    let (needs_person, automatic): (Vec<String>, Vec<String>) = report
+        .capabilities
+        .iter()
+        .map(|cap| cap.as_str().to_string())
+        .chain(report.wasm_required_capabilities.iter().cloned())
+        .chain(report.wasm_optional_capabilities.iter().cloned())
+        .partition(|id| crate::broker::gate::declared_capability_needs_click(id));
+    if automatic.is_empty() && needs_person.is_empty() {
+        return None;
+    }
+    let mut line = format!(
+        "Installing grants no permissions. When '{}' first runs",
+        report.id
+    );
+    if !automatic.is_empty() {
+        line.push_str(&format!(" it gets {} automatically", automatic.join(", ")));
+    }
+    if !needs_person.is_empty() {
+        if !automatic.is_empty() {
+            line.push(';');
+        }
+        match report.runtime {
+            PackageRuntime::Wasm => line.push_str(&format!(
+                " {} wait for your approval in the Plexi window",
+                needs_person.join(", ")
+            )),
+            PackageRuntime::Python => line.push_str(&format!(
+                " {} stay withheld: Python plugins cannot ask for them yet",
+                needs_person.join(", ")
+            )),
+        }
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// Shown in the rendered Permissions view and on stderr when `view render`
+/// runs outside the host (stint 1291).
+const PERMISSION_ROWS_FROM_HOST: &str = "Permission rows come from the running Plexi host and are not available to this command; rendering the view with none.";
 
 /// `plexi plugin package <path> [--out <file>]` — build a `.plexipkg` artifact.
 pub fn plugin_package_cli(path: &str, out: Option<&str>) -> i32 {
@@ -1800,18 +1836,16 @@ pub fn view_render(
     let seed_state = if seed_state.is_none() && plugin_id == "permissions" {
         // Permission rows live in the running host (stint 1291). This command
         // renders the view without them and says so.
-        let entries = match crate::broker::gate::PermissionMonitor::for_profile(
-            &crate::config::config_dir(),
-        ) {
-            Ok(monitor) => monitor.list_entries(),
-            Err(error) => {
-                log::info!("view_render: permissions inventory unavailable: {error}");
-                eprintln!(
-                        "Permission rows come from the running Plexi host and are not available to this command; rendering the view with none."
-                    );
-                Vec::new()
-            }
-        };
+        let (entries, notice) =
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => (monitor.list_entries(), String::new()),
+                Err(error) => {
+                    log::info!("view_render: permissions inventory unavailable: {error}");
+                    eprintln!("{PERMISSION_ROWS_FROM_HOST}");
+                    (Vec::new(), PERMISSION_ROWS_FROM_HOST.to_string())
+                }
+            };
         log::info!(
             "view_render: seeding permissions inventory count={}",
             entries.len()
@@ -1820,7 +1854,7 @@ pub fn view_render(
             "entries": entries,
             "selected": 0,
             "mode": "list",
-            "notice": "",
+            "notice": notice,
         }))
     } else {
         seed_state
@@ -2522,6 +2556,40 @@ mod plugin_install_workspace_tests {
             !legacy.contains(plugin_id),
             "install --yes must not write a legacy permission row:\n{legacy}"
         );
+    }
+
+    /// Stint 1291: the install line says what each runtime really gets.
+    #[test]
+    fn install_permission_line_is_true_per_runtime() {
+        use crate::app::package::{PackageReport, PackageRuntime};
+        use crate::app::permissions::Capability;
+        let mut report = PackageReport {
+            id: "p".to_string(),
+            name: "P".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: PackageRuntime::Python,
+            entry: "main.py".to_string(),
+            capabilities: vec![Capability::FsRead, Capability::SpawnView],
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
+            file_count: 1,
+            total_size: 1,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
+        };
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs it gets fs.read automatically; spawn.plugin stay withheld: Python plugins cannot ask for them yet."
+        );
+        report.runtime = PackageRuntime::Wasm;
+        report.capabilities = Vec::new();
+        report.wasm_required_capabilities = vec!["fs:write:/w".to_string()];
+        assert_eq!(
+            super::install_permission_line(&report).unwrap(),
+            "Installing grants no permissions. When 'p' first runs fs:write:/w wait for your approval in the Plexi window."
+        );
+        report.wasm_required_capabilities = Vec::new();
+        assert!(super::install_permission_line(&report).is_none());
     }
 
     #[test]
