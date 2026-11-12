@@ -53,7 +53,7 @@ export const docsNav: DocNavSection[] = [
   },
   {
     section: 'Reference',
-    blurb: 'Generated from the source on every change, so it matches the build.',
+    blurb: 'Generated from the source code, never written by hand.',
     items: [
       { slug: 'cli', title: 'CLI', summary: 'Every plexi command and flag.', generatedFrom: 'the command definitions (gen_cli_docs)' },
       { slug: 'config', title: 'Configuration', summary: 'Every config.toml key, its type and default.', generatedFrom: 'the config structs (gen_config_docs)' },

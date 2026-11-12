@@ -66,8 +66,14 @@ const showToc = !landing && outline.length > 1;
             {entry?.generatedFrom && (
               <p class="doc-generated">
                 <span class="doc-generated-tag">Generated</span>
-                Built from {entry.generatedFrom}. It tracks the <code>alpha</code> branch, so it can be ahead of the release you have installed.
+                <span>Built from {entry.generatedFrom}. It tracks the <code>alpha</code> branch, so it can be ahead of the release you have installed.</span>
               </p>
+            )}
+            {showToc && (
+              <details class="doc-outline">
+                <summary>On this page</summary>
+                <ul>{outline.map(h => <li><a href={`#${h.slug}`}>{h.text}</a></li>)}</ul>
+              </details>
             )}
           </header>
           <div class="prose prose-invert max-w-none">

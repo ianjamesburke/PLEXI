@@ -1,6 +1,7 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
 import { docsNav } from '../../lib/docsNav';
+import DocsSearch from '../../components/docs/DocsSearch.astro';
 
 const startCommands: Record<string, string> = {
   'getting-started': 'curl -fsSL https://plexiapp.com/install | bash',
@@ -26,6 +27,7 @@ const [start, ...rest] = docsNav;
         It ships today on Apple Silicon Mac. Windows and Linux are coming soon.
         Builds are self-signed and not notarized; <a href="/docs/getting-started#open-an-unsigned-build">Install</a> covers opening one.
       </p>
+      <DocsSearch />
     </header>
 
     <section class="start-path" aria-labelledby="path-title">
