@@ -3402,9 +3402,9 @@ mod scaffold_marketplace_tests {
 
         let main_src = std::fs::read_to_string(plugin_dir.join("main.py")).unwrap();
         for needle in [
-            "def init(size, args):",
-            "def update(event):",
-            "def view():",
+            "def init(size, args) -> list:",
+            "def update(event) -> list:",
+            "def view() -> Component:",
             "isinstance(event, Resize)",
             "on_click=\"increment\"",
             "event.key == \"+\"",

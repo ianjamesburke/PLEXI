@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Sequence
+from typing import Any, Literal, TypeAlias
 
 from ._keys import normalize_key
 
@@ -44,23 +45,24 @@ RADIUS_MD: int = 10
 RADIUS_LG: int = 14
 RADIUS_BADGE: int = 6
 
-# Semantic color roles accepted by Badge / Banner (`decode_badge_color` in
-# `src/host/wasm_python.rs`).
-BadgeColor = Literal[
+# Host decoder: `decode_badge_color` in `src/host/wasm_python.rs`.
+BadgeColor: TypeAlias = Literal[
     "accent", "success", "warning", "danger", "neutral",
     "red", "green", "yellow",
 ]
+"""Semantic color roles accepted by ``Badge`` and ``Banner``."""
 BADGE_COLORS: tuple[str, ...] = (
     "accent", "success", "warning", "danger", "neutral",
     "red", "green", "yellow",
 )
 
-# Semantic color roles accepted by Text / Label / Heading (Badge roles + "muted"),
-# in addition to `#rrggbb` / `#rrggbbaa` hex strings from `plexi_sdk.theme`.
-TextColor = Literal[
+TextColor: TypeAlias = Literal[
     "accent", "success", "warning", "danger", "neutral", "muted",
     "red", "green", "yellow",
 ]
+"""Semantic color roles accepted by ``Text``, ``Label`` and ``Heading`` (the
+``BadgeColor`` roles plus ``"muted"``), in addition to ``#rrggbb`` /
+``#rrggbbaa`` hex strings from ``plexi_sdk.theme``."""
 TEXT_COLORS: tuple[str, ...] = BADGE_COLORS + ("muted",)
 
 
@@ -198,7 +200,7 @@ class Column(Component):
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float | None = None,
         padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0,
         *,
@@ -242,7 +244,7 @@ class HStack(Component):
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float | None = None,
         *,
         align: str = "center",
@@ -281,7 +283,7 @@ class Card(Component):
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         padding: float = SPACE_MD,
         gap: float | None = SPACE_SM,
         *,
@@ -349,7 +351,7 @@ class Grid(Component):
     def __init__(
         self,
         columns: int,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float = SPACE_SM,
     ) -> None:
         self.columns = max(1, int(columns))
@@ -411,17 +413,17 @@ class Section(Component):
     def __init__(
         self,
         title: str,
-        children: list[Component] | Component | None = None,
+        children: Sequence[Component] | Component | None = None,
         *more_children: Component,
         gap: float = SPACE_SM,
     ) -> None:
         self.title = title
         self.gap = float(gap)
         collected: list[Component] = []
-        if isinstance(children, list):
-            collected.extend(children)
-        elif children is not None:
+        if isinstance(children, Component):
             collected.append(children)
+        elif children is not None:
+            collected.extend(children)
         if more_children:
             collected.extend(more_children)
         _validate_component_list(collected, "Section")
@@ -670,23 +672,19 @@ class Actions(Component):
 
     def __init__(
         self,
-        buttons: list[Button] | None = None,
+        buttons: Sequence[Button] | None = None,
         *,
-        actions: list[Button] | None = None,
+        actions: Sequence[Button] | None = None,
         gap: float = SPACE_SM,
         align: str = "center",
     ) -> None:
-        items = actions if actions is not None else (buttons if buttons is not None else [])
-        if not isinstance(items, list):
-            raise TypeError(
-                f"ActionBar actions must be a list of Button instances, got {type(items).__name__}"
-            )
+        items = list(actions if actions is not None else (buttons if buttons is not None else []))
         for i, item in enumerate(items):
             if not isinstance(item, Button):
                 raise TypeError(
                     f"ActionBar actions[{i}] must be a Button, got {type(item).__name__}"
                 )
-        self.buttons = list(items)
+        self.buttons = items
         self.actions = self.buttons
         self.gap = float(gap)
         self.align = align
@@ -1747,12 +1745,16 @@ class CanvasText:
         }
 
 
+CanvasCommand: TypeAlias = CanvasRect | CanvasCircle | CanvasLine | CanvasText
+"""Any one drawing command accepted by ``Canvas``."""
+
+
 class Canvas(Component):
     """2D vector drawing surface rendered natively by the host."""
 
     def __init__(
         self,
-        commands: list[Any] | None = None,
+        commands: Sequence[CanvasCommand] | None = None,
         width: float = 640.0,
         height: float = 360.0,
         grow: bool = True,
@@ -1820,5 +1822,5 @@ __all__ = [
     "KeyValue", "CodeBlock", "Avatar", "Icon", "Tooltip",
     "Accordion", "EmptyState", "Modal",
     # 2D Canvas
-    "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
+    "Canvas", "CanvasCommand", "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
 ]
