@@ -17489,7 +17489,8 @@ mod tiled_navigation_frame_tests {
         let tile = h.app.windows[0].tree.tiles.find_pane(&panes[2]).unwrap();
         let removed = h.app.windows[0].panes.remove(&panes[2]).unwrap();
         let strip = h.app.host.strip(ctx_id).cloned();
-        let model = h.app.host.test_pane_ids();
+        let pane_ids: std::collections::BTreeSet<_> =
+            h.app.windows[0].panes.keys().copied().collect();
         let tree_count = h.app.windows[0].tree.tiles.len();
         assert!(h
             .app
@@ -17502,7 +17503,14 @@ mod tiled_navigation_frame_tests {
         h.app.close_tile(0, tile);
         h.app.close_pane_by_id(panes[2]);
         assert_eq!(h.app.host.strip(ctx_id), strip.as_ref());
-        assert_eq!(h.app.host.test_pane_ids(), model);
+        assert_eq!(
+            h.app.windows[0]
+                .panes
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            pane_ids
+        );
         assert_eq!(h.app.windows[0].tree.tiles.len(), tree_count);
         assert_eq!(h.app.windows[0].focused_pane, Some(tile));
         h.app.windows[0].panes.insert(panes[2], removed);
@@ -17630,8 +17638,6 @@ mod tiled_navigation_frame_tests {
         let initial_tile_count = window.tree.tiles.len();
         let initial_focus = window.focused_pane;
         let initial_strip = h.app.host.strip(context_id).cloned();
-        let initial_model_panes = h.app.host.test_pane_ids();
-        let initial_model_focus = h.app.host.test_focused_pane();
 
         // `split_focused` is the production terminal-creation path. Force its
         // real `TerminalPane::new` call to fail without sharing a process env
@@ -17657,16 +17663,6 @@ mod tiled_navigation_frame_tests {
             "failed spawn must not emit PaneSplit"
         );
 
-        assert_eq!(
-            h.app.host.test_pane_ids(),
-            initial_model_panes,
-            "failed spawn must not register a model pane"
-        );
-        assert_eq!(
-            h.app.host.test_focused_pane(),
-            initial_model_focus,
-            "failed spawn must not change model focus"
-        );
         let window = &h.app.windows[0];
         let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
         let final_tree_panes: std::collections::BTreeSet<_> = window

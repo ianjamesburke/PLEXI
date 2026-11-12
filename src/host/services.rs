@@ -1,99 +1,7 @@
-//! HostServices — host side-effect plumbing.
-//!
-//! `EventSink` is the only production field right now; fs/secrets/net/spawn
-//! trait seams live in the plugin runtimes (`host::wasm_python`, `host::wasm_view`)
-//! and `plugin_registry` until HostModel owns their routing.
+//! Host service seams: the outbound HTTP broker (`NetService`) and the native
+//! file picker (`PickerService`) shared by the plugin runtimes.
 
-use crate::host::effect::HostEffect;
 use std::collections::HashMap;
-
-// ── EventSink ──────────────────────────────────────────────────────────────
-
-pub trait EventSink: Send {
-    fn emit(&mut self, effect: &HostEffect);
-}
-
-/// Append-only JSONL sink. One line per `HostEffect` written to the configured
-/// path, each carrying an RFC 3339 `ts`. Production wires this to
-/// `<profile>/effects.jsonl` so every command path leaves a durable audit trail
-/// and the Runs palette + future agent consumers have a single source of truth.
-/// The file rolls over live at 10 MB or a day change. Pane and focus effects are
-/// also mirrored into the session flight trace.
-pub struct FileEventSink {
-    path: std::path::PathBuf,
-    writer: Option<crate::platform::rolling::RollingFile>,
-}
-
-impl FileEventSink {
-    pub fn new(path: std::path::PathBuf) -> Self {
-        let writer = match crate::platform::rolling::RollingFile::open(&path) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                log::error!("FileEventSink: open({}) failed: {e}", path.display());
-                None
-            }
-        };
-        let mut sink = Self { path, writer };
-        // Startup heartbeat so the post-install smoke test can assert the
-        // sink opened the file for write (non-empty file means the wiring
-        // is live, even before the first HostRequest fires).
-        if let Some(writer) = sink.writer.as_mut() {
-            use std::io::Write;
-            let now = crate::platform::clock::now_secs();
-            let ts = crate::platform::clock::now_rfc3339();
-            let line =
-                format!("{{\"kind\":\"sink_opened\",\"timestamp\":{now},\"ts\":\"{ts}\"}}\n");
-            if let Err(e) = writer
-                .write_all(line.as_bytes())
-                .and_then(|()| writer.flush())
-            {
-                log::debug!(
-                    "FileEventSink: startup heartbeat write({}) failed: {e}",
-                    sink.path.display()
-                );
-            }
-        }
-        sink
-    }
-}
-
-impl EventSink for FileEventSink {
-    fn emit(&mut self, effect: &HostEffect) {
-        use std::io::Write;
-        let ts = crate::platform::clock::now_rfc3339();
-        let mut value = match serde_json::to_value(effect) {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!("FileEventSink serialize failed: {e}");
-                return;
-            }
-        };
-        if let Some(object) = value.as_object_mut() {
-            object.insert("ts".to_string(), serde_json::Value::String(ts));
-        }
-        // EventEmitted carries a HostEvent that `event_log::emit_scoped`
-        // already mirrors; the structural effects are mirrored here.
-        if !matches!(effect, HostEffect::EventEmitted(_)) {
-            let pane_id = value.get("pane_id").and_then(|v| v.as_u64());
-            crate::host::flight_recorder::record("host_effect", None, pane_id, None, value.clone());
-        }
-        let Some(writer) = self.writer.as_mut() else {
-            return;
-        };
-        match serde_json::to_string(&value) {
-            Ok(mut line) => {
-                line.push('\n');
-                if let Err(e) = writer.write_all(line.as_bytes()) {
-                    log::warn!("FileEventSink write({}) failed: {e}", self.path.display());
-                }
-                if let Err(e) = writer.flush() {
-                    log::debug!("FileEventSink flush({}) failed: {e}", self.path.display());
-                }
-            }
-            Err(e) => log::warn!("FileEventSink serialize failed: {e}"),
-        }
-    }
-}
 
 // ── NetService ─────────────────────────────────────────────────────────────
 
@@ -502,30 +410,6 @@ fn picker_override_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<dyn
     static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<dyn PickerService>>>> =
         std::sync::OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-// ── HostServices aggregate ─────────────────────────────────────────────────
-
-pub struct HostServices {
-    pub event_sink: Box<dyn EventSink>,
-}
-
-impl HostServices {
-    /// Production wiring — real event bus.
-    /// `event_sink` appends to `<config_dir>/effects.jsonl` so every HostEffect
-    /// leaves a durable audit trail.
-    pub fn new() -> Self {
-        let effects_path = crate::config::config_dir().join("effects.jsonl");
-        Self {
-            event_sink: Box::new(FileEventSink::new(effects_path)),
-        }
-    }
-}
-
-impl Default for HostServices {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[cfg(test)]

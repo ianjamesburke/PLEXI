@@ -1,9 +1,5 @@
 use serde::Serialize;
 
-pub use crate::host::keys::Direction;
-
-pub type Capability = String;
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ShareRatio {
     pub numerator: f32,
@@ -28,39 +24,4 @@ impl ShareRatio {
 pub enum Placement {
     Below,
     Right,
-}
-
-/// Pane ADT is frozen at these 2 variants. New pane-shaped things are PGAP plugins,
-/// not new variants.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PaneRuntimeKind {
-    Terminal,
-    View { plugin_id: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct OpenPaneRequest {
-    pub runtime: PaneRuntimeKind,
-    pub placement: Placement,
-    pub share: ShareRatio,
-    /// Pane group name for `sync_plugin_cwd` membership. None = ungrouped.
-    pub group: Option<String>,
-    /// Capabilities declared in the plugin's manifest.toml.
-    pub declared_capabilities: Vec<Capability>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum HostAction {
-    /// Create a new pane (Terminal or App).
-    OpenPane(OpenPaneRequest),
-    /// Close the pane that currently has focus.
-    CloseFocusedPane,
-    /// Move focus directionally within the active context.
-    Navigate(Direction),
-    /// Split focused pane: new Terminal pane below.
-    SplitHorizontal,
-    /// Split focused pane: new Terminal pane to the right.
-    SplitVertical,
 }

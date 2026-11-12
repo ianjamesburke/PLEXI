@@ -182,7 +182,7 @@ completes.
 | Layer | Tool | Lives in | Runs |
 |---|---|---|---|
 | Pure logic | `#[test]` unit tests | next to the code | `cargo test --bin plexi` |
-| Host logic (HostRequest/HostEffect dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
+| Host logic (HostRequest dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
 | Observable behavior — host UI, host apps, portals, real PGAP apps | **TOML scenes** (`tests/scenes/*.toml`) | `tests/scenes/` | targeted `just scene`; `scene_suite` for broad/final coverage |
 
 `PlexiUiHarness` (`src/ui_tests.rs`) is the engine under scenes: PlexiApp inside egui_kittest with fully headless wgpu Metal rendering (no display needed). Direct PlexiUiHarness tests in `src/ui_tests.rs` are for egui-input edge cases scenes can't express (e.g. rename-commit-on-Enter inside a draw pass).
@@ -456,7 +456,7 @@ exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
 
 - Follow The Gate above for the push path and integration. The justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
-- Test-first for host logic: a new `HostRequest`/`HostEffect` gets a failing `HostHarness` test before implementation.
+- Test-first for host logic: a new `HostRequest` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).
 - Coverage: `cargo llvm-cov --bin plexi` (cargo-llvm-cov installed at `~/.cargo/bin/`).
 
