@@ -30,6 +30,15 @@ class Parsing(unittest.TestCase):
         self.assertTrue(FC.parse_args(["a", "--ignored"])["ignored"])
         self.assertEqual(FC.parse_args(["--skip=a", "b"])["skips"], ["a"])
 
+    def test_exit_code_maps_signals_like_the_lease(self):
+        self.assertEqual(FC.exit_code(-9), 137)
+        self.assertEqual(FC.exit_code(-2), 130)
+        self.assertEqual(FC.exit_code(3), 3)
+        self.assertEqual(FC.exit_code(0), 0)
+
+    def test_report_time_does_not_swallow_a_filter(self):
+        self.assertEqual(FC.parse_args(["--report-time", "host::"])["filters"], ["host::"])
+
     def test_listing_keeps_only_tests(self):
         self.assertEqual(FC.parse_listing(LISTING), NAMES)
 
@@ -83,6 +92,18 @@ class Cache(unittest.TestCase):
         (self.root / "src/main.rs").write_text("fn main() { /* edit */ }\n")
         self.assertEqual(FC.precheck(self.root, FC.parse_args(["cli_registry"]), "t"), "unknown")
 
+    def test_a_source_edit_during_the_build_is_never_cached(self):
+        parsed = FC.parse_args(["cli::registry::"])
+        key_before = FC.source_key(self.root)
+        (self.root / "src/main.rs").write_text("fn main() { /* edited while building */ }\n")
+        FC.validate_listing(self.root, parsed, "t", LISTING, store=True, key_before=key_before)
+        self.assertEqual(list(FC.cache_dir().glob("*.json")) if FC.cache_dir().exists() else [], [])
+        self.assertEqual(FC.precheck(self.root, parsed, "t"), "unknown")
+        # unchanged source: the same call does cache
+        key_before = FC.source_key(self.root)
+        FC.validate_listing(self.root, parsed, "t", LISTING, store=True, key_before=key_before)
+        self.assertEqual(FC.precheck(self.root, parsed, "t"), "ok")
+
     def test_cache_never_trusts_a_mismatched_record(self):
         key = FC.source_key(self.root)
         FC.cache_store(key, NAMES)
@@ -117,6 +138,10 @@ class HostFlow(unittest.TestCase):
             "else:\n"
             "    filters = [a for a in rest if not a.startswith('-')]\n"
             "    ran = [n for n in names if any(f in n for f in filters)] if filters else names\n"
+            "    if os.environ.get('FC_BADBYTES'):\n"
+            "        sys.stdout.flush(); sys.stdout.buffer.write(b'caf\\xff\\n'); sys.stdout.buffer.flush()\n"
+            "    if os.environ.get('FC_SIGNAL'):\n"
+            "        os.kill(os.getpid(), 9)\n"
             "    print(f'running {len(ran)} tests')\n"
             "    sys.exit(int(os.environ.get('FC_EXIT', '0')))\n")
         self.log = Path(self.temp.name) / "log"
@@ -173,6 +198,15 @@ class HostFlow(unittest.TestCase):
     def test_exit_code_of_the_run_is_preserved(self):
         self.assertEqual(self.run_fc("host", "--", "host::model::", FC_EXIT="3").returncode, 3)
 
+    def test_non_utf8_test_output_does_not_crash_the_wrapper(self):
+        result = self.run_fc("host", "--", "host::model::", FC_BADBYTES="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("running 2 tests", result.stdout)
+
+    def test_signalled_cargo_reports_128_plus_signal(self):
+        result = self.run_fc("host", "--", "host::model::", FC_SIGNAL="1")
+        self.assertEqual(result.returncode, 137, result.stderr)
+
     def test_zero_tests_run_with_exit_zero_is_an_error(self):
         # A cache that says the filter matches, while the real binary runs nothing.
         self.run_fc("host", "--", "host::model::")
@@ -223,6 +257,17 @@ class HostFlow(unittest.TestCase):
         summary = FC.skip_summary(["a::changes::t", "b::flips_when_state_changes"], ["changes"])
         self.assertIn("skipped 2 of 2", summary)
         self.assertIn("1 of them only because", summary)
+
+    def test_unreadable_path_table_selects_the_broad_fallback_not_nothing(self):
+        (self.root / "scripts/scoped-tests.table").unlink()
+        result = subprocess.run(["bash", str(self.root / "scripts/scoped-tests.sh"), "src/host/model.rs"],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.stdout.split(), ["::"])
+        self.assertIn("cannot read a path table", result.stderr)
+        (self.root / "scripts/scoped-tests.table").write_text("# comments only, no rows\n")
+        result = subprocess.run(["bash", str(self.root / "scripts/scoped-tests.sh"), "src/host/model.rs"],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.stdout.split(), ["::"])
 
     def test_module_filter(self):
         self.assertEqual(FC.module_filter("src/host/model.rs"), "host::model::")

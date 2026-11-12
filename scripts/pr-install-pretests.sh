@@ -62,8 +62,9 @@ if [[ "$scope" == scoped && ${#filters[@]} -gt 0 ]]; then
   # Cheapest first: a cached list for this exact source state rejects a wrong
   # filter before any compile. Otherwise validate right after the test build.
   "${filter_check[@]}" precheck --label "pr-install: scoped Rust" -- "${filters[@]}"
+  key_before="$("${filter_check[@]}" key)"
   listing="$(cargo_test --list)"
-  matched="$(printf '%s\n' "$listing" | "${filter_check[@]}" validate --label "pr-install: scoped Rust" - -- "${filters[@]}" | sed -n 's/^matched=//p')"
+  matched="$(printf '%s\n' "$listing" | "${filter_check[@]}" validate --label "pr-install: scoped Rust" --key-before "$key_before" - -- "${filters[@]}" | sed -n 's/^matched=//p')"
   printf 'pr-install: scoped Rust filters=%s matched=%s base=%s\n' "${filters[*]}" "$matched" "$base_oid"
 fi
 sdk_selection="run: full candidate or legacy selector"

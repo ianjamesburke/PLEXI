@@ -7,6 +7,7 @@ pass. Every recipe that takes a filter goes through here instead:
   host -- ARGS...        `just test-host`: validate, then run the host tests.
   for PATH               `just test-for`: tests covering one source file.
   precheck -- FILTERS    validate against the cached test list, no build.
+  key                    print the source key (take it before listing; pass to validate --key-before).
   validate [-] -- FILTERS  validate a full `--list` output (file or stdin).
   suite -- SKIPS...      `just test`: run every test target except SKIPS (libtest
                          substring skips) and report how many tests that skipped.
@@ -35,11 +36,17 @@ CACHE_ENV = "PLEXI_TEST_LIST_CACHE_DIR"
 CACHE_KEEP = 20
 # Options that consume the next argv token, so it is not a filter.
 VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile",
-                 "--report-time", "--shuffle-seed", "-Z"}
+                 "--shuffle-seed", "-Z"}
 # Options that make validation meaningless: nothing is filtered or run.
 BYPASS_OPTIONS = {"--list", "--help", "-h", "--version"}
+NOKEY = object()  # "compute the key now"; None is a real value: no src/ tree to key on
 MANIFESTS = ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain", "rust-toolchain.toml",
              ".cargo/config.toml")
+
+
+def exit_code(returncode):
+    """Shell convention for a signalled child: 128+signal, as cargo-with-lease.sh reports it."""
+    return 128 + -returncode if returncode < 0 else returncode
 
 
 def say(message):
@@ -242,11 +249,16 @@ def precheck(root, parsed, label):
     return "ok"
 
 
-def validate_listing(root, parsed, label, text, store):
+def validate_listing(root, parsed, label, text, store, key_before=NOKEY):
+    """key_before is the source key taken BEFORE the listing was produced; the list is cached
+    only if the source is unchanged since, so an edit during the build never poisons the cache."""
     names = parse_listing(text)
-    key = source_key(root)
+    key = source_key(root) if key_before is NOKEY else key_before
     if store:
-        cache_store(key, names)
+        if key == source_key(root):
+            cache_store(key, names)
+        else:
+            say("source changed while the tests were being built and listed; not caching this list")
     origin = f"fresh test listing of {len(names)} tests" + (f", source key {key[:12]}" if key else "")
     count = judge(names, parsed, label, origin)
     return count
@@ -263,17 +275,20 @@ def locked_run(root, args):
     parsed = parse_args(args)
     root = Path(root)
     if parsed["filters"] and not parsed["bypass"]:
-        record = None if parsed["ignored"] else cache_load(source_key(root))
+        key_before = source_key(root)
+        record = None if parsed["ignored"] else cache_load(key_before)
         if record is None:
             listing = subprocess.run(cargo_base(root) + (["--ignored"] if parsed["ignored"] else []) + ["--list"],
-                                     cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+                                     cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     text=True, errors="replace")
             if listing.returncode != 0:
-                say(f"listing the tests failed (exit {listing.returncode}); see the build output above")
-                return listing.returncode
-            if validate_listing(root, parsed, "test-host", listing.stdout, store=not parsed["ignored"]) is None:
+                say(f"listing the tests failed (exit {exit_code(listing.returncode)}); see the build output above")
+                return exit_code(listing.returncode)
+            if validate_listing(root, parsed, "test-host", listing.stdout, store=not parsed["ignored"],
+                                key_before=key_before) is None:
                 return 1
     process = subprocess.Popen(cargo_base(root) + list(args), cwd=root, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, text=True, bufsize=1)
+                               stdout=subprocess.PIPE, text=True, errors="replace", bufsize=1)
     last_count = None
     for line in process.stdout:
         sys.stdout.write(line)
@@ -283,7 +298,7 @@ def locked_run(root, args):
                 last_count = int(line.split()[1])
             except ValueError:
                 pass
-    code = process.wait()
+    code = exit_code(process.wait())
     if code == 0 and parsed["filters"] and not parsed["bypass"] and last_count == 0:
         say("the run executed zero tests although filters were given (the validated list was wrong or "
             "stale); treating this as a failure, not a pass")
@@ -295,12 +310,13 @@ def run_host(root, args):
     parsed = parse_args(args)
     root = Path(root)
     if not parsed["filters"] or parsed["bypass"]:
-        return subprocess.call(["bash", str(root / "scripts/cargo-with-lease.sh")] + cargo_base(root) + list(args),
-                               cwd=root)
+        return exit_code(subprocess.call(["bash", str(root / "scripts/cargo-with-lease.sh")] + cargo_base(root)
+                                         + list(args), cwd=root))
     if not parsed["ignored"] and precheck(root, parsed, "test-host") == "zero":
         return 1
-    return subprocess.call(["bash", str(root / "scripts/cargo-with-lease.sh"), "python3", str(Path(__file__).resolve()),
-                            "locked-run", "--root", str(root), "--", *args], cwd=root)
+    return exit_code(subprocess.call(["bash", str(root / "scripts/cargo-with-lease.sh"), "python3",
+                                      str(Path(__file__).resolve()), "locked-run", "--root", str(root), "--", *args],
+                                     cwd=root))
 
 
 def skip_summary(names, skips):
@@ -319,27 +335,27 @@ def locked_suite(root, skips):
     """Under the cargo lease: list every target, announce the skips, run, announce them again."""
     base = ["python3", str(Path(root) / "scripts/cargo-channel-inputs.py"), "test", "--"]
     listing = subprocess.run(base + ["--list"], cwd=root, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, text=True)
+                             stdout=subprocess.PIPE, text=True, errors="replace")
     if listing.returncode != 0:
-        say(f"listing the tests failed (exit {listing.returncode}); see the build output above")
-        return listing.returncode
+        say(f"listing the tests failed (exit {exit_code(listing.returncode)}); see the build output above")
+        return exit_code(listing.returncode)
     summary = skip_summary(parse_listing(listing.stdout), skips)
     say(summary)
     arguments = [part for skip in skips for part in ("--skip", skip)]
-    code = subprocess.call(base + arguments, cwd=root, stdin=subprocess.DEVNULL)
+    code = exit_code(subprocess.call(base + arguments, cwd=root, stdin=subprocess.DEVNULL))
     say(summary)
     return code
 
 
 def run_suite(root, skips):
-    return subprocess.call(["bash", str(Path(root) / "scripts/cargo-with-lease.sh"), "python3",
-                            str(Path(__file__).resolve()), "locked-suite", "--root", str(root), "--", *skips],
-                           cwd=root)
+    return exit_code(subprocess.call(["bash", str(Path(root) / "scripts/cargo-with-lease.sh"), "python3",
+                                      str(Path(__file__).resolve()), "locked-suite", "--root", str(root), "--", *skips],
+                                     cwd=root))
 
 
 def scoped_filters(root, relative):
     result = subprocess.run(["bash", str(Path(root) / "scripts/scoped-tests.sh"), relative],
-                            cwd=root, capture_output=True, text=True)
+                            cwd=root, capture_output=True, text=True, errors="replace")
     if result.returncode != 0:
         say(f"scripts/scoped-tests.sh failed for {relative}: {result.stderr.strip()}")
         return None
@@ -404,7 +420,10 @@ def main(argv):
         if name == "validate":
             command.add_argument("listing", nargs="?", default="-")
             command.add_argument("--no-store", action="store_true")
+            command.add_argument("--key-before", default=None,
+                                 help="output of `key`, taken before the listing was produced")
         command.add_argument("args", nargs=argparse.REMAINDER)
+    sub.add_parser("key").add_argument("--root", dest="sub_root")
     command = sub.add_parser("for")
     command.add_argument("path")
     options = parser.parse_args(argv)
@@ -420,6 +439,9 @@ def main(argv):
         return run_suite(root, args)
     if options.command == "locked-suite":
         return locked_suite(root, args)
+    if options.command == "key":
+        print(source_key(root) or "")
+        return 0
     if options.command == "for":
         return run_for(root, options.path)
     parsed = parse_args(args)
@@ -428,7 +450,8 @@ def main(argv):
     if options.command == "precheck":
         return 1 if precheck(root, parsed, options.label) == "zero" else 0
     text = sys.stdin.read() if options.listing == "-" else Path(options.listing).read_text()
-    count = validate_listing(root, parsed, options.label, text, store=not options.no_store)
+    key_before = NOKEY if options.key_before is None else (options.key_before or None)
+    count = validate_listing(root, parsed, options.label, text, store=not options.no_store, key_before=key_before)
     if count is None:
         return 1
     print(f"matched={count}")

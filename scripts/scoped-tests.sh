@@ -24,6 +24,13 @@ table_file="$(dirname "$0")/scoped-tests.table"
 select_filters() {
     local path patterns filters pattern filter
     local -a pats words
+    # A table that cannot be read must never read as "no tests apply": select the broad
+    # fallback, which pretests refuse until filters are reviewed by hand.
+    if ! grep -q $'\t' "$table_file" 2>/dev/null; then
+        printf 'scoped-tests: cannot read a path table with rows at %s; selecting :: (reviewed filters required)\n' "$table_file" >&2
+        printf '%s\n' ::
+        return 0
+    fi
     for path in "$@"; do
         path=${path#./}
         # Embedded markdown is compiled in or asserted on by a test.
