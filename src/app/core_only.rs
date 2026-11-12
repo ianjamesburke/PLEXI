@@ -15,25 +15,48 @@ impl super::PlexiApp {
         let message = unavailable(plugin);
         log::info!("plugins: launch refused plugin={plugin}: core-only mode is on");
         self.plugin_notice = Some(message.clone());
+        // Own the keyboard in this frame, so Esc/Enter reach the notice
+        // rather than the pane under it.
+        self.sync_plugin_notice_focus();
         Err(message)
+    }
+
+    /// The notice owns a focus layer exactly while `plugin_notice` is set.
+    pub(crate) fn sync_plugin_notice_focus(&mut self) {
+        self.reconcile_focus_layer(
+            crate::app::FocusKind::PluginNotice,
+            self.plugin_notice.is_some(),
+        );
+    }
+
+    pub(crate) fn plugin_notice_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+        {
+            self.dismiss_plugin_notice("keyboard");
+        }
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
+    fn dismiss_plugin_notice(&mut self, via: &str) {
+        if self.plugin_notice.take().is_some() {
+            log::info!("plugins: core-only notice dismissed via {via}");
+        }
+        self.sync_plugin_notice_focus();
     }
 
     pub(crate) fn draw_plugin_notice(&mut self, ctx: &egui::Context) {
         let Some(message) = self.plugin_notice.clone() else {
             return;
         };
-        let mut dismiss = false;
-        crate::ui::toast::ToastShell::bottom("plugin_unavailable").show(ctx, &self.colors, |ui| {
-            ui.label(message);
-            dismiss = ui
-                .add(crate::ui::toast::ToastShell::button(
-                    "Dismiss",
-                    &self.colors,
-                ))
-                .clicked();
-        });
-        if dismiss || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.plugin_notice = None;
+        let colors = self.colors;
+        let response = crate::ui::toast::ToastShell::bottom("plugin_unavailable")
+            .notice_action(ctx, &colors, &message, "Dismiss");
+        if response.clicked() {
+            self.dismiss_plugin_notice("button");
         }
     }
 
