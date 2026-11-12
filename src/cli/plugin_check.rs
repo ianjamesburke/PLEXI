@@ -2094,10 +2094,12 @@ mod type_check_tests {
     /// Stint 0415, both halves of the contract: (1) a plugin reading a field
     /// that doesn't exist on an SDK event (`UiValueChange.payload` — it only
     /// has `.value`) fails the type gate instead of crashing the guest at
-    /// runtime; (2) a mixed-children `Column([Text, Button])` type-checks
-    /// clean now that container params are covariant `Sequence`. Runs mypy
-    /// through the repo venv's python; skips (loudly) when that venv isn't
-    /// synced so a fresh clone's `cargo test` doesn't require Python setup.
+    /// runtime; (2) child lists type-check clean because container and canvas
+    /// params are covariant `Sequence` (stint 1362): a literal mixed list, and
+    /// single-type lists held in variables, which mypy infers as `list[Text]`
+    /// and the like. Runs mypy through the repo venv's python; skips (loudly)
+    /// when that venv isn't synced so a fresh clone's `cargo test` doesn't
+    /// require Python setup.
     #[test]
     fn mypy_gate_flags_wrong_event_attribute_and_accepts_mixed_children() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2138,16 +2140,100 @@ mod type_check_tests {
         let good = good_dir.join("main.py");
         std::fs::write(
             &good,
-            "from plexi_sdk.ui import Button, Column, Text\n\n\
+            "from plexi_sdk.ui import (\n\
+             \x20   Badge, Button, Canvas, CanvasRect, Column, HStack, Text,\n\
+             )\n\n\
              def view():\n\
-             \x20   return Column([Text(\"hello\"), Button(\"go\", \"on-go\")])\n",
+             \x20   rows = [Text(\"a\"), Text(\"b\")]\n\
+             \x20   chips = [Badge(\"x\"), Badge(\"y\")]\n\
+             \x20   cmds = [CanvasRect(0, 0, 4, 4, \"#ffffff\")]\n\
+             \x20   return Column([\n\
+             \x20       Text(\"hello\"),\n\
+             \x20       Button(\"go\", \"on-go\"),\n\
+             \x20       Column(rows),\n\
+             \x20       HStack(chips),\n\
+             \x20       Canvas(cmds),\n\
+             \x20   ])\n",
         )
         .unwrap();
         match run_python_type_check_with(&good, &python, &sdk).expect("mypy run") {
             TypeCheckOutcome::Clean => {}
             TypeCheckOutcome::Findings(findings) => panic!(
-                "mixed-children Column must type-check clean under Sequence covariance: {findings}"
+                "mixed and variable-held child lists must type-check clean under Sequence covariance: {findings}"
             ),
+            TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
+        }
+    }
+
+    /// Stint 1362: authors copy the scaffold's `view()`, so its typing is the
+    /// pattern the type gate sees. Starting the scaffold's `body` from a single
+    /// component type and appending another must stay clean, and a `view()`
+    /// that returns a `str` must fail the gate.
+    #[test]
+    fn mypy_gate_checks_edited_scaffold_view() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let python = manifest_dir.join(".venv/bin/python");
+        if !python.exists() || probe_mypy(&python).is_err() {
+            eprintln!("skipping: repo venv python with mypy not available");
+            return;
+        }
+        let sdk_path = manifest_dir.join("sdk/python");
+        let sdk = sdk_path.to_string_lossy();
+        let scaffold = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init.py")
+            .replace("__DISPLAY_NAME__", "Probe");
+        let edit = |source: &str, anchor: &str, replacement: &str| -> String {
+            assert_eq!(
+                source.matches(anchor).count(),
+                1,
+                "scaffold must contain {anchor:?} exactly once"
+            );
+            source.replace(anchor, replacement)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let check = |name: &str, source: &str| {
+            let plugin_dir = dir.path().join(name);
+            std::fs::create_dir_all(&plugin_dir).unwrap();
+            let entry = plugin_dir.join("main.py");
+            std::fs::write(&entry, source).unwrap();
+            run_python_type_check_with(&entry, &python, &sdk).expect("mypy run")
+        };
+
+        let appended = edit(
+            &scaffold,
+            "from plexi_sdk.ui import ",
+            "from plexi_sdk.ui import Badge, ",
+        );
+        let appended = edit(
+            &appended,
+            "        Button(\"Add one\", on_click=\"increment\"),\n",
+            "",
+        );
+        let appended = edit(
+            &appended,
+            "    return Column(\n",
+            "    body.append(Badge(\"new\"))\n    return Column(\n",
+        );
+        match check("appended", &appended) {
+            TypeCheckOutcome::Clean => {}
+            TypeCheckOutcome::Findings(findings) => {
+                panic!("appending another component type to the scaffold body must type-check: {findings}")
+            }
+            TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
+        }
+
+        let str_view = edit(
+            &scaffold,
+            "    width = state.get(\"width\", 0)\n",
+            "    if state.get(\"count\", 0) > 99:\n        return \"too many\"\n    width = state.get(\"width\", 0)\n",
+        );
+        match check("str-view", &str_view) {
+            TypeCheckOutcome::Findings(findings) => assert!(
+                findings.contains("Incompatible return value type"),
+                "findings must name the str return: {findings}"
+            ),
+            TypeCheckOutcome::Clean => {
+                panic!("a scaffold view() returning str must fail the type gate")
+            }
             TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
         }
     }
