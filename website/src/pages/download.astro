@@ -24,7 +24,7 @@ const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
       <dl class="facts">
         <div><dt>Needs</dt><dd><code class="inline">bash</code>, <code class="inline">curl</code>, <code class="inline">tar</code> and <code class="inline">shasum</code>. All four come with macOS.</dd></div>
         <div><dt>Does</dt><dd>Downloads the release archive, verifies its SHA-256 checksum and installs into directories you own.</dd></div>
-        <div><dt>Then</dt><dd>Open Plexi. In any pane, <code class="inline">plexi --help</code> lists the commands and <code class="inline">plexi ai onboard</code> walks through AI setup, which you can skip.</dd></div>
+        <div><dt>Then</dt><dd>Open Plexi. The beta's launcher is <code class="inline">plexi-beta</code>; inside a Plexi pane, plain <code class="inline">plexi</code> runs the build that pane belongs to. <code class="inline">plexi --help</code> lists the commands and <code class="inline">plexi ai onboard</code> walks through AI setup, which you can skip.</dd></div>
         <div><dt>Update</dt><dd><code class="inline">plexi update</code> moves to the newest build on your channel. <code class="inline">plexi update --rollback</code> restores the previous one.</dd></div>
         <div><dt>Remove</dt><dd><code class="inline">plexi uninstall</code> removes the package and its launchers. It keeps your data unless you pass <code class="inline">--delete-data</code>.</dd></div>
       </dl>

@@ -19,6 +19,5 @@ export const release = {
   },
   next: '0.5.0',
   installBeta: 'curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta',
-  installStable: 'curl -fsSL https://plexiapp.com/install | bash',
   unsignedGuide: `${REPO}/blob/alpha/docs/unsigned-install.md`,
 } as const;

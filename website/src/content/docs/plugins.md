@@ -122,6 +122,8 @@ plexi view open --mcp filesystem
 ```
 
 Both are behind experiments. `plexi experiments list` shows their state.
+`plexi agents-dashboard` opens the Agents dashboard when its experiment is
+enabled. Agents are separate from plugins.
 
 ## Logging
 

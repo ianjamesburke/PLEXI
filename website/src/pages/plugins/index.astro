@@ -47,6 +47,11 @@ const steps = [
       <p class="lead">{plugins.length} plugins ship with Plexi. Each is built on the same SDK you get, so each one is also example code.</p>
     </div>
 
+    <div class="renders">
+      <Shot ratio="4 / 3" src="/shots/todo.png" alt="The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete." caption="Todo, rendered by plexi view render with seeded items." />
+      <Shot ratio="4 / 3" src="/shots/calc.png" alt="The Calculator plugin showing a display reading 0 and a keypad with digits and operators." caption="Calculator, rendered by plexi view render." />
+    </div>
+
     <h3 class="group-label">Tools</h3>
     <ul class="plugin-list">
       {tools.map(p => (
@@ -101,7 +106,7 @@ const steps = [
         FooterKeys([("+", "increment")]),
     ], grow=True)</code></pre>
       <div class="build-side">
-        <Shot ratio="4 / 3" caption="The counter view." pending="The counter plugin rendered alone at 800 by 600, showing its header, the count and the key hint." />
+        <Shot ratio="3 / 2" src="/shots/counter.png" alt="The counter plugin running: a header reading Counter, the count 0, and a footer hint that the plus key increments." caption="This source, rendered by plexi view render." />
         <dl class="facts">
           <div><dt>init</dt><dd>Runs once on launch and returns the starting effects.</dd></div>
           <div><dt>update</dt><dd>Runs for every input event and returns effects. State changes only through those effects.</dd></div>
@@ -153,6 +158,8 @@ const steps = [
   .sticky-head p { max-width: 36ch; }
 
   .bundled-head { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 20px clamp(40px, 8vw, 128px); align-items: end; margin-bottom: clamp(36px, 4vw, 56px); }
+  .renders { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px clamp(20px, 3vw, 40px); margin-bottom: 56px; }
+  @media (max-width: 700px) { .renders { grid-template-columns: minmax(0, 1fr); } }
   .group-label { font: 700 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-2); padding-bottom: 12px; border-bottom: 1px solid var(--border-2); }
   .plugin-list + .group-label { margin-top: 56px; }
   .plugin-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); column-gap: 40px; }

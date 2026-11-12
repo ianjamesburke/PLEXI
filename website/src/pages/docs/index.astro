@@ -5,7 +5,7 @@ import { release } from '../../lib/release';
 import DocsSearch from '../../components/docs/DocsSearch.astro';
 
 const startCommands: Record<string, string> = {
-  'getting-started': release.installStable,
+  'getting-started': release.installBeta,
   'first-agent': 'plexi agent hook install --claude-code',
   'first-plugin': 'plexi plugin init my-plugin',
 };

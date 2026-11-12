@@ -11,16 +11,18 @@ Plexi runs on Apple Silicon Macs today. Windows and Linux builds are coming soon
 Paste this into a terminal:
 
 ```sh
-curl -fsSL https://plexiapp.com/install | bash
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 ```
 
-The installer downloads the current stable release for your Mac, checks the
+The installer downloads the current beta release for your Mac, checks the
 archive's SHA-256 checksum, and installs into your home directory. It needs
 `bash`, `curl`, `tar` and `shasum`. It does not need Rust, Git, a package
 manager or administrator access.
 
+The beta's launcher is `plexi-beta`. Inside a Plexi pane, plain `plexi` runs
+the build that pane belongs to, so the commands in these docs work as written.
 The [Download page](/download) lists which release each channel currently
-installs. Check it before you pick a channel other than stable.
+installs.
 
 ## Open an unsigned build
 
@@ -78,10 +80,11 @@ app bundle, so you can run them side by side.
 | Beta | `plexi-beta` | `~/.plexi-beta/` | `<repo>/.plexi-beta/` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `<repo>/.plexi-alpha/` |
 
-To install a pre-release channel, pass `--channel`:
+The install command above passes `--channel beta`. Pass `--channel alpha` for
+the alpha channel instead:
 
 ```sh
-curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
 ```
 
 Features outside the stable surface are experiments, off by default on every

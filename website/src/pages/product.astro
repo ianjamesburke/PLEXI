@@ -48,7 +48,7 @@ const parts = [
     ],
     cmd: 'plexi view open todo',
     cmdNote: 'Opens the bundled Todo plugin in a split to the right.',
-    shot: { id: 'S5', pending: 'Left pane: main.py of the counter plugin in a terminal editor. Right pane: the counter view running.', caption: 'A plugin beside its source.' },
+    shot: { id: 'S6', src: '/shots/todo.png', alt: 'The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete.', ratio: '4 / 3', caption: 'The bundled Todo view, rendered by plexi view render with seeded items.' },
     doc: { href: '/plugins', label: 'Plugins and views' },
   },
   {
@@ -120,7 +120,7 @@ const parts = [
           </div>
           <a class="link-arrow" href={p.doc.href}>{p.doc.label} <Arrow /></a>
         </div>
-        <Shot caption={p.shot.caption} pending={p.shot.pending} />
+        <Shot caption={p.shot.caption} pending={p.shot.pending} src={p.shot.src} alt={p.shot.alt} ratio={p.shot.ratio} />
       </div>
       {p.id === 'permissions' && (
         <div class="wrap part-notice">
