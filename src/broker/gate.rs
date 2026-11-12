@@ -378,8 +378,9 @@ pub struct PermissionEntry {
 pub struct PermissionCaller {
     /// `true` only for host-owned trusted input. It is never derived from the
     /// absence of an agent signal: socket callers (pane or not, credential or
-    /// not), MCP and Assistant tools pass `false`, so their `allow`/`reset`
-    /// file Needs you and a desktop click applies them (stint 1271).
+    /// not), MCP and Assistant tools, and plugin guest messages (including the
+    /// bundled Permissions plugin's) pass `false`, so their `allow`/`reset`
+    /// file Needs you and a desktop click applies them (stints 1264, 1271).
     pub human: bool,
     pub actor_id: String,
 }
