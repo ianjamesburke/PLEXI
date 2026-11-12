@@ -1478,6 +1478,32 @@ mod tests {
         ));
     }
 
+    /// Stint 1127, adapted from PR #2978: a permission-denied workspace file
+    /// is named with its path and its bytes survive.
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_workspace_load_names_the_file_and_preserves_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"original workspace";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = WorkspaceFile::load_from(profile.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = result.err().expect("an unreadable workspace must fail");
+        assert!(
+            matches!(&error, WorkspaceLoadError::Unusable { path: named, .. } if named == &path),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("cannot read the file"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
     #[test]
     fn save_rejects_unreadable_existing_workspace() {
         let profile = tempfile::tempdir().expect("temporary profile");

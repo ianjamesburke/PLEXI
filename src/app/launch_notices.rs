@@ -53,8 +53,10 @@ impl PlexiApp {
                 notify_id: crate::app::notifications::new_notify_id("workspace-load"),
                 title: "Workspace not restored".to_string(),
                 body: block,
-                // The workspace file belongs to the whole host profile.
+                // The workspace file belongs to the whole host profile, and
+                // the notice stays until the user acknowledges it (#2978).
                 scope: crate::protocol::NotifyScope::Global,
+                required: true,
                 ..Default::default()
             },
         );
