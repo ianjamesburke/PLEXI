@@ -2615,6 +2615,45 @@ mod plugin_install_workspace_tests {
         assert_eq!(code, 0, "reverse-DNS plugin ids must install cleanly");
     }
 
+    /// Stint 1291: `--yes` confirms the install only. A WASM package whose
+    /// `[plugin.capabilities.wasm]` lists required and optional ids leaves no
+    /// capability row in either permission file; the plugin asks when it runs.
+    #[test]
+    fn install_yes_writes_no_grant() {
+        let profile = TempDir::new().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let src = TempDir::new().unwrap();
+        let plugin_id = "plexi-test-install-yes-no-grant";
+        std::fs::write(
+            src.path().join("manifest.toml"),
+            format!(
+                "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"Test\"\nversion = \"0.1.0\"\ndescription = \"Test\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [\"spawn.plugin\", \"state:read-write\"]\noptional = [\"ai.query\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"app.wasm\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(src.path().join("app.wasm"), b"\0asm").unwrap();
+
+        let code = super::plugin_install_with_pin(
+            &src.path().to_string_lossy(),
+            None,
+            super::InstallConfirm::Interactive,
+            true,
+        );
+        assert_eq!(code, 0, "install --yes must still install the plugin");
+
+        let grants = std::fs::read_to_string(profile.path().join("grants.toml")).unwrap_or_default();
+        assert!(
+            !grants.contains(plugin_id),
+            "install --yes must not write a grant row:\n{grants}"
+        );
+        let legacy =
+            std::fs::read_to_string(profile.path().join("permissions.toml")).unwrap_or_default();
+        assert!(
+            !legacy.contains(plugin_id),
+            "install --yes must not write a legacy permission row:\n{legacy}"
+        );
+    }
+
     #[test]
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();

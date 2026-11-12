@@ -860,6 +860,53 @@ mod open_cli_tests {
         assert_eq!(payload["args"], serde_json::json!(["--sample", "96"]));
     }
 
+    /// Stint 1291: the CLI never reviews or remembers raw `.wasm` imports. It
+    /// forwards the launch and the host asks in its window; no permission
+    /// file is written by this process.
+    #[test]
+    fn raw_wasm_open_writes_no_row() {
+        let env = socket_env_guard();
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let wasm_path_str = fixture.to_string_lossy().into_owned();
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let socket_path = socket_dir.path().join("open.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind open socket");
+        env.set(&socket_path);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept open connection");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).ok();
+            let payload: Option<Value> = serde_json::from_str(&line).ok();
+            if let Some(response_file) = payload
+                .as_ref()
+                .and_then(|p| p.get("response_file"))
+                .and_then(|v| v.as_str())
+            {
+                crate::rpc::write_response(response_file, br#"{"pane_id":123}"#);
+            }
+            payload
+        });
+
+        let code = open_cli(&wasm_path_str, &[], None, None, None);
+        if code != 0 {
+            // Unblock the listener when the CLI refused before connecting.
+            let _ = std::os::unix::net::UnixStream::connect(&socket_path);
+        }
+        let payload = server.join().expect("socket thread");
+
+        assert_eq!(code, 0, "raw .wasm open must forward to the host, not review locally");
+        assert_eq!(payload.expect("spawn payload")["type"], "spawn_pane");
+        for file in ["grants.toml", "permissions.toml"] {
+            assert!(
+                !config_dir.path().join(file).exists(),
+                "the CLI must not write {file}"
+            );
+        }
+    }
+
     #[test]
     fn raw_wasm_review_requires_tty_for_unreviewed_imports() {
         let config_dir = tempfile::tempdir().expect("temp config dir");

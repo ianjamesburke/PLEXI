@@ -1849,6 +1849,30 @@ values = ["hi"]
         );
     }
 
+    /// Stint 1291: `[plugin.capabilities.wasm]` names raw WASM imports. A
+    /// Python package that lists them gets nothing from them and must not
+    /// validate (the ids overlap Python capability strings such as
+    /// `spawn.plugin`).
+    #[test]
+    fn wasm_capability_table_is_rejected_for_python_runtime() {
+        let work = TempDir::new().unwrap();
+        let plugin_dir = work.path().join("app");
+        fs::create_dir(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join("manifest.toml"),
+            "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"pkg-py-wasm-table\"\nname = \"Py\"\nversion = \"0.1.0\"\ndescription = \"Py\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[plugin.capabilities.wasm]\nrequired = [\"spawn.plugin\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pkg-py-wasm-table.main\"\ndefault = true\n",
+        )
+        .unwrap();
+        fs::write(plugin_dir.join("main.py"), "# stub\n").unwrap();
+
+        let err = validate_dir(&plugin_dir).unwrap_err();
+        assert!(
+            err.to_string().contains("[plugin.capabilities.wasm]")
+                && err.to_string().contains("only for WASM plugins"),
+            "expected the WASM-table runtime refusal, got: {err}"
+        );
+    }
+
     #[test]
     fn default_output_name_is_id_version() {
         let work = TempDir::new().unwrap();

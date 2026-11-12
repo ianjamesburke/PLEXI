@@ -104,3 +104,34 @@ pub fn changes_revert_cli(id: &str) -> i32 {
         Err(error) => stop(error),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Stint 1291: `plexi changes allow` runs in the CLI process, which never
+    /// writes a grant or opens the permission store. A leftover legacy
+    /// `permissions.toml` is not imported by it either (that import seals).
+    #[test]
+    fn changes_allow_writes_no_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let legacy = profile.join("permissions.toml");
+        std::fs::write(&legacy, "[entries]\n").unwrap();
+        let file = dir.path().join("draft.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+
+        let code = super::changes_allow_cli("editor-bot", &file, "alpha", "beta");
+
+        assert_ne!(code, 0, "changes allow must refuse in the CLI process");
+        assert!(
+            !profile.join("grants.toml").exists(),
+            "changes allow must not write grants.toml"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "[entries]\n",
+            "the CLI must not import or retire permissions.toml"
+        );
+    }
+}
