@@ -303,6 +303,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn close_changelog(&mut self) {
+        self.update_confirm_prompt = false;
         if self.show_changelog {
             self.show_changelog = false;
             self.reconcile_focus_layer(crate::app::FocusKind::Changelog, false);
@@ -314,7 +315,15 @@ impl PlexiApp {
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::view_trait::KeyDisposition {
+        if self.update_confirm_prompt && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+        {
+            self.update_confirm_prompt = false;
+            self.restart_to_update("changelog confirm");
+        }
         if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if self.update_confirm_prompt {
+                log::info!("update: restart confirm cancelled");
+            }
             self.close_changelog();
         }
         crate::app::view_trait::KeyDisposition::Consumed
@@ -355,7 +364,9 @@ impl PlexiApp {
                         if let (Some(latest), true) = (&ready, self.update_confirm_prompt) {
                             ui.vertical(|ui| {
                                 ui.label(
-                                    RichText::new("Plexi will restart with the new version. Your workspace will be saved.")
+                                    RichText::new(format!(
+                                        "Plexi will restart into v{latest}. Running panes will close; your workspace will be saved."
+                                    ))
                                         .size(style::TEXT_HINT)
                                         .color(self.colors.accent),
                                 );
@@ -376,6 +387,12 @@ impl PlexiApp {
                                         self.update_confirm_prompt = false;
                                     }
                                 });
+                                ui.add_space(4.0);
+                                let hints = [
+                                    crate::ui::hints::HintGroup::new(&["\u{21b5}"], "restart"),
+                                    crate::ui::hints::HintGroup::new(&["esc"], "cancel"),
+                                ];
+                                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                             });
                             return;
                         }

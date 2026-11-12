@@ -1868,7 +1868,9 @@ impl PlexiApp {
                                 let title = format!("Update ready: v{version}");
                                 let row_response = ListRow::new(&title)
                                     .metadata_chips(&["update"])
-                                    .secondary("Restart to update · your workspace is saved")
+                                    .secondary(
+                                        "Restart to update · asks before closing running panes",
+                                    )
                                     .selected(is_selected)
                                     .show(ui, &colors);
                                 if is_selected {
@@ -2092,7 +2094,7 @@ impl PlexiApp {
                     self.toggle_changelog();
                 }
             }
-            PaletteCommand::RestartToUpdate => self.restart_to_update("palette"),
+            PaletteCommand::RestartToUpdate => self.offer_update_restart("palette"),
             PaletteCommand::SetupCli => match crate::cli::setup::setup_external_shell(true) {
                 Ok(report) => {
                     log::info!(
@@ -3095,18 +3097,83 @@ mod tests {
 
         let mut h = crate::testing::HostHarness::new();
         h.app.run_palette_command(PaletteCommand::RestartToUpdate);
-        assert!(
-            !h.app.update_quit_pending,
-            "nothing ready, nothing restarts"
-        );
+        assert!(!h.app.show_changelog, "nothing ready, nothing offered");
+        assert!(!h.app.update_confirm_prompt);
+        assert!(!h.app.update_quit_pending);
+    }
+
+    fn harness_with_ready_update() -> crate::testing::HostHarness {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
         h.app.update_status.begin_check();
         h.app
             .update_status
             .apply(crate::host::update_status::UpdateEvent::Ready {
                 version: "0.5.1".into(),
             });
-        h.app.run_palette_command(PaletteCommand::RestartToUpdate);
-        assert!(h.app.update_quit_pending);
+        h.run_frames(1);
+        h
+    }
+
+    fn open_palette_and_press_enter(h: &mut crate::testing::HostHarness) {
+        h.app.show_command_palette = true;
+        h.app.palette_selected = 0;
+        h.app.palette_selected_key = None;
+        h.app.sync_command_palette_focus();
+        h.run_frames(1);
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    }
+
+    /// Cmd+P then Enter on the ready row only asks; a second Enter restarts.
+    /// The test clears the restart request and never runs another frame, so
+    /// nothing schedules a real restart.
+    #[test]
+    fn palette_update_ready_enter_asks_then_second_enter_restarts() {
+        let mut h = harness_with_ready_update();
+        open_palette_and_press_enter(&mut h);
+        assert!(!h.app.show_command_palette);
+        assert!(h.app.show_changelog, "the restart confirm opens");
+        assert!(h.app.update_confirm_prompt);
+        assert!(
+            !h.app.update_quit_pending,
+            "the first Enter must never restart"
+        );
+
+        // The second Enter goes straight to the changelog's key handler (the
+        // owner the focus stack routes it to). Delivering it through a real
+        // frame would let that frame's preamble schedule an actual restart.
+        let mut enter = crate::app::input_router::PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(
+            h.app.focus_stack.last(),
+            Some(&crate::app::FocusKind::Changelog)
+        );
+        h.app.changelog_handle_key(&mut enter);
+        assert!(h.app.update_quit_pending, "the second Enter confirms");
+        assert!(!h.app.update_confirm_prompt);
+        h.app.update_quit_pending = false;
+    }
+
+    #[test]
+    fn palette_update_ready_confirm_esc_cancels() {
+        let mut h = harness_with_ready_update();
+        open_palette_and_press_enter(&mut h);
+        assert!(h.app.update_confirm_prompt);
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.update_confirm_prompt);
+        assert!(!h.app.show_changelog);
+        h.run_frames(2);
+        assert!(!h.app.update_quit_pending);
+        assert!(!h.app.quit_coordinator.is_active());
+        assert_eq!(h.app.update_status.ready(), Some("0.5.1"));
     }
 
     #[test]

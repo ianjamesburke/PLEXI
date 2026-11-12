@@ -85,6 +85,21 @@ impl PlexiApp {
         }
     }
 
+    /// Show the changelog's restart confirm for the ready build. A second
+    /// Enter (or the confirm button) restarts; Esc cancels. Nothing restarts
+    /// on the first keystroke. No-op when nothing is ready.
+    pub(crate) fn offer_update_restart(&mut self, source: &str) {
+        let Some(version) = self.update_status.ready() else {
+            log::warn!("update: restart offered from {source} with no build ready");
+            return;
+        };
+        log::info!("update: restart to v{version} offered from {source}; awaiting confirm");
+        if !self.show_changelog {
+            self.toggle_changelog();
+        }
+        self.update_confirm_prompt = true;
+    }
+
     /// Restart into the ready build through the same quit path as the
     /// changelog's Restart button. No-op when nothing is ready.
     pub(crate) fn restart_to_update(&mut self, source: &str) {

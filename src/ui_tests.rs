@@ -7144,6 +7144,20 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_ready")).expect("render failed");
         println!("Screenshot saved to {}", evidence_png!("_ready"));
 
+        h.with_app_mut(|app| app.offer_update_restart("test"));
+        h.run_steps(2);
+        h.harness().get_by_label(
+            "Plexi will restart into v0.5.1. Running panes will close; your workspace will be saved.",
+        );
+        h.harness().get_by_label("Restart to v0.5.1");
+        assert!(
+            h.with_app(|app| !app.update_quit_pending),
+            "showing the confirm never restarts"
+        );
+        h.save_screenshot(&evidence_png!("_confirm")).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!("_confirm"));
+        h.with_app_mut(|app| app.update_confirm_prompt = false);
+
         h.with_app_mut(|app| {
             let mut status = crate::host::update_status::UpdateStatus::default();
             status.begin_check();
