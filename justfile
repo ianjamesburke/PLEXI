@@ -523,14 +523,6 @@ channel-list:
 channel-uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 
-# Wipe a channel's installed apps directory then re-sync from examples/.
-# Useful when an app is renamed or removed — rsync won't delete stale dirs.
-#   just clear-apps alpha
-#   just clear-apps beta
-#   just clear-apps main
-clear-apps channel="":
-    bash scripts/clear-apps.sh {{channel}}
-
 # Preview what the next changelog would look like without committing anything.
 changelog:
     git cliff --unreleased --bump --tag-pattern 'v[0-9]+\.[0-9]+\.[0-9]+$'
