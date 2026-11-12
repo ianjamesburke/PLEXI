@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Writes src/data/bundled-plugins.json from packs/core.toml and each bundled
+// Writes src/lib/bundled-plugins.json from packs/core.toml and each bundled
 // plugin's manifest.toml. The site never types this list by hand.
 //   node scripts/gen-bundled-plugins.mjs          regenerate
 //   node scripts/gen-bundled-plugins.mjs --check  exit 1 if the committed file is stale
@@ -10,7 +10,7 @@ import { parse } from 'smol-toml';
 
 const website = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(website, '..');
-const outPath = join(website, 'src/data/bundled-plugins.json');
+const outPath = join(website, 'src/lib/bundled-plugins.json');
 
 function readToml(path) {
   let text;
