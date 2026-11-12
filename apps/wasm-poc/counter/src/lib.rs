@@ -8,8 +8,8 @@ wit_bindgen::generate!({
 use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::host_log;
 use plexi::platform::types::{
-    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, StateSnapshot,
-    TextNode, UiNodeData, UiTree,
+    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, Justify,
+    StateSnapshot, TextNode, UiNodeData, UiTree,
 };
 
 const INCREMENT_HANDLER: &str = "increment";
@@ -97,6 +97,7 @@ impl Counter {
                 children: vec![title_id, count_id, button_id],
                 gap: 10.0,
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: true,
             }),
         );

@@ -10,52 +10,59 @@
 # With no arguments, detect branch + staged + unstaged + untracked paths against
 # SCOPED_TEST_BASE (default origin/alpha), using the merge base. Set this to the
 # actual PR base for aggregate lanes. Detection failure conservatively selects ::.
+# The path table lives in scoped-tests.table (tested for drift by test_filter_check.py).
 # Selection always exits 0. --selftest is a diagnostic and exits 1 on failure.
-# --gate delegates to the sibling docs-gate-scope.py: a markdown-only diff may
-# skip the gate only when every path is provably not embedded via include_str!
-# and not under a #[cfg(test)] doc-sync assertion's directory. The embedded set
-# is computed from src/ on every call, never listed. Exits 0 for skip, 1 for
+# --gate delegates to the sibling docs_gate_scope.py, which owns the rule for
+# when a markdown-only diff may skip the gate. Exits 0 for skip, 1 for
 # required, and prints the reason.
 
+table_file="$(dirname "$0")/scoped-tests.table"
+
+# Path -> filters comes from scoped-tests.table (first matching row wins).
 select_filters() {
-    local path
+    local path patterns filters pattern filter
+    local -a pats words
+    # A table that cannot be read must never read as "no tests apply": select the broad
+    # fallback, which pretests refuse until filters are reviewed by hand.
+    if ! grep -q $'\t' "$table_file" 2>/dev/null; then
+        printf 'scoped-tests: cannot read a path table with rows at %s; selecting :: (reviewed filters required)\n' "$table_file" >&2
+        printf '%s\n' ::
+        return 0
+    fi
     for path in "$@"; do
         path=${path#./}
-        case "$path" in
-            *.md)
-                # Embedded markdown is compiled in or asserted on by a test.
-                # Treat it as code and force a reviewed filter selection.
-                if python3 "$(dirname "$0")/docs_gate_scope.py" --is-embedded "$path" 2>/dev/null; then
-                    printf '%s\n' ::
+        # Markdown is docs only when the classifier positively says skip (exit 0).
+        # Binding markdown, a classifier crash or a missing python3 all select ::.
+        if [[ "$path" == *.md ]]; then
+            if ! python3 "$(dirname "$0")/docs_gate_scope.py" "$path" >/dev/null 2>&1; then
+                printf '%s\n' ::
+            fi
+            continue
+        fi
+        while IFS=$'\t' read -r patterns filters || [[ -n "$patterns" ]]; do
+            [[ -z "$patterns" || "$patterns" == \#* ]] && continue
+            IFS='|' read -ra pats <<< "$patterns"
+            for pattern in "${pats[@]}"; do
+                # shellcheck disable=SC2053 # the table entry is a glob
+                if [[ "$path" == $pattern ]]; then
+                    read -ra words <<< "$filters"
+                    for filter in "${words[@]}"; do printf '%s\n' "$filter"; done
+                    break 2
                 fi
-                ;;
-            docs/*|.agents/*|.claude/*) ;;
-            src/overlays/*) printf '%s\n' overlays:: testing:: ;;
-            src/testing/harness_tests.rs) printf '%s\n' testing::harness_tests:: ;;
-            src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
-            src/scenes.rs) printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
-            src/ui/*|src/render/*|src/ui_tests.rs|tests/scenes/*)
-                printf '%s\n' ui:: render:: ui_tests:: testing:: ;;
-            src/cli/*) printf '%s\n' cli:: cli_tests:: testing:: ;;
-            src/editor/*|src/app/text_editor_app.rs)
-                printf '%s\n' editor:: editor_gate ui_tests:: ;;
-            src/config/*|src/workspace/*)
-                printf '%s\n' config:: workspace:: testing:: ;;
-            src/*) printf '%s\n' :: ;;
-            apps/*|sdk/python/*) ;; # PGAP evidence is separate, not libtest.
-            scripts/*) ;; # Deliberate decision documented above.
-            *) ;; # docs/skills/config-only: no host evidence per classification.
-        esac
+            done
+        done < "$table_file"
     done | LC_ALL=C sort -u
 }
 
 selftest() {
     local got first second
-    got=$(select_filters notes/guide.md AGENTS.md .agents/skills/testing/SKILL.md)
+    got=$(select_filters notes/guide.md scripts/AGENTS.md)
     [[ -z "$got" ]] || { printf 'FAIL docs-only selected: %s\n' "$got"; return 1; }
     printf 'PASS non-embedded docs-only: <empty>\n'
     got=$(select_filters docs/CONFIG.md)
     [[ "$got" == :: ]] || { printf 'FAIL embedded markdown: %s\n' "$got"; return 1; }
+    got=$(select_filters apps/AGENTS.md)
+    [[ "$got" == :: ]] || { printf 'FAIL include_dir markdown: %s\n' "$got"; return 1; }
     printf 'PASS embedded markdown -> :: (code)\n'
     got=$(select_filters src/host/model.rs)
     [[ "$got" == *host::* && "$got" == *testing::* ]] || { printf 'FAIL host: %s\n' "$got"; return 1; }

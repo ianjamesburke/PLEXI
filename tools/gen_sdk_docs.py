@@ -181,11 +181,26 @@ def _class_constructor_sig(
     return None
 
 
+def _type_alias_name(node: ast.stmt) -> str | None:
+    """Name of an explicit ``Name: TypeAlias = ...`` declaration, else None."""
+    if (
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and isinstance(node.annotation, ast.Name)
+        and node.annotation.id == "TypeAlias"
+        and node.value is not None
+    ):
+        return node.target.id
+    return None
+
+
 def _iter_top_level(
     tree: ast.Module,
-) -> Iterator[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
+) -> Iterator[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign]:
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node
+        elif isinstance(node, ast.AnnAssign) and _type_alias_name(node) is not None:
             yield node
 
 
@@ -242,6 +257,16 @@ def render_class(
     return lines
 
 
+def render_type_alias(node: ast.AnnAssign, doc: str | None) -> list[str]:
+    assert node.value is not None
+    name = _type_alias_name(node)
+    lines = [f"### `{name}`", "", "```python", f"{name} = {ast.unparse(node.value)}", "```"]
+    if doc:
+        lines.append("")
+        lines.append(_dedent(doc))
+    return lines
+
+
 def render_function(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     lines: list[str] = []
     doc = ast.get_docstring(fn)
@@ -269,8 +294,22 @@ def process_file(path: Path, section_title: str) -> list[str]:
     class_map = {
         node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
     }
+    # A string statement right after a type alias is that alias's docstring.
+    alias_docs = {
+        id(node): following.value.value
+        for node, following in zip(tree.body, tree.body[1:])
+        if isinstance(following, ast.Expr)
+        and isinstance(following.value, ast.Constant)
+        and isinstance(following.value.value, str)
+    }
     for node in _iter_top_level(tree):
-        if isinstance(node, ast.ClassDef):
+        if isinstance(node, ast.AnnAssign):
+            name = _type_alias_name(node)
+            if name is None or not _is_public(name):
+                continue
+            lines.extend(render_type_alias(node, alias_docs.get(id(node))))
+            lines.append("")
+        elif isinstance(node, ast.ClassDef):
             if node.name.startswith("_"):
                 continue
             expand = node.name in EXPAND_CLASSES

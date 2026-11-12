@@ -40,7 +40,7 @@ use super::wasm_view::bindings::plexi::platform::types::{
     DeclareToolsEffect, FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent,
     StateSnapshot, TimerEffect, ToolDecl, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
 };
-use super::wasm_view::Alignment;
+use super::wasm_view::{Alignment, Justify};
 #[cfg(test)]
 use super::wasm_view::{Effect, Grants, StateStore, WasmView};
 
@@ -497,6 +497,10 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
 
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
+    /// The plugin's own code raised; the text is the SDK runtime's structured
+    /// report, headline first (`fatal_error::GuestFatalError::report`).
+    #[error("{0}")]
+    PluginRaised(String),
     #[error("read manifest at {path}: {source}")]
     ReadManifest {
         path: PathBuf,
@@ -570,6 +574,8 @@ pub enum WasmPythonError {
     StateNotObject { path: PathBuf, found: &'static str },
     #[error("invalid [state] declaration: {0}")]
     StateScopes(String),
+    #[error("invalid seed state: {0}")]
+    HeadlessSeed(String),
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
@@ -669,31 +675,84 @@ impl PythonLaunchConfig {
     }
 }
 
-fn python_init_payload(config: &PythonLaunchConfig, state: Value, size: (f32, f32)) -> Value {
-    // Same wire shape the live pane sends: state is always scope-keyed, never
-    // a flat `state` key. `state` here seeds only the plugin's default scope.
-    let default_scope = config
-        .state_scopes
+/// Shape a headless seed into the scope-keyed `states` object the init
+/// payload carries. A plugin that declares one scope takes a flat seed, which
+/// lands in that scope. A plugin that declares several takes an object keyed
+/// by scope name, so each scope can be seeded; a flat seed there is an error,
+/// never a guess about which scope it meant.
+pub fn headless_seed_states(
+    scopes: &[crate::host::state_scope::StateScope],
+    seed: Option<Value>,
+) -> Result<Value, String> {
+    let default_scope = scopes
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let Some(seed) = seed else {
+        return Ok(json!({ default_scope.as_str(): Value::Null }));
+    };
+    if scopes.len() <= 1 {
+        return Ok(json!({ default_scope.as_str(): seed }));
+    }
+    let declared: Vec<&'static str> = scopes.iter().map(|scope| scope.as_str()).collect();
+    let example = declared
+        .iter()
+        .map(|scope| format!("\"{scope}\": {{...}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(map) = seed.as_object() else {
+        return Err(format!(
+            "seed state must be a JSON object keyed by scope name, for example {{{example}}}"
+        ));
+    };
+    let mut unknown: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !declared.contains(key))
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "this plugin declares several [state] scopes ({}), so seed state must be keyed by scope name, for example {{{example}}}; found top-level key(s) that are not declared scopes: {}",
+            declared.join(", "),
+            unknown.join(", ")
+        ));
+    }
+    Ok(seed)
+}
+
+fn python_init_payload(
+    config: &PythonLaunchConfig,
+    seed: Option<Value>,
+    size: (f32, f32),
+) -> Result<Value, WasmPythonError> {
+    // Same wire shape the live pane sends: state is always scope-keyed, never
+    // a flat `state` key.
+    let states =
+        headless_seed_states(&config.state_scopes, seed).map_err(WasmPythonError::HeadlessSeed)?;
     let scope_names: Vec<&'static str> = config
         .state_scopes
         .iter()
         .map(|scope| scope.as_str())
         .collect();
-    json!({
+    log::info!(
+        "wasm_python[{}]: headless init seeds scope(s) {:?} of declared {:?}",
+        config.plugin_id,
+        states.as_object().map(|m| m.keys().collect::<Vec<_>>()),
+        scope_names
+    );
+    Ok(json!({
         "type": "init",
         "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
         "feature_flags": ["keyed_tree_delta"],
-        "states": { default_scope.as_str(): state },
+        "states": states,
         "state_scopes": scope_names,
         "theme": config.theme,
         "args": config.launch_args,
         "size": [size.0, size.1],
-    })
+    }))
 }
 
 fn cache_python_theme_for_relaunch(
@@ -778,6 +837,10 @@ impl WasmPythonRuntime {
                     .stdout(thread_stdout)
                     .stderr(thread_stderr)
                     .env("PYTHONPATH", "/sdk:/app")
+                    // Names the prefix the stdlib is mounted under, so CPython
+                    // does not search for it and warn "Could not find platform
+                    // dependent libraries <exec_prefix>" on every boot.
+                    .env("PYTHONHOME", "/usr/local")
                     .args(&[
                         "python",
                         "-u",
@@ -995,6 +1058,8 @@ struct HeadlessPythonSession {
     /// Previous decoded frame, so `tree_delta` frames (stint 0438) can be
     /// reconstructed the same way the live host does.
     last_tree: Option<PythonUiTree>,
+    /// Guest messages drained but not yet consumed by a `wait_for`.
+    inbox: VecDeque<Value>,
 }
 
 impl HeadlessPythonSession {
@@ -1004,14 +1069,11 @@ impl HeadlessPythonSession {
         seed_state: Option<Value>,
     ) -> Result<Self, WasmPythonError> {
         let runtime = WasmPythonRuntime::launch(config)?;
-        runtime.send(&python_init_payload(
-            config,
-            seed_state.unwrap_or(Value::Null),
-            size,
-        ))?;
+        runtime.send(&python_init_payload(config, seed_state, size)?)?;
         let mut session = Self {
             runtime,
             last_tree: None,
+            inbox: VecDeque::new(),
         };
         session.wait_for(|message| message.get("type").and_then(Value::as_str) == Some("ready"))?;
         Ok(session)
@@ -1027,6 +1089,7 @@ impl HeadlessPythonSession {
                 tree_message = Some(message.clone());
             }
             message_type == Some("frame_done")
+                && message.get("frame_id").and_then(Value::as_u64) == Some(frame_id)
         })?;
         let message = tree_message.ok_or_else(|| {
             WasmPythonError::BridgeJson(
@@ -1069,18 +1132,14 @@ impl HeadlessPythonSession {
     fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
         let mut deadline = HeadlessDeadline::new(std::time::Instant::now());
         loop {
-            for message in self.runtime.drain_messages()? {
-                if matches(&message) {
-                    return Ok(());
-                }
+            if self.take_until(&mut matches)? {
+                return Ok(());
             }
             if self.runtime.is_finished() {
                 // The guest may have flushed final messages between the drain
                 // above and exiting — drain once more before declaring death.
-                for message in self.runtime.drain_messages()? {
-                    if matches(&message) {
-                        return Ok(());
-                    }
+                if self.take_until(&mut matches)? {
+                    return Ok(());
                 }
                 return Err(self.guest_death_error());
             }
@@ -1094,10 +1153,8 @@ impl HeadlessPythonSession {
                 // cause the caller sees must not flip based on that race.
                 verdict => {
                     if self.runtime.is_finished() {
-                        for message in self.runtime.drain_messages()? {
-                            if matches(&message) {
-                                return Ok(());
-                            }
+                        if self.take_until(&mut matches)? {
+                            return Ok(());
                         }
                         return Err(self.guest_death_error());
                     }
@@ -1106,6 +1163,32 @@ impl HeadlessPythonSession {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// Drain the guest and feed its messages to `matches` in order, stopping at
+    /// the first match; later messages stay queued for the next wait. A
+    /// `fatal_error` ends the wait with the plugin's own exception, so the
+    /// caller leads with it instead of a bare death notice.
+    fn take_until(
+        &mut self,
+        matches: &mut impl FnMut(&Value) -> bool,
+    ) -> Result<bool, WasmPythonError> {
+        self.inbox.extend(self.runtime.drain_messages()?);
+        while let Some(message) = self.inbox.pop_front() {
+            if message.get("type").and_then(Value::as_str) == Some("fatal_error") {
+                let fatal = fatal_error::GuestFatalError::decode(&message)
+                    .map_err(WasmPythonError::BridgeJson)?;
+                log::info!(
+                    "python_compat: headless guest reported a fatal error: {}",
+                    fatal.headline()
+                );
+                return Err(WasmPythonError::PluginRaised(fatal.report()));
+            }
+            if matches(&message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The error returned when a deadline expires with the guest still alive.
@@ -1136,7 +1219,8 @@ impl HeadlessPythonSession {
     }
 
     /// The error returned when the guest thread has exited before producing the
-    /// awaited message. Drains stderr so the crash traceback rides along.
+    /// awaited message and without a `fatal_error` report: a hard crash, not a
+    /// plugin exception. Drains stderr so whatever it wrote rides along.
     fn guest_death_error(&self) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         WasmPythonError::BridgeJson(format!(
@@ -1184,6 +1268,9 @@ pub struct LivePythonPane {
     wake_schedule: WakeSchedule,
     wants_close: bool,
     error: Option<String>,
+    /// `Some` once the guest has sent `fatal_error`: the count of its messages
+    /// dropped since. That report is final, so nothing after it is serviced.
+    dropped_after_fatal: Option<u64>,
     /// stderr accumulated from a Python traceback until its unindented
     /// exception line arrives. `DrainableOutput` may split one traceback
     /// across several non-blocking drains.
@@ -1280,6 +1367,9 @@ pub struct LivePythonPane {
     /// One info line the first time this pane serves
     /// `read_permission_decisions`. Later polls stay quiet at info.
     announced_permission_read: bool,
+    /// Host-derived authority over the permission bridge, set at launch and
+    /// re-derived on relaunch because a hot reload can change the files.
+    permission_ui: PermissionUiTrust,
     /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
     /// opened by or targeting this Python runtime.
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
@@ -2489,6 +2579,199 @@ fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridge
     }
 }
 
+/// Embedded name of the bundled Permissions plugin (`apps/permissions`).
+const PERMISSIONS_UI_BUNDLE: &str = "permissions";
+
+/// A pane's authority over the permission bridge (stint 1264). Derived from
+/// what the host itself shipped, never from a plugin id or manifest claim.
+/// Interim: stint 1238 replaces it with a broker-admitted capability
+/// (`permissions.manage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionUiTrust {
+    /// The plugin folder is byte-identical to this binary's embedded
+    /// Permissions plugin.
+    BundledPermissionsUi,
+    /// Uses the id `permissions` but differs from this build's copy, for
+    /// example after an upgrade. Refused like any other plugin, but told why.
+    MismatchedPermissionsCopy,
+    Untrusted,
+}
+
+/// Refusal notice for every plugin that is not the bundled Permissions copy.
+const PERMISSION_BRIDGE_REFUSED_NOTICE: &str = "not permitted";
+
+/// Refusal notice for a plugin with the id `permissions` that differs from
+/// this build. Names the cause and the fix with the running channel's command
+/// (`plugin uninstall` then `plugin install local:<name>`, see `PluginCmd` in
+/// `src/cli/args.rs`).
+fn permissions_copy_mismatch_notice() -> String {
+    format!(
+        "This Permissions plugin differs from the copy built into this Plexi version, so it cannot read or change permissions. Reinstall it: {}",
+        permissions_reinstall_command()
+    )
+}
+
+fn permissions_reinstall_command() -> String {
+    let cli = crate::cli::setup::cli_name();
+    format!(
+        "{cli} plugin uninstall {PERMISSIONS_UI_BUNDLE} --yes, then {cli} plugin install local:{PERMISSIONS_UI_BUNDLE} --yes"
+    )
+}
+
+/// The one trust predicate for `read_permission_decisions` and
+/// `permission_decision`. The id is a necessary condition only, because the
+/// bundled manifest declares it; any installed plugin may reuse it, so the
+/// content check decides.
+///
+/// What is verified: every file under the plugin folder (`/app` in the guest).
+/// What is not: the SDK root (`/sdk`) and the CPython stdlib the guest also
+/// imports from; those come from the host's own distribution, not the plugin.
+fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust {
+    if plugin_id != PERMISSIONS_UI_BUNDLE {
+        return PermissionUiTrust::Untrusted;
+    }
+    if crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir) {
+        return PermissionUiTrust::BundledPermissionsUi;
+    }
+    log::warn!(
+        "plugin::{plugin_id}: installed copy at {} differs from the Permissions plugin built into this Plexi version; the permission bridge is disabled for it. Fix: {}",
+        plugin_dir.display(),
+        permissions_reinstall_command()
+    );
+    PermissionUiTrust::MismatchedPermissionsCopy
+}
+
+/// A refused bridge message: names only, never the payload. Both fields are
+/// safe to log: `action` is a known verb or "unknown", and `ask_id` is
+/// bounded with control characters removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionBridgeRefusal {
+    kind: PermissionBridgeKind,
+    action: &'static str,
+    ask_id: String,
+}
+
+impl PermissionBridgeRefusal {
+    fn operation(&self) -> String {
+        match self.kind {
+            PermissionBridgeKind::Read => "read_permission_decisions".to_string(),
+            PermissionBridgeKind::Decide => format!("permission_decision:{}", self.action),
+        }
+    }
+
+    fn log_line(&self, plugin_id: &str, instance: Option<u64>) -> String {
+        let instance = instance.map_or_else(|| "-".to_string(), |id| id.to_string());
+        format!(
+            "plugin::{plugin_id}: refused {} instance={instance} id={}: only the bundled Permissions plugin may use the permission bridge",
+            self.operation(),
+            self.ask_id
+        )
+    }
+
+    /// Rate-limit key. One per message kind, so guest-chosen strings can
+    /// neither defeat the limit nor grow the limiter map.
+    fn warn_key(&self) -> &'static str {
+        match self.kind {
+            PermissionBridgeKind::Read => "permission_bridge_refused:read",
+            PermissionBridgeKind::Decide => "permission_bridge_refused:decide",
+        }
+    }
+}
+
+/// Longest ask id written to the log. Real ids are a prefix plus a UUID.
+const LOGGED_ASK_ID_MAX: usize = 64;
+
+fn loggable_action(action: &str) -> &'static str {
+    match action.trim() {
+        "revoke" => "revoke",
+        "reset" => "reset",
+        "allow" => "allow",
+        _ => "unknown",
+    }
+}
+
+fn loggable_ask_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| !c.is_control())
+        .take(LOGGED_ASK_ID_MAX)
+        .collect()
+}
+
+/// Answer one permission bridge message. Returns the `permission_inventory`
+/// reply for the guest and, when refused, what to log.
+///
+/// No guest message is a human decision. The bundled Permissions plugin calls
+/// the broker as a non-human caller: `revoke` narrows and applies; `allow` and
+/// `reset` widen, so the broker files a Needs you item that only a real click
+/// in the host window can approve. Every other plugin is refused outright and
+/// sees no inventory.
+fn answer_permission_bridge(
+    trust: PermissionUiTrust,
+    kind: PermissionBridgeKind,
+    message: &Value,
+    monitor: &crate::broker::gate::PermissionMonitor,
+    plugin_id: &str,
+) -> (Value, Option<PermissionBridgeRefusal>) {
+    let inventory =
+        |entries: Vec<crate::broker::gate::PermissionEntry>, notice: &str, status: &str| {
+            json!({
+                "type": "permission_inventory",
+                "entries": entries,
+                "notice": notice,
+                "status": status,
+            })
+        };
+    let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+    let action = message.get("action").and_then(Value::as_str).unwrap_or("");
+    if trust != PermissionUiTrust::BundledPermissionsUi {
+        let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
+            permissions_copy_mismatch_notice()
+        } else {
+            PERMISSION_BRIDGE_REFUSED_NOTICE.to_string()
+        };
+        return (
+            inventory(Vec::new(), &notice, "rejected"),
+            Some(PermissionBridgeRefusal {
+                kind,
+                action: loggable_action(action),
+                ask_id: loggable_ask_id(id),
+            }),
+        );
+    }
+    if kind == PermissionBridgeKind::Read {
+        return (inventory(monitor.list_entries(), "", "list"), None);
+    }
+    let outcome = monitor.mutate_entry(
+        id,
+        action,
+        &crate::broker::gate::PermissionCaller {
+            human: false,
+            actor_id: format!("app:{plugin_id}"),
+        },
+    );
+    log::info!(
+        "plugin::{plugin_id}: permission {} id={} human=false",
+        loggable_action(action),
+        loggable_ask_id(id)
+    );
+    let (notice, status) = match &outcome {
+        crate::broker::gate::PermissionMutation::Applied { entry_id } => {
+            (format!("{action} applied for {entry_id}"), "applied")
+        }
+        crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
+            format!("Confirm {action} in Needs you ({needs_you_id})"),
+            "needs_you",
+        ),
+        crate::broker::gate::PermissionMutation::Missing { entry_id } => {
+            (format!("missing {entry_id}"), "missing")
+        }
+        crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
+            (error.clone(), "rejected")
+        }
+    };
+    (inventory(monitor.list_entries(), &notice, status), None)
+}
+
 fn guest_log_level(raw: Option<&str>) -> log::Level {
     match raw.map(str::trim) {
         Some("debug") => log::Level::Debug,
@@ -2530,6 +2813,7 @@ impl LivePythonPane {
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
         let plugin_id = config.plugin_id.clone();
+        let permission_ui = permission_ui_trust(&plugin_id, &config.plugin_dir);
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
@@ -2575,6 +2859,7 @@ impl LivePythonPane {
             wake_schedule,
             wants_close: false,
             error: None,
+            dropped_after_fatal: None,
             pending_traceback_stderr: String::new(),
             timers: std::collections::HashMap::new(),
             pending_timer_events: Vec::new(),
@@ -2610,6 +2895,7 @@ impl LivePythonPane {
             stderr_classifier: GuestStderrClassifier::new(),
             unhandled_warned_at: HashMap::new(),
             announced_permission_read: false,
+            permission_ui,
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ),
@@ -3056,7 +3342,10 @@ impl LivePythonPane {
                     self.perf_stdout_bytes += bytes;
                     let frame_id =
                         frame_id.or_else(|| self.frame_scheduler.oldest_pending_frame_id());
-                    if let Some(frame_id) = frame_id {
+                    // A guest that reported a fatal error is finished: none
+                    // of its later frames are kept.
+                    if let Some(frame_id) = frame_id.filter(|_| self.dropped_after_fatal.is_none())
+                    {
                         self.pending_trees.insert(frame_id, tree);
                     }
                 }
@@ -3155,14 +3444,22 @@ impl LivePythonPane {
             self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
+        if let Some(dropped) = self.dropped_after_fatal.as_mut() {
+            if *dropped == 0 {
+                log::info!(
+                    "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
+                    self.plugin_id,
+                    message_type.unwrap_or("<missing>").escape_debug()
+                );
+            }
+            *dropped += 1;
+            return;
+        }
         // Permission polls arrive every second from the Permissions plugin.
         // Handle them before the generic match so a miss cannot fall through
         // to the unhandled warning and leave the list blank.
         if let Some(kind) = permission_bridge_kind(message_type) {
-            match kind {
-                PermissionBridgeKind::Read => self.handle_read_permission_decisions(),
-                PermissionBridgeKind::Decide => self.handle_permission_decision(&message),
-            }
+            self.handle_permission_bridge(kind, &message);
             return;
         }
         match message_type {
@@ -3242,7 +3539,7 @@ impl LivePythonPane {
                     );
                 }
             }
-            Some("close") | Some("close_self") => self.wants_close = true,
+            Some("close_self") => self.wants_close = true,
             Some("save_plugin_state") => {
                 self.save_state(message.get("scope"), message.get("payload"))
             }
@@ -3266,6 +3563,26 @@ impl LivePythonPane {
                 log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
+            Some("fatal_error") => {
+                let error = match fatal_error::GuestFatalError::decode(&message) {
+                    Ok(fatal) => {
+                        for line in fatal.traceback().lines() {
+                            log::error!("plugin::{} traceback: {line}", self.plugin_id);
+                        }
+                        fatal.headline()
+                    }
+                    Err(error) => {
+                        log::error!("plugin::{}: {error}", self.plugin_id);
+                        error
+                    }
+                };
+                log::info!(
+                    "plugin::{}: guest entered failed state: {error}",
+                    self.plugin_id
+                );
+                self.error = Some(error);
+                self.dropped_after_fatal = Some(0);
+            }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(command)) => {
                     if let Some(capability) =
@@ -3533,19 +3850,25 @@ impl LivePythonPane {
             .list_entries()
     }
 
-    fn send_permission_inventory(&mut self, notice: &str, status: &str) {
-        let entries = Self::permission_entries();
-        log::debug!(
-            "plugin::{}: permission inventory count={} status={status}",
-            self.plugin_id,
-            entries.len()
-        );
-        if let Err(error) = self.runtime.send(&json!({
-            "type": "permission_inventory",
-            "entries": entries,
-            "notice": notice,
-            "status": status,
-        })) {
+    fn handle_permission_bridge(&mut self, kind: PermissionBridgeKind, message: &Value) {
+        if kind == PermissionBridgeKind::Read
+            && self.permission_ui == PermissionUiTrust::BundledPermissionsUi
+            && !self.announced_permission_read
+        {
+            self.announced_permission_read = true;
+            log::info!(
+                "plugin::{}: serving read_permission_decisions",
+                self.plugin_id
+            );
+        }
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let (reply, refusal) =
+            answer_permission_bridge(self.permission_ui, kind, message, &monitor, &self.plugin_id);
+        if let Some(refusal) = refusal {
+            self.warn_refused_permission_bridge(&refusal);
+        }
+        if let Err(error) = self.runtime.send(&reply) {
             log::error!(
                 "plugin::{}: send permission_inventory: {error}",
                 self.plugin_id
@@ -3553,15 +3876,18 @@ impl LivePythonPane {
         }
     }
 
-    fn handle_read_permission_decisions(&mut self) {
-        if !self.announced_permission_read {
-            self.announced_permission_read = true;
-            log::info!(
-                "plugin::{}: serving read_permission_decisions",
-                self.plugin_id
-            );
+    /// Warn once per refused operation per window; a 1 Hz poll stays at debug.
+    fn warn_refused_permission_bridge(&mut self, refusal: &PermissionBridgeRefusal) {
+        let key = refusal.warn_key();
+        let now = std::time::Instant::now();
+        let instance = self.pane_owner.map(|(pane_id, _)| pane_id);
+        let line = refusal.log_line(&self.plugin_id, instance);
+        if unhandled_warn_is_due(self.unhandled_warned_at.get(key).copied(), now) {
+            self.unhandled_warned_at.insert(key.to_string(), now);
+            log::warn!("{line}");
+        } else {
+            log::debug!("{line}");
         }
-        self.send_permission_inventory("", "list");
     }
 
     /// Warn once per message type per window. Repeats stay at debug so a
@@ -3584,42 +3910,6 @@ impl LivePythonPane {
             "plugin::{}: unhandled CPython WASM message: {message}",
             self.plugin_id
         );
-    }
-
-    fn handle_permission_decision(&mut self, message: &Value) {
-        let id = message.get("id").and_then(Value::as_str).unwrap_or("");
-        let action = message.get("action").and_then(Value::as_str).unwrap_or("");
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let outcome = monitor.mutate_entry(
-            id,
-            action,
-            &crate::broker::gate::PermissionCaller {
-                human: true,
-                actor_id: format!("app:{}", self.plugin_id),
-            },
-        );
-        log::info!(
-            "plugin::{}: permission {action} id={id} human=true",
-            self.plugin_id
-        );
-        let (notice, status) = match &outcome {
-            crate::broker::gate::PermissionMutation::Applied { entry_id } => (
-                format!("{action} applied for {entry_id}"),
-                "applied".to_string(),
-            ),
-            crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => (
-                format!("filed Needs you {needs_you_id}"),
-                "needs_you".to_string(),
-            ),
-            crate::broker::gate::PermissionMutation::Missing { entry_id } => {
-                (format!("missing {entry_id}"), "missing".to_string())
-            }
-            crate::broker::gate::PermissionMutation::Rejected { error, .. } => {
-                (error.clone(), "rejected".to_string())
-            }
-        };
-        self.send_permission_inventory(&notice, &status);
     }
 
     fn handle_http_request(&mut self, message: &Value) {
@@ -4014,7 +4304,7 @@ impl LivePythonPane {
                 })
                 .collect(),
         );
-        if self.plugin_id == "permissions" {
+        if self.permission_ui == PermissionUiTrust::BundledPermissionsUi {
             let entries = Self::permission_entries();
             log::info!(
                 "plugin::{}: seeded permission inventory count={}",
@@ -4673,6 +4963,10 @@ impl LivePythonPane {
             .suppressed
     }
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
+        // Check the files before the new guest can run, and drop the old
+        // trust first so a failed launch leaves the pane untrusted.
+        let permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
+        self.permission_ui = PermissionUiTrust::Untrusted;
         // Drop the old decoder (closes its stdout, joins the thread) before the
         // old runtime is replaced, then bind a fresh decoder to the new
         // runtime's stdout. The shared repaint hook carries over so the new
@@ -4708,6 +5002,7 @@ impl LivePythonPane {
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
+        self.dropped_after_fatal = None;
         self.pending_traceback_stderr.clear();
         self.wants_close = false;
         self.timers.clear();
@@ -4719,6 +5014,7 @@ impl LivePythonPane {
         self.stderr_classifier = GuestStderrClassifier::new();
         self.unhandled_warned_at.clear();
         self.announced_permission_read = false;
+        self.permission_ui = permission_ui;
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -6304,6 +6600,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .and_then(Value::as_str)
                     .unwrap_or("start"),
             )?,
+            justify: decode_justify(value)?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "DataTable" | "data_table" | "table" | "Table" => {
@@ -6316,6 +6613,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 children,
                 gap: optional_f32(value, "gap")?.unwrap_or(4.0),
                 align: Alignment::Start,
+                justify: Justify::Start,
                 grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
             }))
         }
@@ -6370,12 +6668,16 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             // Rows sit tighter than columns by default; absence uses the token,
             // an explicit `gap: 0.0` still packs children flush (stint 0445).
             gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_SM),
+            // `align` is the cross axis. A row that does not say centers its
+            // children vertically, which is what every row did before the
+            // renderer read the field.
             align: decode_alignment(
                 value
                     .get("align")
                     .and_then(Value::as_str)
-                    .unwrap_or("start"),
+                    .unwrap_or("center"),
             )?,
+            justify: decode_justify(value)?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "Divider" | "divider" => Ok(UiNodeData::Divider),
@@ -6758,6 +7060,27 @@ fn decode_alignment(value: &str) -> Result<Alignment, WasmPythonError> {
     }
 }
 
+/// A row's or column's `justify`: main-axis placement. Absent is `start`,
+/// which places children as rows and columns always have.
+fn decode_justify(node: &Value) -> Result<Justify, WasmPythonError> {
+    const ACCEPTED: &str = "start, center, end, space-between";
+    match node.get("justify") {
+        None | Some(Value::Null) => Ok(Justify::Start),
+        Some(Value::String(value)) => match value.as_str() {
+            "start" => Ok(Justify::Start),
+            "center" => Ok(Justify::Center),
+            "end" => Ok(Justify::End),
+            "space-between" => Ok(Justify::SpaceBetween),
+            other => Err(WasmPythonError::BridgeJson(format!(
+                "unknown justify {other:?}; accepted: {ACCEPTED}"
+            ))),
+        },
+        Some(other) => Err(WasmPythonError::BridgeJson(format!(
+            "justify must be a string ({ACCEPTED}), got {other}"
+        ))),
+    }
+}
+
 fn decode_button_style(value: &str) -> Result<ButtonStyle, WasmPythonError> {
     match value {
         "primary" => Ok(ButtonStyle::Primary),
@@ -6820,6 +7143,17 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
         ))),
     }
 }
+
+#[cfg(test)]
+#[path = "wasm_python/wire_contract_tests.rs"]
+mod wire_contract_tests;
+
+#[path = "wasm_python/fatal_error.rs"]
+mod fatal_error;
+
+#[cfg(test)]
+#[path = "wasm_python/fatal_error_tests.rs"]
+mod fatal_error_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6960,7 +7294,8 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         let config = state_test_config(workspace.path(), "test.scoped-init");
 
-        let payload = python_init_payload(&config, json!({"count": 41}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({"count": 41})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         // `state_test_config` declares exactly one scope: Context.
         assert_eq!(payload["states"], json!({ "context": { "count": 41 } }));
@@ -6980,7 +7315,8 @@ mod tests {
             ("bg".to_string(), "#abcdef".to_string()),
         ]);
 
-        let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         assert_eq!(payload["theme"], json!(config.theme));
         assert!(payload["theme"]
@@ -9081,6 +9417,11 @@ mod tests {
             crate::ui::style::SPACE_SM,
             "an unset row gap must fall back to the SPACE_SM token"
         );
+        assert_eq!(
+            r.align,
+            Alignment::Center,
+            "an unset row align must center children vertically"
+        );
 
         let col_zero = decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))
             .expect("decode column");
@@ -9926,7 +10267,10 @@ mod tests {
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
-            .send(&python_init_payload(&config, json!({}), (480.0, 320.0)))
+            .send(
+                &python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+                    .expect("single-scope seed"),
+            )
             .expect("send init");
         runtime
             .send(&json!({"type": "render", "frame_id": 1}))
@@ -10114,6 +10458,67 @@ mod tests {
         );
     }
 
+    /// The seam the other state tests skip: they call `save_state` directly,
+    /// so a message-name mismatch between the SDK's `PersistState` emission and
+    /// `handle_message` (the `save_app_state` / `save_plugin_state` rename
+    /// regression) went unseen. This runs the real embedded SDK in the real
+    /// CPython WASM guest and asserts the state file lands on disk.
+    #[test]
+    fn sdk_persist_state_effect_reaches_the_state_file_through_the_host() {
+        let app = tempdir().expect("plugin dir");
+        let root = tempdir().expect("context root");
+        std::fs::write(
+            app.path().join("main.py"),
+            "from plexi_sdk.effects import PersistState\n\
+             from plexi_sdk.ui import Column, Text\n\
+             \n\
+             def init(size, args):\n\
+             \x20   return [PersistState({'items': ['persisted-by-sdk']})]\n\
+             \n\
+             def update(event):\n\
+             \x20   return []\n\
+             \n\
+             def view():\n\
+             \x20   return Column([Text('persist')])\n",
+        )
+        .expect("write plugin");
+        let config = PythonLaunchConfig {
+            plugin_id: "test.sdk-persist".to_string(),
+            plugin_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
+            state_scopes: vec![crate::host::state_scope::StateScope::Context],
+            state_format: crate::host::state_scope::StateFormat::Json,
+            context_root: root.path().to_path_buf(),
+        };
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+        let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
+            LivePythonPane::launch(config).expect("launch CPython WASM"),
+        ));
+        let file = root.path().join(".plexi/app_states/test.sdk-persist.json");
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
+        while !file.exists() && std::time::Instant::now() < deadline {
+            visible_pass(&mut runtime, &colors);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&file).unwrap_or_else(|e| {
+            panic!(
+                "SDK PersistState never produced {}: {e}; the SDK and host disagree on the \
+                 state-save message type",
+                file.display()
+            )
+        }))
+        .expect("valid JSON");
+        assert_eq!(persisted, json!({"items": ["persisted-by-sdk"]}));
+    }
+
     #[test]
     fn headless_frame_fails_fast_when_the_guest_dies_at_import() {
         let app = tempdir().expect("plugin dir");
@@ -10140,17 +10545,18 @@ mod tests {
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");
         // The invariant is the *cause*, not the wall clock: a guest that raises
-        // at import is detected via its process-exit signal and reported as a
-        // death, never mistaken for a live plugin or a poll timeout. Asserting on
-        // elapsed time flakes under parallel-test CPU contention (the crash can
-        // legitimately take longer than the poll budget to surface), so this
-        // checks the error path itself.
-        let WasmPythonError::BridgeJson(message) = &err else {
-            panic!("guest death must surface as a BridgeJson error, got {err:?}");
+        // at import reports its own exception and exits, and that report is what
+        // the caller gets, never a poll timeout. Asserting on elapsed time
+        // flakes under parallel-test CPU contention (the crash can legitimately
+        // take longer than the poll budget to surface), so this checks the
+        // error path itself.
+        let WasmPythonError::PluginRaised(report) = &err else {
+            panic!("an import-time exception must surface as PluginRaised, got {err:?}");
         };
-        assert!(
-            message.contains("plugin exited before responding"),
-            "broken guest must take the process-exit death path, not the timeout backstop: {message}"
+        assert_eq!(
+            report.lines().next(),
+            Some("plugin error in main.py:1 (import): RuntimeError: broken on purpose"),
+            "{report}"
         );
     }
 
@@ -10392,6 +10798,250 @@ default = true
         assert_eq!(permission_bridge_kind(bridge_message_type(&typo)), None);
     }
 
+    /// A monitor holding one pending ask, one stored denial and one grant.
+    struct BridgeFixture {
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+        pending: String,
+        deny: String,
+        grant: String,
+    }
+
+    fn bridge_admit(
+        monitor: &crate::broker::gate::PermissionMonitor,
+        call: &str,
+        tool: &str,
+    ) -> String {
+        let admission = monitor.admit(crate::broker::gate::AdmitRequest {
+            call_id: call,
+            tool,
+            input_json: "{}",
+            actor_type: crate::broker::ActorType::Agent,
+            actor_id: "agent:bridge-test",
+            actor_scope: crate::broker::ActorScope::User,
+            trust_origin: "host",
+            workspace_root: Path::new("/ws"),
+            context_id: 1,
+            package_id: "bridge-test",
+            instance_id: 1,
+            target_type: crate::broker::TargetType::HostTool,
+        });
+        match admission {
+            crate::broker::gate::Admission::Required { pending_request_id } => pending_request_id,
+            _ => panic!("{tool} must ask"),
+        }
+    }
+
+    fn bridge_fixture() -> BridgeFixture {
+        use crate::broker::gate::ApprovalChoice;
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        let to_deny = bridge_admit(&monitor, "call-deny", "bridge.denied");
+        monitor
+            .approve_pending(&to_deny, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let to_grant = bridge_admit(&monitor, "call-grant", "bridge.granted");
+        monitor
+            .approve_pending(&to_grant, ApprovalChoice::Always)
+            .unwrap();
+        let pending = bridge_admit(&monitor, "call-pending", "bridge.pending");
+        let entries = monitor.list_entries();
+        let id_of = |kind: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.kind == kind)
+                .unwrap_or_else(|| panic!("fixture has a {kind} row"))
+                .id
+                .clone()
+        };
+        BridgeFixture {
+            deny: id_of("deny"),
+            grant: id_of("allow"),
+            pending,
+            monitor,
+        }
+    }
+
+    fn decide(id: &str, action: &str) -> Value {
+        json!({"type": "permission_decision", "id": id, "action": action})
+    }
+
+    fn rows(monitor: &crate::broker::gate::PermissionMonitor) -> Vec<(String, String)> {
+        monitor
+            .list_entries()
+            .into_iter()
+            .map(|entry| (entry.id, entry.kind))
+            .collect()
+    }
+
+    #[test]
+    fn permission_bridge_refuses_a_plugin_without_bundled_provenance() {
+        let fx = bridge_fixture();
+        let before = rows(&fx.monitor);
+        let needs_before = fx.monitor.list_needs_you().len();
+        let read = json!({"type": "read_permission_decisions"});
+        let (reply, refusal) = answer_permission_bridge(
+            PermissionUiTrust::Untrusted,
+            PermissionBridgeKind::Read,
+            &read,
+            &fx.monitor,
+            "evil",
+        );
+        assert_eq!(reply["entries"], json!([]), "no inventory: {reply}");
+        assert_eq!(reply["status"], "rejected");
+        assert_eq!(
+            refusal.map(|r| r.operation()),
+            Some("read_permission_decisions".to_string())
+        );
+        for (id, action) in [
+            (&fx.pending, "allow"),
+            (&fx.deny, "allow"),
+            (&fx.deny, "reset"),
+            (&fx.grant, "revoke"),
+            (&fx.pending, "revoke"),
+        ] {
+            let (reply, refusal) = answer_permission_bridge(
+                PermissionUiTrust::Untrusted,
+                PermissionBridgeKind::Decide,
+                &decide(id, action),
+                &fx.monitor,
+                "evil",
+            );
+            assert_eq!(reply["status"], "rejected", "{action} {id}: {reply}");
+            assert_eq!(reply["notice"], "not permitted");
+            assert_eq!(reply["entries"], json!([]));
+            assert_eq!(
+                refusal,
+                Some(PermissionBridgeRefusal {
+                    kind: PermissionBridgeKind::Decide,
+                    action: loggable_action(action),
+                    ask_id: id.clone(),
+                })
+            );
+            assert_eq!(rows(&fx.monitor), before, "{action} {id} changed nothing");
+            assert_eq!(fx.monitor.list_needs_you().len(), needs_before);
+        }
+    }
+
+    #[test]
+    fn permission_bridge_trust_comes_from_bundled_content_not_the_id() {
+        let root = tempdir().expect("root");
+        let bundled =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        assert_eq!(
+            permission_ui_trust("permissions", &bundled),
+            PermissionUiTrust::BundledPermissionsUi
+        );
+        assert_eq!(
+            permission_ui_trust("other", &bundled),
+            PermissionUiTrust::Untrusted,
+            "the bundled copy is trusted only under its own id"
+        );
+
+        let spoof = tempdir().expect("spoof");
+        std::fs::write(
+            spoof.path().join("manifest.toml"),
+            std::fs::read_to_string(bundled.join("manifest.toml")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            spoof.path().join("main.py"),
+            "def init(size, args):\n    return []\n",
+        )
+        .unwrap();
+        assert_eq!(
+            permission_ui_trust("permissions", spoof.path()),
+            PermissionUiTrust::MismatchedPermissionsCopy,
+            "declaring id = \"permissions\" is not provenance"
+        );
+
+        std::fs::write(bundled.join("typing.pyc"), b"\x00").unwrap();
+        assert_eq!(
+            permission_ui_trust("permissions", &bundled),
+            PermissionUiTrust::MismatchedPermissionsCopy,
+            "bundled source plus a planted module is not the bundled plugin"
+        );
+    }
+
+    #[test]
+    fn bundled_permissions_ui_lists_revokes_and_widens_only_through_needs_you() {
+        use crate::broker::gate::{NeedsYouKind, ResolveSurface};
+        let fx = bridge_fixture();
+        let trusted = PermissionUiTrust::BundledPermissionsUi;
+        let (reply, refusal) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Read,
+            &json!({"type": "read_permission_decisions"}),
+            &fx.monitor,
+            "permissions",
+        );
+        assert!(refusal.is_none());
+        assert_eq!(reply["status"], "list");
+        assert_eq!(
+            reply["entries"].as_array().map(Vec::len),
+            Some(3),
+            "{reply}"
+        );
+
+        // Allow on a pending ask: no grant on the guest message alone.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.pending, "allow"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "needs_you", "{reply}");
+        let kinds = rows(&fx.monitor);
+        assert!(kinds.contains(&(fx.pending.clone(), "pending".to_string())));
+        assert_eq!(
+            kinds.iter().filter(|(_, kind)| kind == "allow").count(),
+            1,
+            "only the fixture grant exists"
+        );
+        let change = fx
+            .monitor
+            .list_needs_you()
+            .into_iter()
+            .find(|row| row.kind == NeedsYouKind::PermissionChange)
+            .expect("allow files a Needs you item");
+        assert!(
+            fx.monitor
+                .resolve_needs_you_from(&change.id, true, ResolveSurface::Socket)
+                .is_err(),
+            "a socket cannot approve the widening"
+        );
+        fx.monitor
+            .resolve_needs_you_from(&change.id, true, ResolveSurface::Desktop)
+            .expect("a real host click approves");
+        assert!(
+            !rows(&fx.monitor)
+                .iter()
+                .any(|(id, kind)| id == &fx.pending && kind == "pending"),
+            "the host click settles the ask"
+        );
+
+        // Reset clears a denial: widening, so it waits for the host too.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.deny, "reset"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "needs_you", "{reply}");
+        assert!(rows(&fx.monitor).contains(&(fx.deny.clone(), "deny".to_string())));
+
+        // Revoke narrows and applies.
+        let (reply, _) = answer_permission_bridge(
+            trusted,
+            PermissionBridgeKind::Decide,
+            &decide(&fx.grant, "revoke"),
+            &fx.monitor,
+            "permissions",
+        );
+        assert_eq!(reply["status"], "applied", "{reply}");
+        assert!(!rows(&fx.monitor).iter().any(|(id, _)| id == &fx.grant));
+    }
+
     /// Stint 1238 characterisation matrix, Python rows (see
     /// `crate::broker::admission_matrix`). Builds the launch set exactly as
     /// `gate_plugin_permissions_in_profile` and `build_python_runtime` do
@@ -10484,17 +11134,243 @@ default = true
         assert_eq!(checked, 14 * matrix::STATES.len());
     }
 
-    /// CUTOVER: expected to change to deny (no human approval). Every Python
-    /// guest can send `permission_decision`; `handle_permission_decision`
-    /// forwards it to `PermissionMonitor::mutate_entry` with this exact caller,
-    /// `human: true`, and checks neither `permissions.manage` nor the plugin id.
-    /// `allow` on a pending id approves it as Always. Pinned at the monitor seam
-    /// because launching a CPython guest is not needed to show the decision.
     #[test]
-    fn python_permission_bridge_caller_approves_a_pending_ask_as_human() {
-        use crate::broker::gate::{
-            Admission, AdmitRequest, PermissionCaller, PermissionMonitor, PermissionMutation,
+    fn a_mismatched_permissions_copy_is_told_the_cause_and_fix_others_are_not() {
+        let fx = bridge_fixture();
+        let before = rows(&fx.monitor);
+        let read = json!({"type": "read_permission_decisions"});
+        let answer = |trust, kind, message: &Value, plugin| {
+            answer_permission_bridge(trust, kind, message, &fx.monitor, plugin).0
         };
+        for (kind, message) in [
+            (PermissionBridgeKind::Read, read.clone()),
+            (PermissionBridgeKind::Decide, decide(&fx.pending, "allow")),
+        ] {
+            let stale = answer(
+                PermissionUiTrust::MismatchedPermissionsCopy,
+                kind,
+                &message,
+                "permissions",
+            );
+            assert_eq!(stale["status"], "rejected");
+            assert_eq!(stale["entries"], json!([]));
+            let notice = stale["notice"].as_str().unwrap();
+            assert!(notice.contains("differs from the copy built into this Plexi version"));
+            assert!(
+                notice.contains(&format!(
+                    "{} plugin install local:permissions --yes",
+                    crate::cli::setup::cli_name()
+                )),
+                "{notice}"
+            );
+
+            let other = answer(PermissionUiTrust::Untrusted, kind, &message, "evil");
+            assert_eq!(
+                other,
+                json!({
+                    "type": "permission_inventory",
+                    "entries": [],
+                    "notice": "not permitted",
+                    "status": "rejected",
+                }),
+                "other plugins get one constant reply"
+            );
+        }
+        assert_eq!(rows(&fx.monitor), before);
+        let root = tempdir().expect("root");
+        assert_eq!(
+            permission_ui_trust("evil", root.path()),
+            PermissionUiTrust::Untrusted,
+            "only the id permissions gets the reinstall notice"
+        );
+    }
+
+    #[test]
+    fn permission_bridge_refusal_log_is_bounded_and_keyed_by_kind() {
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        let hostile_id = format!("req\nFAKE LOG LINE\u{1b}[31m{}", "x".repeat(4096));
+        let mut keys = std::collections::HashSet::new();
+        for action in [
+            "allow",
+            " revoke ",
+            "reset",
+            "allow\nforged",
+            "a1",
+            "a2",
+            "",
+        ] {
+            let (_, refusal) = answer_permission_bridge(
+                PermissionUiTrust::Untrusted,
+                PermissionBridgeKind::Decide,
+                &json!({"type": "permission_decision", "id": hostile_id, "action": action}),
+                &monitor,
+                "evil",
+            );
+            let refusal = refusal.expect("refused");
+            assert!(matches!(
+                refusal.action,
+                "allow" | "revoke" | "reset" | "unknown"
+            ));
+            let line = refusal.log_line("evil", Some(7));
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+            assert!(!line.contains("forged"), "{line}");
+            assert!(refusal.ask_id.chars().count() <= LOGGED_ASK_ID_MAX);
+            keys.insert(refusal.warn_key());
+        }
+        assert_eq!(loggable_action("allow\nforged"), "unknown");
+        let (_, read) = answer_permission_bridge(
+            PermissionUiTrust::Untrusted,
+            PermissionBridgeKind::Read,
+            &json!({"type": "read_permission_decisions"}),
+            &monitor,
+            "evil",
+        );
+        keys.insert(read.expect("refused").warn_key());
+        assert_eq!(keys.len(), 2, "one limiter key per message kind: {keys:?}");
+    }
+
+    /// A test profile whose directory exists before the monitor is opened, so
+    /// the process monitor cache keys it by the same canonical path the pane
+    /// handler resolves later.
+    struct BridgeProfile {
+        _dir: tempfile::TempDir,
+        _guard: crate::config::TestProfileDirGuard,
+    }
+
+    impl BridgeProfile {
+        fn monitor(&self) -> Arc<crate::broker::gate::PermissionMonitor> {
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        }
+    }
+
+    fn bridge_profile() -> BridgeProfile {
+        let dir = tempdir().expect("profile");
+        let path = dir.path().canonicalize().unwrap().join("profile");
+        std::fs::create_dir_all(&path).unwrap();
+        let guard = crate::config::set_test_profile_dir(path);
+        BridgeProfile {
+            _dir: dir,
+            _guard: guard,
+        }
+    }
+
+    /// Launch config for a bundled-plugin copy whose state lives outside the
+    /// plugin folder, as in production.
+    fn bridge_pane_config(plugin_dir: &Path, context_root: &Path) -> PythonLaunchConfig {
+        let mut config = PythonLaunchConfig::from_manifest_file(plugin_dir)
+            .expect("manifest")
+            .expect("python plugin");
+        config.workspace_root = context_root.to_path_buf();
+        config.context_root = context_root.to_path_buf();
+        config
+    }
+
+    fn seeded_entry_ids(pane: &LivePythonPane) -> Vec<String> {
+        pane.states_json()
+            .as_object()
+            .into_iter()
+            .flat_map(|scopes| scopes.values())
+            .filter_map(|scope| scope.get("entries").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+        let monitor_profile = bridge_profile();
+        let monitor = monitor_profile.monitor();
+        let pending = bridge_admit(&monitor, "call-live-spoof", "bridge.live");
+        let root = tempdir().expect("root");
+        let spoof =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
+        main.extend_from_slice(b"\n# not the bundled code\n");
+        std::fs::write(spoof.join("main.py"), main).unwrap();
+        let ctx = tempdir().expect("context");
+
+        let mut pane =
+            LivePythonPane::launch(bridge_pane_config(&spoof, ctx.path())).expect("launch spoof");
+        assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
+        assert_eq!(
+            pane.permission_ui,
+            PermissionUiTrust::MismatchedPermissionsCopy
+        );
+        assert!(seeded_entry_ids(&pane).is_empty(), "no inventory at open");
+
+        let before = rows(&monitor);
+        pane.handle_message(json!({"type": "read_permission_decisions"}));
+        for action in ["allow", "revoke"] {
+            pane.handle_message(decide(&pending, action));
+        }
+        assert_eq!(rows(&monitor), before, "the monitor is unchanged");
+        assert!(rows(&monitor).contains(&(pending.clone(), "pending".to_string())));
+        assert!(pane
+            .unhandled_warned_at
+            .contains_key("permission_bridge_refused:read"));
+        assert!(pane
+            .unhandled_warned_at
+            .contains_key("permission_bridge_refused:decide"));
+        assert!(
+            Arc::ptr_eq(&monitor, &monitor_profile.monitor()),
+            "the pane handler used this monitor"
+        );
+    }
+
+    #[test]
+    fn relaunch_rederives_bridge_trust_before_the_new_guest_runs() {
+        let monitor_profile = bridge_profile();
+        let monitor = monitor_profile.monitor();
+        let pending = bridge_admit(&monitor, "call-live-reload", "bridge.reload");
+        let root = tempdir().expect("root");
+        let dir =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let ctx = tempdir().expect("context");
+        let original = std::fs::read(dir.join("main.py")).unwrap();
+
+        let mut pane =
+            LivePythonPane::launch(bridge_pane_config(&dir, ctx.path())).expect("launch bundled");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        assert!(
+            seeded_entry_ids(&pane).contains(&pending),
+            "bundled copy is seeded"
+        );
+
+        // Hot reload onto changed files: trust does not survive.
+        let mut swapped = original.clone();
+        swapped.extend_from_slice(b"\n# swapped in\n");
+        std::fs::write(dir.join("main.py"), &swapped).unwrap();
+        pane.relaunch().expect("relaunch swapped");
+        assert_eq!(
+            pane.permission_ui,
+            PermissionUiTrust::MismatchedPermissionsCopy
+        );
+        assert!(seeded_entry_ids(&pane).is_empty());
+        let before = rows(&monitor);
+        pane.handle_message(decide(&pending, "revoke"));
+        assert_eq!(rows(&monitor), before, "swapped code cannot decide");
+
+        // Restoring the shipped bytes restores trust on the next reload.
+        std::fs::write(dir.join("main.py"), &original).unwrap();
+        pane.relaunch().expect("relaunch restored");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        pane.handle_message(decide(&pending, "revoke"));
+        assert!(
+            !rows(&monitor).iter().any(|(id, _)| id == &pending),
+            "restored bundled code may revoke"
+        );
+        assert!(Arc::ptr_eq(&monitor, &monitor_profile.monitor()));
+    }
+
+    /// Stint 1238 matrix cell flipped by stint 1264. Was: any Python guest's
+    /// `permission_decision` reached `mutate_entry` as a human caller, so
+    /// `allow` approved a pending ask as Always. Now: a guest without bundled
+    /// provenance is refused and changes nothing; the bundled Permissions
+    /// plugin is a non-human caller whose `allow` only files a Needs you item.
+    #[test]
+    fn python_permission_bridge_never_approves_a_pending_ask_as_human() {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
         use crate::broker::{ActorScope, ActorType, TargetType};
 
         let monitor = PermissionMonitor::ephemeral();
@@ -10518,17 +11394,37 @@ default = true
         let Admission::Required { pending_request_id } = admit() else {
             panic!("an unapproved connector call must ask");
         };
-        let bridge_caller = PermissionCaller {
-            human: true,
-            actor_id: format!("app:{}", "any.python.plugin"),
-        };
-        let outcome = monitor.mutate_entry(&pending_request_id, "allow", &bridge_caller);
-        // CUTOVER: expected to change to deny.
-        assert!(
-            matches!(outcome, PermissionMutation::Applied { .. }),
-            "today a guest-built human caller approves the pending ask"
-        );
-        assert!(matches!(admit(), Admission::Proceed { .. }));
+        let message = json!({
+            "type": "permission_decision",
+            "id": pending_request_id,
+            "action": "allow",
+        });
+        for (trust, plugin, status) in [
+            (
+                PermissionUiTrust::Untrusted,
+                "any.python.plugin",
+                "rejected",
+            ),
+            (PermissionUiTrust::Untrusted, "permissions", "rejected"),
+            (
+                PermissionUiTrust::BundledPermissionsUi,
+                "permissions",
+                "needs_you",
+            ),
+        ] {
+            let (reply, _) = answer_permission_bridge(
+                trust,
+                PermissionBridgeKind::Decide,
+                &message,
+                &monitor,
+                plugin,
+            );
+            assert_eq!(reply["status"], status, "{plugin} {trust:?}: {reply}");
+            assert!(
+                matches!(admit(), Admission::Required { .. }),
+                "{plugin} {trust:?}: a guest message never approves the ask"
+            );
+        }
     }
 
     #[test]

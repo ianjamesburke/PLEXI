@@ -1742,13 +1742,21 @@ pub enum ViewCmd {
         extra_args: Vec<String>,
     },
     /// Render a plugin headlessly (JSON frame tree by default, or PNG with --png).
+    ///
+    /// The JSON output lists, under "layout", the rect each node painted at
+    /// this size, the visible part of it, and whether its text was cut or
+    /// wrapped mid-word.
     Render {
         /// View id, default plugin id, or local path to render (e.g. "calc" or "./my-plugin")
         plugin: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]
         size: String,
-        /// Pre-seed the plugin's state from a JSON file before rendering
+        /// Pre-seed the plugin's state from a JSON file before rendering.
+        ///
+        /// A plugin with one [state] scope takes a flat object, for example
+        /// {"count": 3}. A plugin that declares several scopes takes an object
+        /// keyed by scope name, for example {"context": {...}, "global": {...}}.
         #[arg(long, value_hint = ValueHint::FilePath)]
         state: Option<String>,
         /// Where to save the output (default: stdout)

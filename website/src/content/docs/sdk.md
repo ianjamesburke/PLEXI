@@ -100,8 +100,9 @@ ReadPermissionDecisions()
 
 Ask the host for the live permission-monitor inventory.
 
-The host replies with :class:`events.PermissionInventory`. The app does
-not keep its own grant store.
+The host replies with :class:`events.PermissionInventory`. Only the
+bundled Permissions plugin receives entries; any other plugin gets an
+empty list with ``status="rejected"``.
 
 ### `PermissionDecision`
 
@@ -111,8 +112,11 @@ PermissionDecision(id: str, action: str)
 
 Change one live permission row.
 
-``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
-Permissions app is a human decision. The host replies with a fresh
+``action`` is ``revoke``, ``reset``, or ``allow``. Only the bundled
+Permissions plugin may send it, and it is never a human decision:
+``revoke`` applies, while ``allow`` and ``reset`` file a Needs you item
+that a person confirms in the host (``status="needs_you"``). Other
+plugins get ``status="rejected"``. The host replies with a fresh
 :class:`events.PermissionInventory`.
 
 ### `ReadHostLog`
@@ -783,6 +787,24 @@ Usage::
         SPACE_SM, SPACE_MD,
     )
 
+### `BadgeColor`
+
+```python
+BadgeColor = Literal['accent', 'success', 'warning', 'danger', 'neutral', 'red', 'green', 'yellow']
+```
+
+Semantic color roles accepted by ``Badge`` and ``Banner``.
+
+### `TextColor`
+
+```python
+TextColor = Literal['accent', 'success', 'warning', 'danger', 'neutral', 'muted', 'red', 'green', 'yellow']
+```
+
+Semantic color roles accepted by ``Text``, ``Label`` and ``Heading`` (the
+``BadgeColor`` roles plus ``"muted"``), in addition to ``#rrggbb`` /
+``#rrggbbaa`` hex strings from ``plexi_sdk.theme``.
+
 ### `ensure_visible(scroll_offset: float, viewport_h: float, item_top: float, item_bottom: float, margin: float = 0.0)`
 
 Return a clamped scroll offset that keeps ``[item_top, item_bottom]`` visible.
@@ -813,23 +835,41 @@ Give a component a stable explicit key for lists and local state.
 ### `Column`
 
 ```python
-Column(children: list[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', grow: bool = False)
+Column(children: Sequence[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', justify: str = 'start', grow: bool = False)
 ```
 
 Vertical stack of child components.
 
+``align`` places children across the column: ``"start"`` (left, the
+default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+``child`` vertically and a single grow spacer pins what follows it to the
+bottom. ``justify`` places children down a column without grow spacers:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``;
+the column then fills the height it is given.
+
 ### `HStack`
 
 ```python
-HStack(children: list[Component] | None = None, gap: float | None = None, align: str = 'start', grow: bool = False)
+HStack(children: Sequence[Component] | None = None, gap: float | None = None, align: str = 'center', justify: str = 'start', grow: bool = False)
 ```
 
 Horizontal stack of child components (`Row` alias).
 
+``align`` is the cross axis, as on ``Column``: it places children at the
+top (``"start"``), the middle (``"center"``, the default) or the bottom
+(``"end"``) of the row. ``justify`` places them along the row:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``.
+Leftover width is shared equally by every ``Spacer(grow=True)``,
+``Column(grow=True)`` and ``Row(grow=True)`` child, which then takes
+precedence over ``justify``; a ``Column`` that does not grow is as wide as
+its content. A ``Text`` child too long for the row wraps in the width its
+later siblings leave.
+
 ### `Card`
 
 ```python
-Card(children: list[Component] | None = None, padding: float = SPACE_MD, gap: float | None = SPACE_SM, bg_color: str | None = None, border_color: str | None = None, radius: float = RADIUS_MD)
+Card(children: Sequence[Component] | None = None, padding: float = SPACE_MD, gap: float | None = SPACE_SM, bg_color: str | None = None, border_color: str | None = None, radius: float = RADIUS_MD)
 ```
 
 Elevated surface container with rounded border and inner padding.
@@ -845,7 +885,7 @@ Scrollable viewport wrapping a single child component.
 ### `Grid`
 
 ```python
-Grid(columns: int, children: list[Component] | None = None, gap: float = SPACE_SM)
+Grid(columns: int, children: Sequence[Component] | None = None, gap: float = SPACE_SM)
 ```
 
 Multi-column grid layout composed onto rows and columns.
@@ -861,7 +901,7 @@ Top application header bar with title and optional subtitle.
 ### `Section`
 
 ```python
-Section(title: str, children: list[Component] | Component | None = None, *more_children, gap: float = SPACE_SM)
+Section(title: str, children: Sequence[Component] | Component | None = None, *more_children, gap: float = SPACE_SM)
 ```
 
 Titled section header with a divider, optionally wrapping body children.
@@ -896,7 +936,10 @@ Declarative text primitive with font size, styling, color, truncation, and align
 Spacer(size: float = SPACE_MD, grow: bool = False, flex: bool = False)
 ```
 
-Fixed or flex gap. ``grow=True`` expands to consume remaining space.
+Fixed or flex gap.
+
+``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+height with every other grow spacer in it.
 
 ### `Divider`
 
@@ -933,18 +976,26 @@ Interactive button dispatching ``UiAction(on_click)`` when activated.
 ### `Actions`
 
 ```python
-Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None, gap: float = SPACE_SM, align: str = 'start')
+Actions(buttons: Sequence[Button] | None = None, actions: Sequence[Button] | None = None, gap: float = SPACE_SM, align: str = 'center')
 ```
 
 Horizontal row of ``Button`` components (`ActionBar` alias).
 
+``align`` places the buttons at the top, middle (the default) or bottom of
+the row. Buttons that do not fit the pane width wrap onto further lines as
+whole buttons; a label never breaks inside a word.
+
 ### `TextInput`
 
 ```python
-TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '', multiline: bool = False, max_length: int | None = None, height: float = 0.0)
+TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '')
 ```
 
-Editable text input rendered natively by the host (`TextEdit` alias).
+Single-line editable text input rendered natively by the host (`TextEdit` alias).
+
+The host sends ``UiValueChange(on_change, value)`` on every edit and
+``UiAction(on_submit)`` when Enter is pressed in the field. Both ids default
+to ``id``. There is no multi-line input yet.
 
 ### `FormField`
 
@@ -1192,10 +1243,18 @@ CanvasLine(x1: float, y1: float, x2: float, y2: float, color: str = '#cdd6f4', w
 CanvasText(x: float, y: float, text: str, size: float = 14.0, color: str = '#ffffff', bold: bool = False, align: str = 'left_top', monospace: bool = False)
 ```
 
+### `CanvasCommand`
+
+```python
+CanvasCommand = CanvasRect | CanvasCircle | CanvasLine | CanvasText
+```
+
+Any one drawing command accepted by ``Canvas``.
+
 ### `Canvas`
 
 ```python
-Canvas(commands: list[Any] | None = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '', on_click: str = '')
+Canvas(commands: Sequence[CanvasCommand] | None = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '', on_click: str = '')
 ```
 
 2D vector drawing surface rendered natively by the host.

@@ -37,6 +37,7 @@ from plexi_sdk.ui import (
     CanvasRect,
     Column,
     FooterKeys,
+    Row,
     Scrollable,
     SelectList,
     Text,
@@ -142,6 +143,16 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert tree["nodes"][2]["data"]["type"] == "Button"
 
 
+def test_ui_tree_carries_row_and_column_justify() -> None:
+    """Stint 1358: the adapter forwards ``justify`` for rows and columns."""
+    tree = _encode_uitree(
+        Column([Row([Text("a")], justify="space-between")], justify="center", padding=0)
+    )
+    assert tree["nodes"][0]["data"]["justify"] == "center"
+    assert tree["nodes"][1]["data"]["type"] == "Row"
+    assert tree["nodes"][1]["data"]["justify"] == "space-between"
+
+
 def test_ui_tree_serializes_text_input_and_select_list() -> None:
     tree = _encode_uitree(
         Column(
@@ -212,7 +223,8 @@ def test_ui_tree_serializes_row_children() -> None:
         "type": "Row",
         "children": [1, 2],
         "gap": 8.0,
-        "align": "start",
+        "align": "center",
+        "justify": "start",
         "grow": False,
     }
     assert nodes[1]["data"]["type"] == "Button"

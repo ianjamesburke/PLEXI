@@ -10,7 +10,7 @@ Plexi gives a person direct control at the point where an automated edit needs t
 
 V2 targets an XML sync-review editor: open the generated sequence, inspect synchronized cameras, correct placement, remove unwanted material, and save an XML revision the existing multicam scripts can consume. The first useful release replaces the Premiere correction step in that workflow.
 
-V3 targets creative editing on the same document: select cameras during playback, record cuts, trim, adjust crop and zoom, and render the resulting edit. These are product scope targets, not dates or promises about the next semantic-version tag. Both follow stable v1. Task metadata owns priority and dependency order; [ROADMAP.toml](../ROADMAP.toml) reports proven capability.
+V3 targets creative editing on the same document: select cameras during playback, record cuts, trim, adjust crop and zoom, and render the resulting edit. These are product scope targets, not dates or promises about the next semantic-version tag. Both follow stable v1. Task metadata owns priority and dependency order.
 
 ## Shared document
 

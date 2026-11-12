@@ -1,19 +1,17 @@
 import rss from '@astrojs/rss';
-import { getCollection } from 'astro:content';
+import { publishedPosts } from '../lib/blog';
 
 export async function GET(context) {
-  const posts = await getCollection('blog');
+  const posts = await publishedPosts();
   return rss({
     title: 'Plexi',
-    description: 'Updates from building Plexi in public.',
+    description: 'Notes from building Plexi.',
     site: context.site,
-    items: posts
-      .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
-      .map((post) => ({
-        title: post.data.title,
-        description: post.data.description,
-        pubDate: post.data.date,
-        link: `/blog/${post.id}/`,
-      })),
+    items: posts.map((post) => ({
+      title: post.data.title,
+      description: post.data.description,
+      pubDate: post.data.date,
+      link: `/blog/${post.id}/`,
+    })),
   });
 }

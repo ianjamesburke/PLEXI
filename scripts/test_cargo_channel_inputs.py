@@ -31,6 +31,7 @@ class ChannelInputs(unittest.TestCase):
         for key in (ROOT_ENV, INPUT_ENV, "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "PLEXI_CARGO_LOCK_HELD", "PLEXI_BUILD_TAG", "RUSTFLAGS"):
             self.env.pop(key, None)
         self.env["PLEXI_CARGO_LOCK"] = str(self.base / "lease.lock")
+        self.env["PLEXI_RUN_LOG_DIR"] = str(self.base / "run-logs")  # keep logs out of the fixture's git tree
         self.env["CARGO_BUILD_JOBS"] = "2"
 
     def command(self, args, cwd, env=None):
@@ -134,6 +135,7 @@ class ChannelInputs(unittest.TestCase):
         (root / "scripts").mkdir()
         shutil.copyfile(HELPER, root / "scripts/cargo-channel-inputs.py")
         shutil.copyfile(LEASE, root / "scripts/cargo-with-lease.sh")
+        shutil.copyfile(REPO / "scripts/run_logged.py", root / "scripts/run_logged.py")
         env = dict(self.env, CARGO_TARGET_DIR=str(root / "target"), CARGO_NET_OFFLINE="true")
         command = ["just", "--justfile", str(REPO / "justfile"), "--working-directory", str(root), "clippy"]
         first = self.command(command, root, env)

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Sequence
+from typing import Any, Literal, TypeAlias
 
 from ._keys import normalize_key
 
@@ -44,23 +45,24 @@ RADIUS_MD: int = 10
 RADIUS_LG: int = 14
 RADIUS_BADGE: int = 6
 
-# Semantic color roles accepted by Badge / Banner (`decode_badge_color` in
-# `src/host/wasm_python.rs`).
-BadgeColor = Literal[
+# Host decoder: `decode_badge_color` in `src/host/wasm_python.rs`.
+BadgeColor: TypeAlias = Literal[
     "accent", "success", "warning", "danger", "neutral",
     "red", "green", "yellow",
 ]
+"""Semantic color roles accepted by ``Badge`` and ``Banner``."""
 BADGE_COLORS: tuple[str, ...] = (
     "accent", "success", "warning", "danger", "neutral",
     "red", "green", "yellow",
 )
 
-# Semantic color roles accepted by Text / Label / Heading (Badge roles + "muted"),
-# in addition to `#rrggbb` / `#rrggbbaa` hex strings from `plexi_sdk.theme`.
-TextColor = Literal[
+TextColor: TypeAlias = Literal[
     "accent", "success", "warning", "danger", "neutral", "muted",
     "red", "green", "yellow",
 ]
+"""Semantic color roles accepted by ``Text``, ``Label`` and ``Heading`` (the
+``BadgeColor`` roles plus ``"muted"``), in addition to ``#rrggbb`` /
+``#rrggbbaa`` hex strings from ``plexi_sdk.theme``."""
 TEXT_COLORS: tuple[str, ...] = BADGE_COLORS + ("muted",)
 
 
@@ -185,17 +187,38 @@ def _validate_component_list(items: Any, container_name: str) -> None:
 
 # ── Layout Containers ─────────────────────────────────────────────────────────
 
+_JUSTIFY_VALUES = ("start", "center", "end", "space-between")
+
+
+def _validate_justify(justify: Any, container_name: str) -> str:
+    if justify not in _JUSTIFY_VALUES:
+        raise ValueError(
+            f"{container_name} justify must be one of "
+            f"{', '.join(repr(v) for v in _JUSTIFY_VALUES)}, got {justify!r}"
+        )
+    return str(justify)
+
 
 class Column(Component):
-    """Vertical stack of child components."""
+    """Vertical stack of child components.
+
+    ``align`` places children across the column: ``"start"`` (left, the
+    default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+    child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+    ``child`` vertically and a single grow spacer pins what follows it to the
+    bottom. ``justify`` places children down a column without grow spacers:
+    ``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``;
+    the column then fills the height it is given.
+    """
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float | None = None,
         padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0,
         *,
         align: str = "start",
+        justify: str = "start",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -204,6 +227,7 @@ class Column(Component):
         self.gap: float | None = float(gap) if gap is not None else None
         self.padding = padding
         self.align = align
+        self.justify = _validate_justify(justify, "Column")
         self.grow = bool(grow)
 
     def to_node(self) -> dict | None:
@@ -217,6 +241,7 @@ class Column(Component):
             "type": "column",
             "children": children,
             "align": self.align,
+            "justify": self.justify,
             "grow": self.grow,
         }
         if self.gap is not None:
@@ -225,14 +250,26 @@ class Column(Component):
 
 
 class HStack(Component):
-    """Horizontal stack of child components (`Row` alias)."""
+    """Horizontal stack of child components (`Row` alias).
+
+    ``align`` is the cross axis, as on ``Column``: it places children at the
+    top (``"start"``), the middle (``"center"``, the default) or the bottom
+    (``"end"``) of the row. ``justify`` places them along the row:
+    ``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``.
+    Leftover width is shared equally by every ``Spacer(grow=True)``,
+    ``Column(grow=True)`` and ``Row(grow=True)`` child, which then takes
+    precedence over ``justify``; a ``Column`` that does not grow is as wide as
+    its content. A ``Text`` child too long for the row wraps in the width its
+    later siblings leave.
+    """
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float | None = None,
         *,
-        align: str = "start",
+        align: str = "center",
+        justify: str = "start",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -240,6 +277,7 @@ class HStack(Component):
         self.children = items
         self.gap: float | None = float(gap) if gap is not None else None
         self.align = align
+        self.justify = _validate_justify(justify, "HStack")
         self.grow = bool(grow)
 
     def to_node(self) -> dict | None:
@@ -253,6 +291,7 @@ class HStack(Component):
             "type": "row",
             "children": children,
             "align": self.align,
+            "justify": self.justify,
             "grow": self.grow,
         }
         if self.gap is not None:
@@ -268,7 +307,7 @@ class Card(Component):
 
     def __init__(
         self,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         padding: float = SPACE_MD,
         gap: float | None = SPACE_SM,
         *,
@@ -336,7 +375,7 @@ class Grid(Component):
     def __init__(
         self,
         columns: int,
-        children: list[Component] | None = None,
+        children: Sequence[Component] | None = None,
         gap: float = SPACE_SM,
     ) -> None:
         self.columns = max(1, int(columns))
@@ -398,17 +437,17 @@ class Section(Component):
     def __init__(
         self,
         title: str,
-        children: list[Component] | Component | None = None,
+        children: Sequence[Component] | Component | None = None,
         *more_children: Component,
         gap: float = SPACE_SM,
     ) -> None:
         self.title = title
         self.gap = float(gap)
         collected: list[Component] = []
-        if isinstance(children, list):
-            collected.extend(children)
-        elif children is not None:
+        if isinstance(children, Component):
             collected.append(children)
+        elif children is not None:
+            collected.extend(children)
         if more_children:
             collected.extend(more_children)
         _validate_component_list(collected, "Section")
@@ -546,7 +585,11 @@ class Text(Component):
 
 @dataclass
 class Spacer(Component):
-    """Fixed or flex gap. ``grow=True`` expands to consume remaining space."""
+    """Fixed or flex gap.
+
+    ``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+    height with every other grow spacer in it.
+    """
 
     size: float = SPACE_MD
     grow: bool = False
@@ -644,27 +687,28 @@ class Button(Component):
 
 
 class Actions(Component):
-    """Horizontal row of ``Button`` components (`ActionBar` alias)."""
+    """Horizontal row of ``Button`` components (`ActionBar` alias).
+
+    ``align`` places the buttons at the top, middle (the default) or bottom of
+    the row. Buttons that do not fit the pane width wrap onto further lines as
+    whole buttons; a label never breaks inside a word.
+    """
 
     def __init__(
         self,
-        buttons: list[Button] | None = None,
+        buttons: Sequence[Button] | None = None,
         *,
-        actions: list[Button] | None = None,
+        actions: Sequence[Button] | None = None,
         gap: float = SPACE_SM,
-        align: str = "start",
+        align: str = "center",
     ) -> None:
-        items = actions if actions is not None else (buttons if buttons is not None else [])
-        if not isinstance(items, list):
-            raise TypeError(
-                f"ActionBar actions must be a list of Button instances, got {type(items).__name__}"
-            )
+        items = list(actions if actions is not None else (buttons if buttons is not None else []))
         for i, item in enumerate(items):
             if not isinstance(item, Button):
                 raise TypeError(
                     f"ActionBar actions[{i}] must be a Button, got {type(item).__name__}"
                 )
-        self.buttons = list(items)
+        self.buttons = items
         self.actions = self.buttons
         self.gap = float(gap)
         self.align = align
@@ -682,7 +726,12 @@ ActionBar = Actions
 
 
 class TextInput(Component):
-    """Editable text input rendered natively by the host (`TextEdit` alias)."""
+    """Single-line editable text input rendered natively by the host (`TextEdit` alias).
+
+    The host sends ``UiValueChange(on_change, value)`` on every edit and
+    ``UiAction(on_submit)`` when Enter is pressed in the field. Both ids default
+    to ``id``. There is no multi-line input yet.
+    """
 
     def __init__(
         self,
@@ -695,9 +744,6 @@ class TextInput(Component):
         *,
         autofocus: bool = False,
         node_id: str = "",
-        multiline: bool = False,
-        max_length: int | None = None,
-        height: float = 0.0,
     ) -> None:
         resolved_id = id or node_id
         self.id = resolved_id
@@ -708,9 +754,6 @@ class TextInput(Component):
         self.on_submit = on_submit or resolved_id
         self.password = bool(password)
         self.autofocus = bool(autofocus)
-        self.multiline = bool(multiline)
-        self.max_length = max_length
-        self.height = float(height)
 
     def to_node(self) -> dict:
         return {
@@ -1726,12 +1769,16 @@ class CanvasText:
         }
 
 
+CanvasCommand: TypeAlias = CanvasRect | CanvasCircle | CanvasLine | CanvasText
+"""Any one drawing command accepted by ``Canvas``."""
+
+
 class Canvas(Component):
     """2D vector drawing surface rendered natively by the host."""
 
     def __init__(
         self,
-        commands: list[Any] | None = None,
+        commands: Sequence[CanvasCommand] | None = None,
         width: float = 640.0,
         height: float = 360.0,
         grow: bool = True,
@@ -1799,5 +1846,5 @@ __all__ = [
     "KeyValue", "CodeBlock", "Avatar", "Icon", "Tooltip",
     "Accordion", "EmptyState", "Modal",
     # 2D Canvas
-    "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
+    "Canvas", "CanvasCommand", "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
 ]

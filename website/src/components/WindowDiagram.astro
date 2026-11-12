@@ -1,0 +1,81 @@
+---
+/**
+ * Schematic of a Plexi window: contexts on the left, tiled panes on the right.
+ * It is a diagram, drawn as one, and the caption says so. Replace with a real
+ * capture through Shot.astro when one exists (see IMAGES-NEEDED.md).
+ */
+const contexts = ['api-refactor', 'website', 'notes'];
+---
+<figure class="window-diagram">
+  <div class="win" role="img" aria-label="Diagram of a Plexi window. A sidebar lists three contexts. The main area is tiled into four panes: a terminal, two coding agents, and a plugin view.">
+    <div class="win-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span>plexi</span><span class="win-ctx">context: api-refactor</span></div>
+    <div class="win-body" aria-hidden="true">
+      <div class="win-side">
+        <p class="tag">Contexts</p>
+        {contexts.map((c, i) => <p class:list={['ctx', { on: i === 0 }]}><span>{i + 1}</span>{c}</p>)}
+      </div>
+      <div class="panes">
+        <div class="pane p-term"><p class="tag">Terminal</p><p class="what">Your shell, your dotfiles</p><div class="lines"><i style="width:62%"></i><i style="width:38%"></i><i style="width:71%"></i><i style="width:46%"></i><i style="width:55%"></i><i style="width:24%"></i></div></div>
+        <div class="pane p-agent-a"><p class="tag">Agent</p><p class="what">Claude Code</p><p class="state working">working</p></div>
+        <div class="pane p-agent-b"><p class="tag">Agent</p><p class="what">Codex</p><p class="state needs">needs you</p></div>
+        <div class="pane p-view focus"><p class="tag">View</p><p class="what">Todo, a plugin</p><div class="checks"><i></i><i></i><i></i></div></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Diagram, not a screenshot. One window: contexts on the left, panes tiled on the right.</figcaption>
+</figure>
+
+<style>
+  .window-diagram { min-width: 0; }
+  .win { border: 1px solid var(--border-2); background: var(--bg-2); box-shadow: 0 40px 90px -30px rgba(0, 0, 0, .7); }
+  .win-bar { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border); font: 12px/1 var(--mono); color: var(--fg-2); }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); }
+  .win-ctx { margin-left: auto; }
+  .win-body { display: grid; grid-template-columns: minmax(120px, 18%) 1fr; aspect-ratio: 2.3 / 1; }
+  .win-side { border-right: 1px solid var(--border); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .tag { font: 700 10px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent-light); }
+  .win-side .tag { color: var(--fg-2); margin-bottom: 8px; }
+  .ctx { display: flex; gap: 10px; padding: 7px 8px; font: 12px/1.3 var(--mono); color: var(--fg-2); overflow: hidden; white-space: nowrap; }
+  .ctx span { color: var(--border-3); }
+  .ctx.on { background: var(--bg-4); color: var(--fg); }
+  .panes { display: grid; grid-template-columns: 1.15fr 1fr; grid-template-rows: 1fr 1fr 1.1fr; gap: 6px; padding: 6px; background: var(--bg); min-width: 0; }
+  .pane { border: 1px solid var(--border); background: var(--bg-2); padding: clamp(10px, 1.4vw, 18px); display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow: hidden; }
+  .pane.focus { border-color: var(--accent-light); }
+  .p-term { grid-row: 1 / -1; }
+  .what { font-size: clamp(13px, 1.25vw, 18px); font-weight: 650; letter-spacing: -.02em; line-height: 1.2; color: var(--fg); }
+  .lines, .checks { display: grid; gap: 9px; margin-top: auto; }
+  .lines i { display: block; height: 5px; background: var(--border); }
+  .lines i:last-child { background: var(--accent-light); width: 8px !important; height: 12px; }
+  .checks i { display: block; height: 5px; margin-left: 16px; background: var(--border); position: relative; width: 60%; }
+  .checks i:nth-child(2) { width: 42%; }
+  .checks i::before { content: ''; position: absolute; left: -16px; top: -3px; width: 9px; height: 9px; border: 1px solid var(--border-3); }
+  .checks i:first-child::before { background: var(--accent-light); border-color: var(--accent-light); }
+  .state { margin-top: auto; align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; font: 11px/1 var(--mono); color: var(--fg-2); }
+  .state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+  .state.needs { color: var(--amber); }
+  .state.needs::before { background: var(--amber); }
+  figcaption { margin-top: 14px; color: var(--fg-2); font: 13px/1.5 var(--mono); }
+
+  /* The one authored moment: the window tiles itself, pane by pane. */
+  @media (prefers-reduced-motion: no-preference) {
+    .pane { animation: tile 700ms var(--ease-out) both; }
+    .p-term { animation-delay: 120ms; --from: inset(0 100% 0 0); }
+    .p-agent-a { animation-delay: 300ms; --from: inset(0 0 100% 0); }
+    .p-agent-b { animation-delay: 460ms; --from: inset(0 0 100% 0); }
+    .p-view { animation-delay: 620ms; --from: inset(0 0 100% 0); }
+    .state.working::before { animation: pulse 1.6s ease-in-out infinite; }
+  }
+  @keyframes tile { from { clip-path: var(--from); opacity: 0; } to { clip-path: inset(0); opacity: 1; } }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  @media (max-width: 620px) {
+    .win-body { grid-template-columns: 1fr; aspect-ratio: auto; }
+    .win-side { display: none; }
+    .panes { grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
+    .p-term { grid-row: auto; grid-column: 1 / -1; min-height: 120px; }
+    .pane { min-height: 96px; }
+    .p-view { grid-column: 1 / -1; }
+    .win-ctx { display: none; }
+  }
+</style>

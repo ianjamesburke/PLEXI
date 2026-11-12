@@ -49,13 +49,15 @@ Default placement is a sibling split to the right — the calling pane is never 
 
 ### `plexi view render`
 
-Render a plugin headlessly (JSON frame tree by default, or PNG with --png)
+Render a plugin headlessly (JSON frame tree by default, or PNG with --png).
+
+The JSON output lists, under "layout", the rect each node painted at this size, the visible part of it, and whether its text was cut or wrapped mid-word.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<plugin>` | string | yes | View id, default plugin id, or local path to render (e.g. "calc" or "./my-plugin") |
 | `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
-| `--state` | string | no | Pre-seed the plugin's state from a JSON file before rendering |
+| `--state` | string | no | Pre-seed the plugin's state from a JSON file before rendering.  A plugin with one [state] scope takes a flat object, for example {"count": 3}. A plugin that declares several scopes takes an object keyed by scope name, for example {"context": {...}, "global": {...}}. |
 | `--output` | string | no | Where to save the output (default: stdout) |
 | `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
 

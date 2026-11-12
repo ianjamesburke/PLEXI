@@ -202,15 +202,15 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
         stderr: "",
       };
     }
-    if (cmd === "app tools") {
+    if (cmd === "plugin tools") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({
           ok: true,
           context_id: 10,
           tools: [
-            { name: "clip.state", app_id: "clip-editor-probe", pane_id: 2, read_only: true },
-            { name: "clip.crop", app_id: "clip-editor-probe", pane_id: 2, read_only: false },
+            { name: "clip.state", plugin_id: "clip-editor-probe", pane_id: 2, read_only: true },
+            { name: "clip.crop", plugin_id: "clip-editor-probe", pane_id: 2, read_only: false },
           ],
         }),
         stderr: "",
@@ -266,7 +266,7 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
         stderr: "",
       };
     }
-    if (cmd === "app call") {
+    if (cmd === "plugin call") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({
@@ -476,7 +476,7 @@ test("Stint 0815: session_start and session_shutdown omit sessionId until sessio
         stderr: "",
       };
     }
-    if (cmd === "app tools") {
+    if (cmd === "plugin tools") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({ ok: true, context_id: 10, tools: [] }),
@@ -671,7 +671,7 @@ test("buildContainerContext describes the pane and the native surfaces", () => {
   });
   assert.match(attached, /pane #7/);
   assert.match(attached, /channel: alpha/);
-  assert.match(attached, /plexi app open text-editor/);
+  assert.match(attached, /plexi view open text-editor/);
   assert.match(attached, /image-viewer/);
   assert.match(attached, /video-player/);
   assert.match(attached, /audio-player/);
@@ -709,7 +709,7 @@ test("an attached session injects the Plexi container section into the system pr
   const text = event.systemPromptOptions.sections[PLEXI_CONTAINER_SECTION];
   assert.equal(typeof text, "string");
   assert.match(text, /pane #7/);
-  assert.match(text, /plexi app open text-editor/);
+  assert.match(text, /plexi view open text-editor/);
   // Stint 1050: an attached agent must know the notes editor exists without
   // having to load the (model-invocation-disabled) `plexi-cli` skill.
   assert.match(text, /plexi note open/);
@@ -754,7 +754,7 @@ test("Stint 1026: orient reports registered agents from the one gather it alread
     "pane list",
     "context list",
     "agent list",
-    "app tools",
+    "plugin tools",
     "needs-you reconcile",
   ]);
   let releaseBatch;
@@ -817,7 +817,7 @@ test("Stint 1026: orient reports registered agents from the one gather it alread
         stderr: "",
       };
     }
-    if (cmd === "app tools") {
+    if (cmd === "plugin tools") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({ ok: true, context_id: 10, tools: [] }),

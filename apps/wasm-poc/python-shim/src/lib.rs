@@ -15,8 +15,8 @@ use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::host_log;
 use plexi::platform::host_state;
 use plexi::platform::types::{
-    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
-    StateSnapshot, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
+    Alignment, ButtonNode, ButtonStyle, ColumnNode, Effect, IndexedNode, InputEvent, Justify,
+    KeyEvent, StateSnapshot, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
 };
 use serde_json::{json, Value};
 
@@ -232,6 +232,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, String> {
                 .collect::<Result<Vec<_>, _>>()?,
             gap: optional_f32(value, "gap")?.unwrap_or(0.0),
             align: decode_alignment(value["align"].as_str().unwrap_or("start"))?,
+            justify: Justify::Start,
             grow: value["grow"].as_bool().unwrap_or(false),
         })),
         other => Err(format!("unknown ui node type: {other}")),
