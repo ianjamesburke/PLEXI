@@ -2600,6 +2600,11 @@ enum PermissionUiTrust {
 /// Refusal notice for every plugin that is not the bundled Permissions copy.
 const PERMISSION_BRIDGE_REFUSED_NOTICE: &str = "not permitted";
 
+/// Reply to the bundled Permissions plugin in a process that is not the host
+/// (stint 1291). Constant, like the refusal above.
+const PERMISSION_BRIDGE_NOT_HOST_NOTICE: &str =
+    "permission decisions are held by the Plexi host and are not available in this process";
+
 /// Refusal notice for a plugin with the id `permissions` that differs from
 /// this build. Names the cause and the fix with the running channel's command
 /// (`plugin uninstall` then `plugin install local:<name>`, see `PluginCmd` in
@@ -2649,6 +2654,15 @@ struct PermissionBridgeRefusal {
     kind: PermissionBridgeKind,
     action: &'static str,
     ask_id: String,
+    reason: PermissionBridgeRefusalReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionBridgeRefusalReason {
+    /// Not the bundled Permissions copy.
+    NotPermitted,
+    /// The bundled copy, in a process that holds no permission state.
+    NotHost,
 }
 
 impl PermissionBridgeRefusal {
@@ -2661,8 +2675,16 @@ impl PermissionBridgeRefusal {
 
     fn log_line(&self, plugin_id: &str, instance: Option<u64>) -> String {
         let instance = instance.map_or_else(|| "-".to_string(), |id| id.to_string());
+        let why = match self.reason {
+            PermissionBridgeRefusalReason::NotPermitted => {
+                "only the bundled Permissions plugin may use the permission bridge"
+            }
+            PermissionBridgeRefusalReason::NotHost => {
+                "this process is not the Plexi host and holds no permission state"
+            }
+        };
         format!(
-            "plugin::{plugin_id}: refused {} instance={instance} id={}: only the bundled Permissions plugin may use the permission bridge",
+            "plugin::{plugin_id}: refused {} instance={instance} id={}: {why}",
             self.operation(),
             self.ask_id
         )
@@ -2671,9 +2693,19 @@ impl PermissionBridgeRefusal {
     /// Rate-limit key. One per message kind, so guest-chosen strings can
     /// neither defeat the limit nor grow the limiter map.
     fn warn_key(&self) -> &'static str {
-        match self.kind {
-            PermissionBridgeKind::Read => "permission_bridge_refused:read",
-            PermissionBridgeKind::Decide => "permission_bridge_refused:decide",
+        match (self.reason, self.kind) {
+            (PermissionBridgeRefusalReason::NotPermitted, PermissionBridgeKind::Read) => {
+                "permission_bridge_refused:read"
+            }
+            (PermissionBridgeRefusalReason::NotPermitted, PermissionBridgeKind::Decide) => {
+                "permission_bridge_refused:decide"
+            }
+            (PermissionBridgeRefusalReason::NotHost, PermissionBridgeKind::Read) => {
+                "permission_bridge_not_host:read"
+            }
+            (PermissionBridgeRefusalReason::NotHost, PermissionBridgeKind::Decide) => {
+                "permission_bridge_not_host:decide"
+            }
         }
     }
 }
@@ -2723,20 +2755,8 @@ fn answer_permission_bridge(
         };
     let id = message.get("id").and_then(Value::as_str).unwrap_or("");
     let action = message.get("action").and_then(Value::as_str).unwrap_or("");
-    if trust != PermissionUiTrust::BundledPermissionsUi {
-        let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
-            permissions_copy_mismatch_notice()
-        } else {
-            PERMISSION_BRIDGE_REFUSED_NOTICE.to_string()
-        };
-        return (
-            inventory(Vec::new(), &notice, "rejected"),
-            Some(PermissionBridgeRefusal {
-                kind,
-                action: loggable_action(action),
-                ask_id: loggable_ask_id(id),
-            }),
-        );
+    if let Some((reply, refusal)) = refuse_unless_bundled(trust, kind, message) {
+        return (reply, Some(refusal));
     }
     if kind == PermissionBridgeKind::Read {
         return (inventory(monitor.list_entries(), "", "list"), None);
@@ -2770,6 +2790,78 @@ fn answer_permission_bridge(
         }
     };
     (inventory(monitor.list_entries(), &notice, status), None)
+}
+
+/// The refusal for every guest that is not the bundled Permissions copy:
+/// one constant reply (or the reinstall notice for a mismatched copy) and a
+/// refusal record. Runs before any permission state is opened.
+fn refuse_unless_bundled(
+    trust: PermissionUiTrust,
+    kind: PermissionBridgeKind,
+    message: &Value,
+) -> Option<(Value, PermissionBridgeRefusal)> {
+    if trust == PermissionUiTrust::BundledPermissionsUi {
+        return None;
+    }
+    let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
+        permissions_copy_mismatch_notice()
+    } else {
+        PERMISSION_BRIDGE_REFUSED_NOTICE.to_string()
+    };
+    Some((
+        rejected_permission_inventory(&notice),
+        bridge_refusal(kind, message, PermissionBridgeRefusalReason::NotPermitted),
+    ))
+}
+
+fn rejected_permission_inventory(notice: &str) -> Value {
+    json!({
+        "type": "permission_inventory",
+        "entries": [],
+        "notice": notice,
+        "status": "rejected",
+    })
+}
+
+fn bridge_refusal(
+    kind: PermissionBridgeKind,
+    message: &Value,
+    reason: PermissionBridgeRefusalReason,
+) -> PermissionBridgeRefusal {
+    let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+    let action = message.get("action").and_then(Value::as_str).unwrap_or("");
+    PermissionBridgeRefusal {
+        kind,
+        action: loggable_action(action),
+        ask_id: loggable_ask_id(id),
+        reason,
+    }
+}
+
+/// Serve one permission bridge message. The trust check runs first, so only
+/// the bundled Permissions plugin causes the profile monitor to be opened; in
+/// a process that is not the host it gets a constant reply and a refusal
+/// record that the caller logs through its limiter (stint 1291).
+fn serve_permission_bridge(
+    trust: PermissionUiTrust,
+    kind: PermissionBridgeKind,
+    message: &Value,
+    plugin_id: &str,
+) -> (Value, Option<PermissionBridgeRefusal>) {
+    if let Some((reply, refusal)) = refuse_unless_bundled(trust, kind, message) {
+        return (reply, Some(refusal));
+    }
+    match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()) {
+        Ok(monitor) => answer_permission_bridge(trust, kind, message, &monitor, plugin_id),
+        Err(_) => (
+            rejected_permission_inventory(PERMISSION_BRIDGE_NOT_HOST_NOTICE),
+            Some(bridge_refusal(
+                kind,
+                message,
+                PermissionBridgeRefusalReason::NotHost,
+            )),
+        ),
+    }
 }
 
 fn guest_log_level(raw: Option<&str>) -> log::Level {
@@ -3867,28 +3959,7 @@ impl LivePythonPane {
             );
         }
         let (reply, refusal) =
-            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            {
-                Ok(monitor) => answer_permission_bridge(
-                    self.permission_ui,
-                    kind,
-                    message,
-                    &monitor,
-                    &self.plugin_id,
-                ),
-                Err(error) => {
-                    log::error!("permissions: bridge request not served in this process: {error}");
-                    (
-                        json!({
-                            "type": "permission_inventory",
-                            "entries": [],
-                            "notice": error.to_string(),
-                            "status": "rejected",
-                        }),
-                        None,
-                    )
-                }
-            };
+            serve_permission_bridge(self.permission_ui, kind, message, &self.plugin_id);
         if let Some(refusal) = refusal {
             self.warn_refused_permission_bridge(&refusal);
         }
@@ -10943,6 +11014,7 @@ default = true
                     kind: PermissionBridgeKind::Decide,
                     action: loggable_action(action),
                     ask_id: id.clone(),
+                    reason: PermissionBridgeRefusalReason::NotPermitted,
                 })
             );
             assert_eq!(rows(&fx.monitor), before, "{action} {id} changed nothing");
@@ -11212,6 +11284,64 @@ default = true
             PermissionUiTrust::Untrusted,
             "only the id permissions gets the reinstall notice"
         );
+    }
+
+    /// Stint 1291: outside the host, an untrusted guest still gets #3062's
+    /// one constant refusal and a refusal record (the trust check runs before
+    /// the monitor is opened); the bundled guest gets a constant not-the-host
+    /// reply and its own refusal record, so both go through the limiter.
+    #[test]
+    fn permission_bridge_outside_the_host_refuses_untrusted_first_and_bundled_constantly() {
+        let read = json!({"type": "read_permission_decisions"});
+        let decide = json!({"type": "permission_decision", "id": "ask-1", "action": "allow"});
+        crate::broker::custody::as_cli_process(|| {
+            for (kind, message) in [
+                (PermissionBridgeKind::Read, &read),
+                (PermissionBridgeKind::Decide, &decide),
+            ] {
+                let (reply, refusal) =
+                    serve_permission_bridge(PermissionUiTrust::Untrusted, kind, message, "evil");
+                assert_eq!(
+                    reply,
+                    json!({
+                        "type": "permission_inventory",
+                        "entries": [],
+                        "notice": PERMISSION_BRIDGE_REFUSED_NOTICE,
+                        "status": "rejected",
+                    })
+                );
+                let refusal = refusal.expect("untrusted guest is recorded");
+                assert_eq!(refusal.reason, PermissionBridgeRefusalReason::NotPermitted);
+
+                let (reply, refusal) = serve_permission_bridge(
+                    PermissionUiTrust::BundledPermissionsUi,
+                    kind,
+                    message,
+                    "permissions",
+                );
+                assert_eq!(
+                    reply,
+                    json!({
+                        "type": "permission_inventory",
+                        "entries": [],
+                        "notice": PERMISSION_BRIDGE_NOT_HOST_NOTICE,
+                        "status": "rejected",
+                    })
+                );
+                let refusal = refusal.expect("bundled guest outside the host is recorded");
+                assert_eq!(refusal.reason, PermissionBridgeRefusalReason::NotHost);
+                let line = refusal.log_line("permissions", None);
+                assert!(line.starts_with("plugin::permissions: refused"), "{line}");
+                assert_ne!(
+                    refusal.warn_key(),
+                    PermissionBridgeRefusal {
+                        reason: PermissionBridgeRefusalReason::NotPermitted,
+                        ..refusal.clone()
+                    }
+                    .warn_key()
+                );
+            }
+        });
     }
 
     #[test]
