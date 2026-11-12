@@ -2514,9 +2514,22 @@ enum PermissionUiTrust {
 const PERMISSION_BRIDGE_REFUSED_NOTICE: &str = "not permitted";
 
 /// Refusal notice for a plugin with the id `permissions` that differs from
-/// this build. Names the cause and the fix (`plexi plugin uninstall` then
-/// `plexi plugin install local:<name>`, see `PluginCmd` in `src/cli/args.rs`).
-const PERMISSIONS_COPY_MISMATCH_NOTICE: &str = "This Permissions plugin differs from the copy built into this Plexi version, so it cannot read or change permissions. Reinstall it: plexi plugin uninstall permissions --yes, then plexi plugin install local:permissions --yes";
+/// this build. Names the cause and the fix with the running channel's command
+/// (`plugin uninstall` then `plugin install local:<name>`, see `PluginCmd` in
+/// `src/cli/args.rs`).
+fn permissions_copy_mismatch_notice() -> String {
+    format!(
+        "This Permissions plugin differs from the copy built into this Plexi version, so it cannot read or change permissions. Reinstall it: {}",
+        permissions_reinstall_command()
+    )
+}
+
+fn permissions_reinstall_command() -> String {
+    let cli = crate::cli::setup::cli_name();
+    format!(
+        "{cli} plugin uninstall {PERMISSIONS_UI_BUNDLE} --yes, then {cli} plugin install local:{PERMISSIONS_UI_BUNDLE} --yes"
+    )
+}
 
 /// The one trust predicate for `read_permission_decisions` and
 /// `permission_decision`. The id is a necessary condition only, because the
@@ -2534,8 +2547,9 @@ fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust 
         return PermissionUiTrust::BundledPermissionsUi;
     }
     log::warn!(
-        "plugin::{plugin_id}: installed copy at {} differs from the Permissions plugin built into this Plexi version; the permission bridge is disabled for it. Fix: plexi plugin uninstall permissions --yes, then plexi plugin install local:permissions --yes",
-        plugin_dir.display()
+        "plugin::{plugin_id}: installed copy at {} differs from the Permissions plugin built into this Plexi version; the permission bridge is disabled for it. Fix: {}",
+        plugin_dir.display(),
+        permissions_reinstall_command()
     );
     PermissionUiTrust::MismatchedPermissionsCopy
 }
@@ -2624,12 +2638,12 @@ fn answer_permission_bridge(
     let action = message.get("action").and_then(Value::as_str).unwrap_or("");
     if trust != PermissionUiTrust::BundledPermissionsUi {
         let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
-            PERMISSIONS_COPY_MISMATCH_NOTICE
+            permissions_copy_mismatch_notice()
         } else {
-            PERMISSION_BRIDGE_REFUSED_NOTICE
+            PERMISSION_BRIDGE_REFUSED_NOTICE.to_string()
         };
         return (
-            inventory(Vec::new(), notice, "rejected"),
+            inventory(Vec::new(), &notice, "rejected"),
             Some(PermissionBridgeRefusal {
                 kind,
                 action: loggable_action(action),
@@ -10975,7 +10989,10 @@ default = true
             let notice = stale["notice"].as_str().unwrap();
             assert!(notice.contains("differs from the copy built into this Plexi version"));
             assert!(
-                notice.contains("plexi plugin install local:permissions"),
+                notice.contains(&format!(
+                    "{} plugin install local:permissions --yes",
+                    crate::cli::setup::cli_name()
+                )),
                 "{notice}"
             );
 
