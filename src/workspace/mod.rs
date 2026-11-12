@@ -1415,6 +1415,47 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
+    /// Stint 1127: an existing workspace that cannot be used is a named
+    /// failure carrying the file and the reason, never "no workspace".
+    #[test]
+    fn unusable_workspace_load_names_the_file_and_reason() {
+        let profile = tempfile::tempdir().expect("temporary profile");
+        assert_eq!(
+            WorkspaceFile::load_from(profile.path()).err(),
+            Some(WorkspaceLoadError::NotSaved),
+            "a missing file is not a failure"
+        );
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"{corrupt workspace";
+        std::fs::write(&path, original).unwrap();
+        let error = WorkspaceFile::load_from(profile.path())
+            .err()
+            .expect("a corrupt workspace must not load");
+        let WorkspaceLoadError::Unusable {
+            path: named,
+            reason,
+        } = &error
+        else {
+            panic!("corrupt file must be Unusable, got {error:?}");
+        };
+        assert_eq!(named, &path);
+        assert!(!reason.is_empty());
+        let message = error.to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains(reason.as_str()), "{message}");
+        assert_eq!(error.save_block().as_deref(), Some(message.as_str()));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        // An unreadable path (a directory where the file belongs) is named too.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            WorkspaceFile::load_from(profile.path()),
+            Err(WorkspaceLoadError::Unusable { path: named, .. }) if named == path
+        ));
+    }
+
     #[test]
     fn save_rejects_unreadable_existing_workspace() {
         let profile = tempfile::tempdir().expect("temporary profile");
