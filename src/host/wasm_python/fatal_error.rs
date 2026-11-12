@@ -21,6 +21,7 @@ const MAX_MESSAGE_CHARS: usize = 2048;
 const MAX_TRACEBACK_BYTES: usize = 64 * 1024;
 /// One host log record is written per traceback line, so lines are capped too.
 const MAX_TRACEBACK_LINES: usize = 200;
+const MAX_DECODE_DETAIL_CHARS: usize = 200;
 const TRUNCATED: &str = " [truncated]";
 const TRACEBACK_TRUNCATED: &str = "[traceback truncated: earlier frames dropped]";
 /// Shown in place of a reported path that is not inside the plugin folder.
@@ -57,8 +58,13 @@ pub(super) struct GuestFatalError {
 impl GuestFatalError {
     pub(super) fn decode(message: &Value) -> Result<Self, String> {
         let wire = WireFatalError::deserialize(message).map_err(|error| {
+            // serde quotes the offending value, and the guest chose that value.
+            let detail = escape_untrusted(
+                &keep_head(&error.to_string(), MAX_DECODE_DETAIL_CHARS),
+                false,
+            );
             format!(
-                "malformed fatal_error message from the SDK runtime ({error}); \
+                "malformed fatal_error message from the SDK runtime ({detail}); \
                  the host and the packaged plexi_sdk disagree on its fields"
             )
         })?;
@@ -132,7 +138,16 @@ fn is_plugin_relative(file: &str) -> bool {
 /// reorder the text around them.
 fn is_unsafe_to_print(c: char) -> bool {
     c.is_control()
-        || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// Replace every unprintable character with its visible escape (`\n`,

@@ -3291,7 +3291,10 @@ impl LivePythonPane {
                     self.perf_stdout_bytes += bytes;
                     let frame_id =
                         frame_id.or_else(|| self.frame_scheduler.oldest_pending_frame_id());
-                    if let Some(frame_id) = frame_id {
+                    // A guest that reported a fatal error is finished: none
+                    // of its later frames are kept.
+                    if let Some(frame_id) = frame_id.filter(|_| self.dropped_after_fatal.is_none())
+                    {
                         self.pending_trees.insert(frame_id, tree);
                     }
                 }
