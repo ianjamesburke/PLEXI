@@ -3529,8 +3529,13 @@ impl LivePythonPane {
     }
 
     fn permission_entries() -> Vec<crate::broker::gate::PermissionEntry> {
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .list_entries()
+        match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()) {
+            Ok(monitor) => monitor.list_entries(),
+            Err(error) => {
+                log::error!("permissions: no inventory in this process: {error}");
+                Vec::new()
+            }
+        }
     }
 
     fn send_permission_inventory(&mut self, notice: &str, status: &str) {
@@ -3589,8 +3594,12 @@ impl LivePythonPane {
     fn handle_permission_decision(&mut self, message: &Value) {
         let id = message.get("id").and_then(Value::as_str).unwrap_or("");
         let action = message.get("action").and_then(Value::as_str).unwrap_or("");
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let Ok(monitor) =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        else {
+            log::error!("permissions: decision dropped, no permission monitor in this process");
+            return;
+        };
         let outcome = monitor.mutate_entry(
             id,
             action,
@@ -3909,8 +3918,13 @@ impl LivePythonPane {
         ) -> R,
     ) -> R {
         let who = self.cli_identity();
+        // Host only (stint 1291); elsewhere a diskless monitor that grants nothing.
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap_or_else(|error| {
+                    log::error!("cli_ops: diskless permission monitor: {error}");
+                    crate::broker::gate::PermissionMonitor::ephemeral()
+                });
         let search_dirs = crate::host::cli_ops::search_dirs();
         let seal_base = crate::host::cli_ops::seal_base();
         let wake = self.cli_wake();

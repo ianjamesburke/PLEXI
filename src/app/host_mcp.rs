@@ -418,7 +418,11 @@ fn handle_connection(
                 caller.workspace_root.clone(),
                 caller.context_id,
             ),
-            crate::broker::gate::PermissionMonitor::for_profile(profile),
+            // Host only (stint 1291); elsewhere a diskless monitor that grants nothing.
+            crate::broker::gate::PermissionMonitor::for_profile(profile).unwrap_or_else(|error| {
+                log::error!("host_mcp: diskless permission monitor: {error}");
+                crate::broker::gate::PermissionMonitor::ephemeral()
+            }),
         );
 
         let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -531,7 +535,8 @@ fn tool_permissions(
     profile: &std::path::Path,
     caller: &McpCaller,
 ) -> Result<String, String> {
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile);
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile)
+        .map_err(|error| error.to_string())?;
     if op == "list" {
         let entries = monitor.list_entries();
         log::info!(
@@ -1063,6 +1068,7 @@ mod tests {
                 operation_id: String::new(),
             };
             crate::broker::gate::PermissionMonitor::for_profile(&profile)
+                .unwrap()
                 .store()
                 .record(GrantRecord::from_binding(
                     &binding,

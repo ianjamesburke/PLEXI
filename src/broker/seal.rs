@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use zeroize::Zeroizing;
 
+use super::custody::HostProcess;
+
 /// Line prefix on a sealed TOML file. The HMAC covers every byte before it.
 const MAC_PREFIX: &str = "# plexi-mac:";
 /// Create-only secret-store account. Never written into a pane environment.
@@ -156,12 +158,12 @@ fn profile_dir_for_path(path: &Path) -> PathBuf {
 }
 
 /// Read a sealed TOML file. Does not move it; the caller quarantines.
-pub fn read_sealed(path: &Path) -> SealStatus {
+pub fn read_sealed(host: &HostProcess, path: &Path) -> SealStatus {
     let dir = profile_dir_for_path(path);
-    read_sealed_with_dir(path, &dir)
+    read_sealed_with_dir(host, path, &dir)
 }
 
-fn read_sealed_with_dir(path: &Path, dir: &Path) -> SealStatus {
+fn read_sealed_with_dir(host: &HostProcess, path: &Path, dir: &Path) -> SealStatus {
     let raw = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return SealStatus::Absent,
@@ -175,7 +177,7 @@ fn read_sealed_with_dir(path: &Path, dir: &Path) -> SealStatus {
         Err(_) => return SealStatus::Rejected("not utf-8".to_string()),
     };
     let Some(idx) = text.rfind(MAC_PREFIX) else {
-        if let Err(error) = existing_mac_key(dir) {
+        if let Err(error) = existing_mac_key(host, dir) {
             if super::host_key::is_key_unreadable(&error) {
                 return SealStatus::KeyUnreadable(error);
             }
@@ -188,7 +190,7 @@ fn read_sealed_with_dir(path: &Path, dir: &Path) -> SealStatus {
     let mac_line = text[idx..].lines().next().unwrap_or("");
     let mac_hex = mac_line.trim_start_matches(MAC_PREFIX).trim();
     let body = &text[..idx];
-    let key = match key_bytes(dir) {
+    let key = match key_bytes(host, dir) {
         Ok(key) => key,
         Err(error) if super::host_key::is_key_unreadable(&error) => {
             return SealStatus::KeyUnreadable(error);
@@ -205,12 +207,12 @@ fn read_sealed_with_dir(path: &Path, dir: &Path) -> SealStatus {
     SealStatus::Trusted(body.to_string())
 }
 
-pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
+pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path) -> LoadedToml<T> {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    match read_sealed(path) {
+    match read_sealed(host, path) {
         SealStatus::Absent => LoadedToml {
             data: T::default(),
             fault: None,
@@ -229,7 +231,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
         SealStatus::Trusted(body) => {
             if let Some(dir) = path.parent() {
                 if !dir.as_os_str().is_empty() {
-                    match read_seal_state(dir) {
+                    match read_seal_state(host, dir) {
                         SealStateStatus::KeyUnreadable(reason) => {
                             log::info!(
                                 "permission_seal: key unreadable while verifying seal state for {file_name}; left in place ({reason})"
@@ -255,7 +257,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
                             };
                         }
                         SealStateStatus::Trusted(_) | SealStateStatus::Absent => {
-                            mark_profile_sealed(dir);
+                            mark_profile_sealed(host, dir);
                         }
                     }
                 }
@@ -294,31 +296,41 @@ pub fn load_toml<T: DeserializeOwned + Default>(path: &Path) -> LoadedToml<T> {
     }
 }
 
-pub fn write_toml<T: Serialize>(path: &Path, label: &str, data: &T) -> Result<(), String> {
+pub fn write_toml<T: Serialize>(
+    host: &HostProcess,
+    path: &Path,
+    label: &str,
+    data: &T,
+) -> Result<(), String> {
     if path.as_os_str().is_empty() {
         return Ok(());
     }
     let body = toml::to_string_pretty(data).map_err(|error| error.to_string())?;
-    write_sealed(path, body.as_bytes())?;
+    write_sealed(host, path, body.as_bytes())?;
     log::info!("{label}: saved {}", path.display());
     Ok(())
 }
 
-pub fn write_sealed(path: &Path, body: &[u8]) -> Result<(), String> {
+pub fn write_sealed(host: &HostProcess, path: &Path, body: &[u8]) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    write_sealed_with_dir(path, &dir, body)?;
+    write_sealed_with_dir(host, path, &dir, body)?;
     if let Some(parent) = path.parent() {
-        mark_profile_sealed(parent);
+        mark_profile_sealed(host, parent);
     }
     Ok(())
 }
 
-fn write_sealed_with_dir(path: &Path, dir: &Path, body: &[u8]) -> Result<(), String> {
+fn write_sealed_with_dir(
+    host: &HostProcess,
+    path: &Path,
+    dir: &Path,
+    body: &[u8],
+) -> Result<(), String> {
     let mut bytes = body.to_vec();
     if !bytes.ends_with(b"\n") {
         bytes.push(b'\n');
     }
-    let key = key_bytes(dir)?;
+    let key = key_bytes(host, dir)?;
     let mac = hex_encode(&hmac_sha256(key.as_slice(), &bytes));
     bytes.extend(format!("{MAC_PREFIX}{mac}\n").into_bytes());
     crate::platform::fs::atomic_write_with_mode(path, &bytes, 0o600)
@@ -326,7 +338,11 @@ fn write_sealed_with_dir(path: &Path, dir: &Path, body: &[u8]) -> Result<(), Str
 
 /// Append one fact. Verifies the chain first. A bad chain is quarantined and
 /// the tip is cleared before this returns [`SealError::Untrusted`].
-pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError> {
+pub fn append_audit(
+    host: &HostProcess,
+    path: &Path,
+    fact: &impl Serialize,
+) -> Result<(), SealError> {
     // The append writes the log line and then the authenticated tip. A
     // concurrent verifier (or appender) between those two writes would see a
     // tip that trails the log and quarantine a healthy chain.
@@ -334,15 +350,15 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
     let _audit_guard = audit_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Err(reason) = verify_audit_unlocked(path) {
+    if let Err(reason) = verify_audit_unlocked(host, path) {
         if super::host_key::is_key_unreadable(&reason) {
             return Err(SealError::Io(reason));
         }
-        reject_untrusted_audit(path, &reason);
+        reject_untrusted_audit(host, path, &reason);
         return Err(SealError::Untrusted(reason));
     }
     let dir = profile_dir_for_path(path);
-    let key = key_bytes(&dir).map_err(SealError::Io)?;
+    let key = key_bytes(host, &dir).map_err(SealError::Io)?;
     let (seq, prev) = next_link(path).map_err(SealError::Io)?;
     let fact_json =
         serde_json::to_string(fact).map_err(|error| SealError::Io(error.to_string()))?;
@@ -370,20 +386,20 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
     file.sync_all()
         .map_err(|error| SealError::Io(error.to_string()))?;
     let tip = format!("{seq}:{}", sha256_hex(line.as_bytes()));
-    store_tip(path, &tip).map_err(SealError::Io)?;
+    store_tip(host, path, &tip).map_err(SealError::Io)?;
     if let Some(parent) = path.parent() {
-        mark_profile_sealed(parent);
+        mark_profile_sealed(host, parent);
     }
     Ok(())
 }
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
-pub fn verify_audit(path: &Path) -> Result<(), String> {
+pub fn verify_audit(host: &HostProcess, path: &Path) -> Result<(), String> {
     let audit_lock = audit_lock_for(path);
     let _audit_guard = audit_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    verify_audit_unlocked(path)
+    verify_audit_unlocked(host, path)
 }
 
 /// One lock per audit log, so appends and verifications of the same log are
@@ -400,9 +416,9 @@ fn audit_lock_for(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     locks.entry(path.to_path_buf()).or_default().clone()
 }
 
-fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
+fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    let tip = match tip_lookup(path) {
+    let tip = match tip_lookup(host, path) {
         Ok(value) => value,
         Err(error) if super::host_key::is_key_unreadable(&error) => return Err(error),
         Err(error) => {
@@ -412,13 +428,13 @@ fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
     };
     if !path.exists() {
         return if tip.is_some() {
-            existing_mac_key(&dir)?;
+            existing_mac_key(host, &dir)?;
             Err("audit log deleted".to_string())
         } else {
             Ok(())
         };
     }
-    existing_mac_key(&dir)?;
+    existing_mac_key(host, &dir)?;
     let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
     let lines = content_lines(&raw);
     if lines.is_empty() {
@@ -431,7 +447,7 @@ fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
     let Some(tip) = tip else {
         return Err(UNAUTHENTICATED_AUDIT.to_string());
     };
-    let key = key_bytes(&dir)?;
+    let key = key_bytes(host, &dir)?;
     let mut prev = GENESIS.to_string();
     let mut last_seq = 0u64;
     let mut last_hash = String::new();
@@ -471,7 +487,7 @@ fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn reject_untrusted_audit(path: &Path, reason: &str) {
+pub fn reject_untrusted_audit(host: &HostProcess, path: &Path, reason: &str) {
     log::info!(
         "permission_seal: audit rejected {} ({reason})",
         path.display()
@@ -479,7 +495,7 @@ pub fn reject_untrusted_audit(path: &Path, reason: &str) {
     if path.exists() {
         quarantine(path);
     }
-    clear_audit_tip(path);
+    clear_audit_tip(host, path);
 }
 
 /// True when `reason` is the pre-seal audit failure: a log with lines and no tip.
@@ -504,11 +520,11 @@ pub(crate) fn legacy_unsealed_body(path: &Path) -> Option<String> {
 ///
 /// A read error is sealed. Legacy adopt must not run when the host store
 /// cannot prove the profile is untouched.
-pub(crate) fn profile_never_sealed(dir: &Path) -> bool {
+pub(crate) fn profile_never_sealed(host: &HostProcess, dir: &Path) -> bool {
     if !has_any_profile_seal_files(dir) {
         return true;
     }
-    match existing_mac_key(dir) {
+    match existing_mac_key(host, dir) {
         Ok(None) => {}
         Ok(Some(_)) => return false,
         Err(error) => {
@@ -519,7 +535,7 @@ pub(crate) fn profile_never_sealed(dir: &Path) -> bool {
             return false;
         }
     }
-    match read_seal_state(dir) {
+    match read_seal_state(host, dir) {
         SealStateStatus::Absent => true,
         SealStateStatus::Trusted(state) => {
             !state.sealed && state.audit_tip.is_none() && state.needs_you_tip.is_none()
@@ -545,8 +561,8 @@ pub(crate) fn profile_never_sealed(dir: &Path) -> bool {
 ///
 /// Does not quarantine. A profile that already has a tip is left untouched
 /// and returns an error so the caller keeps the tamper path.
-pub(crate) fn adopt_legacy_audit(path: &Path) -> Result<(), String> {
-    if tip_lookup(path)?.is_some() {
+pub(crate) fn adopt_legacy_audit(host: &HostProcess, path: &Path) -> Result<(), String> {
+    if tip_lookup(host, path)?.is_some() {
         return Err("audit tip already exists".to_string());
     }
     if path.exists() {
@@ -566,7 +582,7 @@ pub(crate) fn adopt_legacy_audit(path: &Path) -> Result<(), String> {
         "actor": "host",
         "decision": "migrated legacy unsealed permission-audit.jsonl",
     });
-    append_audit(path, &fact).map_err(|error| error.to_string())?;
+    append_audit(host, path, &fact).map_err(|error| error.to_string())?;
     log::info!(
         "permission_seal: started authenticated audit tip for {}",
         path.display()
@@ -581,7 +597,13 @@ pub fn scrub_pane_env(env: &mut HashMap<String, String>, agent_pane: bool) {
     // Read a key that already exists. Creating one here opens the macOS
     // keychain while the first pane is being built, before `host start` can
     // report ready.
-    let key_hex = match existing_mac_key(&profile) {
+    // Only the host holds the key. Any other process never read it, so there
+    // is no key value to strip; names and profile paths are still stripped.
+    let key = match super::custody::host_process() {
+        Ok(host) => existing_mac_key(&host, &profile),
+        Err(error) => Err(error.to_string()),
+    };
+    let key_hex = match key {
         Ok(Some(bytes)) => Some(Zeroizing::new(hex_encode(bytes.as_slice()))),
         Ok(None) => None,
         Err(error) => {
@@ -801,29 +823,29 @@ fn has_sealed_files_on_disk(dir: &Path) -> bool {
     false
 }
 
-fn write_seal_state(dir: &Path, state: &SealState) -> Result<(), String> {
-    let host = ensure_host_state_dir(dir)?;
-    let path = host.join("seal-state.json");
+fn write_seal_state(host: &HostProcess, dir: &Path, state: &SealState) -> Result<(), String> {
+    let host_dir = ensure_host_state_dir(dir)?;
+    let path = host_dir.join("seal-state.json");
     if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(format!("{} is a symlink", path.display()));
     }
     let mut normalized = state.clone();
     normalized.schema = SEAL_STATE_SCHEMA;
     let body = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
-    write_sealed_with_dir(&path, dir, body.as_bytes())
+    write_sealed_with_dir(host, &path, dir, body.as_bytes())
 }
 
-fn read_seal_state(dir: &Path) -> SealStateStatus {
+fn read_seal_state(host: &HostProcess, dir: &Path) -> SealStateStatus {
     let path = seal_state_path(dir);
     if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return SealStateStatus::Untrusted("seal-state.json is a symlink".to_string());
     }
-    match read_sealed_with_dir(&path, dir) {
+    match read_sealed_with_dir(host, &path, dir) {
         SealStatus::Absent => {
             if !has_sealed_files_on_disk(dir) {
                 return SealStateStatus::Absent;
             }
-            if let Err(error) = existing_mac_key(dir) {
+            if let Err(error) = existing_mac_key(host, dir) {
                 if super::host_key::is_key_unreadable(&error) {
                     return SealStateStatus::KeyUnreadable(error);
                 }
@@ -848,7 +870,11 @@ fn read_seal_state(dir: &Path) -> SealStateStatus {
     }
 }
 
-fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<(), String> {
+fn update_seal_state(
+    host: &HostProcess,
+    dir: &Path,
+    mutate: impl FnOnce(&mut SealState),
+) -> Result<(), String> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
@@ -858,7 +884,7 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
     let _state_guard = state_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut state = match read_seal_state(dir) {
+    let mut state = match read_seal_state(host, dir) {
         SealStateStatus::Trusted(state) => state,
         SealStateStatus::Absent => SealState {
             schema: SEAL_STATE_SCHEMA,
@@ -889,7 +915,7 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
     if state == before && seal_state_path(dir).is_file() {
         return Ok(());
     }
-    write_seal_state(dir, &state)
+    write_seal_state(host, dir, &state)
 }
 
 fn seal_state_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
@@ -903,35 +929,42 @@ fn seal_state_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     locks.entry(dir.to_path_buf()).or_default().clone()
 }
 
-fn tip_lookup(path: &Path) -> Result<Option<String>, String> {
+fn tip_lookup(host: &HostProcess, path: &Path) -> Result<Option<String>, String> {
     let dir = profile_dir_for_path(path);
-    match read_seal_state(&dir) {
+    match read_seal_state(host, &dir) {
         SealStateStatus::Absent => Ok(None),
         SealStateStatus::Trusted(state) => Ok(state.audit_tip),
         SealStateStatus::KeyUnreadable(error) | SealStateStatus::Untrusted(error) => Err(error),
     }
 }
 
-pub(crate) fn needs_you_tip_lookup(dir: &Path) -> Result<Option<String>, String> {
-    match read_seal_state(dir) {
+pub(crate) fn needs_you_tip_lookup(
+    host: &HostProcess,
+    dir: &Path,
+) -> Result<Option<String>, String> {
+    match read_seal_state(host, dir) {
         SealStateStatus::Absent => Ok(None),
         SealStateStatus::Trusted(state) => Ok(state.needs_you_tip),
         SealStateStatus::KeyUnreadable(error) | SealStateStatus::Untrusted(error) => Err(error),
     }
 }
 
-pub(crate) fn store_needs_you_tip(dir: &Path, tip: Option<&str>) -> Result<(), String> {
-    update_seal_state(dir, |state| {
+pub(crate) fn store_needs_you_tip(
+    host: &HostProcess,
+    dir: &Path,
+    tip: Option<&str>,
+) -> Result<(), String> {
+    update_seal_state(host, dir, |state| {
         state.sealed = true;
         state.needs_you_tip = tip.map(ToOwned::to_owned);
     })
 }
 
-fn mark_profile_sealed(dir: &Path) {
+fn mark_profile_sealed(host: &HostProcess, dir: &Path) {
     if dir.as_os_str().is_empty() {
         return;
     }
-    if let Err(error) = update_seal_state(dir, |state| {
+    if let Err(error) = update_seal_state(host, dir, |state| {
         state.sealed = true;
     }) {
         log::error!(
@@ -941,17 +974,17 @@ fn mark_profile_sealed(dir: &Path) {
     }
 }
 
-fn store_tip(path: &Path, tip: &str) -> Result<(), String> {
+fn store_tip(host: &HostProcess, path: &Path, tip: &str) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    update_seal_state(&dir, |state| {
+    update_seal_state(host, &dir, |state| {
         state.sealed = true;
         state.audit_tip = Some(tip.to_string());
     })
 }
 
-fn clear_audit_tip(path: &Path) {
+fn clear_audit_tip(host: &HostProcess, path: &Path) {
     let dir = profile_dir_for_path(path);
-    if let Err(error) = update_seal_state(&dir, |state| {
+    if let Err(error) = update_seal_state(host, &dir, |state| {
         state.audit_tip = None;
     }) {
         log::error!(
@@ -1012,9 +1045,12 @@ fn backup_corrupt(path: &Path, error: &str) {
 }
 
 /// Permission MAC for `dir` if the host seal store already has one. Does not create a key.
-pub(crate) fn existing_mac_key(dir: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+pub(crate) fn existing_mac_key(
+    host: &HostProcess,
+    dir: &Path,
+) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     let account = mac_account(dir);
-    if let Some(existing) = super::host_key::get(&account)? {
+    if let Some(existing) = super::host_key::get(host, &account)? {
         return Ok(Some(Zeroizing::new(decode_hex(existing.trim())?)));
     }
     Ok(None)
@@ -1034,8 +1070,11 @@ pub(crate) enum MacRecovery {
 /// A readable key is left in place. A missing key is not created here.
 /// Deletion does not read the secret. When that delete needs a keychain
 /// prompt, this returns the unreadable error and the caller files Needs you.
-pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
-    match existing_mac_key(dir) {
+pub(crate) fn rotate_unreadable_mac_key(
+    host: &HostProcess,
+    dir: &Path,
+) -> Result<MacRecovery, String> {
+    match existing_mac_key(host, dir) {
         Ok(Some(_)) => return Ok(MacRecovery::Ready),
         Ok(None) => return Ok(MacRecovery::Ready),
         Err(error) if !super::host_key::is_key_unreadable(&error) => return Err(error),
@@ -1044,7 +1083,7 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
     let account = mac_account(dir);
     super::host_key::delete(&account)?;
     let hex = fresh_key_hex();
-    super::host_key::add_new(&account, &hex)?;
+    super::host_key::add_new(host, &account, &hex)?;
     log::info!(
         "permission_seal: rotated unreadable permission mac key for {}",
         dir.display()
@@ -1058,18 +1097,21 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
 /// A delete that still needs a prompt returns that error so startup can file
 /// Needs you without blocking on a dialog. Even a profile without seal files
 /// may have an existing, unreadable key from an earlier run.
-pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
+pub(crate) fn ensure_readable_mac_key(
+    host: &HostProcess,
+    dir: &Path,
+) -> Result<MacRecovery, String> {
     // A fresh Linux profile can start without Secret Service. macOS must probe
     // for an existing Keychain item even when no profile files exist.
     if !cfg!(target_os = "macos") && !has_any_profile_seal_files(dir) {
         return Ok(MacRecovery::Ready);
     }
-    match existing_mac_key(dir) {
+    match existing_mac_key(host, dir) {
         Ok(_) => Ok(MacRecovery::Ready),
         Err(error) if super::host_key::is_key_unreadable(&error) => {
-            let recovery = rotate_unreadable_mac_key(dir)?;
+            let recovery = rotate_unreadable_mac_key(host, dir)?;
             if recovery == MacRecovery::Rotated {
-                reset_unverified_profile(dir)?;
+                reset_unverified_profile(host, dir)?;
                 log::info!(
                     "permission_seal: seal key rotated for {}; unverified grants were reset and loaded",
                     dir.display()
@@ -1085,7 +1127,7 @@ pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String>
 ///
 /// The previous bytes are copied aside. The new files are sealed with the
 /// current key and are not an integrity failure.
-pub(crate) fn reset_unverified_profile(dir: &Path) -> Result<(), String> {
+pub(crate) fn reset_unverified_profile(host: &HostProcess, dir: &Path) -> Result<(), String> {
     let seal_state = seal_state_path(dir);
     if seal_state.is_file() {
         copy_aside(&seal_state, "seal-state.json.before-key-rotation");
@@ -1095,20 +1137,20 @@ pub(crate) fn reset_unverified_profile(dir: &Path) -> Result<(), String> {
     if grants.is_file() {
         copy_aside(&grants, "grants.toml.before-key-rotation");
     }
-    write_sealed(&grants, b"records = []\n")?;
+    write_sealed(host, &grants, b"records = []\n")?;
     let audit = dir.join("permission-audit.jsonl");
     if audit.is_file() {
         copy_aside(&audit, "permission-audit.jsonl.before-key-rotation");
         std::fs::remove_file(&audit).map_err(|error| error.to_string())?;
     }
-    clear_audit_tip(&audit);
+    clear_audit_tip(host, &audit);
     let fact = serde_json::json!({
         "kind": "key_rotation",
         "actor": "host",
         "decision": "grants_reset",
         "summary": "previous grants could not be verified after the seal key was rotated",
     });
-    match append_audit(&audit, &fact) {
+    match append_audit(host, &audit, &fact) {
         Ok(()) => {}
         Err(error) => {
             log::error!(
@@ -1118,7 +1160,7 @@ pub(crate) fn reset_unverified_profile(dir: &Path) -> Result<(), String> {
             return Err(error.to_string());
         }
     }
-    super::needs_you_store::reset_after_key_rotation(dir)?;
+    super::needs_you_store::reset_after_key_rotation(host, dir)?;
     crate::broker::integrity::note_saved_file(&grants);
     crate::broker::integrity::note_saved_file(&audit);
     log::info!(
@@ -1140,19 +1182,19 @@ pub(crate) fn copy_aside(path: &Path, name: &str) {
 }
 
 /// Permission MAC for `dir`, creating it in the host seal store when this is the first use.
-pub(crate) fn mac_key_bytes(dir: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
-    let hex = key_hex(dir)?;
+pub(crate) fn mac_key_bytes(host: &HostProcess, dir: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+    let hex = key_hex(host, dir)?;
     let bytes = decode_hex(hex.as_str())?;
     Ok(Zeroizing::new(bytes))
 }
 
-fn key_hex(dir: &Path) -> Result<Zeroizing<String>, String> {
-    if let Some(existing) = existing_mac_key(dir)? {
+fn key_hex(host: &HostProcess, dir: &Path) -> Result<Zeroizing<String>, String> {
+    if let Some(existing) = existing_mac_key(host, dir)? {
         return Ok(Zeroizing::new(hex_encode(&existing)));
     }
     let account = mac_account(dir);
     let hex = fresh_key_hex();
-    match super::host_key::add_new(&account, &hex) {
+    match super::host_key::add_new(host, &account, &hex) {
         Ok(()) => {
             log::info!(
                 "permission_seal: created host permission mac key for {}",
@@ -1160,15 +1202,15 @@ fn key_hex(dir: &Path) -> Result<Zeroizing<String>, String> {
             );
             Ok(Zeroizing::new(hex))
         }
-        Err(error) => match existing_mac_key(dir)? {
+        Err(error) => match existing_mac_key(host, dir)? {
             Some(existing) => Ok(Zeroizing::new(hex_encode(&existing))),
             None => Err(error),
         },
     }
 }
 
-fn key_bytes(dir: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
-    mac_key_bytes(dir)
+fn key_bytes(host: &HostProcess, dir: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+    mac_key_bytes(host, dir)
 }
 
 fn fresh_key_hex() -> String {
@@ -1261,6 +1303,8 @@ fn ct_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    const TEST_HOST: &crate::broker::custody::HostProcess =
+        &crate::broker::custody::HostProcess::for_test();
     use super::*;
 
     #[test]
@@ -1277,18 +1321,20 @@ mod tests {
                 crate::broker::needs_you_store::tip_account(dir),
             ]
         };
-        let shared = crate::broker::host_key::get("permission-mac").unwrap();
+        let shared = crate::broker::host_key::get(TEST_HOST, "permission-mac").unwrap();
         for account in accounts(&alpha).into_iter().chain(accounts(&beta)) {
             crate::broker::host_key::set(&account, "fixture").unwrap();
         }
         super::remove_profile_credentials(&alpha).unwrap();
         super::remove_profile_credentials(&alpha).unwrap();
         for account in accounts(&alpha) {
-            assert!(crate::broker::host_key::get(&account).unwrap().is_none());
+            assert!(crate::broker::host_key::get(TEST_HOST, &account)
+                .unwrap()
+                .is_none());
         }
         for account in accounts(&beta) {
             assert_eq!(
-                crate::broker::host_key::get(&account)
+                crate::broker::host_key::get(TEST_HOST, &account)
                     .unwrap()
                     .unwrap()
                     .as_str(),
@@ -1297,7 +1343,7 @@ mod tests {
             crate::broker::host_key::delete(&account).unwrap();
         }
         assert_eq!(
-            crate::broker::host_key::get("permission-mac").unwrap(),
+            crate::broker::host_key::get(TEST_HOST, "permission-mac").unwrap(),
             shared
         );
     }
@@ -1316,7 +1362,7 @@ mod tests {
     fn scrub_removes_mac_key_and_agent_profile_path() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
-        let key = key_hex(dir.path()).unwrap();
+        let key = key_hex(TEST_HOST, dir.path()).unwrap();
         let mut env = HashMap::new();
         env.insert(
             "PLEXI_SOCKET".into(),
@@ -1361,21 +1407,25 @@ mod tests {
         let profile = root.path().join("profile");
         std::fs::create_dir_all(&profile).unwrap();
         let path = profile.join("permission-audit.jsonl");
-        append_audit(&path, &serde_json::json!({"kind": "seed"})).unwrap();
+        append_audit(TEST_HOST, &path, &serde_json::json!({"kind": "seed"})).unwrap();
 
         std::thread::scope(|scope| {
             for worker in 0..4 {
                 let path = path.clone();
                 scope.spawn(move || {
                     for n in 0..15 {
-                        append_audit(&path, &serde_json::json!({"worker": worker, "n": n}))
-                            .expect("append must not race the tip");
-                        verify_audit(&path).expect("log and tip must stay in step");
+                        append_audit(
+                            TEST_HOST,
+                            &path,
+                            &serde_json::json!({"worker": worker, "n": n}),
+                        )
+                        .expect("append must not race the tip");
+                        verify_audit(TEST_HOST, &path).expect("log and tip must stay in step");
                     }
                 });
             }
         });
-        verify_audit(&path).unwrap();
+        verify_audit(TEST_HOST, &path).unwrap();
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines, 61);
     }
@@ -1385,24 +1435,32 @@ mod tests {
         let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
         let audit = dir.path().join("permission-audit.jsonl");
-        append_audit(&audit, &serde_json::json!({"kind": "seed"})).unwrap();
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "seed"})).unwrap();
 
         std::thread::scope(|scope| {
             let audit = &audit;
             scope.spawn(|| {
                 for n in 0..40 {
-                    append_audit(audit, &serde_json::json!({"kind": "audit", "n": n})).unwrap();
+                    append_audit(
+                        TEST_HOST,
+                        audit,
+                        &serde_json::json!({"kind": "audit", "n": n}),
+                    )
+                    .unwrap();
                 }
             });
             scope.spawn(|| {
                 for n in 0..40 {
-                    store_needs_you_tip(dir.path(), Some(&format!("needs-{n}"))).unwrap();
+                    store_needs_you_tip(TEST_HOST, dir.path(), Some(&format!("needs-{n}")))
+                        .unwrap();
                 }
             });
         });
 
-        verify_audit(&audit).unwrap();
-        assert!(needs_you_tip_lookup(dir.path()).unwrap().is_some());
+        verify_audit(TEST_HOST, &audit).unwrap();
+        assert!(needs_you_tip_lookup(TEST_HOST, dir.path())
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -1414,34 +1472,36 @@ mod tests {
         std::fs::create_dir_all(&profile_a).unwrap();
         std::fs::create_dir_all(&profile_b).unwrap();
 
-        write_sealed(&profile_a.join("grants.toml"), b"records = []\n").unwrap();
+        write_sealed(TEST_HOST, &profile_a.join("grants.toml"), b"records = []\n").unwrap();
         append_audit(
+            TEST_HOST,
             &profile_a.join("permission-audit.jsonl"),
             &serde_json::json!({"kind": "seed", "actor": "a"}),
         )
         .unwrap();
 
-        write_sealed(&profile_b.join("grants.toml"), b"records = []\n").unwrap();
+        write_sealed(TEST_HOST, &profile_b.join("grants.toml"), b"records = []\n").unwrap();
         append_audit(
+            TEST_HOST,
             &profile_b.join("permission-audit.jsonl"),
             &serde_json::json!({"kind": "seed", "actor": "b"}),
         )
         .unwrap();
 
-        let key_b_before = existing_mac_key(&profile_b).unwrap().unwrap();
+        let key_b_before = existing_mac_key(TEST_HOST, &profile_b).unwrap().unwrap();
         crate::broker::host_key::mark_profile_mac_unreadable(&profile_a);
         assert_eq!(
-            ensure_readable_mac_key(&profile_a).unwrap(),
+            ensure_readable_mac_key(TEST_HOST, &profile_a).unwrap(),
             MacRecovery::Rotated
         );
 
-        let key_b_after = existing_mac_key(&profile_b).unwrap().unwrap();
+        let key_b_after = existing_mac_key(TEST_HOST, &profile_b).unwrap().unwrap();
         assert_eq!(key_b_before.as_slice(), key_b_after.as_slice());
         assert!(matches!(
-            read_sealed(&profile_b.join("grants.toml")),
+            read_sealed(TEST_HOST, &profile_b.join("grants.toml")),
             SealStatus::Trusted(_)
         ));
-        assert!(verify_audit(&profile_b.join("permission-audit.jsonl")).is_ok());
+        assert!(verify_audit(TEST_HOST, &profile_b.join("permission-audit.jsonl")).is_ok());
     }
 
     #[test]
@@ -1449,7 +1509,7 @@ mod tests {
         let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
         let grants = dir.path().join("grants.toml");
-        write_sealed(&grants, b"records = []\n").unwrap();
+        write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap();
         let state_file = seal_state_path(dir.path());
         assert!(state_file.is_file());
 
@@ -1459,7 +1519,7 @@ mod tests {
             b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n",
         )
         .unwrap();
-        let loaded: LoadedToml<toml::Table> = load_toml(&grants);
+        let loaded: LoadedToml<toml::Table> = load_toml(TEST_HOST, &grants);
         assert!(!loaded.trusted);
         assert!(loaded
             .fault
@@ -1467,9 +1527,9 @@ mod tests {
             .is_some_and(|fault| fault.reason.contains("seal-state.json")));
 
         // Rewrite clean state, then delete seal-state.json -> missing state is rejected.
-        write_sealed(&grants, b"records = []\n").unwrap();
+        write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap();
         std::fs::remove_file(&state_file).unwrap();
-        let loaded_missing: LoadedToml<toml::Table> = load_toml(&grants);
+        let loaded_missing: LoadedToml<toml::Table> = load_toml(TEST_HOST, &grants);
         assert!(!loaded_missing.trusted);
         assert!(loaded_missing
             .fault
@@ -1485,8 +1545,14 @@ mod tests {
         crate::broker::host_key::reset_backend_get_calls();
 
         crate::broker::host_key::with_pr_channel_seal_isolation(dir.path(), "pr-9999", || {
-            write_sealed(&dir.path().join("grants.toml"), b"records = []\n").unwrap();
+            write_sealed(
+                TEST_HOST,
+                &dir.path().join("grants.toml"),
+                b"records = []\n",
+            )
+            .unwrap();
             append_audit(
+                TEST_HOST,
                 &dir.path().join("permission-audit.jsonl"),
                 &serde_json::json!({"kind": "pr_test"}),
             )
@@ -1512,8 +1578,10 @@ mod tests {
         }
         // The underlying shared Keychain backend was never written with this profile's MAC key.
         crate::broker::host_key::clear_session_mac_for_test();
-        assert!(crate::broker::host_key::get(&mac_account(dir.path()))
-            .unwrap()
-            .is_none());
+        assert!(
+            crate::broker::host_key::get(TEST_HOST, &mac_account(dir.path()))
+                .unwrap()
+                .is_none()
+        );
     }
 }

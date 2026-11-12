@@ -32,17 +32,18 @@ pub fn changes_profile_cli() -> i32 {
     0
 }
 
-pub fn changes_allow_cli(agent: &str, file: &Path, old: &str, new: &str) -> i32 {
-    match changes::allow_edit(agent, file, old, new) {
-        Ok(()) => {
-            println!("allowed");
-            0
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            1
-        }
-    }
+/// Refused (stint 1291). A terminal is not the person: only a click in the
+/// Plexi window records an allow, and the host has no request route for this
+/// command yet. Nothing is written.
+pub fn changes_allow_cli(agent: &str, file: &Path, _old: &str, _new: &str) -> i32 {
+    log::info!(
+        "changes: allow refused in the CLI process agent={agent} path={}",
+        file.display()
+    );
+    eprintln!(
+        "error: plexi changes allow cannot grant from the terminal. Only a click in the Plexi window allows an edit; nothing was recorded"
+    );
+    1
 }
 
 pub fn changes_propose_cli(agent: &str, file: &Path, old: &str, new: &str) -> i32 {
@@ -110,6 +111,35 @@ mod tests {
     /// Stint 1291: `plexi changes allow` runs in the CLI process, which never
     /// writes a grant or opens the permission store. A leftover legacy
     /// `permissions.toml` is not imported by it either (that import seals).
+    /// Stint 1291: the gated change commands need the broker, which only the
+    /// host holds. From a CLI process they fail with the named error and write
+    /// nothing.
+    #[test]
+    fn changes_propose_refuses_outside_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let file = dir.path().join("draft.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+
+        let result = crate::broker::custody::as_cli_process(|| {
+            crate::host::changes::propose_gated("editor-bot", &file, "alpha", "beta")
+        });
+
+        match result {
+            Err(crate::host::changes::GateStop::Failed(message)) => assert!(
+                message.contains("this process is not the host"),
+                "{message}"
+            ),
+            Err(other) => panic!("expected the not-host refusal, got {other:?}"),
+            Ok(_) => panic!("propose must not run outside the host"),
+        }
+        assert!(!profile.join("grants.toml").exists());
+        assert!(!profile.join("permission-audit.jsonl").exists());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+    }
+
     #[test]
     fn changes_allow_writes_no_grant() {
         let dir = tempfile::tempdir().unwrap();

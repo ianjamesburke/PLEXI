@@ -133,7 +133,14 @@ impl SecretsView {
     fn commit_add(&mut self) {
         let name = self.new_key.trim().to_string();
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    self.report_error(error.to_string());
+                    return;
+                }
+            };
         let result = manager::mutate_secret(
             Self::store_for(&self.target),
             &monitor,
@@ -162,7 +169,14 @@ impl SecretsView {
             return;
         };
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    self.report_error(error.to_string());
+                    return;
+                }
+            };
         match manager::mutate_secret(
             Self::store_for(&entry.target),
             &monitor,
@@ -194,16 +208,17 @@ impl SecretsView {
                 .get(&secrets::keychain_workspace_name(id, &entry.name))
                 .map_or(ReadResult::NotFound, ReadResult::Value)),
             SecretTarget::Folder(folder) => {
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                    &crate::config::config_dir(),
-                );
-                secrets::read_folder_secret(
-                    &monitor,
-                    secrets::folder_store(),
-                    &secrets::SecretActor::app("secrets_manager"),
-                    &entry.name,
-                    folder,
-                )
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                    .map_err(|error| error.to_string())
+                    .and_then(|monitor| {
+                        secrets::read_folder_secret(
+                            &monitor,
+                            secrets::folder_store(),
+                            &secrets::SecretActor::app("secrets_manager"),
+                            &entry.name,
+                            folder,
+                        )
+                    })
             }
         };
         match result {
@@ -230,7 +245,14 @@ impl SecretsView {
 
     fn import_selected(&mut self, target: &SecretTarget, path: &Path) {
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    self.report_error(error.to_string());
+                    return;
+                }
+            };
         let result = manager::import_env(Self::store_for(target), &monitor, target, path);
         self.refresh();
         match result {
@@ -790,7 +812,7 @@ mod tests {
         std::fs::write(&fixture, bytes).unwrap();
         app.import_selected(&app.target.clone(), &fixture);
         assert_eq!(std::fs::read(&fixture).unwrap(), bytes);
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path()).unwrap();
         let rows = monitor.audit_records();
         assert_eq!(
             rows.iter()
@@ -861,7 +883,8 @@ mod tests {
         )
         .unwrap();
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let global = SecretTarget::Global;
         let workspace = SecretTarget::Workspace {
             id: cfg.id,

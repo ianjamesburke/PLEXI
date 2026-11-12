@@ -96,6 +96,8 @@ pub enum PackageError {
     InvalidCliOperation { path: PathBuf, message: String },
     #[error("manifest at {path} declares [[cli_operation]] but not the `cli.operations` capability — add it to [plugin.capabilities].capabilities")]
     CliOperationsWithoutCapability { path: PathBuf },
+    #[error("{path} declares [plugin.capabilities.wasm] but its runtime is {runtime}; that table is only for WASM plugins. Move these ids to [plugin.capabilities].capabilities or remove the table")]
+    WasmCapabilitiesOnNonWasmRuntime { runtime: &'static str, path: PathBuf },
     #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
     UnknownWasmCapability {
         value: String,
@@ -388,6 +390,16 @@ fn validate_dir_inner(
 
     let files = collect_files(plugin_dir)?;
     let runtime = PackageRuntime::from_manifest(manifest.plugin.manifest_type, &entry)?;
+    // The table names raw WASM imports. On any other runtime its ids would
+    // only alias Python capability strings (stint 1291).
+    if runtime != PackageRuntime::Wasm
+        && !(wasm_required_capabilities.is_empty() && wasm_optional_capabilities.is_empty())
+    {
+        return Err(PackageError::WasmCapabilitiesOnNonWasmRuntime {
+            runtime: runtime.as_str(),
+            path: plugin_dir.join("manifest.toml"),
+        });
+    }
     scan_native_bypass_patterns(plugin_dir, &files, runtime, native_bypass_review)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
@@ -1867,9 +1879,14 @@ values = ["hi"]
 
         let err = validate_dir(&plugin_dir).unwrap_err();
         assert!(
-            err.to_string().contains("[plugin.capabilities.wasm]")
-                && err.to_string().contains("only for WASM plugins"),
-            "expected the WASM-table runtime refusal, got: {err}"
+            matches!(
+                err,
+                PackageError::WasmCapabilitiesOnNonWasmRuntime {
+                    runtime: "python",
+                    ..
+                }
+            ),
+            "expected WasmCapabilitiesOnNonWasmRuntime, got: {err}"
         );
     }
 

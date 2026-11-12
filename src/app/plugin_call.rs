@@ -112,7 +112,19 @@ impl PlexiApp {
         response_file: &str,
     ) {
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    crate::rpc::write_response(
+                        response_file,
+                        serde_json::json!({"error": error.to_string(), "error_code": "not_host"})
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    return;
+                }
+            };
         let body = match op {
             "list" => {
                 let pending = monitor.list_pending();
@@ -190,7 +202,19 @@ impl PlexiApp {
         response_file: &str,
     ) {
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    crate::rpc::write_response(
+                        response_file,
+                        serde_json::json!({"error": error.to_string(), "error_code": "not_host"})
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    return;
+                }
+            };
         let credential_set = credential.is_some_and(|value| !value.is_empty());
         let human = pane_id.is_none() && !credential_set;
         let actor_id = match pane_id {
@@ -638,7 +662,16 @@ impl PlexiApp {
             }
         };
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    reply(
+                        serde_json::json!({"error": error.to_string(), "error_code": "not_host"}),
+                    );
+                    return;
+                }
+            };
         let peer_pane = self
             .resolve_socket_peer_pane(&peer_ancestry)
             .map(|(pane_id, _, _)| pane_id);
@@ -886,8 +919,11 @@ impl PlexiApp {
     /// approval: it reloads or rotates the host seal and never grants a plugin
     /// capability.
     pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let Ok(monitor) =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        else {
+            return;
+        };
         let Some(item) = monitor
             .open_needs_you()
             .into_iter()
@@ -951,7 +987,8 @@ impl PlexiApp {
             return Err("Ignored: only the person at the desktop can do this.".to_string());
         }
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .map_err(|error| error.to_string())?;
         match monitor.resolve_needs_you_from(
             id,
             approve,
@@ -1003,7 +1040,8 @@ impl PlexiApp {
             return Err("Ignored: only the person at the desktop can do this.".to_string());
         }
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .map_err(|error| error.to_string())?;
         match monitor.answer_needs_you_from(
             id,
             answer,
@@ -1032,6 +1070,7 @@ impl PlexiApp {
 
     fn oldest_pending_id(&self) -> Option<String> {
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .ok()?
             .list_pending()
             .into_iter()
             .next()
@@ -1093,8 +1132,11 @@ impl PlexiApp {
         let Some(pending_id) = self.synthetic_approval_target(pane_id, key, click_abs) else {
             return false;
         };
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .refuse_client_resolve(&pending_id);
+        if let Ok(monitor) =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        {
+            monitor.refuse_client_resolve(&pending_id);
+        }
         log::info!(
             "permission_monitor: refused synthetic input pane={pane_id} pending={pending_id}"
         );

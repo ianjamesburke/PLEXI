@@ -61,7 +61,8 @@ impl PlexiApp {
         if self.is_human_owned_pane(pane) {
             return crate::workspace::secrets::manager::inventory_for_context(&root);
         }
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
+            .map_err(|error| error.to_string())?;
         let actor = format!("pane:{pane}");
         let call = format!("secret-list-{}", uuid::Uuid::new_v4());
         let input = serde_json::json!({"path": root}).to_string();
@@ -103,7 +104,15 @@ impl PlexiApp {
             return;
         }
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    log::error!("secret_get: denied name={name}: {error}");
+                    write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
+                    return;
+                }
+            };
         let Some((pane_id, _, _)) = self.resolve_socket_peer_pane(peer_ancestry) else {
             monitor.note_denial("session:unscoped", "secret-get", name, "", "identity");
             log::info!("secret_get: denied name={name} caller resolves to no pane");
@@ -317,7 +326,8 @@ mod list_tests {
         let error = denied["error"].as_str().unwrap();
         assert!(error.contains("secret.list") && error.contains("Needs you"));
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let pending = monitor
             .list_entries()
             .into_iter()
@@ -415,7 +425,8 @@ mod list_tests {
         assert_eq!(ask["status"], "permission_required", "{ask}");
         let pending_id = ask["pending_request_id"].as_str().unwrap();
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
             .unwrap();
@@ -498,7 +509,8 @@ mod list_tests {
         );
 
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         let reply = secret_get_request(&mut h, "FOO", &[denied_pid]);
         assert_eq!(reply["status"], "denied", "{reply}");
         assert!(
@@ -627,7 +639,8 @@ mod list_tests {
         );
 
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         assert_eq!(
             monitor.list_pending().len(),
             1,
@@ -717,7 +730,8 @@ mod list_tests {
             "human-owned pane must send without broker gating: {send_reply}"
         );
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         assert!(
             !monitor
                 .list_pending()
@@ -841,7 +855,8 @@ mod list_tests {
         assert_eq!(req_a["status"], "permission_required", "{req_a}");
         let pending_id = req_a["pending_request_id"].as_str().unwrap();
         let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
         monitor
             .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Always)
             .unwrap();

@@ -472,7 +472,8 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
     if disconnect {
         drop(client.take());
     }
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     monitor
         .approve_pending(
             &pending,

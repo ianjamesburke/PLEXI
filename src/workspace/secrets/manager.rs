@@ -98,7 +98,16 @@ pub enum SkippedSecrets {
 pub struct SecretInventory {
     pub entries: Vec<SecretEntry>,
     pub skipped: Vec<SkippedSecrets>,
+    /// Why grant and last-used columns are empty: they come from the running
+    /// host, and this process is not the host (stint 1291). `None` when they
+    /// are filled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_details_unavailable: Option<String>,
 }
+
+/// Printed once when a listing runs outside the host.
+pub const GRANT_DETAILS_FROM_HOST: &str =
+    "Grant and last-used details come from the running Plexi host and are not available to this command.";
 
 pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
     Ok(secret_inventory_report(cwd, global_only)?.entries)
@@ -166,9 +175,18 @@ fn inventory_for_scope(
         }
     }
     let mut entries = Vec::new();
-    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-    let uses = monitor.secret_last_uses()?;
-    let permissions = monitor.list_entries();
+    let (uses, permissions, grant_details_unavailable) =
+        match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+            Ok(monitor) => (monitor.secret_last_uses()?, monitor.list_entries(), None),
+            Err(error) => {
+                log::info!("secrets_manager: listing names without grant details: {error}");
+                (
+                    Default::default(),
+                    Vec::new(),
+                    Some(GRANT_DETAILS_FROM_HOST.to_string()),
+                )
+            }
+        };
     let mut add = |name: String, target: SecretTarget| {
         let resource = target.resource(&name);
         let grant = permissions
@@ -238,7 +256,11 @@ fn inventory_for_scope(
             .then(a.scope.cmp(&b.scope))
             .then(a.name.cmp(&b.name))
     });
-    Ok(SecretInventory { entries, skipped })
+    Ok(SecretInventory {
+        entries,
+        skipped,
+        grant_details_unavailable,
+    })
 }
 
 pub enum Mutation<'a> {
@@ -421,7 +443,7 @@ mod tests {
     fn audited_mutations_and_import_keep_values_out_of_audit() {
         let profile = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let store = InMemoryKeychain::new();
         let target = SecretTarget::Workspace {
             id: "test-workspace".into(),
@@ -488,7 +510,7 @@ mod tests {
     fn invalid_import_is_validated_before_any_mutation() {
         let profile = tempfile::tempdir().unwrap();
         let store = InMemoryKeychain::new();
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let fixture = profile.path().join("invalid.env");
         std::fs::write(&fixture, "GOOD=one\nnot a valid assignment\n").unwrap();
         assert!(import_env(&store, &monitor, &SecretTarget::Global, &fixture).is_err());
@@ -529,7 +551,7 @@ mod inventory_tests {
                 .unwrap();
         let name = format!("INVENTORY_{}", uuid::Uuid::new_v4().simple());
         let store = super::super::system_store();
-        let monitor = PermissionMonitor::for_profile(profile.path());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let global = SecretTarget::Global;
         let workspace = SecretTarget::Workspace {
             id: cfg.id.clone(),

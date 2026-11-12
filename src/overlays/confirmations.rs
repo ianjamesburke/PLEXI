@@ -449,9 +449,18 @@ impl PlexiApp {
             let Some(review) = self.pending_raw_wasm_launches.pop_front() else {
                 return;
             };
-            let mut store = crate::app::permissions::PermissionStore::load_or_default(
-                &crate::config::config_dir(),
-            );
+            let (mut store, monitor) = match (
+                crate::app::permissions::PermissionStore::load_or_default(
+                    &crate::config::config_dir(),
+                ),
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()),
+            ) {
+                (Ok(store), Ok(monitor)) => (store, monitor),
+                (Err(error), _) | (_, Err(error)) => {
+                    log::error!("raw_wasm_review: approval not recorded: {error}");
+                    return;
+                }
+            };
             for capability in &review.missing_capabilities {
                 store.set_wasm(
                     &review.plugin_id,
@@ -461,8 +470,6 @@ impl PlexiApp {
                 );
             }
             store.save();
-            let monitor =
-                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
             for capability in &review.missing_capabilities {
                 monitor.grant_capability_id(
                     &review.plugin_id,

@@ -9,7 +9,7 @@ use crate::testing::HostHarness;
 use crate::workspace::secrets::NonDestructiveStore;
 
 fn monitor() -> std::sync::Arc<PermissionMonitor> {
-    PermissionMonitor::for_profile(&crate::config::config_dir())
+    PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap()
 }
 
 fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {

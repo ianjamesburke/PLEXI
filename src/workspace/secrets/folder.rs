@@ -524,7 +524,13 @@ fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &
         (inbox, granted_tx)
     };
     let owned_id = pending_id.to_string();
-    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor = match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            log::error!("folder_secrets: no approval sheet for {pending_id}: {error}");
+            return;
+        }
+    };
     if let Err(err) = std::thread::Builder::new()
         .name("folder-secret-approval".into())
         .spawn(move || wait_for_human_choice(monitor, owned_id, inbox, granted_tx))
@@ -779,7 +785,8 @@ fn handle_gate_line(line: &str) -> Result<String, String> {
         kind: actor_kind,
         id: actor_id.to_string(),
     };
-    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
+        .map_err(|error| error.to_string())?;
     let result = read_folder_secret(
         &monitor,
         super::folder_store(),

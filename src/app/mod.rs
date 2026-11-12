@@ -1651,7 +1651,9 @@ impl PlexiApp {
         crate::platform::app_nap::disable_app_nap();
         // File a death/tamper item and leave a running stamp before any client
         // can connect. A kill skips `exit_host`, so the next start can see it.
-        crate::broker::gate::PermissionMonitor::for_profile(&profile_dir);
+        if let Err(error) = crate::broker::gate::PermissionMonitor::for_profile(&profile_dir) {
+            log::error!("permission_monitor: host start could not open the profile: {error}");
+        }
         spawn_socket_listener(
             pane_ipc_mailbox,
             event_subscribe_mailbox.clone(),
@@ -3300,14 +3302,18 @@ impl PlexiApp {
             .clone()
             .or_else(|| working_directory.clone())
             .unwrap_or_default();
-        let call_credential = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-            .issue_credential(
-                Some(pane_id),
-                context_id,
-                &workspace_root,
-                &format!("pane:{pane_id}"),
-            );
-        env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
+        match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
+            Ok(monitor) => {
+                let call_credential = monitor.issue_credential(
+                    Some(pane_id),
+                    context_id,
+                    &workspace_root,
+                    &format!("pane:{pane_id}"),
+                );
+                env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
+            }
+            Err(error) => log::error!("pane_env: no call credential for pane {pane_id}: {error}"),
+        }
         if let Some((port, token)) =
             host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
         {
@@ -3727,11 +3733,13 @@ impl eframe::App for PlexiApp {
         if crate::broker::gate::PermissionMonitor::loaded(&profile).is_none()
             && crate::broker::gate::PermissionMonitor::has_persisted_queue(&profile)
         {
-            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
-            log::info!(
-                "needs_you: host opened restored queue count={}",
-                monitor.open_needs_you().len()
-            );
+            match crate::broker::gate::PermissionMonitor::for_profile(&profile) {
+                Ok(monitor) => log::info!(
+                    "needs_you: host opened restored queue count={}",
+                    monitor.open_needs_you().len()
+                ),
+                Err(error) => log::error!("needs_you: restored queue not opened: {error}"),
+            }
         }
         if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
             monitor.expire_needs_you();

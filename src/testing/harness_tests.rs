@@ -11774,7 +11774,8 @@ mod pane_lifecycle_events {
         let mut h = HostHarness::new();
         let master_pane = h.add_focused_terminal();
         let dir = tempfile::tempdir().unwrap();
-        let mon = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let mon = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .unwrap();
         let initial_needs_you_count = mon.list_needs_you().len();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
@@ -12111,7 +12112,7 @@ mod flight_recorder_session {
         let workspace = h.workspace_root();
         let context_id = h.app.windows[h.app.active_window].context_id;
         let profile = crate::config::config_dir();
-        let mon = PermissionMonitor::for_profile(&profile);
+        let mon = PermissionMonitor::for_profile(&profile).unwrap();
 
         for (pane, agent_session) in [(caller, "agent-sess-a"), (target, "agent-sess-b")] {
             h.inject_ipc(
@@ -12303,7 +12304,7 @@ mod attention_review {
     fn needs_you_api_ask_answer_reconcile_and_complete_round_trip_through_host() {
         let mut h = HostHarness::new();
         h.run_frames(2);
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let grants_before = monitor.store().records().len();
 
         let ask_file =
@@ -15929,7 +15930,7 @@ ask = ["pane.send"]
     });
     h.hidden_frame();
 
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path());
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path()).unwrap();
     let pending = monitor.list_pending();
     assert_eq!(
         pending.len(),
@@ -16006,7 +16007,8 @@ ask = ["pane.send"]
         !std::path::Path::new(&reply_1).exists(),
         "SendToPane must stay parked while awaiting approval decision"
     );
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let pending = monitor.list_pending();
     assert_eq!(pending.len(), 1);
     let req_id = pending[0].pending_request_id.clone();
@@ -16115,7 +16117,8 @@ ask = ["pane.send"]
             .is_some_and(|e| e.contains("approval_wait_timeout")),
         "expired wait must report its actual timeout: {json_1}"
     );
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let pending = monitor.list_pending();
     assert_eq!(
         pending.len(),

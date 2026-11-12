@@ -337,7 +337,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi changes`: Preview and accept an agent's file edit before it is written
 <!-- /experiment -->
 <!-- experiment: change_sets -->
-- `plexi changes allow`: Record a permission-gate allow for one exact edit
+- `plexi changes allow`: Refused: a terminal cannot allow an edit
 <!-- /experiment -->
 <!-- experiment: change_sets -->
 - `plexi changes propose`: Prepare an edit

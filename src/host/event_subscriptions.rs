@@ -498,7 +498,11 @@ impl HostSubscriptionService {
     /// `PlexiApp::origin_for_pane` before it reaches this service) — there is
     /// no ambient fallback.
     pub fn new(config_dir: &Path, timeline: Arc<Mutex<PluginTimeline>>) -> Self {
-        let grant_store = GrantStore::load_or_default(config_dir);
+        // Host only (stint 1291); elsewhere no grants, so every stream asks.
+        let grant_store = GrantStore::load_or_default(config_dir).unwrap_or_else(|error| {
+            log::error!("HostSubscriptionService: no grant store: {error}");
+            GrantStore::default()
+        });
         let posture = PermissionPosture::load_from_config(config_dir);
         log::info!(
             "HostSubscriptionService: loaded {} grant record(s), posture={}",
@@ -527,7 +531,10 @@ impl HostSubscriptionService {
     /// subscription so newly-granted permissions take effect without a host
     /// restart.
     pub fn reload(&mut self, config_dir: &Path) {
-        self.grant_store = GrantStore::load_or_default(config_dir);
+        match GrantStore::load_or_default(config_dir) {
+            Ok(store) => self.grant_store = store,
+            Err(error) => log::error!("HostSubscriptionService: reload kept its grants: {error}"),
+        }
         self.posture = PermissionPosture::load_from_config(config_dir);
     }
 

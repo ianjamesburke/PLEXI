@@ -1033,7 +1033,7 @@ pub struct HeadlessBackend {
 impl Drop for HeadlessBackend {
     fn drop(&mut self) {
         if let Some((profile, id)) = self.seeded_approval.take() {
-            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
             if let Err(error) =
                 monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny)
             {
@@ -2822,8 +2822,8 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     let grants = crate::host::wasm_view::WasmView::inspect_required_grants(wasm_path)
         .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
     let config_dir = crate::config::config_dir();
-    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
-    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir);
+    let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir).unwrap();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir).unwrap();
     // Link-time host-interface grants (state/pipes/gpu/audio) come from the
     // component's imports. `fs.pick` is not an import — it gates the picker
     // effect at runtime — so preapprove it unconditionally: a scene never opens
@@ -3326,7 +3326,8 @@ impl HeadlessBackend {
                     )
                 });
                 let profile = crate::config::config_dir();
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+                let monitor =
+                    crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
                 let actor = format!("pane:{pane_id}");
                 let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: "pane-send",
@@ -3375,7 +3376,8 @@ impl HeadlessBackend {
                     .h
                     .with_app(|app| app.windows[app.active_window].context_id);
                 let profile = crate::config::config_dir();
-                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+                let monitor =
+                    crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
                 let authority = crate::app::cli_operation::AuthorityDecl {
                     mode: crate::app::cli_operation::OperationMode::Mutate,
                     fs_read: vec!["workspace".into()],
@@ -3629,7 +3631,8 @@ impl HeadlessBackend {
                 });
                 let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
-                );
+                )
+                .unwrap();
                 let admission = monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: "scene-host-permission",
                     tool: "chess.play",

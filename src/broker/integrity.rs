@@ -274,7 +274,7 @@ mod tests {
         mark_running(dir.path());
         std::fs::write(dir.path().join("grants.toml"), "records = []\n# tampered\n").unwrap();
 
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(dir.path());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(dir.path()).unwrap();
         let items = monitor.list_needs_you();
         let item = items
             .iter()
