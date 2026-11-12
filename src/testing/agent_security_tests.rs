@@ -491,7 +491,9 @@ fn raw_set_permission_socket_line_writes_no_grant() {
     let pane_pid = h.terminal_backend(pane).child_pid();
     let root = h.workspace_root();
     let profile = h.app.permission_store_dir.clone();
-    let grants_before = monitor().store().records().to_vec();
+    // The deleted handler wrote the monitor for `permission_store_dir`.
+    let broker = || PermissionMonitor::for_profile(&profile);
+    let grants_before = broker().store().records().to_vec();
     let callers: [Option<&[u32]>; 3] = [Some(&[pane_pid]), Some(&[]), None];
     let mut acks = Vec::new();
     for (i, ancestry) in callers.into_iter().enumerate() {
@@ -521,7 +523,7 @@ fn raw_set_permission_socket_line_writes_no_grant() {
         "permissions.toml was written"
     );
     assert_eq!(
-        monitor().store().records(),
+        broker().store().records(),
         grants_before.as_slice(),
         "broker grant store changed"
     );

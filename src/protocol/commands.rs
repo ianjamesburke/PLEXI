@@ -127,8 +127,7 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
     match kind {
         "set_permission" => Some(
             "set_permission was removed: it changed grants with no caller \
-             identity. Change permissions with `plexi permissions` or the Permissions \
-             view; widening a grant needs a click in the Plexi window.",
+             identity. Use `plexi permissions` or the Permissions view instead.",
         ),
         _ => None,
     }
@@ -598,9 +597,9 @@ pub enum HostRequest {
         steps: u64,
     },
 
-    /// List permission state across plugins (stint 0017). Gated on
-    /// `permissions.manage` when arriving over PGAP. Host writes a JSON object
-    /// to `response_file`:
+    /// List permission state across plugins (stint 0017). No gate: any socket
+    /// caller can send it, and nothing checks `permissions.manage`; its removal
+    /// is tracked under stint 1285. Host writes a JSON object to `response_file`:
     ///
     /// ```json
     /// {

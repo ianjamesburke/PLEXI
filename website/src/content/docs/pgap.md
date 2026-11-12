@@ -457,9 +457,7 @@ Query info for the previously focused pane. Host walks `pane_focus_history` from
 
 ### `list_permissions`
 
-List permission state across plugins (stint 0017). Gated on `permissions.manage` when arriving over PGAP. Host writes...
-
-**Capability:** `permissions.manage`
+List permission state across plugins (stint 0017). No gate: any socket caller can send it, and nothing checks `permis...
 
 | Field | Type | Required |
 |-------|------|----------|

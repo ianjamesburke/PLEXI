@@ -81,8 +81,9 @@ pub enum Capability {
     /// commands use over PLEXI_SOCKET.
     PanesControl,
     /// Inspect and mutate other plugins' permission state (stint 0017). No
-    /// host request checks it today; widening a grant is never a plugin
-    /// capability, it is a host-window click (stint 1272).
+    /// host request checks it today: `SetPermission` was removed (stint 1272)
+    /// and `ListPermissions` is ungated (removal tracked under stint 1285).
+    /// Moving widening decisions to host-owned consent is stints 1264 and 1238.
     PermissionsManage,
     /// Read the Plexi host channel log via the host-mediated `read_host_log`
     /// effect (stint 0444). The host owns path resolution — it tails its own
@@ -310,21 +311,6 @@ impl PermissionState {
             Self::Green => "green",
             Self::Yellow => "yellow",
             Self::Red => "red",
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a str> for PermissionState {
-    type Error = String;
-
-    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        match s {
-            "green" => Ok(Self::Green),
-            "yellow" => Ok(Self::Yellow),
-            "red" => Ok(Self::Red),
-            other => Err(format!(
-                "unknown permission state: '{other}' (expected green | yellow | red)"
-            )),
         }
     }
 }
@@ -1308,24 +1294,6 @@ mod tests {
             }
             PermissionCheck::Allowed => panic!("must be denied without declaration"),
         }
-    }
-
-    #[test]
-    fn permission_state_string_round_trips() {
-        for state in [
-            PermissionState::Green,
-            PermissionState::Yellow,
-            PermissionState::Red,
-        ] {
-            assert_eq!(
-                PermissionState::try_from(state.as_str()).expect("must round-trip"),
-                state
-            );
-        }
-        assert!(
-            PermissionState::try_from("purple").is_err(),
-            "unknown state strings must fail closed"
-        );
     }
 
     #[test]
