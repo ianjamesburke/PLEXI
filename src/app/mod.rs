@@ -3852,6 +3852,9 @@ impl eframe::App for PlexiApp {
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+        let ui_cpu_start = crate::platform::ui_profile::enabled()
+            .then(crate::platform::ui_profile::thread_cpu_time);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::UiRender,
@@ -4724,6 +4727,12 @@ impl eframe::App for PlexiApp {
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
         if let Some(start) = ui_profile_start {
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            if let Some(cpu_start) = ui_cpu_start {
+                crate::platform::ui_profile::note_cpu_frame(
+                    crate::platform::ui_profile::thread_cpu_time() - cpu_start,
+                );
+            }
             crate::platform::ui_profile::end_frame(start.elapsed());
         }
         crate::platform::logging::mark_ui_phase(

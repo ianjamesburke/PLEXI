@@ -29,7 +29,11 @@ pub fn time<T>(label: &str, f: impl FnOnce() -> T) -> T {
         return f();
     }
     let start = Instant::now();
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    let cpu_start = thread_cpu_time();
     let result = f();
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    note_nanos(&format!("{label}_cpu"), (thread_cpu_time() - cpu_start).as_nanos() as u64);
     note_nanos(label, start.elapsed().as_nanos() as u64);
     result
 }
@@ -247,4 +251,46 @@ mod tests {
         assert_eq!(max, 100.0);
         assert_eq!(percentiles(&[]), (0.0, 0.0, 0.0));
     }
+}
+
+
+#[cfg(test)]
+pub(crate) fn reset_measurement() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    CPU_FRAMES.lock().unwrap().clear();
+    set_drag_active(false);
+    set_drag_active(true);
+}
+
+#[cfg(test)]
+pub(crate) fn print_measurement() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let samples = CPU_FRAMES.lock().unwrap();
+        let (p50, p95, max) = percentiles(&samples);
+        println!("UI_THREAD_CPU frames={} p50_ms={p50:.2} p95_ms={p95:.2} max_ms={max:.2}", samples.len());
+    }
+    let window = WINDOW.lock().unwrap();
+    let w = window.as_ref().expect("measurement window");
+    let (p50, p95, max) = percentiles(&w.frame_ms);
+    println!("{}", window_summary_line(w.frames, w.started.elapsed().as_secs_f32(), p50, p95, max, &drain_spans()));
+}
+
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+static CPU_FRAMES: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+
+/// Test-only render-thread CPU clock excludes scheduler delay on shared builders.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn thread_cpu_time() -> Duration {
+    let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: value is a valid writable timespec; the clock is thread-local.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    assert_eq!(result, 0, "thread CPU clock: {}", std::io::Error::last_os_error());
+    Duration::new(value.tv_sec as u64, value.tv_nsec as u32)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn note_cpu_frame(total: Duration) {
+    CPU_FRAMES.lock().unwrap().push(total.as_secs_f32() * 1000.0);
 }
