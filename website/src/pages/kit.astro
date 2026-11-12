@@ -1,0 +1,82 @@
+---
+// Review surface for the shared kit: every token and component on one page. Not linked, not indexed.
+import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import Arrow from '../components/Arrow.astro';
+import CopyCommand from '../components/CopyCommand.astro';
+import Notice from '../components/Notice.astro';
+import Shot from '../components/Shot.astro';
+import WindowDiagram from '../components/WindowDiagram.astro';
+
+const surfaces = ['--bg', '--bg-2', '--bg-3', '--bg-4', '--border', '--border-2', '--border-3'];
+const inks = ['--fg', '--fg-2', '--fg-3', '--fg-4', '--accent-light', '--good', '--caution'];
+---
+<Layout title="Kit | Plexi" description="Shared tokens and components for plexiapp.com." noindex>
+  <PageHead title="Kit." lede="Midnight tokens and the shared components, in every state. For review, not for visitors." compact>
+    <a class="btn lg" href="#buttons">Primary <Arrow /></a>
+    <a class="link-arrow" href="#type">Link with arrow <Arrow /></a>
+  </PageHead>
+
+  <section class="wrap split" id="color" aria-labelledby="color-title">
+    <h2 class="h2" id="color-title">Color</h2>
+    <div class="stack">
+      <div class="swatches">{surfaces.map(t => <div><i style={`background:var(${t})`}></i><code>{t}</code></div>)}</div>
+      <div class="swatches">{inks.map(t => <div><i style={`background:var(${t})`}></i><code>{t}</code></div>)}</div>
+      <p class="muted">Text uses --fg, --fg-2, --fg-3 and --fg-4, all at 4.5:1 or better on --bg. --accent-light is the only accent for text, links, focus and the primary button.</p>
+    </div>
+  </section>
+
+  <section class="wrap split" id="type" aria-labelledby="type-title">
+    <h2 class="h2" id="type-title">Type</h2>
+    <div class="stack">
+      <p class="display">Display</p>
+      <p class="h2">Heading two</p>
+      <p class="title">Title, for rows and small sections</p>
+      <p class="lead">Lead. One or two plain sentences that say what the page or section is for.</p>
+      <p>Body at 17px. <a class="text-link" href="#type">An inline link</a>, <code class="inline">inline code</code> and a key: <kbd>⌘D</kbd>.</p>
+      <p class="muted">Muted body for supporting detail.</p>
+    </div>
+  </section>
+
+  <section class="wrap split" id="buttons" aria-labelledby="buttons-title">
+    <h2 class="h2" id="buttons-title">Buttons and links</h2>
+    <div class="stack">
+      <div class="row"><a class="btn" href="#buttons">Primary</a><a class="btn lg" href="#buttons">Primary large <Arrow dir="down" /></a><a class="btn ghost" href="#buttons">Ghost</a><a class="btn ghost lg" href="#buttons">Ghost large</a></div>
+      <div class="row"><a class="link-arrow" href="#buttons">Onward <Arrow /></a><a class="link-arrow" href="#buttons">Leaves the site <Arrow dir="ne" /></a></div>
+      <div class="on-accent-surface accent-demo"><a class="btn on-accent" href="#buttons">On accent</a><a class="link-arrow" href="#buttons">Link on accent <Arrow /></a></div>
+    </div>
+  </section>
+
+  <section class="wrap split" id="blocks" aria-labelledby="blocks-title">
+    <h2 class="h2" id="blocks-title">Blocks</h2>
+    <div class="stack">
+      <CopyCommand cmd="plexi view open todo" label="example command" />
+      <pre class="code" tabindex="0"><code><span class="c"># pre.code with .p prompt, .k keyword, .c comment</span>
+<span class="p">$ </span>plexi pane new -n tests
+<span class="k">def</span> view(): ...</code></pre>
+      <Notice title="Notice"><p>A short plain statement the reader should not miss, with <a href="#blocks">a link</a>.</p></Notice>
+      <Notice tone="warn" title="Notice, warn"><p>For things that can cost the reader something.</p></Notice>
+      <dl class="facts">
+        <div><dt>Term</dt><dd><strong>Strong lead-in.</strong> Detail in muted body.</dd></div>
+        <div><dt>Second</dt><dd>dl.facts is the ruled term and detail list.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="wrap split" id="imagery" aria-labelledby="imagery-title">
+    <h2 class="h2" id="imagery-title">Imagery</h2>
+    <div class="stack">
+      <Shot caption="Shot without src: the honest placeholder." pending="Says what the capture will show." />
+      <WindowDiagram />
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .stack { display: grid; gap: 24px; min-width: 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+  .swatches i { display: block; height: 56px; border: 1px solid var(--border-2); }
+  .swatches code { display: block; margin-top: 6px; font-size: 12px; color: var(--fg-2); }
+  .accent-demo { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; padding: 24px; background: var(--accent-light); color: var(--bg); }
+</style>
