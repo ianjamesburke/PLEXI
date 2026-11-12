@@ -3377,6 +3377,38 @@ impl Drop for TextEditorView {
 }
 
 impl super::PlexiApp {
+    /// Load and save the editor position store off the UI thread (stint
+    /// 1236). Runs from `App::logic`, so an occluded host still persists.
+    pub(super) fn service_editor_positions(&mut self) {
+        let notices = crate::host::editor_positions::service(&self.ui_wake);
+        self.post_editor_position_notices(notices);
+    }
+
+    /// Blocking final write of unsaved editor positions. Quit paths only.
+    pub(crate) fn flush_editor_positions_now(&mut self) {
+        let notices = crate::host::editor_positions::flush_now();
+        self.post_editor_position_notices(notices);
+    }
+
+    fn post_editor_position_notices(
+        &mut self,
+        notices: Vec<crate::host::editor_positions::Notice>,
+    ) {
+        for notice in notices {
+            log::info!("editor_positions: notice posted title={:?}", notice.title);
+            self.enqueue_notification(
+                crate::app::notifications::NotifySource::HostInternal,
+                crate::app::notifications::PendingNotification {
+                    notify_id: crate::app::notifications::new_notify_id("editor-positions"),
+                    title: notice.title.to_string(),
+                    body: notice.body,
+                    scope: crate::protocol::NotifyScope::Global,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
     /// Arm and drain plugin file watchers even when no experiment is enabled.
     pub(super) fn service_pane_external_io(&mut self) -> bool {
         let started = std::time::Instant::now();

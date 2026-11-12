@@ -300,6 +300,7 @@ impl super::PlexiApp {
         trace("post_hide_logic");
         self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
+        self.flush_editor_positions_now();
         self.bank_final_focus_segment();
         exit_host(reason, self.quit_workspace_durability());
     }
