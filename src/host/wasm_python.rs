@@ -574,6 +574,8 @@ pub enum WasmPythonError {
     StateNotObject { path: PathBuf, found: &'static str },
     #[error("invalid [state] declaration: {0}")]
     StateScopes(String),
+    #[error("invalid seed state: {0}")]
+    HeadlessSeed(String),
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
     #[error("start CPython WASM runtime: {0}")]
@@ -673,31 +675,84 @@ impl PythonLaunchConfig {
     }
 }
 
-fn python_init_payload(config: &PythonLaunchConfig, state: Value, size: (f32, f32)) -> Value {
-    // Same wire shape the live pane sends: state is always scope-keyed, never
-    // a flat `state` key. `state` here seeds only the plugin's default scope.
-    let default_scope = config
-        .state_scopes
+/// Shape a headless seed into the scope-keyed `states` object the init
+/// payload carries. A plugin that declares one scope takes a flat seed, which
+/// lands in that scope. A plugin that declares several takes an object keyed
+/// by scope name, so each scope can be seeded; a flat seed there is an error,
+/// never a guess about which scope it meant.
+pub fn headless_seed_states(
+    scopes: &[crate::host::state_scope::StateScope],
+    seed: Option<Value>,
+) -> Result<Value, String> {
+    let default_scope = scopes
         .first()
         .copied()
         .unwrap_or(crate::host::state_scope::StateScope::Global);
+    let Some(seed) = seed else {
+        return Ok(json!({ default_scope.as_str(): Value::Null }));
+    };
+    if scopes.len() <= 1 {
+        return Ok(json!({ default_scope.as_str(): seed }));
+    }
+    let declared: Vec<&'static str> = scopes.iter().map(|scope| scope.as_str()).collect();
+    let example = declared
+        .iter()
+        .map(|scope| format!("\"{scope}\": {{...}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(map) = seed.as_object() else {
+        return Err(format!(
+            "seed state must be a JSON object keyed by scope name, for example {{{example}}}"
+        ));
+    };
+    let mut unknown: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !declared.contains(key))
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "this plugin declares several [state] scopes ({}), so seed state must be keyed by scope name, for example {{{example}}}; found top-level key(s) that are not declared scopes: {}",
+            declared.join(", "),
+            unknown.join(", ")
+        ));
+    }
+    Ok(seed)
+}
+
+fn python_init_payload(
+    config: &PythonLaunchConfig,
+    seed: Option<Value>,
+    size: (f32, f32),
+) -> Result<Value, WasmPythonError> {
+    // Same wire shape the live pane sends: state is always scope-keyed, never
+    // a flat `state` key.
+    let states =
+        headless_seed_states(&config.state_scopes, seed).map_err(WasmPythonError::HeadlessSeed)?;
     let scope_names: Vec<&'static str> = config
         .state_scopes
         .iter()
         .map(|scope| scope.as_str())
         .collect();
-    json!({
+    log::info!(
+        "wasm_python[{}]: headless init seeds scope(s) {:?} of declared {:?}",
+        config.plugin_id,
+        states.as_object().map(|m| m.keys().collect::<Vec<_>>()),
+        scope_names
+    );
+    Ok(json!({
         "type": "init",
         "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
         "feature_flags": ["keyed_tree_delta"],
-        "states": { default_scope.as_str(): state },
+        "states": states,
         "state_scopes": scope_names,
         "theme": config.theme,
         "args": config.launch_args,
         "size": [size.0, size.1],
-    })
+    }))
 }
 
 fn cache_python_theme_for_relaunch(
@@ -1014,11 +1069,7 @@ impl HeadlessPythonSession {
         seed_state: Option<Value>,
     ) -> Result<Self, WasmPythonError> {
         let runtime = WasmPythonRuntime::launch(config)?;
-        runtime.send(&python_init_payload(
-            config,
-            seed_state.unwrap_or(Value::Null),
-            size,
-        ))?;
+        runtime.send(&python_init_payload(config, seed_state, size)?)?;
         let mut session = Self {
             runtime,
             last_tree: None,
@@ -7216,7 +7267,8 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         let config = state_test_config(workspace.path(), "test.scoped-init");
 
-        let payload = python_init_payload(&config, json!({"count": 41}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({"count": 41})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         // `state_test_config` declares exactly one scope: Context.
         assert_eq!(payload["states"], json!({ "context": { "count": 41 } }));
@@ -7236,7 +7288,8 @@ mod tests {
             ("bg".to_string(), "#abcdef".to_string()),
         ]);
 
-        let payload = python_init_payload(&config, json!({}), (480.0, 320.0));
+        let payload = python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+            .expect("single-scope seed");
 
         assert_eq!(payload["theme"], json!(config.theme));
         assert!(payload["theme"]
@@ -10182,7 +10235,10 @@ mod tests {
         };
         let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
         runtime
-            .send(&python_init_payload(&config, json!({}), (480.0, 320.0)))
+            .send(
+                &python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+                    .expect("single-scope seed"),
+            )
             .expect("send init");
         runtime
             .send(&json!({"type": "render", "frame_id": 1}))
