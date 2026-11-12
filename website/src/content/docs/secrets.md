@@ -1,13 +1,13 @@
 ---
 title: Secrets
-description: Store secrets and control workspace access.
+description: Store API keys per workspace, and control which terminals, agents and plugins can read them.
 order: 6
 ---
 
 Plexi has a built-in secrets store scoped to each workspace. On macOS, secrets
 are stored through the system keychain. On Linux, global, workspace, and
 folder secrets share the backend described under [Linux storage](#linux-storage).
-For plugin access, see [Using Secrets in an App](#using-secrets-in-an-plugin).
+For plugin access, see [Using Secrets in a Plugin](#using-secrets-in-a-plugin).
 
 ## Set a Secret
 
@@ -145,7 +145,7 @@ plexi secret delete MY_API_KEY
 
 To update a secret, run `plexi secret set` again with the new value. The old value is overwritten.
 
-## Using Secrets in an App
+## Using Secrets in a Plugin
 
 Declaring `secrets.get` reserves the capability in the manifest and protocol:
 
@@ -162,7 +162,7 @@ withheld and must use permission-controlled reads.
 
 ## Workspace Scoping
 
-Secrets are scoped by workspace root path — a secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
+Secrets are scoped by workspace root path. A secret set inside one project is not visible to another project at a different path. Use `--global` to share a secret across all workspaces on the machine.
 
 ### Human Pane Authority and Context Boundary
 

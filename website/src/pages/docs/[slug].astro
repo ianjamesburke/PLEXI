@@ -1,9 +1,21 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
 import { getCollection, render } from 'astro:content';
+import { docsFlat } from '../../lib/docsNav';
 
 export async function getStaticPaths() {
   const docs = await getCollection('docs');
+  // Every page is in the sidebar and every sidebar entry has a page, or the build stops.
+  const ids = new Set(docs.map(doc => doc.id));
+  const listed = new Set(docsFlat.map(item => item.slug));
+  const unlisted = [...ids].filter(id => !listed.has(id));
+  const missing = [...listed].filter(slug => !ids.has(slug));
+  if (unlisted.length || missing.length) {
+    throw new Error(
+      `docs nav out of sync with src/content/docs. In no group: [${unlisted.join(', ')}]. ` +
+      `Listed without a file: [${missing.join(', ')}]. Fix src/lib/docsNav.ts.`,
+    );
+  }
   return docs.map((doc) => ({
     params: { slug: doc.id },
     props: { doc },
