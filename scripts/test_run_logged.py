@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/run_logged.py"
+SCRIPT = Path(os.environ.get("RUN_LOGGED_UNDER_TEST") or ROOT / "scripts/run_logged.py")  # env: revert proofs
 
 
 def parse_result(line):
@@ -18,7 +18,7 @@ def parse_result(line):
     return dict(part.split("=", 1) for part in line.split()[1:])
 
 
-class RunLogged(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -29,9 +29,15 @@ class RunLogged(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), "--dir", str(self.dir), *flags, name, "--", *command],
                               capture_output=True, text=True, env=env, **kwargs)
 
+    def files(self, name, suffix):
+        return sorted(self.dir.glob(f"{name}-*.{suffix}"))
+
     def last_line(self, result):
         return result.stdout.rstrip("\n").splitlines()[-1]
 
+
+
+class RunLogged(Base):
     def test_pass_quiet_with_result_status_and_full_log(self):
         result = self.run_logged("ok", ["sh", "-c", "for i in 1 2 3; do echo line$i; done; echo warn >&2"])
         self.assertEqual(result.returncode, 0)
@@ -40,7 +46,8 @@ class RunLogged(unittest.TestCase):
         self.assertTrue(Path(fields["log"]).is_absolute())
         self.assertEqual(sorted(Path(fields["log"]).read_text().split()), ["line1", "line2", "line3", "warn"])
         self.assertNotIn("line1", result.stdout, "quiet mode must not echo command output")
-        self.assertEqual((self.dir / "ok.status").read_text().strip(), self.last_line(result))
+        self.assertEqual(self.files("ok", "status")[0].read_text().strip(), self.last_line(result))
+        self.assertEqual(Path(fields["log"]).with_suffix(".status").resolve(), self.files("ok", "status")[0].resolve())
         self.assertEqual(result.stdout.count("RESULT "), 1)
 
     def test_failure_keeps_exit_code_prints_only_bounded_error_tail(self):
@@ -75,9 +82,9 @@ class RunLogged(unittest.TestCase):
                                    "--", "sh", "-c", "echo started; sleep 2; echo done"],
                                   stdout=subprocess.PIPE, text=True)
         deadline = time.time() + 5
-        status = self.dir / "slow.status"
-        while time.time() < deadline and not status.exists():
+        while time.time() < deadline and not self.files("slow", "status"):
             time.sleep(0.05)
+        status = self.files("slow", "status")[0]
         self.assertIn("status=running", status.read_text())
         self.assertIn("pid=", status.read_text())
         out, _ = process.communicate(timeout=20)
@@ -91,14 +98,14 @@ class RunLogged(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines()[0], "out")
         self.assertEqual(result.stderr.strip(), "err")
         self.assertEqual(parse_result(self.last_line(result))["exit"], "3")
-        self.assertEqual(sorted((self.dir / "tee.log").read_text().split()), ["err", "out"])
+        self.assertEqual(sorted(self.files("tee", "log")[0].read_text().split()), ["err", "out"])
         self.assertNotIn("error lines from the log", result.stdout, "tee mode adds no tail: the output already passed through")
 
     def test_nested_wrapper_is_transparent(self):
         inner = [sys.executable, str(SCRIPT), "--dir", str(self.dir), "inner", "--", "echo", "hi"]
         result = self.run_logged("outer", inner, "--tee")
         self.assertEqual(result.stdout.count("RESULT "), 1)
-        self.assertFalse((self.dir / "inner.status").exists())
+        self.assertEqual(self.files("inner", "status"), [])
 
     def test_usage_errors(self):
         for argv in ([], ["name"], ["name", "--"], ["bad name", "--", "true"]):
@@ -109,7 +116,7 @@ class RunLogged(unittest.TestCase):
     def test_sigterm_is_forwarded_and_recorded(self):
         process = subprocess.Popen([sys.executable, str(SCRIPT), "--dir", str(self.dir), "term", "--", "sleep", "30"],
                                    stdout=subprocess.PIPE, text=True)
-        while not (self.dir / "term.status").exists():
+        while not self.files("term", "status"):
             time.sleep(0.05)
         time.sleep(0.5)
         process.send_signal(signal.SIGTERM)
@@ -118,12 +125,105 @@ class RunLogged(unittest.TestCase):
         self.assertEqual((fields["status"], fields["exit"]), ("fail", "143"))
 
 
+class Hardening(Base):
+    """Review findings: unique names, closed downstream, bounded join, unwritable log dir."""
+
+    def test_repeated_and_concurrent_runs_of_one_name_never_share_files(self):
+        first = self.run_logged("same", ["sh", "-c", "echo one"])
+        second = self.run_logged("same", ["sh", "-c", "echo two; exit 1"])
+        logs = self.files("same", "log")
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(sorted(l.read_text().strip() for l in logs), ["one", "two"])
+        self.assertEqual(sorted(l.read_text().split()[2] for l in self.files("same", "status")),
+                         ["status=fail", "status=pass"])
+        self.assertNotEqual(parse_result(self.last_line(first))["log"], parse_result(self.last_line(second))["log"])
+        procs = [subprocess.Popen([sys.executable, str(SCRIPT), "--dir", str(self.dir), "par", "--", "sh", "-c", "sleep 1"],
+                                  stdout=subprocess.PIPE, text=True) for _ in range(3)]
+        logs = {parse_result(p.communicate(timeout=30)[0].rstrip("\n").splitlines()[-1])["log"] for p in procs}
+        self.assertEqual(len(logs), 3)
+
+    def test_quiet_mode_announces_its_files_first(self):
+        result = self.run_logged("announce", ["true"])
+        first = result.stdout.splitlines()[0]
+        self.assertIn("started; log=", first)
+        self.assertIn(parse_result(self.last_line(result))["log"], first)
+
+    def test_closed_downstream_does_not_hang_the_wrapper(self):
+        command = "head -c 300000 /dev/zero | tr '\\0' x; echo; echo tail >&2; exit 3"
+        process = subprocess.Popen([sys.executable, str(SCRIPT), "--dir", str(self.dir), "--tee", "pipe", "--",
+                                   "sh", "-c", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process.stdout.close()  # `... | head` that already exited
+        self.addCleanup(process.stderr.close)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            self.fail("wrapper hung on a closed stdout")
+        self.assertEqual(process.returncode, 3)
+        log = self.files("pipe", "log")[0]
+        self.assertGreater(log.stat().st_size, 300000)
+        self.assertIn("exit=3", self.files("pipe", "status")[0].read_text())
+
+    def test_descendant_holding_the_pipes_does_not_block_the_verdict(self):
+        started = time.time()
+        result = self.run_logged("daemon", ["sh", "-c", "(sleep 20) & echo parent-done"], timeout=60)
+        self.assertLess(time.time() - started, 15, "must not wait for the background descendant")
+        self.assertEqual(parse_result(self.last_line(result))["status"], "pass")
+        self.assertIn("descendant still holds", result.stderr)
+
+    def test_sigterm_reaches_the_whole_process_group(self):
+        marker = Path(self.temp.name) / "child.pid"
+        script = f"sh -c 'echo $$ > {marker}; exec sleep 60' & wait"
+        process = subprocess.Popen([sys.executable, str(SCRIPT), "--dir", str(self.dir), "grp", "--", "sh", "-c", script],
+                                   stdout=subprocess.PIPE, text=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and not (marker.exists() and marker.read_text().strip()):
+            time.sleep(0.05)
+        grandchild = int(marker.read_text())
+        process.send_signal(signal.SIGTERM)
+        out, _ = process.communicate(timeout=30)
+        self.assertEqual(parse_result(out.rstrip("\n").splitlines()[-1])["exit"], "143")
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(grandchild, 0)
+
+    def test_signal_ignoring_group_is_killed_after_the_grace_period(self):
+        process = subprocess.Popen([sys.executable, "-c",
+                                    "import sys, importlib.util as u; s=u.spec_from_file_location('r', sys.argv[1]); "
+                                    "m=u.module_from_spec(s); s.loader.exec_module(m); m.KILL_AFTER_SECONDS=1.0; "
+                                    "sys.exit(m.main(sys.argv[2:]))", str(SCRIPT), "--dir", str(self.dir), "stubborn", "--",
+                                    "sh", "-c", "trap '' TERM; sleep 60"], stdout=subprocess.PIPE, text=True)
+        while not self.files("stubborn", "status"):
+            time.sleep(0.05)
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        out, _ = process.communicate(timeout=30)
+        self.assertEqual(parse_result(out.rstrip("\n").splitlines()[-1])["exit"], "137")
+
+    def test_unwritable_log_dir_warns_and_still_runs_the_command(self):
+        blocker = Path(self.temp.name) / "file-not-dir"
+        blocker.write_text("x")
+        for flags in ((), ("--tee",)):
+            result = subprocess.run([sys.executable, str(SCRIPT), "--dir", str(blocker / "logs"), *flags, "nolog", "--",
+                                     "sh", "-c", "echo ran; exit 4"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 4, flags)
+            self.assertIn("ran", result.stdout, "output must still reach the console unlogged")
+            self.assertIn("running unlogged", result.stderr)
+            fields = parse_result(self.last_line(result))
+            self.assertEqual((fields["status"], fields["exit"], fields["log"]), ("fail", "4", "-"))
+
+    def test_missing_command_is_reported_as_such_not_as_a_log_failure(self):
+        result = self.run_logged("nocmd2", ["/nonexistent/binary"])
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("cannot start", result.stderr)
+
+
 class RecipeWiring(unittest.TestCase):
     """The long recipes keep their commands and gain only the RESULT trailer."""
 
     def test_long_recipes_run_through_the_wrapper_in_tee_mode(self):
         lines = (ROOT / "justfile").read_text().splitlines()
-        for name in ("release-host-gate", "clippy", "test-host", "pr-install", "pr-candidate"):
+        for name in ("release-host-gate", "clippy", "test-host", "test-for", "pr-install", "pr-candidate"):
             start = next(i for i, l in enumerate(lines) if l.startswith((name + ":", name + " ")))
             body = []
             for line in lines[start + 1:]:
