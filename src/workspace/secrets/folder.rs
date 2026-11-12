@@ -450,7 +450,9 @@ pub fn deliver_folder_secret_choice(choice: &str) -> bool {
 }
 
 /// Ask the host process's permission monitor when its gate socket is up.
-/// `None` means this process should admit locally (no host is listening).
+/// `None` means no host gate was reached (no host listening, or a non-unix
+/// build, where this always returns `None`). The caller then fails with the
+/// not-the-host error; it never admits locally (stint 1291).
 pub fn read_through_host_gate(
     actor: &SecretActor,
     name: &str,
