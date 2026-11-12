@@ -14,3 +14,5 @@ mod zoom_tests;
 mod wrap_tests;
 
 mod core_only_tests;
+
+mod terminal_authority_tests;
