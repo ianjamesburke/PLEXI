@@ -54,10 +54,10 @@ with:
 source "${PLEXI_E2E_SHIM:?}"
 ```
 
-`scripts/command-view-steer-e2e.sh` (#2717). Replace:
+`scripts/command-view-e2e.sh` (#2717). Replace:
 
 ```bash
-PR="${1:?usage: scripts/command-view-steer-e2e.sh <PR>}"
+PR="${1:?usage: scripts/command-view-e2e.sh <PR>}"
 BIN="plexi-pr-${PR}"
 ```
 
@@ -127,4 +127,4 @@ with `HUMAN_APPROVE "$PENDING"` after sourcing `scripts/e2e/human.sh`. Keep the 
 
 `scripts/app-share-e2e.sh` (#2718), V1-15. Bypass: none. When the sensitive tool asks, `HUMAN_APPROVE` the pending id (contract step 4). Do not auto-grant it.
 
-`scripts/multi-lead-e2e.sh` and `scripts/headless-queue-e2e.sh` (V1-10) and `scripts/command-view-steer-e2e.sh` (V1-11) echo `VERIFIED-VIA-BYPASS` because an ungranted tool must not run and a command-view resolve from an agent pane must be refused. That echo is not skip panes, CLI approval, or an env flag. Do not add a resolve to clear it.
+`scripts/multi-lead-e2e.sh` and `scripts/headless-queue-e2e.sh` (V1-10) and `scripts/command-view-e2e.sh` (V1-11) echo `VERIFIED-VIA-BYPASS` because an ungranted tool must not run and a command-view resolve from an agent pane must be refused. That echo is not skip panes, CLI approval, or an env flag. Do not add a resolve to clear it.
