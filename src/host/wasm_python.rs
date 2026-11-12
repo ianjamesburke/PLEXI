@@ -6666,11 +6666,14 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             // Rows sit tighter than columns by default; absence uses the token,
             // an explicit `gap: 0.0` still packs children flush (stint 0445).
             gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_SM),
+            // `align` is the cross axis. A row that does not say centers its
+            // children vertically, which is what every row did before the
+            // renderer read the field.
             align: decode_alignment(
                 value
                     .get("align")
                     .and_then(Value::as_str)
-                    .unwrap_or("start"),
+                    .unwrap_or("center"),
             )?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
@@ -9389,6 +9392,11 @@ mod tests {
             r.gap,
             crate::ui::style::SPACE_SM,
             "an unset row gap must fall back to the SPACE_SM token"
+        );
+        assert_eq!(
+            r.align,
+            Alignment::Center,
+            "an unset row align must center children vertically"
         );
 
         let col_zero = decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))

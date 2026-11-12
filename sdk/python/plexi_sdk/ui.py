@@ -187,7 +187,14 @@ def _validate_component_list(items: Any, container_name: str) -> None:
 
 
 class Column(Component):
-    """Vertical stack of child components."""
+    """Vertical stack of child components.
+
+    ``align`` places children across the column: ``"start"`` (left, the
+    default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+    child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+    ``child`` vertically and a single grow spacer pins what follows it to the
+    bottom.
+    """
 
     def __init__(
         self,
@@ -225,14 +232,20 @@ class Column(Component):
 
 
 class HStack(Component):
-    """Horizontal stack of child components (`Row` alias)."""
+    """Horizontal stack of child components (`Row` alias).
+
+    ``align`` is the cross axis, as on ``Column``: it places children at the
+    top (``"start"``), the middle (``"center"``, the default) or the bottom
+    (``"end"``) of the row. A ``Text`` child too long for the row wraps in the
+    width its later siblings leave.
+    """
 
     def __init__(
         self,
         children: list[Component] | None = None,
         gap: float | None = None,
         *,
-        align: str = "start",
+        align: str = "center",
         grow: bool = False,
     ) -> None:
         items = list(children) if children is not None else []
@@ -546,7 +559,11 @@ class Text(Component):
 
 @dataclass
 class Spacer(Component):
-    """Fixed or flex gap. ``grow=True`` expands to consume remaining space."""
+    """Fixed or flex gap.
+
+    ``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+    height with every other grow spacer in it.
+    """
 
     size: float = SPACE_MD
     grow: bool = False
@@ -644,7 +661,12 @@ class Button(Component):
 
 
 class Actions(Component):
-    """Horizontal row of ``Button`` components (`ActionBar` alias)."""
+    """Horizontal row of ``Button`` components (`ActionBar` alias).
+
+    ``align`` places the buttons at the top, middle (the default) or bottom of
+    the row. Buttons that do not fit the pane width wrap onto further lines as
+    whole buttons; a label never breaks inside a word.
+    """
 
     def __init__(
         self,
@@ -652,7 +674,7 @@ class Actions(Component):
         *,
         actions: list[Button] | None = None,
         gap: float = SPACE_SM,
-        align: str = "start",
+        align: str = "center",
     ) -> None:
         items = actions if actions is not None else (buttons if buttons is not None else [])
         if not isinstance(items, list):
