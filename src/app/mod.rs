@@ -405,6 +405,8 @@ pub struct PlexiApp {
     /// Notes picker: file content shown in the preview half, read once per
     /// selection rather than every frame and re-checked on each open.
     pub(crate) notes_picker_preview: Option<crate::overlays::notes_picker::NotePreview>,
+    /// Notes picker: the preview stat/read running off the UI thread.
+    pub(crate) notes_picker_preview_job: Option<crate::overlays::notes_picker::NotePreviewJob>,
     /// Last recoverable notes picker deletion.
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
     pub(crate) notes_trash: std::sync::Arc<dyn crate::overlays::notes_picker::NotesTrash>,
@@ -1864,6 +1866,7 @@ impl PlexiApp {
                     notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
                     notes_picker_preview: None,
+                    notes_picker_preview_job: None,
                     notes_picker_undo: None,
                     notes_trash: crate::overlays::notes_picker::default_notes_trash(),
                     notes_clip_jobs: Vec::new(),
@@ -2153,6 +2156,7 @@ impl PlexiApp {
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
+            notes_picker_preview_job: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_clip_jobs: Vec::new(),
@@ -3140,6 +3144,7 @@ impl PlexiApp {
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
+            notes_picker_preview_job: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_clip_jobs: Vec::new(),
@@ -3787,6 +3792,7 @@ impl eframe::App for PlexiApp {
         // undo and notice toasts expire here, not in the draw, so Cmd+Z in a
         // reopened picker cannot undo a delete whose toast is already gone.
         self.drain_notes_clip_jobs(ctx);
+        self.drain_notes_preview_read();
         self.expire_notes_toasts();
 
         // Expired needs-you items auto-deny even while the window is hidden.
