@@ -589,7 +589,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 <!-- /experiment -->
 - `plexi ai doctor`: Scan hardware and report recommended AI models
 <!-- experiment: ai_setup -->
-- `plexi ai setup`: Retired: local AI providers are not supported in 0.5.0
+- `plexi ai setup`: Interactive wizard to configure a local AI model via Ollama
 <!-- /experiment -->
 <!-- experiment: ledger -->
 - `plexi ledger`: Summarize recorded AI usage from this channel's ledger
