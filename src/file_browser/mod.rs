@@ -2895,6 +2895,7 @@ impl FileBrowserView {
                                 input_id,
                                 "Type a /command or intent (e.g. /new file notes.md, /hidden, rename to \u{2026})",
                             )
+                            .font_size(self.font_size)
                             .log_name("file_browser_palette")
                             .show(ui, &mut self.palette_query, colors)
                         })
@@ -2989,6 +2990,8 @@ impl FileBrowserView {
                 // Ranked candidate list
                 ui.add_space(style::SPACE_XS);
                 let row_h = (22.0 * self.font_scale()).round().max(20.0);
+                // Row text scales with the pane font like the row height does.
+                let row_text_size = style::TEXT_META * self.font_scale();
                 for (idx, candidate) in candidates
                     .iter()
                     .take(PALETTE_MAX_VISIBLE_CANDIDATES)
@@ -3007,7 +3010,7 @@ impl FileBrowserView {
                         colors,
                     );
                     let inner = row_rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
-                    let cmd_font = egui::FontId::monospace(style::TEXT_META);
+                    let cmd_font = egui::FontId::monospace(row_text_size);
                     let cmd_color = colors.accent;
                     let cmd_galley = ui.fonts_mut(|f| {
                         f.layout_no_wrap(
@@ -3026,7 +3029,7 @@ impl FileBrowserView {
                         .galley(cmd_pos, cmd_galley, cmd_color);
 
                     let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
-                    let title_font = egui::FontId::proportional(style::TEXT_META);
+                    let title_font = egui::FontId::proportional(row_text_size);
                     let title_color = colors.text_primary;
                     let title_galley = ui.fonts_mut(|f| {
                         f.layout_no_wrap(

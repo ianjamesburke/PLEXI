@@ -201,6 +201,7 @@ impl<'a> SearchBar<'a> {
                 .layout(Layout::left_to_right(Align::Center)),
         );
         let resp = TextField::singleline(self.id, self.hint)
+            .font_size(self.font_size)
             .log_name("search_bar")
             .show(&mut input_ui, query, colors);
         if query.is_empty() {
