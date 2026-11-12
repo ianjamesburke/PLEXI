@@ -2260,3 +2260,43 @@ fn notification_counts_toward_context_matrix() {
         6
     ));
 }
+
+/// Stint 1312: each retired on-disk shape found at launch is a host notice
+/// that names the file and the fix. Reporting never touches the file.
+#[test]
+fn retired_data_shapes_surface_as_launch_notices() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let profile = h.profile_dir().to_path_buf();
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    let layout = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+    std::fs::write(&workspace, layout).unwrap();
+    let notes = profile.join("notes");
+    std::fs::create_dir_all(notes.join("inbox")).unwrap();
+    std::fs::write(notes.join("inbox").join("staged.md"), "staged body").unwrap();
+    let ledger = profile.join("agent-ledger.jsonl");
+    std::fs::write(&ledger, "{\"ts\":\"2026-09-01T00:00:00Z\"}\n").unwrap();
+
+    h.app.surface_retired_data_notices();
+
+    let bodies: Vec<&str> = h
+        .app
+        .pending_notifications
+        .iter()
+        .map(|n| n.body.as_str())
+        .collect();
+    for path in [&workspace, &notes, &ledger] {
+        let path = path.display().to_string();
+        assert!(
+            bodies.iter().any(|body| body.contains(&path)),
+            "no launch notice names {path}: {bodies:?}"
+        );
+    }
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+    assert_eq!(
+        std::fs::read_to_string(notes.join("inbox").join("staged.md")).unwrap(),
+        "staged body"
+    );
+    assert!(ledger.is_file());
+}
