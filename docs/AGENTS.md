@@ -22,6 +22,7 @@ reports are stored under that profile's `sessions/teams/` directory.
 | File | Covers | Stint |
 |---|---|---|
 | `agent-run-orchestration.md` | Superseded: prose queue-runner host primitives; direction now `@plexi/pi` (0796) + squads per `TRUTH.md` | see file |
+| `agent-sandbox-profile.md` | Per-harness agent sandbox profile (Claude Code, Codex, Pi): launch profile, no-native-sandbox policy, user-visible contract (v1.1) | 1273, 1378–1380 |
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
 | `assistant-agent-mesh.md` | Superseded: built-in Assistant head-agent mesh; replaced by CLI coding agents + `@plexi/pi` (0796) + squads per `TRUTH.md` | none yet |
 | `assistant-authority-model.md` | Assistant threat model, reference monitor, grant binding, runtime boundary | see file |
