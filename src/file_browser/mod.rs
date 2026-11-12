@@ -361,6 +361,11 @@ pub struct FileBrowserView {
     search_indices: Vec<usize>, // indices into `entries` that match the query
     search_session: crate::search::SearchSession,
     search_focus_pending: bool,
+    /// The search hit the user explicitly chose (keyboard, click) or that a
+    /// filesystem refresh must keep. Same-query result updates keep this file
+    /// selected wherever it ranks; without it the selection follows the top
+    /// result. A query change clears it.
+    search_pinned_path: Option<PathBuf>,
     // Action palette (`/` and `Cmd+K`, stint 0813)
     in_palette: bool,
     palette_query: String,
@@ -449,6 +454,7 @@ impl FileBrowserView {
             search_indices: Vec::new(),
             search_session: crate::search::SearchSession::new(),
             search_focus_pending: false,
+            search_pinned_path: None,
             in_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -593,11 +599,54 @@ impl FileBrowserView {
             let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
             self.search_session
                 .update_query(&self.cwd, hidden, &self.search_query, &shallow, true);
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
+    }
+
+    /// Place the selection after the hits for the unchanged query were
+    /// replaced (a background phase, a rewalk). A pinned file stays selected
+    /// wherever it now ranks; if it left the results, or nothing is pinned,
+    /// the selection is the top result. Rows never change identity by index.
+    fn apply_search_results_update(&mut self) {
+        self.sync_search_indices();
+        let Some(pinned) = self.search_pinned_path.clone() else {
+            self.selected = 0;
+            return;
+        };
+        match self
+            .search_session
+            .hits()
+            .iter()
+            .position(|hit| hit.path == pinned)
+        {
+            Some(index) => {
+                if index != self.selected {
+                    log::info!(
+                        "file_browser: search results reranked; selection kept on its file (row {} -> {index})",
+                        self.selected
+                    );
+                }
+                self.selected = index;
+            }
+            None => {
+                log::info!(
+                    "file_browser: selected search result left the results; selecting the top result"
+                );
+                self.search_pinned_path = None;
+                self.selected = 0;
+                self.pending_scroll = true;
+            }
+        }
+    }
+
+    /// Select a search hit by row as the user's explicit choice.
+    fn pin_search_selection(&mut self, index: usize) {
+        self.selected = index;
+        self.search_pinned_path = self
+            .search_session
+            .hits()
+            .get(index)
+            .map(|hit| hit.path.clone());
     }
 
     /// Refresh after an external change, keeping the selected path selected
@@ -606,9 +655,16 @@ impl FileBrowserView {
     fn refresh_after_external_change(&mut self) {
         let selected_path = self.selected_entry_or_hit().map(|entry| entry.path);
         let scroll = self.pending_scroll;
-        self.refresh_preserving_filter();
-        if let Some(path) = selected_path {
-            self.select_path(&path);
+        if self.in_search {
+            // Search rows are ordered hits, not directory entries: pin the
+            // file so this rewalk and its background phases keep it selected.
+            self.search_pinned_path = selected_path;
+            self.refresh_preserving_filter();
+        } else {
+            self.refresh_preserving_filter();
+            if let Some(path) = selected_path {
+                self.select_path(&path);
+            }
         }
         self.pending_scroll = scroll;
         log::info!(
@@ -807,7 +863,11 @@ impl FileBrowserView {
     }
 
     fn set_single_selection(&mut self, visible_idx: usize) {
-        self.selected = visible_idx;
+        if self.in_search {
+            self.pin_search_selection(visible_idx);
+        } else {
+            self.selected = visible_idx;
+        }
         self.clear_multi_selection();
         self.selection_anchor = Some(visible_idx);
     }
@@ -872,6 +932,7 @@ impl FileBrowserView {
         self.search_session
             .update_query(&self.cwd, hidden, &self.search_query, &shallow, false);
         self.sync_search_indices();
+        self.search_pinned_path = None;
         self.selected = 0;
         self.pending_scroll = true;
     }
@@ -891,6 +952,7 @@ impl FileBrowserView {
             self.search_query.clear();
             self.search_indices.clear();
             self.search_session.clear();
+            self.search_pinned_path = None;
             self.selected = 0;
             self.pending_scroll = true;
             log::info!("file_browser: exiting search mode");
@@ -3166,10 +3228,7 @@ impl View for FileBrowserView {
     ) -> bool {
         let mut changed = self.search_session.service_external(wake);
         if changed && self.in_search {
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
         if self.watch.as_ref().map(|(dir, _)| dir) != Some(&self.cwd) {
             self.watch = None;
@@ -3243,10 +3302,7 @@ impl View for FileBrowserView {
             ui.ctx().copy_text(text);
         }
         if self.in_search && self.search_session.poll() {
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
 
         egui::Frame::new()
@@ -3558,12 +3614,12 @@ impl View for FileBrowserView {
             }
             (Mode::Search, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.search_session.hits().len().saturating_sub(1);
-                self.selected = (self.selected + 1).min(last);
+                self.pin_search_selection((self.selected + 1).min(last));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::SelectPrev)) => {
-                self.selected = self.selected.saturating_sub(1);
+                self.pin_search_selection(self.selected.saturating_sub(1));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
