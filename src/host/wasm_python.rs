@@ -11359,12 +11359,6 @@ default = true
         )));
     }
 
-    /// CUTOVER: expected to change to deny (no human approval). Every Python
-    /// guest can send `permission_decision`; `handle_permission_decision`
-    /// forwards it to `PermissionMonitor::mutate_entry` with this exact caller,
-    /// `human: true`, and checks neither `permissions.manage` nor the plugin id.
-    /// `allow` on a pending id approves it as Always. Pinned at the monitor seam
-    /// because launching a CPython guest is not needed to show the decision.
     #[test]
     fn a_mismatched_permissions_copy_is_told_the_cause_and_fix_others_are_not() {
         let fx = bridge_fixture();
