@@ -15,12 +15,8 @@ markdown that no Rust source in the tree can observe. A path is *binding*
     walk repository files at runtime;
   * names it by its exact repository path as a string literal anywhere.
 
-A file-level reference binds that file only, never its siblings. A directory
-walk binds only the extensions it reads: when the manifest-rooted item and
-the same-file functions it calls (transitively) filter by extension
-(`extension() ... "rs"`, `ends_with(".rs")`) and name no markdown, markdown
-under the walked directory stays skippable. Without such a filter the walk
-binds every file.
+A file-level reference binds that file only, never its siblings. A walked or
+listed directory binds every file under it, whatever the walk filters on.
 
 Paths resolve through tracked symlinks, and a symlink inside a bound
 directory binds its target. The binding set is recomputed from the tree on
@@ -35,9 +31,7 @@ manifest-rooted item, a scanner that loses literal sync, and any git error.
 
 Known limits (not detected): a helper that returns the manifest root while
 its caller names the path (`fn root()` then `read_dir(root().join("x"))`),
-cwd-relative reads (`read_to_string("NORTH_STAR.md")`), and one item that
-runs both an extension-filtered walk and an unfiltered walk (the filter is
-applied per item).
+and cwd-relative reads (`read_to_string("NORTH_STAR.md")`).
 
 `build.rs` hashes every tracked file into the build identity; that is not
 behaviour, and installed validation still builds the exact head, so it does
@@ -68,8 +62,7 @@ INCLUDE_RE = re.compile(r"\binclude_(str|bytes|dir)!\s*\(")
 CONCAT_RE = re.compile(r"concat!\s*\(")
 RAW_RE = re.compile(r'[bc]?r(#*)"')
 CFG_TEST_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
-FN_RE = re.compile(r"\bfn\s+([A-Za-z_]\w*)")
-EXT_RE = re.compile(r"\.?[A-Za-z0-9]{1,10}")
+FN_RE = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 MANIFEST = "CARGO_MANIFEST_DIR"
 
 
@@ -273,48 +266,19 @@ def _resolve(path: str | None, links: dict[str, str]) -> str | None:
     raise ScopeError(f"symlink loop resolving {path}")
 
 
-def _scope_exts(spans, fns, blanked: str, literals: dict[int, str]) -> list[str] | None:
-    """Extensions a manifest-rooted walk reads, or None for every file.
-
-    The scope is the manifest item plus the same-file functions it calls,
-    transitively. A walk is narrowed only when that scope holds an extension
-    filter (`extension() ... "rs"`, `ends_with(".rs")`) and names no markdown.
-    """
-    scope, pending = list(spans), list(spans)
-    while pending:
-        start, end = pending.pop()
-        for name, span in fns:
-            if span not in scope and re.search(rf"\b{re.escape(name)}\s*\(", blanked[start:end]):
-                scope.append(span)
-                pending.append(span)
-    found = [(o, v) for o, v in literals.items() if any(a <= o < b for a, b in scope)]
-    if any(".md" in v.lower() or v.lower() in ("md", "markdown") for _, v in found):
-        return None
-    filters = set()
-    for offset, value in found:
-        if not EXT_RE.fullmatch(value):
-            continue
-        before = blanked[:offset].rstrip()
-        statement = blanked[max(blanked.rfind(c, 0, offset) for c in ";{}") + 1:offset]
-        if (before.endswith("ends_with(") and value.startswith(".")) or "extension" in statement:
-            filters.add(value.lstrip(".").lower())
-    return sorted(filters) or None
-
-
 def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
-    """Map each binding repo path (file or directory) to {"mode", "how", "exts"}.
+    """Map each binding repo path (file or directory) to {"mode", "how"}.
 
     `mode` is "shipped" when any reference sits outside a `#[cfg(test)]` item,
-    otherwise "test". `exts` limits a directory binding to the extensions its
-    walk reads (None: every file). Markdown files and directories only: a
-    docs-only diff contains nothing else.
+    otherwise "test". Markdown files and directories only: a docs-only diff
+    contains nothing else.
     """
     tracked, sources, links = tree(root, rev)
     dirs = {parent.as_posix() for path in tracked for parent in PurePosixPath(path).parents}
     dirs.discard(".")
     bindings: dict[str, dict] = {}
 
-    def bind(path: str | None, mode: str, how: str, origin: str, exts: list[str] | None = None) -> None:
+    def bind(path: str | None, mode: str, how: str, origin: str) -> None:
         resolved = _resolve(path, links)
         if resolved is None or resolved == ".":
             raise ScopeError(f"{origin}: {how} reference {path!r} resolves outside the repository or to its root")
@@ -322,19 +286,14 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
         if how != "include_dir" and not (resolved.lower().endswith(".md") or resolved in dirs):
             return
         current = bindings.get(resolved)
-        if current is None:
-            bindings[resolved] = {"mode": mode, "how": how, "exts": exts}
-            return
-        if current["mode"] == "test" and mode == "shipped":
-            current.update(mode=mode, how=how)
-        current["exts"] = None if current["exts"] is None or exts is None else sorted(set(current["exts"]) | set(exts))
+        if current is None or (current["mode"] == "test" and mode == "shipped"):
+            bindings[resolved] = {"mode": mode, "how": how}
 
     for source, text in sources.items():
         blanked, literals, comments = _scan(text)
         crate = _crate_root(source, tracked)
         tests = [_item_span(blanked, m.start()) for m in CFG_TEST_RE.finditer(blanked)]
-        named_fns = [(m.group(1), _item_span(blanked, m.start())) for m in FN_RE.finditer(blanked)]
-        fns = [span for _, span in named_fns]
+        fns = [_item_span(blanked, m.start()) for m in FN_RE.finditer(blanked)]
 
         def mode_at(index: int) -> str:
             return "test" if any(start <= index < end for start, end in tests) else "shipped"
@@ -374,15 +333,12 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
                     continue
             raise ScopeError(f"{source}: cannot resolve include_{kind}! argument")
 
-        manifest = {}
+        manifest = []
         for offset, value in literals.items():
             if value == MANIFEST:
                 enclosing = [span for span in fns if span[0] <= offset < span[1]]
-                item = max(enclosing, key=lambda span: span[0]) if enclosing else _item_span(
-                    blanked, max(blanked.rfind(";", 0, offset), blanked.rfind("}", 0, offset)) + 1)
-                manifest[item] = None
-        for item in manifest:
-            manifest[item] = _scope_exts([item], named_fns, blanked, literals)
+                manifest.append(max(enclosing, key=lambda span: span[0]) if enclosing else _item_span(
+                    blanked, max(blanked.rfind(";", 0, offset), blanked.rfind("}", 0, offset)) + 1))
         # Every quoted CARGO_MANIFEST_DIR in code must be a literal the scanner saw;
         # otherwise it lost string/code sync and the manifest rule would be blind.
         for match in re.finditer(f'"{MANIFEST}"', text):
@@ -393,9 +349,7 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
             literal = value.strip()
             if not literal:
                 continue
-            items = [item for item in manifest if item[0] <= offset < item[1]]
-            in_manifest = bool(items)
-            exts = manifest[max(items)] if items else None
+            in_manifest = any(start <= offset < end for start, end in manifest)
             if "{" in literal or "\\" in literal:
                 if in_manifest and ".md" in literal.lower():
                     prefix = literal[:min(i for i in (literal.find("{"), literal.find("\\")) if i != -1)]
@@ -405,7 +359,7 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
                     for base in {crate, PurePosixPath(".")}:
                         candidate = _normalize(base / static)
                         if candidate not in (None, ".") and candidate in dirs:
-                            bind(candidate, mode_at(offset), "manifest-read", source, ["md"])
+                            bind(candidate, mode_at(offset), "manifest-read", source)
                 continue
             rel = literal.lstrip("/")
             for base in {crate, PurePosixPath(".")}:
@@ -413,8 +367,7 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
                 if candidate in (None, "."):
                     continue
                 if in_manifest and (candidate in tracked or candidate in dirs):
-                    bind(candidate, mode_at(offset), "manifest-read", source,
-                         exts if candidate in dirs else None)
+                    bind(candidate, mode_at(offset), "manifest-read", source)
                 elif "/" in rel and candidate in tracked and candidate.lower().endswith(".md"):
                     bind(candidate, mode_at(offset), "path-literal", source)
 
@@ -422,20 +375,16 @@ def binding_paths(root: Path | str, rev: str | None = None) -> dict[str, dict]:
     while True:
         before = len(bindings)
         for link in sorted(links):
-            hit = _binding_for(link, bindings, by_extension=False)
+            hit = _binding_for(link, bindings)
             if hit:
-                bind(link, hit[1]["mode"], hit[1]["how"], f"symlink {link}", hit[1]["exts"])
+                bind(link, hit[1]["mode"], hit[1]["how"], f"symlink {link}")
         if len(bindings) == before:
             return bindings
 
 
-def _binding_for(path: str, bindings: dict[str, dict], by_extension: bool = True):
-    """The most specific binding covering `path`; a directory binding limited to
-    other extensions does not cover it."""
-    ext = PurePosixPath(path).suffix.lstrip(".").lower()
-    hits = [(key, info) for key, info in bindings.items()
-            if path == key or (path.startswith(key + "/") and (
-                not by_extension or info["exts"] is None or ext in info["exts"]))]
+def _binding_for(path: str, bindings: dict[str, dict]):
+    """The most specific binding covering `path`."""
+    hits = [(key, info) for key, info in bindings.items() if path == key or path.startswith(key + "/")]
     return max(hits, key=lambda hit: len(hit[0]), default=None)
 
 
@@ -469,8 +418,7 @@ def _commit(root: Path, rev: str) -> str:
 
 
 def _digest(bindings: dict[str, dict]) -> str:
-    lines = "".join(f"{info['mode']}\t{info['how']}\t{','.join(info['exts'] or ['*'])}\t{path}\n"
-                    for path, info in sorted(bindings.items()))
+    lines = "".join(f"{info['mode']}\t{info['how']}\t{path}\n" for path, info in sorted(bindings.items()))
     return hashlib.sha256(lines.encode()).hexdigest()
 
 
@@ -505,7 +453,7 @@ def main(argv=None) -> int:
             return 0
         if args.show_embedded:
             for path, info in sorted(binding_paths(root).items()):
-                print(f"{info['mode']}\t{info['how']}\t{','.join(info['exts'] or ['*'])}\t{path}")
+                print(f"{info['mode']}\t{info['how']}\t{path}")
             return 0
     except ScopeError as error:
         print(f"docs_gate_scope: {error}", file=sys.stderr)
