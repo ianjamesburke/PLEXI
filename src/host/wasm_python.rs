@@ -497,6 +497,10 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
 
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
+    /// The plugin's own code raised; the text is the SDK runtime's structured
+    /// report, headline first (`fatal_error::GuestFatalError::report`).
+    #[error("{0}")]
+    PluginRaised(String),
     #[error("read manifest at {path}: {source}")]
     ReadManifest {
         path: PathBuf,
@@ -778,6 +782,10 @@ impl WasmPythonRuntime {
                     .stdout(thread_stdout)
                     .stderr(thread_stderr)
                     .env("PYTHONPATH", "/sdk:/app")
+                    // Names the prefix the stdlib is mounted under, so CPython
+                    // does not search for it and warn "Could not find platform
+                    // dependent libraries <exec_prefix>" on every boot.
+                    .env("PYTHONHOME", "/usr/local")
                     .args(&[
                         "python",
                         "-u",
@@ -995,6 +1003,8 @@ struct HeadlessPythonSession {
     /// Previous decoded frame, so `tree_delta` frames (stint 0438) can be
     /// reconstructed the same way the live host does.
     last_tree: Option<PythonUiTree>,
+    /// Guest messages drained but not yet consumed by a `wait_for`.
+    inbox: VecDeque<Value>,
 }
 
 impl HeadlessPythonSession {
@@ -1012,6 +1022,7 @@ impl HeadlessPythonSession {
         let mut session = Self {
             runtime,
             last_tree: None,
+            inbox: VecDeque::new(),
         };
         session.wait_for(|message| message.get("type").and_then(Value::as_str) == Some("ready"))?;
         Ok(session)
@@ -1069,18 +1080,14 @@ impl HeadlessPythonSession {
     fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
         let mut deadline = HeadlessDeadline::new(std::time::Instant::now());
         loop {
-            for message in self.runtime.drain_messages()? {
-                if matches(&message) {
-                    return Ok(());
-                }
+            if self.take_until(&mut matches)? {
+                return Ok(());
             }
             if self.runtime.is_finished() {
                 // The guest may have flushed final messages between the drain
                 // above and exiting — drain once more before declaring death.
-                for message in self.runtime.drain_messages()? {
-                    if matches(&message) {
-                        return Ok(());
-                    }
+                if self.take_until(&mut matches)? {
+                    return Ok(());
                 }
                 return Err(self.guest_death_error());
             }
@@ -1094,10 +1101,8 @@ impl HeadlessPythonSession {
                 // cause the caller sees must not flip based on that race.
                 verdict => {
                     if self.runtime.is_finished() {
-                        for message in self.runtime.drain_messages()? {
-                            if matches(&message) {
-                                return Ok(());
-                            }
+                        if self.take_until(&mut matches)? {
+                            return Ok(());
                         }
                         return Err(self.guest_death_error());
                     }
@@ -1106,6 +1111,32 @@ impl HeadlessPythonSession {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// Drain the guest and feed its messages to `matches` in order, stopping at
+    /// the first match; later messages stay queued for the next wait. A
+    /// `fatal_error` ends the wait with the plugin's own exception, so the
+    /// caller leads with it instead of a bare death notice.
+    fn take_until(
+        &mut self,
+        matches: &mut impl FnMut(&Value) -> bool,
+    ) -> Result<bool, WasmPythonError> {
+        self.inbox.extend(self.runtime.drain_messages()?);
+        while let Some(message) = self.inbox.pop_front() {
+            if message.get("type").and_then(Value::as_str) == Some("fatal_error") {
+                let fatal = fatal_error::GuestFatalError::decode(&message)
+                    .map_err(WasmPythonError::BridgeJson)?;
+                log::info!(
+                    "python_compat: headless guest reported a fatal error: {}",
+                    fatal.headline()
+                );
+                return Err(WasmPythonError::PluginRaised(fatal.report()));
+            }
+            if matches(&message) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The error returned when a deadline expires with the guest still alive.
@@ -1136,7 +1167,8 @@ impl HeadlessPythonSession {
     }
 
     /// The error returned when the guest thread has exited before producing the
-    /// awaited message. Drains stderr so the crash traceback rides along.
+    /// awaited message and without a `fatal_error` report: a hard crash, not a
+    /// plugin exception. Drains stderr so whatever it wrote rides along.
     fn guest_death_error(&self) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         WasmPythonError::BridgeJson(format!(
@@ -3461,6 +3493,25 @@ impl LivePythonPane {
                 log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
+            Some("fatal_error") => {
+                let error = match fatal_error::GuestFatalError::decode(&message) {
+                    Ok(fatal) => {
+                        for line in fatal.traceback().lines() {
+                            log::error!("plugin::{} traceback: {line}", self.plugin_id);
+                        }
+                        fatal.headline()
+                    }
+                    Err(error) => {
+                        log::error!("plugin::{}: {error}", self.plugin_id);
+                        error
+                    }
+                };
+                log::info!(
+                    "plugin::{}: guest entered failed state: {error}",
+                    self.plugin_id
+                );
+                self.error = Some(error);
+            }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(command)) => {
                     if let Some(capability) =
@@ -6998,6 +7049,13 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
 #[path = "wasm_python/wire_contract_tests.rs"]
 mod wire_contract_tests;
 
+#[path = "wasm_python/fatal_error.rs"]
+mod fatal_error;
+
+#[cfg(test)]
+#[path = "wasm_python/fatal_error_tests.rs"]
+mod fatal_error_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10378,17 +10436,18 @@ mod tests {
         let err = run_headless_frame(&config, (480.0, 320.0), None)
             .expect_err("an entry that raises at import must fail the headless probe");
         // The invariant is the *cause*, not the wall clock: a guest that raises
-        // at import is detected via its process-exit signal and reported as a
-        // death, never mistaken for a live plugin or a poll timeout. Asserting on
-        // elapsed time flakes under parallel-test CPU contention (the crash can
-        // legitimately take longer than the poll budget to surface), so this
-        // checks the error path itself.
-        let WasmPythonError::BridgeJson(message) = &err else {
-            panic!("guest death must surface as a BridgeJson error, got {err:?}");
+        // at import reports its own exception and exits, and that report is what
+        // the caller gets, never a poll timeout. Asserting on elapsed time
+        // flakes under parallel-test CPU contention (the crash can legitimately
+        // take longer than the poll budget to surface), so this checks the
+        // error path itself.
+        let WasmPythonError::PluginRaised(report) = &err else {
+            panic!("an import-time exception must surface as PluginRaised, got {err:?}");
         };
-        assert!(
-            message.contains("plugin exited before responding"),
-            "broken guest must take the process-exit death path, not the timeout backstop: {message}"
+        assert_eq!(
+            report.lines().next(),
+            Some("plugin error in main.py:1 (import): RuntimeError: broken on purpose"),
+            "{report}"
         );
     }
 
