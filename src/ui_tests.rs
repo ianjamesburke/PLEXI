@@ -1043,6 +1043,76 @@ mod tests {
         }
     }
 
+    /// Stint 1067: the shortcuts body must not stay capped at egui's seeded
+    /// default area height. When the window has room, every row is inside the
+    /// modal's scroll viewport without scrolling; when it does not, the modal
+    /// fills the screen budget and scrolling reaches the last rows.
+    #[test]
+    fn shortcuts_overlay_every_row_reachable_at_every_scale() {
+        const LAST_ROWS: [&str; 3] = [
+            "Send pane (focus stays)",
+            "Reset UI scale",
+            "ADHDISNTREAL@GMAIL.COM",
+        ];
+        let pad = f32::from(crate::ui::style::MODAL_PADDING_V);
+        let tol = 0.75;
+        for scale in [0.6_f32, 1.0, 1.25, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(4);
+            let (screen, ppp) =
+                h.with_app(|app| (app.ctx.content_rect(), app.ctx.pixels_per_point()));
+            let area = ui_scale_area_rect(&h, "shortcuts");
+            assert_inside("shortcuts", scale, area, screen);
+            // Rows paint inside the frame's vertical padding.
+            let viewport_bottom = area.max.y - pad;
+            let hidden: Vec<&str> = LAST_ROWS
+                .iter()
+                .copied()
+                .filter(|label| {
+                    let rect = h.harness().get_by_label(label).rect() / ppp;
+                    rect.max.y > viewport_bottom + tol
+                })
+                .collect();
+            if std::env::var_os("PLEXI_SHORTCUTS_SCREENSHOTS").is_some() {
+                let path = evidence_png!(&format!("_{scale}"));
+                h.save_screenshot(&path).unwrap();
+                eprintln!("shortcuts screenshot: {path}");
+            }
+            if hidden.is_empty() {
+                continue;
+            }
+            // Rows below the fold are only acceptable when the modal already
+            // uses the whole height the window allows.
+            let budget = screen.height() - 2.0 * crate::ui::style::SPACE_MD;
+            assert!(
+                area.height() >= budget - 2.0,
+                "shortcuts rows {hidden:?} are clipped below {viewport_bottom} while the modal \
+                 {area:?} is shorter than the {budget} the screen {screen:?} allows at scale {scale}"
+            );
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(area.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -5000.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            h.run_steps(30);
+            let area = ui_scale_area_rect(&h, "shortcuts");
+            for label in LAST_ROWS {
+                let rect = h.harness().get_by_label(label).rect() / ppp;
+                assert!(
+                    rect.max.y <= area.max.y - pad + tol && rect.min.y >= area.min.y - tol,
+                    "shortcuts row {label:?} {rect:?} is not reachable by scrolling the modal \
+                     {area:?} at scale {scale}"
+                );
+            }
+        }
+    }
+
     /// The QuickNote capture card is content-sized: an empty or one-line note
     /// opens short (no screen-fraction reservation), and a tall note grows the
     /// card while it stays inside the window.
