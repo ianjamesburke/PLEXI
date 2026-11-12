@@ -47,6 +47,8 @@ fn cli_parity_hide_reveal_and_zoom_use_keyboard_handlers() {
         assert_eq!(reply["hidden"], hidden);
         assert_eq!(h.app.windows[0].panes[&pane].is_hidden(), hidden);
     }
+    // Hiding the focused pane handed focus to `other`; the shortcut acts on focus.
+    h.focus_pane(pane).run_frames(1);
     h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
     assert!(h.app.windows[0].panes[&pane].is_hidden());
     let reveal_reply = request(
