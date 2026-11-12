@@ -1,0 +1,41 @@
+# A short typed query must select its direct title match even when another
+# group ranks earlier by default (stint 1115): "file" selects File Explorer
+# and Enter opens it. The relevance-ordering contract across groups is
+# asserted in Rust (`typed_query_selects_direct_title_match_above_incidental_description_match_across_groups`);
+# this scene is the rendered evidence at a narrow and a normal width with a
+# raised UI scale, reviewed in the PNGs for header attachment and an
+# on-screen selected row.
+sizes = [[520.0, 400.0], [1168.0, 720.0]]
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+equals" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "file" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "File Explorer" }
+
+[[steps]]
+shot = "command-palette-file-relevance.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert_label = { target = "host", label = "Search files and contents…" }
+
+[[steps]]
+shot = "command-palette-file-relevance-open.png"

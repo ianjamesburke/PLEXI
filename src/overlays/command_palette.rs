@@ -3414,29 +3414,184 @@ mod tests {
         );
     }
 
+    /// The render loop prints each section header the first time it meets a
+    /// row of that group, so a group split into two runs would attach its
+    /// later rows to another group's header. Returns the group of each run.
+    fn palette_group_runs(entries: &[PaletteEntry]) -> Vec<usize> {
+        let mut runs: Vec<usize> = Vec::new();
+        for entry in entries {
+            if runs.last() != Some(&entry.group_rank()) {
+                runs.push(entry.group_rank());
+            }
+        }
+        runs
+    }
+
+    fn assert_each_group_is_one_run(entries: &[PaletteEntry]) {
+        let runs = palette_group_runs(entries);
+        let mut seen = runs.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            runs.len(),
+            "every palette group must render as one contiguous run under its header, got runs {runs:?}"
+        );
+    }
+
+    fn todo_view_entry() -> PaletteEntry {
+        // The shipped Todo manifest: its description mentions a file, which
+        // is incidental to a "file" query.
+        let description = "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly.";
+        PaletteEntry::View {
+            id: "todo".to_string(),
+            name: "Todo".to_string(),
+            description: description.to_string(),
+            running_in_background: false,
+            is_workspace_local: false,
+            search_text: searchable_text(&["Todo", "todo", description]),
+        }
+    }
+
+    fn registered_command_entry(command: PaletteCommand) -> PaletteEntry {
+        let entry = PALETTE_COMMANDS
+            .iter()
+            .find(|entry| entry.command == command)
+            .expect("palette command must be registered in PALETTE_COMMANDS");
+        PaletteEntry::Command {
+            command: entry.command.clone(),
+            name: entry.name,
+            description: entry.description,
+            search_text: entry.search_text,
+        }
+    }
+
+    fn file_explorer_command() -> PaletteCommand {
+        PaletteCommand::Host(crate::host::keys::Action::OpenFileBrowser)
+    }
+
+    #[test]
+    fn typed_query_selects_direct_title_match_above_incidental_description_match_across_groups() {
+        for query in ["file", "file explorer"] {
+            let mut entries = vec![
+                todo_view_entry(),
+                registered_command_entry(file_explorer_command()),
+            ];
+            sort_palette_entries(&mut entries, query);
+
+            assert_eq!(
+                action_for_palette_entry(&entries[0]),
+                Some(PaletteAction::RunCommand(file_explorer_command())),
+                "query {query:?} must rank File Explorer's title match first"
+            );
+            // A fresh query selects the first displayed row, and Enter acts on it.
+            let mut selected = 0;
+            let mut selected_key = None;
+            reconcile_palette_selection(&entries, &mut selected, &mut selected_key);
+            assert_eq!(selected, 0);
+            assert_eq!(selected_key, Some(entries[0].selection_key()));
+            assert_each_group_is_one_run(&entries);
+        }
+
+        // Description-only discovery survives: Todo still matches "file",
+        // just below the direct title match.
+        let todo = todo_view_entry();
+        assert!(todo.matches_query("file"));
+        let mut entries = vec![todo, registered_command_entry(file_explorer_command())];
+        sort_palette_entries(&mut entries, "file");
+        assert!(matches!(entries[1], PaletteEntry::View { ref id, .. } if id == "todo"));
+    }
+
     #[test]
     fn typed_palette_query_keeps_groups_contiguous_for_their_headers() {
+        let view = |id: &str, name: &str, search_text: &str| PaletteEntry::View {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: "Demo".to_string(),
+            running_in_background: false,
+            is_workspace_local: false,
+            search_text: search_text.to_string(),
+        };
         let mut entries = vec![
-            PaletteEntry::View {
-                id: "config-viewer".to_string(),
-                name: "Config Viewer".to_string(),
-                description: "Demo".to_string(),
-                running_in_background: false,
-                is_workspace_local: false,
-                search_text: "demo config viewer".to_string(),
-            },
+            // Weak app: "open" only in its description text.
+            view("viewer", "Viewer", "viewer demo open anything"),
             PaletteEntry::Command {
                 command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config settings preferences",
             },
+            // Second app: mid-word title substring, weaker than the
+            // command's title prefix but stronger than any description hit.
+            view("reopen", "Reopen", "reopen demo"),
+            PaletteEntry::Command {
+                command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
+                name: "Quick Note",
+                description: "Capture a note",
+                search_text: "quick note capture open inbox",
+            },
         ];
 
         sort_palette_entries(&mut entries, "open");
 
+        // The group holding the strongest match leads; each group stays one
+        // run, so every header sits above its own rows.
+        assert_each_group_is_one_run(&entries);
+        assert_eq!(palette_group_runs(&entries), vec![4, 3]);
+        assert_eq!(entries[0].primary_label(), "Open config");
+        assert_eq!(entries[1].primary_label(), "Quick Note");
+        assert_eq!(entries[2].primary_label(), "Reopen");
+        assert_eq!(entries[3].primary_label(), "Viewer");
+    }
+
+    #[test]
+    fn typed_query_with_equal_relevance_keeps_default_group_order() {
+        let mut entries = vec![
+            PaletteEntry::Command {
+                command: PaletteCommand::Host(crate::host::keys::Action::OpenChangelog),
+                name: "Changelog",
+                description: "Show what changed",
+                search_text: "changelog",
+            },
+            PaletteEntry::View {
+                id: "changelog".to_string(),
+                name: "Changelog".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "changelog".to_string(),
+            },
+        ];
+
+        sort_palette_entries(&mut entries, "changelog");
+
         assert!(matches!(entries[0], PaletteEntry::View { .. }));
         assert!(matches!(entries[1], PaletteEntry::Command { .. }));
+    }
+
+    #[test]
+    fn palette_selection_follows_its_target_when_relevance_reorders_groups() {
+        let mut entries = vec![
+            todo_view_entry(),
+            registered_command_entry(file_explorer_command()),
+        ];
+        sort_palette_entries(&mut entries, "file");
+        // The user moves to the incidental Todo row.
+        let mut selected = 1;
+        let mut selected_key = Some(entries[1].selection_key());
+
+        // A rebuild with the same query, collected in a different order.
+        let mut rebuilt = vec![
+            registered_command_entry(file_explorer_command()),
+            todo_view_entry(),
+        ];
+        sort_palette_entries(&mut rebuilt, "file");
+        reconcile_palette_selection(&rebuilt, &mut selected, &mut selected_key);
+
+        assert_eq!(
+            action_for_palette_entry(&rebuilt[selected]),
+            Some(PaletteAction::OpenView("todo".to_string()))
+        );
     }
 
     #[test]
@@ -3491,10 +3646,11 @@ mod tests {
             },
         ];
 
-        // Groups stay contiguous; relevance ranks within each group.
+        // The exact-name user command outranks the app's mid-word substring,
+        // so its group leads; each group stays one contiguous run.
         sort_palette_entries(&mut entries, "test");
-        assert!(matches!(entries[0], PaletteEntry::View { .. }));
-        assert!(matches!(entries[1], PaletteEntry::UserCommand { .. }));
+        assert!(matches!(entries[0], PaletteEntry::UserCommand { .. }));
+        assert!(matches!(entries[1], PaletteEntry::View { .. }));
     }
 
     #[test]
