@@ -407,36 +407,19 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     println!("  {dim}{}{reset}", rec.note);
 }
 
-fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommendation) -> String {
+fn format_onboarding_guide(openrouter_configured: bool) -> String {
     let mut out = String::new();
     out.push_str("plexi ai onboard -- first-run setup\n\n");
-    out.push_str("1. Pick an AI path\n");
+    out.push_str("1. Set up AI\n");
 
-    if integrations.ollama_running && !integrations.ollama_models.is_empty() {
-        out.push_str("   Local AI is ready. Ollama is running with models installed.\n");
-        out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
-    } else if integrations.openrouter_configured {
+    if openrouter_configured {
         out.push_str("   Cloud AI is ready. OpenRouter is configured.\n");
         out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
-    } else if integrations.ollama_running {
-        let model = ollama_setup_model(rec);
-        out.push_str("   Ollama is running, but no models are installed yet.\n");
-        out.push_str(&format!(
-            "   Next: run `ollama pull {model}`, then `plexi ai setup`.\n"
-        ));
-    } else if integrations.ollama_installed {
-        out.push_str("   Ollama is installed but not running.\n");
-        out.push_str("   Next: run `ollama serve` in a Plexi pane, then `plexi ai setup`.\n");
-    } else if rec.tier == "cloud-recommended" {
-        out.push_str("   This machine is best suited for cloud AI.\n");
-        out.push_str("   Next: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
     } else {
-        let model = ollama_setup_model(rec);
-        out.push_str("   This machine can run local AI.\n");
-        out.push_str(&format!(
-            "   Next: install Ollama, then run `plexi ai setup` to pull {model}.\n"
-        ));
-        out.push_str("   Cloud option: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
+        out.push_str(
+            "   Plexi uses OpenRouter for AI. Local providers are not supported in 0.5.0.\n",
+        );
+        out.push_str("   Next: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
     }
 
     out.push_str("\n2. Skip AI for now\n");
@@ -448,279 +431,26 @@ fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommen
     out.push_str("   Install from GitHub: `plexi plugin install github:owner/repo`.\n");
 
     out.push_str("\nUseful checks\n");
-    out.push_str("   `plexi ai doctor` shows hardware, Ollama, and OpenRouter status.\n");
+    out.push_str("   `plexi ai doctor` shows hardware and OpenRouter status.\n");
     out.push_str("   `plexi plugin list` shows installed plugins.\n");
 
     out
 }
 
-fn ollama_setup_model(rec: &ModelRecommendation) -> &'static str {
-    rec.models
-        .iter()
-        .copied()
-        .find(|model| !model.starts_with("openrouter/") && !model.contains('/'))
-        .unwrap_or("llama3.2:3b")
-}
+// ── Setup ────────────────────────────────────────────────────────────────────
 
-// ── Setup wizard ─────────────────────────────────────────────────────────────
-
-/// Write or update the `[ai.ollama]` table in config.toml via the shared
-/// comment-preserving editor. Returns whether `ai.backend` now selects Ollama.
-fn write_ollama_config(model: &str) -> Result<bool, String> {
-    let path = crate::config::config_path();
-    let mut backend_selected = false;
-    crate::config::edit::edit_config_file(&path, |doc| {
-        backend_selected = apply_ollama_config(doc, model)?;
-        Ok(())
-    })?;
-    log::info!(
-        "cli:ai:setup: wrote [ai.ollama] model={model} to {} (backend_selected={backend_selected})",
-        path.display()
-    );
-    Ok(backend_selected)
-}
-
-/// Owned keys: `ai.ollama.{model_low,model_medium,model_high}`, `ai.ollama.host`
-/// when absent, and `ai.backend` only when unset or already `"ollama"`.
-/// Everything else, including `[ai.local]`, budget caps, and comments, is untouched.
-fn apply_ollama_config(doc: &mut toml_edit::DocumentMut, model: &str) -> Result<bool, String> {
-    use crate::config::edit::set_value;
-    use toml_edit::Value;
-
-    let ai = doc.get("ai");
-    let backend_selected = match ai.and_then(|a| a.get("backend")).and_then(|b| b.as_str()) {
-        None | Some("ollama") => {
-            set_value(doc, &["ai", "backend"], Value::from("ollama"))?;
-            true
-        }
-        Some(_) => false,
-    };
-    if doc
-        .get("ai")
-        .and_then(|a| a.get("ollama"))
-        .and_then(|o| o.get("host"))
-        .is_none()
-    {
-        set_value(
-            doc,
-            &["ai", "ollama", "host"],
-            Value::from("http://localhost:11434"),
-        )?;
-    }
-    for key in ["model_low", "model_medium", "model_high"] {
-        set_value(doc, &["ai", "ollama", key], Value::from(model))?;
-    }
-    Ok(backend_selected)
-}
+/// Why `plexi ai setup` refuses. Local AI providers are out for 0.5.0; the
+/// config loader rejects every `[ai.ollama]` key (`legacy_ai_keys`), so the
+/// former Ollama wizard could only write a config Plexi then flags. Stint 1248
+/// (OpenAI-compatible endpoint) is the planned way back in.
+const AI_SETUP_REFUSAL: &str = "error: `plexi ai setup` configured local AI providers (Ollama), which are not supported in Plexi 0.5.0.\n\
+     OpenRouter is the supported provider: run `plexi secret set OPENROUTER_API_KEY --global`, then `plexi ai doctor`.\n\
+     A configurable OpenAI-compatible endpoint (stint 1248) is planned to replace local setup.\n";
 
 pub fn ai_setup_cli() -> i32 {
-    log::info!("cli:ai:setup: starting local model wizard");
-
-    let no_color = std::env::var_os("NO_COLOR").is_some();
-    let green = if no_color { "" } else { "\x1b[32m" };
-    let yellow = if no_color { "" } else { "\x1b[33m" };
-    let red = if no_color { "" } else { "\x1b[31m" };
-    let bold = if no_color { "" } else { "\x1b[1m" };
-    let dim = if no_color { "" } else { "\x1b[2m" };
-    let reset = if no_color { "" } else { "\x1b[0m" };
-
-    println!("{bold}plexi ai setup{reset} — local model wizard");
-    println!();
-
-    // ── Step 1: detect hardware ───────────────────────────────────────────────
-    println!("Scanning hardware...");
-    let hw = detect_hardware();
-    let rec = recommend_models(&hw);
-    log::info!(
-        "cli:ai:setup: hardware -- ram_gb={:?} is_apple_silicon={} tier={}",
-        hw.ram_gb,
-        hw.is_apple_silicon,
-        rec.tier
-    );
-
-    if rec.tier == "cloud-recommended" {
-        println!("{yellow}Your hardware is better suited for cloud models.{reset}");
-        println!("  {dim}{}{reset}", rec.note);
-        println!();
-        println!("To configure cloud AI instead, run:");
-        println!("  {dim}plexi secret set OPENROUTER_API_KEY --global{reset}");
-        crate::cli::print_tip(
-            "Use `plexi ai doctor` to see your full hardware and integration report.",
-        );
-        return 0;
-    }
-
-    let recommended_model = rec.models.first().copied().unwrap_or("llama3.2:3b");
-    log::info!("cli:ai:setup: recommended model={recommended_model}");
-
-    println!(
-        "Hardware: {}",
-        hw.cpu_name.as_deref().unwrap_or("unknown CPU")
-    );
-    if let Some(ram) = hw.ram_gb {
-        println!(
-            "RAM:      {ram:.1} GB{}",
-            if hw.is_apple_silicon {
-                " (unified)"
-            } else {
-                ""
-            }
-        );
-    }
-    println!("Recommended model: {green}{recommended_model}{reset}");
-    println!("  {dim}{}{reset}", rec.note);
-    println!();
-
-    // ── Step 2: check Ollama installation ─────────────────────────────────────
-    let ollama_installed = crate::cli::binary_in_path("ollama")
-        || std::path::Path::new("/usr/local/bin/ollama").exists()
-        || std::path::Path::new("/opt/homebrew/bin/ollama").exists();
-
-    log::info!("cli:ai:setup: ollama_installed={ollama_installed}");
-
-    if !ollama_installed {
-        println!("{bold}Step 1/3: Install Ollama{reset}");
-        println!("  Ollama is not installed.");
-        println!();
-        println!("  Install Ollama:");
-        println!("    {dim}{}{reset}", install_hint(OLLAMA_INSTALL));
-        println!();
-        println!("{yellow}Re-run `plexi ai setup` after installing Ollama.{reset}");
-        crate::cli::print_tip(&format!(
-            "After `{}`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.",
-            install_hint(OLLAMA_INSTALL)
-        ));
-        return 0;
-    }
-
-    println!("{green}\u{2713}{reset} Ollama installed");
-
-    // ── Step 3: check if Ollama is running ───────────────────────────────────
-    let (ollama_running, ollama_models) = probe_ollama();
-    log::info!(
-        "cli:ai:setup: ollama_running={ollama_running} models_count={}",
-        ollama_models.len()
-    );
-
-    if !ollama_running {
-        println!();
-        println!("{bold}Step 2/3: Start Ollama{reset}");
-        println!("  Ollama is installed but not running.");
-        println!();
-        println!("  Start it in another terminal pane:");
-        println!("    {dim}ollama serve{reset}");
-        println!();
-        println!("{yellow}Re-run `plexi ai setup` after starting Ollama.{reset}");
-        crate::cli::print_tip("Run `ollama serve` in another terminal pane, then come back and re-run `plexi ai setup`.");
-        return 0;
-    }
-
-    println!("{green}\u{2713}{reset} Ollama is running");
-
-    // ── Step 4: check if recommended model is already pulled ─────────────────
-    let already_have_model = ollama_models
-        .iter()
-        .any(|m| m == recommended_model || m.starts_with(&format!("{recommended_model}:")));
-
-    log::info!(
-        "cli:ai:setup: already_have_model={already_have_model} models={:?}",
-        ollama_models
-    );
-
-    if already_have_model {
-        println!("{green}\u{2713}{reset} Model {recommended_model} is already pulled");
-    } else {
-        println!();
-        println!("{bold}Step 3/3: Pull recommended model{reset}");
-        println!("  Pulling {bold}{recommended_model}{reset}...");
-        println!("  {dim}(this may take a few minutes on first run){reset}");
-        println!();
-
-        log::info!("cli:ai:setup: running `ollama pull {recommended_model}`");
-
-        let status = std::process::Command::new("ollama")
-            .args(["pull", recommended_model])
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                log::info!("cli:ai:setup: ollama pull succeeded");
-                println!("{green}\u{2713}{reset} Model {recommended_model} pulled successfully");
-            }
-            Ok(s) => {
-                let code = s.code().unwrap_or(1);
-                log::warn!("cli:ai:setup: ollama pull failed with exit code {code}");
-                eprintln!(
-                    "{red}error:{reset} `ollama pull {recommended_model}` exited with code {code}"
-                );
-                eprintln!("Run it manually and then re-run `plexi ai setup`.");
-                return 1;
-            }
-            Err(e) => {
-                log::warn!("cli:ai:setup: could not spawn ollama pull: {e}");
-                eprintln!("{red}error:{reset} could not run `ollama pull`: {e}");
-                eprintln!("Ensure `ollama` is in your PATH and try again.");
-                return 1;
-            }
-        }
-    }
-
-    // ── Step 5: write config.toml ─────────────────────────────────────────────
-    let config_path = crate::config::config_path();
-    log::info!(
-        "cli:ai:setup: writing ollama config to {}",
-        config_path.display()
-    );
-
-    let backend_selected = match write_ollama_config(recommended_model) {
-        Ok(backend_selected) => {
-            println!(
-                "{green}\u{2713}{reset} Config updated: {}",
-                config_path.display()
-            );
-            backend_selected
-        }
-        Err(e) => {
-            log::warn!("cli:ai:setup: failed to write config: {e}");
-            eprintln!(
-                "{red}error:{reset} could not write config to {}: {e}",
-                config_path.display()
-            );
-            eprintln!(
-                "You can configure it manually — add this to {}:",
-                config_path.display()
-            );
-            eprintln!();
-            eprintln!("[ai]");
-            eprintln!("backend = \"ollama\"");
-            eprintln!();
-            eprintln!("[ai.ollama]");
-            eprintln!("host         = \"http://localhost:11434\"");
-            eprintln!("model_low    = \"{recommended_model}\"");
-            eprintln!("model_medium = \"{recommended_model}\"");
-            eprintln!("model_high   = \"{recommended_model}\"");
-            return 1;
-        }
-    };
-
-    println!();
-    println!("{bold}Setup complete!{reset}");
-    if backend_selected {
-        println!("  Plexi plugins using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
-    } else {
-        println!("  [ai.ollama] is configured with {green}{recommended_model}{reset}; your existing `ai.backend` was left unchanged.");
-        println!("  Set `backend = \"ollama\"` under [ai] to switch to it.");
-    }
-    println!();
-    println!("Next steps:");
-    println!("  {dim}plexi ai doctor{reset}    — verify your full AI configuration");
-    println!("  {dim}plexi config edit{reset}  — tune model tiers or spending caps");
-
-    crate::cli::print_tip(
-        "Use `plexi ai doctor` at any time to see your hardware and integration status.",
-    );
-
-    0
+    log::info!("cli:ai:setup: refused; local AI providers are not supported in 0.5.0, config.toml untouched");
+    eprint!("{AI_SETUP_REFUSAL}");
+    1
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -728,23 +458,10 @@ pub fn ai_setup_cli() -> i32 {
 pub fn ai_onboard_cli() -> i32 {
     log::info!("cli:ai:onboard: starting first-run guide");
 
-    let hw = detect_hardware();
-    let integrations = check_integrations();
-    let recommendation = recommend_models(&hw);
+    let openrouter_configured = check_openrouter_configured();
+    log::info!("cli:ai:onboard: openrouter={openrouter_configured}");
 
-    log::info!(
-        "cli:ai:onboard: tier={} ollama_installed={} ollama_running={} models={} openrouter={}",
-        recommendation.tier,
-        integrations.ollama_installed,
-        integrations.ollama_running,
-        integrations.ollama_models.len(),
-        integrations.openrouter_configured
-    );
-
-    print!(
-        "{}",
-        format_onboarding_guide(&integrations, &recommendation)
-    );
+    print!("{}", format_onboarding_guide(openrouter_configured));
     0
 }
 
@@ -802,38 +519,13 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_onboarding_guide, IntegrationReport, ModelRecommendation};
-
-    fn rec(tier: &'static str) -> ModelRecommendation {
-        ModelRecommendation {
-            tier,
-            models: vec!["llama3.2:3b"],
-            note: "test note",
-        }
-    }
-
-    fn cloud_rec() -> ModelRecommendation {
-        ModelRecommendation {
-            tier: "cloud-recommended",
-            models: vec!["openrouter/anthropic/claude-3-haiku"],
-            note: "test note",
-        }
-    }
+    use super::{ai_setup_cli, format_onboarding_guide, AI_SETUP_REFUSAL};
 
     #[test]
     fn onboarding_guides_fresh_profile_without_hidden_prerequisites() {
-        let integrations = IntegrationReport {
-            ollama_installed: false,
-            ollama_running: false,
-            ollama_models: Vec::new(),
-            openrouter_configured: false,
-        };
-
-        let guide = format_onboarding_guide(&integrations, &rec("local-ok"));
+        let guide = format_onboarding_guide(false);
 
         assert!(guide.contains("plexi ai onboard -- first-run setup"));
-        assert!(guide.contains("install Ollama"));
-        assert!(guide.contains("plexi ai setup"));
         assert!(guide.contains("plexi secret set OPENROUTER_API_KEY --global"));
         assert!(guide.contains("plexi plugin install --pack core"));
         assert!(guide.contains("plexi plugin install <id>"));
@@ -841,152 +533,62 @@ mod tests {
 
     #[test]
     fn onboarding_prefers_ready_cloud_ai_when_openrouter_configured() {
-        let integrations = IntegrationReport {
-            ollama_installed: false,
-            ollama_running: false,
-            ollama_models: Vec::new(),
-            openrouter_configured: true,
-        };
-
-        let guide = format_onboarding_guide(&integrations, &rec("cloud-recommended"));
+        let guide = format_onboarding_guide(true);
 
         assert!(guide.contains("Cloud AI is ready"));
         assert!(guide.contains("plexi ai doctor"));
         assert!(guide.contains("plexi plugin install --pack core"));
     }
 
-    #[test]
-    fn onboarding_prefers_openrouter_over_incomplete_ollama_setup() {
-        let integrations = IntegrationReport {
-            ollama_installed: true,
-            ollama_running: true,
-            ollama_models: Vec::new(),
-            openrouter_configured: true,
-        };
-
-        let guide = format_onboarding_guide(&integrations, &rec("local-ok"));
-
-        assert!(guide.contains("Cloud AI is ready"));
-        assert!(!guide.contains("ollama pull"));
-    }
-
-    #[test]
-    fn onboarding_never_uses_openrouter_model_id_for_ollama_pull() {
-        let integrations = IntegrationReport {
-            ollama_installed: true,
-            ollama_running: true,
-            ollama_models: Vec::new(),
-            openrouter_configured: false,
-        };
-
-        let guide = format_onboarding_guide(&integrations, &cloud_rec());
-
-        assert!(guide.contains("ollama pull llama3.2:3b"));
-        assert!(!guide.contains("ollama pull openrouter/"));
-    }
-
     /// Stint 1315: local AI providers are out for 0.5.0, so onboarding must
     /// never route a user to Ollama, whatever the machine could run.
     #[test]
     fn onboarding_routes_to_openrouter_and_never_to_ollama() {
-        let integrations = IntegrationReport {
-            ollama_installed: true,
-            ollama_running: true,
-            ollama_models: Vec::new(),
-            openrouter_configured: false,
-        };
+        for openrouter_configured in [false, true] {
+            let guide = format_onboarding_guide(openrouter_configured);
 
-        let guide = format_onboarding_guide(&integrations, &rec("local-great"));
-
-        assert!(
-            guide.contains("plexi secret set OPENROUTER_API_KEY --global"),
-            "{guide}"
-        );
-        assert!(!guide.contains("ollama pull"), "{guide}");
-        assert!(!guide.contains("ollama serve"), "{guide}");
-        assert!(!guide.contains("install Ollama"), "{guide}");
-        assert!(!guide.contains("plexi ai setup"), "{guide}");
-    }
-
-    const SEEDED: &str = r#"# top comment
-[general]
-theme = "dark" # inline
-
-[ai]
-# which provider answers ai.query
-backend = "local"
-# budget caps
-per_app_daily_usd = 0.50
-global_daily_usd = 5.00
-
-[ai.local]
-# Meridian proxy
-base_url = "http://127.0.0.1:3456"
-model_low = "haiku"
-model_medium = "sonnet"
-model_high = "opus"
-
-[marketplace]
-submit_url = "https://example.test"
-"#;
-
-    fn apply(src: &str, model: &str) -> (String, bool) {
-        let mut doc: toml_edit::DocumentMut = src.parse().unwrap();
-        let selected = super::apply_ollama_config(&mut doc, model).unwrap();
-        (doc.to_string(), selected)
-    }
-
-    #[test]
-    fn setup_preserves_unowned_ai_config_and_comments() {
-        let (out, selected) = apply(SEEDED, "llama3.2:3b");
-        assert!(!selected, "explicit backend = local must not be switched");
-        let before: toml::Table = SEEDED.parse().unwrap();
-        let after: toml::Table = out.parse().expect("output must stay valid TOML");
-
-        let mut expected = before.clone();
-        let ai = expected["ai"].as_table_mut().unwrap();
-        ai.insert(
-            "ollama".into(),
-            toml::Value::Table(
-                [
-                    ("host", "http://localhost:11434"),
-                    ("model_low", "llama3.2:3b"),
-                    ("model_medium", "llama3.2:3b"),
-                    ("model_high", "llama3.2:3b"),
-                ]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), toml::Value::String(v.to_string())))
-                .collect(),
-            ),
-        );
-        assert_eq!(after, expected, "only [ai.ollama] may be added");
-        for comment in [
-            "# top comment",
-            "# inline",
-            "# which provider answers ai.query",
-            "# budget caps",
-            "# Meridian proxy",
-        ] {
-            assert!(out.contains(comment), "lost comment {comment:?}");
+            assert!(!guide.contains("ollama pull"), "{guide}");
+            assert!(!guide.contains("ollama serve"), "{guide}");
+            assert!(!guide.contains("install Ollama"), "{guide}");
+            assert!(!guide.contains("plexi ai setup"), "{guide}");
         }
-        assert!(out.contains("[ai.local]\n# Meridian proxy"));
+        assert!(
+            format_onboarding_guide(false).contains("plexi secret set OPENROUTER_API_KEY --global")
+        );
     }
 
+    /// Stint 1315: the refusal names what is unsupported, the supported
+    /// provider and the planned replacement.
     #[test]
-    fn setup_activates_ollama_when_no_backend_chosen() {
-        let out = apply("[general]\ntheme = \"dark\"\n", "m").0;
-        let t: toml::Table = out.parse().unwrap();
-        assert_eq!(t["ai"]["backend"].as_str(), Some("ollama"));
-        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("m"));
+    fn ai_setup_refusal_names_unsupported_local_providers_openrouter_and_stint_1248() {
+        let message = AI_SETUP_REFUSAL;
+
+        assert!(message.starts_with("error: "), "{message}");
+        assert!(
+            message.contains("not supported in Plexi 0.5.0"),
+            "{message}"
+        );
+        assert!(message.contains("OpenRouter"), "{message}");
+        assert!(
+            message.contains("plexi secret set OPENROUTER_API_KEY --global"),
+            "{message}"
+        );
+        assert!(message.contains("stint 1248"), "{message}");
     }
 
+    /// Stint 1315: `plexi ai setup` exits non-zero and leaves an isolated
+    /// profile without a `config.toml`. (Not in the red commit: on alpha the
+    /// wizard can spawn `ollama pull` on the test machine.)
     #[test]
-    fn setup_rewrites_existing_ollama_table_in_place() {
-        let src = "[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\n# mine\nhost = \"http://x:1\"\nmodel_low = \"old\"\n";
-        let out = apply(src, "new").0;
-        let t: toml::Table = out.parse().unwrap();
-        assert_eq!(t["ai"]["ollama"]["model_low"].as_str(), Some("new"));
-        assert_eq!(t["ai"]["ollama"]["model_high"].as_str(), Some("new"));
-        assert!(out.contains("# mine"));
+    fn ai_setup_exits_nonzero_and_writes_no_config() {
+        let dir = tempfile::TempDir::new().expect("temp profile dir");
+        let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+
+        assert_eq!(ai_setup_cli(), 1);
+        assert!(
+            !crate::config::config_path().exists(),
+            "ai setup must not create {}",
+            crate::config::config_path().display()
+        );
     }
 }
