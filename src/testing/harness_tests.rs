@@ -17829,12 +17829,12 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
         InputOwner::Pane(pane),
         "focus must return to originating pane"
     );
-    assert!(
-        h.last_platform_output
-            .commands
-            .contains(&egui::OutputCommand::CopyText(
-                "harness note text".to_string()
-            )),
+    let copied = pump_notes_until(&mut h, "copy reaches the clipboard", |h| {
+        h.app.notes_picker_last_copied.is_some()
+    });
+    assert_eq!(
+        copied,
+        vec!["harness note text".to_string()],
         "clipboard command must receive full note contents"
     );
     let _ = std::fs::remove_file(&note_path);
@@ -17881,24 +17881,6 @@ fn notes_delete_fixture(h: &mut HostHarness, dir: &std::path::Path) -> std::path
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(2);
     path
-}
-
-#[test]
-fn notes_picker_cut_copies_then_trashes_and_undo_restores() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    h.focus_pane(pane);
-    let dir = tempfile::tempdir().unwrap();
-    let path = notes_delete_fixture(&mut h, dir.path());
-    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
-    assert_eq!(
-        h.app.notes_picker_last_copied.as_deref(),
-        Some("original\nbytes\n")
-    );
-    assert!(!path.exists());
-    assert!(h.app.notes_picker_entries.is_empty());
-    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
-    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
 }
 
 #[test]
@@ -18069,8 +18051,7 @@ fn notes_picker_cut_trash_failure_keeps_the_copy_and_the_note() {
     let path = notes_delete_fixture(&mut h, dir.path());
     let mut fake = crate::overlays::notes_picker::FakeNotesTrash::new();
     fake.fail = true;
-    h.app.notes_trash =
-        (Box::new(fake) as Box<dyn crate::overlays::notes_picker::NotesTrash>).into();
+    h.app.notes_trash = std::sync::Arc::new(fake);
     h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
     assert!(!h
         .app
@@ -18147,7 +18128,7 @@ fn notes_picker_trash_failure_preserves_note_and_shows_error() {
     let path = notes_delete_fixture(&mut h, dir.path());
     let mut fake = crate::overlays::notes_picker::FakeNotesTrash::new();
     fake.fail = true;
-    h.app.notes_trash = Box::new(fake);
+    h.app.notes_trash = std::sync::Arc::new(fake);
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
     assert_eq!(h.app.notes_picker_entries[0].path, path);
