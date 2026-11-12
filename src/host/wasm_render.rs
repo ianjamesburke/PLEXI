@@ -3477,6 +3477,38 @@ mod tests {
         }
     }
 
+    /// The Row default is center: a row that says nothing about `align`, as
+    /// every SDK row that is not an explicit `HStack(align=...)` does, centers
+    /// its children vertically, and `align="start"` puts them at the top.
+    #[test]
+    fn row_without_align_centers_and_start_aligns_to_the_top() {
+        let rects = |align: &str| {
+            let tree = crate::host::wasm_python::decode_ui_tree(&format!(
+                r#"{{"root":0,"nodes":[
+                {{"id":0,"key":"0","data":{{"type":"row","children":[1,2]{align}}}}},
+                {{"id":1,"key":"1","data":{{"type":"text","text":"TALL","size":48.0}}}},
+                {{"id":2,"key":"2","data":{{"type":"text","text":"small"}}}}
+            ]}}"#
+            ))
+            .expect("row tree decodes");
+            let texts = painted_texts(&tree, egui::vec2(400.0, 200.0));
+            (
+                painted_text(&texts, "TALL").rect,
+                painted_text(&texts, "small").rect,
+            )
+        };
+        let (tall, small) = rects("");
+        assert!(
+            (small.center().y - tall.center().y).abs() <= 1.0,
+            "a row with no align centers its children: {small:?} vs {tall:?}"
+        );
+        let (tall, small) = rects(r#","align":"start""#);
+        assert!(
+            (small.min.y - tall.min.y).abs() <= 1.0,
+            "align start puts children at the top: {small:?} vs {tall:?}"
+        );
+    }
+
     /// Run `render` and return how many `render_node` calls it made.
     fn render_node_calls(render: impl FnOnce()) -> usize {
         RENDER_NODE_CALLS.with(|calls| calls.set(0));

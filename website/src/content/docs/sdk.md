@@ -822,8 +822,8 @@ Column(children: list[Component] | None = None, gap: float | None = None, paddin
 
 Vertical stack of child components.
 
-``align`` places children across the column: ``"start"``, ``"center"`` or
-``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+``align`` places children across the column: ``"start"`` (left, the
+default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
 child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
 ``child`` vertically and a single grow spacer pins what follows it to the
 bottom.
