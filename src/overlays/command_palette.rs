@@ -4096,6 +4096,57 @@ mod tests {
         assert!(matches!(focused, Some(egui_tiles::Tile::Pane(11))));
     }
 
+    /// Stint 1230: focusing a palette row for a pane in an inactive tab
+    /// activates that tab, so the tab bar shows the focused pane.
+    #[test]
+    fn palette_focus_target_activates_the_target_tab() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let mut target = test_window(7, 70, 1, 0, &[(10, false), (11, false)], 0);
+        let old_root = target.tree.root.expect("test window root");
+        target.tree.tiles.remove(old_root);
+        let ten = target.tree.tiles.find_pane(&10).expect("pane 10 tile");
+        let eleven = target.tree.tiles.find_pane(&11).expect("pane 11 tile");
+        let tabs = target.tree.tiles.insert_tab_tile(vec![ten, eleven]);
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(container))) =
+            target.tree.tiles.get_mut(tabs)
+        {
+            container.set_active(ten);
+        }
+        target.tree.root = Some(tabs);
+        target.focused_pane = Some(ten);
+        h.app.windows.push(target);
+        h.app.router.push(crate::host::context::Context {
+            name: "tabbed".to_string().into(),
+            root: crate::testing::scratch_context_root("palette-tabbed"),
+            description: None,
+            context_id: 7,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+
+        h.app.focus_palette_target(PaletteFocusTarget {
+            context_id: 7,
+            window_id: 70,
+            pane_id: Some(11),
+        });
+
+        let window = &h.app.windows[1];
+        assert_eq!(window.focused_pane, Some(eleven));
+        let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(container))) =
+            window.tree.tiles.get(tabs)
+        else {
+            panic!("tab group survives the focus change");
+        };
+        assert_eq!(
+            container.active,
+            Some(eleven),
+            "the tab bar must show the pane the palette focused"
+        );
+    }
+
     #[test]
     fn every_registered_palette_host_command_reaches_shared_dispatcher() {
         let mut h = crate::testing::HostHarness::new();
