@@ -46,8 +46,11 @@ impl StartupErrorView {
                 title: "Plexi could not update your plugins".into(),
                 plugin: failure.package.clone(),
                 file: failure.file.as_ref().map(|file| file.display().to_string()),
-                reason: failure.reason.clone(),
-                fix: failure.hint.as_deref().map(sentence_case),
+                reason: plain_text(&failure.plain_reason),
+                fix: failure
+                    .hint
+                    .as_deref()
+                    .map(|hint| sentence_case(&plain_text(hint))),
                 reassurance: failure
                     .unchanged
                     .then(|| "Nothing was moved or changed.".to_owned()),
@@ -57,7 +60,7 @@ impl StartupErrorView {
                 title: "Plexi could not prepare its profile".into(),
                 plugin: None,
                 file: None,
-                reason: message.clone(),
+                reason: plain_text(message),
                 fix: None,
                 reassurance: None,
                 log_path,
@@ -84,6 +87,12 @@ impl StartupErrorView {
         lines.push(format!("Log: {}", self.log_path));
         lines.join("\n")
     }
+}
+
+/// The window draws plain text, so Markdown code marks are dropped. The CLI
+/// and log keep the original strings.
+fn plain_text(text: &str) -> String {
+    text.replace('`', "")
 }
 
 fn sentence_case(text: &str) -> String {
@@ -265,10 +274,13 @@ mod tests {
         assert_eq!(view.plugin.as_deref(), Some("brokenpkg"));
         let file = view.file.expect("file");
         assert!(file.ends_with("apps/brokenpkg/manifest.toml"), "{file}");
-        assert_eq!(view.reason, "missing legacy app type");
+        assert_eq!(
+            view.reason,
+            "This plugin's manifest has no type, so Plexi cannot tell how to convert it."
+        );
         let fix = view.fix.expect("fix");
         assert!(
-            fix.starts_with("Add `type = \"app\"` to `[app]`"),
+            fix.starts_with("Add type = \"app\" to [app] in the named manifest"),
             "sentence case: {fix}"
         );
         assert_eq!(
@@ -276,6 +288,76 @@ mod tests {
             Some("Nothing was moved or changed.")
         );
         assert_eq!(view.log_path, "/p/plexi.log");
+    }
+
+    fn error_for_manifest(manifest: &str) -> ProfileInitError {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("apps/pkg");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+        ProfileInitError::Migration(crate::app::plugin_migration::migrate(root.path()).unwrap_err())
+    }
+
+    /// The window draws plain text: no Markdown code marks and no internal
+    /// vocabulary, for every failure class a user can reach.
+    #[test]
+    fn no_text_in_the_window_has_backticks_or_internal_wording() {
+        let app = "[app]\nid = 'pkg'\ntype = 'app'\nentry = 'main.py'\n";
+        let mut errors: Vec<ProfileInitError> = [
+            "schema_version = 1\n[app\n".to_owned(),
+            "name = 'x'\n".to_owned(),
+            "schema_version = 1\n".to_owned(),
+            "schema_version = 1\napp = 3\n".to_owned(),
+            "schema_version = 1\n[app]\nname = 'B'\ntype = 'app'\nentry = 'main.py'\n".into(),
+            MISSING_TYPE.to_owned(),
+            "schema_version = 1\n[app]\nid = 'pkg'\ntype = 'rust'\nentry = 'main.py'\n".into(),
+            "schema_version = 1\n[app]\nid = 'pkg'\ntype = 'app'\n".into(),
+            format!("schema_version = 1\nruntime = 3\n{app}"),
+            format!("schema_version = 1\n{app}[runtime]\nkind = 7\n"),
+        ]
+        .iter()
+        .map(|manifest| error_for_manifest(manifest))
+        .collect();
+        for setup in [
+            |root: &Path| std::fs::write(root.join("apps.toml"), "schema_version = 7\n").unwrap(),
+            |root: &Path| std::fs::write(root.join("apps.toml"), "[[app\n").unwrap(),
+            |root: &Path| {
+                std::fs::create_dir(root.join("apps")).unwrap();
+                std::fs::create_dir(root.join("plugins")).unwrap();
+            },
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            setup(root.path());
+            errors.push(ProfileInitError::Migration(
+                crate::app::plugin_migration::migrate(root.path()).unwrap_err(),
+            ));
+        }
+        for error in &errors {
+            let view = StartupErrorView::from_error(error, Path::new("/p/plexi.log"));
+            let details = view.details();
+            let shown = [
+                Some(view.title.as_str()),
+                view.plugin.as_deref(),
+                view.file.as_deref(),
+                Some(view.reason.as_str()),
+                view.fix.as_deref(),
+                view.reassurance.as_deref(),
+                Some(details.as_str()),
+            ];
+            for text in shown.into_iter().flatten() {
+                assert!(!text.contains('`'), "backtick in window text: {text}");
+            }
+            assert!(
+                !view.reason.to_lowercase().contains("legacy"),
+                "internal wording: {}",
+                view.reason
+            );
+            assert!(
+                view.fix.is_some(),
+                "every class names a fix: {}",
+                view.reason
+            );
+        }
     }
 
     #[test]
@@ -295,8 +377,8 @@ mod tests {
         let details = view.details();
         for expected in [
             "Plugin: brokenpkg",
-            "Reason: missing legacy app type",
-            "Fix: Add `type = \"app\"`",
+            "Reason: This plugin's manifest has no type, so Plexi cannot tell how to convert it.",
+            "Fix: Add type = \"app\"",
             "Nothing was moved or changed.",
             "Log: /p/plexi.log",
         ] {
@@ -338,7 +420,9 @@ mod tests {
         let h = harness(egui::vec2(720.0, 520.0), view);
         h.get_by_label("Plexi could not update your plugins");
         h.get_by_label("brokenpkg");
-        h.get_by_label("missing legacy app type");
+        h.get_by_label(
+            "This plugin's manifest has no type, so Plexi cannot tell how to convert it.",
+        );
         h.get_by_label("Nothing was moved or changed.");
         h.get_by_label_contains("Copy details");
         h.get_by_label_contains("Quit");

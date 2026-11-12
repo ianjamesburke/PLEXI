@@ -51,6 +51,9 @@ pub(crate) struct MigrationFailure {
     pub(crate) package: Option<String>,
     pub(crate) file: Option<PathBuf>,
     pub(crate) reason: String,
+    /// The same failure in words for a person reading a window: no internal
+    /// vocabulary and no Markdown.
+    pub(crate) plain_reason: String,
     pub(crate) hint: Option<String>,
     /// True when the failed attempt left every original package where it was.
     pub(crate) unchanged: bool,
@@ -58,15 +61,22 @@ pub(crate) struct MigrationFailure {
 
 impl MigrationFailure {
     fn new(operation: &'static str, profile_dir: &Path, reason: impl Into<String>) -> Self {
+        let reason = reason.into();
         Self {
             operation,
             profile_dir: profile_dir.to_path_buf(),
             package: None,
             file: None,
-            reason: reason.into(),
+            plain_reason: reason.clone(),
+            reason,
             hint: None,
             unchanged: false,
         }
+    }
+
+    fn plain(mut self, plain_reason: impl Into<String>) -> Self {
+        self.plain_reason = plain_reason.into();
+        self
     }
 
     fn package(mut self, name: &str) -> Self {
@@ -183,6 +193,54 @@ impl ManifestFault {
         }
     }
 
+    /// What a person reading a window needs to know, in plain words.
+    fn plain(&self) -> String {
+        match self {
+            Self::Syntax {
+                line: Some(line), ..
+            } => format!(
+                "This plugin's manifest is not valid TOML (line {line}), so Plexi cannot read it."
+            ),
+            Self::Syntax { line: None, .. } => {
+                "This plugin's manifest is not valid TOML, so Plexi cannot read it.".into()
+            }
+            Self::UnsupportedSchema => {
+                "This plugin's manifest does not declare a version Plexi knows how to convert."
+                    .into()
+            }
+            Self::MissingApp => {
+                "This plugin's manifest has no [app] section, so Plexi cannot tell what the plugin is."
+                    .into()
+            }
+            Self::NotATable("the manifest") => {
+                "This plugin's manifest is not laid out as sections, so Plexi cannot read it."
+                    .into()
+            }
+            Self::NotATable(name) => format!(
+                "The {name} part of this plugin's manifest is not a section, so Plexi cannot read it."
+            ),
+            Self::MissingId => {
+                "This plugin's manifest has no id, so Plexi cannot tell which plugin it is."
+                    .into()
+            }
+            Self::MissingType => {
+                "This plugin's manifest has no type, so Plexi cannot tell how to convert it."
+                    .into()
+            }
+            Self::UnsupportedType => {
+                "This plugin's manifest names a type Plexi does not recognise, so it cannot convert it."
+                    .into()
+            }
+            Self::MissingEntry => {
+                "This plugin's manifest does not name its entry file, so Plexi cannot convert it."
+                    .into()
+            }
+            Self::Unwritable(_) => {
+                "Plexi could not write the converted manifest for this plugin.".into()
+            }
+        }
+    }
+
     /// The edit that fixes this class, before the shared "or move it out" tail.
     fn fix(&self) -> String {
         match self {
@@ -236,9 +294,11 @@ fn package_failure(
     old: &Path,
     package: &str,
     reason: String,
+    plain: String,
     fix: &str,
 ) -> MigrationFailure {
     MigrationFailure::new(OPERATION_TREE, root, reason)
+        .plain(plain)
         .package(package)
         .file(old.join(package).join("manifest.toml"))
         .hint(move_out_hint(fix, package))
@@ -262,6 +322,9 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
     let lock_path = root.join("migration-plugin-v2.lock");
     let lock_failure = |action: &str, error: std::io::Error| {
         MigrationFailure::new(OPERATION_TREE, root, format!("{action}: {error}"))
+            .plain(format!(
+                "Plexi could not take the plugin upgrade lock: {error}"
+            ))
             .file(lock_path.clone())
     };
     let lock = std::fs::OpenOptions::new()
@@ -291,6 +354,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                 root,
                 "legacy apps/ reappeared after plugin migration; use plugins/ and schema_version = 2",
             )
+            .plain("The old apps folder came back after your plugins were already upgraded.")
             .file(old.clone())
             .hint("move the packages you want into plugins/ with a schema_version = 2 manifest, then move apps/ out of the profile and relaunch.");
             failure.unchanged = true;
@@ -310,6 +374,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                 root,
                 "both apps/ and plugins/ exist; resolve the collision before migration",
             )
+            .plain("Both the old apps folder and the new plugins folder exist, so Plexi cannot tell which to keep.")
             .hint(format!(
                 "move whichever of {} or {} you do not want out of the profile, then relaunch.",
                 old.display(),
@@ -324,6 +389,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     root,
                     "migration backup already exists while apps/ is present; refusing to overwrite it",
                 )
+                .plain("An earlier upgrade backup is already in place, and Plexi will not overwrite it.")
                 .file(backup.clone())
                 .hint(format!(
                     "check that {} holds the packages you expect, move it out of the profile, then relaunch.",
@@ -356,6 +422,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                         root,
                         format!("cannot run `uv` for the source migration: {error}"),
                     )
+                    .plain("Plexi could not run uv, which it needs to convert plugin source code.")
                     .hint("install uv and make sure it is on PATH, then relaunch.")
                 })?;
             if !output.status.success() {
@@ -375,6 +442,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     root,
                     format!("Python source migration failed: {summary}"),
                 )
+                .plain(format!("Plexi's source converter failed: {summary}"))
                 .file(old.clone())
                 .into());
             }
@@ -387,6 +455,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                         &old,
                         &name,
                         "cannot migrate a symlinked package; migrate its source explicitly".into(),
+                        "This plugin is a link to another folder, and Plexi will not convert linked plugins.".into(),
                         "replace the symlink with a real copy of the package",
                     )
                     .into());
@@ -398,6 +467,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                         &old,
                         &name,
                         "cannot migrate a symlinked manifest".into(),
+                        "This plugin's manifest is a link to another file, and Plexi will not convert linked manifests.".into(),
                         "replace the symlink with a real manifest file",
                     )
                     .into());
@@ -407,7 +477,14 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                 }
                 let raw = std::fs::read_to_string(&path)?;
                 let (rewritten, dropped) = migrate_manifest(&raw).map_err(|fault| {
-                    package_failure(root, &old, &name, fault.reason(), &fault.fix())
+                    package_failure(
+                        root,
+                        &old,
+                        &name,
+                        fault.reason(),
+                        fault.plain(),
+                        &fault.fix(),
+                    )
                 })?;
                 // Validate the destination before moving any original directory.
                 toml::from_str::<super::registry::PluginManifest>(&rewritten).map_err(|error| {
@@ -417,6 +494,10 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                         &name,
                         format!(
                             "does not convert to a valid schema 2 manifest: {}",
+                            error.message()
+                        ),
+                        format!(
+                            "After conversion this plugin's manifest would not be valid: {}",
                             error.message()
                         ),
                         "correct the field named in the reason in the named manifest",
@@ -440,6 +521,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     root,
                     "interrupted migration has no complete staged tree; original packages remain in migration-plugin-v2/apps",
                 )
+                .plain("An earlier upgrade was interrupted and left no complete result. Your original plugins are in the upgrade backup.")
                 .file(backup.clone())
                 .hint(format!(
                     "move {} back to {}, then relaunch to retry.",
@@ -507,8 +589,9 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let new = root.join("plugins.toml");
-    let fail = |reason: String, hint: String| -> Box<dyn std::error::Error> {
+    let fail = |reason: String, plain: String, hint: String| -> Box<dyn std::error::Error> {
         MigrationFailure::new(OPERATION_PACK, root, reason)
+            .plain(plain)
             .file(old.clone())
             .hint(hint)
             .into()
@@ -516,6 +599,7 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if new.exists() {
         return Err(fail(
             "both apps.toml and plugins.toml exist; resolve the collision before migration".into(),
+            "Both the old apps.toml and the new plugins.toml exist, so Plexi cannot tell which to keep.".into(),
             format!(
                 "move whichever of {} or {} you do not want out of the profile, then relaunch.",
                 old.display(),
@@ -527,12 +611,15 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut value: toml::Value = toml::from_str(&raw).map_err(|error| {
         fail(
             ManifestFault::syntax(&raw, &error).reason(),
+            "The plugin list apps.toml is not valid TOML, so Plexi cannot read it.".into(),
             "correct the TOML syntax of apps.toml, then relaunch.".into(),
         )
     })?;
     let table = value.as_table_mut().ok_or_else(|| {
         fail(
             "pack must be a table".into(),
+            "The plugin list apps.toml is not laid out as sections, so Plexi cannot read it."
+                .into(),
             "make apps.toml a TOML table, then relaunch.".into(),
         )
     })?;
@@ -543,6 +630,8 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err(fail(
             "only schema_version 1 workspace packs can migrate".into(),
+            "The plugin list apps.toml does not declare a version Plexi knows how to convert."
+                .into(),
             "set `schema_version = 1` at the top of apps.toml, then relaunch.".into(),
         ));
     }
@@ -554,6 +643,10 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     toml::from_str::<super::packs::Pack>(&content).map_err(|error| {
         fail(
             format!("pack does not convert to schema 2: {}", error.message()),
+            format!(
+                "After conversion the plugin list would not be valid: {}",
+                error.message()
+            ),
             "correct the `[[app]]` entry named in the reason in apps.toml, then relaunch.".into(),
         )
     })?;
@@ -563,6 +656,7 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if backup.exists() {
         return Err(fail(
             "pack migration backup already exists; refusing to overwrite it".into(),
+            "An earlier backup of the plugin list is already in place, and Plexi will not overwrite it.".into(),
             format!(
                 "check {} holds the pack you expect, move it out of the profile, then relaunch.",
                 backup.display()
