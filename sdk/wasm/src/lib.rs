@@ -385,7 +385,9 @@ pub mod ui {
                 UiNodeData::Row(RowNode {
                     children: children.into_iter().collect(),
                     gap: 8.0,
-                    align: Alignment::Start,
+                    // `align` is the cross axis. A row centers its children
+                    // vertically unless the guest says otherwise.
+                    align: Alignment::Center,
                     grow: false,
                 }),
             )
