@@ -169,6 +169,41 @@ fn select_all(ctx: &egui::Context, id: egui::Id, buf: &str, log_name: &str) {
     }
 }
 
+fn rendered_text_key(id: egui::Id) -> egui::Id {
+    id.with("plexi_rendered_text")
+}
+
+/// One owner for text and caret when a field's buffer is written outside its
+/// TextEdit (stint 1093): a pane seeding search with the keystroke that opened
+/// it, a completion, a clear. egui keeps the caret it last stored, which can
+/// sit before the new text, so the next keystroke would land in front of it.
+/// Text the field did not render last pass moves the caret to its end, once;
+/// the TextEdit's own edits and a caret the user placed are left alone.
+/// Returns the text rendered last pass, for the caller to update after show.
+fn place_caret_after_owner_write(
+    ctx: &egui::Context,
+    id: egui::Id,
+    buf: &str,
+    log_name: &str,
+) -> Option<String> {
+    let rendered: Option<String> = ctx.data(|d| d.get_temp(rendered_text_key(id)));
+    if rendered.as_deref() == Some(buf) {
+        return rendered;
+    }
+    let end = buf.chars().count();
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(
+            egui::text::CCursor::new(end),
+        )));
+    state.store(ctx, id);
+    if rendered.is_some() {
+        log::info!("{log_name}: caret placed after owner-written text ({end} chars)");
+    }
+    rendered
+}
+
 pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
@@ -220,6 +255,7 @@ impl<'a> TextField<'a> {
         buf: &mut String,
         colors: &Colors,
     ) -> egui::Response {
+        let rendered = place_caret_after_owner_write(ui.ctx(), self.id, buf, self.log_name);
         let response = styled_text_input_inner(
             ui,
             buf,
@@ -229,6 +265,10 @@ impl<'a> TextField<'a> {
             self.password,
             f32::INFINITY,
         );
+        if rendered.as_deref() != Some(buf.as_str()) {
+            let key = rendered_text_key(self.id);
+            ui.ctx().data_mut(|d| d.insert_temp(key, buf.clone()));
+        }
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }
