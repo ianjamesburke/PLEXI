@@ -57,20 +57,13 @@ cargo_test() {
     -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING \
     -u PLEXI_PANE_ID "${cargo_command[@]}" test --bin plexi -- "$@" < /dev/null
 }
+filter_check=(python3 "$driver_dir/filter_check.py" --root "$worktree")
 if [[ "$scope" == scoped && ${#filters[@]} -gt 0 ]]; then
-  listing="$(cargo_test "${filters[@]}" --list)"
-  matched="$(printf '%s\n' "$listing" | awk '/: test$/ {n++} END {print n+0}')"
-  if [[ "$matched" == 0 ]]; then
-    echo "pr-install: scoped Rust filters matched zero tests" >&2
-    exit 1
-  fi
-  for filter in "${filters[@]}"; do
-    count="$(printf '%s\n' "$listing" | awk -v filter="$filter" '/: test$/ && index($0, filter) {n++} END {print n+0}')"
-    if [[ "$count" == 0 ]]; then
-      echo "pr-install: scoped Rust filter matched zero tests: $filter" >&2
-      exit 1
-    fi
-  done
+  # Cheapest first: a cached list for this exact source state rejects a wrong
+  # filter before any compile. Otherwise validate right after the test build.
+  "${filter_check[@]}" precheck --label "pr-install: scoped Rust" -- "${filters[@]}"
+  listing="$(cargo_test --list)"
+  matched="$(printf '%s\n' "$listing" | "${filter_check[@]}" validate --label "pr-install: scoped Rust" - -- "${filters[@]}" | sed -n 's/^matched=//p')"
   printf 'pr-install: scoped Rust filters=%s matched=%s base=%s\n' "${filters[*]}" "$matched" "$base_oid"
 fi
 sdk_selection="run: full candidate or legacy selector"

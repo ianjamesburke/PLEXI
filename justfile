@@ -67,9 +67,17 @@ release-host-gate:
     {{TEST_ENV_SCRUB}} bash scripts/release-host-gate.sh
 
 # Run selected host tests with the same flags and isolation as `just scene`.
-# Pass libtest filters and options after the recipe name.
+# Pass libtest filters and options after the recipe name. A filter that matches
+# no test fails (exit 1) with the nearest real module and test names; it never
+# reports a pass for zero tests. See scripts/filter_check.py.
 test-host +args:
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi -- {{args}} < /dev/null
+    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py host -- {{args}} < /dev/null
+
+# Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
+# A file with no table entry falls back to its own module tests and says so.
+#   just test-for src/host/model.rs
+test-for path:
+    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py for {{path}} < /dev/null
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -591,6 +599,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_build_lifecycle.py
     uv run --no-project python scripts/test_distribution_cache.py
     uv run --no-project python scripts/test_publish_pr_image.py

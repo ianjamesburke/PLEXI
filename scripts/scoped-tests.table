@@ -1,0 +1,18 @@
+# Path to libtest filter table read by scripts/scoped-tests.sh and scripts/filter_check.py.
+# Tab separated: glob patterns joined by "|" (first matching row wins; "*" crosses "/"),
+# then space separated libtest filters. An empty filter column selects no host Rust tests.
+# "::" is the src catch-all: scoped-tests.sh reports it as broad; `just test-for` falls back
+# to the file's own module. scripts/test_filter_check.py fails when a pattern here matches
+# no tracked file, so the table cannot drift from the tree.
+docs/*|.agents/*|.claude/*	
+src/overlays/*	overlays:: testing::
+src/testing/harness_tests.rs	testing::harness_tests::
+src/host/*	host:: testing:: ui_tests::
+src/scenes.rs	ui:: render:: ui_tests:: testing:: scene_suite
+src/ui/*|src/render/*|src/ui_tests.rs|tests/scenes/*	ui:: render:: ui_tests:: testing::
+src/cli/*	cli:: cli_tests:: testing::
+src/editor/*|src/app/text_editor_view.rs	editor:: editor_gate ui_tests::
+src/config/*|src/workspace/*	config:: workspace:: testing::
+src/*	::
+apps/*|sdk/python/*	
+scripts/*	
