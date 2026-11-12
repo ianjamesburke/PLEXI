@@ -68,6 +68,44 @@ pub(crate) struct NotePreview {
     checked: bool,
 }
 
+/// What a background preview load found.
+enum PreviewLoad {
+    /// The file still matches the stamp the cached text was read at.
+    Unchanged,
+    /// The note body as of `stamp`, or a readable error in its place.
+    Fresh {
+        stamp: Option<NoteStamp>,
+        text: std::sync::Arc<str>,
+    },
+}
+
+/// A preview stat-and-read running off the UI thread. Drained from
+/// `App::logic`; a newer selection replaces it and its result is dropped.
+pub(crate) struct NotePreviewJob {
+    path: std::path::PathBuf,
+    rx: std::sync::mpsc::Receiver<PreviewLoad>,
+}
+
+/// Worker body: one stat, and a read only when the stamp moved from `known`.
+fn load_preview(path: &std::path::Path, known: Option<NoteStamp>) -> PreviewLoad {
+    // Stamp before reading: a write landing mid-read leaves an older stamp,
+    // so the next check re-reads rather than trusting a torn body.
+    let stamp = NoteStamp::of(path).ok();
+    if stamp.is_some() && stamp == known {
+        return PreviewLoad::Unchanged;
+    }
+    let text: std::sync::Arc<str> = match std::fs::read_to_string(path) {
+        // Preview and clipboard share one projection: the note body, with a
+        // Plexi capture metadata envelope stripped and user text preserved.
+        Ok(text) => crate::notes::note_body(&text).into(),
+        Err(e) => {
+            log::warn!("notes_picker: preview read failed for {path:?}: {e}");
+            format!("Could not read note: {e}").into()
+        }
+    };
+    PreviewLoad::Fresh { stamp, text }
+}
+
 /// Which picker chord started a background clipboard job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClipKind {
@@ -300,52 +338,109 @@ impl PlexiApp {
             .copied()
     }
 
-    /// Content of the selected note for the preview half. Read once per
-    /// selection; on each picker open the cache is checked against the file's
-    /// modified time and length (one stat) and re-read only when either moved.
+    /// Content of the selected note for the preview half. Never touches the
+    /// file on the calling (UI) thread: a cached body shows at once, and the
+    /// stat (once per picker open) and any read run on a worker whose result
+    /// `App::logic` swaps in. `None` means the first read has not landed yet.
     pub(crate) fn notes_picker_preview_text(&mut self) -> Option<std::sync::Arc<str>> {
         let path = self
             .notes_picker_selected_entry()
             .map(|idx| self.notes_picker_entries[idx].path.clone())?;
-        if let Some(cached) = self
+        let cached = self
             .notes_picker_preview
-            .as_mut()
-            .filter(|cached| cached.path == path)
-        {
-            if cached.checked {
-                return Some(cached.text.clone());
-            }
-            let current = NoteStamp::of(&path).ok();
-            if current.is_some() && current == cached.stamp {
-                cached.checked = true;
-                return Some(cached.text.clone());
-            }
-            let reason = match (current, cached.stamp) {
-                (None, _) => "the note can no longer be read",
-                (Some(_), None) => "the cached read had no file stamp",
-                (Some(_), Some(_)) => "its modified time or length changed",
-            };
-            log::info!("notes_picker: cached preview of {path:?} is stale ({reason}); re-reading");
+            .as_ref()
+            .filter(|cached| cached.path == path);
+        let text = cached.map(|cached| cached.text.clone());
+        if cached.is_some_and(|cached| cached.checked) {
+            return text;
         }
-        // Stamp before reading: a write landing mid-read leaves an older stamp,
-        // so the next check re-reads rather than trusting a torn body.
-        let stamp = NoteStamp::of(&path).ok();
-        let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
-            // Preview and clipboard share one projection: the note body, with a
-            // Plexi capture metadata envelope stripped and user text preserved.
-            Ok(text) => crate::notes::note_body(&text).into(),
+        let known = cached.and_then(|cached| cached.stamp);
+        let in_flight = self
+            .notes_picker_preview_job
+            .as_ref()
+            .is_some_and(|job| job.path == path);
+        if !in_flight {
+            self.notes_picker_preview_spawn(path, known);
+        }
+        text
+    }
+
+    fn notes_picker_preview_spawn(&mut self, path: std::path::PathBuf, known: Option<NoteStamp>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        let worker_path = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("notes-preview".to_string())
+            .spawn(move || {
+                // A send fails only when a newer selection replaced this job;
+                // its result is obsolete by design.
+                if tx.send(load_preview(&worker_path, known)).is_ok() {
+                    wake.wake("notes_preview");
+                }
+            });
+        match spawned {
+            Ok(_) => self.notes_picker_preview_job = Some(NotePreviewJob { path, rx }),
             Err(e) => {
-                log::warn!("notes_picker: preview read failed for {path:?}: {e}");
-                format!("Could not read note: {e}").into()
+                log::warn!("notes_picker: could not start the preview read for {path:?}: {e}");
+                self.notes_picker_preview_job = None;
+                self.notes_picker_preview = Some(NotePreview {
+                    path,
+                    stamp: None,
+                    text: format!("Could not read note: {e}").into(),
+                    checked: true,
+                });
+            }
+        }
+    }
+
+    /// Swap in a finished background preview load. Called from `App::logic`.
+    pub(crate) fn drain_notes_preview_read(&mut self) {
+        let received = {
+            let Some(job) = self.notes_picker_preview_job.as_ref() else {
+                return;
+            };
+            job.rx.try_recv()
+        };
+        let load = match received {
+            Ok(load) => load,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(job) = self.notes_picker_preview_job.take() {
+                    log::warn!(
+                        "notes_picker: preview worker for {:?} stopped without a result",
+                        job.path
+                    );
+                }
+                return;
             }
         };
-        self.notes_picker_preview = Some(NotePreview {
-            path,
-            stamp,
-            text: text.clone(),
-            checked: true,
-        });
-        Some(text)
+        let Some(job) = self.notes_picker_preview_job.take() else {
+            return;
+        };
+        let cached = self
+            .notes_picker_preview
+            .as_mut()
+            .filter(|cached| cached.path == job.path);
+        match (load, cached) {
+            (PreviewLoad::Unchanged, Some(cached)) => cached.checked = true,
+            (PreviewLoad::Unchanged, None) => {
+                // The cache moved to another note meanwhile; nothing to confirm.
+            }
+            (PreviewLoad::Fresh { stamp, text }, cached) => {
+                if cached.is_some() {
+                    log::info!(
+                        "notes_picker: cached preview of {:?} was stale; swapped in the current body",
+                        job.path
+                    );
+                }
+                self.notes_picker_preview = Some(NotePreview {
+                    path: job.path,
+                    stamp,
+                    text,
+                    checked: true,
+                });
+            }
+        }
     }
 
     /// The note may be edited while the picker is away; make the next preview
@@ -1164,22 +1259,28 @@ impl PlexiApp {
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| {
                                             ui.set_width(ui.available_width());
-                                            let body_text = preview.as_deref().unwrap_or("");
-                                            if body_text.trim().is_empty() {
-                                                ui.label(
-                                                    egui::RichText::new("Empty note")
-                                                        .font(font_id.clone())
-                                                        .color(colors.text_dim),
-                                                );
-                                            } else {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        egui::RichText::new(body_text)
+                                            // `None`: the first read is still in flight
+                                            // (a frame or two); paint nothing rather
+                                            // than a false "Empty note".
+                                            match preview.as_deref() {
+                                                None => {}
+                                                Some(body) if body.trim().is_empty() => {
+                                                    ui.label(
+                                                        egui::RichText::new("Empty note")
                                                             .font(font_id.clone())
-                                                            .color(colors.text_primary),
-                                                    )
-                                                    .wrap(),
-                                                );
+                                                            .color(colors.text_dim),
+                                                    );
+                                                }
+                                                Some(body) => {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(body)
+                                                                .font(font_id.clone())
+                                                                .color(colors.text_primary),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
                                             }
                                         });
                                 });
