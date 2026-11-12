@@ -75,6 +75,10 @@ fi
 
 `just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding rebuilds caused solely by mismatched warning flags; other changes or build-script invalidations can still trigger recompilation. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
 
+A filter that matches no test is an error, not a pass. Use `just test-for <path>` instead of composing filters by hand.
+
+When backgrounding a long gate, run it as `just run-logged <name> -- ...` and wait for its `RESULT` line or read `<name>.status`. Cite the log path in hand-offs instead of pasting output.
+
 No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
 
 For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
@@ -370,7 +374,7 @@ still gets this pass before push.
 
 ## Editor Release Gate
 
-Any diff touching `src/editor/` or `src/app/text_editor_app.rs` runs the editor
+Any diff touching `src/editor/` or `src/app/text_editor_view.rs` runs the editor
 release gate before push, in this order:
 
 1. **Core matrix + fuzz** — `cargo test --bin plexi editor::gate`. Runs the
