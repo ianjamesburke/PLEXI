@@ -334,8 +334,10 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
     );
 }
 
+/// Stint 1251: B's left (A) and right (C) neighbours are equally adjacent, so
+/// window-local history breaks the tie; history no longer outranks adjacency.
 #[test]
-fn close_focused_pane_prefers_window_local_history_and_keeps_successor_visible() {
+fn close_focused_pane_uses_history_as_neighbour_tie_break_and_keeps_successor_visible() {
     let mut h = HostHarness::new();
     let a = h.add_test_pane();
     let b = h.add_test_pane();
