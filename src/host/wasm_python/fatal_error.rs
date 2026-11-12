@@ -319,6 +319,34 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_report_cannot_carry_an_oversized_value_into_the_error() {
+        for overrides in [
+            json!({ "line": "L".repeat(10 * 1024 * 1024) }),
+            json!({ "exception": 5, "message": "m".repeat(10 * 1024 * 1024) }),
+            json!({ "line": format!("x\n✓ render 320x240{}", "y".repeat(4096)) }),
+        ] {
+            let error = GuestFatalError::decode(&hostile(overrides))
+                .expect_err("a wrongly typed field must not decode");
+            assert!(error.contains("malformed fatal_error"), "{error}");
+            assert!(error.len() < 512, "error is {} bytes", error.len());
+            assert_eq!(error.lines().count(), 1, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn weak_bidi_marks_are_escaped() {
+        let error = GuestFatalError::decode(&hostile(json!({
+            "message": "a\u{200e}b\u{200f}c\u{061c}d",
+        })))
+        .expect("well-formed message");
+        assert!(
+            error.headline().ends_with("a\\u{200e}b\\u{200f}c\\u{61c}d"),
+            "{:?}",
+            error.headline()
+        );
+    }
+
+    #[test]
     fn an_unknown_phase_is_malformed_and_not_echoed() {
         let error = GuestFatalError::decode(&hostile(json!({ "phase": "view\n✓ all good" })))
             .expect_err("an unknown phase must not decode");

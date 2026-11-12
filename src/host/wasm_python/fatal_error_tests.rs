@@ -249,3 +249,37 @@ fn live_pane_ignores_everything_after_the_first_fatal_error() {
     assert_eq!(pane.display_name(), "test.fatal-error");
     assert_eq!(pane.dropped_after_fatal, Some(4));
 }
+
+/// A hot reload starts a new guest, and the old guest's fatal report must not
+/// mute it: the pane leaves the failed state and services messages again.
+#[test]
+fn relaunch_after_a_fatal_error_services_the_new_guest() {
+    let app = tempfile::tempdir().expect("plugin dir");
+    std::fs::write(
+        app.path().join("main.py"),
+        format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
+    )
+    .expect("write entry");
+    let mut pane = LivePythonPane::launch(launch_config(app.path())).expect("launch CPython WASM");
+    pane.handle_message(json!({
+        "type": "fatal_error",
+        "phase": "view",
+        "file": "main.py",
+        "line": 3,
+        "exception": "RuntimeError",
+        "message": "first",
+        "traceback": "Traceback (most recent call last):\nRuntimeError\n",
+    }));
+    pane.handle_message(json!({"type": "set_title", "title": "muted"}));
+    assert!(pane.error().is_some());
+    assert_eq!(pane.dropped_after_fatal, Some(1));
+    assert_eq!(pane.display_name(), "test.fatal-error");
+
+    pane.relaunch().expect("relaunch");
+
+    assert_eq!(pane.error(), None);
+    assert_eq!(pane.dropped_after_fatal, None);
+    pane.handle_message(json!({"type": "set_title", "title": "healthy again"}));
+    assert_eq!(pane.display_name(), "healthy again");
+    assert_eq!(pane.dropped_after_fatal, None);
+}
