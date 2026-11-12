@@ -3513,6 +3513,177 @@ mod tests {
         }
     }
 
+    /// Stint 1238 characterisation matrix, native WASM rows (see
+    /// `crate::broker::admission_matrix`). Launch goes through
+    /// `PermissionMonitor::materialize_wasm_sets` and
+    /// `with_remembered_capabilities`, as `open_wasm_view_pane` does; the guest
+    /// then asks with `request-capability`. One pane is reused with its
+    /// capability state cleared between cells, so the fixture compiles once.
+    #[test]
+    fn wasm_runtime_admission_matrix() {
+        use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
+        use crate::broker::gate::PermissionMonitor;
+
+        const PLUGIN: &str = "matrix.wasm";
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path();
+        let families = [
+            Family::FsRead,
+            Family::FsWrite,
+            Family::Network,
+            Family::Ai,
+            Family::Clipboard,
+            Family::Panes,
+            Family::Notify,
+        ];
+        let mut reused = Some(pane(0.0));
+        let checked = matrix::verify(Runtime::Wasm, &families, ws, |_, id, state| {
+            let monitor = PermissionMonitor::ephemeral();
+            matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
+            let declared: HashSet<String> = if matrix::plugin_declares(state) {
+                HashSet::from([id.to_string()])
+            } else {
+                HashSet::new()
+            };
+            let (granted, blocked) = monitor.materialize_wasm_sets(PLUGIN, ws, &declared);
+            let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
+                Mech::ManifestAsGrant
+            } else {
+                Mech::LaunchRow
+            };
+            let mut p = reused.take().expect("pane");
+            p.session_grants.clear();
+            p.session_blocks.clear();
+            p.pending_capability_prompts.clear();
+            p.queue.clear();
+            let mut p = p.with_remembered_capabilities(
+                ws.to_path_buf(),
+                PermissionStore::default(),
+                granted,
+                blocked,
+            );
+            p.exec(request_capability(id.to_string()), 0);
+            let observed = if p.has_pending_capability_prompt() {
+                (Outcome::Ask, Mech::WasmQueue)
+            } else {
+                match pop_event(&mut p) {
+                    InputEvent::CapabilityGranted(_) => (Outcome::Admit, mech),
+                    InputEvent::CapabilityDenied(_) => (Outcome::Deny, mech),
+                    other => panic!("{id} {state:?}: unexpected event {other:?}"),
+                }
+            };
+            reused = Some(p);
+            observed
+        });
+        assert_eq!(checked, 9 * matrix::STATES.len());
+    }
+
+    /// Stint 1238 characterisation: the dual-authority write in
+    /// `decide_next_capability_prompt_inner`. A remembered decision lands in
+    /// three places (the pane's session set, `PermissionStore`, and
+    /// `PermissionMonitor`'s `GrantStore`), so a monitor revocation leaves two
+    /// of them standing.
+    #[test]
+    fn wasm_remembered_decision_writes_three_authorities() {
+        use crate::app::permissions::PermissionState;
+        use crate::broker::gate::PermissionMonitor;
+        use crate::broker::Decision;
+
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let cap = "clipboard.read";
+        let plugin = "sysmon-pane";
+        let grant_id = format!("cap:{plugin}:{cap}");
+        // The running host's monitor is open before the pane decides.
+        let monitor = PermissionMonitor::for_profile(profile.path());
+        let mut p = pane(0.0).with_remembered_capabilities(
+            ws.path().to_path_buf(),
+            PermissionStore::load_or_default(profile.path()),
+            HashSet::new(),
+            HashSet::new(),
+        );
+        p.exec(request_capability(cap), 0);
+        p.decide_next_capability_prompt_remembered(true);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::CapabilityGranted(_)
+        ));
+
+        // 1. The pane's runtime-specific session set.
+        assert!(p.has_session_grant(cap));
+        // 2. The legacy PermissionStore file.
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            Some(PermissionState::Green)
+        );
+        // 3. The monitor's GrantStore.
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .any(|record| record.grant_id == grant_id && record.decision == Decision::Allow));
+
+        assert!(monitor.revoke_grant_id(&grant_id));
+        // CUTOVER: expected to change to ask. The live pane keeps its session
+        // grant after the monitor revoked it.
+        p.exec(request_capability(cap), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::CapabilityGranted(_)
+        ));
+        // CUTOVER: expected to change to ask. The PermissionStore row survives
+        // the monitor revocation; the next monitor load imports it again.
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            Some(PermissionState::Green)
+        );
+        let restarted = PermissionMonitor::reload_for_test(profile.path());
+        let (granted, _) =
+            restarted.materialize_wasm_sets(plugin, ws.path(), &HashSet::from([cap.to_string()]));
+        assert!(
+            granted.contains(cap),
+            "today a monitor-revoked WASM grant comes back from permissions.toml on restart"
+        );
+    }
+
+    /// Without `remember`, the decision lives only in the pane's session set:
+    /// nothing reaches PermissionStore or the monitor.
+    #[test]
+    fn wasm_session_decision_stays_in_the_pane() {
+        use crate::broker::gate::PermissionMonitor;
+
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let cap = "clipboard.read";
+        let monitor = PermissionMonitor::for_profile(profile.path());
+        let mut p = pane(0.0).with_remembered_capabilities(
+            ws.path().to_path_buf(),
+            PermissionStore::load_or_default(profile.path()),
+            HashSet::new(),
+            HashSet::new(),
+        );
+        p.exec(request_capability(cap), 0);
+        p.decide_next_capability_prompt(true);
+        assert!(p.has_session_grant(cap));
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(
+                "sysmon-pane",
+                ws.path(),
+                cap
+            ),
+            None
+        );
+        assert!(!monitor
+            .store()
+            .records()
+            .iter()
+            .any(|record| record.target_id == cap));
+    }
+
     // ── Host-owned surface pacing (stint 0552) ──────────────────────────────
     //
     // sysmon declares a repeating poll timer, which is exactly the shape a

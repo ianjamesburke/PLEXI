@@ -856,8 +856,9 @@ fn is_installer_written_root_entry(name: &str) -> bool {
 /// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
 /// extra, no symlinks. Package content identity is not enough here because it
 /// skips `.pyc` files and caches, which the guest's importer would still load.
-/// A manifest id or package claim cannot satisfy this. The walk stops at the
-/// first difference, so its cost is bounded by the embedded tree.
+/// A manifest id or package claim cannot satisfy this. It covers the plugin
+/// folder only, not the SDK or stdlib a guest also imports. The walk stops at
+/// the first difference, so its cost is bounded by the embedded tree.
 pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     let Some(bundled) = EMBEDDED_APPS.get_dir(name) else {
         log::warn!("bundled_check: no embedded plugin '{name}'");

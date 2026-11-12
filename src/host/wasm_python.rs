@@ -2497,9 +2497,12 @@ const PERMISSIONS_UI_BUNDLE: &str = "permissions";
 
 /// A pane's authority over the permission bridge (stint 1264). Derived from
 /// what the host itself shipped, never from a plugin id or manifest claim.
+/// Interim: stint 1238 replaces it with a broker-admitted capability
+/// (`permissions.manage`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionUiTrust {
-    /// Byte-identical to this binary's embedded Permissions plugin.
+    /// The plugin folder is byte-identical to this binary's embedded
+    /// Permissions plugin.
     BundledPermissionsUi,
     Untrusted,
 }
@@ -2508,6 +2511,10 @@ enum PermissionUiTrust {
 /// `permission_decision`. The id is a necessary condition only, because the
 /// bundled manifest declares it; any installed plugin may reuse it, so the
 /// content check decides.
+///
+/// What is verified: every file under the plugin folder (`/app` in the guest).
+/// What is not: the SDK root (`/sdk`) and the CPython stdlib the guest also
+/// imports from; those come from the host's own distribution, not the plugin.
 fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust {
     if plugin_id == PERMISSIONS_UI_BUNDLE
         && crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir)
@@ -2518,11 +2525,60 @@ fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust 
     }
 }
 
-/// A refused bridge message: names only, never the payload.
+/// A refused bridge message: names only, never the payload. Both fields are
+/// safe to log: `action` is a known verb or "unknown", and `ask_id` is
+/// bounded with control characters removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PermissionBridgeRefusal {
-    operation: String,
+    kind: PermissionBridgeKind,
+    action: &'static str,
     ask_id: String,
+}
+
+impl PermissionBridgeRefusal {
+    fn operation(&self) -> String {
+        match self.kind {
+            PermissionBridgeKind::Read => "read_permission_decisions".to_string(),
+            PermissionBridgeKind::Decide => format!("permission_decision:{}", self.action),
+        }
+    }
+
+    fn log_line(&self, plugin_id: &str, instance: Option<u64>) -> String {
+        let instance = instance.map_or_else(|| "-".to_string(), |id| id.to_string());
+        format!(
+            "plugin::{plugin_id}: refused {} instance={instance} id={}: only the bundled Permissions plugin may use the permission bridge",
+            self.operation(),
+            self.ask_id
+        )
+    }
+
+    /// Rate-limit key. One per message kind, so guest-chosen strings can
+    /// neither defeat the limit nor grow the limiter map.
+    fn warn_key(&self) -> &'static str {
+        match self.kind {
+            PermissionBridgeKind::Read => "permission_bridge_refused:read",
+            PermissionBridgeKind::Decide => "permission_bridge_refused:decide",
+        }
+    }
+}
+
+/// Longest ask id written to the log. Real ids are a prefix plus a UUID.
+const LOGGED_ASK_ID_MAX: usize = 64;
+
+fn loggable_action(action: &str) -> &'static str {
+    match action.trim() {
+        "revoke" => "revoke",
+        "reset" => "reset",
+        "allow" => "allow",
+        _ => "unknown",
+    }
+}
+
+fn loggable_ask_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| !c.is_control())
+        .take(LOGGED_ASK_ID_MAX)
+        .collect()
 }
 
 /// Answer one permission bridge message. Returns the `permission_inventory`
@@ -2552,15 +2608,12 @@ fn answer_permission_bridge(
     let id = message.get("id").and_then(Value::as_str).unwrap_or("");
     let action = message.get("action").and_then(Value::as_str).unwrap_or("");
     if trust != PermissionUiTrust::BundledPermissionsUi {
-        let operation = match kind {
-            PermissionBridgeKind::Read => "read_permission_decisions".to_string(),
-            PermissionBridgeKind::Decide => format!("permission_decision:{}", action.trim()),
-        };
         return (
             inventory(Vec::new(), "not permitted", "rejected"),
             Some(PermissionBridgeRefusal {
-                operation,
-                ask_id: id.to_string(),
+                kind,
+                action: loggable_action(action),
+                ask_id: loggable_ask_id(id),
             }),
         );
     }
@@ -2575,7 +2628,11 @@ fn answer_permission_bridge(
             actor_id: format!("app:{plugin_id}"),
         },
     );
-    log::info!("plugin::{plugin_id}: permission {action} id={id} human=false");
+    log::info!(
+        "plugin::{plugin_id}: permission {} id={} human=false",
+        loggable_action(action),
+        loggable_ask_id(id)
+    );
     let (notice, status) = match &outcome {
         crate::broker::gate::PermissionMutation::Applied { entry_id } => {
             (format!("{action} applied for {entry_id}"), "applied")
@@ -3665,18 +3722,12 @@ impl LivePythonPane {
 
     /// Warn once per refused operation per window; a 1 Hz poll stays at debug.
     fn warn_refused_permission_bridge(&mut self, refusal: &PermissionBridgeRefusal) {
-        let key = format!("refused:{}", refusal.operation);
+        let key = refusal.warn_key();
         let now = std::time::Instant::now();
-        let instance = self
-            .pane_owner
-            .map(|(pane_id, _)| pane_id.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let line = format!(
-            "plugin::{}: refused {} instance={instance} id={}: only the bundled Permissions plugin may use the permission bridge",
-            self.plugin_id, refusal.operation, refusal.ask_id
-        );
-        if unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now) {
-            self.unhandled_warned_at.insert(key, now);
+        let instance = self.pane_owner.map(|(pane_id, _)| pane_id);
+        let line = refusal.log_line(&self.plugin_id, instance);
+        if unhandled_warn_is_due(self.unhandled_warned_at.get(key).copied(), now) {
+            self.unhandled_warned_at.insert(key.to_string(), now);
             log::warn!("{line}");
         } else {
             log::debug!("{line}");
@@ -4756,6 +4807,10 @@ impl LivePythonPane {
             .suppressed
     }
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
+        // Check the files before the new guest can run, and drop the old
+        // trust first so a failed launch leaves the pane untrusted.
+        let permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
+        self.permission_ui = PermissionUiTrust::Untrusted;
         // Drop the old decoder (closes its stdout, joins the thread) before the
         // old runtime is replaced, then bind a fresh decoder to the new
         // runtime's stdout. The shared repaint hook carries over so the new
@@ -4802,7 +4857,7 @@ impl LivePythonPane {
         self.stderr_classifier = GuestStderrClassifier::new();
         self.unhandled_warned_at.clear();
         self.announced_permission_read = false;
-        self.permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
+        self.permission_ui = permission_ui;
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
             // resolved against — that tree is gone after relaunch, so
@@ -10566,7 +10621,7 @@ default = true
         assert_eq!(reply["entries"], json!([]), "no inventory: {reply}");
         assert_eq!(reply["status"], "rejected");
         assert_eq!(
-            refusal.map(|r| r.operation),
+            refusal.map(|r| r.operation()),
             Some("read_permission_decisions".to_string())
         );
         for (id, action) in [
@@ -10589,7 +10644,8 @@ default = true
             assert_eq!(
                 refusal,
                 Some(PermissionBridgeRefusal {
-                    operation: format!("permission_decision:{action}"),
+                    kind: PermissionBridgeKind::Decide,
+                    action: loggable_action(action),
                     ask_id: id.clone(),
                 })
             );
@@ -10727,6 +10783,334 @@ default = true
             fx.monitor.mutate_entry(&fx.deny, "reset", &human),
             crate::broker::gate::PermissionMutation::Applied { .. }
         ));
+    }
+
+    /// Stint 1238 characterisation matrix, Python rows (see
+    /// `crate::broker::admission_matrix`). Builds the launch set exactly as
+    /// `gate_plugin_permissions_in_profile` and `build_python_runtime` do
+    /// (`materialize_plugin_permissions`, then capability strings), then asks
+    /// `manifest_declares`, the check behind `LivePythonPane::has_capability`.
+    /// Typed CLI operations add the monitor's per-invocation admission.
+    #[test]
+    fn python_runtime_admission_matrix() {
+        use crate::app::permissions::Capability;
+        use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
+        use crate::broker::gate::{AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        const PLUGIN: &str = "matrix.python";
+        let profile = tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempdir().unwrap();
+        let ws = ws.path();
+        let families = [
+            Family::FsRead,
+            Family::FsWrite,
+            Family::Network,
+            Family::CliExec,
+            Family::Panes,
+            Family::Notify,
+            Family::HostRead,
+        ];
+        let checked = matrix::verify(Runtime::Python, &families, ws, |family, id, state| {
+            let monitor = PermissionMonitor::ephemeral();
+            let declared: std::collections::HashSet<Capability> = if matrix::plugin_declares(state)
+            {
+                Capability::try_from(id).into_iter().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            if family != Family::CliExec {
+                matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
+            }
+            let permissions =
+                monitor.materialize_plugin_permissions(PLUGIN, ws, &declared, Vec::new());
+            let launch_set: Vec<String> = permissions
+                .capabilities
+                .iter()
+                .map(|capability| capability.as_str().to_string())
+                .collect();
+            let in_launch_set = manifest_declares(&launch_set, id);
+            if family == Family::CliExec {
+                if !in_launch_set {
+                    return (Outcome::Deny, Mech::PythonLaunchSet);
+                }
+                let input = r#"{"cli_operation_id":"task.set","binding":"task.set#bind-1","values":{"priority":"p1"}}"#;
+                let outcome = matrix::drive_exact(&monitor, state, "cli.op.mutate", &|_posture| {
+                    monitor.admit_cli_operation(
+                        AdmitRequest {
+                            call_id: "call-1",
+                            tool: "cli.op.mutate",
+                            input_json: input,
+                            actor_type: ActorType::Plugin,
+                            actor_id: PLUGIN,
+                            actor_scope: ActorScope::User,
+                            trust_origin: "host",
+                            workspace_root: ws,
+                            context_id: 9,
+                            package_id: "pkg-a",
+                            instance_id: 4,
+                            target_type: TargetType::CliOperation,
+                        },
+                        "matrix.python wants to run task.set",
+                    )
+                });
+                return (outcome, Mech::MonitorAdmit);
+            }
+            if in_launch_set {
+                let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
+                    Mech::ManifestAsGrant
+                } else {
+                    Mech::LaunchRow
+                };
+                (Outcome::Admit, mech)
+            } else if permissions
+                .blocked
+                .iter()
+                .any(|capability| capability.as_str() == id)
+            {
+                (Outcome::Deny, Mech::LaunchRow)
+            } else {
+                (Outcome::Deny, Mech::PythonLaunchSet)
+            }
+        });
+        assert_eq!(checked, 14 * matrix::STATES.len());
+    }
+
+    #[test]
+    fn permission_bridge_refusal_log_is_bounded_and_keyed_by_kind() {
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        let hostile_id = format!("req\nFAKE LOG LINE\u{1b}[31m{}", "x".repeat(4096));
+        let mut keys = std::collections::HashSet::new();
+        for action in [
+            "allow",
+            " revoke ",
+            "reset",
+            "allow\nforged",
+            "a1",
+            "a2",
+            "",
+        ] {
+            let (_, refusal) = answer_permission_bridge(
+                PermissionUiTrust::Untrusted,
+                PermissionBridgeKind::Decide,
+                &json!({"type": "permission_decision", "id": hostile_id, "action": action}),
+                &monitor,
+                "evil",
+            );
+            let refusal = refusal.expect("refused");
+            assert!(matches!(
+                refusal.action,
+                "allow" | "revoke" | "reset" | "unknown"
+            ));
+            let line = refusal.log_line("evil", Some(7));
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+            assert!(!line.contains("forged"), "{line}");
+            assert!(refusal.ask_id.chars().count() <= LOGGED_ASK_ID_MAX);
+            keys.insert(refusal.warn_key());
+        }
+        assert_eq!(loggable_action("allow\nforged"), "unknown");
+        let (_, read) = answer_permission_bridge(
+            PermissionUiTrust::Untrusted,
+            PermissionBridgeKind::Read,
+            &json!({"type": "read_permission_decisions"}),
+            &monitor,
+            "evil",
+        );
+        keys.insert(read.expect("refused").warn_key());
+        assert_eq!(keys.len(), 2, "one limiter key per message kind: {keys:?}");
+    }
+
+    /// A test profile whose directory exists before the monitor is opened, so
+    /// the process monitor cache keys it by the same canonical path the pane
+    /// handler resolves later.
+    struct BridgeProfile {
+        _dir: tempfile::TempDir,
+        _guard: crate::config::TestProfileDirGuard,
+    }
+
+    impl BridgeProfile {
+        fn monitor(&self) -> Arc<crate::broker::gate::PermissionMonitor> {
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        }
+    }
+
+    fn bridge_profile() -> BridgeProfile {
+        let dir = tempdir().expect("profile");
+        let path = dir.path().canonicalize().unwrap().join("profile");
+        std::fs::create_dir_all(&path).unwrap();
+        let guard = crate::config::set_test_profile_dir(path);
+        BridgeProfile {
+            _dir: dir,
+            _guard: guard,
+        }
+    }
+
+    /// Launch config for a bundled-plugin copy whose state lives outside the
+    /// plugin folder, as in production.
+    fn bridge_pane_config(plugin_dir: &Path, context_root: &Path) -> PythonLaunchConfig {
+        let mut config = PythonLaunchConfig::from_manifest_file(plugin_dir)
+            .expect("manifest")
+            .expect("python plugin");
+        config.workspace_root = context_root.to_path_buf();
+        config.context_root = context_root.to_path_buf();
+        config
+    }
+
+    fn seeded_entry_ids(pane: &LivePythonPane) -> Vec<String> {
+        pane.states_json()
+            .as_object()
+            .into_iter()
+            .flat_map(|scopes| scopes.values())
+            .filter_map(|scope| scope.get("entries").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+        let monitor_profile = bridge_profile();
+        let monitor = monitor_profile.monitor();
+        let pending = bridge_admit(&monitor, "call-live-spoof", "bridge.live");
+        let root = tempdir().expect("root");
+        let spoof =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
+        main.extend_from_slice(b"\n# not the bundled code\n");
+        std::fs::write(spoof.join("main.py"), main).unwrap();
+        let ctx = tempdir().expect("context");
+
+        let mut pane =
+            LivePythonPane::launch(bridge_pane_config(&spoof, ctx.path())).expect("launch spoof");
+        assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::Untrusted);
+        assert!(seeded_entry_ids(&pane).is_empty(), "no inventory at open");
+
+        let before = rows(&monitor);
+        pane.handle_message(json!({"type": "read_permission_decisions"}));
+        for action in ["allow", "revoke"] {
+            pane.handle_message(decide(&pending, action));
+        }
+        assert_eq!(rows(&monitor), before, "the monitor is unchanged");
+        assert!(rows(&monitor).contains(&(pending.clone(), "pending".to_string())));
+        assert!(pane
+            .unhandled_warned_at
+            .contains_key("permission_bridge_refused:read"));
+        assert!(pane
+            .unhandled_warned_at
+            .contains_key("permission_bridge_refused:decide"));
+        assert!(
+            Arc::ptr_eq(&monitor, &monitor_profile.monitor()),
+            "the pane handler used this monitor"
+        );
+    }
+
+    #[test]
+    fn relaunch_rederives_bridge_trust_before_the_new_guest_runs() {
+        let monitor_profile = bridge_profile();
+        let monitor = monitor_profile.monitor();
+        let pending = bridge_admit(&monitor, "call-live-reload", "bridge.reload");
+        let root = tempdir().expect("root");
+        let dir =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let ctx = tempdir().expect("context");
+        let original = std::fs::read(dir.join("main.py")).unwrap();
+
+        let mut pane =
+            LivePythonPane::launch(bridge_pane_config(&dir, ctx.path())).expect("launch bundled");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        assert!(
+            seeded_entry_ids(&pane).contains(&pending),
+            "bundled copy is seeded"
+        );
+
+        // Hot reload onto changed files: trust does not survive.
+        let mut swapped = original.clone();
+        swapped.extend_from_slice(b"\n# swapped in\n");
+        std::fs::write(dir.join("main.py"), &swapped).unwrap();
+        pane.relaunch().expect("relaunch swapped");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::Untrusted);
+        assert!(seeded_entry_ids(&pane).is_empty());
+        let before = rows(&monitor);
+        pane.handle_message(decide(&pending, "revoke"));
+        assert_eq!(rows(&monitor), before, "swapped code cannot decide");
+
+        // Restoring the shipped bytes restores trust on the next reload.
+        std::fs::write(dir.join("main.py"), &original).unwrap();
+        pane.relaunch().expect("relaunch restored");
+        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        pane.handle_message(decide(&pending, "revoke"));
+        assert!(
+            !rows(&monitor).iter().any(|(id, _)| id == &pending),
+            "restored bundled code may revoke"
+        );
+        assert!(Arc::ptr_eq(&monitor, &monitor_profile.monitor()));
+    }
+
+    /// Stint 1238 matrix cell flipped by stint 1264. Was: any Python guest's
+    /// `permission_decision` reached `mutate_entry` as `human: true`, so
+    /// `allow` approved a pending ask as Always. Now: a guest without bundled
+    /// provenance is refused and changes nothing; the bundled Permissions
+    /// plugin is a non-human caller whose `allow` only files a Needs you item.
+    #[test]
+    fn python_permission_bridge_never_approves_a_pending_ask_as_human() {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempdir().unwrap();
+        let admit = || {
+            monitor.admit(AdmitRequest {
+                call_id: "call-1",
+                tool: "probe.add",
+                input_json: "{}",
+                actor_type: ActorType::Agent,
+                actor_id: "agent:caller",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: ws.path(),
+                context_id: 1,
+                package_id: "probe",
+                instance_id: 0,
+                target_type: TargetType::PluginConnector,
+            })
+        };
+        let Admission::Required { pending_request_id } = admit() else {
+            panic!("an unapproved connector call must ask");
+        };
+        let message = json!({
+            "type": "permission_decision",
+            "id": pending_request_id,
+            "action": "allow",
+        });
+        for (trust, plugin, status) in [
+            (
+                PermissionUiTrust::Untrusted,
+                "any.python.plugin",
+                "rejected",
+            ),
+            (PermissionUiTrust::Untrusted, "permissions", "rejected"),
+            (
+                PermissionUiTrust::BundledPermissionsUi,
+                "permissions",
+                "needs_you",
+            ),
+        ] {
+            let (reply, _) = answer_permission_bridge(
+                trust,
+                PermissionBridgeKind::Decide,
+                &message,
+                &monitor,
+                plugin,
+            );
+            assert_eq!(reply["status"], status, "{plugin} {trust:?}: {reply}");
+            assert!(
+                matches!(admit(), Admission::Required { .. }),
+                "{plugin} {trust:?}: a guest message never approves the ask"
+            );
+        }
     }
 
     #[test]

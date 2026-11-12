@@ -47,6 +47,7 @@ pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
+pub(crate) mod startup_error;
 mod secret_get;
 pub mod secrets_view;
 mod sync;
