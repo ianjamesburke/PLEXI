@@ -785,7 +785,7 @@ class PluginRuntime:
                 self._merge_state_effect(scoped, effect.data)
                 state_changed = True
                 _emit({
-                    "type": "save_app_state",
+                    "type": "save_plugin_state",
                     "scope": scope_name,
                     "payload": dict(scoped),
                 })

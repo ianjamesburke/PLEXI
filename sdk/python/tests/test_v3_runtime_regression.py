@@ -244,7 +244,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            assert not _find_events(events, "save_app_state")
+            assert not _find_events(events, "save_plugin_state")
         finally:
             proc.kill()
 
@@ -253,7 +253,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            saves = _find_events(events, "save_app_state")
+            saves = _find_events(events, "save_plugin_state")
             assert len(saves) == 1
             assert saves[0]["payload"]["count"] == 99
         finally:
