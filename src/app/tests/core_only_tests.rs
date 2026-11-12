@@ -281,45 +281,60 @@ fn core_only_terminal_executes_and_splits() {
         .all(|p| p.as_view().is_none()));
 }
 
-/// Stint 1210: the core-only notice owns the keyboard while it is up, Esc and
-/// Enter each dismiss it, and input returns to the pane it came from.
+/// Stint 1210: a refusal notice never moves keyboard focus. This launch comes
+/// from a direct call, the way an agent's or script's CLI request reaches the
+/// host, so input must stay with the pane. The notice wraps its message and
+/// is dismissed with its kit Dismiss action. Focus for the user's own input
+/// is a follow-up that needs the typed requesting principal.
 #[test]
-fn core_only_notice_takes_focus_and_escape_or_enter_dismisses_it() {
-    use crate::app::input_owner::{InputOwner, OverlaySurface};
-    for key in [egui::Key::Escape, egui::Key::Enter] {
-        let profile = profile(true);
-        let mut h = HostHarness::from_profile_dir(profile.path());
-        let pane = h.add_test_pane();
-        h.focus_pane(pane);
-        h.run_frames(1);
-        let ctx = h.app.ctx.clone();
-        assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+fn core_only_refusal_notice_never_moves_keyboard_focus_and_dismisses_by_click() {
+    use crate::app::input_owner::InputOwner;
+    let profile = profile(true);
+    let mut h = HostHarness::from_profile_dir(profile.path());
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    let ctx = h.app.ctx.clone();
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
 
-        h.app.open_notes_picker();
-        h.run_frames(1);
-        assert!(
-            h.app.plugin_notice.is_some(),
-            "Notes is refused in core-only mode"
-        );
-        assert_eq!(
-            h.app.input_owner(&ctx),
-            InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::PluginNotice)),
-            "the notice owns the keyboard while it is up"
-        );
+    h.app.open_notes_picker();
+    h.run_frames(2);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Notes is refused in core-only mode"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "a refusal notice must not take keyboard focus"
+    );
 
-        h.press_key(key, egui::Modifiers::NONE);
-        assert!(
-            h.app.plugin_notice.is_none(),
-            "{key:?} must dismiss the notice"
-        );
-        assert!(!h
-            .app
-            .focus_stack
-            .contains(&crate::app::FocusKind::PluginNotice));
-        assert_eq!(
-            h.app.input_owner(&ctx),
-            InputOwner::Pane(pane),
-            "{key:?}: input returns to the pane under the notice"
-        );
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Esc belongs to the focused pane, not to an unfocused notice"
+    );
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+
+    h.run_frames(1);
+    let rect: egui::Rect = ctx
+        .data(|data| data.get_temp(egui::Id::new("plugin_notice_dismiss_rect")))
+        .expect("the notice paints its Dismiss action");
+    let pos = rect.center();
+    for pressed in [true, false] {
+        h.frame(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
     }
+    assert!(h.app.plugin_notice.is_none(), "Dismiss closes the notice");
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
 }
