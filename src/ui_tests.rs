@@ -6676,6 +6676,87 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    /// Paints its whole `ui.max_rect()`, as the declarative renderer's plugin
+    /// backdrop does (`render_ui_tree_with_canvas_fits` fills `max_rect` before
+    /// drawing the tree). A plugin's paint must never reach host chrome.
+    struct BackdropFillFixture;
+
+    const BACKDROP_FIXTURE_FILL: egui::Color32 = egui::Color32::from_rgb(255, 0, 255);
+
+    impl crate::app::view_trait::View for BackdropFillFixture {
+        fn type_id(&self) -> &'static str {
+            "backdrop_fill_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Backdrop fill".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            _: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, BACKDROP_FIXTURE_FILL);
+        }
+    }
+
+    /// Stint 1267: a plugin view that replaced a pane lost its "← <pane> / Esc
+    /// return" bar when selected. The plugin was handed the pane's whole rect,
+    /// so its backdrop fill painted over the bar; only the unfocused-pane
+    /// opacity let the bar show through. The bar must be visible, and plugin
+    /// paint must start below it, whether or not the view is focused.
+    #[test]
+    fn overtake_bar_stays_visible_over_a_full_rect_plugin_focused_or_not() {
+        let (mut h, terminal, view) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            let Some(Pane::View(view_pane)) = app.windows[app.active_window].panes.get_mut(&view)
+            else {
+                panic!("fixture view pane missing");
+            };
+            view_pane.runtime = ViewRuntime::Builtin(Box::new(BackdropFillFixture));
+            view_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
+                pane_id: view + 1_000,
+                target_context_id: 42,
+                context_state: None,
+                reveal_after_close: false,
+                hidden: false,
+            }))));
+        });
+        let bar_height = crate::render::view_pane::chrome_height(true, false);
+        for (focus, label) in [(view, "focused"), (terminal, "unfocused")] {
+            h.focus_pane(focus).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(view).unwrap());
+            let img = h.render().unwrap();
+            h.save_screenshot(&evidence_png!(&format!("_{label}")))
+                .expect("render overtake bar evidence");
+            let ppp = img.width() as f32 / h.with_app(|app| app.ctx.content_rect().width());
+            let is_fixture = |y: f32| {
+                let [r, g, b, _] = img
+                    .get_pixel((rect.center().x * ppp) as u32, (y * ppp) as u32)
+                    .0;
+                r > 150 && b > 150 && g < 100
+            };
+            let mut y = rect.top() + 0.5;
+            while y < rect.top() + bar_height + 40.0 && !is_fixture(y) {
+                y += 0.5;
+            }
+            assert!(
+                y < rect.top() + bar_height + 40.0,
+                "{label}: the fixture plugin must paint its content area"
+            );
+            assert!(
+                y >= rect.top() + bar_height - 1.0,
+                "{label}: plugin paint starts {:.1}px below the pane top, over the {bar_height}px overtake bar",
+                y - rect.top()
+            );
+        }
+    }
+
     struct GalleryRowsFixture {
         width: f32,
     }
