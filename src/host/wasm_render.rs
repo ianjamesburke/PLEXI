@@ -55,6 +55,122 @@ pub struct RenderResult {
     pub canvas_clicks: Vec<CanvasClick>,
     pub canvas_time: std::time::Duration,
     authored_paint: Vec<std::ops::Range<usize>>,
+    /// Painted geometry per node, filled only by a pass started through
+    /// [`render_ui_tree_layout`]. `None` on every live-host pass.
+    pub node_layout: Option<Vec<NodeLayout>>,
+    node_paint: Option<Vec<NodePaintSpan>>,
+}
+
+/// What one node painted in a headless pass: read from the pass's shape list,
+/// so it reports the pixels the renderer produced and never a second layout.
+/// A node with no entry was not visited as its own node (a keypad button, a
+/// table cell); a node with an entry and `visible == None` painted nothing a
+/// viewer can see.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeLayout {
+    pub id: u32,
+    /// Union of everything the node painted, before clipping.
+    pub rect: Option<egui::Rect>,
+    /// The part of `rect` inside the clip rects it was painted under.
+    pub visible: Option<egui::Rect>,
+    /// Clip rect of the `Ui` the node was laid out in.
+    pub clip: egui::Rect,
+    /// A text run inside the node broke a line in the middle of a word.
+    pub text_wrapped_mid_word: bool,
+    /// A text run inside the node extends past its clip rect.
+    pub text_cut: bool,
+}
+
+#[derive(Debug)]
+struct NodePaintSpan {
+    id: u32,
+    shapes: std::ops::Range<usize>,
+    clip: egui::Rect,
+}
+
+/// True when consecutive rows of one text run split a word: the first row
+/// ends, and the next begins, on a non-whitespace character with no newline
+/// between them ("Star" / "t").
+pub fn rows_break_mid_word(rows: &[(String, bool)]) -> bool {
+    rows.windows(2).any(|pair| {
+        let (first, ends_with_newline) = &pair[0];
+        !ends_with_newline
+            && first.chars().last().is_some_and(|c| !c.is_whitespace())
+            && pair[1].0.chars().next().is_some_and(|c| !c.is_whitespace())
+    })
+}
+
+fn galley_rows(galley: &egui::Galley) -> Vec<(String, bool)> {
+    galley
+        .rows
+        .iter()
+        .map(|placed| {
+            (
+                placed.row.glyphs.iter().map(|g| g.chr).collect(),
+                placed.ends_with_newline,
+            )
+        })
+        .collect()
+}
+
+/// Slack, in points, before painted geometry counts as cut: strokes and
+/// glyph ink routinely sit a fraction of a point outside their widget rect.
+const LAYOUT_CUT_SLACK: f32 = 1.0;
+
+fn measure_shape(shape: &egui::Shape, clip: egui::Rect, fact: &mut NodeLayout) {
+    match shape {
+        egui::Shape::Noop => {}
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                measure_shape(shape, clip, fact);
+            }
+        }
+        other => {
+            let bounds = other.visual_bounding_rect();
+            if !bounds.is_positive() {
+                return;
+            }
+            fact.rect = Some(fact.rect.map_or(bounds, |r| r.union(bounds)));
+            let visible = bounds.intersect(clip);
+            if visible.is_positive() {
+                fact.visible = Some(fact.visible.map_or(visible, |r| r.union(visible)));
+            }
+            if let egui::Shape::Text(text) = other {
+                if !clip.expand(LAYOUT_CUT_SLACK).contains_rect(bounds) {
+                    fact.text_cut = true;
+                }
+                if rows_break_mid_word(&galley_rows(&text.galley)) {
+                    fact.text_wrapped_mid_word = true;
+                }
+            }
+        }
+    }
+}
+
+fn collect_node_layout(ui: &egui::Ui, spans: &[NodePaintSpan]) -> Vec<NodeLayout> {
+    ui.ctx().graphics(|g| {
+        let entries: Vec<&egui::epaint::ClippedShape> = g
+            .get(ui.layer_id())
+            .map(|list| list.all_entries().collect())
+            .unwrap_or_default();
+        spans
+            .iter()
+            .map(|span| {
+                let mut fact = NodeLayout {
+                    id: span.id,
+                    rect: None,
+                    visible: None,
+                    clip: span.clip,
+                    text_wrapped_mid_word: false,
+                    text_cut: false,
+                };
+                for entry in entries.get(span.shapes.clone()).unwrap_or_default() {
+                    measure_shape(&entry.shape, entry.clip_rect, &mut fact);
+                }
+                fact
+            })
+            .collect()
+    })
 }
 
 /// Render a view tree, compositing `surface` into the first surface-node
@@ -65,6 +181,7 @@ pub struct RenderResult {
 /// the same tree under the same value. Host-owned edit buffers use it to tell
 /// "the plugin pushed me a new value" apart from "I am painting the same stale
 /// tree again" — see `reconcile_text_input_buffer`.
+#[cfg(test)]
 pub fn render_ui_tree_with_surface(
     ui: &mut egui::Ui,
     tree: &UiTree,
@@ -98,7 +215,31 @@ pub fn render_ui_tree_with_canvas_fits(
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
 ) -> RenderResult {
-    let mut out = RenderResult::default();
+    render_ui_tree_into(
+        ui,
+        tree,
+        colors,
+        surface,
+        canvas_fits,
+        pending_click,
+        surface_key,
+        tree_seq,
+        RenderResult::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_ui_tree_into(
+    ui: &mut egui::Ui,
+    tree: &UiTree,
+    colors: &Colors,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
+    tree_seq: u64,
+    mut out: RenderResult,
+) -> RenderResult {
     let paint_start = paint_len(ui);
     let env = TreeRenderEnv {
         nodes: &tree.nodes,
@@ -139,6 +280,9 @@ pub fn render_ui_tree_with_canvas_fits(
     }
     resolve_default_text(ui, paint_start, colors.terminal_bg, &out.authored_paint);
     out.authored_paint.clear();
+    if let Some(spans) = out.node_paint.take() {
+        out.node_layout = Some(collect_node_layout(ui, &spans));
+    }
     out
 }
 
@@ -366,6 +510,48 @@ pub fn render_ui_tree_to_png(
     height: f32,
     pixels_per_point: f32,
 ) -> Result<Vec<u8>, String> {
+    let mut harness = headless_tree_harness(tree, width, height, pixels_per_point, None);
+    harness.run();
+    let img = harness
+        .render()
+        .map_err(|e| format!("offscreen render failed: {e}"))?;
+    let mut bytes = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| format!("PNG encode failed: {e}"))?;
+    Ok(bytes)
+}
+
+/// Headless layout pass over a `UiTree`: the same widgets, fonts and pane size
+/// as [`render_ui_tree_to_png`], returning what each node painted instead of
+/// pixels. Nothing is rasterized, so it needs no GPU.
+pub fn render_ui_tree_layout(tree: &UiTree, width: f32, height: f32) -> Vec<NodeLayout> {
+    let sink = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut harness = headless_tree_harness(tree, width, height, 1.0, Some(sink.clone()));
+    harness.run();
+    drop(harness);
+    let layout = sink.take();
+    log::info!(
+        "wasm_render: headless layout pass {width}x{height} measured {} node(s)",
+        layout.len()
+    );
+    layout
+}
+
+type NodeLayoutSink = std::rc::Rc<std::cell::RefCell<Vec<NodeLayout>>>;
+
+/// The harness both headless entry points share. With a `layout_sink`, every
+/// pass overwrites it with that pass's node geometry, so after `run` it holds
+/// the settled frame.
+fn headless_tree_harness(
+    tree: &UiTree,
+    width: f32,
+    height: f32,
+    pixels_per_point: f32,
+    layout_sink: Option<NodeLayoutSink>,
+) -> egui_kittest::Harness<'static> {
     let config = crate::config::PlexiConfig::load();
     let colors = crate::ui::theme::colors_from_config(&config);
 
@@ -378,7 +564,7 @@ pub fn render_ui_tree_to_png(
     // not hit this because `setup_fonts` runs once at startup, long before any
     // plugin frame.
     let mut fonts_ready = false;
-    let mut harness = egui_kittest::Harness::builder()
+    egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
         .with_pixels_per_point(pixels_per_point)
         .build_ui(move |ui| {
@@ -392,20 +578,25 @@ pub fn render_ui_tree_to_png(
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+                    let out = render_ui_tree_into(
+                        ui,
+                        &tree,
+                        &colors,
+                        None,
+                        None,
+                        None,
+                        None,
+                        0,
+                        RenderResult {
+                            node_paint: layout_sink.as_ref().map(|_| Vec::new()),
+                            ..RenderResult::default()
+                        },
+                    );
+                    if let (Some(sink), Some(layout)) = (&layout_sink, out.node_layout) {
+                        sink.replace(layout);
+                    }
                 });
-        });
-    harness.run();
-    let img = harness
-        .render()
-        .map_err(|e| format!("offscreen render failed: {e}"))?;
-    let mut bytes = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut bytes),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| format!("PNG encode failed: {e}"))?;
-    Ok(bytes)
+        })
 }
 
 fn rgba(c: &Color) -> Color32 {
@@ -840,6 +1031,24 @@ fn render_column_children(
 }
 
 fn render_node(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    id: u32,
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    let layout_start = out.node_paint.is_some().then(|| paint_len(ui));
+    render_node_inner(ui, env, id, out, depth);
+    if let (Some(start), Some(spans)) = (layout_start, out.node_paint.as_mut()) {
+        spans.push(NodePaintSpan {
+            id,
+            shapes: start..paint_len(ui),
+            clip: ui.clip_rect(),
+        });
+    }
+}
+
+fn render_node_inner(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
     id: u32,

@@ -8,30 +8,41 @@ use std::path::{Path, PathBuf};
 /// already-loaded manifest, so `plugin check`/`view render` boot the plugin exactly
 /// the way the live host does (`wasm_python::WasmPythonRuntime`), not a
 /// separate native subprocess speaking a different wire protocol.
-fn python_launch_config(
+pub(crate) fn python_launch_config(
     manifest: &PluginManifest,
     entry_path: &Path,
     plugin_dir: &Path,
-) -> PythonLaunchConfig {
-    python_launch_config_from_parts(
+) -> Result<PythonLaunchConfig, String> {
+    Ok(python_launch_config_from_parts(
         &manifest.plugin.id,
         plugin_dir,
         entry_path,
         &manifest.plugin.capabilities.capabilities,
         &manifest.plugin.capabilities.allowed_hosts,
-    )
+        manifest
+            .state_scopes()
+            .map_err(|e| format!("manifest [state] scopes: {e}"))?,
+        manifest.state_format()?,
+    ))
 }
 
 /// Same as [`python_launch_config`], for callers that only have the pieces
 /// (e.g. `plexi view render`'s registry-id lookup path, which resolves an
-/// `PluginIdentity` rather than a full `PluginManifest`).
+/// installed plugin rather than a full `PluginManifest`).
 pub(crate) fn python_launch_config_from_parts(
     plugin_id: &str,
     plugin_dir: &Path,
     entry_path: &Path,
     capabilities: &[String],
     allowed_hosts: &[String],
+    state_scopes: Vec<crate::host::state_scope::StateScope>,
+    state_format: crate::host::state_scope::StateFormat,
 ) -> PythonLaunchConfig {
+    log::info!(
+        "plugin_check[{plugin_id}]: headless launch declares state scopes {:?} format {}",
+        state_scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        state_format.as_str()
+    );
     PythonLaunchConfig {
         plugin_id: plugin_id.to_string(),
         plugin_dir: plugin_dir.to_path_buf(),
@@ -51,10 +62,11 @@ pub(crate) fn python_launch_config_from_parts(
             ),
         )
         .to_theme_map(),
-        // Headless one-shot renders never persist state; the default scope
-        // list and a plugin-dir anchor are inert here.
-        state_scopes: crate::host::state_scope::default_scopes(),
-        state_format: crate::host::state_scope::StateFormat::Json,
+        // The SDK validates every `scope=` argument against this list, so it
+        // must be the manifest's. Headless runs never persist state; the
+        // plugin-dir anchor only gives the scopes somewhere to resolve.
+        state_scopes,
+        state_format,
         context_root: plugin_dir.to_path_buf(),
     }
 }
@@ -77,16 +89,24 @@ fn indexed_node_to_json(node: &crate::host::wasm_view::IndexedNode) -> serde_jso
         UiNodeData::Button(b) => {
             serde_json::json!({"type": "Button", "label": b.label, "on_click": b.on_click})
         }
-        UiNodeData::TextInput(_) => serde_json::json!({"type": "TextInput"}),
+        UiNodeData::TextInput(t) => serde_json::json!({
+            "type": "TextInput", "value": t.value, "placeholder": t.placeholder
+        }),
         UiNodeData::Row(r) => serde_json::json!({"type": "Row", "children": r.children}),
         UiNodeData::Column(c) => serde_json::json!({"type": "Column", "children": c.children}),
-        UiNodeData::ProgressBar(_) => serde_json::json!({"type": "ProgressBar"}),
+        UiNodeData::ProgressBar(p) => serde_json::json!({"type": "ProgressBar", "label": p.label}),
         UiNodeData::Badge(b) => serde_json::json!({"type": "Badge", "text": b.text}),
         UiNodeData::ListView(l) => serde_json::json!({"type": "ListView", "items": l.items}),
         UiNodeData::Scroll(s) => serde_json::json!({"type": "Scroll", "child": s.child}),
         UiNodeData::Padding(p) => serde_json::json!({"type": "Padding", "child": p.child}),
         UiNodeData::Canvas(c) => serde_json::json!({
-            "type": "Canvas", "width": c.width, "height": c.height, "commands": c.commands.len()
+            "type": "Canvas", "width": c.width, "height": c.height, "commands": c.commands.len(),
+            "texts": c.commands.iter().filter_map(|command| match command {
+                crate::host::wasm_view::bindings::plexi::platform::types::CanvasCommand::Text(t) => {
+                    Some(t.text.as_str())
+                }
+                _ => None,
+            }).collect::<Vec<_>>(),
         }),
         UiNodeData::Divider => serde_json::json!({"type": "Divider"}),
         UiNodeData::Space(s) => {
@@ -148,7 +168,43 @@ struct ScaffoldMetadata {
 struct SeedFixture {
     path: PathBuf,
     state: serde_json::Value,
-    signals: Vec<String>,
+    signals: Vec<SeedSignal>,
+}
+
+/// One scalar from `fixtures/state.json`, with the path that names it.
+#[derive(Debug, Clone, PartialEq)]
+struct SeedSignal {
+    key: String,
+    value: SeedValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SeedValue {
+    Text(String),
+    Number(String),
+}
+
+impl std::fmt::Display for SeedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(text) => write!(f, "{text:?}"),
+            Self::Number(number) => f.write_str(number),
+        }
+    }
+}
+
+impl std::fmt::Display for SeedSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} = {}", self.key, self.value)
+    }
+}
+
+fn join_signals(signals: &[SeedSignal]) -> String {
+    signals
+        .iter()
+        .map(SeedSignal::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
@@ -291,8 +347,20 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
             entry_path.display()
         ));
     }
-    let launch_config =
-        is_python_entry.then(|| python_launch_config(&manifest, &entry_path, plugin_dir));
+    let launch_config = if is_python_entry {
+        match python_launch_config(&manifest, &entry_path, plugin_dir) {
+            Ok(config) => Some(config),
+            Err(e) => {
+                errors.push(format!(
+                    "{} — {e}",
+                    plugin_dir.join("manifest.toml").display()
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // A guest that fails to boot fails identically at every size; stop after
     // the first boot failure instead of paying the probe cost 4 more times
@@ -316,6 +384,18 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
                     continue;
                 }
                 println!("✓ render {label} — {node_count} node(s)");
+                let layout = crate::host::wasm_render::render_ui_tree_layout(
+                    &tree,
+                    width as f32,
+                    height as f32,
+                );
+                report_layout_findings(
+                    &manifest.plugin.id,
+                    &label,
+                    layout_findings(&tree, &layout, (width, height)),
+                    &mut errors,
+                    &mut warnings,
+                );
                 if let Some(dir) = &png_dir {
                     let png_path = dir.join(format!("{}-{label}.png", manifest.plugin.id));
                     match crate::host::wasm_render::render_ui_tree_to_png(
@@ -469,20 +549,38 @@ fn run_seeded_state_and_action_probe(
 
     let matched = matched_seed_signals(&frame, &fixture.signals);
     if matched.is_empty() {
-        errors.push(format!(
-            "seeded render {label} — rendered frame did not include any scalar fixture value ({})",
-            fixture.signals.join(", ")
-        ));
+        // Only a miss pays for a second boot: the same frame without the seed
+        // tells an ignored seed apart from a value the probe cannot see.
+        let unseeded = match crate::host::wasm_python::run_headless_frame(
+            launch_config,
+            (width as f32, height as f32),
+            None,
+        ) {
+            Ok(tree) => Some(ui_tree_to_json(&tree)),
+            Err(e) => {
+                log::warn!(
+                    "plugin_check[{}]: unseeded comparison render {label} failed: {e}",
+                    manifest.plugin.id
+                );
+                None
+            }
+        };
+        let seed_ignored = unseeded.as_ref() == Some(&frame);
+        log::info!(
+            "plugin_check[{}]: seeded render {label} matched no fixture value; seed_ignored={seed_ignored}",
+            manifest.plugin.id
+        );
+        errors.push(seed_miss_error(&label, &fixture.signals, seed_ignored));
         return;
     }
     println!(
         "✓ seeded render {label} — reflected fixture value(s): {}",
-        matched.join(", ")
+        join_signals(&matched)
     );
     log::info!(
-        "plugin_check[{}]: seeded render {label} reflected {:?}",
+        "plugin_check[{}]: seeded render {label} reflected {}",
         manifest.plugin.id,
-        matched
+        join_signals(&matched)
     );
 
     let discovered = discover_action_handlers(&frame);
@@ -533,7 +631,7 @@ fn run_seeded_state_and_action_probe(
                             .then(|| expected_action_signal(&fixture.state, handler_id))
                             .flatten();
                         if let Some(expected) = expected {
-                            if frame_contains_scalar(&after_frame, &expected) {
+                            if frame_shows(&after_frame, &SeedValue::Number(expected.clone())) {
                                 any_effect = true;
                                 println!(
                                     "✓ {action_label} — rendered expected state value {expected}"
@@ -572,53 +670,126 @@ fn run_seeded_state_and_action_probe(
     }
 }
 
-fn seed_state_signals(state: &serde_json::Value) -> Vec<String> {
+/// The error for a seeded render that showed no fixture value: which file,
+/// which values were looked for, the rule they are matched by, and, when the
+/// frame is identical without the seed, the likeliest cause.
+fn seed_miss_error(label: &str, signals: &[SeedSignal], seed_ignored: bool) -> String {
+    let mut message = format!(
+        "seeded render {label} — no value from fixtures/state.json appeared in the rendered frame. Looked for: {}. Rule: a string matches when displayed text contains it, ignoring case; a number matches as a whole number in displayed text. Displayed text is Text, Button, Badge, list rows, headers, TextInput value and placeholder, and canvas text.",
+        join_signals(signals)
+    );
+    if seed_ignored {
+        message.push_str(
+            " The seed had no visible effect: the frame is identical without it; does init() overwrite these keys with SetState? Read the seeded value in init() (state.get) before returning defaults.",
+        );
+    }
+    message
+}
+
+fn seed_state_signals(state: &serde_json::Value) -> Vec<SeedSignal> {
     let mut signals = Vec::new();
-    collect_scalar_signals(state, &mut signals);
-    signals.sort();
+    collect_scalar_signals(state, "", &mut signals);
+    signals.sort_by(|a, b| a.key.cmp(&b.key));
     signals.dedup();
     signals
 }
 
-fn collect_scalar_signals(value: &serde_json::Value, signals: &mut Vec<String>) {
+fn collect_scalar_signals(value: &serde_json::Value, path: &str, signals: &mut Vec<SeedSignal>) {
     match value {
-        serde_json::Value::String(s) if !s.is_empty() => signals.push(s.clone()),
-        serde_json::Value::Number(n) => signals.push(n.to_string()),
+        serde_json::Value::String(s) if !s.trim().is_empty() => signals.push(SeedSignal {
+            key: path.to_string(),
+            value: SeedValue::Text(s.clone()),
+        }),
+        serde_json::Value::Number(n) => signals.push(SeedSignal {
+            key: path.to_string(),
+            value: SeedValue::Number(n.to_string()),
+        }),
         serde_json::Value::Array(values) => {
-            for value in values {
-                collect_scalar_signals(value, signals);
+            for (index, value) in values.iter().enumerate() {
+                collect_scalar_signals(value, &format!("{path}[{index}]"), signals);
             }
         }
         serde_json::Value::Object(map) => {
-            for value in map.values() {
-                collect_scalar_signals(value, signals);
+            for (key, value) in map {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_scalar_signals(value, &child, signals);
             }
         }
         _ => {}
     }
 }
 
-fn matched_seed_signals(frame: &serde_json::Value, signals: &[String]) -> Vec<String> {
+fn matched_seed_signals(frame: &serde_json::Value, signals: &[SeedSignal]) -> Vec<SeedSignal> {
     signals
         .iter()
-        .filter(|signal| frame_contains_scalar(frame, signal))
+        .filter(|signal| frame_shows(frame, &signal.value))
         .cloned()
         .collect()
 }
 
-fn frame_contains_scalar(frame: &serde_json::Value, expected: &str) -> bool {
+/// Frame JSON fields that hold text a user reads. Everything else (type tags,
+/// keys, handler ids, sizes) is structure and never satisfies a seed.
+const DISPLAYED_FIELDS: &[&str] = &[
+    "text",
+    "label",
+    "value",
+    "placeholder",
+    "title",
+    "subtitle",
+    "texts",
+    "keys",
+    "description",
+];
+
+/// True when the frame displays `expected` somewhere a user would read it.
+fn frame_shows(frame: &serde_json::Value, expected: &SeedValue) -> bool {
     match frame {
-        serde_json::Value::String(s) => s == expected,
-        serde_json::Value::Number(n) => n.to_string() == expected,
-        serde_json::Value::Bool(b) => b.to_string() == expected,
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| frame_contains_scalar(value, expected)),
-        serde_json::Value::Object(map) => map
-            .values()
-            .any(|value| frame_contains_scalar(value, expected)),
+        serde_json::Value::Array(values) => values.iter().any(|value| frame_shows(value, expected)),
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            if DISPLAYED_FIELDS.contains(&key.as_str()) && displayed_matches(value, expected) {
+                return true;
+            }
+            frame_shows(value, expected)
+        }),
         _ => false,
     }
+}
+
+fn displayed_matches(value: &serde_json::Value, expected: &SeedValue) -> bool {
+    match (value, expected) {
+        (serde_json::Value::String(shown), SeedValue::Text(text)) => {
+            shown.to_lowercase().contains(&text.to_lowercase())
+        }
+        (serde_json::Value::String(shown), SeedValue::Number(number)) => {
+            contains_whole_number(shown, number)
+        }
+        (serde_json::Value::Number(shown), SeedValue::Number(number)) => {
+            shown.to_string() == *number
+        }
+        (serde_json::Value::Array(values), _) => values
+            .iter()
+            .any(|value| displayed_matches(value, expected)),
+        _ => false,
+    }
+}
+
+/// `number` occurs in `shown` as a whole number: not as digits inside a longer
+/// number, so a seeded `3` is not satisfied by "13", "30" or "1.3".
+fn contains_whole_number(shown: &str, number: &str) -> bool {
+    let bytes = shown.as_bytes();
+    shown.match_indices(number).any(|(start, matched)| {
+        let end = start + matched.len();
+        let digit_at = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_digit);
+        let before_ok = start == 0
+            || !(digit_at(start - 1)
+                || (bytes[start - 1] == b'.' && start >= 2 && digit_at(start - 2)));
+        let after_ok = !(digit_at(end) || (bytes.get(end) == Some(&b'.') && digit_at(end + 1)));
+        before_ok && after_ok
+    })
 }
 
 /// Every clickable handler id in the rendered frame, in render order, deduped.
@@ -659,6 +830,302 @@ fn expected_action_signal(state: &serde_json::Value, handler_id: &str) -> Option
             .map(|count| (count + 1).to_string());
     }
     None
+}
+
+/// The smallest pane `plugin check` renders. A control that cannot be reached
+/// here is an error, because nothing on screen tells the user it exists.
+const SMALLEST_CHECK_SIZE: (u32, u32) = (320, 240);
+/// Painted geometry may differ by this many points before it counts as cut
+/// or overlapping; strokes and glyph ink sit slightly outside widget rects.
+const LAYOUT_TOLERANCE: f32 = 2.0;
+/// Findings printed per size before the rest are summarized as a count.
+const MAX_LAYOUT_FINDINGS_PER_SIZE: usize = 8;
+
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutFinding {
+    is_error: bool,
+    message: String,
+}
+
+fn report_layout_findings(
+    plugin_id: &str,
+    label: &str,
+    findings: Vec<LayoutFinding>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    log::info!(
+        "plugin_check[{plugin_id}]: layout {label} produced {} finding(s), {} error(s)",
+        findings.len(),
+        findings.iter().filter(|f| f.is_error).count()
+    );
+    let total = findings.len();
+    // Errors first, so the per-size cap never hides one behind warnings.
+    let (failing, advisory): (Vec<_>, Vec<_>) = findings.into_iter().partition(|f| f.is_error);
+    for finding in failing
+        .into_iter()
+        .chain(advisory)
+        .take(MAX_LAYOUT_FINDINGS_PER_SIZE)
+    {
+        let line = format!("layout {label} — {}", finding.message);
+        if finding.is_error {
+            errors.push(line);
+        } else {
+            warnings.push(line);
+        }
+    }
+    if total > MAX_LAYOUT_FINDINGS_PER_SIZE {
+        warnings.push(format!(
+            "layout {label} — {} more layout finding(s) not shown; fix the ones above and rerun",
+            total - MAX_LAYOUT_FINDINGS_PER_SIZE
+        ));
+    }
+}
+
+fn clip_text(text: &str) -> String {
+    const MAX: usize = 40;
+    if text.chars().count() <= MAX {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(MAX).collect::<String>())
+    }
+}
+
+/// Node type plus the text a plugin author would recognize it by.
+fn describe_node(node: &crate::host::wasm_view::IndexedNode) -> String {
+    use crate::host::wasm_view::UiNodeData;
+    let (kind, text) = match &node.data {
+        UiNodeData::Empty => ("Empty", None),
+        UiNodeData::Text(t) => ("Text", Some(t.text.as_str())),
+        UiNodeData::Button(b) => ("Button", Some(b.label.as_str())),
+        UiNodeData::TextInput(t) => (
+            "TextInput",
+            Some(if t.placeholder.is_empty() {
+                t.value.as_str()
+            } else {
+                t.placeholder.as_str()
+            }),
+        ),
+        UiNodeData::Row(_) => ("Row", None),
+        UiNodeData::Column(_) => ("Column", None),
+        UiNodeData::ProgressBar(p) => ("ProgressBar", p.label.as_deref()),
+        UiNodeData::Badge(b) => ("Badge", Some(b.text.as_str())),
+        UiNodeData::ListView(_) => ("ListView", None),
+        UiNodeData::Scroll(_) => ("Scroll", None),
+        UiNodeData::Padding(_) => ("Padding", None),
+        UiNodeData::Canvas(_) => ("Canvas", None),
+        UiNodeData::Divider => ("Divider", None),
+        UiNodeData::Space(_) => ("Space", None),
+        UiNodeData::Surface(_) => ("Surface", None),
+        UiNodeData::SurfaceHeader(h) => ("SurfaceHeader", Some(h.title.as_str())),
+        UiNodeData::FooterKeys(_) => ("FooterKeys", None),
+        UiNodeData::Pinned(_) => ("Pinned", None),
+        UiNodeData::Spinner(s) => ("Spinner", Some(s.label.as_str())),
+    };
+    match text.filter(|text| !text.is_empty()) {
+        Some(text) => format!("{kind} \"{}\"", clip_text(text)),
+        None if node.key.is_empty() || node.key.parse::<u64>().is_ok() => {
+            format!("{kind} (node {})", node.id)
+        }
+        None => format!("{kind} (key {})", clip_text(&node.key)),
+    }
+}
+
+fn node_children(data: &crate::host::wasm_view::UiNodeData) -> Vec<u32> {
+    use crate::host::wasm_view::UiNodeData;
+    match data {
+        UiNodeData::Row(r) => r.children.clone(),
+        UiNodeData::Column(c) => c.children.clone(),
+        UiNodeData::ListView(l) => l.items.clone(),
+        UiNodeData::Scroll(s) => vec![s.child],
+        UiNodeData::Padding(p) => vec![p.child],
+        UiNodeData::Pinned(p) => vec![p.child],
+        _ => Vec::new(),
+    }
+}
+
+/// Turn the headless pass's painted geometry into findings an author can act
+/// on. Pure over its inputs: the renderer measured, this only judges.
+///
+/// Nodes under a `Scroll` or `ListView` are exempt from the visibility rules,
+/// since scrolling reaches them. A node the pass has no entry for is unknown
+/// and never reported.
+fn layout_findings(
+    tree: &UiTree,
+    layout: &[crate::host::wasm_render::NodeLayout],
+    pane: (u32, u32),
+) -> Vec<LayoutFinding> {
+    use crate::host::wasm_view::UiNodeData;
+    use std::collections::{HashMap, HashSet};
+
+    let facts: HashMap<u32, &crate::host::wasm_render::NodeLayout> =
+        layout.iter().map(|fact| (fact.id, fact)).collect();
+    let nodes: HashMap<u32, &crate::host::wasm_view::IndexedNode> =
+        tree.nodes.iter().map(|node| (node.id, node)).collect();
+
+    // Every node below a scrolling container, walked from those containers.
+    let mut scrollable: HashSet<u32> = HashSet::new();
+    let mut pending: Vec<u32> = tree
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.data, UiNodeData::Scroll(_) | UiNodeData::ListView(_)))
+        .map(|node| node.id)
+        .collect();
+    while let Some(id) = pending.pop() {
+        if !scrollable.insert(id) {
+            continue;
+        }
+        if let Some(node) = nodes.get(&id) {
+            pending.extend(node_children(&node.data));
+        }
+    }
+
+    let smallest = pane == SMALLEST_CHECK_SIZE;
+    let mut findings = Vec::new();
+
+    for node in &tree.nodes {
+        let Some(fact) = facts.get(&node.id) else {
+            continue;
+        };
+        let paints = match &node.data {
+            UiNodeData::Text(t) => !t.text.trim().is_empty(),
+            UiNodeData::Button(_)
+            | UiNodeData::TextInput(_)
+            | UiNodeData::Badge(_)
+            | UiNodeData::ProgressBar(_)
+            | UiNodeData::SurfaceHeader(_)
+            | UiNodeData::Spinner(_) => true,
+            UiNodeData::FooterKeys(f) => !f.entries.is_empty(),
+            _ => false,
+        };
+        if !paints {
+            continue;
+        }
+        let interactive = matches!(node.data, UiNodeData::Button(_) | UiNodeData::TextInput(_));
+        let name = describe_node(node);
+
+        if matches!(node.data, UiNodeData::Button(_)) && fact.text_wrapped_mid_word {
+            findings.push(LayoutFinding {
+                is_error: false,
+                message: format!(
+                    "{name}: the label breaks in the middle of a word; shorten the label, or give the row fewer buttons at this width"
+                ),
+            });
+        }
+
+        if scrollable.contains(&node.id) {
+            continue;
+        }
+        let is_error = smallest && interactive;
+        let reach = if is_error {
+            " This is the smallest supported pane and the control cannot be reached, so it is an error."
+        } else {
+            ""
+        };
+        let (Some(rect), Some(visible)) = (fact.rect, fact.visible) else {
+            findings.push(LayoutFinding {
+                is_error,
+                message: format!(
+                    "{name} is not visible: it was laid out outside its container or with zero size; move it above any grow Spacer, or put the content that pushes it out inside Scrollable(...).{reach}"
+                ),
+            });
+            continue;
+        };
+        let hidden = [
+            (visible.min.x - rect.min.x, "left"),
+            (rect.max.x - visible.max.x, "right"),
+            (visible.min.y - rect.min.y, "top"),
+            (rect.max.y - visible.max.y, "bottom"),
+        ];
+        let cut: Vec<String> = hidden
+            .iter()
+            .filter(|(amount, _)| *amount > LAYOUT_TOLERANCE)
+            .map(|(amount, side)| format!("{}px on the {side}", amount.round()))
+            .collect();
+        if !cut.is_empty() {
+            findings.push(LayoutFinding {
+                is_error,
+                message: format!(
+                    "{name} is cut off ({}); shorten it, stack the row vertically at this width, or put its container inside Scrollable(...).{reach}",
+                    cut.join(", ")
+                ),
+            });
+        }
+    }
+
+    for parent in &tree.nodes {
+        if !matches!(parent.data, UiNodeData::Row(_) | UiNodeData::Column(_)) {
+            continue;
+        }
+        let placed: Vec<(&crate::host::wasm_view::IndexedNode, egui::Rect)> =
+            node_children(&parent.data)
+                .into_iter()
+                .filter_map(|id| {
+                    let node = nodes.get(&id)?;
+                    if matches!(
+                        node.data,
+                        UiNodeData::Empty | UiNodeData::Space(_) | UiNodeData::Divider
+                    ) {
+                        return None;
+                    }
+                    Some((*node, facts.get(&id)?.visible?))
+                })
+                .collect();
+        for (index, (first, first_rect)) in placed.iter().enumerate() {
+            for (second, second_rect) in &placed[index + 1..] {
+                let shared = first_rect.intersect(*second_rect);
+                if shared.width() > LAYOUT_TOLERANCE && shared.height() > LAYOUT_TOLERANCE {
+                    findings.push(LayoutFinding {
+                        is_error: false,
+                        message: format!(
+                            "{} and {} overlap by {}x{}px; children of one {} must not share space (a Canvas drawing outside its own rect, or a second grow Spacer in a Column, does this)",
+                            describe_node(first),
+                            describe_node(second),
+                            shared.width().round(),
+                            shared.height().round(),
+                            describe_node(parent)
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn rect_json(rect: egui::Rect) -> serde_json::Value {
+    let round = |value: f32| (f64::from(value) * 10.0).round() / 10.0;
+    serde_json::json!([
+        round(rect.min.x),
+        round(rect.min.y),
+        round(rect.width()),
+        round(rect.height())
+    ])
+}
+
+/// The frame JSON `view render` prints: the tree plus, per measured node, the
+/// rect it painted (`[x, y, width, height]`), the visible part of that rect
+/// and its clip rect, so a caller can check layout without reading a PNG.
+pub(crate) fn frame_json_with_layout(
+    tree: &UiTree,
+    layout: &[crate::host::wasm_render::NodeLayout],
+) -> serde_json::Value {
+    let mut frame = ui_tree_to_json(tree);
+    frame["layout"] = layout
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "id": fact.id,
+                "rect": fact.rect.map(rect_json),
+                "visible": fact.visible.map(rect_json),
+                "clip": rect_json(fact.clip),
+                "text_wrapped_mid_word": fact.text_wrapped_mid_word,
+                "text_cut": fact.text_cut,
+            })
+        })
+        .collect();
+    frame
 }
 
 fn check_sizes(raw_sizes: &[String]) -> Result<Vec<(u32, u32)>, String> {
@@ -1417,9 +1884,11 @@ profile_dir = ".plexi-beta"
 
         let signals = super::seed_state_signals(&state);
 
-        assert!(signals.contains(&"3".to_string()), "{signals:?}");
-        assert!(signals.contains(&"demo".to_string()), "{signals:?}");
-        assert!(signals.contains(&"7".to_string()), "{signals:?}");
+        let shown: Vec<String> = signals.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            vec!["count = 3", "mode = \"demo\"", "nested.items[0] = 7"]
+        );
     }
 
     #[test]
@@ -1438,8 +1907,11 @@ profile_dir = ".plexi-beta"
             }
         ]);
 
-        assert!(!super::frame_contains_scalar(&frame, "3"));
-        assert!(super::frame_contains_scalar(&frame, "13"));
+        let number = |n: &str| super::SeedValue::Number(n.to_string());
+        assert!(!super::frame_shows(&frame, &number("3")));
+        assert!(super::frame_shows(&frame, &number("13")));
+        // Structure is not display: the padding value never satisfies a seed.
+        assert!(!super::frame_shows(&frame, &number("24")));
     }
 
     /// Discovery must find every clickable handler in render order without an
@@ -1603,5 +2075,492 @@ mod type_check_tests {
             ),
             TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod gauntlet_probe_tests {
+    fn tree(json: &str) -> crate::host::wasm_view::UiTree {
+        crate::host::wasm_python::decode_ui_tree(json).expect("fixture tree decodes")
+    }
+
+    #[test]
+    fn frame_json_includes_text_input_value_and_placeholder() {
+        let frame = super::ui_tree_to_json(&tree(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"text_input","value":"calm","placeholder":"Mood"}}
+            ]}"#,
+        ));
+        assert_eq!(frame["nodes"][0]["data"]["value"], "calm", "{frame}");
+        assert_eq!(frame["nodes"][0]["data"]["placeholder"], "Mood", "{frame}");
+    }
+
+    #[test]
+    fn frame_json_includes_canvas_text_strings() {
+        let frame = super::ui_tree_to_json(&tree(
+            r##"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"canvas","width":100,"height":50,"commands":[
+                    {"type":"rect","x":0,"y":0,"width":10,"height":10,"fill":"#000000"},
+                    {"type":"text","x":4,"y":4,"text":"Score 42","color":"#ffffff"}
+                ]}}
+            ]}"##,
+        ));
+        assert_eq!(
+            frame["nodes"][0]["data"]["texts"],
+            serde_json::json!(["Score 42"]),
+            "{frame}"
+        );
+    }
+
+    fn text(value: &str) -> super::SeedValue {
+        super::SeedValue::Text(value.to_string())
+    }
+
+    fn number(value: &str) -> super::SeedValue {
+        super::SeedValue::Number(value.to_string())
+    }
+
+    #[test]
+    fn seeded_string_match_is_case_insensitive_containment() {
+        let frame =
+            serde_json::json!({"nodes": [{"data": {"type": "Text", "text": "Mood: Calm"}}]});
+        assert!(super::frame_shows(&frame, &text("calm")));
+        assert!(!super::frame_shows(&frame, &text("tense")));
+        // A type tag or handler id is structure, not something the user reads.
+        assert!(!super::frame_shows(&frame, &text("text")));
+    }
+
+    #[test]
+    fn seeded_value_shown_only_in_a_text_input_or_canvas_matches() {
+        let input = super::ui_tree_to_json(&tree(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"text_input","value":"Buy milk"}}
+            ]}"#,
+        ));
+        assert!(super::frame_shows(&input, &text("buy milk")));
+
+        let canvas = super::ui_tree_to_json(&tree(
+            r##"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"canvas","width":100,"height":50,"commands":[
+                    {"type":"text","x":4,"y":4,"text":"Score 42","color":"#ffffff"}
+                ]}}
+            ]}"##,
+        ));
+        assert!(super::frame_shows(&canvas, &number("42")));
+        // The canvas's own width never satisfies a seeded 100.
+        assert!(!super::frame_shows(&canvas, &number("100")));
+    }
+
+    #[test]
+    fn seeded_number_matches_whole_numbers_inside_text_only() {
+        for (shown, expected) in [
+            ("Count: 3", true),
+            ("3 items", true),
+            ("3.", true),
+            ("13", false),
+            ("30", false),
+            ("1.3", false),
+            ("3.5", false),
+        ] {
+            assert_eq!(
+                super::contains_whole_number(shown, "3"),
+                expected,
+                "{shown:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seed_miss_error_names_the_fixture_values_rule_and_overwrite_hint() {
+        let signals = super::seed_state_signals(&serde_json::json!({"mood": "calm", "count": 3}));
+
+        let plain = super::seed_miss_error("480x320", &signals, false);
+        assert!(plain.contains("fixtures/state.json"), "{plain}");
+        assert!(
+            plain.contains("count = 3") && plain.contains("mood = \"calm\""),
+            "{plain}"
+        );
+        assert!(plain.contains("ignoring case"), "{plain}");
+        assert!(!plain.contains("init()"), "{plain}");
+
+        let ignored = super::seed_miss_error("480x320", &signals, true);
+        assert!(
+            ignored.contains("does init() overwrite these keys with SetState?"),
+            "{ignored}"
+        );
+    }
+
+    const TWO_SCOPE_MANIFEST: &str = "schema_version = 2\n\n[plugin]\nid = \"memo\"\nname = \"Memo\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[state]\nscopes = [\"context\", \"global\"]\n\n[[contributes.views]]\nid = \"memo.main\"\ndefault = true\n";
+
+    #[test]
+    fn headless_launch_config_forwards_manifest_state_scopes() {
+        let manifest: crate::app::registry::PluginManifest =
+            toml::from_str(TWO_SCOPE_MANIFEST).expect("manifest parses");
+        let dir = std::path::Path::new("/tmp/memo");
+        let config = super::python_launch_config(&manifest, &dir.join("main.py"), dir)
+            .expect("valid [state] section");
+        assert_eq!(
+            config.state_scopes,
+            vec![
+                crate::host::state_scope::StateScope::Context,
+                crate::host::state_scope::StateScope::Global
+            ]
+        );
+    }
+
+    #[test]
+    fn headless_seed_is_flat_for_one_scope_and_scope_keyed_for_several() {
+        use crate::host::state_scope::StateScope;
+        use crate::host::wasm_python::headless_seed_states;
+
+        let flat = serde_json::json!({"count": 3});
+        assert_eq!(
+            headless_seed_states(&[StateScope::Global], Some(flat.clone())).unwrap(),
+            serde_json::json!({"global": {"count": 3}})
+        );
+
+        let both = [StateScope::Context, StateScope::Global];
+        let keyed = serde_json::json!({"context": {"memo": "a"}, "global": {"name": "b"}});
+        assert_eq!(
+            headless_seed_states(&both, Some(keyed.clone())).unwrap(),
+            keyed
+        );
+
+        let err = headless_seed_states(&both, Some(flat)).unwrap_err();
+        assert!(
+            err.contains("context, global") && err.contains("count"),
+            "error must list the declared scopes and the stray key: {err}"
+        );
+    }
+
+    /// End to end through the live CPython-WASM runtime: a plugin that reads
+    /// both declared scopes in `view()` boots headlessly, and a scope-keyed
+    /// seed reaches each scope.
+    #[test]
+    fn two_scope_plugin_renders_headlessly_with_a_seed_per_scope() {
+        let dir = tempfile::tempdir().expect("plugin dir");
+        std::fs::write(dir.path().join("manifest.toml"), TWO_SCOPE_MANIFEST).unwrap();
+        std::fs::write(
+            dir.path().join("main.py"),
+            "from plexi_sdk import state\nfrom plexi_sdk.ui import Column, Text\n\n\ndef init(size, args):\n    return []\n\n\ndef update(event):\n    return []\n\n\ndef view():\n    return Column([\n        Text(str(state.get(\"memo\", \"no memo\", scope=\"context\"))),\n        Text(str(state.get(\"owner\", \"nobody\", scope=\"global\"))),\n    ])\n",
+        )
+        .unwrap();
+        let (manifest, entry) = super::load_local_plugin(dir.path()).expect("fixture loads");
+        let config = super::python_launch_config(&manifest, &entry, dir.path()).unwrap();
+
+        let unseeded = crate::host::wasm_python::run_headless_frame(&config, (480.0, 320.0), None)
+            .expect("a two-scope plugin must boot headlessly");
+        let unseeded = super::ui_tree_to_json(&unseeded);
+        assert!(
+            super::frame_shows(&unseeded, &text("no memo")),
+            "{unseeded}"
+        );
+
+        let seeded = crate::host::wasm_python::run_headless_frame(
+            &config,
+            (480.0, 320.0),
+            Some(serde_json::json!({
+                "context": {"memo": "water the ficus"},
+                "global": {"owner": "Ada"},
+            })),
+        )
+        .expect("scope-keyed seed renders");
+        let seeded = super::ui_tree_to_json(&seeded);
+        assert!(
+            super::frame_shows(&seeded, &text("water the ficus"))
+                && super::frame_shows(&seeded, &text("Ada")),
+            "both scopes must be seeded: {seeded}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod layout_finding_tests {
+    use crate::host::wasm_render::NodeLayout;
+    use egui::{pos2, Rect};
+
+    fn tree(json: &str) -> crate::host::wasm_view::UiTree {
+        crate::host::wasm_python::decode_ui_tree(json).expect("fixture tree decodes")
+    }
+
+    const PANE: Rect = Rect {
+        min: pos2(0.0, 0.0),
+        max: pos2(320.0, 240.0),
+    };
+
+    fn painted(id: u32, rect: Rect) -> NodeLayout {
+        let visible = rect.intersect(PANE);
+        NodeLayout {
+            id,
+            rect: Some(rect),
+            visible: visible.is_positive().then_some(visible),
+            clip: PANE,
+            text_wrapped_mid_word: false,
+            text_cut: false,
+        }
+    }
+
+    fn unpainted(id: u32) -> NodeLayout {
+        NodeLayout {
+            id,
+            rect: None,
+            visible: None,
+            clip: PANE,
+            text_wrapped_mid_word: false,
+            text_cut: false,
+        }
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::from_min_size(pos2(x, y), egui::vec2(w, h))
+    }
+
+    fn messages(findings: &[super::LayoutFinding]) -> String {
+        findings
+            .iter()
+            .map(|f| {
+                format!(
+                    "[{}] {}",
+                    if f.is_error { "error" } else { "warning" },
+                    f.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    const ACTIONS_TREE: &str = r#"{"root":0,"nodes":[
+        {"id":0,"key":"0","data":{"type":"column","children":[1,2]}},
+        {"id":1,"key":"1","data":{"type":"text","text":"Timer"}},
+        {"id":2,"key":"2","data":{"type":"row","children":[3,4]}},
+        {"id":3,"key":"3","data":{"type":"button","label":"Start","on_click":"start"}},
+        {"id":4,"key":"4","data":{"type":"button","label":"Reset","on_click":"reset"}}
+    ]}"#;
+
+    /// Gauntlet 02: an Actions row after a second grow Spacer was never painted.
+    #[test]
+    fn unpainted_actions_row_is_reported_per_button() {
+        let layout = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(1, rect(24.0, 12.0, 60.0, 18.0)),
+            unpainted(2),
+            unpainted(3),
+            unpainted(4),
+        ];
+        let findings = super::layout_findings(&tree(ACTIONS_TREE), &layout, (800, 600));
+        let text = messages(&findings);
+        assert!(text.contains("Button \"Start\" is not visible"), "{text}");
+        assert!(text.contains("Button \"Reset\" is not visible"), "{text}");
+        assert!(
+            findings.iter().all(|f| !f.is_error),
+            "800x600 only warns: {text}"
+        );
+    }
+
+    /// Gauntlet 10: text drawn on top of buttons.
+    #[test]
+    fn overlapping_siblings_are_reported_by_name() {
+        let layout = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(1, rect(24.0, 12.0, 120.0, 18.0)),
+            painted(2, rect(24.0, 10.0, 200.0, 28.0)),
+            painted(3, rect(24.0, 10.0, 90.0, 28.0)),
+            painted(4, rect(122.0, 10.0, 90.0, 28.0)),
+        ];
+        let text = messages(&super::layout_findings(
+            &tree(ACTIONS_TREE),
+            &layout,
+            (480, 320),
+        ));
+        assert!(
+            text.contains("Text \"Timer\" and Row (node 2) overlap by 120x18px"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("Button \"Start\" and Button \"Reset\""),
+            "{text}"
+        );
+    }
+
+    /// Gauntlet 05: an EmptyState pushed the only button off a 320x240 pane.
+    #[test]
+    fn unreachable_button_at_the_smallest_size_is_an_error() {
+        let layout = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(1, rect(24.0, 12.0, 60.0, 18.0)),
+            painted(2, rect(24.0, 220.0, 200.0, 28.0)),
+            painted(3, rect(24.0, 220.0, 90.0, 28.0)),
+            unpainted(4),
+        ];
+        let tree = tree(ACTIONS_TREE);
+        let small = super::layout_findings(&tree, &layout, (320, 240));
+        let text = messages(&small);
+        assert!(
+            text.contains("[error] Button \"Start\" is cut off (8px on the bottom)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[error] Button \"Reset\" is not visible"),
+            "{text}"
+        );
+        assert!(text.contains("smallest supported pane"), "{text}");
+
+        let larger = super::layout_findings(&tree, &layout, (480, 320));
+        assert!(larger.iter().all(|f| !f.is_error), "{}", messages(&larger));
+    }
+
+    /// Gauntlet 02: a button label wrapped as "Star" / "t".
+    #[test]
+    fn button_label_broken_mid_word_is_reported() {
+        assert!(crate::host::wasm_render::rows_break_mid_word(&[
+            ("Star".to_string(), false),
+            ("t".to_string(), false)
+        ]));
+        assert!(!crate::host::wasm_render::rows_break_mid_word(&[
+            ("Save ".to_string(), false),
+            ("draft".to_string(), false)
+        ]));
+        assert!(!crate::host::wasm_render::rows_break_mid_word(&[
+            ("one".to_string(), true),
+            ("two".to_string(), false)
+        ]));
+
+        let mut start = painted(3, rect(24.0, 40.0, 40.0, 44.0));
+        start.text_wrapped_mid_word = true;
+        let layout = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(1, rect(24.0, 12.0, 60.0, 18.0)),
+            painted(2, rect(24.0, 40.0, 140.0, 44.0)),
+            start,
+            painted(4, rect(72.0, 40.0, 90.0, 44.0)),
+        ];
+        let text = messages(&super::layout_findings(
+            &tree(ACTIONS_TREE),
+            &layout,
+            (320, 240),
+        ));
+        assert!(
+            text.contains("[warning] Button \"Start\": the label breaks in the middle of a word"),
+            "{text}"
+        );
+    }
+
+    /// Gauntlet 05/07/09: a Banner's text cut at the pane edge.
+    #[test]
+    fn text_cut_at_the_pane_edge_is_reported_and_scroll_content_is_not() {
+        let banner = r#"{"root":0,"nodes":[
+            {"id":0,"key":"0","data":{"type":"column","children":[1,2]}},
+            {"id":1,"key":"1","data":{"type":"text","text":"Sync failed: check the relay address"}},
+            {"id":2,"key":"2","data":{"type":"scroll","child":3}},
+            {"id":3,"key":"3","data":{"type":"text","text":"A long log line that scrolls"}}
+        ]}"#;
+        let layout = vec![
+            painted(0, rect(0.0, 0.0, 320.0, 240.0)),
+            painted(1, rect(24.0, 12.0, 340.0, 18.0)),
+            painted(2, rect(24.0, 40.0, 296.0, 100.0)),
+            painted(3, rect(24.0, 40.0, 500.0, 18.0)),
+        ];
+        let findings = super::layout_findings(&tree(banner), &layout, (320, 240));
+        let text = messages(&findings);
+        assert!(
+            text.contains(
+                "[warning] Text \"Sync failed: check the relay address\" is cut off (44px on the right)"
+            ),
+            "{text}"
+        );
+        assert_eq!(findings.len(), 1, "scrollable text is reachable: {text}");
+    }
+
+    /// The renderer's own measurement, on a layout no fix changes: content
+    /// taller than the pane leaves the last button unpainted, and a tree that
+    /// fits produces no finding.
+    #[test]
+    fn rendered_tree_reports_a_button_below_the_pane_and_passes_one_that_fits() {
+        let tall = tree(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"column","children":[1,2,3]}},
+                {"id":1,"key":"1","data":{"type":"text","text":"Nothing here yet"}},
+                {"id":2,"key":"2","data":{"type":"spacer","size":400}},
+                {"id":3,"key":"3","data":{"type":"button","label":"Add item","on_click":"add"}}
+            ]}"#,
+        );
+        let layout = crate::host::wasm_render::render_ui_tree_layout(&tall, 320.0, 240.0);
+        let findings = super::layout_findings(&tall, &layout, (320, 240));
+        let text = messages(&findings);
+        assert!(
+            text.contains("[error] Button \"Add item\" is not visible"),
+            "{text}"
+        );
+        assert!(!text.contains("Nothing here yet"), "{text}");
+
+        let fits = tree(
+            r#"{"root":0,"nodes":[
+                {"id":0,"key":"0","data":{"type":"column","children":[1,2]}},
+                {"id":1,"key":"1","data":{"type":"text","text":"Nothing here yet"}},
+                {"id":2,"key":"2","data":{"type":"button","label":"Add item","on_click":"add"}}
+            ]}"#,
+        );
+        let layout = crate::host::wasm_render::render_ui_tree_layout(&fits, 320.0, 240.0);
+        let findings = super::layout_findings(&fits, &layout, (320, 240));
+        assert!(findings.is_empty(), "{}", messages(&findings));
+
+        let frame = super::frame_json_with_layout(&fits, &layout);
+        let button = frame["layout"]
+            .as_array()
+            .and_then(|facts| facts.iter().find(|fact| fact["id"] == 2))
+            .expect("the button has a layout entry");
+        assert!(button["rect"][2].as_f64().unwrap_or(0.0) > 0.0, "{frame}");
+    }
+
+    /// Runs the layout pass over the maintained set (`packs/core.toml`) at the
+    /// smallest and a normal pane size and prints every finding. It asserts
+    /// only that each plugin was measured: findings in bundled plugins are
+    /// theirs to fix, and pinning them here would fail on every layout fix.
+    #[test]
+    fn core_pack_plugins_are_measured_by_the_layout_pass() {
+        let pack: toml::Value =
+            toml::from_str(crate::cli::install_host::CORE_PACK_TOML).expect("core pack parses");
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("apps");
+        let mut checked = 0;
+        for plugin in pack["plugin"].as_array().expect("[[plugin]] entries") {
+            let source = plugin["source"].as_str().expect("plugin source");
+            let Some(dir) = source.strip_prefix("local:") else {
+                continue;
+            };
+            let dir = apps.join(dir);
+            let (manifest, entry) = super::load_local_plugin(&dir).expect("core plugin loads");
+            if entry.extension().and_then(|ext| ext.to_str()) != Some("py") {
+                continue;
+            }
+            let config = super::python_launch_config(&manifest, &entry, &dir).unwrap();
+            for (width, height) in [super::SMALLEST_CHECK_SIZE, (800, 600)] {
+                let tree = crate::host::wasm_python::run_headless_frame(
+                    &config,
+                    (width as f32, height as f32),
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{} must render headlessly: {e}", manifest.plugin.id));
+                let layout = crate::host::wasm_render::render_ui_tree_layout(
+                    &tree,
+                    width as f32,
+                    height as f32,
+                );
+                assert!(
+                    !layout.is_empty(),
+                    "{} {width}x{height}: the layout pass measured no node",
+                    manifest.plugin.id
+                );
+                for finding in super::layout_findings(&tree, &layout, (width, height)) {
+                    eprintln!(
+                        "core-pack layout {}: {} {width}x{height}: {}",
+                        if finding.is_error { "error" } else { "warning" },
+                        manifest.plugin.id,
+                        finding.message
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no core plugin was checked");
     }
 }

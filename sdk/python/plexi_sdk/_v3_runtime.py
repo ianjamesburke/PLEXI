@@ -753,7 +753,7 @@ class PluginRuntime:
             return self._scopes[0]
         if scope not in self._scoped_values:
             raise ValueError(
-                f"state scope '{scope}' is not declared in this app's manifest "
+                f"state scope '{scope}' is not declared in this plugin's manifest "
                 f"[state] scopes {self._scopes}"
             )
         return scope

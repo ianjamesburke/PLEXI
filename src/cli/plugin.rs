@@ -1810,12 +1810,15 @@ pub fn view_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (plugin_id, plugin_dir, plugin_bin, capabilities, allowed_hosts) = if std::path::Path::new(
-        plugin,
-    )
-    .components()
-    .count()
-        > 1
+    let (
+        plugin_id,
+        plugin_dir,
+        plugin_bin,
+        capabilities,
+        allowed_hosts,
+        state_scopes,
+        state_format,
+    ) = if std::path::Path::new(plugin).components().count() > 1
         || std::path::Path::new(plugin).is_dir()
     {
         let plugin_dir = match std::path::Path::new(plugin).canonicalize() {
@@ -1880,6 +1883,17 @@ pub fn view_render(
             );
             return 1;
         }
+        let state = manifest
+            .state_scopes()
+            .map_err(|e| format!("[state] scopes: {e}"))
+            .and_then(|scopes| Ok((scopes, manifest.state_format()?)));
+        let (state_scopes, state_format) = match state {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("error: {}: {e}", manifest_path.display());
+                return 1;
+            }
+        };
         log::info!(
             "view_render[{}]: loaded from path '{plugin}'",
             manifest.plugin.id
@@ -1890,6 +1904,8 @@ pub fn view_render(
             entry,
             manifest.plugin.capabilities.capabilities,
             manifest.plugin.capabilities.allowed_hosts,
+            state_scopes,
+            state_format,
         )
     } else {
         // ID-based: registry lookup
@@ -1914,6 +1930,8 @@ pub fn view_render(
                     a.bin_path.clone(),
                     a.manifest.capabilities.capabilities.clone(),
                     a.manifest.capabilities.allowed_hosts.clone(),
+                    a.state_scopes.clone(),
+                    a.state_format,
                 )
             }
             None => {
@@ -1938,6 +1956,8 @@ pub fn view_render(
         &plugin_bin,
         &capabilities,
         &allowed_hosts,
+        state_scopes,
+        state_format,
     );
     let seed_state = if seed_state.is_none() && plugin_id == "permissions" {
         let entries =
@@ -2004,15 +2024,19 @@ pub fn view_render(
             }
         }
     } else {
-        // JSON mode (default): return the semantic UI-node tree
-        let json =
-            match serde_json::to_string_pretty(&crate::cli::plugin_check::ui_tree_to_json(&tree)) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("error: could not serialize frame: {e}");
-                    return 1;
-                }
-            };
+        // JSON mode (default): the semantic UI-node tree plus what each node
+        // painted at this size.
+        let layout =
+            crate::host::wasm_render::render_ui_tree_layout(&tree, width as f32, height as f32);
+        let json = match serde_json::to_string_pretty(
+            &crate::cli::plugin_check::frame_json_with_layout(&tree, &layout),
+        ) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("error: could not serialize frame: {e}");
+                return 1;
+            }
+        };
         match output {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &json) {
