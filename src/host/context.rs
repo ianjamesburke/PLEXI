@@ -275,6 +275,29 @@ impl Window {
         self.zoomed_pane = Some(tile_id);
     }
 
+    /// Simplify the tree with the host options and heal focus and zoom in the
+    /// same step (stint 1230). Every tree mutation ends here, so a window's
+    /// `focused_pane` and `zoomed_pane` are always `Tile::Pane` tiles of an
+    /// already-simplified tree and egui's per-frame simplify has nothing left
+    /// to re-id. Returns true if zoom was cleared, as `reconcile_stale_tiles`.
+    pub(crate) fn simplify_and_reconcile(&mut self) -> bool {
+        let (old_focus, old_zoom) = (self.focused_pane, self.zoomed_pane);
+        self.tree
+            .simplify(&crate::spatial::tiling::host_simplification_options());
+        let zoom_cleared = self.reconcile_stale_tiles();
+        if (old_focus, old_zoom) != (self.focused_pane, self.zoomed_pane) {
+            log::info!(
+                "window settle: window={} focus {:?} -> {:?} zoom {:?} -> {:?}",
+                self.window_id,
+                old_focus,
+                self.focused_pane,
+                old_zoom,
+                self.zoomed_pane
+            );
+        }
+        zoom_cleared
+    }
+
     /// Reconcile stale tile references after the tile tree simplifier runs.
     /// Returns true if zoomed_pane was cleared (caller may need to surrender egui focus).
     pub(crate) fn reconcile_stale_tiles(&mut self) -> bool {

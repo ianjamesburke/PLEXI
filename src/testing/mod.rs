@@ -584,10 +584,7 @@ impl HostHarness {
     pub fn assert_window_settled(&mut self, window: usize, step: &str) {
         let win = &self.app.windows[window];
         let mut simplified = win.tree.clone();
-        simplified.simplify(&egui_tiles::SimplificationOptions {
-            all_panes_must_have_tabs: true,
-            ..egui_tiles::SimplificationOptions::default()
-        });
+        simplified.simplify(&crate::spatial::tiling::host_simplification_options());
         assert!(
             simplified == win.tree,
             "{step}: window {window} tree is not simplified; the next frame would re-id its tiles"

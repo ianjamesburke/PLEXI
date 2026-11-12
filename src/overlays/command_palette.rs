@@ -2898,7 +2898,9 @@ impl PlexiApp {
                     None
                 }
             }) {
-                win.focused_pane = Some(tile_id);
+                // navigate_to, not a bare assignment: a pane in an inactive
+                // tab must become the visible tab (stint 1230).
+                win.navigate_to(tile_id);
             }
         }
     }

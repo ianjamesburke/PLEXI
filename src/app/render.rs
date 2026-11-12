@@ -603,7 +603,9 @@ impl PlexiApp {
                 let canvas_full_rect = ui.available_rect_before_wrap();
                 let ctx = &mut self.windows[self.active_window];
 
-                ctx.reconcile_stale_tiles();
+                // Settle before Tree::ui so egui's own simplify at its start is a
+                // no-op and cannot re-id a tile under focus mid-frame (stint 1230).
+                ctx.simplify_and_reconcile();
                 #[cfg(debug_assertions)]
                 ctx.assert_focus_invariants();
 
@@ -1130,6 +1132,10 @@ impl PlexiApp {
                 } else {
                     drop(behavior);
                 }
+
+                // Tree::ui can still restructure the tree (a tab or pane drag);
+                // heal focus and zoom against the tree it left (stint 1230).
+                ctx.reconcile_stale_tiles();
 
                 // Apply canvas focus change now that behavior is dropped and
                 // ctx is freely borrowable again.
