@@ -6605,6 +6605,141 @@ mod tests {
         );
     }
 
+    /// A File Explorer pane in a real host, settled until it owns input.
+    fn explorer_harness(dir: &Path) -> crate::testing::HostHarness {
+        let mut h = crate::testing::HostHarness::new();
+        h.app.open_builtin_view_pane(
+            Box::new(FileBrowserView::new(dir.to_path_buf())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.to_path_buf(),
+            None,
+            None,
+            None,
+        );
+        h.run_frames(2);
+        h
+    }
+
+    fn explorer_in_harness(h: &mut crate::testing::HostHarness) -> (u64, &mut FileBrowserView) {
+        h.app
+            .windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .find_map(|(pane_id, pane)| {
+                let crate::host::pane::ViewRuntime::Builtin(b) = &mut pane.as_view_mut()?.runtime
+                else {
+                    return None;
+                };
+                let browser = b.as_any_mut().downcast_mut::<FileBrowserView>()?;
+                Some((*pane_id, browser))
+            })
+            .expect("file_browser runtime")
+    }
+
+    /// The egui id `draw_search_bar` gives the search TextEdit.
+    fn explorer_search_input_id(pane_id: u64) -> egui::Id {
+        egui::Id::new(("file_browser_search", pane_id))
+    }
+
+    /// One frame carrying exactly the text events a keystroke produces.
+    fn type_frame(h: &mut crate::testing::HostHarness, text: &str) {
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text(text.to_string())],
+            ..Default::default()
+        });
+    }
+
+    /// Leave a caret at `index` in the search field's stored TextEdit state,
+    /// the state a prior focus of the field leaves behind.
+    fn store_search_caret(h: &mut crate::testing::HostHarness, index: usize) {
+        let (pane_id, _) = explorer_in_harness(h);
+        let id = explorer_search_input_id(pane_id);
+        let mut state = egui::TextEdit::load_state(&h.app.ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(index),
+            )));
+        state.store(&h.app.ctx, id);
+    }
+
+    fn search_query_and_caret(h: &mut crate::testing::HostHarness) -> (String, Option<usize>) {
+        let (pane_id, browser) = explorer_in_harness(h);
+        let query = browser.search_query.clone();
+        let caret = egui::TextEdit::load_state(&h.app.ctx, explorer_search_input_id(pane_id))
+            .and_then(|state| state.cursor.char_range())
+            .map(|range| range.primary.index);
+        (query, caret)
+    }
+
+    #[test]
+    fn explorer_search_keeps_typed_order_after_a_stale_caret_from_an_earlier_focus() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("abc.txt"), b"x").expect("write abc.txt");
+        let mut h = explorer_harness(dir.path());
+        // An earlier focus of the empty field left its caret at 0.
+        store_search_caret(&mut h, 0);
+
+        for ch in ["a", "b", "c"] {
+            type_frame(&mut h, ch);
+        }
+        h.run_frames(1);
+
+        assert_eq!(
+            search_query_and_caret(&mut h),
+            ("abc".to_string(), Some(3)),
+            "the keystroke that opens search is consumed once and later keys append after it"
+        );
+    }
+
+    #[test]
+    fn explorer_search_keeps_typed_order_on_cold_open_burst_and_unicode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cases: [(&[&str], &str); 3] = [
+            (&["a", "b", "c"], "abc"),
+            (&["ab", "c"], "abc"),
+            (&["\u{e9}", "\u{df}", "x"], "\u{e9}\u{df}x"),
+        ];
+        for (keys, expected) in cases {
+            let mut h = explorer_harness(dir.path());
+            for key in keys {
+                type_frame(&mut h, key);
+            }
+            h.run_frames(1);
+            assert_eq!(
+                search_query_and_caret(&mut h),
+                (expected.to_string(), Some(expected.chars().count())),
+                "typing {keys:?} into a freshly opened explorer"
+            );
+        }
+    }
+
+    #[test]
+    fn explorer_search_keeps_an_intentional_mid_query_caret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut h = explorer_harness(dir.path());
+        for ch in ["a", "b", "c"] {
+            type_frame(&mut h, ch);
+        }
+        h.run_frames(1);
+        assert_eq!(search_query_and_caret(&mut h).0, "abc");
+
+        // The user moves the caret back inside the query; the field owns it.
+        store_search_caret(&mut h, 1);
+        type_frame(&mut h, "x");
+        h.run_frames(1);
+
+        assert_eq!(
+            search_query_and_caret(&mut h),
+            ("axbc".to_string(), Some(2)),
+            "a caret the user placed mid-query must not be forced to the end"
+        );
+    }
+
     #[test]
     fn plain_text_search_discoverable_and_interactive_on_initial_open() {
         let dir = tempfile::tempdir().expect("tempdir");
