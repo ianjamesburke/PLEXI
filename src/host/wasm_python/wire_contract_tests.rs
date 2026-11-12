@@ -38,6 +38,14 @@ const HOST_ONLY_GUEST_KINDS: &[&str] = &[
 const SDK_ONLY_HANDLED_KINDS: &[&str] =
     &["capability_denied", "capability_granted", "focus_changed"];
 
+/// Classes in `effects.py` that are values nested inside other effects, never
+/// returned from `update()` on their own.
+const NESTED_EFFECT_VALUES: &[&str] = &["AiMessage", "AiTool", "EventStreamDecl"];
+
+/// Effects the live runtime refuses loudly because the host has no handler.
+/// A follow-up wires or deletes them; until then the SDK must raise, not drop.
+const UNSUPPORTED_EFFECTS: &[&str] = &["AiQuery", "GetSystemStats"];
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -200,7 +208,15 @@ fn tagged_enum_kinds(path: &Path) -> BTreeSet<String> {
     kinds
 }
 
-fn sdk_wire_kinds() -> (BTreeSet<String>, BTreeSet<String>) {
+struct SdkWire {
+    emits: BTreeSet<String>,
+    handles: BTreeSet<String>,
+    effect_classes: BTreeSet<String>,
+    effect_arms: BTreeSet<String>,
+    effect_refused: BTreeSet<String>,
+}
+
+fn sdk_wire_kinds() -> SdkWire {
     let output = std::process::Command::new("python3")
         .arg("-I")
         .arg(repo_root().join("scripts/sdk-wire-kinds.py"))
@@ -221,12 +237,24 @@ fn sdk_wire_kinds() -> (BTreeSet<String>, BTreeSet<String>) {
             .map(|v| v.as_str().expect("string kind").to_string())
             .collect()
     };
-    (set("emits"), set("handles"))
+    SdkWire {
+        emits: set("emits"),
+        handles: set("handles"),
+        effect_classes: set("effect_classes"),
+        effect_arms: set("effect_arms"),
+        effect_refused: set("effect_refused"),
+    }
 }
 
 #[test]
 fn sdk_and_host_agree_on_wire_message_kinds() {
-    let (sdk_emits, sdk_handles) = sdk_wire_kinds();
+    let SdkWire {
+        emits: sdk_emits,
+        handles: sdk_handles,
+        effect_classes,
+        effect_arms,
+        effect_refused,
+    } = sdk_wire_kinds();
     let wasm_python = parse(&repo_root().join("src/host/wasm_python.rs"));
 
     // Guest to host: everything `LivePythonPane` / the decoder thread /
@@ -288,5 +316,32 @@ fn sdk_and_host_agree_on_wire_message_kinds() {
         stale.is_empty(),
         "SDK_ONLY_HANDLED_KINDS lists kinds the host now sends or the SDK no longer handles; \
          drop them: {stale:?}"
+    );
+
+    // Effects: every class `effects.py` defines is either executed by the live
+    // runtime (its arm emits kinds checked above), a nested value, or
+    // explicitly refused. An effect that is none of these is silently dropped.
+    let nested: BTreeSet<String> = NESTED_EFFECT_VALUES.iter().map(|s| s.to_string()).collect();
+    let unsupported: BTreeSet<String> = UNSUPPORTED_EFFECTS.iter().map(|s| s.to_string()).collect();
+    let covered: BTreeSet<String> = effect_arms
+        .iter()
+        .chain(&effect_refused)
+        .chain(&nested)
+        .cloned()
+        .collect();
+    let dropped: Vec<_> = effect_classes.difference(&covered).collect();
+    assert!(
+        dropped.is_empty(),
+        "effects.py defines effects the live runtime neither executes nor refuses \
+         (silently dropped): {dropped:?}"
+    );
+    assert_eq!(
+        effect_refused, unsupported,
+        "the runtime's refusing arms must match UNSUPPORTED_EFFECTS"
+    );
+    let stale: Vec<_> = nested.intersection(&effect_arms).collect();
+    assert!(
+        stale.is_empty(),
+        "NESTED_EFFECT_VALUES lists effects that now have a runtime arm; drop them: {stale:?}"
     );
 }
