@@ -136,12 +136,10 @@ impl<'a> ModalShell<'a> {
         let available_content_width =
             (screen.width() - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_H))).max(0.0);
         let content_width = self.width.min(available_content_width);
-        // Frame padding, optional title row and edge clearance come off the
-        // screen height; never collapse below a usable minimum.
-        let max_body_height = (screen.height()
-            - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_V))
-            - 40.0)
-            .max(120.0);
+        // Frame padding and edge clearance come off the screen height; the
+        // title row is measured where it is painted.
+        let max_frame_content_height =
+            screen.height() - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_V));
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
             // Scrim sits one layer below the modal so an elevated modal
@@ -198,8 +196,23 @@ impl<'a> ModalShell<'a> {
                             ui.add_space(style::SPACE_MD);
                         }
                         if self.width > 0.0 && self.fit_height {
-                            // At high UI scale the logical screen shrinks; a
-                            // tall body scrolls instead of leaving the window.
+                            // The Area's Ui is only as tall as last frame's
+                            // content, seeded from egui's default area size, so
+                            // a scroll area sized from the available height
+                            // never grows past that seed and clips rows the
+                            // window has room for. Give the body its real
+                            // budget; a body taller than the window scrolls.
+                            let title_height = ui.cursor().min.y - ui.min_rect().min.y;
+                            let max_body_height = (max_frame_content_height - title_height)
+                                .max(style::MODAL_BODY_MIN_H);
+                            ui.set_max_height(max_body_height);
+                            if ui.is_sizing_pass() {
+                                log::info!(
+                                    "modal {:?}: body height budget {max_body_height:.1} (screen {:.1})",
+                                    self.title.unwrap_or("untitled"),
+                                    screen.height()
+                                );
+                            }
                             egui::ScrollArea::vertical()
                                 .id_salt("modal_body")
                                 .max_height(max_body_height)

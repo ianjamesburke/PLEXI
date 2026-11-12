@@ -310,6 +310,9 @@ pub const MODAL_PADDING_V: i8 = 10;
 /// between a dense list row and a form button: the chips need breathing room
 /// but a confirm modal's action stack must not read as a menu.
 pub const MODAL_ACTION_ROW_H: f32 = 30.0;
+/// Floor for a modal's scrolling body when the window is shorter than the
+/// modal chrome; below this the body scrolls in a usable strip.
+pub const MODAL_BODY_MIN_H: f32 = 120.0;
 
 // ── Pane ID overlay ────────────────────────────────────────────────────────
 /// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).
