@@ -870,6 +870,7 @@ mod socket_resolution_tests {
             Some("pr-2765"),
             Some(OsStr::new("/Users/test/.plexi-beta/notify.sock")),
             Path::new("/Users/test"),
+            false,
         );
 
         assert_eq!(
@@ -887,6 +888,7 @@ mod socket_resolution_tests {
             Some("alpha"),
             Some(OsStr::new("/tmp/beta.sock")),
             Path::new("/Users/test"),
+            false,
         );
 
         assert_eq!(
@@ -904,6 +906,7 @@ mod socket_resolution_tests {
             None,
             Some(OsStr::new("/tmp/ambient.sock")),
             Path::new("/Users/test"),
+            false,
         );
 
         assert_eq!(actual, Some(PathBuf::from("/tmp/ambient.sock")));
@@ -916,6 +919,7 @@ mod socket_resolution_tests {
             Some("alpha"),
             Some(OsStr::new("/Users/test/.plexi-alpha/notify.sock")),
             Path::new("/Users/test"),
+            false,
         );
 
         assert_eq!(
@@ -933,6 +937,7 @@ mod socket_resolution_tests {
             Some("pr-2384"),
             Some(OsStr::new("/tmp/ambient.sock")),
             Path::new("/Users/test"),
+            false,
         );
 
         assert_eq!(actual, Some(PathBuf::from("/tmp/explicit.sock")));
@@ -946,7 +951,7 @@ mod socket_resolution_tests {
     #[test]
     fn binary_suffix_alone_does_not_enable_direct_dispatch() {
         let resolved =
-            resolve_command_socket_from(None, Some("alpha"), None, Path::new("/Users/test"));
+            resolve_command_socket_from(None, Some("alpha"), None, Path::new("/Users/test"), false);
 
         assert_eq!(
             (resolved, command_socket_available_from(false, false)),
@@ -992,6 +997,7 @@ mod socket_resolution_tests {
             shim_channel,
             env_get("PLEXI_SOCKET").map(OsStr::new),
             home,
+            false,
         );
         assert_eq!(shim_profile_dir, ".plexi-pr-2765");
         assert_eq!(
@@ -1008,6 +1014,7 @@ mod socket_resolution_tests {
             shim_channel,
             env_get("PLEXI_SOCKET").map(OsStr::new),
             home,
+            false,
         );
         assert_eq!(overridden_socket, Some(explicit_socket.to_path_buf()));
 
@@ -1022,6 +1029,7 @@ mod socket_resolution_tests {
             bare_channel,
             env_get("PLEXI_SOCKET").map(OsStr::new),
             home,
+            false,
         );
         assert_eq!(bare_profile_dir, ".plexi-beta");
         assert_eq!(
@@ -1031,10 +1039,39 @@ mod socket_resolution_tests {
     }
 }
 
+/// Printed when no routing input names a host and none was discovered.
+pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host found: PLEXI_SOCKET is not \
+     set and no host is running for this binary's profile. Start Plexi, run this inside a \
+     Plexi pane, or pass --socket <path>";
+
+/// How long host discovery waits for the default endpoint to accept a
+/// connection. A live host accepts at once; this only bounds a wedged one.
+const DISCOVERY_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// True when a host is accepting connections at `endpoint`. The probe sends
+/// nothing; the host reads EOF before a frame and drops the connection
+/// without dispatching anything (`read_socket_frame`).
+#[cfg(unix)]
+fn endpoint_accepts_connections(endpoint: &std::path::Path) -> bool {
+    connect_unix_deadline(
+        endpoint,
+        std::time::Instant::now() + DISCOVERY_PROBE_DEADLINE,
+    )
+    .is_ok()
+}
+
+#[cfg(windows)]
+fn endpoint_accepts_connections(endpoint: &std::path::Path) -> bool {
+    crate::platform::ipc::connect_timeout(endpoint, DISCOVERY_PROBE_DEADLINE).is_ok()
+}
+
 /// Resolve the command socket endpoint from target-routing inputs.
 ///
 /// Precedence: explicit `--socket` > binary channel identity (`plexi-<channel>`)
-/// > ambient `PLEXI_SOCKET` (bare `plexi` only) > `None`.
+/// > ambient `PLEXI_SOCKET` (bare `plexi` only) > the bare binary's own
+/// profile endpoint (`~/.plexi`, the host `plexi host status` reports) when
+/// `discover_default_host` is set and a host accepts connections there >
+/// `None`.
 ///
 /// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
 /// `target-routing`)") for the canonical precedence table. Self-identity env
@@ -1045,6 +1082,7 @@ fn resolve_command_socket_from(
     binary_channel: Option<&str>,
     ambient_socket: Option<&std::ffi::OsStr>,
     home_dir: &std::path::Path,
+    discover_default_host: bool,
 ) -> Option<std::path::PathBuf> {
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
@@ -1057,7 +1095,14 @@ fn resolve_command_socket_from(
             &home_dir.join(format!(".plexi-{channel}")),
         ));
     }
-    ambient_socket.map(std::path::PathBuf::from)
+    if let Some(socket) = ambient_socket {
+        return Some(std::path::PathBuf::from(socket));
+    }
+    if !discover_default_host {
+        return None;
+    }
+    let endpoint = crate::platform::ipc::endpoint_in(&home_dir.join(".plexi"));
+    endpoint_accepts_connections(&endpoint).then_some(endpoint)
 }
 
 /// Remove self-identity stamped by another host before CLI defaults are read.
@@ -1070,7 +1115,7 @@ pub(crate) fn drop_foreign_channel_identity(explicit_socket: bool) -> Vec<String
         return Vec::new();
     };
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let target = resolve_command_socket_from(None, Some(&channel), None, &home);
+    let target = resolve_command_socket_from(None, Some(&channel), None, &home, false);
     if explicit_socket || target.as_deref() == Some(std::path::Path::new(&ambient)) {
         return Vec::new();
     }
@@ -1286,19 +1331,34 @@ pub(super) fn spawn_queued_at_ms() -> u64 {
     crate::platform::clock::now_millis() as u64
 }
 
+/// True when this process is a `cargo test` binary (`target/*/deps/...`).
+/// Such a binary must not route by its own name or discover a real host in
+/// the developer's home directory.
+#[cfg(test)]
+fn is_cargo_test_artifact() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.ends_with("deps")))
+        .unwrap_or(false)
+}
+
 fn command_binary_channel() -> Option<String> {
     let channel = crate::config::build_channel();
     #[cfg(test)]
-    {
-        let is_cargo_test_artifact = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|parent| parent.ends_with("deps")))
-            .unwrap_or(false);
-        if is_cargo_test_artifact {
-            return None;
-        }
+    if is_cargo_test_artifact() {
+        return None;
     }
     channel
+}
+
+/// Whether the bare binary may fall back to the live host at its own profile
+/// endpoint when no routing input names one.
+fn command_discovery_enabled() -> bool {
+    #[cfg(test)]
+    if is_cargo_test_artifact() {
+        return false;
+    }
+    true
 }
 
 pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
@@ -1311,14 +1371,17 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
         channel.as_deref(),
         ambient.as_deref(),
         &home,
+        command_discovery_enabled(),
     );
     if let Some(path) = socket.as_ref() {
         let source = if explicit.is_some() {
             "--socket"
         } else if channel.is_some() {
             "binary-channel"
-        } else {
+        } else if ambient.is_some() {
             "PLEXI_SOCKET"
+        } else {
+            "discovered-default-host"
         };
         if explicit.is_none() && channel.is_some() {
             if let Some(ignored) = ambient.as_ref() {
@@ -1332,6 +1395,8 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
         log::info!(
             "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"
         );
+    } else {
+        log::info!("cli: no command socket: no --socket, binary channel, PLEXI_SOCKET or live default host");
     }
     socket
 }
@@ -1663,7 +1728,7 @@ fn send_to_socket_connected(
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
         None => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            eprintln!("{NO_COMMAND_SOCKET}");
             return Err(1);
         }
     };

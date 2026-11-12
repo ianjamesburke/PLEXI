@@ -25,7 +25,7 @@ fn connect_socket() -> Result<IpcStream, i32> {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            eprintln!("{}", super::NO_COMMAND_SOCKET);
             return Err(1);
         }
     };
@@ -50,7 +50,7 @@ fn from_pane_id() -> Option<u64> {
 /// Connect to the host socket and write one control line + flush, logging the
 /// sent type. Returns the live stream so the caller can read its reply (a
 /// single line for publish, an open NDJSON stream for subscribe). Shared
-/// prologue for [`stream_control_line`] and [`send_and_read_reply`].
+/// prologue for [`stream_control_line`] and [`read_publish_reply`].
 fn connect_and_send(payload: &serde_json::Value) -> Result<IpcStream, i32> {
     let mut stream = connect_socket()?;
     let line = format!("{payload}\n");
@@ -124,59 +124,146 @@ pub fn events_subscribe_cli(
     stream_control_line(req)
 }
 
-/// Send one control line, read exactly one JSON reply line, print a
-/// human-readable result, and return the process exit code. Used by the
-/// one-shot publish commands (`declare`, `emit`): the host answers with a
-/// single `ok`/`error` object rather than an open NDJSON stream.
-fn send_and_read_reply(payload: serde_json::Value) -> i32 {
-    let stream = match connect_and_send(&payload) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let mut reader = BufReader::new(stream);
-    let mut reply = String::new();
-    if let Err(e) = reader.read_line(&mut reply) {
-        eprintln!("error: reading reply: {e}");
+/// How long a publish reply may take before `declare` tells the caller it is
+/// waiting on a consent prompt. Pre-granted publishes answer well inside it.
+const CONSENT_NOTICE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A publish that may block on the host consent modal: after `notice_after`
+/// without a reply, stderr names `what` is waiting and where to answer; after
+/// `timeout` the CLI gives up with exit 2.
+struct ConsentWait<'a> {
+    what: &'a str,
+    notice_after: std::time::Duration,
+    timeout: std::time::Duration,
+}
+
+/// Read exactly one JSON reply line for a one-shot publish (`declare`,
+/// `emit`), print a human-readable result, and return the exit code: 0 ok,
+/// 1 host error or plumbing failure, 2 when `consent` is set and its timeout
+/// passes with no answer.
+fn read_publish_reply<W: Write, E: Write>(
+    conn: IpcStream,
+    consent: Option<ConsentWait<'_>>,
+    out: &mut W,
+    errors: &mut E,
+) -> i32 {
+    let first_wait = consent
+        .as_ref()
+        .map(|wait| wait.notice_after.min(wait.timeout));
+    if let Err(e) = conn.set_read_timeout(first_wait) {
+        let _ = writeln!(errors, "error: setting the publish reply deadline: {e}");
         return 1;
+    }
+    let started = std::time::Instant::now();
+    let mut reader = BufReader::new(conn);
+    let mut reply = String::new();
+    let mut noticed = false;
+    loop {
+        match reader.read_line(&mut reply) {
+            Ok(_) => break,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                let Some(wait) = consent.as_ref() else {
+                    let _ = writeln!(errors, "error: reading reply: {e}");
+                    return 1;
+                };
+                let elapsed = started.elapsed();
+                if elapsed >= wait.timeout {
+                    log::info!(
+                        "events: {} got no consent answer within {:?}",
+                        wait.what,
+                        wait.timeout
+                    );
+                    let _ = writeln!(
+                        errors,
+                        "error: no answer to the consent prompt for {} within {:.1}s (--timeout). \
+                         The host keeps the prompt open; answering it later can still apply the request.",
+                        wait.what,
+                        wait.timeout.as_secs_f64()
+                    );
+                    return 2;
+                }
+                let remaining = wait.timeout - elapsed;
+                if !noticed {
+                    noticed = true;
+                    log::info!(
+                        "events: {} waiting on host consent, remaining={remaining:?}",
+                        wait.what
+                    );
+                    let _ = writeln!(
+                        errors,
+                        "waiting: the host is asking whether to allow {}. Answer the consent \
+                         prompt in the Plexi window; giving up in {:.0}s (--timeout).",
+                        wait.what,
+                        remaining.as_secs_f64().ceil()
+                    );
+                    let _ = errors.flush();
+                }
+                if let Err(e) = reader.get_ref().set_read_timeout(Some(remaining)) {
+                    let _ = writeln!(errors, "error: setting the publish reply deadline: {e}");
+                    return 1;
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(errors, "error: reading reply: {e}");
+                return 1;
+            }
+        }
     }
     let reply = reply.trim();
     if reply.is_empty() {
-        eprintln!("error: host closed the connection without replying");
+        let _ = writeln!(errors, "error: host closed the connection without replying");
         return 1;
     }
     match serde_json::from_str::<serde_json::Value>(reply) {
         Ok(val) => match val["type"].as_str() {
             Some("error") => {
-                eprintln!(
+                let _ = writeln!(
+                    errors,
                     "error: {}",
                     val["message"].as_str().unwrap_or("unknown error")
                 );
                 1
             }
             _ => {
-                println!("{}", val["detail"].as_str().unwrap_or(reply));
+                let _ = writeln!(out, "{}", val["detail"].as_str().unwrap_or(reply));
                 0
             }
         },
         Err(_) => {
-            eprintln!("error: host reply was not valid JSON: {reply}");
+            let _ = writeln!(errors, "error: host reply was not valid JSON: {reply}");
             1
         }
     }
 }
 
 /// `plexi events declare <plugin_id> <stream>` — register a stream schema.
+///
+/// A first declare under a namespace the caller does not own waits for the
+/// host consent modal; `timeout_secs` bounds that wait (exit 2).
 pub fn events_declare_cli(
     plugin_id: &str,
     stream: &str,
     schema: &str,
     description: Option<&str>,
+    timeout_secs: f64,
 ) -> i32 {
+    let Some(timeout) = std::time::Duration::try_from_secs_f64(timeout_secs)
+        .ok()
+        .filter(|timeout| !timeout.is_zero())
+    else {
+        eprintln!("error: --timeout must be a finite, positive number of seconds");
+        return 1;
+    };
     let schema_json: serde_json::Value = match serde_json::from_str(schema) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: --schema is not valid JSON: {e}");
-            return 2;
+            return 1;
         }
     };
     let mut decl = serde_json::json!({ "name": stream, "schema": schema_json });
@@ -189,7 +276,21 @@ pub fn events_declare_cli(
         "streams": [decl],
         "from_pane_id": from_pane_id(),
     });
-    send_and_read_reply(req)
+    let conn = match connect_and_send(&req) {
+        Ok(conn) => conn,
+        Err(code) => return code,
+    };
+    let what = format!("declare stream {plugin_id}/{stream}");
+    read_publish_reply(
+        conn,
+        Some(ConsentWait {
+            what: &what,
+            notice_after: CONSENT_NOTICE_AFTER,
+            timeout,
+        }),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
 }
 
 /// Arguments for `plexi events emit`, mirroring the `EventsCmd::Emit` fields.
@@ -236,7 +337,16 @@ pub fn events_emit_cli(args: EmitArgs) -> i32 {
         "changed_resources": args.changed_resources,
         "from_pane_id": from_pane_id(),
     });
-    send_and_read_reply(req)
+    let conn = match connect_and_send(&req) {
+        Ok(conn) => conn,
+        Err(code) => return code,
+    };
+    read_publish_reply(
+        conn,
+        None,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
 }
 
 /// `plexi events list` — print declared streams once and exit.

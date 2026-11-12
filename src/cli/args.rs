@@ -1190,7 +1190,9 @@ pub enum EventsCmd {
     /// Registers a named stream under a plugin-id namespace with a JSON-Schema
     /// object describing its payload. Declaring is a prerequisite for `emit`.
     /// Re-declaring a stream replaces its previous schema. The first declare
-    /// under a namespace you do not own prompts for host consent.
+    /// under a namespace you do not own prompts for host consent: the command
+    /// says on stderr that it is waiting for an answer in the Plexi window.
+    /// Exit 0 declared, 1 refused or failed, 2 no answer within `--timeout`.
     ///
     /// Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
     Declare {
@@ -1204,6 +1206,9 @@ pub enum EventsCmd {
         /// Human-readable description of when this event fires.
         #[arg(long)]
         description: Option<String>,
+        /// Seconds to wait for a consent answer before exiting 2.
+        #[arg(long, default_value_t = 60.0)]
+        timeout: f64,
     },
     /// Emit an event onto a declared stream.
     ///

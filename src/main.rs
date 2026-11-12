@@ -1764,11 +1764,13 @@ fn main() -> eframe::Result {
                             stream,
                             schema,
                             description,
+                            timeout,
                         } => cli::trace::exit(cli::events_declare_cli(
                             &plugin_id,
                             &stream,
                             &schema,
                             description.as_deref(),
+                            timeout,
                         )),
                         EventsCmd::Emit {
                             plugin_id,
