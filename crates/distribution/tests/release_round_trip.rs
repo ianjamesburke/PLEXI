@@ -2,7 +2,7 @@
 //! produces. `scripts/release-round-trip-e2e.sh` cuts the tags with the real
 //! release scripts in a temporary repository and hands them to the ignored
 //! test through the environment; the fixed-tag test keeps the same policy
-//! under `cargo test --workspace` and ROADMAP.toml evidence.
+//! under `cargo test --workspace`.
 use plexi_distribution::release::{Asset, Release, accepts, archive_name, select};
 
 const PLATFORM: &str = "macos-arm64";
