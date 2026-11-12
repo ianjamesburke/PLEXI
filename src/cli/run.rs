@@ -1450,3 +1450,50 @@ config_version = 1
         );
     }
 }
+
+#[cfg(test)]
+mod step_classification_tests {
+    use super::{parse_step, ParsedStep};
+    use clap::CommandFactory;
+
+    #[test]
+    fn step_whose_first_word_is_not_a_cli_command_runs_in_the_shell() {
+        assert_eq!(
+            parse_step("open README.md"),
+            ParsedStep::Shell("open README.md".to_string())
+        );
+    }
+
+    #[test]
+    fn step_whose_first_word_is_a_top_level_cli_command_runs_plexi() {
+        assert_eq!(
+            parse_step("ai doctor"),
+            ParsedStep::PlexiCli(vec![
+                "plexi".to_string(),
+                "ai".to_string(),
+                "doctor".to_string(),
+            ])
+        );
+    }
+
+    /// Step classification is derived from the clap tree: every top-level
+    /// command name and alias routes to the CLI. A hand-kept classifier list
+    /// that drifts from the tree fails here.
+    #[test]
+    fn step_classification_matches_the_clap_tree() {
+        for sub in crate::cli::args::Cli::command().get_subcommands() {
+            for name in std::iter::once(sub.get_name()).chain(sub.get_all_aliases()) {
+                let step = format!("{name} --help");
+                assert_eq!(
+                    parse_step(&step),
+                    ParsedStep::PlexiCli(vec![
+                        "plexi".to_string(),
+                        name.to_string(),
+                        "--help".to_string(),
+                    ]),
+                    "`{step}` names a top-level command and must run through the CLI"
+                );
+            }
+        }
+    }
+}

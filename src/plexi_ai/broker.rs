@@ -2276,4 +2276,55 @@ mod tests {
         assert!(generation_cost_fallback(None, &None, "sk-test").is_none());
         assert!(generation_cost_fallback(None, &Some(String::new()), "sk-test").is_none());
     }
+
+    /// A workspace event whose 200th byte falls inside an emoji is truncated on
+    /// a character boundary instead of panicking the turn worker.
+    #[test]
+    fn context_prefix_truncates_multibyte_event_on_a_char_boundary() {
+        let _channel = crate::config::set_test_channel("test");
+        let ws = tempfile::tempdir().unwrap();
+        let channel_dir = ws.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&channel_dir).unwrap();
+        // Serialized as `{"k":"` (6 bytes) + 193 ASCII bytes, so the emoji
+        // occupies bytes 199..203 and byte 200 is inside it.
+        let value = format!("{}{}", "a".repeat(193), "🎉".repeat(50));
+        let line = serde_json::json!({ "k": value }).to_string();
+        assert!(
+            !line.is_char_boundary(200),
+            "fixture must split a char at byte 200"
+        );
+        std::fs::write(channel_dir.join("events.jsonl"), format!("{line}\n")).unwrap();
+
+        let prefix = build_context_prefix(ws.path(), &[]);
+
+        let event_line = prefix
+            .lines()
+            .find(|l| l.starts_with("{\"k\""))
+            .expect("event line present");
+        assert!(event_line.chars().count() <= 200, "{event_line}");
+        assert!(event_line.contains("chars omitted"), "{event_line}");
+    }
+
+    /// The 8000-character cap cuts on a character boundary. Four paddings
+    /// guarantee that, before the fix, at least one run splits a 4-byte char.
+    #[test]
+    fn context_prefix_caps_multibyte_context_on_a_char_boundary() {
+        let root = std::path::Path::new("/plexi-test-context-prefix-without-workspace");
+        for pad in 0..4 {
+            let panes = [PaneContext {
+                type_id: format!("{}{}", "a".repeat(pad), "🎉".repeat(8400)),
+                pane_id: 1,
+            }];
+
+            let prefix = build_context_prefix(root, &panes);
+
+            assert!(prefix.ends_with("\n---\n"), "pad={pad}");
+            assert!(prefix.contains("chars omitted"), "pad={pad}");
+            assert!(
+                prefix.chars().count() <= 8000 + "\n---\n".len(),
+                "pad={pad}: {} chars",
+                prefix.chars().count()
+            );
+        }
+    }
 }

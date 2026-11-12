@@ -5809,6 +5809,80 @@ mod tests {
         assert_eq!(second, vec![dir.path().join("alpha 2.txt")]);
     }
 
+    /// Pasting a folder into itself or one of its descendants is refused
+    /// before anything is created; copying would otherwise recurse into its
+    /// own output.
+    #[test]
+    fn pasting_a_folder_into_itself_or_a_descendant_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("folder");
+        let sub = folder.join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir folder/sub");
+        std::fs::write(folder.join("keep.txt"), b"k").expect("write keep");
+
+        for (cwd, operation) in [
+            (folder.clone(), FileOperation::Copy),
+            (sub.clone(), FileOperation::Copy),
+            (sub.clone(), FileOperation::Cut),
+        ] {
+            let mut app = FileBrowserView::new(cwd.clone());
+            app.operation_clipboard = Some(FileOperationClipboard {
+                operation,
+                paths: vec![folder.clone()],
+            });
+
+            let err = app
+                .paste_into_current_dir()
+                .expect_err("pasting a folder into itself must be refused");
+
+            assert!(err.contains("into itself"), "{err}");
+            let mut folder_entries: Vec<String> = std::fs::read_dir(&folder)
+                .expect("read folder")
+                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            folder_entries.sort();
+            assert_eq!(
+                folder_entries,
+                vec!["keep.txt".to_string(), "sub".to_string()],
+                "{operation:?} into {} created entries",
+                cwd.display()
+            );
+            assert_eq!(
+                std::fs::read_dir(&sub).expect("read sub").count(),
+                0,
+                "{operation:?} into {} created entries",
+                cwd.display()
+            );
+        }
+    }
+
+    /// A symlink inside a copied folder is copied as a link, so a link that
+    /// points back at its own folder cannot make the copy recurse.
+    #[cfg(unix)]
+    #[test]
+    fn copying_a_folder_copies_a_symlink_cycle_as_a_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).expect("mkdir folder");
+        std::fs::write(folder.join("keep.txt"), b"k").expect("write keep");
+        std::os::unix::fs::symlink(&folder, folder.join("loop")).expect("symlink loop");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![folder.clone()],
+        });
+
+        let created = app.paste_into_current_dir().expect("paste");
+
+        assert_eq!(created, vec![dir.path().join("folder 1")]);
+        let copied_link = dir.path().join("folder 1").join("loop");
+        let meta = std::fs::symlink_metadata(&copied_link).expect("copied link");
+        assert!(meta.file_type().is_symlink(), "loop must stay a symlink");
+        assert_eq!(std::fs::read_link(&copied_link).expect("read link"), folder);
+        assert!(dir.path().join("folder 1").join("keep.txt").is_file());
+    }
+
     #[test]
     fn r_and_f2_open_rename_modal_and_cmd_shift_r_refreshes() {
         let (mut app, dir) = make_three_file_plugin();

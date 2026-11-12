@@ -4160,6 +4160,32 @@ mod per_key_load_tests {
         );
     }
 
+    /// `cmd:` file handlers are not implemented, so the loader reports them
+    /// instead of accepting a value it would silently treat as `os`.
+    #[test]
+    fn unsupported_cmd_file_handler_is_reported() {
+        let (cfg, diagnostics) = load(
+            "[file_handlers]\nmd = \"cmd:code -w\"\npdf = \"os\"\npng = \"app:image-viewer\"\n",
+        );
+        assert_eq!(keys(&diagnostics), ["file_handlers.md"], "{diagnostics:?}");
+        assert!(diagnostics[0].is_error());
+        assert!(
+            diagnostics[0].to_string().contains("cmd:"),
+            "{}",
+            diagnostics[0]
+        );
+        let handlers = cfg.file_handlers.expect("file_handlers loaded");
+        assert!(
+            !handlers.contains_key("md"),
+            "rejected handler must not apply"
+        );
+        assert_eq!(handlers.get("pdf").map(String::as_str), Some("os"));
+        assert_eq!(
+            handlers.get("png").map(String::as_str),
+            Some("app:image-viewer")
+        );
+    }
+
     #[test]
     fn one_wrong_type_is_reported_and_other_settings_still_load() {
         let (cfg, diagnostics) = load(
