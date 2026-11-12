@@ -3102,7 +3102,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. A pane id or a call credential marks an agent.\nAgents may revoke. Reset and allow from an agent file Needs you.",
+          "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. No socket caller is human: `reset` and `allow`\nfile a Needs you item that only a click in the Plexi window applies;\n`revoke` and `list` apply directly.",
           "properties": {
             "id": {
               "type": [

@@ -561,3 +561,37 @@ fn socket_caller_with_no_pane_is_not_human() {
         "the desktop click applies the reset"
     );
 }
+
+/// An older CLI still sends the removed `pane_id`/`credential` fields. The host
+/// answers with the parse error instead of leaving the caller to time out.
+#[test]
+fn permissions_request_with_removed_fields_gets_a_clear_error() {
+    let mut h = HostHarness::new();
+    let reply = PathBuf::from(crate::rpc::response_file("permissions-old", "json"));
+    let token = reply.to_string_lossy().into_owned();
+    let line = serde_json::json!({
+        "type": "permissions",
+        "op": "allow",
+        "id": "grant-x",
+        "pane_id": null,
+        "credential": null,
+        "response_file": token,
+    })
+    .to_string();
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[999_999]), &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error_code"], "invalid_request", "{value}");
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown field"),
+        "{value}"
+    );
+}

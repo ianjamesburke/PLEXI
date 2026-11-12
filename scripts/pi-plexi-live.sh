@@ -114,11 +114,19 @@ echo "$TOOLS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(
 wait_for_human_approval() {
   local id="$1"
   echo "==> Approve $id in the Plexi window ($LIVE_CHANNEL). Waiting up to 120s..."
+  local out
   for _ in {1..240}; do
-    if ! plexi_iso assistant permission show "$id" >/dev/null 2>&1; then
+    # Pending: ok=true. Decided: the host no longer knows the id. Anything
+    # else (host down, transport error) is a failure, not a decision.
+    if out="$(plexi_iso assistant permission show "$id" 2>&1)"; then
+      sleep 0.5
+      continue
+    fi
+    if printf '%s' "$out" | grep -q "unknown pending request"; then
       return 0
     fi
-    sleep 0.5
+    echo "error: could not check $id: $out" >&2
+    return 1
   done
   echo "error: $id was not decided in the Plexi window within 120s" >&2
   return 1

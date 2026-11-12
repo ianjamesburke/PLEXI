@@ -1147,8 +1147,9 @@ pub enum HostRequest {
         response_file: String,
     },
     /// Read or change the permission monitor. `op` is `list`, `reset`,
-    /// `revoke`, or `allow`. A pane id or a call credential marks an agent.
-    /// Agents may revoke. Reset and allow from an agent file Needs you.
+    /// `revoke`, or `allow`. No socket caller is human: `reset` and `allow`
+    /// file a Needs you item that only a click in the Plexi window applies;
+    /// `revoke` and `list` apply directly.
     Permissions {
         op: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

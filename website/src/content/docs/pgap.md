@@ -903,7 +903,7 @@ Resolve one pending permission request from the desktop observation seam.
 
 ### `permissions`
 
-Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `allow`. A pane id or a call credential ...
+Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `allow`. No socket caller is human: `res...
 
 | Field | Type | Required |
 |-------|------|----------|

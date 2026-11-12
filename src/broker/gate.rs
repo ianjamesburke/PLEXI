@@ -3389,7 +3389,7 @@ impl PermissionMonitor {
         }
         let outcome = self.apply_mutation(id, action);
         log::info!(
-            "permission_monitor: mutate {action} id={id} human={} actor={} outcome={}",
+            "permission_monitor: mutate {action} id={id:?} human={} actor={} outcome={}",
             caller.human,
             caller.actor_id,
             mutation_label(&outcome)
@@ -3399,7 +3399,7 @@ impl PermissionMonitor {
 
     fn file_widen(&self, id: &str, action: &str, actor: &str) -> PermissionMutation {
         let Some(entry) = self.entry_by_id(id) else {
-            log::info!("permission_monitor: widen {action} missing id={id} actor={actor}");
+            log::info!("permission_monitor: widen {action} missing id={id:?} actor={actor:?}");
             return PermissionMutation::Missing {
                 entry_id: id.to_string(),
             };
@@ -3442,7 +3442,7 @@ impl PermissionMonitor {
                         },
                     );
                 log::info!(
-                    "permission_monitor: widen {action} id={id} filed needs_you={needs_you_id} actor={actor}"
+                    "permission_monitor: widen {action} id={id:?} filed needs_you={needs_you_id} actor={actor:?}"
                 );
                 PermissionMutation::NeedsYou {
                     needs_you_id,

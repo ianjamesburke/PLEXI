@@ -218,7 +218,7 @@ impl PlexiApp {
             );
             let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
             log::info!(
-                "permissions:cli {op} id={id} surface=socket actor={actor_id} outcome={}",
+                "permissions:cli op={op:?} id={id:?} surface=socket actor={actor_id} outcome={}",
                 body["status"].as_str().unwrap_or("unknown")
             );
             let ok = matches!(
