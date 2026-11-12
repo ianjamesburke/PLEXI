@@ -1,6 +1,26 @@
 # Changelog
 
 Newest releases appear first.
+## [0.5.0] — 2026-11-12
+
+### Changes
+- security(custody): only the host process reads the seal key or writes sealed state; install and CLI commands file requests (#3072)
+- fix(permissions): a socket caller with no pane identity is not human (#3067)
+- fix(permissions): remove the raw socket SetPermission route (#3064)
+- feat(website): overhaul site and docs for plugins and views (#3081)
+- feat(render): rows hand out width to grow children; Row and Column justify (#3104)
+- fix(sdk): containers accept Sequence[Component]; export CanvasCommand; type the scaffold view (#3102)
+- fix(render): columns share space between grow spacers; rows align and wrap (#3100)
+- fix(plugin-check): layout findings, per-scope headless seeds, honest seeded probe (#3096)
+- fix(plugin): lead plugin errors with the plugin's own exception (#3090)
+- Gauntlet fixes D: minimal plugin scaffold, login-home walk stop, authoring guide gaps (#3093)
+- fix(testing): docs-only skipped gate for aggregate batches (#3079)
+- fix(pi-plexi): call plugin tools/call and view open instead of retired app namespace (#3074)
+- fix(permissions): plugin guests cannot list or decide broker asks (#3062)
+- fix(sdk): plugin state saves again after the rename; contract test for SDK/host message kinds (#3070)
+- fix(plugins): failed plugin migration is logged, shown on GUI launch and names the fix (#3060)
+- feat(plugins): complete schema-2 manifest contract (#3057)
+- feat(plugins)!: rename apps to plugins and views, schema-2 manifests, core-only mode (0.5.0 checkpoint) (#3033)
 ## [0.4.6] — 2026-11-11
 
 ### Changes
