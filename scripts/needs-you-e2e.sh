@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Installed-binary check: create a click approval, prove a terminal or phone
+# Installed-binary check: create a click approval, prove a terminal
 # approve does not grant, click Allow once, and confirm the tool proceeds.
-# Check 7 races two denies. It does not approve from the CLI or the phone.
+# Check 7 races two denies. It does not approve from the CLI.
 # permission-audit.jsonl lines are sealed envelopes; the fact is the inner JSON.
 set -euo pipefail
 
@@ -16,7 +16,7 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${PHONE_PID:-}" ]]; then kill "$PHONE_PID" 2>/dev/null || true; wait "$PHONE_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; wait "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; wait "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -171,36 +171,9 @@ if [[ ! -S "$SOCKET" ]]; then
 fi
 export PLEXI_SOCKET="$SOCKET"
 
-export PLEXI_PHONE_TOKEN="needs-you-e2e-token"
-PHONE_PORT=$((18000 + RANDOM % 2000))
-python3 "$ROOT/clients/phone-web/server.py" --backend host --plexi-bin "$BIN" --port "$PHONE_PORT" >"$WORK/phone.log" 2>&1 &
-PHONE_PID=$!
-phone_up=0
-for _ in $(seq 1 40); do
-  if python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" <<'PY'
-import sys, urllib.request
-port, token = sys.argv[1:]
-req = urllib.request.Request(
-    f"http://127.0.0.1:{port}/api/needs-you",
-    headers={"Authorization": f"Bearer {token}"},
-)
-urllib.request.urlopen(req, timeout=2).read()
-PY
-  then
-    phone_up=1
-    break
-  fi
-  sleep 0.25
-done
-if [[ "$phone_up" != 1 ]]; then
-  echo "error: phone shell did not answer" >&2
-  cat "$WORK/phone.log" >&2 || true
-  exit 1
-fi
-
 echo "opening chess"
-"$BIN" app open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
-  echo "error: app open failed" >&2
+"$BIN" view open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
+  echo "error: view open failed" >&2
   cat "$WORK/open.log" >&2
   exit 1
 }
@@ -249,7 +222,7 @@ ask_approval() {
   local outfile="$2"
   local asked=0
   for _ in $(seq 1 40); do
-    if ! run_in_pane "$outfile" "$BIN app call chess chess.play --json --input '$input' > '$outfile' 2>&1"; then
+    if ! run_in_pane "$outfile" "$BIN plugin call chess chess.play --json --input '$input' > '$outfile' 2>&1"; then
       sleep 1
       continue
     fi
@@ -367,39 +340,6 @@ if not refused:
 print("refuse audit row recorded")
 PY
 
-echo "phone approve must not grant"
-python3 - "$PHONE_PORT" "$PLEXI_PHONE_TOKEN" "$ID" <<'PY'
-import json, sys, urllib.error, urllib.request
-port, token, item_id = sys.argv[1:]
-req = urllib.request.Request(
-    f"http://127.0.0.1:{port}/api/needs-you/{item_id}/resolve",
-    data=json.dumps({"decision": "approve"}).encode(),
-    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(req, timeout=20) as response:
-        body = json.load(response)
-        raise SystemExit(f"phone approve granted: {response.status} {body}")
-except urllib.error.HTTPError as exc:
-    raw = exc.read().decode()
-    body = json.loads(raw) if raw else {}
-    if exc.code == 200 or body.get("ok") is True or body.get("resolution") == "approved":
-        raise SystemExit(f"phone approve granted: {exc.code} {body}")
-    if body.get("error_code") != "permission_denied":
-        raise SystemExit(f"phone approve was not permission_denied: {exc.code} {body}")
-print("phone approve did not grant")
-PY
-
-LIST3="$("$BIN" needs-you list --json)"
-python3 - "$LIST3" "$ID" <<'PY'
-import json, sys
-body = json.loads(sys.argv[1])
-item = next((row for row in body.get("items", []) if row.get("id") == sys.argv[2]), None)
-if item is None or item.get("resolution") is not None:
-    raise SystemExit(f"pending item was settled from the phone: {body}")
-PY
-
 echo "clicking Allow once"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
@@ -411,7 +351,7 @@ if ! HUMAN_APPROVE "$ID"; then
 fi
 
 echo "retrying the tool"
-run_in_pane "$WORK/call2.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
+run_in_pane "$WORK/call2.out" "$BIN plugin call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
 python3 - "$WORK/call2.out" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
@@ -542,7 +482,7 @@ if [[ "$GRANTS_BEFORE" != "$GRANTS_AFTER" ]]; then
   echo "error: check 7 wrote a grant ($GRANTS_BEFORE -> $GRANTS_AFTER)" >&2
   exit 1
 fi
-run_in_pane "$WORK/call4.out" "$BIN app call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
+run_in_pane "$WORK/call4.out" "$BIN plugin call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
 python3 - "$WORK/call4.out" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()

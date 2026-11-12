@@ -33,9 +33,21 @@ pub struct OwnedPath {
     pub sha256: String,
     #[serde(default)]
     pub link_target: Option<PathBuf>,
+    /// Set for a copied Mac app bundle: its main executable, relative to the
+    /// bundle. `sha256` is that executable's digest. The marker lives in the
+    /// receipt because a file inside `Contents/` would break the signature seal.
+    #[serde(default)]
+    pub bundle_executable: Option<PathBuf>,
 }
 impl OwnedPath {
     pub fn matches(&self) -> Result<bool> {
+        if let Some(executable) = &self.bundle_executable {
+            let executable = self.path.join(executable);
+            return Ok(!self.path.is_symlink()
+                && self.path.is_dir()
+                && executable.is_file()
+                && hash_file(&executable)? == self.sha256);
+        }
         if let Some(target) = &self.link_target {
             return Ok(self.path.is_symlink()
                 && fs::read_link(&self.path).context("read owned symlink")? == *target);
@@ -78,6 +90,19 @@ struct Change {
     link_target: Option<PathBuf>,
     #[serde(default)]
     before_link: Option<PathBuf>,
+    #[serde(default)]
+    bundle: Option<BundleSwap>,
+}
+/// Activation of a copied app bundle. `staged` and `aside` share one hidden
+/// scratch directory beside the destination, so both moves are renames.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BundleSwap {
+    scratch: PathBuf,
+    staged: PathBuf,
+    aside: PathBuf,
+    executable: PathBuf,
+    /// An owned item (old link or copy) occupied the destination.
+    previous: bool,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Journal {
@@ -196,7 +221,7 @@ pub fn installations() -> Result<Vec<Receipt>> {
 
 pub fn installed_for_executable(exe: &Path) -> Result<Option<Receipt>> {
     let Some(package) = Package::at_executable(exe)? else {
-        return Ok(None);
+        return managed_bundle_receipt(exe);
     };
     let Some(generations) = package
         .root
@@ -209,6 +234,56 @@ pub fn installed_for_executable(exe: &Path) -> Result<Option<Receipt>> {
         .parent()
         .ok_or_else(|| Error::Invalid("generation has no installation root".into()))?;
     read_receipt(root)
+}
+
+/// The receipt whose copied Applications bundle contains `exe`. The copy has
+/// no `package.json`; the executable name selects the channel to consult.
+fn managed_bundle_receipt(exe: &Path) -> Result<Option<Receipt>> {
+    let Some(name) = exe.file_stem().and_then(|n| n.to_str()) else {
+        return Ok(None);
+    };
+    let channel = match name.strip_prefix("plexi-") {
+        Some(channel) => channel,
+        None if name == "plexi" => "stable",
+        None => return Ok(None),
+    };
+    if release::validate_channel(channel).is_err() {
+        return Ok(None);
+    }
+    let Some(receipt) = find_installation(channel)? else {
+        return Ok(None);
+    };
+    let Ok(exe) = exe.canonicalize() else {
+        return Ok(None);
+    };
+    let owned = receipt.integrations.iter().any(|o| {
+        o.bundle_executable
+            .as_ref()
+            .is_some_and(|rel| o.path.join(rel).canonicalize().is_ok_and(|p| p == exe))
+    });
+    Ok(owned.then_some(receipt))
+}
+
+/// The package a managed Applications bundle copy was made from, selected by
+/// the running build id among the receipt's retained generations.
+pub fn managed_bundle_package(exe: &Path, build_id: &str) -> Result<Option<Package>> {
+    let Some(receipt) = managed_bundle_receipt(exe)? else {
+        return Ok(None);
+    };
+    std::iter::once(&receipt.active)
+        .chain(receipt.previous.iter())
+        .find(|g| g.build_id == build_id)
+        .map(|g| Package::load(&g.path))
+        .transpose()
+}
+
+/// The package `exe` runs from: its own package layout, else the generation
+/// a managed Applications bundle copy was made from.
+pub fn package_for_executable(exe: &Path, build_id: &str) -> Result<Option<Package>> {
+    if let Some(package) = Package::at_executable(exe)? {
+        return Ok(Some(package));
+    }
+    managed_bundle_package(exe, build_id)
 }
 
 pub fn lock(root: &Path) -> Result<File> {
@@ -327,6 +402,7 @@ fn prepare_file(root: &Path, path: &Path, bytes: &[u8], index: usize) -> Result<
         executable: false,
         link_target: None,
         before_link: None,
+        bundle: None,
     })
 }
 
@@ -344,7 +420,9 @@ fn executable_permission(path: &Path) -> Result<()> {
 
 fn apply_changes(changes: &[Change]) -> Result<()> {
     for change in changes {
-        if let Some(target) = &change.link_target {
+        if let Some(swap) = &change.bundle {
+            swap_bundle(&change.path, swap)?;
+        } else if let Some(target) = &change.link_target {
             atomic_link(&change.path, target)?;
         } else {
             let bytes = fs::read(&change.staged).context("read staged integration")?;
@@ -375,10 +453,15 @@ pub fn recover(root: &Path) -> Result<()> {
         root.display()
     );
     for change in journal.changes.iter().rev() {
+        if let Some(swap) = &change.bundle {
+            restore_bundle(&change.path, &change.after_hash, swap)?;
+            continue;
+        }
         let owned = OwnedPath {
             path: change.path.clone(),
             sha256: change.after_hash.clone(),
             link_target: change.link_target.clone(),
+            bundle_executable: change.bundle.as_ref().map(|b| b.executable.clone()),
         };
         if owned.matches()? {
             if let Some(target) = &change.before_link {
@@ -789,14 +872,20 @@ fn install_checked(
             path,
             sha256: change.after_hash.clone(),
             link_target: None,
+            bundle_executable: None,
         });
         changes.push(change);
     }
+    #[cfg(unix)]
+    if options.modify_path || !receipt.path_edits.is_empty() {
+        prepare_path_registration(&mut receipt, &mut changes)?;
+    }
+    let windows_path = prepare_windows_integration(&mut receipt, &mut changes)?;
+    // Staged last: it is the only change that leaves scratch outside `root`.
     #[cfg(target_os = "macos")]
     {
-        let bundle = receipt
-            .active
-            .executable()
+        let executable = receipt.active.executable();
+        let bundle = executable
             .ancestors()
             .find(|p| p.extension().is_some_and(|e| e == "app"))
             .map(Path::to_path_buf)
@@ -804,42 +893,16 @@ fn install_checked(
         let path = receipt
             .applications_dir
             .join(format!("{}.app", display_name(&receipt.channel)));
-        let before_link = if path.exists() || path.is_symlink() {
-            if !before.as_ref().is_some_and(|r| {
-                r.integrations
-                    .iter()
-                    .any(|p| p.path == path && p.matches().unwrap_or(false))
-            }) {
-                return Err(Error::Invalid(format!(
-                    "refusing to replace unowned bundle {}",
-                    path.display()
-                )));
-            }
-            Some(fs::read_link(&path).context("read existing Applications link")?)
-        } else {
-            None
-        };
-        changes.push(Change {
-            path: path.clone(),
-            before: None,
-            staged: PathBuf::new(),
-            after_hash: String::new(),
-            executable: false,
-            link_target: Some(bundle.clone()),
-            before_link,
-        });
+        let change = prepare_bundle_change(&root, before.as_ref(), &path, &bundle, &executable)?;
         receipt.integrations.retain(|p| p.path != path);
         receipt.integrations.push(OwnedPath {
             path,
-            sha256: String::new(),
-            link_target: Some(bundle),
+            sha256: change.after_hash.clone(),
+            link_target: None,
+            bundle_executable: change.bundle.as_ref().map(|b| b.executable.clone()),
         });
+        changes.push(change);
     }
-    #[cfg(unix)]
-    if options.modify_path || !receipt.path_edits.is_empty() {
-        prepare_path_registration(&mut receipt, &mut changes)?;
-    }
-    let windows_path = prepare_windows_integration(&mut receipt, &mut changes)?;
     let journal = Journal {
         before,
         after: receipt.clone(),
@@ -861,6 +924,14 @@ fn install_checked(
     if let Err(error) = result {
         recover(&root)?;
         return Err(error);
+    }
+    #[cfg(target_os = "macos")]
+    for change in &journal.changes {
+        if let Some(swap) = &change.bundle {
+            finish_bundle_swap(swap);
+            lsregister("-f", &change.path);
+            unregister_generation_bundles(&root);
+        }
     }
     log::info!(
         "distribution: activated channel={} build={} root={}",
@@ -947,6 +1018,207 @@ fn atomic_link(path: &Path, target: &Path) -> Result<()> {
     }
 }
 
+/// Stage a real copy of the active app bundle beside the Applications
+/// destination. Spotlight skips symlinks and hidden directories, so a link
+/// into the generation store is invisible to search and leaves one
+/// LaunchServices record per generation. Only our old link into this
+/// installation root, or a copy the previous receipt records, is replaced.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn prepare_bundle_change(
+    root: &Path,
+    before: Option<&Receipt>,
+    path: &Path,
+    source: &Path,
+    executable: &Path,
+) -> Result<Change> {
+    let previous = path.exists() || path.is_symlink();
+    let recorded = before.is_some_and(|r| {
+        r.integrations
+            .iter()
+            .any(|p| p.path == path && p.matches().unwrap_or(false))
+    });
+    let our_link = path.is_symlink()
+        && fs::read_link(path)
+            .context("read existing Applications link")?
+            .starts_with(root);
+    if previous && !recorded && !our_link {
+        return Err(Error::Invalid(format!(
+            "refusing to replace unowned bundle {}",
+            path.display()
+        )));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("Applications bundle has no parent".into()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::Invalid("Applications bundle has no name".into()))?;
+    let relative = executable
+        .strip_prefix(source)
+        .map_err(|_| Error::Invalid("bundle executable is outside its bundle".into()))?
+        .to_path_buf();
+    let scratch = tempfile::Builder::new()
+        .prefix(".plexi-bundle-")
+        .tempdir_in(parent)
+        .context("stage Applications bundle")?;
+    let staged = scratch.path().join(name);
+    copy_bundle(source, &staged)?;
+    let after_hash = hash_file(&staged.join(&relative))?;
+    if after_hash != hash_file(executable)? {
+        return Err(Error::Invalid(format!(
+            "copied bundle executable differs from {}",
+            executable.display()
+        )));
+    }
+    let scratch = scratch.keep();
+    Ok(Change {
+        path: path.to_path_buf(),
+        before: None,
+        staged: PathBuf::new(),
+        after_hash,
+        executable: false,
+        link_target: None,
+        before_link: None,
+        bundle: Some(BundleSwap {
+            aside: scratch.join("previous"),
+            staged,
+            scratch,
+            executable: relative,
+            previous,
+        }),
+    })
+}
+
+/// `ditto` keeps the code signature, extended attributes and bundle metadata.
+#[cfg(target_os = "macos")]
+fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
+    let output = Command::new("/usr/bin/ditto")
+        .arg(source)
+        .arg(destination)
+        .output()
+        .context("run ditto")?;
+    if !output.status.success() {
+        return Err(Error::Invalid(format!(
+            "ditto {} failed: {}",
+            source.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+#[cfg(all(test, unix, not(target_os = "macos")))]
+fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination).context("create bundle copy")?;
+    for entry in fs::read_dir(source).context("list bundle")? {
+        let entry = entry.context("read bundle entry")?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type().context("bundle entry type")?.is_dir() {
+            copy_bundle(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).context("copy bundle file")?;
+        }
+    }
+    Ok(())
+}
+
+fn swap_bundle(path: &Path, swap: &BundleSwap) -> Result<()> {
+    if swap.previous {
+        fs::rename(path, &swap.aside).context(format!("move aside {}", path.display()))?;
+    }
+    fs::rename(&swap.staged, path).context(format!("activate {}", path.display()))?;
+    sync_dir(path.parent().unwrap_or(path))
+}
+
+/// Undo an interrupted `swap_bundle`. The aside item exists only between the
+/// swap and post-commit cleanup, so its presence means the swap started.
+fn restore_bundle(path: &Path, after_hash: &str, swap: &BundleSwap) -> Result<()> {
+    let ours = OwnedPath {
+        path: path.to_path_buf(),
+        sha256: after_hash.to_string(),
+        link_target: None,
+        bundle_executable: Some(swap.executable.clone()),
+    };
+    let aside = swap.aside.exists() || swap.aside.is_symlink();
+    if (aside || !swap.previous) && ours.matches()? {
+        fs::remove_dir_all(path).context(format!("remove {}", path.display()))?;
+    }
+    if aside && !path.exists() && !path.is_symlink() {
+        fs::rename(&swap.aside, path).context(format!("restore {}", path.display()))?;
+    }
+    if !swap.aside.exists() && !swap.aside.is_symlink() {
+        match fs::remove_dir_all(&swap.scratch) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    action: format!("remove {}", swap.scratch.display()),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Discard the displaced link or copy once the new receipt is committed.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn finish_bundle_swap(swap: &BundleSwap) {
+    if let Err(error) = fs::remove_dir_all(&swap.scratch) {
+        log::warn!(
+            "distribution: could not remove bundle scratch {}: {error}",
+            swap.scratch.display()
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lsregister(flag: &str, path: &Path) {
+    const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    match Command::new(LSREGISTER).arg(flag).arg(path).output() {
+        Ok(output) if output.status.success() => {
+            log::info!("distribution: lsregister {flag} {}", path.display())
+        }
+        // -10814 (kLSApplicationNotFoundErr): unregistering a bundle
+        // LaunchServices never knew, the normal case for generation bundles.
+        Ok(output)
+            if flag == "-u" && String::from_utf8_lossy(&output.stderr).contains("-10814") =>
+        {
+            log::debug!(
+                "distribution: lsregister -u {} was not registered",
+                path.display()
+            )
+        }
+        Ok(output) => log::warn!(
+            "distribution: lsregister {flag} {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => log::warn!(
+            "distribution: lsregister {flag} {} failed: {error}",
+            path.display()
+        ),
+    }
+}
+
+/// Bundles inside the generation store, which LaunchServices must forget so
+/// `open -a` and Spotlight resolve to the Applications copy.
+#[cfg(target_os = "macos")]
+fn unregister_generation_bundles(root: &Path) {
+    let Ok(generations) = fs::read_dir(root.join("generations")) else {
+        return;
+    };
+    for generation in generations.flatten() {
+        let Ok(entries) = fs::read_dir(generation.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|e| e == "app") {
+                lsregister("-u", &entry.path());
+            }
+        }
+    }
+}
+
 pub fn remove_owned(owned: &OwnedPath) -> Result<()> {
     if !owned.path.exists() && !owned.path.is_symlink() {
         return Ok(());
@@ -956,6 +1228,9 @@ pub fn remove_owned(owned: &OwnedPath) -> Result<()> {
             "preserving changed or unowned file {}",
             owned.path.display()
         )));
+    }
+    if owned.bundle_executable.is_some() {
+        return fs::remove_dir_all(&owned.path).context(format!("remove {}", owned.path.display()));
     }
     remove_if_present(&owned.path)
 }
@@ -1207,6 +1482,17 @@ pub fn uninstall(root: &Path) -> Result<()> {
     windows_remove(&receipt)?;
     #[cfg(unix)]
     remove_path_registration(&receipt)?;
+    #[cfg(target_os = "macos")]
+    {
+        unregister_generation_bundles(root);
+        for owned in receipt
+            .integrations
+            .iter()
+            .filter(|o| o.bundle_executable.is_some())
+        {
+            lsregister("-u", &owned.path);
+        }
+    }
     for owned in &receipt.integrations {
         remove_owned(owned)?;
     }
@@ -1340,6 +1626,18 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     }
 }
 
+fn running_identity_matches(response: &serde_json::Value, build_id: &str, commit: &str) -> bool {
+    response.get("ready").and_then(|v| v.as_bool()) == Some(true)
+        && response
+            .pointer("/running/build_id")
+            .and_then(|v| v.as_str())
+            == Some(build_id)
+        && response
+            .pointer("/running/source_commit")
+            .and_then(|v| v.as_str())
+            == Some(commit)
+}
+
 pub fn launch_ready(receipt: &Receipt) -> Result<()> {
     let mut command = Command::new(receipt.active.executable());
     if let Some(home) = dirs::home_dir() {
@@ -1356,6 +1654,36 @@ pub fn launch_ready(receipt: &Receipt) -> Result<()> {
                 .into(),
         ));
     }
+    // An already-running older host also reports ready; require its identity.
+    let package = Package::load(&receipt.active.path)?;
+    let mut query = Command::new(receipt.active.executable());
+    query.args(["host", "status", "--json"]);
+    clean_environment(&mut query);
+    let output = query.output().context("query running host identity")?;
+    let response: serde_json::Value = if output.status.success() {
+        serde_json::from_slice(&output.stdout).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    if !running_identity_matches(
+        &response,
+        &receipt.active.build_id,
+        &package.manifest.source_commit,
+    ) {
+        log::warn!(
+            "distribution: running host identity unverified or differs from installed build={}",
+            receipt.active.build_id
+        );
+        return Err(Error::Invalid(
+            "running host identity is unverified or differs from the installed build; restart it cleanly and retry"
+                .into(),
+        ));
+    }
+    log::info!(
+        "distribution: verified running host build={} commit={}",
+        receipt.active.build_id,
+        package.manifest.source_commit
+    );
     Ok(())
 }
 
@@ -1547,6 +1875,7 @@ fn prepare_windows_integration(
         path,
         sha256: change.after_hash.clone(),
         link_target: None,
+        bundle_executable: None,
     });
     changes.push(change);
     Ok(Some(WindowsPathChange { before, after }))
@@ -1648,6 +1977,34 @@ mod tests {
     }
 
     #[test]
+    fn running_identity_requires_matching_build_and_commit() {
+        for (response, matches) in [
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-b", "source_commit": "commit-b"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-a", "source_commit": "commit-b"}}),
+                false,
+            ),
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-b", "source_commit": "commit-a"}}),
+                false,
+            ),
+            (serde_json::json!({"ready": true, "running": null}), false),
+            (
+                serde_json::json!({"ready": false, "running": {"build_id": "build-b", "source_commit": "commit-b"}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                running_identity_matches(&response, "build-b", "commit-b"),
+                matches
+            );
+        }
+    }
+
+    #[test]
     fn modified_integration_is_never_removed_as_owned() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plexi");
@@ -1656,6 +2013,7 @@ mod tests {
             path: path.clone(),
             sha256: crate::package::hash_file(&path).unwrap(),
             link_target: None,
+            bundle_executable: None,
         };
         fs::write(&path, b"unrelated development binary").unwrap();
         assert!(remove_owned(&owned).is_err());
@@ -1739,6 +2097,195 @@ mod tests {
         write_windows_path(&before).unwrap();
         result.unwrap();
         assert_eq!(observed, before);
+    }
+
+    /// A fake home: install root with one generation bundle, and ~/Applications.
+    #[cfg(unix)]
+    fn bundle_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("data/plexi/beta");
+        let bundle = root.join("generations/abc/Plexi Beta.app");
+        let executable = bundle.join("Contents/MacOS/plexi-beta");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"host build abc").unwrap();
+        fs::write(bundle.join("Contents/Info.plist"), b"<plist/>").unwrap();
+        let applications = home.path().join("Applications");
+        fs::create_dir_all(&applications).unwrap();
+        let path = applications.join("Plexi Beta.app");
+        (home, root, bundle, executable, path)
+    }
+
+    #[cfg(unix)]
+    fn activate_bundle(change: &Change) -> OwnedPath {
+        apply_changes(std::slice::from_ref(change)).unwrap();
+        finish_bundle_swap(change.bundle.as_ref().unwrap());
+        OwnedPath {
+            path: change.path.clone(),
+            sha256: change.after_hash.clone(),
+            link_target: None,
+            bundle_executable: change.bundle.as_ref().map(|b| b.executable.clone()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applications_link_into_our_root_becomes_a_real_owned_bundle() {
+        let (home, root, bundle, executable, path) = bundle_fixture();
+        std::os::unix::fs::symlink(&bundle, &path).unwrap();
+        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        let owned = activate_bundle(&change);
+        assert!(!path.is_symlink() && path.is_dir());
+        assert_eq!(
+            fs::read(path.join("Contents/MacOS/plexi-beta")).unwrap(),
+            b"host build abc"
+        );
+        assert!(owned.matches().unwrap());
+        assert!(bundle.is_dir(), "the generation bundle is untouched");
+        let leftovers: Vec<_> = fs::read_dir(home.path().join("Applications"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from("Plexi Beta.app")]);
+        // Upgrading over the recorded copy is allowed; uninstall removes it.
+        let mut receipt = fixture_receipt(&root);
+        receipt.integrations.push(owned.clone());
+        fs::write(&executable, b"host build def").unwrap();
+        let change =
+            prepare_bundle_change(&root, Some(&receipt), &path, &bundle, &executable).unwrap();
+        let upgraded = activate_bundle(&change);
+        assert!(!owned.matches().unwrap() && upgraded.matches().unwrap());
+        remove_owned(&upgraded).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unowned_applications_items_are_refused_and_changed_copies_kept() {
+        let (home, root, bundle, executable, path) = bundle_fixture();
+        fs::create_dir_all(path.join("Contents")).unwrap();
+        let error = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to replace unowned bundle")
+        );
+        fs::remove_dir_all(&path).unwrap();
+        std::os::unix::fs::symlink(home.path().join("elsewhere.app"), &path).unwrap();
+        assert!(prepare_bundle_change(&root, None, &path, &bundle, &executable).is_err());
+        assert!(path.is_symlink());
+        fs::remove_file(&path).unwrap();
+        let owned = activate_bundle(
+            &prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap(),
+        );
+        fs::write(path.join("Contents/MacOS/plexi-beta"), b"user edit").unwrap();
+        assert!(remove_owned(&owned).is_err());
+        assert!(path.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_bundle_activation_restores_the_previous_link() {
+        let (_home, root, bundle, executable, path) = bundle_fixture();
+        std::os::unix::fs::symlink(&bundle, &path).unwrap();
+        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        let journal = Journal {
+            before: None,
+            after: fixture_receipt(&root),
+            changes: vec![change.clone()],
+            windows_path: None,
+        };
+        write_json(&root.join("transaction.json"), &journal).unwrap();
+        apply_changes(&journal.changes).unwrap();
+        assert!(path.is_dir() && !path.is_symlink());
+        recover(&root).unwrap();
+        assert_eq!(fs::read_link(&path).unwrap(), bundle);
+        assert!(!change.bundle.unwrap().scratch.exists());
+        // An interruption before the swap leaves the destination alone.
+        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        restore_bundle(&path, &change.after_hash, change.bundle.as_ref().unwrap()).unwrap();
+        assert_eq!(fs::read_link(&path).unwrap(), bundle);
+        assert!(!change.bundle.unwrap().scratch.exists());
+    }
+
+    /// Regression: an npm `package.json` in `$HOME` made the Applications copy
+    /// fail to start ("missing field `schema`") instead of resolving its
+    /// generation package.
+    #[cfg(unix)]
+    #[test]
+    fn applications_copy_ignores_foreign_home_package_json() {
+        let (tmp, root, bundle, executable, _) = bundle_fixture();
+        let home_dir = tmp.path().join("home");
+        let applications = home_dir.join("Applications");
+        fs::create_dir_all(&applications).unwrap();
+        let path = applications.join("Plexi Beta.app");
+        fs::write(
+            home_dir.join("package.json"),
+            r#"{"name":"dotfiles","version":"1.0.0","devDependencies":{}}"#,
+        )
+        .unwrap();
+        let generation = bundle.parent().unwrap().to_path_buf();
+        fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+        let manifest = crate::package::Manifest {
+            schema: 1,
+            version: "0.4.2".into(),
+            tag: "v0.4.2-beta.1".into(),
+            build_id: "abc".into(),
+            source_commit: "abc".into(),
+            channel: "beta".into(),
+            platform: "macos-arm64".into(),
+            executable: "Plexi Beta.app/Contents/MacOS/plexi-beta".into(),
+            resources: "Plexi Beta.app/Contents/Resources".into(),
+            files: Default::default(),
+        };
+        write_json(&generation.join("package.json"), &manifest).unwrap();
+        let owned = activate_bundle(
+            &prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap(),
+        );
+        let root = root.canonicalize().unwrap();
+        let mut receipt = fixture_receipt(&root);
+        receipt.channel = "beta".into();
+        receipt.applications_dir = applications.clone();
+        receipt.active = Generation {
+            path: root.join("generations/abc"),
+            build_id: "abc".into(),
+            tag: "v0.4.2-beta.1".into(),
+            executable: manifest.executable.clone(),
+        };
+        receipt.integrations.push(owned);
+        write_json(&root.join(RECEIPT), &receipt).unwrap();
+        // SAFETY: the only test in this crate that reads the distribution root.
+        unsafe { std::env::set_var("PLEXI_DISTRIBUTION_HOME", root.parent().unwrap()) };
+
+        let copy = path.join("Contents/MacOS/plexi-beta");
+        assert!(Package::at_executable(&copy).unwrap().is_none());
+        let package = managed_bundle_package(&copy, "abc").unwrap().unwrap();
+        let from_generation = Package::at_executable(&executable).unwrap().unwrap();
+        assert_eq!(package.root, from_generation.root);
+        assert_eq!(
+            package.resources().unwrap(),
+            from_generation.resources().unwrap()
+        );
+        assert_eq!(
+            package_for_executable(&copy, "abc")
+                .unwrap()
+                .unwrap()
+                .resources()
+                .unwrap(),
+            from_generation.resources().unwrap()
+        );
+        assert_eq!(
+            installed_for_executable(&copy)
+                .unwrap()
+                .unwrap()
+                .active
+                .build_id,
+            "abc"
+        );
+        assert!(
+            managed_bundle_package(&copy, "other-build")
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn fixture_receipt(root: &Path) -> Receipt {

@@ -312,11 +312,11 @@ pipeline_slots_set implement <n> "" pushed "" ""
 - No `todo!()` or `unimplemented!()` outside `#[cfg(test)]`
 - No `#[allow(dead_code)]` or `#[allow(unused)]`
 - `just build` (release, `-D warnings`) must pass after all changes; bare `cargo build` is not a substitute (root `AGENTS.md` Traps)
-- `/testing` is mandatory before pushing when any `src/` host logic or `apps/` Python app code was touched. For `src/` changes, this means `cargo test --bin plexi`; for `apps/` changes, this means the PGAP-layer evidence (real-process headless screenshot). The `**Test evidence:**` block must be in the Ship Log before `/open-pr` is invoked. For docs-only, skills-only, or config-only changes, write `"docs-only — no test evidence required"` in place of the block.
+- `/testing` is mandatory before pushing when any `src/` host logic or `apps/` Python app code was touched. For `src/` changes, use the relevant scoped host filters and phase-aware evidence from `src/testing/TESTING.md`; for `apps/` changes, this means the PGAP-layer evidence (real-process headless screenshot). The `**Test evidence:**` block must be in the Ship Log before `/open-pr` is invoked. For docs-only, skills-only, or config-only changes, write `"docs-only — no test evidence required"` in place of the block.
 - Subagents stage only — orchestrator owns the commit
 - Never dispatch subagent without the Phase 3 spec
 - Every implementation needs a logging plan
-- CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md` in same PR
+- CLI changes must update `skills/plexi-cli/` in the same PR: edit `intro.md`, regenerate `SKILL.md` (`just gen-skill-docs`), and bump `skill_version` in `tools/gen_cli_docs/src/skill.rs`
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
 - Start linked stint tasks here; never mark them done here. `/merge-pr` owns completion timing.
 - After pushing, always invoke `/open-pr` inline before considering this skill complete.

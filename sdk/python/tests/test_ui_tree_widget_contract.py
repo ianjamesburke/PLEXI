@@ -22,7 +22,7 @@ from plexi_sdk._adapter import _encode_uitree
 ACCEPTED_NODE_TYPES = frozenset({
     "Empty",
     "Text", "text", "label",
-    "AppBar", "app_bar", "app-bar",
+    "SurfaceHeader", "surface_header", "app-bar",
     "FooterKeys", "footer_keys", "footer-keys",
     "Pinned", "pinned",
     "Spinner", "spinner",
@@ -59,6 +59,7 @@ _NOT_A_WIDGET = {
     "Component",  # abstract base; never instantiated directly, to_node() is None by design
     "ensure_visible",  # scroll-math helper function
     "move_cursor",  # list-cursor helper function
+    "CanvasCommand",  # type alias: the union of the four draw commands below
     "CanvasRect", "CanvasCircle", "CanvasLine", "CanvasText",
     # ^ Canvas draw commands -- to_command(), not to_node(); only meaningful
     # nested inside a Canvas(commands=[...]) node, never as a tree node.
@@ -76,7 +77,7 @@ _FACTORIES = {
     "Row": lambda: ui.Row([]),
     "Actions": lambda: ui.Actions([]),
     "ActionBar": lambda: ui.ActionBar([]),
-    "AppBar": lambda: ui.AppBar("Title"),
+    "SurfaceHeader": lambda: ui.SurfaceHeader("Title"),
     "Section": lambda: ui.Section("Title"),
     "Heading": lambda: ui.Heading("Title"),
     "Label": lambda: ui.Label("Body"),

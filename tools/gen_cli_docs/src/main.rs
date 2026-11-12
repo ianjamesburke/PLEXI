@@ -4,14 +4,21 @@
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use plexi::cli_args::Cli;
 
-mod skill;
 mod parity;
+mod skill;
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--parity") {
-        match parity::generate(&Cli::command(), include_str!("../../../src/host/keys.rs"), include_str!("../../../docs/cli/parity.json")) {
+        match parity::generate(
+            &Cli::command(),
+            include_str!("../../../src/host/keys.rs"),
+            include_str!("../../../docs/cli/parity.json"),
+        ) {
             Ok(output) => print!("{output}"),
-            Err(error) => { eprintln!("parity: {error}"); std::process::exit(1); }
+            Err(error) => {
+                eprintln!("parity: {error}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -184,7 +191,7 @@ fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
         | "plexi account status"
         | "plexi account login"
         | "plexi account logout" => Some("Marketplace account management is a beta surface."),
-        "plexi app publish" | "plexi app browse" | "plexi app search" => {
+        "plexi plugin publish" | "plexi plugin browse" | "plexi plugin search" => {
             Some("Marketplace publishing and catalog browsing are beta surfaces.")
         }
         "plexi events mcp-config" => Some("MCP client configuration is a beta surface."),

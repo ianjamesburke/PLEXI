@@ -8,7 +8,7 @@ Stint: 0480, 0481, 0482, 0483, 0484, 0485, 0486, 0487, 0488, 0489, 0490
 
 Plexi can open a browser as a normal App pane. The first implementation is macOS-first and uses a native WebKit child view through Wry. It follows the browser lane already reserved by `app-framework-marketplace.md`; it does not add a new pane variant or bundle Chromium.
 
-The host owns the native browser surface, its position, visibility, focus, storage, permissions, capture, and lifecycle. The browser app owns navigation state and browser chrome. A WASM app may request browser operations through a typed host capability later, but WebKit does not run inside the WASM component.
+The host owns the native browser surface, its position, visibility, focus, storage, permissions, capture, and lifecycle. The browser plugin owns navigation state and browser chrome. A WASM plugin may request browser operations through a typed host capability later, but WebKit does not run inside the WASM component.
 
 ## Native Surface Contract
 

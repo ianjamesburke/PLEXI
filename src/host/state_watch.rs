@@ -11,8 +11,8 @@
 //!   which replaces the inode — a single-file watch dies after the first
 //!   replacement. Events are filtered by file name instead.
 //! - **The watched dirs are shared** (`~/.plexi/app_states/` holds every
-//!   app's global state), so filename filtering is mandatory: without it,
-//!   every app's save would fire every other app's watcher.
+//!   plugin's global state), so filename filtering is mandatory: without it,
+//!   every plugin's save would fire every other plugin's watcher.
 //!
 //! Same 250ms debounce-thread pattern as hot_reload; one debouncer thread per
 //! watched pane coalesces a burst into one notice per scope. Self-write
@@ -29,10 +29,12 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use crate::host::state_scope::StateScope;
@@ -76,7 +78,7 @@ impl Drop for WatcherHandle {
 }
 
 /// Manages per-pane state-file watchers. The host owns one of these, registers
-/// each file-backed app pane at launch, re-syncs registrations when a pane's
+/// each file-backed view pane at launch, re-syncs registrations when a pane's
 /// resolved state paths change, and unwatches on pane close.
 pub struct StateWatcher {
     watchers: HashMap<PaneId, WatcherHandle>,
@@ -168,7 +170,7 @@ impl StateWatcher {
                             ) {
                                 return;
                             }
-                            // Shared dir: only this app's file counts. An
+                            // Shared dir: only this plugin's file counts. An
                             // atomic rename reports the destination path, so
                             // matching the final file name is sufficient.
                             if ev
@@ -213,7 +215,18 @@ impl StateWatcher {
         }
 
         let thread = thread::spawn(move || {
-            debounce_loop(pane_id, raw_rx, sender, cancel_thread);
+            crate::app::debounce::run(
+                raw_rx,
+                cancel_thread,
+                Duration::from_millis(DEBOUNCE_MS),
+                |scope| {
+                    log::info!(
+                        "state_watch: debounced state change for pane {pane_id} scope={}",
+                        scope.as_str()
+                    );
+                    sender.send(StateChangedNotice { pane_id, scope }).is_ok()
+                },
+            );
         });
 
         self.watchers.insert(
@@ -232,56 +245,6 @@ impl StateWatcher {
     pub fn unwatch(&mut self, pane_id: PaneId) {
         if self.watchers.remove(&pane_id).is_some() {
             log::info!("state_watch: stopped watching pane {pane_id}");
-        }
-    }
-}
-
-/// Debounce loop: collect per-scope events into a window, emit one
-/// `StateChangedNotice` per changed scope when the window closes (no new
-/// events within `DEBOUNCE_MS`). Polls every 50ms so cancellation is observed
-/// promptly even when the watchers are silent.
-fn debounce_loop(
-    pane_id: PaneId,
-    rx: Receiver<StateScope>,
-    sender: UiMailbox<StateChangedNotice>,
-    cancel: Arc<Mutex<bool>>,
-) {
-    let mut pending: HashMap<StateScope, Instant> = HashMap::new();
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
-    let poll = Duration::from_millis(50);
-
-    loop {
-        if cancel.lock().map(|g| *g).unwrap_or(true) {
-            return;
-        }
-
-        match rx.try_recv() {
-            Ok(scope) => {
-                pending.insert(scope, Instant::now());
-            }
-            Err(TryRecvError::Disconnected) => {
-                // All watchers dropped — exit cleanly.
-                return;
-            }
-            Err(TryRecvError::Empty) => {
-                let due: Vec<StateScope> = pending
-                    .iter()
-                    .filter(|(_, t)| t.elapsed() >= debounce)
-                    .map(|(scope, _)| *scope)
-                    .collect();
-                for scope in due {
-                    pending.remove(&scope);
-                    log::info!(
-                        "state_watch: debounced state change for pane {pane_id} scope={}",
-                        scope.as_str()
-                    );
-                    if sender.send(StateChangedNotice { pane_id, scope }).is_err() {
-                        // Host receiver dropped — nothing more to do.
-                        return;
-                    }
-                }
-                thread::sleep(poll);
-            }
         }
     }
 }
@@ -412,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_sibling_app_files() {
+    fn ignores_sibling_plugin_files() {
         let dir = tempdir().unwrap();
         let mine = dir.path().join("mine.json");
         let sibling = dir.path().join("other-app.json");
@@ -435,7 +398,7 @@ mod tests {
         let got = poll_for_notice(&rx, Duration::from_millis(800));
         assert!(
             got.is_none(),
-            "a sibling app's state file must not fire this pane's watcher, got {got:?}"
+            "a sibling plugin's state file must not fire this pane's watcher, got {got:?}"
         );
     }
 

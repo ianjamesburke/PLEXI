@@ -10,7 +10,7 @@ reference: doc rot becomes a CI failure. Two checks, both against live source:
    <!-- drift-check:* --> markers) must exist in the SDK. Catches the exact rot
    fixed in stint 0332 (TextInput vs TextEdit).
 
-   `plexi app init --help` intentionally links to the canonical guide instead
+   `plexi plugin init --help` intentionally links to the canonical guide instead
    of duplicating an API reference. Keep a small smoke check that `plexi app
    check --help` still advertises the verification loop.
 
@@ -97,8 +97,8 @@ def check_names() -> list[str]:
         if name not in components:
             errors.append(f"component `{name}` in AUTHORING.md does not exist in ui.py")
 
-    if "APP CHECK LOOP:" not in ARGS_RS.read_text(encoding="utf-8"):
-        errors.append("args.rs is missing the APP CHECK LOOP help block")
+    if "PLUGIN CHECK LOOP:" not in ARGS_RS.read_text(encoding="utf-8"):
+        errors.append("args.rs is missing the PLUGIN CHECK LOOP help block")
     return errors
 
 

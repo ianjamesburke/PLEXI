@@ -14,6 +14,6 @@ package = "plexi:counter"
 
 [package.metadata.component.target]
 path = "wit"
-world = "plexi-app"
+world = "plexi-plugin"
 
 [workspace]

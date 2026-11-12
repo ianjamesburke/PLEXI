@@ -35,12 +35,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::app::PlexiApp;
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{Pane, ViewRuntime};
 use crate::spatial::tiling::PaneId;
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
 
-/// Generic app target used by the scene runner. Builtin ids resolve through
+/// Generic plugin target used by the scene runner. Builtin ids resolve through
 /// the production factory plus the test-only registry below.
 pub(crate) enum HarnessOpenTarget<'a> {
     Process {
@@ -58,16 +58,16 @@ pub(crate) enum HarnessOpenTarget<'a> {
     },
 }
 
-type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::app_trait::App>;
+type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::view_trait::View>;
 
 fn assistant_harness_factory(
     workspace_root: &Path,
     _args: &[String],
     context_id: u64,
-) -> Box<dyn crate::app::app_trait::App> {
+) -> Box<dyn crate::app::view_trait::View> {
     let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
         std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
-    Box::new(crate::assistant::AssistantApp::new(
+    Box::new(crate::assistant::AssistantView::new(
         workspace_root.to_path_buf(),
         broker,
         workspace_root,
@@ -75,15 +75,156 @@ fn assistant_harness_factory(
     ))
 }
 
-const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] =
-    &[("assistant", assistant_harness_factory)];
+struct ButtonGalleryFixture;
+
+impl crate::app::view_trait::View for ButtonGalleryFixture {
+    fn type_id(&self) -> &'static str {
+        "button-gallery-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Kit button gallery".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        // Padded so captions and the first column are never flush with the pane edge.
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(crate::ui::style::SPACE_XL as i8))
+            .show(ui, |ui| {
+                crate::overlays::ui_gallery::draw_button_sizes(ui, ctx.colors);
+            });
+    }
+}
+
+fn button_gallery_factory(_: &Path, _: &[String], _: u64) -> Box<dyn crate::app::view_trait::View> {
+    Box::new(ButtonGalleryFixture)
+}
+
+struct DescriptorDropdownFixture {
+    field: crate::app::plexi_descriptor::ArgSpec,
+    values: std::collections::HashMap<String, String>,
+}
+
+impl crate::app::view_trait::View for DescriptorDropdownFixture {
+    fn type_id(&self) -> &'static str {
+        "descriptor-dropdown-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Deployment settings".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        crate::render::descriptor_widgets::form_fields(
+            ui,
+            ctx.colors,
+            [&self.field],
+            &mut self.values,
+            false,
+            ctx.pane_id,
+        );
+        ui.label(format!(
+            "Selected environment: {}",
+            self.values["Environment"]
+        ));
+    }
+}
+
+fn descriptor_dropdown_factory(
+    _: &Path,
+    _: &[String],
+    _: u64,
+) -> Box<dyn crate::app::view_trait::View> {
+    Box::new(DescriptorDropdownFixture {
+        field: serde_json::from_value(serde_json::json!({
+            "name": "Environment", "type": "enum",
+            "description": "Choose the deployment environment",
+            "enum_values": ["Development", "Staging", "Production"]
+        }))
+        .unwrap(),
+        values: std::collections::HashMap::from([("Environment".into(), "Development".into())]),
+    })
+}
+
+// Seed the popup endpoint directly: generic scene pane gestures do not
+// reproduce kittest's widget click routing. The descriptor and secrets pixel
+// tests separately open the production callers through real widget clicks.
+struct DropdownSceneFixture {
+    selected: &'static str,
+}
+impl crate::app::view_trait::View for DropdownSceneFixture {
+    fn type_id(&self) -> &'static str {
+        "kit-dropdown-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Kit dropdown".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let response = crate::ui::dropdown::select_value(
+            ui,
+            "scene_dropdown",
+            self.selected,
+            &mut self.selected,
+            || {
+                [
+                    ("Development", "Development"),
+                    ("Staging", "Staging"),
+                    ("Production", "Production"),
+                ]
+            },
+            ctx.colors,
+        );
+        if ui.input(|input| input.key_pressed(egui::Key::F6)) {
+            egui::Popup::open_id(ui.ctx(), response.id.with("popup"));
+        }
+        ui.label(format!("Selected environment: {}", self.selected));
+        ui.label(
+            if egui::Popup::is_id_open(ui.ctx(), response.id.with("popup")) {
+                "Options open"
+            } else {
+                "Options closed"
+            },
+        );
+    }
+}
+fn dropdown_scene_factory(_: &Path, _: &[String], _: u64) -> Box<dyn crate::app::view_trait::View> {
+    Box::new(DropdownSceneFixture {
+        selected: "Development",
+    })
+}
+const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] = &[
+    ("assistant", assistant_harness_factory),
+    ("button-gallery-fixture", button_gallery_factory),
+    ("descriptor-dropdown-fixture", descriptor_dropdown_factory),
+    ("kit-dropdown-fixture", dropdown_scene_factory),
+];
 
 fn harness_builtin_factory(
     id: &str,
     cwd: &Path,
     args: &[String],
     context_id: u64,
-) -> Option<Box<dyn crate::app::app_trait::App>> {
+) -> Option<Box<dyn crate::app::view_trait::View>> {
     HARNESS_BUILTIN_FACTORIES
         .iter()
         .find(|(candidate, _)| *candidate == id)
@@ -109,7 +250,8 @@ impl PlexiUiHarness {
     /// Create a harness with a fresh, isolated PlexiApp.
     pub fn new() -> Self {
         let profile_dir = tempfile::tempdir().expect("create UI harness profile");
-        let profile_guard = crate::config::test_profile_dir_override().is_none()
+        let profile_guard = crate::config::test_profile_dir_override()
+            .is_none()
             .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
@@ -135,7 +277,7 @@ impl PlexiUiHarness {
 
     /// Create a harness with an explicit surface size. Use for screenshot
     /// tests — the default kittest surface is too small for pane chrome and
-    /// app content to be legible in the saved PNG.
+    /// plugin content to be legible in the saved PNG.
     pub fn new_sized(width: f32, height: f32) -> Self {
         Self::new_sized_ppp(width, height, 1.0)
     }
@@ -145,8 +287,18 @@ impl PlexiUiHarness {
     /// (half-resolution surfaces, off-grid galley origins) are invisible at
     /// the default ppp of 1.0.
     pub fn new_sized_ppp(width: f32, height: f32, ppp: f32) -> Self {
+        Self::new_sized_config(width, height, ppp, Default::default())
+    }
+
+    fn new_sized_config(
+        width: f32,
+        height: f32,
+        ppp: f32,
+        config: crate::config::PlexiConfig,
+    ) -> Self {
         let profile_dir = tempfile::tempdir().expect("create UI harness profile");
-        let profile_guard = crate::config::test_profile_dir_override().is_none()
+        let profile_guard = crate::config::test_profile_dir_override()
+            .is_none()
             .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
         let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let shared_dir = tempfile::tempdir().expect("create UI harness shared dir");
@@ -158,7 +310,8 @@ impl PlexiUiHarness {
             .with_size(egui::Vec2::new(width, height))
             .with_pixels_per_point(ppp)
             .build_eframe(move |cc| {
-                let (mut app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                let (mut app, _ipc_tx) =
+                    PlexiApp::new_for_test_with_config(cc.egui_ctx.clone(), frame_tick, config);
                 app.set_initial_context_id_for_test(context_id);
                 app.host.seed_next_pane_id(pane_block);
                 app
@@ -171,6 +324,28 @@ impl PlexiUiHarness {
             _shared_guard,
             _shared_dir: shared_dir,
         }
+    }
+
+    /// Harness for a `phys_w` x `phys_h` PHYSICAL-pixel window at UI scale
+    /// `scale`: the logical surface ends up `phys / scale` points and egui's
+    /// zoom factor is `scale`.
+    pub fn new_sized_scaled(phys_w: f32, phys_h: f32, scale: f32) -> Self {
+        Self::new_sized_scaled_with_config(phys_w, phys_h, scale, Default::default())
+    }
+
+    pub fn new_sized_scaled_with_config(
+        phys_w: f32,
+        phys_h: f32,
+        scale: f32,
+        config: crate::config::PlexiConfig,
+    ) -> Self {
+        // Start at zoom 1.0 with the physical size; egui rescales the screen
+        // rect to `phys / scale` on the pass that changes the zoom factor,
+        // exactly as it does for a real window.
+        let mut h = Self::new_sized_config(phys_w, phys_h, 1.0, config);
+        h.with_app_mut(|app| app.ui_scale = scale);
+        h.run_steps(3);
+        h
     }
 
     /// Advance one frame. Uses `step()` — PlexiApp continuously requests
@@ -224,17 +399,17 @@ impl PlexiUiHarness {
     }
 
     /// Fresh directory owned by this harness. Scenes use it when an open step
-    /// omits `cwd`, keeping native app state out of the developer's workspace.
+    /// omits `cwd`, keeping native plugin state out of the developer's workspace.
     pub fn workspace_root(&self) -> &Path {
         self.workspace.path()
     }
 
-    // ── Real app / host app / portal drivers ─────────────────────────────────
+    // ── Real plugin / host plugin / portal drivers ─────────────────────────────────
 
     /// Open any supported scene target through its normal pane-opening path.
     pub fn open_target(&mut self, target: HarnessOpenTarget<'_>) -> Result<PaneId, String> {
         match target {
-            HarnessOpenTarget::Process { path, args } => self.open_app_at(path, args),
+            HarnessOpenTarget::Process { path, args } => self.open_view_at(path, args),
             HarnessOpenTarget::Wasm { path, args } => {
                 self.open_wasm_at_with_args(path, args.to_vec())
             }
@@ -258,9 +433,9 @@ impl PlexiUiHarness {
         let context_id = self.with_app(|app| app.windows[app.active_window].context_id);
         if let Some(app) = harness_builtin_factory(id, cwd, args, context_id) {
             self.with_app_mut(|host| {
-                host.open_builtin_app_pane(
+                host.open_builtin_view_pane(
                     app,
-                    crate::app::permissions::AppPermissions::builtin(),
+                    crate::app::permissions::PluginPermissions::builtin(),
                     cwd.to_path_buf(),
                     None,
                     Some("split_v"),
@@ -269,7 +444,7 @@ impl PlexiUiHarness {
             });
         } else {
             self.with_app_mut(|host| {
-                host.launch_app_by_id_with_layout(
+                host.launch_view_by_id_with_layout(
                     id,
                     Some("split_v".to_string()),
                     args,
@@ -289,12 +464,12 @@ impl PlexiUiHarness {
             host.windows.iter().any(|window| {
                 matches!(
                     window.panes.get(&pane_id),
-                    Some(Pane::App(app)) if matches!(app.runtime, AppRuntime::Builtin(_))
+                    Some(Pane::View(app)) if matches!(app.runtime, ViewRuntime::Builtin(_))
                 )
             })
         });
         if !is_builtin {
-            return Err(format!("app id '{id}' did not resolve to a builtin"));
+            return Err(format!("plugin id '{id}' did not resolve to a builtin"));
         }
         Ok(pane_id)
     }
@@ -353,8 +528,8 @@ impl PlexiUiHarness {
         self.inner.query_all_by_label(label).next().is_some()
     }
 
-    /// Launch a real PGAP app process from `app_dir` (a directory containing
-    /// `manifest.toml`) — the same production path as `plexi app open <path>`.
+    /// Launch a real PGAP plugin process from `plugin_dir` (a directory containing
+    /// `manifest.toml`) — the same production path as `plexi view open <path>`.
     /// The child process, IPC threads, and L1 render pipeline are all real.
     /// Returns the new pane's id.
     ///
@@ -364,7 +539,7 @@ impl PlexiUiHarness {
     ///
     /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
     /// pass JSON state for deterministic scenes.
-    pub fn open_app_at(&mut self, app_dir: &Path, args: &[String]) -> Result<PaneId, String> {
+    pub fn open_view_at(&mut self, plugin_dir: &Path, args: &[String]) -> Result<PaneId, String> {
         if std::env::var_os("PLEXI_SDK_PATH").is_none() {
             let dev_sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("sdk")
@@ -380,9 +555,9 @@ impl PlexiUiHarness {
                 .copied()
                 .collect()
         });
-        let path = app_dir.to_string_lossy().into_owned();
+        let path = plugin_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
+            app.launch_view_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
                 .map(|_| ())
         })?;
         self.with_app(|app| {
@@ -395,27 +570,31 @@ impl PlexiUiHarness {
         })
     }
 
-    /// Open a sandboxed WASM component app, forwarding `args` to the guest's
-    /// `init` as its argv (the same path as `plexi app open <path> -- <args>`).
+    /// Open a sandboxed WASM component plugin, forwarding `args` to the guest's
+    /// `init` as its argv (the same path as `plexi view open <path> -- <args>`).
     pub fn open_wasm_at_with_args(
         &mut self,
         wasm_path: &Path,
         args: Vec<String>,
     ) -> Result<PaneId, String> {
-        let app_id = wasm_path
+        let plugin_id = wasm_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm")
             .to_string();
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd, args))
+        self.with_app_mut(|app| app.open_wasm_view_pane(&plugin_id, wasm_path, cwd, args))
     }
 
-    /// Step frames until the real app process behind `pane_id` commits its
+    /// Step frames until the real plugin process behind `pane_id` commits its
     /// first rendered frame (FrameDone observed), sleeping between steps to
-    /// give the child process wall-clock time. Fails with the app's recent
+    /// give the child process wall-clock time. Fails with the plugin's recent
     /// stderr on crash or timeout.
-    pub fn wait_for_app_frame(&mut self, pane_id: PaneId, timeout: Duration) -> Result<(), String> {
+    pub fn wait_for_view_frame(
+        &mut self,
+        pane_id: PaneId,
+        timeout: Duration,
+    ) -> Result<(), String> {
         enum Probe {
             Rendered,
             Waiting,
@@ -426,17 +605,17 @@ impl PlexiUiHarness {
             self.step();
             let probe = self.with_app(|app| {
                 let win = &app.windows[app.active_window];
-                let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) else {
-                    return Probe::Dead(format!("pane {pane_id} is not an app pane"));
+                let Some(Pane::View(view_pane)) = win.panes.get(&pane_id) else {
+                    return Probe::Dead(format!("pane {pane_id} is not a view pane"));
                 };
-                match &app_pane.runtime {
-                    AppRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
-                    AppRuntime::Python(p) => p
+                match &view_pane.runtime {
+                    ViewRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
+                    ViewRuntime::Python(p) => p
                         .error()
                         .map(|error| Probe::Dead(error.to_string()))
                         .unwrap_or(Probe::Waiting),
-                    AppRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
-                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM app")),
+                    ViewRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
+                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM plugin")),
                 }
             });
             match probe {
@@ -446,23 +625,23 @@ impl PlexiUiHarness {
             }
             if start.elapsed() > timeout {
                 return Err(format!(
-                    "timed out after {timeout:?} waiting for first app frame"
+                    "timed out after {timeout:?} waiting for first plugin frame"
                 ));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
     }
 
-    /// Open the built-in file browser host app rooted at `cwd`. Uses the
-    /// production `open_builtin_app_pane` path with a `split_v` hint, which
+    /// Open the built-in file browser host plugin rooted at `cwd`. Uses the
+    /// production `open_builtin_view_pane` path with a `split_v` hint, which
     /// installs as the root pane when the context is empty (the ⌘O shortcut's
     /// `overlay` hint requires an existing focused pane).
     pub fn open_file_browser(&mut self, cwd: std::path::PathBuf) {
         self.with_app_mut(|app| {
-            let fb: Box<dyn crate::app::app_trait::App> =
-                Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
-            let perms = crate::app::permissions::AppPermissions::builtin();
-            app.open_builtin_app_pane(
+            let fb: Box<dyn crate::app::view_trait::View> =
+                Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
+            let perms = crate::app::permissions::PluginPermissions::builtin();
+            app.open_builtin_view_pane(
                 fb,
                 perms,
                 cwd,
@@ -491,7 +670,7 @@ impl PlexiUiHarness {
         let context_id = self.with_app_mut(|app| app.windows[app.active_window].context_id);
         // Grants/audit also stay inside the temp workspace, never the real
         // channel profile dir.
-        let assistant = crate::assistant::AssistantApp::new(
+        let assistant = crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
             &workspace_root,
@@ -504,13 +683,13 @@ impl PlexiUiHarness {
     /// pending permission sheet) through the same builtin pane path.
     pub fn open_assistant_built(
         &mut self,
-        assistant: crate::assistant::AssistantApp,
+        assistant: crate::assistant::AssistantView,
         workspace_root: std::path::PathBuf,
     ) {
         self.with_app_mut(|app| {
-            let boxed: Box<dyn crate::app::app_trait::App> = Box::new(assistant);
-            let perms = crate::app::permissions::AppPermissions::builtin();
-            app.open_builtin_app_pane(
+            let boxed: Box<dyn crate::app::view_trait::View> = Box::new(assistant);
+            let perms = crate::app::permissions::PluginPermissions::builtin();
+            app.open_builtin_view_pane(
                 boxed,
                 perms,
                 workspace_root.clone(),
@@ -574,58 +753,1952 @@ pub(crate) fn evidence_png_path(test_name: &str, suffix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::permissions::AppPermissions;
+    use crate::app::permissions::PluginPermissions;
     use crate::app::FocusKind;
     use crate::host::context::Window;
-    use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
+    use crate::host::pane::{Pane, PortalPane, TerminalPane, ViewPane, ViewRuntime};
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn screenshot_card_gallery_all_states_and_surfaces() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                crate::app::card_gallery::FORCE.with(|f| f.set(true));
+                let mut h = PlexiUiHarness::new_sized_scaled(1440.0 * scale, 1400.0 * scale, scale);
+                apply_fixture_theme(&mut h, theme);
+                h.run_steps(4);
+                h.with_app(|app| {
+                    let reports = crate::ui::layout_report::snapshot(&app.ctx);
+                    assert!(reports.iter().any(|r| r.surface == "card"));
+                    let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+                    assert!(errors.is_empty(), "{errors:?}");
+                });
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}")))
+                    .unwrap();
+                crate::app::card_gallery::FORCE.with(|f| f.set(false));
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_quit_save_failure_dialog() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        apply_fixture_theme(&mut h, "plexi-dusk");
+        h.with_app_mut(|app| {
+            let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"invalid workspace").unwrap();
+            app.request_quit(crate::app::quit::ExitReason::HostStop);
+            for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
+                assert!(!app.persist_quit_state());
+            }
+            app.pending_close = true;
+        });
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(app.quit_coordinator.save_failure().is_some());
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
+    fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
+        h.with_app_mut(|app| {
+            let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+            app.colors = crate::ui::theme::Colors::from_config(&cfg);
+            app.theme = crate::ui::theme::terminal_theme(
+                &cfg,
+                crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+            );
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
+        });
+    }
+
+    #[test]
+    fn screenshot_foreground_buttons_and_badges() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 1000.0, scale);
+                apply_fixture_theme(&mut h, theme);
+                add_focused_pane(&mut h);
+                h.with_app_mut(|app| app.show_ui_gallery = true);
+                h.run_steps(4);
+                for section in ["Buttons and chips", "Sidebar rows"] {
+                    h.harness().get_by_label(section).scroll_to_me();
+                    h.run_steps(4);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_{section}")))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    /// Scale for the `screenshot_ui_scale_*` tests (run at 0.6 / 1.0 / 2.0).
+    fn ui_scale_shot() -> f32 {
+        crate::app::ui_scale::clamp_scale(
+            std::env::var("PLEXI_UI_SCALE_SHOT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+        )
+    }
+
+    fn assert_inside(what: &str, scale: f32, rect: egui::Rect, screen: egui::Rect) {
+        let tol = 0.75;
+        assert!(
+            rect.min.x >= screen.min.x - tol
+                && rect.min.y >= screen.min.y - tol
+                && rect.max.x <= screen.max.x + tol
+                && rect.max.y <= screen.max.y + tol,
+            "{what} {rect:?} leaves logical screen {screen:?} at scale {scale}"
+        );
+    }
+
+    fn ui_scale_area_rect(h: &PlexiUiHarness, id: &str) -> egui::Rect {
+        h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.area_rect(egui::Id::new(id).with("overlay")))
+                .unwrap_or_else(|| panic!("modal area {id} not shown"))
+        })
+    }
+
+    fn seed_note_picker(h: &mut PlexiUiHarness) {
+        let realistic_notes = [
+            (
+                "Sprint Planning & Alpha Release Milestones",
+                "## Sprint Objectives\n\n- Close P1 focus layer input leaks across modals\n- Validate Cmd+O Notes Picker layout, font and selection visibility\n- Cut next alpha tag with automated release checks\n\n### Open Items\n1. Review telemetry traces\n2. Verify keyboard navigation on dense note collections\n3. Confirm dirty-pane destructive confirmation flow",
+                Some("active"),
+            ),
+            (
+                "Architecture Decision: Unified Input Router",
+                "Context:\nOverlay surfaces previously read raw input directly inside draw passes, leading to missed keys or desynchronized selection states.\n\nDecision:\nRoute all keyboard and paste events through `PlexiInput` before render dispatch.\n\nStatus: Accepted.",
+                Some("active"),
+            ),
+            (
+                "Quick Note Scratchpad",
+                "Check out egui_term scrollback refactor when reviewing pull requests.\nRemember to test with ppp=2.0 on retina displays.",
+                None,
+            ),
+            (
+                "Database Migration Checklist",
+                "- [x] Backup SQLite store\n- [x] Run schema version 4 migration\n- [ ] Vacuum indexes\n- [ ] Rebuild search FTS table",
+                Some("global"),
+            ),
+            (
+                "Short Note",
+                "Plexi notes are markdown files stored in user scopes.",
+                None,
+            ),
+            (
+                "Terminal Font Tuning & Spacing Tokens",
+                "Font: JetBrains Mono 14pt\nLine height: 1.25\nCell spacing: 0px horizontal, 2px vertical\nGlyph fallback: NotoEmoji + Nerd Font symbols.",
+                Some("global"),
+            ),
+        ];
+
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let entries: Vec<crate::notes::NotePickerEntry> = realistic_notes
+                .iter()
+                .cycle()
+                .take(30)
+                .enumerate()
+                .map(|(i, (title, body, label))| {
+                    let path = std::env::temp_dir()
+                        .join(format!("plexi-ui-scale-note-{}-{i}.md", std::process::id()));
+                    let _ = std::fs::write(&path, body);
+                    crate::notes::NotePickerEntry {
+                        path,
+                        title: title.to_string(),
+                        preview: body.lines().next().unwrap_or("").to_string(),
+                        search_text: format!("{title} {body}").to_lowercase(),
+                        tier_label: label.map(|s| s.to_string()),
+                    }
+                })
+                .collect();
+            app.notes_picker_entries = entries;
+            app.notes_picker_selected = 0;
+            app.notes_picker_last_drawn_selected = None;
+        });
+    }
+
+    /// At every UI scale, a 1440x900 physical window has a logical surface of
+    /// `1440/scale x 900/scale`; the card gallery, atlas and the modals must
+    /// all stay inside it.
+    #[test]
+    fn ui_scale_gallery_and_modals_fit_window() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.run_steps(3);
+            let screen = h.with_app(|app| {
+                assert!(
+                    (app.ctx.zoom_factor() - scale).abs() < 1e-3,
+                    "zoom at {scale}"
+                );
+                app.ctx.content_rect()
+            });
+            assert!(
+                (screen.width() - 1440.0 / scale).abs() < 1.0
+                    && (screen.height() - 900.0 / scale).abs() < 1.0,
+                "logical screen {screen:?} at scale {scale}"
+            );
+
+            // Modals: open one at a time, assert its area, then dismiss.
+            seed_note_picker(&mut h);
+            h.run_steps(3);
+            assert_inside(
+                "notes picker",
+                scale,
+                ui_scale_area_rect(&h, "notes_picker"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_command_palette = true);
+            h.run_steps(3);
+            assert_inside(
+                "command palette",
+                scale,
+                ui_scale_area_rect(&h, "command_palette"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+            h.with_app_mut(|app| app.show_command_palette = false);
+
+            h.with_app_mut(|app| app.open_quick_note_modal());
+            h.run_steps(3);
+            assert_inside(
+                "quick note",
+                scale,
+                ui_scale_area_rect(&h, "quick_note_modal"),
+                screen,
+            );
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(3);
+            assert_inside(
+                "shortcuts",
+                scale,
+                ui_scale_area_rect(&h, "shortcuts"),
+                screen,
+            );
+            h.with_app_mut(|app| app.show_shortcuts = false);
+
+            // Atlas: every node and the hub pill lie inside the logical screen.
+            h.with_app_mut(|app| {
+                let root = app.create_context_without_pty("alpha", None);
+                app.create_context_without_pty("beta", Some(root));
+                app.create_context_without_pty("gamma", Some(root));
+                app.create_context_without_pty("delta", None);
+                let (nodes, _) = app.compute_atlas_graph(screen);
+                assert!(!nodes.is_empty());
+                for n in &nodes {
+                    assert_inside(&format!("atlas node {}", n.name), scale, n.rect, screen);
+                }
+                for (i, a) in nodes.iter().enumerate() {
+                    for b in &nodes[i + 1..] {
+                        assert!(
+                            !a.rect.intersects(b.rect),
+                            "atlas nodes {} and {} overlap at scale {scale}",
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
+                assert_inside(
+                    "atlas hub",
+                    scale,
+                    crate::app::PlexiApp::atlas_hub_rect(screen),
+                    screen,
+                );
+            });
+        }
+    }
+
+    /// The narrower case reproduces font-driven grid overflow on macOS too.
+    /// Keep the original gallery/modal scale matrix unchanged.
+    #[test]
+    fn ui_scale_shortcuts_fit_narrow_window() {
+        for (width, scale) in [(1440.0, 1.0), (1440.0, 2.0), (1200.0, 2.0)] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(4);
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            let rect = ui_scale_area_rect(&h, "shortcuts");
+            eprintln!("shortcuts {rect:?}, screen {screen:?} at scale {scale}");
+            if std::env::var_os("PLEXI_SHORTCUTS_SCREENSHOTS").is_some() {
+                let path = evidence_png!(&format!("_{width}_{scale}"));
+                h.save_screenshot(&path).unwrap();
+                eprintln!("shortcuts screenshot: {path}");
+            }
+            assert_inside("shortcuts", scale, rect, screen);
+        }
+    }
+
+    /// The QuickNote capture card is content-sized: an empty or one-line note
+    /// opens short (no screen-fraction reservation), and a tall note grows the
+    /// card while it stays inside the window.
+    #[test]
+    fn quick_note_card_is_content_sized_and_grows_with_content() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.open_quick_note_modal());
+        h.run_steps(3);
+        let screen = h.with_app(|app| app.ctx.content_rect());
+        let empty = ui_scale_area_rect(&h, "quick_note_modal");
+        assert_inside("quick note", 1.0, empty, screen);
+        assert!(
+            empty.height() < 200.0,
+            "empty quick-note card must be content-sized, not a screen fraction: {empty:?} of {screen:?}"
+        );
+
+        h.with_app_mut(|app| {
+            app.quick_note_text = (1..=40)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        });
+        h.run_steps(3);
+        let long = ui_scale_area_rect(&h, "quick_note_modal");
+        assert!(
+            long.height() > empty.height(),
+            "long note must grow the card"
+        );
+        assert!(
+            long.height() <= screen.height(),
+            "long quick-note card leaves the window: {long:?}"
+        );
+    }
+
+    /// A staged QuickNote attachment renders an inline preview (stint 1047):
+    /// the card grows to fit a decodable image, and a staged file that fails
+    /// to decode falls back to the shared placeholder instead of an empty gap.
+    #[test]
+    fn quick_note_staged_attachment_renders_preview_or_placeholder() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            app.open_quick_note_modal();
+            app.quick_note_text = "look at this".to_string();
+        });
+        h.run_steps(3);
+        let baseline = ui_scale_area_rect(&h, "quick_note_modal");
+
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/notes-drop.png");
+        h.with_app_mut(|app| {
+            app.stage_quick_note_image(fixture.clone())
+                .expect("fixture must decode")
+        });
+        h.run_steps(3);
+        let with_preview = ui_scale_area_rect(&h, "quick_note_modal");
+        assert!(
+            with_preview.height() > baseline.height() + 40.0,
+            "a staged attachment must render a preview taller than the placeholder: \
+             {baseline:?} -> {with_preview:?}"
+        );
+
+        // The same path, corrupted after staging: the shared placeholder must
+        // still paint (grow the card) rather than the full image or a gap.
+        let broken = std::env::temp_dir().join(format!("plexi-1047-{}.png", std::process::id()));
+        std::fs::copy(&fixture, &broken).expect("copy fixture");
+        h.with_app_mut(|app| {
+            app.quick_note_attachments.clear();
+            app.stage_quick_note_image(broken.clone())
+                .expect("staged before corruption")
+        });
+        std::fs::write(&broken, b"not an image").expect("corrupt staged file");
+        h.run_steps(3);
+        let with_placeholder = ui_scale_area_rect(&h, "quick_note_modal");
+        let _ = std::fs::remove_file(&broken);
+        assert!(
+            with_placeholder.height() > baseline.height(),
+            "an undecodable staged attachment must paint its placeholder: \
+             {baseline:?} -> {with_placeholder:?}"
+        );
+        assert!(
+            with_placeholder.height() < with_preview.height(),
+            "the placeholder must be shorter than the decoded preview: \
+             {with_placeholder:?} vs {with_preview:?}"
+        );
+    }
+
+    /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
+    /// terminal pane's effective pixel font size grows with it.
+    #[test]
+    fn ui_scale_up_key_scales_zoom_factor_and_terminal_pixels() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let pane_id = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+            id
+        });
+        h.run_steps(3);
+        let pixel_font = |h: &PlexiUiHarness| {
+            h.with_app(|app| {
+                let pane = app.windows[app.active_window].panes.get(&pane_id).unwrap();
+                let Pane::Terminal(t) = pane else {
+                    panic!("terminal pane")
+                };
+                t.font_size * app.ctx.zoom_factor()
+            })
+        };
+        let before = pixel_font(&h);
+        assert!((h.with_app(|a| a.ctx.zoom_factor()) - 1.0).abs() < 1e-4);
+
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Equals,
+        );
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!(
+                (app.ui_scale - 1.1).abs() < 1e-4,
+                "ui_scale {}",
+                app.ui_scale
+            );
+            assert!(
+                (app.ctx.zoom_factor() - 1.1).abs() < 1e-4,
+                "zoom {}",
+                app.ctx.zoom_factor()
+            );
+        });
+        assert!(pixel_font(&h) > before, "terminal pixel font must grow");
+
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Minus,
+        );
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Minus,
+        );
+        h.run_steps(3);
+        h.with_app(|app| assert!((app.ui_scale - 0.9).abs() < 1e-4, "{}", app.ui_scale));
+        assert!(pixel_font(&h) < before, "terminal pixel font must shrink");
+
+        // Cmd+Shift+0 resets (and is not swallowed by Quick Note on Cmd+0).
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.0).abs() < 1e-4);
+            assert!(
+                !app.focus_stack.contains(&crate::app::FocusKind::QuickNote),
+                "reset chord must not open Quick Note"
+            );
+        });
+    }
+
+    /// Cmd+= / Cmd+- adjusts *only* the focused pane's font size while leaving
+    /// sibling panes and global ui_scale untouched. Cmd+Alt+0 resets font size.
+    #[test]
+    fn cmd_plus_minus_changes_only_focused_pane_in_seeded_fixture() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let (term_a_id, term_b_id, plugin_id, _tile_a, tile_plugin) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+
+            let id_a = app.host.alloc_pane_id();
+            let term_a = crate::host::pane::TerminalPane::new(
+                id_a,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane A");
+
+            let id_b = app.host.alloc_pane_id();
+            let term_b = crate::host::pane::TerminalPane::new(
+                id_b,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane B");
+
+            let id_plugin = app.host.alloc_pane_id();
+            let view_pane = ViewPane {
+                pip_status: None,
+                id: id_plugin,
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
+                    workspace_root.clone(),
+                ))),
+                workspace_root,
+                permissions: PluginPermissions::builtin(),
+                manifest_id: "file-browser".to_string(),
+                name: "Files".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
+            win.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
+            win.panes.insert(id_plugin, Pane::View(Box::new(view_pane)));
+
+            let tile_a = win.tree.tiles.insert_pane(id_a);
+            let tile_b = win.tree.tiles.insert_pane(id_b);
+            let tile_c = win.tree.tiles.insert_pane(id_plugin);
+
+            let tabs = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b, tile_c]);
+            win.tree.root = Some(tabs);
+            win.focused_pane = Some(tile_a);
+
+            (id_a, id_b, id_plugin, tile_a, tile_c)
+        });
+        h.run_steps(3);
+
+        let term_font = |h: &PlexiUiHarness, pid: u64| {
+            h.with_app(|app| {
+                let pane = app.windows[app.active_window].panes.get(&pid).unwrap();
+                let Pane::Terminal(t) = pane else {
+                    panic!("not terminal")
+                };
+                t.font_size
+            })
+        };
+        let plugin_font = |h: &PlexiUiHarness, pid: u64| {
+            h.with_app(|app| {
+                let pane = app.windows[app.active_window].panes.get(&pid).unwrap();
+                let Pane::View(a) = pane else {
+                    panic!("not plugin")
+                };
+                let ViewRuntime::Builtin(b) = &a.runtime else {
+                    panic!("not builtin")
+                };
+                b.font_size().unwrap_or(0.0)
+            })
+        };
+
+        assert_eq!(term_font(&h, term_a_id), 14.0);
+        assert_eq!(term_font(&h, term_b_id), 14.0);
+        assert_eq!(plugin_font(&h, plugin_id), crate::ui::style::TEXT_HINT);
+        assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
+
+        // 1. Cmd+= on focused Terminal A
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        assert_eq!(term_font(&h, term_a_id), 15.0);
+        assert_eq!(
+            term_font(&h, term_b_id),
+            14.0,
+            "unfocused terminal untouched"
+        );
+        assert_eq!(
+            plugin_font(&h, plugin_id),
+            crate::ui::style::TEXT_HINT,
+            "unfocused plugin untouched"
+        );
+        assert_eq!(h.with_app(|a| a.ui_scale), 1.0, "ui_scale untouched");
+
+        // 2. Cmd+- on focused Terminal A
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+        h.run_steps(3);
+        assert_eq!(term_font(&h, term_a_id), 14.0);
+
+        // 3. Cmd+= twice, then Cmd+Alt+0 resets
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        assert_eq!(term_font(&h, term_a_id), 16.0);
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        assert_eq!(
+            term_font(&h, term_a_id),
+            14.0,
+            "Cmd+Alt+0 resets terminal font"
+        );
+
+        // 4. Focus View pane, Cmd+= steps font, Cmd+Alt+0 resets
+        h.with_app_mut(|app| {
+            app.windows[app.active_window].focused_pane = Some(tile_plugin);
+        });
+        h.run_steps(3);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        assert_eq!(
+            plugin_font(&h, plugin_id),
+            crate::ui::style::TEXT_HINT + 1.0,
+            "focused plugin font stepped"
+        );
+        assert_eq!(term_font(&h, term_a_id), 14.0);
+        assert_eq!(term_font(&h, term_b_id), 14.0);
+        assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
+
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        assert_eq!(
+            plugin_font(&h, plugin_id),
+            crate::ui::style::TEXT_HINT,
+            "Cmd+Alt+0 resets plugin font"
+        );
+    }
+
+    /// Cmd+= / Cmd+- in Tree Atlas adjusts only the remembered
+    /// active pane for the highlighted context, keeps the overlay open, and
+    /// returning to Columns shows the pane with its updated font size.
+    #[test]
+    fn cmd_plus_minus_in_tree_atlas() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let (ctx_a, pane_a, ctx_b, pane_b) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let root = app.router.active().root.clone();
+            let ctx_a = app.router.active().context_id;
+            let id_a = app.host.alloc_pane_id();
+            let term_a = crate::host::pane::TerminalPane::new(
+                id_a,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane A");
+            let win_a = &mut app.windows[app.active_window];
+            win_a.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
+            let tile_a = win_a.tree.tiles.insert_pane(id_a);
+            win_a.tree.root = Some(tile_a);
+            win_a.focused_pane = Some(tile_a);
+            app.zoom.context_last_pane.insert(ctx_a, id_a);
+
+            // Create context B
+            let ctx_b = app.create_context_without_pty("context-b", None);
+            let win_b_idx = app.windows.len() - 1;
+            let id_b = app.host.alloc_pane_id();
+            let term_b = crate::host::pane::TerminalPane::new(
+                id_b,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane B");
+            let win_b = &mut app.windows[win_b_idx];
+            win_b.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
+            let tile_b = win_b.tree.tiles.insert_pane(id_b);
+            win_b.tree.root = Some(tile_b);
+            win_b.focused_pane = Some(tile_b);
+            app.zoom.context_last_pane.insert(ctx_b, id_b);
+
+            (ctx_a, id_a, ctx_b, id_b)
+        });
+        h.run_steps(3);
+
+        // 1. Enter TreeAtlas, highlight context B
+        h.with_app_mut(|app| {
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+            app.zoom.atlas_focused_context = Some(ctx_b);
+        });
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+
+        // Cmd+= in TreeAtlas
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+
+        // View remains TreeAtlas!
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
+
+        // Pane B font size changed to 15.0, Pane A remained 14.0!
+        h.with_app(|app| {
+            let (win_b_idx, _) = app.find_pane_in_any_window(pane_b).unwrap();
+            let p_b = app.windows[win_b_idx].panes.get(&pane_b).unwrap();
+            let Pane::Terminal(t_b) = p_b else { panic!() };
+            assert_eq!(
+                t_b.font_size, 15.0,
+                "remembered pane for context B adjusted in Cards"
+            );
+
+            let (win_a_idx, _) = app.find_pane_in_any_window(pane_a).unwrap();
+            let p_a = app.windows[win_a_idx].panes.get(&pane_a).unwrap();
+            let Pane::Terminal(t_a) = p_a else { panic!() };
+            assert_eq!(t_a.font_size, 14.0, "context A pane untouched");
+        });
+
+        // Return to Columns
+        h.with_app_mut(|app| {
+            app.zoom_in_level();
+        });
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert_eq!(app.zoom.level, crate::app::zoom::ZoomLevel::Columns);
+            let p_b = app.windows[app.active_window].panes.get(&pane_b).unwrap();
+            let Pane::Terminal(t_b) = p_b else { panic!() };
+            assert_eq!(
+                t_b.font_size, 15.0,
+                "restored pane reflects new font size in Columns"
+            );
+        });
+
+        // 2. Enter TreeAtlas, highlight context A
+        h.with_app_mut(|app| {
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+            app.zoom.atlas_focused_context = Some(ctx_a);
+        });
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+
+        // Cmd+= in TreeAtlas
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+
+        // View remains TreeAtlas!
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
+
+        // Pane A font size changed to 15.0!
+        h.with_app(|app| {
+            let (win_a_idx, _) = app.find_pane_in_any_window(pane_a).unwrap();
+            let p_a = app.windows[win_a_idx].panes.get(&pane_a).unwrap();
+            let Pane::Terminal(t_a) = p_a else { panic!() };
+            assert_eq!(
+                t_a.font_size, 15.0,
+                "remembered pane for context A adjusted in Atlas"
+            );
+        });
+    }
+
+    /// Cmd+Shift+/- updates global ui_scale by 0.1 at every zoom level, respects
+    /// bounds, persists to disk, and Cmd+Shift+0 resets without opening Quick Note.
+    #[test]
+    fn cmd_shift_plus_minus_updates_global_ui_scale_from_columns_and_atlas() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(3);
+        assert!((h.with_app(|a| a.ui_scale) - 1.0).abs() < 1e-4);
+
+        // 1. In Columns: Cmd+Shift+= steps from 1.0 to 1.1
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Equals,
+        );
+        h.run_steps(3);
+        assert!((h.with_app(|a| a.ui_scale) - 1.1).abs() < 1e-4);
+
+        // 2. In TreeAtlas: Cmd+Shift+= steps from 1.1 to 1.2
+        h.with_app_mut(|app| {
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+        });
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Equals,
+        );
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        assert!((h.with_app(|a| a.ui_scale) - 1.2).abs() < 1e-4);
+
+        // 3. In TreeAtlas: Cmd+Shift+- steps from 1.2 to 1.1
+        h.with_app_mut(|app| {
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+        });
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Minus,
+        );
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|a| a.zoom.level),
+            crate::app::zoom::ZoomLevel::TreeAtlas
+        );
+        assert!((h.with_app(|a| a.ui_scale) - 1.1).abs() < 1e-4);
+
+        // 4. Cmd+Shift+0 resets to 1.0 and does not open QuickNote
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Num0,
+        );
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!((app.ui_scale - 1.0).abs() < 1e-4);
+            assert!(!app.focus_stack.contains(&crate::app::FocusKind::QuickNote));
+        });
+
+        // 5. Test bounds clamping (UI_SCALE_MAX = 2.0, UI_SCALE_MIN = 0.6)
+        for _ in 0..15 {
+            h.harness().key_press_modifiers(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Equals,
+            );
+        }
+        h.run_steps(3);
+        assert!(
+            (h.with_app(|a| a.ui_scale) - 2.0).abs() < 1e-4,
+            "capped at UI_SCALE_MAX 2.0"
+        );
+
+        for _ in 0..25 {
+            h.harness().key_press_modifiers(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Minus,
+            );
+        }
+        h.run_steps(3);
+        assert!(
+            (h.with_app(|a| a.ui_scale) - 0.6).abs() < 1e-4,
+            "floored at UI_SCALE_MIN 0.6"
+        );
+
+        // 6. Test persistence to disk
+        h.with_app_mut(|app| {
+            app.set_ui_scale(1.2);
+            app.flush_ui_scale_persist_now();
+        });
+        let config_path = crate::config::config_path();
+        assert!(
+            config_path.exists(),
+            "ui scale persistence must create config.toml"
+        );
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            content.contains("ui_scale = 1.2"),
+            "persisted scale in config: {content}"
+        );
+        let reloaded = crate::config::PlexiConfig::load();
+        let (fresh_host, _) = PlexiApp::new_for_test_with_config(
+            egui::Context::default(),
+            Arc::new(AtomicU64::new(0)),
+            reloaded,
+        );
+        assert!(
+            (fresh_host.ui_scale - 1.2).abs() < 1e-4,
+            "fresh host must restore the persisted global scale"
+        );
+    }
+
+    /// Harness key routing covers physical Equals/Plus and Minus chords, deduplication,
+    /// and custom keybinding overrides.
+    #[test]
+    fn harness_key_tests_cover_chords_and_custom_bindings() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(3);
+
+        let initial_font = h.with_app(|app| {
+            let (win, _) = app
+                .find_pane_in_any_window(app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let pane = app.windows[win]
+                .panes
+                .get(&app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let Pane::View(a) = pane else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
+        });
+
+        // 1. Key::Equals with Command
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        let font_after_equals = h.with_app(|app| {
+            let (win, _) = app
+                .find_pane_in_any_window(app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let pane = app.windows[win]
+                .panes
+                .get(&app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let Pane::View(a) = pane else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
+        });
+        assert_eq!(font_after_equals, initial_font + 1.0);
+
+        // 2. Key::Plus with Command
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Plus);
+        h.run_steps(3);
+        let font_after_plus = h.with_app(|app| {
+            let (win, _) = app
+                .find_pane_in_any_window(app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let pane = app.windows[win]
+                .panes
+                .get(&app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let Pane::View(a) = pane else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
+        });
+        assert_eq!(font_after_plus, initial_font + 2.0);
+
+        // 3. Deduplication in single frame
+        h.with_app_mut(|app| {
+            let ctx = egui::Context::default();
+            let mut raw = egui::RawInput::default();
+            raw.events.push(egui::Event::Key {
+                key: egui::Key::Equals,
+                physical_key: Some(egui::Key::Equals),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+            raw.events.push(egui::Event::Key {
+                key: egui::Key::Plus,
+                physical_key: Some(egui::Key::Plus),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+            let mut actions = Vec::new();
+            let mut claimed_key_releases = std::collections::HashSet::new();
+            let _ = ctx.run_ui(raw, |ui| {
+                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+                actions = crate::host::keys::poll_actions(
+                    &mut input,
+                    &app.binding_table,
+                    &mut claimed_key_releases,
+                    /* view_active */ true,
+                    /* keyboard_capture */ false,
+                    /* overlay_open */ false,
+                    /* shortcuts_overlay_open */ false,
+                );
+            });
+            let count = actions
+                .iter()
+                .filter(|a| **a == crate::host::keys::Action::IncreasePaneFontSize)
+                .count();
+            assert_eq!(
+                count, 1,
+                "Equals and Plus companions must deduplicate in single frame"
+            );
+        });
+
+        // 4. Custom configured binding override
+        h.with_app_mut(|app| {
+            let mut cfg = crate::config::KeybindingsConfig::default();
+            cfg.increase_font_size = Some("cmd+alt+=".into());
+            app.key_bindings = crate::host::keys::build_key_bindings(Some(&cfg));
+            app.binding_table = crate::host::keys::build_binding_table(&app.key_bindings);
+        });
+
+        // Old binding Cmd+= no longer triggers
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        h.run_steps(3);
+        let font_unchanged = h.with_app(|app| {
+            let (win, _) = app
+                .find_pane_in_any_window(app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let pane = app.windows[win]
+                .panes
+                .get(&app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let Pane::View(a) = pane else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
+        });
+        assert_eq!(
+            font_unchanged, font_after_plus,
+            "Cmd+= overridden so should not step"
+        );
+
+        // New binding Cmd+Alt+= triggers
+        h.harness().key_press_modifiers(
+            egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+            egui::Key::Equals,
+        );
+        h.run_steps(3);
+        let font_stepped = h.with_app(|app| {
+            let (win, _) = app
+                .find_pane_in_any_window(app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let pane = app.windows[win]
+                .panes
+                .get(&app.active_focused_pane_id().unwrap())
+                .unwrap();
+            let Pane::View(a) = pane else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
+        });
+        assert_eq!(
+            font_stepped,
+            font_after_plus + 1.0,
+            "Cmd+Alt+= custom override steps font"
+        );
+    }
+
+    /// Renders realistic seeded screenshots of crowded Atlas at scales 1.0 and 1.3 for visual verification.
+    #[test]
+    fn screenshot_crowded_atlas_scales() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+        for scale in [1.0, 1.3] {
+            // Crowded atlas
+            {
+                let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+                let selected_context = h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let r1 = app.create_context_without_pty("hub-main", None);
+                    let r2 = app.create_context_without_pty("hub-ops", None);
+                    let c1 = app.create_context_without_pty("feature-auth", Some(r1));
+                    let c2 = app.create_context_without_pty("feature-billing", Some(r1));
+                    let _c3 = app.create_context_without_pty("worker-job", Some(r2));
+                    let _c4 = app.create_context_without_pty("worker-cron", Some(r2));
+                    let _g1 = app.create_context_without_pty("auth-tests", Some(c1));
+                    let _g2 = app.create_context_without_pty("auth-tokens", Some(c1));
+                    let _g3 = app.create_context_without_pty("billing-stripe", Some(c2));
+                    let _g4 = app.create_context_without_pty("billing-invoicing", Some(c2));
+                    app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+                    app.zoom.atlas_focused_context = Some(c1);
+                    c1
+                });
+                h.run_steps(6);
+                let (canvas, nodes): (egui::Rect, Vec<(u64, egui::Rect, bool)>) =
+                    h.with_app(|app| {
+                        app.ctx
+                            .data(|data| {
+                                data.get_temp(egui::Id::new("tree_atlas_painted_geometry"))
+                            })
+                            .expect("Atlas render must report its painted geometry")
+                    });
+                let selected = nodes
+                    .iter()
+                    .find(|(context_id, _, _)| *context_id == selected_context)
+                    .expect("selected Atlas context must be painted");
+                assert!(
+                    selected.2,
+                    "selected Atlas context must retain focus treatment"
+                );
+                assert!(
+                    canvas.contains_rect(selected.1),
+                    "selected Atlas rect {:?} must be wholly visible in {:?}",
+                    selected.1,
+                    canvas
+                );
+                let path = format!("/tmp/plexi_crowded_atlas_scale_{scale:.1}.png");
+                h.save_screenshot(&path).unwrap();
+                assert!(std::path::Path::new(&path).exists());
+                if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
+    /// Stint 0988: Enter opens the selected context; the marker stays on the origin context.
+
+    /// Stint 0988: Realistic screenshot verifying overflow, marker alignment and Reduce Motion behavior.
+
+    /// Stint 0989: Tree Atlas directional navigation follows top-down hierarchy:
+    /// - up: parent
+    /// - down: remembered-or-first child
+    /// - left/right: neighboring siblings
+    /// Proves arrows and hjkl parity, child memory, root/leaf boundaries, and that
+    /// selected nodes remain visible and focused through every move, including
+    /// uneven multi-root, leaf-root, and missing-parent fixtures.
+    #[test]
+    fn screenshot_tree_atlas_directional_navigation_hierarchy() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        let tap_key = |h: &mut PlexiUiHarness, key: egui::Key, modifiers: egui::Modifiers| {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers,
+            });
+        };
+
+        let (r1, _c1a, _g1a1, _c1b, _r2, _c2a, _c2b, _c2c, _r3, _r4) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            // Root 1 (active root)
+            let r1 = app.router.active().context_id;
+            let c1a = app.create_context_without_pty("client-web", Some(r1));
+            let g1a1 = app.create_context_without_pty("design-tokens", Some(c1a));
+            let c1b = app.create_context_without_pty("client-mobile", Some(r1));
+
+            // Root 2
+            let r2 = app.create_context_without_pty("backend-cluster", None);
+            let c2a = app.create_context_without_pty("api-gateway", Some(r2));
+            let c2b = app.create_context_without_pty("auth-service", Some(r2));
+            let c2c = app.create_context_without_pty("billing-engine", Some(r2));
+
+            // Root 3: leaf root (no children)
+            let r3 = app.create_context_without_pty("docs-site", None);
+
+            // Root 4: missing parent
+            let r4 = app.create_context_without_pty("legacy-orphan", Some(999999));
+
+            // Parked context: marked parked
+            let parked = app.create_context_without_pty("parked-archive", Some(r1));
+            if let Some(idx) = app
+                .router
+                .as_slice()
+                .iter()
+                .position(|c| c.context_id == parked)
+            {
+                app.router.get_mut(idx).parked = true;
+            }
+
+            app.switch_to_context_restoring_last_pane(r1);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+            app.zoom.atlas_focused_context = Some(r1);
+            (r1, c1a, g1a1, c1b, r2, c2a, c2b, c2c, r3, r4)
+        });
+
+        // Run frames to render TreeAtlas
+        h.run_steps(4);
+
+        let check_selected_visible = |h: &mut PlexiUiHarness, expected_ctx: u64| {
+            let (canvas, nodes): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
+                app.ctx
+                    .data(|data| data.get_temp(egui::Id::new("tree_atlas_painted_geometry")))
+                    .expect("Atlas render must report its painted geometry")
+            });
+            let selected = nodes
+                .iter()
+                .find(|(cid, _, _)| *cid == expected_ctx)
+                .unwrap_or_else(|| panic!("context {expected_ctx} must be painted in tree atlas"));
+            assert!(
+                selected.2,
+                "context {expected_ctx} must have focus treatment"
+            );
+            assert!(
+                canvas.contains_rect(selected.1),
+                "context {expected_ctx} rect {:?} must be wholly visible in canvas {:?}",
+                selected.1,
+                canvas
+            );
+        };
+
+        // 1. Initial focused node: Root 1
+        check_selected_visible(&mut h, r1);
+
+        // 2. Down (ArrowDown) -> First child (c1a)
+        tap_key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 3. Right (ArrowRight) -> Sibling (c1b)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1b);
+
+        // 4. Up (K) -> Parent (r1)
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, r1);
+
+        // 5. Down (J) -> Remembered child (c1b)
+        tap_key(&mut h, egui::Key::J, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1b);
+
+        // 6. Left (H) -> Sibling (c1a)
+        tap_key(&mut h, egui::Key::H, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 7. Down (J) -> Grandchild (g1a1)
+        tap_key(&mut h, egui::Key::J, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _g1a1);
+
+        // 8. Up (K) -> c1a
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 9. Up (K) -> r1
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, r1);
+
+        // 10. Right (L) -> Root 2 (r2)
+        tap_key(&mut h, egui::Key::L, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r2);
+
+        // 11. Right (ArrowRight) -> Root 3 (r3, leaf root)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r3);
+
+        // 12. Down (ArrowDown) at leaf root is a no-op -> stays on r3
+        tap_key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r3);
+
+        // 13. Right (ArrowRight) -> Root 4 (r4, missing parent orphan)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r4);
+
+        // 14. Up (ArrowUp) at orphan root is a no-op -> stays on r4
+        tap_key(&mut h, egui::Key::ArrowUp, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r4);
+
+        // Screenshot for visual review
+        let shot_path = "/tmp/plexi_tree_atlas_hierarchy_nav.png";
+        h.save_screenshot(shot_path).expect("save atlas screenshot");
+        assert!(std::path::Path::new(shot_path).exists());
+        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+            let _ = std::fs::remove_file(shot_path);
+        }
+    }
+
+    #[test]
+    fn screenshot_ui_scale_cards() {
+        let scale = ui_scale_shot();
+        crate::app::card_gallery::FORCE.with(|f| f.set(true));
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 1400.0, scale);
+        h.run_steps(4);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_atlas() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let root = app.create_context_without_pty("alpha", None);
+            app.create_context_without_pty("beta", Some(root));
+            app.create_context_without_pty("gamma", Some(root));
+            app.create_context_without_pty("delta", None);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+        });
+        h.run_steps(6);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_ui_scale_note_picker() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        add_focused_pane(&mut h);
+        seed_note_picker(&mut h);
+        h.run_steps(3);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn screenshot_notes_picker_wide_and_narrow_layout() {
+        // 1. Wide viewport (1440x900): balanced 50/50 layout with framed monospace preview
+        let mut h_wide = PlexiUiHarness::new_sized(1440.0, 900.0);
+        add_focused_pane(&mut h_wide);
+        seed_note_picker(&mut h_wide);
+        h_wide.run_steps(3);
+        let wide_path = "/tmp/plexi_notes_picker_wide.png";
+        h_wide.save_screenshot(wide_path).unwrap();
+        assert!(std::path::Path::new(wide_path).exists());
+
+        // 2. Narrow viewport (640x520): preview omitted, list fills width, clean hints without overflow
+        let mut h_narrow = PlexiUiHarness::new_sized(640.0, 520.0);
+        add_focused_pane(&mut h_narrow);
+        seed_note_picker(&mut h_narrow);
+        h_narrow.run_steps(3);
+        let narrow_path = "/tmp/plexi_notes_picker_narrow.png";
+        h_narrow.save_screenshot(narrow_path).unwrap();
+        assert!(std::path::Path::new(narrow_path).exists());
+
+        // 3. High UI scale (1.5): everything scales cleanly without clipping
+        let mut h_scaled = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, 1.5);
+        add_focused_pane(&mut h_scaled);
+        seed_note_picker(&mut h_scaled);
+        h_scaled.run_steps(3);
+        let scaled_path = "/tmp/plexi_notes_picker_scale.png";
+        h_scaled.save_screenshot(scaled_path).unwrap();
+        assert!(std::path::Path::new(scaled_path).exists());
+
+        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+            let _ = std::fs::remove_file(wide_path);
+            let _ = std::fs::remove_file(narrow_path);
+            let _ = std::fs::remove_file(scaled_path);
+        }
+    }
+
+    #[test]
+    fn screenshot_ui_scale_terminal() {
+        let scale = ui_scale_shot();
+        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let workspace_root = app.router.active().root.clone();
+            let id = app.host.alloc_pane_id();
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            let tile = win.tree.tiles.insert_pane(id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+        });
+        h.run_steps(6);
+        let path = evidence_png!();
+        h.save_screenshot(&path).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    /// The scene DSL cannot seed PTY output or drag inside a terminal widget.
+    /// Exercise real pointer events, selection commands and highlight painting.
+    #[test]
+    #[ignore = "requires-pty"]
+    fn terminal_selection_tracks_pointer_at_fractional_scale() {
+        for scale in [1.0, 1.1, 1.3] {
+            let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 500.0, 2.0);
+            h.with_app_mut(|app| app.ui_scale = scale);
+            h.run_steps(3);
+            let id = add_focused_pane(&mut h);
+            let fixture = "0123456789".repeat(10);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = false;
+                let terminal = TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec![
+                            "-c".into(),
+                            format!(
+                                "read -r line; printf '\\033[2J\\033[H{fixture}'; read -r line"
+                            ),
+                        ],
+                        working_directory: Some(app.router.active().root.clone()),
+                        ..Default::default()
+                    },
+                    16.0,
+                )
+                .expect("start selection fixture");
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(terminal)));
+            });
+            h.run_steps(3);
+            h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .process_command(egui_term::BackendCommand::Write(b"ready\n".to_vec()));
+            });
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            loop {
+                h.run_steps(2);
+                let ready = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .capture_lines(20)
+                        .iter()
+                        .any(|line| line.contains("01234567890123456789"))
+                });
+                if ready {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "selection fixture did not produce text"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            h.run_steps(3);
+            let rect = h
+                .harness()
+                .ctx
+                .read_response(egui_term::terminal_widget_id(id))
+                .expect("rendered terminal widget")
+                .rect;
+            let (width, height) = h.with_app_mut(|app| {
+                let size = app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .last_content()
+                    .terminal_size;
+                (size.cell_width as f32, size.cell_height as f32)
+            });
+            let origin = rect.min
+                + egui::vec2(
+                    crate::ui::style::PANE_CONTENT_INSET,
+                    crate::ui::style::PANE_CONTENT_INSET,
+                );
+            let at = |cell: f32| origin + egui::vec2(cell * width, height * 0.5);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(at(0.25)),
+                egui::Event::PointerButton {
+                    pos: at(0.25),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            let columns = ((rect.width() - 2.0) / width).floor().min(80.0) as usize;
+            let mut previous = 0;
+            for step in 3..columns * 4 {
+                let cell = step as f32 / 4.0;
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(at(cell)));
+                h.step();
+                let selected = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .selectable_content()
+                });
+                assert!(selected.len() >= previous,
+                    "rightward drag moved selection backward: scale={scale}, cell={cell}, {previous}->{}", selected.len());
+                if step % 4 == 3 {
+                    let expected = step / 4 + 1;
+                    assert_eq!(selected, fixture[..expected], "scale={scale}, cell={cell}");
+                }
+                previous = selected.len();
+            }
+            h.save_screenshot(&evidence_png!(&format!("_scale_{scale}")))
+                .expect("render selected terminal text");
+            // Reverse the same drag across the whole line before releasing.
+            for col in (1..columns).rev() {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(at(col as f32 + 0.75)));
+                h.step();
+                let selected = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .selectable_content()
+                });
+                assert_eq!(
+                    selected,
+                    fixture[..col + 1],
+                    "reverse scale={scale}, col={col}"
+                );
+            }
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos: at(1.75),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.step();
+        }
+    }
+
+    #[test]
+    fn screenshot_pane_corners_themes_scale_and_override() {
+        for theme in ["catppuccin-mocha", "catppuccin-latte"] {
+            for (width, scale) in [(1440.0, 1.0), (720.0, 1.5)] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                std::fs::write(
+                    h.workspace.path().join("review-notes.md"),
+                    "Pane corner fixture\n",
+                )
+                .unwrap();
+                let root = h.workspace.path().to_path_buf();
+                let config_path = crate::config::config_path();
+                std::fs::write(
+                    &config_path,
+                    format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    app.reload_config();
+                });
+                h.open_file_browser(root);
+                h.run_steps(4);
+                let (rect, accent) = h.with_app(|app| {
+                    let pane = app.visual_owner_pane().unwrap();
+                    (app.visible_pane_rect(pane).unwrap(), app.colors.accent)
+                });
+                for radius in [None, Some(18)] {
+                    let radius_line = radius
+                        .map(|r| format!("pane_corner_radius = {r}\n"))
+                        .unwrap_or_default();
+                    std::fs::write(&config_path, format!("pane_gap = 0.0\nui_scale = {scale}\n{radius_line}[theme]\npreset = \"{theme}\"\n")).unwrap();
+                    h.with_app_mut(|app| app.reload_config());
+                    h.run_steps(3);
+                    let expected = crate::ui::style::pane_radius(radius, rect);
+                    assert!(h.harness().output().shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect && r.corner_radius == expected
+                            && r.stroke.color == accent && r.stroke.width == crate::ui::style::PANE_FOCUS_WIDTH
+                            && r.stroke_kind == egui::StrokeKind::Inside)
+                    }), "focus radius and width must follow the pane config even at zero gap");
+                    let suffix = format!("_{theme}_{width}_{scale}_{}", radius.unwrap_or(0));
+                    h.save_screenshot(&evidence_png!(&suffix)).unwrap();
+                }
+            }
+        }
+    }
 
     #[test]
     fn screenshot_agent_conjoined_strip_and_parent_pin() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
-        let parent = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
+        let (parent, children) = h.with_app_mut(|app| {
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: review implementation and testing\\n'; sleep 120",
+                    "Coordinate review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
             let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[app.active_window].focused_pane = Some(tile);
+            let mut children = Vec::new();
             for role in ["implementer", "tester"] {
-                let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+                let (child, _) = app
+                    .spawn_agent_worker_pane(
+                        role,
+                        "pi",
+                        "printf 'Worker: checking the requested changes\\n'; sleep 120",
+                        "Verify child call",
+                        Some("agent-tools-preview"),
+                        true,
+                        Some(parent),
+                        None,
+                        None,
+                        None,
+                        true,
+                        None,
+                    )
+                    .unwrap();
                 app.agent_tool_children.insert(child, Some(parent));
+                children.push(child);
             }
-            parent
+            (parent, children)
         });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                std::iter::once(parent)
+                    .chain(children.iter().copied())
+                    .all(|id| {
+                        let (window, _) = app.find_pane_in_any_window(id).unwrap();
+                        app.windows[window]
+                            .panes
+                            .get_mut(&id)
+                            .unwrap()
+                            .as_terminal_mut()
+                            .unwrap()
+                            .backend
+                            .capture_lines(30)
+                            .iter()
+                            .any(|line| line.contains("Lead:") || line.contains("Worker:"))
+                    })
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "conjoined terminals did not print fixture output"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         h.run_steps(4);
         h.save_screenshot(&evidence_png!("_strip")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
         h.run_steps(4);
         h.with_app(|app| {
             assert_eq!(app.conjoined_parent(), Some(parent));
             assert_eq!(app.visual_owner_pane(), Some(parent));
             assert_eq!(app.fleet_focused_pane(), Some(parent));
             let parent_rect = app.visible_pane_rect(parent).unwrap();
-            let child_rect = app.windows[app.active_window].tree.root.and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile)).unwrap();
+            let child_rect = app.windows[app.active_window]
+                .tree
+                .root
+                .and_then(|tile| app.windows[app.active_window].tree.tiles.rect(tile))
+                .unwrap();
             let share = parent_rect.width() / (parent_rect.width() + child_rect.width());
             assert!((share - 0.35).abs() < 0.01, "parent share: {share}");
-            assert!(!app.windows.iter().flat_map(|w| w.panes.values()).any(|p| matches!(p, Pane::Portal(_))));
+            assert!(!app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .any(|p| matches!(p, Pane::Portal(_))));
         });
         h.save_screenshot(&evidence_png!("_view")).unwrap();
-        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
-        h.with_app(|app| assert_eq!(app.conjoined_parent(), None));
+        h.with_app(|app| {
+            assert_eq!(app.zoom.level, crate::app::zoom::ZoomLevel::Columns);
+            assert!(app.router.active().parent_id.is_none());
+        });
     }
 
     fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
         loop {
             h.run_steps(2);
-            let ready = h.with_app_mut(|app| panes.iter().all(|id| {
-                let (win, _) = app.find_pane_in_any_window(*id).unwrap();
-                app.windows[win].panes.get_mut(id).unwrap().as_terminal_mut().unwrap()
-                    .backend.capture_lines(30).iter().any(|line| line.contains("Lead:") || line.contains("Researcher:"))
-            }));
-            if ready { break; }
-            assert!(Instant::now() < deadline, "lineage terminal fixture timed out");
+            let ready = h.with_app_mut(|app| {
+                panes.iter().all(|id| {
+                    let (win, _) = app.find_pane_in_any_window(*id).unwrap();
+                    app.windows[win]
+                        .panes
+                        .get_mut(id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .capture_lines(30)
+                        .iter()
+                        .any(|line| line.contains("Lead:") || line.contains("Researcher:"))
+                })
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "lineage terminal fixture timed out"
+            );
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn screenshot_pane_corners_lineage_themes() {
+        for (theme, width, scale) in [
+            ("catppuccin-mocha", 1440.0, 1.0),
+            ("catppuccin-latte", 720.0, 1.5),
+        ] {
+            for conjoined in [true, false] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                h.step();
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                });
+                let (parent, child, portal) = h.with_app_mut(|app| {
+                    let (parent, _) = app
+                        .spawn_agent_worker_pane(
+                            "lead",
+                            "pi",
+                            "printf 'Lead: review evidence\\n'; sleep 120",
+                            "Coordinate",
+                            None,
+                            false,
+                            None,
+                            None,
+                            None,
+                            None,
+                            false,
+                            None,
+                        )
+                        .unwrap();
+                    let (child, context) = app
+                        .spawn_agent_worker_pane(
+                            "researcher",
+                            "pi",
+                            "printf 'Researcher: checking evidence\\n'; sleep 120",
+                            "Review",
+                            Some("research"),
+                            true,
+                            Some(parent),
+                            None,
+                            None,
+                            None,
+                            conjoined,
+                            None,
+                        )
+                        .unwrap();
+                    let portal = app
+                        .windows
+                        .iter()
+                        .flat_map(|w| w.panes.iter())
+                        .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id));
+                    if conjoined {
+                        assert!(app.dive_into_agent_children(parent));
+                    }
+                    (parent, child, portal)
+                });
+                wait_for_lineage_fixture(&mut h, &[parent, child]);
+                h.with_app(|app| {
+                    let expected = crate::ui::theme::Colors::from_config(
+                        &crate::ui::theme::preset_colors(theme).unwrap(),
+                    );
+                    assert_eq!(
+                        app.colors.bg_darkest, expected.bg_darkest,
+                        "fixture theme must survive startup"
+                    );
+                });
+                if conjoined {
+                    h.focus_pane(child).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_child")))
+                        .unwrap();
+                    h.with_app_mut(|app| app.conjoined_parent_focus = Some(parent));
+                    h.run_steps(3);
+                    let (rect, accent) =
+                        h.with_app(|app| (app.conjoined_parent_rect.unwrap().1, app.colors.accent));
+                    assert!(h.harness().output().shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+                            && r.corner_radius == crate::ui::style::pane_radius(None, rect)
+                            && r.stroke.color == accent && r.stroke.width == crate::ui::style::PANE_FOCUS_WIDTH
+                            && r.stroke_kind == egui::StrokeKind::Inside)
+                    }), "conjoined parent must use the shared radius and independent focus width");
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_conjoined")))
+                        .unwrap();
+                } else {
+                    h.focus_pane(portal.expect("portal fixture")).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_portal")))
+                        .unwrap();
+                    h.focus_pane(parent).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_terminal")))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    // Terminal minimum contrast (stint 1188): dark-theme 24-bit colors printed
+    // by a program, shown on Dawn and Day (stint 1186) with
+    // the default minimum and with the adjustment off.
+    #[test]
+    fn screenshot_terminal_minimum_contrast() {
+        const FIXTURE: &str = "printf '\\033[38;2;153;153;153mgrey 153 comment text, dark-theme dim\\033[0m\\n'; \
+printf '\\033[38;2;119;119;119mgrey 119 secondary text\\033[0m\\n'; \
+printf '\\033[38;2;177;185;249minline_code() pale blue\\033[0m\\n'; \
+printf '\\033[38;2;230;219;116mpale yellow string\\033[0m  \\033[38;2;166;226;46mlime green keyword\\033[0m\\n'; \
+printf '\\033[38;2;255;121;198mpink function\\033[0m  \\033[38;2;139;233;253mcyan type\\033[0m\\n'; \
+printf '\\033[2m\\033[38;2;200;200;200mfaint SGR2 grey\\033[0m  \\033[2m\\033[38;2;177;185;249mfaint pale blue\\033[0m  \\033[7mreverse video\\033[0m\\n'; \
+printf 'hidden:[\\033[8msecret\\033[0m] must show blank\\n'; \
+printf 'ANSI: \\033[31mred\\033[32m green\\033[33m yellow\\033[34m blue\\033[35m magenta\\033[36m cyan\\033[0m\\n'; \
+printf 'FIXTURE-DONE\\n'; sleep 300";
+        for (name, theme_toml) in [
+            ("dawn", "preset = \"plexi-dawn\"\n"),
+            ("day", "preset = \"plexi-day\"\n"),
+        ] {
+            for (label, terminal_toml) in [
+                ("default", ""),
+                ("off", "[terminal]\nminimum_contrast = 1.0\n"),
+            ] {
+                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 520.0, 1.0);
+                h.step();
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("pane_gap = 0.0\n{terminal_toml}[theme]\n{theme_toml}"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| app.reload_config());
+                let expected = if label == "off" { 1.0 } else { 3.0 };
+                h.with_app(|app| {
+                    assert_eq!(
+                        app.theme.minimum_contrast(),
+                        expected,
+                        "reload must apply the setting live"
+                    )
+                });
+                let pane = h.with_app_mut(|app| {
+                    app.spawn_agent_worker_pane(
+                        "fixture", "pi", FIXTURE, "Contrast", None, false, None, None, None, None,
+                        false, None,
+                    )
+                    .unwrap()
+                    .0
+                });
+                let deadline =
+                    Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+                loop {
+                    h.run_steps(2);
+                    let ready = h.with_app_mut(|app| {
+                        let (win, _) = app.find_pane_in_any_window(pane).unwrap();
+                        app.windows[win]
+                            .panes
+                            .get_mut(&pane)
+                            .unwrap()
+                            .as_terminal_mut()
+                            .unwrap()
+                            .backend
+                            .capture_lines(40)
+                            .iter()
+                            .any(|l| l.contains("FIXTURE-DONE"))
+                    });
+                    if ready {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "contrast fixture timed out");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                h.focus_pane(pane).unwrap();
+                h.run_steps(3);
+                h.save_screenshot(&evidence_png!(&format!("_{name}_{label}")))
+                    .unwrap();
+            }
         }
     }
 
@@ -635,8 +2708,38 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review research\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, _) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking source evidence\\n'; sleep 120", "Review evidence", Some("lineage-preview"), true, Some(parent), None, None, None, true, None).unwrap();
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: review research\\n'; sleep 120",
+                    "Coordinate review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let (child, _) = app
+                .spawn_agent_worker_pane(
+                    "researcher",
+                    "pi",
+                    "printf 'Researcher: checking source evidence\\n'; sleep 120",
+                    "Review evidence",
+                    Some("lineage-preview"),
+                    true,
+                    Some(parent),
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                )
+                .unwrap();
             assert!(app.dive_into_agent_children(parent));
             (parent, child)
         });
@@ -646,18 +2749,30 @@ mod tests {
         let (rect, accent, gap) = h.with_app(|app| {
             assert_eq!(app.visual_owner_pane(), Some(child));
             assert_ne!(app.visual_owner_pane(), Some(parent));
-            (app.visible_pane_rect(child).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+            (
+                app.visible_pane_rect(child).unwrap(),
+                app.colors.accent,
+                app.config.pane_gap.unwrap_or(4.0),
+            )
         });
-        assert!(h.harness().output().shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
-                && r.stroke.color == accent && r.stroke.width == gap
-                && r.stroke_kind == egui::StrokeKind::Outside)
-        }), "focused child must have the ordinary outside accent outline");
+        assert!(
+            h.harness().output().shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+                && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
+                && r.stroke_kind == egui::StrokeKind::Inside)
+            }),
+            "focused child must have the ordinary accent outline"
+        );
         let mut texts = Vec::new();
         for shape in &h.harness().output().shapes {
             gallery_text_shapes(&shape.shape, &mut texts);
         }
-        assert!(texts.iter().any(|(_, text)| text.contains("researcher") && text.contains("child of lead")), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|(_, text)| text.contains("researcher") && text.contains("child of lead")),
+            "{texts:?}"
+        );
         assert!(!texts.iter().any(|(_, text)| text.starts_with("↳ lead")));
         h.save_screenshot(&evidence_png!()).unwrap();
     }
@@ -667,10 +2782,44 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
         let (parent, child, portal) = h.with_app_mut(|app| {
-            let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: coordinate research\\n'; sleep 120", "Review", None, false, None, None, None, None, false, None).unwrap();
-            let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: working\\n'; sleep 120", "Research", Some("research"), true, Some(parent), None, None, None, false, None).unwrap();
-            let portal = app.windows.iter().flat_map(|w| w.panes.iter())
-                .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id)).unwrap();
+            let (parent, _) = app
+                .spawn_agent_worker_pane(
+                    "lead",
+                    "pi",
+                    "printf 'Lead: coordinate research\\n'; sleep 120",
+                    "Review",
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let (child, context) = app
+                .spawn_agent_worker_pane(
+                    "researcher",
+                    "pi",
+                    "printf 'Researcher: working\\n'; sleep 120",
+                    "Research",
+                    Some("research"),
+                    true,
+                    Some(parent),
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            let portal = app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.iter())
+                .find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id))
+                .unwrap();
             (parent, child, portal)
         });
         wait_for_lineage_fixture(&mut h, &[parent, child]);
@@ -678,20 +2827,578 @@ mod tests {
         h.run_steps(3);
         let (rect, accent, gap) = h.with_app(|app| {
             assert!(!app.pane_lineage().contains_key(&parent));
-            (app.visible_pane_rect(portal).unwrap(), app.colors.accent, app.config.pane_gap.unwrap_or(4.0))
+            (
+                app.visible_pane_rect(portal).unwrap(),
+                app.colors.accent,
+                app.config.pane_gap.unwrap_or(4.0),
+            )
         });
         assert!(h.harness().output().shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
-                && r.stroke.color == accent && r.stroke.width == gap
-                && r.stroke_kind == egui::StrokeKind::Outside)
+                && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
+                && r.stroke_kind == egui::StrokeKind::Inside)
         }));
-        assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
+        assert!(h
+            .harness()
+            .query_by_label("↳ research · child of lead")
+            .is_some());
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();
-            app.windows[win].panes.get_mut(&parent).unwrap().as_terminal_mut().unwrap().name = None;
+            app.windows[win]
+                .panes
+                .get_mut(&parent)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .name = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
         });
+    }
+
+    #[test]
+    fn native_buttons_safe_area_respects_scale_and_geometry() {
+        for scale in [0.8_f32, 1.0, 1.3, 2.0] {
+            for width in [400.0_f32, 700.0, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| {
+                    app.ctx.data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("native_titlebar_test_metrics"),
+                            egui::vec2(110.0, 32.0),
+                        )
+                    });
+                });
+                h.run_steps(3);
+                let (screen, color, row) = h.with_app(|app| {
+                    (
+                        app.ctx.content_rect(),
+                        app.colors.bg_toolbar,
+                        app.ctx
+                            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_row_rect")))
+                            .unwrap(),
+                    )
+                });
+                let height = h
+                    .harness()
+                    .output()
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(r)
+                            if r.fill == color
+                                && (r.rect.width() - screen.width()).abs() < 1.0
+                                && (r.rect.top() - screen.top()).abs() < 1.0 =>
+                        {
+                            Some(r.rect.height())
+                        }
+                        _ => None,
+                    })
+                    .expect("toolbar background");
+                assert!(
+                    (height - crate::ui::style::TOOLBAR_H.max(32.0 / scale)).abs() < 0.1,
+                    "scale {scale}: wrong toolbar height {height}"
+                );
+                assert!(
+                    row.left() + 0.1 >= 110.0 / scale,
+                    "scale {scale}: toolbar enters native button area: {row:?}"
+                );
+                #[cfg(target_os = "macos")]
+                h.with_app(|app| {
+                    let title = app
+                        .ctx
+                        .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_title_rect")))
+                        .unwrap();
+                    assert!(
+                        !title.is_positive() || title.left() + 0.1 >= 110.0 / scale,
+                        "title enters native button area: {title:?}"
+                    );
+                });
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn titlebar_title_never_overlaps_toolbar_at_any_scale_or_width() {
+        let mut saw_centered = false;
+        let mut saw_shifted = false;
+        let mut saw_elided = false;
+        let mut saw_hidden = false;
+        for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
+            for width in [
+                200.0_f32, 250.0, 300.0, 350.0, 400.0, 425.0, 450.0, 475.0, 500.0, 525.0, 550.0,
+                575.0, 600.0, 700.0, 800.0, 1000.0, 1600.0,
+            ] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| {
+                    app.router.get_mut(0).name = "attention demo — needs_you".to_string().into()
+                });
+                h.run_steps(3);
+                h.with_app(|app| {
+                    let get = |name| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(name)));
+                    let title = get("titlebar_title_rect").expect("title geometry must be published");
+                    let visible = app.ctx.data(|d| d.get_temp::<String>(egui::Id::new("titlebar_visible_title"))).unwrap();
+                    if visible.is_empty() {
+                        saw_hidden = true;
+                    } else if visible.ends_with('…') {
+                        saw_elided = true;
+                    } else if (title.center().x - app.ctx.content_rect().center().x).abs() < 0.1 {
+                        saw_centered = true;
+                    } else {
+                        saw_shifted = true;
+                    }
+                    for name in ["help", "version", "attention_mailbox", "gallery"] {
+                        let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name))))
+                            .or_else(|| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", "overflow"))))).expect("toolbar item or named overflow");
+                        assert!(!title.intersects(item), "scale {scale}, width {width}: title {title:?} overlaps {name} {item:?}");
+                    }
+                });
+            }
+        }
+        assert!(saw_centered && saw_shifted && saw_elided && saw_hidden, "must exercise center, shift, truncate, and hide: centered={saw_centered} shifted={saw_shifted} elided={saw_elided} hidden={saw_hidden}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn titlebar_compact_controls_preserve_native_exclusion() {
+        for scale in [1.0, 1.3, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(400.0, 600.0, scale);
+            h.with_app_mut(|app| {
+                app.ctx.data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("native_titlebar_test_metrics"),
+                        egui::vec2(110.0, 32.0),
+                    )
+                })
+            });
+            h.run_steps(3);
+            let rects = h.with_app(|app| {
+                let row = app
+                    .ctx
+                    .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_row_rect")))
+                    .unwrap();
+                let rects: Vec<_> = [
+                    "gallery",
+                    "help",
+                    "version",
+                    "attention_mailbox",
+                    "overflow",
+                ]
+                .into_iter()
+                .filter_map(|name| {
+                    app.ctx
+                        .data(|d| {
+                            d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))
+                        })
+                        .map(|rect| (name, rect))
+                })
+                .collect();
+                for (name, rect) in &rects {
+                    assert!(
+                        rect.left() >= row.left() && rect.right() <= row.right(),
+                        "{scale}: {name} {rect:?} outside {row:?}"
+                    );
+                }
+                rects
+            });
+            if let Some((_, rect)) = rects.iter().find(|(name, _)| *name == "overflow") {
+                assert!(h.harness().query_by_label("Toolbar actions").is_some());
+                for pressed in [true, false] {
+                    h.harness().input_mut().events.extend([
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                    h.step();
+                }
+                assert!(h.harness().query_by_label("Changelog").is_some());
+                assert!(h.harness().query_by_label("Keyboard shortcuts").is_some());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_titlebar_scales() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [0.8_f32, 1.0, 1.3, 2.0] {
+                for width in [400.0_f32, 700.0, 1600.0] {
+                    let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                    std::fs::write(
+                        h.workspace_root().join("review-notes.txt"),
+                        "Review the pending request\n",
+                    )
+                    .unwrap();
+                    let id = add_focused_pane(&mut h);
+                    h.with_app_mut(|app| {
+                        app.ctx.data_mut(|d| {
+                            d.insert_temp(
+                                egui::Id::new("native_titlebar_test_metrics"),
+                                egui::vec2(70.0, 28.0),
+                            )
+                        });
+                        let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                        app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                        app.theme = crate::ui::theme::terminal_theme(
+                            &cfg,
+                            crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                        );
+                        crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                        app.router.get_mut(0).name = "attention demo".to_string().into();
+                        app.windows[app.active_window]
+                            .panes
+                            .get_mut(&id)
+                            .unwrap()
+                            .as_view_mut()
+                            .unwrap()
+                            .name = "needs_you".into();
+                        app.enqueue_ask(
+                            "titlebar-fixture",
+                            id,
+                            "Review the pending request",
+                            1_000,
+                            Vec::new(),
+                        );
+                    });
+                    h.run_steps(4);
+                    h.save_screenshot(&evidence_png!(format!("_{theme}_{scale}_{width}")))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    /// Sample the pixel one point inside the left edge of `rect`, away from the label.
+    fn edge_pixel(image: &image::RgbaImage, rect: egui::Rect) -> image::Rgba<u8> {
+        *image.get_pixel(rect.left() as u32 + 3, rect.center().y as u32)
+    }
+
+    /// Hover `rect` and render the frame.
+    fn render_hovering(h: &mut PlexiUiHarness, rect: egui::Rect) -> image::RgbaImage {
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(rect.center()));
+        h.run_steps(2);
+        h.render().expect("render hovered menu")
+    }
+
+    /// Stint 1211: kit menu items keep egui's hover highlight (a Ghost button
+    /// is transparent at rest and paints the theme hover fill). Covers the
+    /// sidebar context menu and the toolbar overflow menu in both themes.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_context_and_overflow_menu_hover_states() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let apply_theme = |h: &mut PlexiUiHarness| {
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                });
+            };
+
+            // Sidebar context menu: secondary click on the first context row.
+            let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+            apply_theme(&mut h);
+            h.with_app_mut(|app| app.sidebar_visible = true);
+            h.run_steps(4);
+            let name = h.with_app(|app| app.router.get(0).name.to_string());
+            // The context name also labels the title bar; the sidebar row is the leftmost match.
+            let row = h
+                .harness()
+                .get_all_by_label(&name)
+                .map(|node| node.rect())
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .expect("sidebar context row");
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(row.center()),
+                    egui::Event::PointerButton {
+                        pos: row.center(),
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.step();
+            }
+            h.run_steps(3);
+            let rename = h.harness().get_by_label("Rename").rect();
+            let description = h.harness().get_by_label("Edit Description").rect();
+            let at_rest = h.render().expect("render context menu");
+            let rest_pixel = edge_pixel(&at_rest, rename);
+            h.save_screenshot(&evidence_png!(format!("_context_rest_{theme}")))
+                .unwrap();
+            let hovered = render_hovering(&mut h, rename);
+            h.save_screenshot(&evidence_png!(format!("_context_hover_{theme}")))
+                .unwrap();
+            assert_ne!(
+                edge_pixel(&hovered, rename),
+                rest_pixel,
+                "{theme}: hovered context item must be highlighted"
+            );
+            assert_eq!(
+                edge_pixel(&hovered, description),
+                edge_pixel(&at_rest, description),
+                "{theme}: only the hovered item is highlighted"
+            );
+
+            // Toolbar overflow menu: compact titlebar.
+            // 300 points minus the 110pt native safe area is narrower than the
+            // full toolbar, so the titlebar is compact. Zoom stays 1.0 so points are pixels.
+            let mut h = PlexiUiHarness::new_sized(300.0, 600.0);
+            apply_theme(&mut h);
+            h.with_app_mut(|app| {
+                app.ctx.data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("native_titlebar_test_metrics"),
+                        egui::vec2(110.0, 32.0),
+                    )
+                })
+            });
+            h.run_steps(3);
+            let trigger = h.harness().get_by_label("Toolbar actions").rect();
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(trigger.center()),
+                    egui::Event::PointerButton {
+                        pos: trigger.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.step();
+            }
+            h.run_steps(2);
+            let shortcuts = h.harness().get_by_label("Keyboard shortcuts").rect();
+            let changelog = h.harness().get_by_label("Changelog").rect();
+            let at_rest = h.render().expect("render overflow menu");
+            h.save_screenshot(&evidence_png!(format!("_overflow_rest_{theme}")))
+                .unwrap();
+            let hovered = render_hovering(&mut h, changelog);
+            h.save_screenshot(&evidence_png!(format!("_overflow_hover_{theme}")))
+                .unwrap();
+            assert_ne!(
+                edge_pixel(&hovered, changelog),
+                edge_pixel(&at_rest, changelog),
+                "{theme}: hovered overflow item must be highlighted"
+            );
+            assert_eq!(
+                edge_pixel(&hovered, shortcuts),
+                edge_pixel(&at_rest, shortcuts),
+                "{theme}: only the hovered item is highlighted"
+            );
+        }
+    }
+
+    /// The attention chip in the path bar keeps its own slot: at every UI
+    /// scale and window width it stays inside the viewport and never
+    /// intersects the toolbar controls, version label, or the pane header's
+    /// provenance icon, however long the pending ask is.
+    #[test]
+    fn attention_chip_never_overlaps_chrome_at_any_scale_or_width() {
+        for scale in [0.6_f32, 1.0, 2.0] {
+            for width in [700.0_f32, 1400.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                h.step();
+                let pane_id = h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let workspace_root = app.router.active().root.clone();
+                    let id = app.host.alloc_pane_id();
+                    let mut terminal = crate::host::pane::TerminalPane::new(
+                        id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            working_directory: Some(workspace_root),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .expect("spawn terminal pane");
+                    terminal.spawned_by = Some("agent:researcher".to_string());
+                    let win = &mut app.windows[app.active_window];
+                    win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                    let tile = win.tree.tiles.insert_pane(id);
+                    win.tree.root = Some(tile);
+                    win.focused_pane = Some(tile);
+                    app.enqueue_ask(
+                        "ask-chip",
+                        id,
+                        "permission: Allow flash: cargo test --workspace --all-features -- --nocapture --test-threads=1",
+                        1_000,
+                        Vec::new(),
+                    );
+                    id
+                });
+                h.run_steps(4);
+                let (screen, chip, siblings) = h.with_app(|app| {
+                    let get = |id: egui::Id| app.ctx.data(|d| d.get_temp::<egui::Rect>(id));
+                    let chip = get(egui::Id::new("attention_chip_rect")).expect("chip rect");
+                    let mut siblings = Vec::new();
+                    for name in ["help", "version"] {
+                        siblings.push((
+                            name,
+                            get(egui::Id::new(("toolbar_ctl_rect", name))).expect("toolbar rect"),
+                        ));
+                    }
+                    siblings.push((
+                        "provenance",
+                        get(egui::Id::new(("provenance_icon_rect", pane_id)))
+                            .expect("provenance icon rect"),
+                    ));
+                    (app.ctx.content_rect(), chip, siblings)
+                });
+                let what = format!("scale {scale} width {width}");
+                assert_inside("attention chip", scale, chip, screen);
+                for (name, rect) in &siblings {
+                    assert!(
+                        !chip.intersects(*rect),
+                        "{what}: chip {chip:?} overlaps {name} {rect:?}"
+                    );
+                }
+                for (i, (an, a)) in siblings.iter().enumerate() {
+                    for (bn, b) in &siblings[i + 1..] {
+                        assert!(!a.intersects(*b), "{what}: {an} {a:?} overlaps {bn} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decision_overlay_shows_no_scrollbar_or_scroll_state_when_content_fits() {
+        for scale in [1.0_f32, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.enqueue_ask(
+                    "ask-no-scroll",
+                    pane_id,
+                    "cargo test --bin plexi -- --test-threads=4",
+                    1_000,
+                    Vec::new(),
+                );
+                assert!(app.open_decision_overlay_for_ask("ask-no-scroll"));
+            });
+            h.run_steps(4);
+
+            let (
+                content_size,
+                avail_size,
+                card_inner_size,
+                scroll_id,
+                has_scroll_state,
+                button_widths,
+                modal_w,
+            ) = h.with_app_mut(|app| {
+                let (content_size, avail_size, card_inner_size, scroll_id): (
+                    egui::Vec2,
+                    egui::Vec2,
+                    egui::Vec2,
+                    egui::Id,
+                ) = app
+                    .ctx
+                    .data(|d| d.get_temp(egui::Id::new("decision_overlay_scroll_metrics")))
+                    .expect("decision overlay scroll metrics");
+                let has_scroll_state =
+                    egui::scroll_area::State::load(&app.ctx, scroll_id).is_some();
+                let button_widths: Vec<f32> = app
+                    .approval_buttons
+                    .iter()
+                    .map(|b| b.bounds[2] - b.bounds[0])
+                    .collect();
+                let screen = app.ctx.content_rect();
+                let modal_w = crate::ui::style::DECISION_MODAL_W
+                    .min(screen.width() - 32.0)
+                    .max(300.0);
+                (
+                    content_size,
+                    avail_size,
+                    card_inner_size,
+                    scroll_id,
+                    has_scroll_state,
+                    button_widths,
+                    modal_w,
+                )
+            });
+
+            assert_eq!(button_widths.len(), 3, "scale {scale}: expected 3 options");
+            assert!(
+                content_size.y <= avail_size.y,
+                "scale {scale}: content height {} must fit within available {}",
+                content_size.y,
+                avail_size.y
+            );
+            assert!(
+                (content_size.y - card_inner_size.y).abs() <= 1.0,
+                "scale {scale}: card inner height {} must shrink to content height {}",
+                card_inner_size.y,
+                content_size.y
+            );
+            assert!(
+                !has_scroll_state,
+                "scale {scale}: no ScrollArea offset state ({scroll_id:?}) should persist when content fits"
+            );
+            for (idx, w) in button_widths.iter().enumerate() {
+                assert!(
+                    (w - modal_w).abs() <= 1.0,
+                    "scale {scale}: option {idx} width {w} must equal modal_w {modal_w} (no scrollbar gutter)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        let pane_id = add_focused_pane(&mut h);
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let (id, _) = monitor
+            .file_needs_you_with_details(
+                crate::broker::gate::NeedsYouFile {
+                    kind: crate::broker::gate::NeedsYouKind::Question,
+                    actor: "codex".into(),
+                    resource: format!("pane:{pane_id}"),
+                    summary: "Ready to continue the attention-cue repair on Alpha".into(),
+                    expires_at: None,
+                    run_tag: Some(format!("pane:{pane_id}")),
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    choices: vec!["Continue".to_string()],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
+        monitor.fail_audit(true);
+        h.with_app_mut(|app| {
+            assert!(!app.pick_decision_overlay_option(0));
+        });
+        h.run_steps(3);
+        let message = format!(
+            "Decision failed: Could not complete decision overlay: needs-you item {id} could not be audited"
+        );
+        assert!(
+            h.host_has_label(&message),
+            "audit error must be painted in the retained overlay"
+        );
+        h.save_screenshot(&crate::ui_tests::evidence_png!())
+            .unwrap();
+        monitor.fail_audit(false);
     }
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
@@ -708,14 +3415,14 @@ mod tests {
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     browser_root.clone(),
                 ))),
                 workspace_root: browser_root.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "test".to_string(),
                 name: "Test App".to_string(),
                 pane_group: None,
@@ -727,7 +3434,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[window_index];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -735,6 +3442,126 @@ mod tests {
             win.focused_pane = Some(tile_id);
             pane_id
         })
+    }
+
+    /// What `NaturalWidthFixture` painted: the width `KitButton::natural_width`
+    /// promised, the frame it got, and the rows its label was laid out in.
+    #[derive(Clone, Default)]
+    struct NaturalWidthSnapshot {
+        natural: f32,
+        frame: f32,
+        rows: Vec<String>,
+    }
+
+    /// A wrapping kit button in a slot exactly `natural_width` wide.
+    struct NaturalWidthFixture {
+        label: &'static str,
+        snapshot: Arc<std::sync::Mutex<NaturalWidthSnapshot>>,
+    }
+
+    impl crate::app::view_trait::View for NaturalWidthFixture {
+        fn type_id(&self) -> &'static str {
+            "natural_width_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Button natural width".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            use crate::ui::button::KitButton;
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
+            let natural = KitButton::new(self.label, ctx.colors).natural_width(ui);
+            let frame = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(natural, crate::ui::style::BUTTON_H_MD),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            KitButton::new(self.label, ctx.colors)
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                        )
+                        .rect
+                        .width()
+                    },
+                )
+                .inner;
+            let label = self.label;
+            let rows = ui.ctx().graphics(|g| {
+                g.get(layer).and_then(|list| {
+                    list.all_entries().skip(start).find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            if text.galley.job.text == label {
+                                return Some(
+                                    text.galley.rows.iter().map(|row| row.row.text()).collect(),
+                                );
+                            }
+                        }
+                        None
+                    })
+                })
+            });
+            if let Some(rows) = rows {
+                *self.snapshot.lock().unwrap() = NaturalWidthSnapshot {
+                    natural,
+                    frame,
+                    rows,
+                };
+            }
+        }
+    }
+
+    /// `KitButton::natural_width` is the one width measurement: under the host
+    /// style a wrapping button given exactly that width keeps its label on one
+    /// line and its frame fills the width, less the single round-up. The frame
+    /// stroke is not extra: egui takes the style's 1px widget stroke out of
+    /// the padding, so a kit button is its label plus its padding (the premise
+    /// of stint 1356 holds only under bare egui, which has no such stroke).
+    #[test]
+    fn kit_button_in_its_natural_width_keeps_the_label_on_one_line() {
+        for (case, label) in ["Reset", "Restore deleted note", "Friday"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut h = PlexiUiHarness::new_sized(720.0, 420.0);
+            let pane_id = add_focused_pane(&mut h);
+            let snapshot = Arc::new(std::sync::Mutex::new(NaturalWidthSnapshot::default()));
+            h.with_app_mut(|app| {
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(NaturalWidthFixture {
+                        label,
+                        snapshot: snapshot.clone(),
+                    }));
+                }
+            });
+            h.run_steps(3);
+            let painted = snapshot.lock().unwrap().clone();
+            assert_eq!(
+                painted.rows,
+                vec![label.to_string()],
+                "{label:?} must stay on one line in its natural width {}",
+                painted.natural
+            );
+            assert!(
+                painted.frame <= painted.natural && painted.natural - painted.frame < 1.0,
+                "{label:?}: frame is {} wide but natural_width promised {} (rounded up once)",
+                painted.frame,
+                painted.natural
+            );
+            h.save_screenshot(&evidence_png!(&format!("_{case}")))
+                .expect("natural width screenshot");
+        }
     }
 
     #[derive(Clone)]
@@ -749,7 +3576,7 @@ mod tests {
         snapshot: Arc<std::sync::Mutex<PressSnapshot>>,
     }
 
-    impl crate::app::app_trait::App for PressFixture {
+    impl crate::app::view_trait::View for PressFixture {
         fn type_id(&self) -> &'static str {
             "press_fixture"
         }
@@ -762,7 +3589,7 @@ mod tests {
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             let layer = ui.layer_id();
@@ -770,21 +3597,20 @@ mod tests {
                 .ctx()
                 .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
             let clicked = match self.kind {
-                0 => crate::ui::button::chrome_button(
-                    ui,
-                    "Confirm changes",
-                    crate::ui::button::ButtonKind::Accent,
-                    ctx.colors,
-                    160.0,
-                )
-                .clicked(),
+                0 => ui
+                    .add(
+                        crate::ui::button::KitButton::new("Confirm changes", ctx.colors)
+                            .kind(crate::ui::button::ButtonKind::Primary)
+                            .min_width(160.0),
+                    )
+                    .clicked(),
                 1 => {
                     crate::ui::button::choice_button(ui, "Keep this version", "1", true, ctx.colors)
                         .clicked()
                 }
                 _ => {
-                    use crate::host::wasm_app::bindings::plexi::platform::types::ButtonNode;
-                    use crate::host::wasm_app::{ButtonStyle, IndexedNode, UiNodeData, UiTree};
+                    use crate::host::wasm_view::bindings::plexi::platform::types::ButtonNode;
+                    use crate::host::wasm_view::{ButtonStyle, IndexedNode, UiNodeData, UiTree};
                     let tree = UiTree {
                         root: 0,
                         nodes: vec![IndexedNode {
@@ -809,7 +3635,7 @@ mod tests {
                 g.get(layer).and_then(|list| {
                     list.all_entries().skip(start).find_map(|shape| {
                         if let egui::Shape::Rect(rect) = &shape.shape {
-                            // The app background spans the pane; the button has rounded corners.
+                            // The plugin background spans the pane; the button has rounded corners.
                             if rect.corner_radius != egui::CornerRadius::ZERO
                                 && rect.fill != egui::Color32::TRANSPARENT
                             {
@@ -840,10 +3666,10 @@ mod tests {
                 clicks: 0,
             }));
             h.with_app_mut(|app| {
-                if let Some(Pane::App(pane)) =
+                if let Some(Pane::View(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
-                    pane.runtime = AppRuntime::Builtin(Box::new(PressFixture {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(PressFixture {
                         kind,
                         snapshot: snapshot.clone(),
                     }));
@@ -908,11 +3734,11 @@ mod tests {
         });
         h.run_steps(3);
         assert!(h.harness().query_by_label("Host UI Gallery").is_some());
-        assert!(
-            h.harness()
-                .query_by_label("⌘Q pressed 1 of 3 — press again to quit")
-                .is_some()
+        let quit_toast = format!(
+            "{} pressed 1 of 3 — press again to quit",
+            crate::ui::shortcuts::key_text(&["cmd", "Q"])
         );
+        assert!(h.harness().query_by_label(&quit_toast).is_some());
         h.save_screenshot(&evidence_png!())
             .expect("floating shells screenshot");
     }
@@ -951,11 +3777,44 @@ mod tests {
             .expect("filename screenshot");
     }
 
-    /// Regression for stint 0351: `AppRequest::KeyPane` (the `plexi pane key`
-    /// socket path) must drive a native app pane through its real
-    /// `App::handle_key` — not the PGAP event queue, which native apps never
+    #[test]
+    fn screenshot_file_browser_external_mutation_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.txt"), "first file").unwrap();
+        std::fs::write(dir.path().join("bravo.txt"), "second file").unwrap();
+        std::fs::write(dir.path().join("charlie.txt"), "third file").unwrap();
+
+        let mut h = PlexiUiHarness::new_sized(680.0, 480.0);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(3);
+
+        // External mutations: create, rename, delete
+        std::fs::write(dir.path().join("0-from-agent.txt"), "agent content").unwrap();
+        std::fs::rename(dir.path().join("charlie.txt"), dir.path().join("echo.txt")).unwrap();
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+        h.run_steps(10);
+
+        let shot_path = std::env::temp_dir().join("plexi-evidence-file-browser-mutation.png");
+        h.save_screenshot(shot_path.to_str().unwrap())
+            .expect("save screenshot of file browser after external mutation");
+
+        assert!(shot_path.exists(), "screenshot PNG must exist");
+        let bytes = std::fs::read(&shot_path).expect("read screenshot PNG");
+        assert!(bytes.len() > 100, "screenshot PNG must be non-empty");
+        assert_eq!(&bytes[1..4], b"PNG", "file must have PNG magic bytes");
+
+        let _ = std::fs::remove_file(&shot_path);
+    }
+
+    /// Regression for stint 0351: `HostRequest::KeyPane` (the `plexi pane key`
+    /// socket path) must drive a native view pane through its real
+    /// `App::handle_key` — not the PGAP event queue, which native plugins never
     /// read. Enter on the File Explorer's selected directory must run the
-    /// app's own Activate flow (navigate_into), and the response file must
+    /// plugin's own Activate flow (navigate_into), and the response file must
     /// report the disposition so driving agents can detect ignored keys.
     #[test]
     fn pane_key_ipc_drives_native_file_browser_handle_key() {
@@ -970,14 +3829,14 @@ mod tests {
             app.windows[app.active_window]
                 .panes
                 .iter()
-                .find_map(|(id, p)| p.as_app().map(|_| *id))
+                .find_map(|(id, p)| p.as_view().map(|_| *id))
                 .expect("file browser pane must exist after open_file_browser")
         });
 
         let rf_dir = tempfile::tempdir().expect("tempdir");
         let rf = rf_dir.path().join("key-response.json");
         h.with_app_mut(|app| {
-            app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+            app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
                 pane_id,
                 key: "enter".to_string(),
                 response_file: Some(rf.to_string_lossy().into_owned()),
@@ -993,12 +3852,12 @@ mod tests {
         );
 
         // Enter on the selected directory (dirs sort first, selected=0) runs
-        // the app's real Activate flow — cwd must now be the subdirectory.
+        // the plugin's real Activate flow — cwd must now be the subdirectory.
         let cwd = h.with_app(|app| {
             app.windows[app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(|p| p.as_app())
+                .and_then(|p| p.as_view())
                 .and_then(|a| a.runtime.serialize_state())
                 .and_then(|s| s["cwd"].as_str().map(str::to_string))
                 .expect("file browser must serialize cwd")
@@ -1055,7 +3914,7 @@ mod tests {
     }
 
     /// Stint 0750 evidence: the file-browser rename modal's action pair now
-    /// renders through `chrome_button` (`Primary` / `Secondary`) at
+    /// renders through `KitButton` (`Primary` / `Secondary`) at
     /// `BUTTON_H_MD`, instead of the bare `ui.button` it used to emit inside
     /// an otherwise correct `ModalShell`. Review artifact:
     /// /tmp/plexi-0750-file-browser-rename-modal.png.
@@ -1107,28 +3966,45 @@ mod tests {
             profile.path(),
         )
         .expect("read admits");
-        assert!(matches!(read, crate::workspace::secrets::ReadResult::PermissionRequired { .. }));
+        assert!(matches!(
+            read,
+            crate::workspace::secrets::ReadResult::PermissionRequired { .. }
+        ));
 
         let mut h = PlexiUiHarness::new_sized(1100.0, 300.0);
         h.run_steps(2);
-        h.harness().get_by_label("Terminal pane 4 wants to use secret.get");
-        let caption = format!(
-            "Resource: OPENAI_API_KEY@{}",
-            root.path().display()
+        // The old approval banner is gone: the ask is an attention-queue item
+        // that names the secret and its workspace.
+        h.with_app_mut(|app| app.sync_attention_queue());
+        let (summary, command_text) = h.with_app(|app| {
+            let ask = app
+                .attention_queue
+                .items
+                .iter()
+                .find(|b| b.category == crate::app::attention_queue::QueueCategory::Ask)
+                .expect("secret.get ask is queued");
+            (ask.summary.clone(), ask.command_text.clone())
+        });
+        assert!(
+            summary.contains("wants to use secret.get"),
+            "summary: {summary}"
         );
-        h.harness().get_by_label(&caption);
+        assert!(
+            command_text.contains("OPENAI_API_KEY"),
+            "command: {command_text}"
+        );
+        assert!(
+            command_text.contains(&root.path().display().to_string()),
+            "command: {command_text}"
+        );
         // Arrival alone never captures keys or grants consent.
-        h.harness().key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.harness()
+            .key_down_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
-        h.harness().key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
         h.step();
         assert_eq!(monitor.list_pending().len(), 1);
-        let chord = egui::Modifiers { command: true, alt: true, ..Default::default() };
-        h.harness().key_down_modifiers(chord, egui::Key::P);
-        h.step();
-        h.harness().key_up_modifiers(chord, egui::Key::P);
-        h.step();
-        h.with_app_mut(|app| assert_eq!(app.focus_stack.last(), Some(&crate::app::FocusKind::ApprovalBanner)));
         h.save_screenshot(&evidence_png!()).expect("render banner");
     }
 
@@ -1154,360 +4030,12 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(1100.0, 360.0);
         h.run_steps(2);
         h.harness().get_by_label("Keychain access needed");
-        h.harness().get_by_label("Saved permissions are unavailable.");
+        h.harness()
+            .get_by_label("Saved permissions are unavailable.");
         h.harness().get_by_label("Continue");
         h.harness().get_by_label("Not now");
         h.save_screenshot(&evidence_png!())
             .expect("render keychain recovery");
-    }
-
-    const LONG_INTEGRITY: &str = "Needs you queue failed its integrity check (seal mismatch for host/needs-you.journal; record ny_0f3a resource needs-you). Stored entries in that file were not loaded. END-OF-DIAGNOSTIC";
-
-    fn seed_attention_items(monitor: &crate::broker::gate::PermissionMonitor) {
-        monitor.file_integrity_memory_only("seal mismatch for host/needs-you.journal");
-        let file = |kind, actor: &str, resource: &str, summary: &str| {
-            monitor
-                .file_needs_you(crate::broker::gate::NeedsYouFile {
-                    kind,
-                    actor: actor.to_string(),
-                    resource: resource.to_string(),
-                    summary: summary.to_string(),
-                    expires_at: None,
-                    run_tag: None,
-                })
-                .expect("file needs-you item");
-        };
-        use crate::broker::gate::NeedsYouKind as K;
-        file(K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY);
-        file(K::PermissionChange, "agent:claude", "secret.get OPENAI_API_KEY", "Agent wants to read OPENAI_API_KEY");
-        file(K::Question, "agent:codex", "run-7", "Should I overwrite the existing migration?");
-    }
-
-    /// Stint 0801: diagnostic length cannot expand the context-navigation
-    /// header; the sidebar shows one compact labelled entry instead.
-    #[test]
-    fn attention_long_diagnostic_cannot_expand_sidebar_header() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        monitor
-            .file_needs_you(crate::broker::gate::NeedsYouFile {
-                kind: crate::broker::gate::NeedsYouKind::Integrity,
-                actor: "host".to_string(),
-                resource: "needs-you".to_string(),
-                summary: LONG_INTEGRITY.to_string(),
-                expires_at: None,
-                run_tag: None,
-            })
-            .expect("file");
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        assert!(
-            h.harness().query_by_label_contains("END-OF-DIAGNOSTIC").is_none(),
-            "diagnostic text must not be painted in the sidebar"
-        );
-        let entry = h.harness().get_by_label_contains("Needs attention");
-        let height = entry.rect().height();
-        assert!(
-            height <= crate::ui::style::BUTTON_H_MD,
-            "entry height {height} must stay bounded"
-        );
-    }
-
-    /// Stint 0801: keyboard open/select/close, focus restoration, and that
-    /// closing never resolves a record.
-    #[test]
-    fn attention_overlay_keyboard_flow_does_not_resolve_records() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
-        h.run_steps(2);
-        assert!(!h.with_app(|a| a.attention.open), "must not auto-open");
-        let before = h.with_app(|a| a.focus_stack.clone());
-        h.with_app_mut(|a| a.open_attention_overlay("test"));
-        h.run_steps(3);
-        assert!(h.with_app(|a| a.focus_stack.contains(&crate::app::FocusKind::AttentionOverlay)));
-        h.harness().get_by_label("Needs attention");
-        h.harness().key_press(egui::Key::ArrowDown);
-        h.run_steps(2);
-        assert_eq!(h.with_app(|a| a.attention.selected), 1);
-        h.harness().key_press(egui::Key::D);
-        h.run_steps(2);
-        assert!(h.with_app(|a| a.attention.show_technical));
-        h.harness().key_press(egui::Key::Escape);
-        h.run_steps(3);
-        assert!(!h.with_app(|a| a.attention.open));
-        assert_eq!(h.with_app(|a| a.focus_stack.clone()), before, "focus restored");
-        assert_eq!(monitor.open_needs_you().len(), 4, "closing resolves nothing");
-    }
-
-    /// Stint 0801: an issue arriving while the window is hidden stays
-    /// discoverable and never pops an overlay.
-    #[test]
-    fn attention_item_arriving_while_hidden_is_discoverable() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        seed_attention_items(&monitor);
-        h.run_steps(2);
-        assert!(!h.with_app(|a| a.attention.open));
-        assert_eq!(crate::overlays::attention::open_items().len(), 4);
-        h.harness().get_by_label_contains("Needs attention");
-    }
-
-    fn attention_screenshot(width: f32, height: f32, suffix: &str) {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let mut h = PlexiUiHarness::new_sized(width, height);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        h.with_app_mut(|a| a.open_attention_overlay("test"));
-        h.run_steps(3);
-        h.harness().key_press(egui::Key::T);
-        h.run_steps(2);
-        h.save_screenshot(&evidence_png!(suffix)).expect("render attention");
-    }
-
-    #[test]
-    fn screenshot_attention_overlay_normal_width() {
-        attention_screenshot(1100.0, 640.0, "_normal");
-    }
-
-    #[test]
-    fn screenshot_attention_overlay_narrow() {
-        attention_screenshot(520.0, 480.0, "_narrow");
-    }
-
-    /// Stint 0788 Part 2a: a real click on the sidebar Approve for a Keychain
-    /// item runs the Keychain recovery path (`reload_after_keychain_prompt`):
-    /// the key is read with interaction allowed and saved grants load again.
-    #[test]
-    fn sidebar_approve_on_keychain_item_reloads_saved_permissions() {
-        use crate::broker::gate::{NeedsYouKind, PermissionMonitor};
-        use crate::broker::{Decision, GrantRecord, PermissionRequest};
-        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let ws = tempfile::tempdir().expect("workspace");
-        {
-            let sealer = PermissionMonitor::open_profile(profile.path());
-            let mut store = sealer.store();
-            store.record(GrantRecord::app_capability(
-                "my-app",
-                ws.path(),
-                crate::app::permissions::Capability::NetHttp,
-                Decision::Allow,
-            ));
-            store.try_save().expect("seal profile grant");
-        }
-        crate::broker::integrity::mark_clean_shutdown(profile.path());
-        let denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let open = monitor.open_needs_you();
-        assert_eq!(open.len(), 1, "{open:?}");
-        assert_eq!(open[0].kind, NeedsYouKind::Keychain);
-        let request = PermissionRequest::app_capability(
-            "my-app",
-            ws.path(),
-            crate::app::permissions::Capability::NetHttp,
-        );
-        assert_ne!(monitor.store().evaluate(&request, None), Decision::Allow);
-
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        assert_eq!(denied.interactive_reads(), 0, "painting must not prompt");
-        h.harness().get_by_label("Approve").click();
-        h.run_steps(2);
-        assert_eq!(
-            denied.interactive_reads(),
-            1,
-            "the click reads the key with interaction allowed"
-        );
-        assert!(
-            monitor
-                .open_needs_you()
-                .iter()
-                .all(|row| row.kind != NeedsYouKind::Keychain),
-            "{:?}",
-            monitor.open_needs_you()
-        );
-        assert_eq!(
-            monitor.store().evaluate(&request, None),
-            Decision::Allow,
-            "saved permissions are loaded again"
-        );
-    }
-
-    /// Stint 0788 Part 2a: the sidebar buttons act on the oldest item that is
-    /// not an approval click, and their bounds are registered so a synthetic
-    /// `pane click` on them is refused before injection.
-    #[test]
-    fn sidebar_needs_you_buttons_are_registered_against_synthetic_clicks() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        seed_attention_items(&monitor);
-        let oldest = monitor.open_needs_you()[0].clone();
-        let mut h = PlexiUiHarness::new_sized(900.0, 500.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(2);
-        for label in ["Approve", "Dismiss"] {
-            let rect = h.harness().get_by_label(label).rect();
-            let target = h.with_app(|a| {
-                a.approval_buttons
-                    .iter()
-                    .find(|button| button.label == label)
-                    .map(|button| button.pending_request_id.clone())
-            });
-            assert_eq!(target.as_deref(), Some(oldest.id.as_str()), "{label}");
-            let refused =
-                h.with_app(|a| a.synthetic_approval_target(0, None, Some(rect.center())));
-            assert_eq!(refused.as_deref(), Some(oldest.id.as_str()), "{label}");
-        }
-        assert_eq!(monitor.open_needs_you().len(), 4, "painting resolves nothing");
-        h.harness().get_by_label("Dismiss").click();
-        h.run_steps(2);
-        assert!(
-            monitor.open_needs_you().iter().all(|row| row.id != oldest.id),
-            "a real Dismiss click settles the oldest item"
-        );
-    }
-
-    /// Visual review for the sidebar Needs-you row with Integrity, Keychain,
-    /// Question and BlockedRun items seeded.
-    #[test]
-    fn screenshot_sidebar_needs_you_actions() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        use crate::broker::gate::NeedsYouKind as K;
-        for (kind, actor, resource, summary) in [
-            (K::Integrity, "host", "grants.toml", LONG_INTEGRITY),
-            (K::Keychain, "host", "permission-mac", crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY),
-            (K::Question, "agent:codex", "pane:3", "Should I overwrite the existing migration?"),
-            (K::BlockedRun, "agent:claude", "pane:4", "CI runner stopped waiting for input"),
-        ] {
-            monitor
-                .file_needs_you(crate::broker::gate::NeedsYouFile {
-                    kind,
-                    actor: actor.to_string(),
-                    resource: resource.to_string(),
-                    summary: summary.to_string(),
-                    expires_at: None,
-                    run_tag: None,
-                })
-                .expect("file needs-you item");
-        }
-        let mut h = PlexiUiHarness::new_sized(900.0, 420.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(3);
-        h.harness().get_by_label("Approve");
-        h.harness().get_by_label("Dismiss");
-        h.save_screenshot(&evidence_png!()).expect("render sidebar needs-you");
-    }
-
-    fn seed_structured_clip_question(
-        monitor: &crate::broker::gate::PermissionMonitor,
-    ) -> String {
-        let details = crate::broker::gate::NeedsYouDetails {
-            choices: vec!["16:9".to_string(), "9:16".to_string(), "1:1".to_string()],
-            allow_free_text: false,
-            preview_refs: vec!["clip:intro@0..3000ms".to_string()],
-            correlation_id: Some("corr-crop-intro".to_string()),
-            session_id: Some("sess-pi-ui".to_string()),
-            context_id: Some(1),
-            pane_id: Some(1),
-            expected_revision: Some("rev-1".to_string()),
-            ..Default::default()
-        };
-        let (qid, _token) = monitor
-            .file_needs_you_with_details(
-                crate::broker::gate::NeedsYouFile {
-                    kind: crate::broker::gate::NeedsYouKind::Question,
-                    actor: "pane:1".to_string(),
-                    resource: "intro".to_string(),
-                    summary: "Which crop preset should we apply to Intro Slate?".to_string(),
-                    expires_at: None,
-                    run_tag: Some("op-crop-intro".to_string()),
-                },
-                Some(details),
-            )
-            .expect("file structured question");
-        qid
-    }
-
-    #[test]
-    fn sidebar_and_attention_structured_question_choice_settles_without_minting_grant() {
-        let profile = tempfile::tempdir().expect("profile");
-        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let grants_before = monitor.store().records().len();
-        let qid = seed_structured_clip_question(&monitor);
-
-        let mut h = PlexiUiHarness::new_sized(980.0, 520.0);
-        h.with_app_mut(|a| a.sidebar_visible = true);
-        h.run_steps(3);
-
-        // Verify choice buttons are rendered on the sidebar and registered against synthetic clicks
-        let choice_rect = h.harness().get_by_label("9:16").rect();
-        let synthetic_target =
-            h.with_app(|a| a.synthetic_approval_target(0, None, Some(choice_rect.center())));
-        assert_eq!(synthetic_target.as_deref(), Some(qid.as_str()));
-
-        // Real desktop click on "9:16" answers the question, updates the continuation, and writes zero grants
-        h.harness().get_by_label("9:16").click();
-        h.run_steps(2);
-
-        let item = monitor.get_needs_you(&qid).expect("question record");
-        assert_eq!(
-            item.resolution,
-            Some(crate::broker::gate::NeedsYouResolution::Approved)
-        );
-        assert_eq!(item.answer.as_deref(), Some("9:16"));
-        let cont = monitor
-            .get_continuation("corr-crop-intro")
-            .expect("continuation record");
-        assert_eq!(cont.answer.as_deref(), Some("9:16"));
-        assert_eq!(cont.state, crate::broker::gate::ContinuationState::Running);
-        assert_eq!(
-            monitor.store().records().len(),
-            grants_before,
-            "answering a creative question must never write a GrantRecord"
-        );
-    }
-
-    #[test]
-    fn screenshot_structured_question_wide_and_narrow() {
-        for (width, height, suffix) in [(1100.0, 620.0, "_wide"), (560.0, 520.0, "_narrow")] {
-            let profile = tempfile::tempdir().expect("profile");
-            let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-            let monitor =
-                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-            seed_structured_clip_question(&monitor);
-            let mut h = PlexiUiHarness::new_sized(width, height);
-            h.with_app_mut(|a| a.sidebar_visible = true);
-            h.run_steps(2);
-            h.with_app_mut(|a| a.open_attention_overlay("test"));
-            h.run_steps(3);
-            h.save_screenshot(&evidence_png!(suffix))
-                .expect("render structured question screenshot");
-        }
     }
 
     /// Render the initial empty state and save a screenshot for visual inspection.
@@ -1525,7 +4053,8 @@ mod tests {
     /// required link-time import grants.
     #[test]
     fn wasm_path_launch_queues_review_before_spawning() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -1533,7 +4062,7 @@ mod tests {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
 
         let result = h.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(
+            app.launch_view_by_path_with_layout(
                 &fixture.to_string_lossy(),
                 Some("split_v".to_string()),
                 None,
@@ -1552,7 +4081,7 @@ mod tests {
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             !has_wasm,
@@ -1567,36 +4096,37 @@ mod tests {
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
-            "approving raw WASM review should spawn an AppRuntime::Wasm pane"
+            "approving raw WASM review should spawn an ViewRuntime::Wasm pane"
         );
     }
 
     /// Once raw `.wasm` imports are reviewed and persisted for the path scope,
-    /// the same path-launch entry point must still spawn an `AppRuntime::Wasm`
+    /// the same path-launch entry point must still spawn an `ViewRuntime::Wasm`
     /// pane rather than attempting a manifest/process launch.
     #[test]
     fn wasm_path_launch_opens_wasm_pane_after_review() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let app_id = fixture
+        let plugin_id = fixture
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
-        let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+        let grants = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
         let mut store =
             crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
         for capability_id in grants.capability_ids() {
             store.set_wasm(
-                app_id,
+                plugin_id,
                 workspace_root,
                 &capability_id,
                 crate::app::permissions::PermissionState::Green,
@@ -1606,7 +4136,7 @@ mod tests {
 
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         h.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(
+            app.launch_view_by_path_with_layout(
                 &fixture.to_string_lossy(),
                 Some("split_v".to_string()),
                 None,
@@ -1619,17 +4149,17 @@ mod tests {
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
-            "a reviewed .wasm path launch should produce an AppRuntime::Wasm pane"
+            "a reviewed .wasm path launch should produce an ViewRuntime::Wasm pane"
         );
     }
 
     /// Subcontext portal whose child context holds a `text-editor` pane: the
     /// minimap must render the document glyph (accent text rules, folded corner)
-    /// instead of the generic app grid, with a status pip sized to match the
+    /// instead of the generic plugin grid, with a status pip sized to match the
     /// sidebar. Zoom the portal so the icon is legible in the PNG.
     #[test]
     fn screenshot_portal_text_editor_icon() {
@@ -1656,14 +4186,14 @@ mod tests {
 
             // Child window holding the text-editor pane the portal previews.
             let editor_pane_id = app.host.alloc_pane_id();
-            let editor = AppPane {
+            let editor = ViewPane {
                 pip_status: Some(crate::protocol::PipStatus::Green),
                 id: editor_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     editor_path.clone(),
                 ))),
                 workspace_root: editor_path.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "note.md".to_string(),
                 pane_group: None,
@@ -1675,7 +4205,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let mut child_panes = std::collections::HashMap::new();
-            child_panes.insert(editor_pane_id, Pane::App(Box::new(editor)));
+            child_panes.insert(editor_pane_id, Pane::View(Box::new(editor)));
             let mut child_tiles = egui_tiles::Tiles::default();
             let child_tile = child_tiles.insert_pane(editor_pane_id);
             let child_window_id = app.next_window_id;
@@ -1703,6 +4233,7 @@ mod tests {
                     pane_id: portal_pane_id,
                     target_context_id: child_ctx_id,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -1731,8 +4262,8 @@ mod tests {
 
     /// Direct paint of `paint_portal_minimap` with hand-built `MiniPane`s — no
     /// PTY needed — so every glyph arm (terminal `>_`, text-editor document,
-    /// generic app grid) and the status pip render in one screenshot for size
-    /// verification. The full-app test above cannot fabricate a Terminal pane
+    /// generic plugin grid) and the status pip render in one screenshot for size
+    /// verification. The full-plugin test above cannot fabricate a Terminal pane
     /// because that needs a real `TerminalBackend`; this bypasses that by
     /// setting `PaneKind` directly.
     #[test]
@@ -1748,9 +4279,10 @@ mod tests {
             kind,
             focused,
             has_content: true,
-            title: None,
+            title: Some("Investigate Plexi approval routing | PLEXI".into()),
             active: true,
             activity,
+            static_health_pip: false,
         };
         let windows = vec![MiniWindow {
             grid_x: 0,
@@ -1764,7 +4296,7 @@ mod tests {
                     0.34,
                     0.67,
                 ),
-                mk(PaneKind::App, false, None, 0.67, 1.0),
+                mk(PaneKind::View, false, None, 0.67, 1.0),
             ],
         }];
 
@@ -1775,7 +4307,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(colors.bg_darkest))
                     .show_inside(ui, |ui| {
-                        paint_portal_minimap(ui.painter(), ui.max_rect(), &windows, &colors, 0.0);
+                        paint_portal_minimap(ui, ui.max_rect(), &windows, &colors, 0.0);
                     });
             });
         harness.run();
@@ -1802,43 +4334,42 @@ mod tests {
             .expect("open initial master pane");
         h.step();
 
-        let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::AppRequest| {
+        let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::HostRequest| {
             h.with_app_mut(|app| {
                 app.handle_pane_ipc_request(req);
             });
             h.run_steps(2);
         };
 
-        let spawn_in_subctx =
-            |h: &mut PlexiUiHarness, subctx: &str, name: &str| -> (u64, u64) {
-                let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
-                send_req(
-                    h,
-                    crate::protocol::AppRequest::AgentSpawn {
-                        role: name.into(),
-                        harness: "codex".into(),
-                        command: "sleep 30".into(),
-                        task: Some(format!("Task {name}")),
-                        subcontext: Some(subctx.into()),
-                        ephemeral: true,
-                        parent_pane_id: Some(master_pane),
-                        name: Some(name.into()),
-                        cwd: None,
-                        worktree: None,
-                        result_schema: None,
-                        initial_slots: vec![],
-                        no_focus: true,
-                        response_file: reply.to_string_lossy().into_owned(),
-                        peer_ancestry: None,
-                    },
-                );
-                let raw = std::fs::read_to_string(&reply).expect("read spawn response");
-                let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
-                (
-                    json["pane_id"].as_u64().expect("pane_id"),
-                    json["portal_pane_id"].as_u64().expect("portal_pane_id"),
-                )
-            };
+        let spawn_in_subctx = |h: &mut PlexiUiHarness, subctx: &str, name: &str| -> (u64, u64) {
+            let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
+            send_req(
+                h,
+                crate::protocol::HostRequest::AgentSpawn {
+                    role: name.into(),
+                    harness: "codex".into(),
+                    command: "sleep 30".into(),
+                    task: Some(format!("Task {name}")),
+                    subcontext: Some(subctx.into()),
+                    ephemeral: true,
+                    parent_pane_id: Some(master_pane),
+                    name: Some(name.into()),
+                    cwd: None,
+                    worktree: None,
+                    result_schema: None,
+                    initial_slots: vec![],
+                    focus: false,
+                    response_file: reply.to_string_lossy().into_owned(),
+                    peer_ancestry: None,
+                },
+            );
+            let raw = std::fs::read_to_string(&reply).expect("read spawn response");
+            let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+            (
+                json["pane_id"].as_u64().expect("pane_id"),
+                json["portal_pane_id"].as_u64().expect("portal_pane_id"),
+            )
+        };
 
         // Subcontext 1 ("squad-alpha"): 2 WORKING · 1 BLOCKED -> amber PortalPane card.
         let (sq1_w1, portal_blocked) = spawn_in_subctx(&mut h, "squad-alpha", "worker-api");
@@ -1903,7 +4434,7 @@ mod tests {
             let reply = dir.path().join(format!("split-{name}.json"));
             send_req(
                 h,
-                crate::protocol::AppRequest::AgentSpawn {
+                crate::protocol::HostRequest::AgentSpawn {
                     role: name.into(),
                     harness: "codex".into(),
                     command: "sleep 30".into(),
@@ -1916,7 +4447,7 @@ mod tests {
                     worktree: None,
                     result_schema: None,
                     initial_slots: vec![],
-                    no_focus: true,
+                    focus: false,
                     response_file: reply.to_string_lossy().into_owned(),
                     peer_ancestry: None,
                 },
@@ -1927,24 +4458,59 @@ mod tests {
         };
 
         let pane_working = split_pane(&mut h, "lane-working");
+        let pane_idle = split_pane(&mut h, "lane-idle");
         let pane_blocked = split_pane(&mut h, "lane-blocked");
         let pane_needs_you = split_pane(&mut h, "lane-needs-you");
         let pane_error = split_pane(&mut h, "lane-error");
+        let pane_program = h.with_app_mut(|app| {
+            let id = app.host.alloc_pane_id();
+            let mut terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(ws_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn ordinary terminal");
+            terminal.name = Some("ordinary program".into());
+            terminal
+                .backend
+                .process_command(egui_term::BackendCommand::Write(b"sleep 30\n".to_vec()));
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+            id
+        });
 
         // Set pane_working = Working, pane_blocked = Blocked, pane_needs_you = NeedsYou, pane_error = Error,
         // and arrange the active window into a clean 2-row layout:
         //   Top row:    [lane-working | lane-blocked | lane-needs-you | lane-error]
         //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
-        let _ = h.close_pane(master_pane);
+        send_req(
+            &mut h,
+            crate::protocol::HostRequest::SetPipStatus {
+                pane_id: master_pane,
+                status: crate::protocol::PipStatus::Yellow,
+            },
+        );
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let win = &mut app.windows[app.active_window];
             let mut tiles = egui_tiles::Tiles::default();
             let t_work = tiles.insert_pane(pane_working);
+            let t_idle = tiles.insert_pane(pane_idle);
+            let t_program = tiles.insert_pane(pane_program);
+            let t_plugin = tiles.insert_pane(master_pane);
             let t_blk = tiles.insert_pane(pane_blocked);
             let t_ny = tiles.insert_pane(pane_needs_you);
             let t_err = tiles.insert_pane(pane_error);
-            let top_row = tiles.insert_horizontal_tile(vec![t_work, t_blk, t_ny, t_err]);
+            let top_row = tiles.insert_horizontal_tile(vec![
+                t_program, t_work, t_idle, t_plugin, t_blk, t_ny, t_err,
+            ]);
 
             let p_blk = tiles.insert_pane(portal_blocked);
             let p_ny = tiles.insert_pane(portal_needs_you);
@@ -1955,6 +4521,14 @@ mod tests {
             win.tree = egui_tiles::Tree::new("escalation_grid", root, tiles);
             win.focused_pane = Some(t_work);
         });
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane_idle,
+                "state": "idle", "agent": "codex"
+            }))
+            .unwrap(),
+        );
         send_req(
             &mut h,
             serde_json::from_value(serde_json::json!({
@@ -2003,6 +4577,17 @@ mod tests {
 
         h.with_app(|app| {
             let win = &app.windows[app.active_window];
+            assert!(win.panes[&pane_program].agent().is_none());
+            assert!(win.panes[&pane_program].effective_activity().is_none());
+            assert_eq!(
+                win.panes[&pane_working].effective_activity(),
+                Some(&crate::protocol::AgentState::Working)
+            );
+            assert_eq!(
+                win.panes[&pane_idle].effective_activity(),
+                Some(&crate::protocol::AgentState::Idle)
+            );
+            assert!(win.panes[&master_pane].static_health_pip());
             let p_blocked = win.panes[&portal_blocked]
                 .as_portal()
                 .expect("portal_blocked")
@@ -2043,19 +4628,13 @@ mod tests {
                 p_error.status,
                 crate::host::context_state::ContextStatus::Error
             );
-            assert_eq!(
-                p_error.status_summary_badge().as_deref(),
-                Some("[1 ERROR]")
-            );
+            assert_eq!(p_error.status_summary_badge().as_deref(), Some("[1 ERROR]"));
 
             // Named Working pane keeps its normal header bar without an escalation badge.
             let working_layout =
                 crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_working)
                     .expect("named Working terminal pane still renders its name header bar");
-            assert_eq!(
-                working_layout.elided_label.as_deref(),
-                Some("lane-working")
-            );
+            assert_eq!(working_layout.elided_label.as_deref(), Some("lane-working"));
         });
 
         h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -2084,7 +4663,13 @@ mod tests {
             terminal.outside_workspace_cached = false;
             terminal.outside_workspace_checked_at = Some(Instant::now());
             terminal.outside_workspace_root = Some(workspace_root);
-            terminal.activity = Some(crate::protocol::AgentState::Working);
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: id,
+                state: crate::protocol::AgentState::Working,
+                agent: "codex".into(),
+                detail: None,
+                session_id: None,
+            });
 
             let win = &mut app.windows[app.active_window];
             win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
@@ -2110,13 +4695,15 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Blocked);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Blocked;
         });
         h.run_steps(2);
         h.with_app(|app| {
             let layout =
                 crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
-                    .expect("Blocked state on unnamed terminal pane must spawn escalation header bar");
+                    .expect(
+                        "Blocked state on unnamed terminal pane must spawn escalation header bar",
+                    );
             assert_eq!(layout.elided_label.as_deref(), Some("Terminal"));
         });
 
@@ -2127,7 +4714,7 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Working);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Working;
         });
         h.run_steps(2);
         h.with_app(|app| {
@@ -2159,14 +4746,14 @@ mod tests {
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -2178,7 +4765,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -2191,11 +4778,7 @@ mod tests {
         // `note_header` and never reaches the TextEdit buffer (unit-tested
         // via `split_note` in text_editor_app.rs). The file name and save
         // indicator share that header with a file opened from the browser.
-        let file_name = path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
         h.harness().get_by_label("Groceries");
         h.harness().get_by_label(&file_name);
         h.harness().get_by_label("Saved");
@@ -2218,14 +4801,14 @@ mod tests {
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: file_name.clone(),
                 pane_group: None,
@@ -2237,7 +4820,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -2265,14 +4848,14 @@ mod tests {
 
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: file_name.clone(),
                 pane_group: None,
@@ -2284,7 +4867,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -2292,21 +4875,22 @@ mod tests {
             win.focused_pane = Some(tile_id);
             pane_id
         });
-        let with_editor = |h: &mut PlexiUiHarness,
-                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorApp)| {
-            h.with_app_mut(|app| {
-                let win = &mut app.windows[app.active_window];
-                if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
-                    if let AppRuntime::Builtin(b) = &mut a.runtime {
-                        let ed = b
-                            .as_any_mut()
-                            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
-                            .expect("text editor");
-                        f(ed);
+        let with_editor =
+            |h: &mut PlexiUiHarness,
+             f: &mut dyn FnMut(&mut crate::app::text_editor_view::TextEditorView)| {
+                h.with_app_mut(|app| {
+                    let win = &mut app.windows[app.active_window];
+                    if let Some(Pane::View(a)) = win.panes.get_mut(&pane_id) {
+                        if let ViewRuntime::Builtin(b) = &mut a.runtime {
+                            let ed = b
+                                .as_any_mut()
+                                .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
+                                .expect("text editor");
+                            f(ed);
+                        }
                     }
-                }
-            });
-        };
+                });
+            };
         h.run_steps(2);
         h.harness().get_by_label("Saved");
 
@@ -2316,22 +4900,28 @@ mod tests {
         });
         h.run_steps(2);
         h.harness().get_by_label("Unsaved");
-        h.harness().get_by_label("\u{25CF}");
-        h.save_screenshot(&evidence_png!("_dirty")).expect("render dirty");
+        // The zoom path bar's column pips also render "●", so only require the dirty dot.
+        assert!(h.harness().get_all_by_label("\u{25CF}").count() >= 1);
+        h.save_screenshot(&evidence_png!("_dirty"))
+            .expect("render dirty");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
 
         // Host close path: vetoed, prompt shown, pane still there.
         h.with_app_mut(|app| {
-            assert!(app.focused_app_vetoes_close(), "dirty plain file vetoes close");
+            assert!(
+                app.focused_view_vetoes_close(),
+                "dirty plain file vetoes close"
+            );
             assert!(app.windows[app.active_window].panes.contains_key(&pane_id));
         });
         h.run_steps(2);
-        h.harness().get_by_label("Unsaved changes.");
-        h.save_screenshot(&evidence_png!("_close_prompt")).expect("render close prompt");
+        h.harness().get_by_label("Unsaved changes");
+        h.save_screenshot(&evidence_png!("_close_prompt"))
+            .expect("render close prompt");
 
         // Cancel, then an agent writes the file: conflict state.
         with_editor(&mut h, &mut |ed| {
-            use crate::app::app_trait::App as _;
+            use crate::app::view_trait::View as _;
             assert!(!ed.request_close());
         });
         std::fs::write(&path, "agent version\n").expect("external write");
@@ -2340,7 +4930,8 @@ mod tests {
         });
         h.run_steps(2);
         h.harness().get_by_label("Changed on disk");
-        h.save_screenshot(&evidence_png!("_conflict")).expect("render conflict");
+        h.save_screenshot(&evidence_png!("_conflict"))
+            .expect("render conflict");
 
         with_editor(&mut h, &mut |ed| ed.test_discard_unsaved());
         let _ = std::fs::remove_file(&path);
@@ -2359,14 +4950,14 @@ mod tests {
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -2378,7 +4969,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -2666,6 +5257,154 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    #[test]
+    fn screenshot_sidebar_ancestry_overflow_scale_matrix() {
+        for (width, scale) in [(520.0, 1.0), (1100.0, 1.0), (1100.0, 1.5)] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, 800.0, scale);
+            let root_path = h.workspace_root().to_string_lossy().to_string();
+            let root = h.with_app(|app| app.router.active().context_id);
+            fill_window_with_panes(&mut h, 0, 8);
+            let second = push_window_for_context(&mut h, root, 1, &root_path);
+            fill_window_with_panes(&mut h, second, 6);
+            let (child_idx, child, child_window) = push_sidebar_context(
+                &mut h,
+                "Research child with a long descriptive name",
+                &root_path,
+            );
+            fill_window_with_panes(&mut h, child_window, 12);
+            let (leaf_idx, leaf, leaf_window) = push_sidebar_context(
+                &mut h,
+                "Current grandchild with a long descriptive name",
+                &root_path,
+            );
+            fill_window_with_panes(&mut h, leaf_window, 12);
+            let (_, _, other_window) =
+                push_sidebar_context(&mut h, "Unrelated root stays compact", &root_path);
+            fill_window_with_panes(&mut h, other_window, 2);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = true;
+                app.router.get_mut(0).name = "Root workspace".to_string().into();
+                app.router.get_mut(child_idx).parent_id = Some(root);
+                app.router.get_mut(leaf_idx).parent_id = Some(child);
+                for (window, target) in [(second, child), (child_window, leaf)] {
+                    let win = &mut app.windows[window];
+                    let panes = crate::spatial::tiling::collect_pane_ids_spatial(
+                        &win.tree.tiles,
+                        win.tree.root().unwrap(),
+                    );
+                    let pane_id = *panes.last().unwrap();
+                    win.panes.insert(
+                        pane_id,
+                        Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                            pane_id,
+                            target_context_id: target,
+                            context_state: None,
+                            hidden: false,
+                            reveal_after_close: false,
+                        })),
+                    );
+                }
+                for win in &mut app.windows {
+                    let panes = crate::spatial::tiling::collect_pane_ids_spatial(
+                        &win.tree.tiles,
+                        win.tree.root().unwrap(),
+                    );
+                    for (index, pane_id) in panes.iter().enumerate() {
+                        if let Some(Pane::View(pane)) = win.panes.get_mut(pane_id) {
+                            let state = match index % 5 {
+                                0 => Some(crate::protocol::AgentState::Working),
+                                1 => Some(crate::protocol::AgentState::NeedsYou),
+                                2 => Some(crate::protocol::AgentState::Blocked),
+                                _ => None,
+                            };
+                            pane.agent = state.map(|state| crate::protocol::PaneAgentState {
+                                pane_id: *pane_id,
+                                state,
+                                agent: "fixture".into(),
+                                detail: None,
+                                session_id: None,
+                            });
+                            pane.hidden = index % 5 == 3;
+                        }
+                    }
+                    win.focused_pane = panes.last().and_then(|id| win.tree.tiles.find_pane(id));
+                }
+                app.switch_workspace(leaf_idx);
+                app.set_ui_scale(scale);
+            });
+            h.run_steps(3);
+            h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.01));
+            h.save_screenshot(&evidence_png!(format!("_{width}_{scale}")))
+                .unwrap();
+            assert!(h.host_has_label("Current grandchild with a long descriptive name"));
+        }
+    }
+
+    #[test]
+    fn sidebar_ancestor_pointer_restores_context_and_folds_path() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let cwd = h.workspace_root().to_path_buf();
+        let open = |h: &mut PlexiUiHarness| {
+            h.open_target(HarnessOpenTarget::Builtin {
+                id: "file_browser",
+                cwd: &cwd,
+                args: &[],
+            })
+            .unwrap()
+        };
+        let pane = open(&mut h);
+        open(&mut h);
+        let (root, child) = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.router.get_mut(0).name = "Root path".to_string().into();
+            let root = app.router.active().context_id;
+            app.push_pane_to_subcontext(Some("Child path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(root)).unwrap();
+            let child = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            (root, child)
+        });
+        open(&mut h);
+        let grandchild = h.with_app_mut(|app| {
+            app.push_pane_to_subcontext(Some("Grandchild path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(child)).unwrap();
+            let id = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            id
+        });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            app.router.get_mut(0).parked = true;
+            app.parked_section_expanded = false;
+        });
+        h.run_steps(3);
+        assert!(
+            h.host_has_label("Child path"),
+            "active parked ancestry remains reachable"
+        );
+        h.with_app_mut(|app| app.router.get_mut(0).parked = false);
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_nested")).unwrap();
+        h.harness().get_by_label("Child path").click();
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, child));
+        assert!(!h.host_has_label("Grandchild path"));
+        h.with_app_mut(|app| {
+            let index = app.router.position(|c| c.context_id == grandchild).unwrap();
+            app.switch_workspace(index);
+        });
+        h.run_steps(3);
+        h.harness()
+            .get_all_by_label("Root path")
+            .min_by(|a, b| a.rect().height().total_cmp(&b.rect().height()))
+            .unwrap()
+            .click();
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, root));
+        assert!(!h.host_has_label("Child path"));
+        h.save_screenshot(&evidence_png!("_root")).unwrap();
+    }
+
     /// Stint 0241: the sidebar is master-context navigation only. Every slot is
     /// a numbered, keyboard-addressable top-level destination, so a subcontext
     /// is never rendered and never consumes a number — it is reached from
@@ -2842,7 +5581,7 @@ mod tests {
             let before = app.router.len();
             app.new_context();
             assert_eq!(app.router.len(), before + 1, "new context created");
-            assert_eq!(app.renaming_window, None, "rename overlay stays closed");
+            assert_eq!(app.context_rename, None, "rename overlay stays closed");
         });
         h.run_steps(6);
         h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -2900,7 +5639,7 @@ mod tests {
         })
     }
 
-    /// Fill `window_index` with `count` app panes wired into one horizontal
+    /// Fill `window_index` with `count` view panes wired into one horizontal
     /// container, so the window's tree really reports every pane — inserting
     /// panes without attaching them to the root leaves them invisible to the
     /// spatial walk the sidebar pips are built from.
@@ -2910,14 +5649,14 @@ mod tests {
             let mut tiles = Vec::with_capacity(count);
             for _ in 0..count {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "test".to_string(),
                     name: "Test App".to_string(),
                     pane_group: None,
@@ -2929,7 +5668,7 @@ mod tests {
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[window_index];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 tiles.push(win.tree.tiles.insert_pane(pane_id));
             }
             let win = &mut app.windows[window_index];
@@ -2985,6 +5724,7 @@ mod tests {
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -3044,8 +5784,8 @@ mod tests {
                 crate::protocol::PipStatus::Red,
             ];
             for (i, pane) in app.windows[0].panes.values_mut().enumerate() {
-                if let Pane::App(app_pane) = pane {
-                    app_pane.pip_status = Some(statuses[i % statuses.len()]);
+                if let Pane::View(view_pane) = pane {
+                    view_pane.pip_status = Some(statuses[i % statuses.len()]);
                 }
             }
             app.pending_notifications.extend([
@@ -3220,6 +5960,303 @@ mod tests {
                 "bold RGB slider must retain its requested foreground; screenshot: {path}"
             );
         }
+    }
+
+    /// Reproduce a Neovim-style clock icon against adjacent colored cells.
+    #[test]
+    fn screenshot_terminal_nvim_clock_narrow() {
+        let mut h = PlexiUiHarness::new_sized_ppp(480.0, 240.0, 2.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let workspace = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    args: vec![concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/terminal-clock.sh"
+                    )
+                    .into()],
+                    working_directory: Some(workspace),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start clock fixture");
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+            app.sidebar_visible = false;
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .and_then(|pane| pane.as_terminal_mut())
+                    .expect("fixture terminal")
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("CLOCK_READY"))
+            });
+            if ready {
+                h.run_steps(2);
+                break;
+            }
+            assert!(Instant::now() < deadline, "clock fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let image = h.render().expect("render clock fixture");
+        image.save(&evidence_png!()).expect("save clock screenshot");
+        // At this fixed viewport and scale, the clock's right half crosses into
+        // the next colored cell. A later background used to erase it entirely.
+        let right_half = (189..224)
+            .flat_map(|y| (78..85).map(move |x| (x, y)))
+            .filter(|&(x, y)| image.get_pixel(x, y).0[..3].iter().all(|&c| c < 90))
+            .count();
+        assert!(
+            right_half > 30,
+            "clock icon right half must remain visible; found {right_half} pixels"
+        );
+    }
+
+    /// The inverted cursor glyph must not spill into a differently colored cell.
+    #[test]
+    fn screenshot_terminal_cursor_clock_stays_in_cell() {
+        let mut h = PlexiUiHarness::new_sized_ppp(480.0, 240.0, 2.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let workspace = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    args: vec![
+                        concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/tests/fixtures/terminal-clock.sh"
+                        )
+                        .into(),
+                        "cursor".into(),
+                    ],
+                    working_directory: Some(workspace),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start clock fixture");
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+            app.sidebar_visible = false;
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                let backend = &mut app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .and_then(|pane| pane.as_terminal_mut())
+                    .expect("fixture terminal")
+                    .backend;
+                let content = backend.last_content();
+                content.cursor_visible
+                    && content.grid.cursor.point.line.0 == 0
+                    && content.grid.cursor.point.column.0 == 2
+                    && backend
+                        .capture_lines(50)
+                        .iter()
+                        .any(|line| line.contains("CLOCK_READY"))
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "clock fixture cursor not ready");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let widget_id = egui_term::terminal_widget_id(id);
+        h.harness().ctx.data_mut(|data| {
+            let mut state = data
+                .get_temp::<egui_term::TerminalViewState>(widget_id)
+                .unwrap_or_default();
+            state.set_cursor_blink_enabled(false);
+            data.insert_temp(widget_id, state);
+        });
+        h.step();
+        let rect = h
+            .harness()
+            .ctx
+            .read_response(widget_id)
+            .expect("terminal widget")
+            .rect;
+        let size = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .and_then(|pane| pane.as_terminal_mut())
+                .expect("fixture terminal")
+                .backend
+                .last_content()
+                .terminal_size
+        });
+        let scale = 2.0;
+        let x = ((rect.min.x + crate::ui::style::PANE_CONTENT_INSET + 2.0 * size.cell_width as f32)
+            * scale)
+            .round() as u32;
+        let y = ((rect.min.y + crate::ui::style::PANE_CONTENT_INSET) * scale).round() as u32;
+        let width = (size.cell_width as f32 * scale).round() as u32;
+        let height = (size.cell_height as f32 * scale).round() as u32;
+        let image = h.render().expect("render clock fixture");
+        image.save(&evidence_png!()).expect("save clock screenshot");
+        // Check the cursor block and inverted glyph, then the neighboring blue cell.
+        assert_eq!(
+            image.get_pixel(x + 3, y + 2).0[..3],
+            [26, 29, 40],
+            "cursor must be visible"
+        );
+        let glyph = (y..y + height)
+            .flat_map(|py| (x..x + width).map(move |px| (px, py)))
+            .filter(|&(px, py)| {
+                let [r, g, b, _] = image.get_pixel(px, py).0;
+                r > 160 && g > 100 && b < 150
+            })
+            .count();
+        assert!(
+            glyph > 30,
+            "visible cursor must contain the inverted clock glyph"
+        );
+        let spill = (y..y + height)
+            .flat_map(|py| (x + width..x + 2 * width).map(move |px| (px, py)))
+            .filter(|&(px, py)| {
+                let [r, g, b, _] = image.get_pixel(px, py).0;
+                r > 160 && g > 100 && b < 150
+            })
+            .count();
+        assert_eq!(spill, 0, "inverted clock glyph spilled into the next cell");
+    }
+
+    /// Stint 1184: `egui::Event::Paste` into a pane whose program enabled
+    /// bracketed paste (mode 2004) must reach the program as one framed paste,
+    /// not raw bytes. 16 KB spans many 1022-byte PTY reads, the regime where
+    /// unframed pastes were lost.
+    #[test]
+    #[ignore = "requires-pty"]
+    #[cfg(target_os = "macos")]
+    fn terminal_paste_is_bracketed_when_program_enabled_2004() {
+        const CHILD: &str = r#"
+import os, sys, tty, time, select
+out = sys.argv[1]
+tty.setraw(0)
+sys.stdout.write("\x1b[?2004hPASTE_READY\r\n"); sys.stdout.flush()
+log = open(out, "wb")
+last = time.time()
+while time.time() - last < 1.5:
+    r, _, _ = select.select([0], [], [], 0.2)
+    if r:
+        log.write(os.read(0, 65536)); log.flush()
+        last = time.time()
+log.close()
+open(out + ".done", "w").close()
+"#;
+        let dir = std::env::temp_dir().join(format!("plexi_paste_2004_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("reads.bin");
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let out_arg = out.to_string_lossy().to_string();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/usr/bin/python3".into(),
+                    args: vec!["-c".into(), CHILD.into(), out_arg],
+                    working_directory: Some(std::env::temp_dir()),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start paste fixture");
+            terminal.backend.enable_input_tap();
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("PASTE_READY"))
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "paste fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text: String = (0..16_000)
+            .map(|i| {
+                if i % 40 == 39 {
+                    '\n'
+                } else {
+                    (b'a' + (i % 26) as u8) as char
+                }
+            })
+            .collect();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Paste(text.clone()));
+        h.step();
+        let tap = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .take_input_tap()
+        });
+        let mut expected = b"\x1b[200~".to_vec();
+        expected.extend_from_slice(text.as_bytes());
+        expected.extend_from_slice(b"\x1b[201~");
+        assert_eq!(tap, expected, "input tap must record one framed paste");
+        let done = out.with_extension("bin.done");
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
+        while !done.exists() {
+            h.run_steps(2);
+            assert!(Instant::now() < deadline, "paste fixture never finished");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let received = std::fs::read(&out).expect("fixture read log");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            received, expected,
+            "program must receive the framed paste intact"
+        );
     }
 
     /// Exercise egui input ownership and the real terminal widget/PTY writer.
@@ -3484,7 +6521,12 @@ mod tests {
             terminals.len() >= 2,
             "need several real terminals for the drag to be meaningful"
         );
-        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let visible_terminals = terminals.clone();
+        assert!(
+            !visible_terminals.is_empty(),
+            "need a visible terminal for the drag to be meaningful"
+        );
+        let widest_before = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         seed_wrapping_text(&mut h, &terminals);
 
         // Drag the window edge in: one frame per intermediate width, exactly
@@ -3496,7 +6538,7 @@ mod tests {
         }
         h.run_steps(4);
 
-        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &terminals));
+        let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
         assert!(
             widest_after < widest_before,
             "the trailing-edge commit was stranded: terminals still {widest_before} cols \
@@ -3570,16 +6612,16 @@ mod tests {
     }
 
     /// Visual review for the diffed WASM tree path (stint 0438): a real
-    /// CPython-in-WASM app (breakout) opened and stepped past its first frame,
+    /// CPython-in-WASM plugin (breakout) opened and stepped past its first frame,
     /// so frame 2+ arrive as `tree_delta`s the decoder thread reconstructs and
     /// the paint path renders. Proves the delta pipeline paints a coherent
     /// frame, not just that the assertions pass.
     #[test]
-    fn screenshot_python_app_delta_frames_paint() {
+    fn screenshot_python_plugin_delta_frames_paint() {
         let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
-        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
-        let pane_id = h.open_app_at(&app_dir, &[]).expect("open breakout");
-        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
+        let pane_id = h.open_view_at(&plugin_dir, &[]).expect("open breakout");
+        h.wait_for_view_frame(pane_id, Duration::from_secs(30))
             .expect("breakout first frame");
         // Advance host frames so the guest emits delta frames that the decoder
         // reconstructs and commits, then screenshot the painted result.
@@ -3591,25 +6633,26 @@ mod tests {
             .expect("render delta frame");
     }
 
-    /// Regression: zoomed app panes must render through the shared
-    /// `render::app_pane::render` path (full-rect fill, no collapsing
+    /// Regression: zoomed view panes must render through the shared
+    /// `render::view_pane::render` path (full-rect fill, no collapsing
     /// `egui::Frame`) and exercise the overtake-bar chrome. Guards against
     /// the black-square / missing-chrome zoom bugs (zoom overlay previously
     /// duplicated pane rendering inline and called `runtime.ui()` directly).
     #[test]
-    fn zoomed_app_pane_renders_via_shared_path() {
+    fn zoomed_view_pane_renders_via_shared_path() {
         let mut h = PlexiUiHarness::new();
         let pane_id = add_focused_pane(&mut h);
         h.step();
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
             // Set overlay_replaced so the zoom path renders the overtake bar
-            // ("← <replaced> / Esc return") via render::app_pane::render.
-            if let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) {
-                app_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
+            // ("← <replaced> / Esc return") via render::view_pane::render.
+            if let Some(Pane::View(view_pane)) = win.panes.get_mut(&pane_id) {
+                view_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
                     pane_id: pane_id + 1_000,
                     target_context_id: 42,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 }))));
             }
@@ -3622,7 +6665,7 @@ mod tests {
         });
         h.run_steps(3);
         h.render()
-            .expect("zoomed app pane frame should render without panic");
+            .expect("zoomed view pane frame should render without panic");
         assert!(
             h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()),
             "pane should remain zoomed after stepping frames"
@@ -3634,7 +6677,7 @@ mod tests {
         width: f32,
     }
 
-    impl crate::app::app_trait::App for GalleryRowsFixture {
+    impl crate::app::view_trait::View for GalleryRowsFixture {
         fn type_id(&self) -> &'static str {
             "gallery_rows_fixture"
         }
@@ -3647,7 +6690,7 @@ mod tests {
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             ui.set_width(self.width);
@@ -3665,10 +6708,10 @@ mod tests {
             let mut h = PlexiUiHarness::new_sized(900.0, 1000.0);
             let pane_id = add_focused_pane(&mut h);
             h.with_app_mut(|app| {
-                if let Some(Pane::App(pane)) =
+                if let Some(Pane::View(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
-                    pane.runtime = AppRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
+                    pane.runtime = ViewRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
                 }
             });
             h.run_steps(3);
@@ -3713,13 +6756,9 @@ mod tests {
                         ui.set_width(width);
                         let response = match kind {
                             0 => button::choice_button(ui, data.detail, "⌘Enter", false, &colors),
-                            1 => button::chrome_button(
-                                ui,
-                                data.detail,
-                                button::ButtonKind::Primary,
-                                &colors,
-                                80.0,
-                            ),
+                            1 => {
+                                ui.add(button::KitButton::new(data.detail, &colors).min_width(80.0))
+                            }
                             2 => surface::copyable_command(
                                 ui,
                                 egui::Id::new("copy"),
@@ -3750,7 +6789,7 @@ mod tests {
                         assert_eq!(
                             bounds.height(),
                             if kind == 0 {
-                                style::BUTTON_H_LG
+                                style::BUTTON_H_CHOICE
                             } else {
                                 style::BUTTON_H_MD
                             }
@@ -3782,7 +6821,7 @@ mod tests {
 
     #[test]
     fn ui_gallery_worst_case() {
-        use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview, gallery_rows};
+        use crate::overlays::ui_gallery::{gallery_rows, UiGalleryDataMode, UiGalleryPreview};
         for mode in UiGalleryDataMode::ALL {
             for width in [760.0, 320.0, 280.0] {
                 // Inspect actual painted galleys, not copies of the layout arithmetic.
@@ -3814,8 +6853,10 @@ mod tests {
                 assert!(
                     (height
                         - mode.fixture().names.len() as f32
-                            * (crate::ui::style::LIST_ROW_H + crate::ui::style::LIST_ROW_DENSE_H))
-                        .abs()
+                            * (crate::ui::style::LIST_ROW_H
+                                + crate::ui::style::LIST_ROW_DENSE_H
+                                    .max(crate::ui::style::BUTTON_H_MD)))
+                    .abs()
                         < 0.1,
                     "row-height blowout: {mode:?} {width}: {height}"
                 );
@@ -3920,6 +6961,69 @@ mod tests {
         }
     }
     #[test]
+    fn screenshot_ui_kit_adoption() {
+        use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview};
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(720.0, 1000.0, scale);
+                apply_fixture_theme(&mut h, theme);
+                let root = h.workspace_root().to_path_buf();
+                let path = root.join("Release evidence — a deliberately long image name with an important distinguishing suffix 0123456789abcdef.png");
+                std::fs::copy(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png"),
+                    &path,
+                )
+                .unwrap();
+                h.open_target(HarnessOpenTarget::Builtin {
+                    id: "image-viewer",
+                    cwd: &root,
+                    args: &[path.display().to_string()],
+                })
+                .unwrap();
+                h.run_steps(4);
+                assert_layout_surface(&h, "surface_header");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_appbar")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.show_ui_gallery = true;
+                    app.ctx.data_mut(|d| {
+                        d.insert_temp(
+                            UiGalleryPreview::id(),
+                            UiGalleryPreview {
+                                mode: UiGalleryDataMode::WorstCase,
+                                narrow: true,
+                            },
+                        )
+                    });
+                });
+                h.run_steps(4);
+                h.harness().get_by_label("Rows").scroll_to_me();
+                h.run_steps(4);
+                assert_layout_surface(&h, "list");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_list")))
+                    .unwrap();
+                h.with_app_mut(|app| app.show_ui_gallery = false);
+                seed_context_close_confirm(&mut h, true);
+                assert_layout_surface(&h, "modal_action");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_modal")))
+                    .unwrap();
+            }
+        }
+    }
+
+    fn assert_layout_surface(h: &PlexiUiHarness, surface: &str) {
+        h.with_app(|app| {
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            assert!(
+                reports.iter().any(|r| r.surface == surface),
+                "missing {surface}"
+            );
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+    }
+
+    #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
         add_focused_pane(&mut h);
@@ -3930,7 +7034,13 @@ mod tests {
         h.run_steps(2);
         h.harness().get_by_label("Code and toast surfaces");
         h.harness().get_by_label("Shell completions aren't set up.");
-        assert_eq!(h.harness().get_all_by_label("plexi completions zsh").count(), 2, "both copy surfaces render the demo fixture");
+        assert_eq!(
+            h.harness()
+                .get_all_by_label("plexi completions zsh")
+                .count(),
+            2,
+            "both copy surfaces render the demo fixture"
+        );
         assert!(
             h.harness()
                 .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
@@ -3952,7 +7062,7 @@ mod tests {
         add_focused_pane(&mut h);
         h.step();
         h.with_app_mut(|app| {
-            app.show_changelog = true;
+            app.toggle_changelog();
         });
         h.run_steps(2);
 
@@ -3983,7 +7093,7 @@ mod tests {
                 .panes
                 .values()
                 .filter(|p| {
-                    p.as_app()
+                    p.as_view()
                         .map(|a| a.runtime.type_id() == "assistant")
                         .unwrap_or(false)
                 })
@@ -4006,7 +7116,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         let row = |role: TurnRole, text: &str, at: &str| Turn {
             role,
             text: text.to_string(),
@@ -4066,7 +7176,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -4139,10 +7249,10 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![Turn {
             role: TurnRole::User,
-            text: "build me a tictactoe app".to_string(),
+            text: "build me a tictactoe plugin".to_string(),
             created_at: "2026-07-19T00:00:00Z".to_string(),
             status: None,
             thoughts: None,
@@ -4169,7 +7279,7 @@ mod tests {
         let broker2: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant2 =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker2, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker2, ws.path(), 1);
         assistant2.model.streaming.in_flight = true;
         assistant2.model.streaming.partial_answer =
             "The SDK uses state.get() from plexi_sdk. Let me fix all the issues.".to_string();
@@ -4187,7 +7297,7 @@ mod tests {
         );
     }
 
-    /// Stint 0455: an app-build turn's transcript renders chronologically —
+    /// Stint 0455: a plugin-build turn's transcript renders chronologically —
     /// user message, first assistant segment, individual caret-dropdown tool
     /// rows (never a collapsed "N tool calls" trail), a failed row in the
     /// danger hue, and the final reply as its own bubble below the tools.
@@ -4200,7 +7310,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
 
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
         write_tool.input_summary = Some("path: main.py".to_string());
@@ -4208,32 +7318,32 @@ mod tests {
         write_tool.detail = Some(
             "--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string(),
         );
-        let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
-        check_tool.input_summary = Some(r#"{"app": "guessing-game"}"#.to_string());
+        let mut check_tool = Turn::tool("plexi.plugin_check", ToolStatus::Succeeded);
+        check_tool.input_summary = Some(r#"{"plugin": "guessing-game"}"#.to_string());
         check_tool.output_preview = Some(r#"{"ok": true}"#.to_string());
         let mut failed_tool = Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
-        failed_tool.input_summary = Some(r#"{"cmd": "app check"}"#.to_string());
+        failed_tool.input_summary = Some(r#"{"cmd": "plugin check"}"#.to_string());
         // Multi-line output preview (stint 0460): real newlines render as a
         // framed block, so a command's output reads as the lines it printed.
         failed_tool.output_preview = Some(
-            "stdout: ✓ manifest — fish-game\n✗ types — mypy found errors:\nmain.py:12: error: \"UiValueChange\" has no attribute \"payload\"\n✗ app check failed — 1 error(s)".to_string(),
+            "stdout: ✓ manifest — fish-game\n✗ types — mypy found errors:\nmain.py:12: error: \"UiValueChange\" has no attribute \"payload\"\n✗ plugin check failed — 1 error(s)".to_string(),
         );
 
         assistant.model.turns = vec![
             Turn::now(
                 TurnRole::User,
-                "Build a simple number guessing game as a Plexi app.",
+                "Build a simple number guessing game as a Plexi plugin.",
             ),
             Turn::now(
                 TurnRole::Assistant,
-                "Let me build this for you. Starting with scaffolding the app.",
+                "Let me build this for you. Starting with scaffolding the plugin.",
             ),
             write_tool,
             check_tool,
             failed_tool,
             Turn::now(
                 TurnRole::Assistant,
-                "The Guessing Game app is open! Type a number and press Enter.",
+                "The Guessing Game plugin is open! Type a number and press Enter.",
             ),
         ];
         // An in-flight tool call so the animated running row (spinner +
@@ -4241,7 +7351,7 @@ mod tests {
         assistant.model.streaming.in_flight = true;
         assistant.model.tool_call_started(
             "host.build.run",
-            r#"{"args": ["app", "check", "fish-game"]}"#,
+            r#"{"args": ["plugin", "check", "fish-game"]}"#,
         );
 
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
@@ -4271,7 +7381,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -4363,7 +7473,7 @@ mod tests {
                 host.windows
                     .iter()
                     .find_map(|window| window.panes.get(&pane_id))
-                    .and_then(Pane::as_app)
+                    .and_then(Pane::as_view)
                     .map(|pane| pane.semantic_state())
                     .expect("builtin pane state")
             };
@@ -4391,7 +7501,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant
             .model
             .permission_requested("csv.write_range", r#"{"range": "A1:B2"}"#);
@@ -4403,7 +7513,7 @@ mod tests {
                 .panes
                 .values()
                 .filter(|p| {
-                    p.as_app()
+                    p.as_view()
                         .map(|a| a.runtime.type_id() == "assistant")
                         .unwrap_or(false)
                 })
@@ -4434,7 +7544,7 @@ mod tests {
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         let turn = |role, text: &str| crate::assistant::model::Turn {
             role,
             text: text.to_string(),
@@ -4490,6 +7600,7 @@ mod tests {
                         pane_id: portal_pane_id,
                         target_context_id: child_ctx_id,
                         context_state: None,
+                        reveal_after_close: false,
                         hidden: false,
                     })),
                 );
@@ -4523,19 +7634,33 @@ mod tests {
     #[test]
     fn screenshot_working_agent_quit_confirmation() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
-        for name in ["release-checks.md", "implementation-plan.md", "test-results.json"] {
-            std::fs::write(h.workspace.path().join(name), "Working agent release validation").unwrap();
+        for name in [
+            "release-checks.md",
+            "implementation-plan.md",
+            "test-results.json",
+        ] {
+            std::fs::write(
+                h.workspace.path().join(name),
+                "Working agent release validation",
+            )
+            .unwrap();
         }
         let pane = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
-            app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
-                pane_id: pane, agent: "codex".into(), state: crate::protocol::AgentState::Working,
-                detail: Some("Validating the release build".into()), session_id: None,
-            }));
+            app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(
+                crate::protocol::PaneAgentState {
+                    pane_id: pane,
+                    agent: "codex".into(),
+                    state: crate::protocol::AgentState::Working,
+                    detail: Some("Validating the release build".into()),
+                    session_id: None,
+                },
+            ));
             assert!(!app.prepare_user_quit());
         });
         h.step();
-        h.save_screenshot(&evidence_png!()).expect("render quit confirmation");
+        h.save_screenshot(&evidence_png!())
+            .expect("render quit confirmation");
         assert!(h.with_app(|app| app.pending_quit && !app.quitting));
         println!("Screenshot saved to {}", evidence_png!());
     }
@@ -4647,14 +7772,14 @@ mod tests {
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: second_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     browser_root.clone(),
                 ))),
                 workspace_root: browser_root.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "hidden-test".to_string(),
                 name: "Hidden Test App".to_string(),
                 pane_group: None,
@@ -4667,7 +7792,7 @@ mod tests {
             };
             let win = &mut app.windows[app.active_window];
             win.panes
-                .insert(second_pane_id, Pane::App(Box::new(app_pane)));
+                .insert(second_pane_id, Pane::View(Box::new(view_pane)));
             let second_tile = win.tree.tiles.insert_pane(second_pane_id);
             if let Some(first_tile) = win.tree.root {
                 let root = win
@@ -4689,6 +7814,7 @@ mod tests {
                     pane_id: extra_a,
                     target_context_id: extra_a + 10_000,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -4698,6 +7824,7 @@ mod tests {
                     pane_id: extra_b,
                     target_context_id: extra_b + 10_000,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: true,
                 })),
             );
@@ -4734,15 +7861,1145 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+    fn pane_chrome_fixture(scale: f32) -> (PlexiUiHarness, u64, u64) {
+        pane_chrome_fixture_sized(scale, 1200.0)
+    }
+
+    fn pane_chrome_fixture_sized(scale: f32, width: f32) -> (PlexiUiHarness, u64, u64) {
+        let mut h = PlexiUiHarness::new_sized_scaled(width, 700.0, scale);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let second = add_focused_pane(&mut h);
+        let root = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let term = crate::host::pane::TerminalPane::new(
+                first,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .unwrap();
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(first, Pane::Terminal(Box::new(term)));
+            let a = win.tree.tiles.find_pane(&first).unwrap();
+            let b = win.tree.tiles.find_pane(&second).unwrap();
+            win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![a, b]));
+        });
+        (h, first, second)
+    }
+
+    /// Real PTY terminal that fills its whole grid with wide glyphs and carries an
+    /// agent state, so both the focus ring and the state ring are drawn.
+    fn install_inset_fixture_terminal(h: &mut PlexiUiHarness, pane: u64) {
+        let root = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let script = "i=0; while [ $i -lt 120 ]; do printf '%0300d\\n' 0 | tr 0 W; i=$((i+1)); done; while IFS= read -r line; do eval \"$line\"; done";
+            let mut term = crate::host::pane::TerminalPane::new(pane, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), script.into()], working_directory: Some(root), ..Default::default() }, 14.0).unwrap();
+            term.outside_workspace_cached = false;
+            term.outside_workspace_checked_at = Some(Instant::now());
+            term.outside_workspace_root = Some(app.router.active().root.clone());
+            term.spawned_by = Some("human".into());
+            term.name = Some("fixture".into());
+            term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None });
+            app.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane)), egui::Rect::NOTHING));
+            app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term)));
+        });
+        h.focus_pane(pane).unwrap();
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(3);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&pane)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("WWWWWWWW"))
+            });
+            if ready {
+                h.run_steps(3);
+                break;
+            }
+            assert!(Instant::now() < deadline, "terminal fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Ask the shell itself for its tty size (rows, cols). The marker is short and on its own
+    /// line so a narrow wrapped terminal cannot split it.
+    fn pty_reported_size(h: &mut PlexiUiHarness, pane: u64) -> (usize, usize) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let marker = format!(
+            "Q{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .process_command(egui_term::BackendCommand::Write(
+                    format!("printf '{marker}\\n'; stty size\n").into_bytes(),
+                ))
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(3);
+            let lines = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&pane)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(200)
+            });
+            if let Some(index) = lines.iter().position(|line| line.trim() == marker) {
+                let actual: Vec<usize> = lines[index + 1..]
+                    .iter()
+                    .flat_map(|line| line.split_whitespace())
+                    .filter_map(|word| word.parse().ok())
+                    .take(2)
+                    .collect();
+                if actual.len() == 2 {
+                    return (actual[0], actual[1]);
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY size fixture timed out: {lines:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Terminal widget rect, its expected inset grid, and the ink of the drawn glyphs.
+    struct TerminalInsetMetrics {
+        rect: egui::Rect,
+        rows: usize,
+        cols: usize,
+        ink: egui::Rect,
+        glyph_left: f32,
+    }
+
+    fn terminal_inset_metrics(h: &mut PlexiUiHarness, pane: u64) -> TerminalInsetMetrics {
+        let rect = h
+            .harness()
+            .ctx
+            .read_response(egui_term::terminal_widget_id(pane))
+            .unwrap()
+            .rect;
+        let (cell_width, cell_height) = h.with_app_mut(|app| {
+            let size = app.windows[app.active_window]
+                .panes
+                .get_mut(&pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .last_content()
+                .terminal_size;
+            (size.cell_width as f32, size.cell_height as f32)
+        });
+        let pad = crate::render::terminal_pane::terminal_content_padding();
+        let mut ink = egui::Rect::NOTHING;
+        let mut glyph_left = f32::INFINITY;
+        for shape in &h.harness().output().shapes {
+            if let egui::Shape::Text(t) = &shape.shape {
+                if rect.contains(t.pos) {
+                    ink = ink.union(shape.shape.visual_bounding_rect());
+                    glyph_left = glyph_left.min(t.pos.x);
+                }
+            }
+        }
+        assert!(
+            glyph_left.is_finite(),
+            "terminal glyphs must be rendered inside {rect:?}"
+        );
+        TerminalInsetMetrics {
+            rect,
+            rows: ((rect.height() - 2.0 * pad.y) / cell_height) as usize,
+            cols: ((rect.width() - 2.0 * pad.x) / cell_width) as usize,
+            ink,
+            glyph_left,
+        }
+    }
+
+    /// The drawn grid, the shell's tty size and the ink all agree with the inset rect.
+    /// Returns the left glyph inset measured from the widget rect.
+    fn assert_terminal_inset_geometry(h: &mut PlexiUiHarness, pane: u64, frame: egui::Rect) -> f32 {
+        use crate::ui::style::{PANE_FOCUS_WIDTH, PANE_STATE_WIDTH};
+        let rings = PANE_FOCUS_WIDTH + PANE_STATE_WIDTH;
+        let pad = crate::render::terminal_pane::terminal_content_padding();
+        // The resize is debounced; settle until the shell reports the expected size.
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        let (m, reported) = loop {
+            let m = terminal_inset_metrics(h, pane);
+            let reported = pty_reported_size(h, pane);
+            if reported == (m.rows, m.cols) || Instant::now() > deadline {
+                break (m, reported);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(
+            reported,
+            (m.rows, m.cols),
+            "PTY (rows, cols) must match the inset grid of {:?}",
+            m.rect
+        );
+        let (drawn_cols, drawn_rows) = h.with_app_mut(|app| {
+            let content = app.windows[app.active_window]
+                .panes
+                .get_mut(&pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .last_content();
+            (
+                content
+                    .grid
+                    .display_iter()
+                    .map(|cell| cell.point.column.0 + 1)
+                    .max()
+                    .unwrap(),
+                content
+                    .grid
+                    .display_iter()
+                    .map(|cell| cell.point.line.0 + 1)
+                    .max()
+                    .unwrap() as usize,
+            )
+        });
+        assert_eq!(
+            (drawn_rows, drawn_cols),
+            (m.rows, m.cols),
+            "drawn grid must match the PTY grid"
+        );
+        // Glyph origin sits at the shared inset (galley offsets are sub-pixel), ink stays off the rings.
+        let inset = m.glyph_left - m.rect.left();
+        assert!(
+            (inset - pad.x).abs() < 0.5,
+            "glyph inset {inset} must equal the shared padding {}",
+            pad.x
+        );
+        assert!(
+            m.ink.left() >= frame.left() + rings,
+            "ink {:?} overlaps left rings of {frame:?}",
+            m.ink
+        );
+        assert!(
+            m.ink.right() <= frame.right() - rings,
+            "ink {:?} overlaps right rings of {frame:?}",
+            m.ink
+        );
+        assert!(
+            m.ink.bottom() <= frame.bottom() - rings,
+            "ink {:?} overlaps bottom rings of {frame:?}",
+            m.ink
+        );
+        inset
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pane_content_clears_focused_state_rings() {
+        for scale in [1.0, 2.0] {
+            for width in [480.0, 1200.0] {
+                let (mut h, pane, _) = pane_chrome_fixture_sized(scale, width);
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("ui_scale = {scale}\n"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                    app.ui_scale = scale;
+                });
+                h.run_steps(3);
+                h.with_app(|app| {
+                    assert!(
+                        (app.ctx.zoom_factor() - scale).abs() < 0.001,
+                        "fixture must retain requested scale"
+                    )
+                });
+                install_inset_fixture_terminal(&mut h, pane);
+                let frame = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+                assert_terminal_inset_geometry(&mut h, pane, frame);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn zoomed_terminal_grid_matches_inset_and_normal_view() {
+        let (mut h, pane, _) = pane_chrome_fixture_sized(1.0, 1200.0);
+        install_inset_fixture_terminal(&mut h, pane);
+        let frame = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+        let normal_inset = assert_terminal_inset_geometry(&mut h, pane, frame);
+        let normal_rect = terminal_inset_metrics(&mut h, pane).rect;
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tile = win.tree.tiles.find_pane(&pane).unwrap();
+            win.zoom_to(tile);
+        });
+        h.run_steps(5);
+        let zoomed_rect = terminal_inset_metrics(&mut h, pane).rect;
+        assert!(
+            zoomed_rect.width() > normal_rect.width(),
+            "zoom must enlarge the terminal: {normal_rect:?} -> {zoomed_rect:?}"
+        );
+        let zoomed_inset = assert_terminal_inset_geometry(&mut h, pane, zoomed_rect);
+        assert!(
+            (zoomed_inset - normal_inset).abs() < 0.01,
+            "zoomed glyph inset {zoomed_inset} must equal normal {normal_inset}"
+        );
+    }
+
+    /// PTY (rows, cols) from the shell must equal the inset grid of the pane's current widget rect.
+    fn assert_pty_follows_layout(h: &mut PlexiUiHarness, pane: u64, step: &str) {
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(3);
+            let rect = h
+                .harness()
+                .ctx
+                .read_response(egui_term::terminal_widget_id(pane))
+                .unwrap()
+                .rect;
+            let (cw, ch) = h.with_app_mut(|app| {
+                let size = app.windows[app.active_window]
+                    .panes
+                    .get_mut(&pane)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .last_content()
+                    .terminal_size;
+                (size.cell_width as f32, size.cell_height as f32)
+            });
+            let pad = crate::render::terminal_pane::terminal_content_padding();
+            let expected = (
+                ((rect.height() - 2.0 * pad.y) / ch) as usize,
+                ((rect.width() - 2.0 * pad.x) / cw) as usize,
+            );
+            let reported = pty_reported_size(h, pane);
+            if reported == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{step}: pane {pane} PTY {reported:?} != inset grid {expected:?} of {rect:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Stint 1213 D1: after a restore, splitting a third pane and zooming must keep every PTY
+    /// size equal to its drawn grid. Reproduces the installed tester's restart sequence.
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pty_follows_layout_after_restore_split_and_zoom() {
+        let (mut h1, first, second) = pane_chrome_fixture_sized(1.0, 1200.0);
+        let root = h1.workspace_root().to_path_buf();
+        h1.with_app_mut(|app| {
+            let term = crate::host::pane::TerminalPane::new(
+                second,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(root),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .unwrap();
+            app.windows[app.active_window]
+                .panes
+                .insert(second, Pane::Terminal(Box::new(term)));
+        });
+        h1.run_steps(5);
+        for pane in [first, second] {
+            assert_pty_follows_layout(&mut h1, pane, "before restart");
+        }
+        assert!(
+            h1.with_app_mut(|app| app.save_workspace_now()),
+            "workspace must save"
+        );
+
+        // Restart: a fresh app restored from the saved workspace, like a host relaunch.
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.with_app_mut(|app| {
+            let profile = crate::config::config_dir();
+            let ws = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+            let cfg = app.config.clone();
+            let colors = app.colors.clone();
+            let pty_event_tx = app.pty_event_tx.clone();
+            let ctx = app.ctx.clone();
+            let restored = crate::app::restore_workspace(
+                ws,
+                &cfg,
+                crate::app::WorkspaceRestoreCollaborators {
+                    profile_dir: &profile,
+                    colors: &colors,
+                    hot_reload: &mut app.hot_reload,
+                    state_watch: &mut app.state_watch,
+                    terminal_spawner: Some((&ctx, &pty_event_tx)),
+                },
+            )
+            .expect("restore workspace");
+            app.install_restored_workspace(restored);
+            app.sidebar_visible = false;
+        });
+        h.run_steps(5);
+        let mut panes: Vec<u64> = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect()
+        });
+        panes.sort_unstable();
+        assert_eq!(panes.len(), 2, "restore must bring both terminals back");
+        for &pane in &panes {
+            assert_pty_follows_layout(&mut h, pane, "after restore");
+        }
+
+        h.with_app_mut(|app| {
+            app.split_focused(true, None, false, false, None);
+        });
+        h.run_steps(5);
+        let mut panes: Vec<u64> = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect()
+        });
+        panes.sort_unstable();
+        assert_eq!(panes.len(), 3, "split must add a third terminal");
+        for &pane in &panes {
+            assert_pty_follows_layout(&mut h, pane, "after third split");
+        }
+
+        let zoomed = panes[0];
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tile = win.tree.tiles.find_pane(&zoomed).unwrap();
+            win.zoom_to(tile);
+        });
+        h.run_steps(5);
+        assert_pty_follows_layout(&mut h, zoomed, "zoomed after restore + split");
+        h.with_app_mut(|app| app.windows[app.active_window].clear_zoom());
+        h.run_steps(5);
+        for &pane in &panes {
+            assert_pty_follows_layout(&mut h, pane, "after unzoom");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pane_provenance_clears_focused_state_rings() {
+        for scale in [1.0, 2.0] {
+            for width in [480.0, 1200.0] {
+                let (mut h, pane, _) = pane_chrome_fixture_sized(scale, width);
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("ui_scale = {scale}\n"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                    app.ui_scale = scale;
+                });
+                h.run_steps(3);
+                h.with_app(|app| {
+                    assert!(
+                        (app.ctx.zoom_factor() - scale).abs() < 0.001,
+                        "fixture must retain requested scale"
+                    )
+                });
+                install_inset_fixture_terminal(&mut h, pane);
+                h.with_app(|app| {
+                    assert!(
+                        app.windows[app.active_window]
+                            .panes
+                            .get(&pane)
+                            .and_then(|p| p.as_terminal())
+                            .unwrap()
+                            .agent
+                            .is_some(),
+                        "state ring needs an agent state"
+                    )
+                });
+                let (frame, icon) = h.with_app(|app| {
+                    (
+                        app.visible_pane_rect(pane).unwrap(),
+                        app.ctx.data(|d| {
+                            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", pane)))
+                                .unwrap()
+                        }),
+                    )
+                });
+                // Optional accessories collapse at narrow widths by design; wide headers must paint it.
+                if width >= 1200.0 {
+                    assert_ne!(
+                        icon,
+                        egui::Rect::NOTHING,
+                        "wide header must paint provenance"
+                    );
+                }
+                if icon == egui::Rect::NOTHING {
+                    continue;
+                }
+                assert!(
+                    icon.right() <= frame.right() - crate::ui::style::PANE_CONTENT_INSET,
+                    "provenance icon {icon:?} overlaps pane edge {frame:?}"
+                );
+            }
+        }
+    }
+
+    /// Dusk/Dawn at normal and narrow widths, a real PTY running `script`, shot to `evidence_png!`.
+    fn terminal_inset_screenshots(script: &str, ready: &str, name: impl Fn(&str, f32) -> String) {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for width in [480.0, 1200.0] {
+                let mut h = PlexiUiHarness::new_sized(width, 500.0);
+                h.step();
+                let pane = add_focused_pane(&mut h);
+                let root = h.workspace_root().to_path_buf();
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("[theme]\npreset = \"{theme}\"\n"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                    app.sidebar_visible = false;
+                    let mut term = crate::host::pane::TerminalPane::new(
+                        pane,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            args: vec!["-c".into(), script.into()],
+                            working_directory: Some(root),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .unwrap();
+                    term.name = Some("Claude Code".into());
+                    term.spawned_by = Some("human".into());
+                    term.outside_workspace_root = Some(app.router.active().root.clone());
+                    term.outside_workspace_checked_at = Some(Instant::now());
+                    term.agent = Some(crate::protocol::PaneAgentState {
+                        pane_id: pane,
+                        state: crate::protocol::AgentState::Working,
+                        agent: "fixture".into(),
+                        detail: None,
+                        session_id: None,
+                    });
+                    app.windows[app.active_window]
+                        .panes
+                        .insert(pane, Pane::Terminal(Box::new(term)));
+                });
+                h.focus_pane(pane).unwrap();
+                let deadline =
+                    Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+                loop {
+                    h.run_steps(3);
+                    if h.with_app_mut(|app| {
+                        app.windows[app.active_window]
+                            .panes
+                            .get_mut(&pane)
+                            .unwrap()
+                            .as_terminal_mut()
+                            .unwrap()
+                            .backend
+                            .capture_lines(50)
+                            .iter()
+                            .any(|line| line.contains(ready))
+                    }) {
+                        h.run_steps(3);
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "terminal fixture timed out");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                h.with_app(|app| {
+                    assert_eq!(
+                        app.colors.bg_darkest,
+                        crate::ui::theme::Colors::from_config(
+                            &crate::ui::theme::preset_colors(theme).unwrap()
+                        )
+                        .bg_darkest,
+                        "fixture must retain requested theme"
+                    )
+                });
+                let path = name(theme, width);
+                h.save_screenshot(&path).unwrap();
+                println!("screenshot: {path}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn screenshot_terminal_inset_and_provenance_matrix() {
+        terminal_inset_screenshots(
+            "printf '* Working on your request\\nWIDEGLYPH\\n'; sleep 300",
+            "WIDEGLYPH",
+            |theme, width| evidence_png!(&format!("_{theme}_{width}")),
+        );
+    }
+
+    /// Full-screen TUI with non-default cell backgrounds: the theme-colored gutter around the
+    /// grid is intentional (matches iTerm/Ghostty); edge-cell bleed is a possible follow-up.
+    #[test]
+    #[ignore = "requires-pty"]
+    fn screenshot_terminal_inset_colored_background_tui() {
+        let script = "i=0; while [ $i -lt 40 ]; do printf '\\033[4%dm%-300s\\033[0m\\n' $((i%6+1)) \"TUIROW $i colored background\"; i=$((i+1)); done; sleep 300";
+        terminal_inset_screenshots(script, "TUIROW", |theme, width| {
+            evidence_png!(&format!("_{theme}_{width}"))
+        });
+    }
+
+    #[test]
+    fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
+        use crate::protocol::AgentState;
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        for state in [
+            AgentState::Working,
+            AgentState::Blocked,
+            AgentState::NeedsYou,
+            AgentState::Interrupted,
+            AgentState::Failed,
+        ] {
+            for focused in [false, true] {
+                h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&pane)
+                        .unwrap()
+                        .set_agent(Some(crate::protocol::PaneAgentState {
+                            pane_id: pane,
+                            state: state.clone(),
+                            agent: "fixture".into(),
+                            detail: None,
+                            session_id: None,
+                        }));
+                });
+                h.focus_pane(if focused { pane } else { other }).unwrap();
+                h.run_steps(3);
+                let (rect, color, accent) = h.with_app(|app| {
+                    (
+                        app.visible_pane_rect(pane).unwrap(),
+                        crate::ui::activity::dot_color_from_time(&state, &app.colors, 0.0, 0),
+                        app.colors.accent,
+                    )
+                });
+                let shapes = &h.harness().output().shapes;
+                let ring = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(r) if r.stroke.color == egui::epaint::ColorMode::Solid(color) && r.points.iter().all(|p| rect.contains(*p)) => Some(r), _ => None }).next().unwrap_or_else(|| panic!("state-color ring must be painted: {state:?}, focused={focused}, paths={:?}", shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(p) if p.closed && p.points.len() == 36 => Some((&p.stroke.color, egui::Rect::from_points(&p.points))), _ => None }).collect::<Vec<_>>()));
+                assert!(ring.stroke.width > 0.0);
+                if focused {
+                    let focus = shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => {
+                                Some(r)
+                            }
+                            _ => None,
+                        })
+                        .next()
+                        .expect("focus ring");
+                    let left = ring
+                        .points
+                        .iter()
+                        .map(|p| p.x)
+                        .fold(f32::INFINITY, f32::min)
+                        - ring.stroke.width / 2.0;
+                    assert!(
+                        left + 0.001 >= focus.rect.left() + focus.stroke.width,
+                        "focus and state strokes overlap"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Stint 1213 round 3: an unfocused pane in a quiet state (Idle, Completed) paints no ring, so
+    /// the edge band is the pane background. The gray `state_waiting` ring was the stray line.
+    #[test]
+    fn unfocused_quiet_pane_edge_is_pane_background() {
+        use crate::protocol::AgentState;
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        for state in [AgentState::Idle, AgentState::Completed] {
+            h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&pane)
+                    .unwrap()
+                    .set_agent(Some(crate::protocol::PaneAgentState {
+                        pane_id: pane,
+                        state: state.clone(),
+                        agent: "fixture".into(),
+                        detail: None,
+                        session_id: None,
+                    }));
+            });
+            h.focus_pane(other).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let img = h.render().unwrap();
+            let ppp = img.width() as f32 / h.with_app(|app| app.ctx.content_rect().width());
+            let y = ((rect.center().y) * ppp) as u32;
+            let at = |dx: f32| *img.get_pixel(((rect.left() + dx) * ppp) as u32, y);
+            let band = at(crate::ui::style::PANE_STATE_WIDTH / 2.0);
+            let inside = at(crate::ui::style::PANE_RING_WIDTH + 0.5);
+            assert_eq!(
+                band, inside,
+                "{state:?}: ring band pixel {band:?} must equal pane background {inside:?}"
+            );
+            assert_ne!(
+                at(-3.0),
+                inside,
+                "probe must sit on the pane edge, not in the gap"
+            );
+        }
+    }
+
+    /// Stint 1216 rule: focus changes paint, never layout. Header height and terminal top
+    /// offset from the pane rect are identical focused and unfocused.
+    #[test]
+    fn header_and_body_layout_is_identical_focused_and_unfocused() {
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
+            if let Some(term) = t.as_terminal_mut() {
+                term.name = Some("fixture".into());
+                term.spawned_by = Some("researcher".into());
+            }
+            t.set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: pane,
+                state: crate::protocol::AgentState::Idle,
+                agent: "fixture".into(),
+                detail: None,
+                session_id: None,
+            }));
+        });
+        let mut tops = Vec::new();
+        for focus in [pane, other] {
+            h.focus_pane(focus).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let body = h
+                .harness()
+                .ctx
+                .read_response(egui_term::terminal_widget_id(pane))
+                .unwrap()
+                .rect;
+            tops.push(body.top() - rect.top());
+            let icon = h.with_app(|app| {
+                app.ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", pane)))
+                })
+            });
+            {
+                let icon = icon
+                    .filter(|i| *i != egui::Rect::NOTHING)
+                    .expect("header paints the provenance icon");
+                let (above, below) = (
+                    icon.top() - rect.top(),
+                    rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - icon.bottom(),
+                );
+                assert!(
+                    (above - below).abs() <= 0.5,
+                    "icon gap above {above} vs below {below} (focus {focus})"
+                );
+            }
+        }
+        assert!(
+            (tops[0] - tops[1]).abs() < 0.01,
+            "terminal top offset focused {} vs unfocused {}",
+            tops[0],
+            tops[1]
+        );
+        assert!(
+            (tops[0] - crate::ui::style::PANE_HEADER_HEIGHT).abs() < 0.01,
+            "body starts right under the {}pt header, got {}",
+            crate::ui::style::PANE_HEADER_HEIGHT,
+            tops[0]
+        );
+    }
+
+    /// An unfocused idle pane paints no outline, seam or veil: below the header, edge band and
+    /// the strip under it are the pane background, exactly as in the focused render except the ring.
+    #[test]
+    fn unfocused_idle_pane_has_no_seam_or_outline_pixels() {
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
+            t.set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: pane,
+                state: crate::protocol::AgentState::Idle,
+                agent: "fixture".into(),
+                detail: None,
+                session_id: None,
+            }));
+        });
+        let mut shots = Vec::new();
+        for focus in [other, pane] {
+            h.focus_pane(focus).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let img = h.render().unwrap();
+            let ppp = img.width() as f32 / h.with_app(|app| app.ctx.content_rect().width());
+            shots.push((rect, img, ppp));
+        }
+        let (rect, img, ppp) = &shots[0];
+        let px = |x: f32, y: f32| *img.get_pixel((x * ppp) as u32, (y * ppp) as u32);
+        let body = px(
+            rect.right() - 20.0,
+            rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 30.0,
+        );
+        let header = px(
+            rect.right() - 3.0,
+            rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - 2.0,
+        );
+        assert_ne!(
+            header, body,
+            "header fill differs from body, so a seam would be visible"
+        );
+        // Column under the header must switch from header fill to body fill with no intermediate colour.
+        let mut colours = std::collections::BTreeSet::new();
+        let mut y = rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - 3.0;
+        while y < rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 20.0 {
+            colours.insert(px(rect.right() - 3.0, y).0);
+            y += 0.5;
+        }
+        assert!(
+            colours.len() <= 2,
+            "unfocused header/body column has seam colours {colours:?}"
+        );
+        // Edge band down the left side below the header is the body fill.
+        let mut y = rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 20.0;
+        while y < rect.bottom() - 20.0 {
+            for dx in [0.5, 1.5, 3.0, 5.0] {
+                assert_eq!(px(rect.left() + dx, y), body, "edge pixel {dx} at y {y}");
+            }
+            y += 7.0;
+        }
+        // Focused render: same layout; only the ring colours the edge.
+        let (_, focused, _) = &shots[1];
+        let fpx = |x: f32, y: f32| *focused.get_pixel((x * ppp) as u32, (y * ppp) as u32);
+        let f = fpx(
+            rect.right() - 20.0,
+            rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 30.0,
+        );
+        // Ghost opacity may round one channel by 1/255; anything more would be a veil.
+        assert!(
+            f.0.iter().zip(body.0).all(|(a, b)| a.abs_diff(b) <= 1),
+            "focused body {f:?} vs unfocused {body:?}"
+        );
+    }
+
+    #[test]
+    fn pane_chrome_selected_view_keeps_its_state_ring() {
+        let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&view_pane)
+                .unwrap()
+                .set_agent(Some(crate::protocol::PaneAgentState {
+                    pane_id: view_pane,
+                    state: crate::protocol::AgentState::Blocked,
+                    agent: "fixture".into(),
+                    detail: None,
+                    session_id: None,
+                }));
+            let window = app.windows[app.active_window].window_id;
+            app.host.extend_pane_selection(window, terminal, view_pane);
+        });
+        h.focus_pane(terminal).unwrap();
+        h.run_steps(3);
+        let (rect, color) = h.with_app(|app| {
+            (
+                app.visible_pane_rect(view_pane).unwrap(),
+                app.colors.state_blocked,
+            )
+        });
+        let ring = h
+            .harness()
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Path(p)
+                    if p.stroke.color == egui::epaint::ColorMode::Solid(color)
+                        && p.points.iter().all(|point| rect.contains(*point)) =>
+                {
+                    Some(p)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("selected plugin retains its state ring");
+        let left = ring
+            .points
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::INFINITY, f32::min)
+            - ring.stroke.width / 2.0;
+        assert!((left - rect.left() - crate::ui::style::PANE_FOCUS_WIDTH).abs() < 0.01);
+    }
+
+    #[test]
+    fn pane_chrome_view_tabs_use_responsive_state_header() {
+        let mut h = PlexiUiHarness::new_sized(500.0, 300.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let second = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let win = &mut app.windows[app.active_window];
+            win.panes
+                .get_mut(&first)
+                .unwrap()
+                .set_agent(Some(crate::protocol::PaneAgentState {
+                    pane_id: first,
+                    state: crate::protocol::AgentState::Blocked,
+                    agent: "fixture".into(),
+                    detail: None,
+                    session_id: None,
+                }));
+            let a = win.tree.tiles.find_pane(&first).unwrap();
+            let b = win.tree.tiles.find_pane(&second).unwrap();
+            win.tree.root = Some(win.tree.tiles.insert_tab_tile(vec![a, b]));
+            win.focused_pane = Some(a);
+        });
+        h.run_steps(3);
+        let (layout, fill) = h.with_app(|app| {
+            let color = app.colors.status_badge_color(app.colors.state_blocked);
+            (
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, first)
+                    .expect("plugin tab header uses shared layout"),
+                egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 36),
+            )
+        });
+        let badge = h
+            .harness()
+            .output()
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == fill => Some(r.rect),
+                _ => None,
+            })
+            .expect("wide plugin tab header shows state chip");
+        if let Some(title) = layout.label_rect {
+            assert!(
+                !title.intersects(badge),
+                "plugin tab title must not overlap its state chip"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_chrome_rings_are_concentric_at_both_scales() {
+        for scale in [1.0, 2.0] {
+            let (mut h, pane, _) = pane_chrome_fixture(scale);
+            h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&pane)
+                    .unwrap()
+                    .set_agent(Some(crate::protocol::PaneAgentState {
+                        pane_id: pane,
+                        state: crate::protocol::AgentState::Blocked,
+                        agent: "fixture".into(),
+                        detail: None,
+                        session_id: None,
+                    }));
+            });
+            h.focus_pane(pane).unwrap();
+            h.run_steps(3);
+            let (rect, color, accent) = h.with_app(|app| {
+                (
+                    app.visible_pane_rect(pane).unwrap(),
+                    app.colors.state_blocked,
+                    app.colors.accent,
+                )
+            });
+            let radius = crate::ui::style::pane_radius(None, rect).nw as f32;
+            let focus = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => Some(r),
+                    _ => None,
+                })
+                .next()
+                .expect("focus ring");
+            assert_eq!(focus.corner_radius.nw as f32, radius);
+            let ring = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Path(r)
+                        if r.stroke.color == egui::epaint::ColorMode::Solid(color)
+                            && r.points.iter().all(|p| rect.contains(*p)) =>
+                    {
+                        Some(r)
+                    }
+                    _ => None,
+                })
+                .next()
+                .expect("state ring");
+            assert!((ring.points[0].x - (rect.right() - radius)).abs() < 0.01);
+            assert!(
+                (ring.points[8].y - (rect.top() + radius)).abs() < 0.01,
+                "ring curves must share the tile corner center"
+            );
+        }
+    }
+
+    #[test]
+    fn screenshot_pane_chrome_state_matrix() {
+        use crate::protocol::AgentState;
+        let states = [
+            ("working", AgentState::Working),
+            ("idle", AgentState::Idle),
+            ("blocked", AgentState::Blocked),
+            ("needs_you", AgentState::NeedsYou),
+            ("interrupted", AgentState::Interrupted),
+            ("failed", AgentState::Failed),
+            ("completed", AgentState::Completed),
+        ];
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                for wide in [false, true] {
+                    let mut h = PlexiUiHarness::new_sized_scaled(1400.0, 800.0, scale);
+                    h.step();
+                    std::fs::write(
+                        crate::config::config_path(),
+                        format!("ui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n"),
+                    )
+                    .unwrap();
+                    h.with_app_mut(|app| {
+                        app.reload_config();
+                        app.ui_scale = scale;
+                        app.sidebar_visible = false;
+                    });
+                    h.run_steps(3);
+                    h.with_app(|app| {
+                        let expected = crate::ui::theme::Colors::from_config(
+                            &crate::ui::theme::preset_colors(theme).unwrap(),
+                        );
+                        assert_eq!(
+                            app.colors.bg_darkest, expected.bg_darkest,
+                            "fixture must render the requested theme"
+                        );
+                    });
+                    let root = h.workspace_root().to_path_buf();
+                    let mut ids = Vec::new();
+                    for (name, state) in &states {
+                        let id = add_focused_pane(&mut h);
+                        ids.push(id);
+                        h.with_app_mut(|app| {
+                        let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                            egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                        term.name = Some(format!("{name}: review implementation"));
+                        term.outside_workspace_cached = false;
+                        term.outside_workspace_checked_at = Some(Instant::now());
+                        term.outside_workspace_root = Some(root.clone());
+                        term.agent = Some(crate::protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
+                        app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                    });
+                    }
+                    h.with_app_mut(|app| {
+                        app.sidebar_visible = false;
+                        let win = &mut app.windows[app.active_window];
+                        let tiles: Vec<_> = ids
+                            .iter()
+                            .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                            .collect();
+                        win.tree.root = Some(if wide {
+                            win.tree.tiles.insert_grid_tile(tiles)
+                        } else {
+                            win.tree.tiles.insert_horizontal_tile(tiles)
+                        });
+                    });
+                    for (index, (name, _)) in states.iter().enumerate() {
+                        h.focus_pane(ids[index]).unwrap();
+                        h.run_steps(3);
+                        h.with_app(|app| {
+                            assert!((app.ctx.zoom_factor() - scale).abs() < 0.001);
+                            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+                            assert!(reports.iter().any(|r| r.surface == "pane_header"));
+                            let errors: Vec<_> =
+                                reports.iter().flat_map(|r| r.violations()).collect();
+                            assert!(
+                                errors.is_empty(),
+                                "{theme} {scale} {wide} {name}: {errors:?}"
+                            );
+                        });
+                        let path = evidence_png!(&format!(
+                            "_{theme}_{scale}_{}_{name}",
+                            if wide { "wide" } else { "narrow" }
+                        ));
+                        h.save_screenshot(&path).unwrap();
+                        println!("screenshot: {path}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn screenshot_state_presets_and_attention_styles() {
-        use crate::protocol::AgentState;
         use crate::config::{AttentionConfig, AttentionStyle};
+        use crate::protocol::AgentState;
         let mut h = PlexiUiHarness::new_sized_ppp(1200.0, 800.0, 1.0);
         let root = h.workspace_root().to_path_buf();
         let mut ids = Vec::new();
-        for (name, state) in [("Working: compiling",AgentState::Working), ("Waiting: ready",AgentState::Idle), ("Blocked: dependency",AgentState::Blocked), ("Needs you: review",AgentState::NeedsYou), ("Interrupted",AgentState::Interrupted), ("Error: failed test",AgentState::Failed)] {
+        for (name, state) in [
+            ("Working: compiling", AgentState::Working),
+            ("Waiting: ready", AgentState::Idle),
+            ("Blocked: dependency", AgentState::Blocked),
+            ("Needs you: review", AgentState::NeedsYou),
+            ("Interrupted", AgentState::Interrupted),
+            ("Error: failed test", AgentState::Failed),
+        ] {
             let id = add_focused_pane(&mut h);
             ids.push(id);
             h.with_app_mut(|app| {
@@ -4757,7 +9014,10 @@ mod tests {
         }
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            let tiles = ids
+                .iter()
+                .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                .collect();
             win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
         });
         for theme in ["plexi-night", "plexi-day", "tokyo-day", "solarized-light"] {
@@ -4769,68 +9029,718 @@ mod tests {
                     let mut cfg = crate::ui::theme::preset_colors(theme).unwrap();
                     cfg.state_preset = Some((*preset).into());
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                    app.theme = crate::ui::theme::terminal_theme(&cfg);
-                    app.config.attention = Some(AttentionConfig { style: Some(AttentionStyle::Subtle), ..Default::default() });
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors, theme == "plexi-night");
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    app.config.attention = Some(AttentionConfig {
+                        style: Some(AttentionStyle::Subtle),
+                        ..Default::default()
+                    });
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 });
                 h.run_steps(3);
-                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}"))).unwrap();
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}")))
+                    .unwrap();
                 let mut simulated = h.render().unwrap();
                 for pixel in simulated.pixels_mut() {
-                    let c = crate::ui::theme::simulate_cvd(egui::Color32::from_rgb(pixel[0],pixel[1],pixel[2]),1);
-                    pixel[0]=c.r(); pixel[1]=c.g(); pixel[2]=c.b();
+                    let c = crate::ui::theme::simulate_cvd(
+                        egui::Color32::from_rgb(pixel[0], pixel[1], pixel[2]),
+                        1,
+                    );
+                    pixel[0] = c.r();
+                    pixel[1] = c.g();
+                    pixel[2] = c.b();
                 }
-                simulated.save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia"))).unwrap();
+                simulated
+                    .save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia")))
+                    .unwrap();
             }
         }
-        for (name,style,intensity) in [("off",AttentionStyle::Off,1.0),("subtle",AttentionStyle::Subtle,1.0),("normal",AttentionStyle::Normal,1.0),("loud",AttentionStyle::Loud,1.0),("normal_half",AttentionStyle::Normal,0.5)] {
+        for (name, style, intensity) in [
+            ("off", AttentionStyle::Off, 1.0),
+            ("subtle", AttentionStyle::Subtle, 1.0),
+            ("normal", AttentionStyle::Normal, 1.0),
+            ("loud", AttentionStyle::Loud, 1.0),
+            ("normal_half", AttentionStyle::Normal, 0.5),
+        ] {
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors("plexi-night").unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(&cfg);
-                app.config.attention = Some(AttentionConfig { style:Some(style),intensity:Some(intensity),..Default::default() });
-                crate::ui::theme::setup_style(&app.ctx,&app.colors,true);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                app.config.attention = Some(AttentionConfig {
+                    style: Some(style),
+                    intensity: Some(intensity),
+                    ..Default::default()
+                });
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
             });
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(&format!("_{name}"))).unwrap();
+            h.save_screenshot(&evidence_png!(&format!("_{name}")))
+                .unwrap();
+        }
+    }
+
+    /// The same populated scene rendered in each Plexi theme: sidebar, file
+    /// browser, a terminal printing every ANSI color plus dim text, and agent
+    /// panes in several states. Review evidence for the theme family (stint 1186).
+    #[test]
+    fn quit_toast_hugs_content_within_bound() {
+        let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
+        h.with_app_mut(|app| {
+            app.quit_press_count = 1;
+            app.quit_last_press = None;
+        });
+        h.run_steps(3);
+        let rect = h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.area_rect(egui::Id::new("quit_confirm_overlay")))
+                .unwrap()
+        });
+        assert!(
+            rect.width() < crate::ui::style::TOAST_MAX_WIDTH - 80.0,
+            "quit toast should hug content: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn screenshot_toast_shrink_variants() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for title in [
+                "Meeting",
+                "Release review with a very long title ".repeat(20).as_str(),
+            ] {
+                let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
+                let path = h.workspace_root().join("meeting.md");
+                std::fs::write(&path, "Meeting notes").unwrap();
+                add_focused_pane(&mut h);
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                    app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+                        path: path.clone(),
+                        title: title.into(),
+                        preview: String::new(),
+                        search_text: String::new(),
+                        tier_label: None,
+                    }];
+                    app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                    assert!(app.notes_picker_delete_entry(0));
+                    app.notes_picker_shown_paths.clear();
+                });
+                h.run_steps(3);
+                let rect = h.with_app(|app| {
+                    app.ctx
+                        .memory(|m| m.area_rect(egui::Id::new("notes_delete_toast")))
+                        .unwrap()
+                });
+                assert!(
+                    rect.width() <= crate::ui::style::TOAST_MAX_WIDTH + 1.0,
+                    "action exceeds bound: {rect:?}"
+                );
+                if title == "Meeting" {
+                    assert!(
+                        rect.width() < crate::ui::style::TOAST_MAX_WIDTH - 80.0,
+                        "short action must hug content: {rect:?}"
+                    );
+                }
+                assert!(h.harness().query_by_label("Undo").is_some());
+                let kind = if title == "Meeting" { "short" } else { "long" };
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{kind}")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_undo = None;
+                    app.quit_last_press = None;
+                });
+                for count in [1, 2] {
+                    h.with_app_mut(|app| app.quit_press_count = count);
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_quit_{count}")))
+                        .unwrap();
+                }
+            }
         }
     }
 
     #[test]
-    fn screenshot_agent_attention_toast_over_working_fleet() {
-        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
-        let root = h.workspace_root().to_path_buf();
-        let id = add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
-            let mut term = crate::host::pane::TerminalPane::new(
-                id, app.ctx.clone(), app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()],
-                    working_directory: Some(root.clone()), ..Default::default()
-                }, 14.0).unwrap();
-            term.agent_role = Some("Implementer".into());
-            term.agent_harness = Some("pi".into());
-            term.agent = Some(crate::protocol::PaneAgentState {
-                pane_id: id, state: crate::protocol::AgentState::Working, agent: "pi".into(),
-                detail: Some("Validating notification delivery".into()), session_id: None,
+    fn bounded_toast_long_title_keeps_named_undo() {
+        for keyboard in [false, true] {
+            let mut h = PlexiUiHarness::new_sized_scaled(520.0, 600.0, 2.0);
+            let path = h.workspace_root().join("long-note.md");
+            std::fs::write(&path, "original bytes").unwrap();
+            h.with_app_mut(|app| {
+                app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+                    path: path.clone(),
+                    title: "Release review with an adversarially long note title ".repeat(20),
+                    preview: String::new(),
+                    search_text: String::new(),
+                    tier_label: None,
+                }];
+                app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                assert!(app.notes_picker_delete_entry(0));
+                app.notes_picker_shown_paths.clear();
             });
-            term.tail_preview = Some("Running focused tests for attention navigation.".into());
-            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
-            app.sidebar_visible = false;
+            h.run_steps(3);
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            let painted_undo =
+                h.harness()
+                    .output()
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Undo" => {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    });
+            assert!(
+                painted_undo.is_some_and(|rect| screen.contains_rect(rect)),
+                "Undo must actually paint its full label inside the viewport: {painted_undo:?}"
+            );
+            assert!(!path.exists());
+            if keyboard {
+                h.harness()
+                    .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+            } else {
+                assert!(h.harness().query_by_label("Undo").is_some());
+                let rect = h.with_app(|app| {
+                    app.ctx
+                        .data(|data| {
+                            data.get_temp::<egui::Rect>(egui::Id::new("notes_delete_undo_rect"))
+                        })
+                        .unwrap()
+                });
+                for pressed in [true, false] {
+                    h.harness().input_mut().events.extend([
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                    h.step();
+                }
+            }
+            h.run_steps(3);
+            assert!(path.exists(), "Undo activation failed: keyboard={keyboard}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes");
+            h.with_app(|app| {
+                assert!(app
+                    .notes_picker_notice
+                    .as_ref()
+                    .is_some_and(|(text, _)| text.starts_with("Restored:")))
+            });
+        }
+    }
+
+    #[test]
+    fn config_chooser_offers_not_created_repo_row_for_plain_repo() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().to_path_buf();
+        assert!(
+            !root.join(crate::config::workspace_channel_dir()).exists(),
+            "plain repo has no channel dir"
+        );
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
         });
-        let agents = h.open_builtin_by_id("agents", &root, &[]).unwrap();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h
+            .harness()
+            .query_by_label("Open config: this repo (not created yet)")
+            .is_some());
+    }
+
+    #[test]
+    fn config_chooser_omits_repo_row_outside_workspace() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().join("does-not-exist");
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
+        });
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h
+            .harness()
+            .query_by_label("Open config: everywhere")
+            .is_some());
+        assert!(h
+            .harness()
+            .query_by_label("Open config: this repo (not created yet)")
+            .is_none());
+        assert!(h
+            .harness()
+            .query_by_label("Open config: this repo")
+            .is_none());
+    }
+
+    #[test]
+    fn screenshot_notes_delete_toast_themes() {
+        for scale in [1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, scale);
+            let root = h.workspace_root().to_path_buf();
+            let removed = root.join("meeting.md");
+            let kept = root.join("plans.md");
+            std::fs::write(&removed, "Meeting notes\nReview the release checklist.").unwrap();
+            std::fs::write(&kept, "Plans\nFinish the review.").unwrap();
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.notes_picker_entries = vec![
+                    crate::notes::NotePickerEntry {
+                        path: removed.clone(),
+                        title: "Meeting notes — release review /workspaces/project/very-long-unbroken-identifier 👩🏽‍💻 ".repeat(8),
+                        preview: "Review the release checklist.".into(),
+                        search_text: "meeting".into(),
+                        tier_label: None,
+                    },
+                    crate::notes::NotePickerEntry {
+                        path: kept.clone(),
+                        title: "Plans".into(),
+                        preview: "Finish the review.".into(),
+                        search_text: "plans".into(),
+                        tier_label: None,
+                    },
+                ];
+                app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                assert!(app.notes_picker_delete_entry(0));
+                // Keep this explicit fixture while the unrelated background index settles.
+                app.notes_picker_shown_paths.clear();
+            });
+            for theme in ["plexi-dusk", "plexi-dawn"] {
+                h.with_app_mut(|app| {
+                    if app.notes_picker_undo.is_none() {
+                        assert!(app.notes_picker_delete_entry(0));
+                        app.notes_picker_shown_paths.clear();
+                    }
+                    app.notes_picker_status = None;
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                });
+                h.run_steps(3);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_status = Some(format!(
+                        "Can't undo: {}",
+                        "recovery path unavailable /very/long/path ".repeat(12)
+                    ))
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_error")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_undo_delete();
+                    app.notes_picker_shown_paths.clear();
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_restored")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_notice = None;
+                    app.quit_press_count = 1;
+                    app.quit_last_press = None;
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_quit")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.quit_press_count = 0;
+                    app.config_notice = Some((
+                        "Reloaded. This repo overrides theme.preset (plexi-night).".into(),
+                        std::time::Instant::now(),
+                    ));
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_config_notice")))
+                    .unwrap();
+                h.with_app_mut(|app| app.config_notice = None);
+            }
+        }
+    }
+
+    struct ViewContrastFixture;
+
+    impl crate::app::view_trait::View for ViewContrastFixture {
+        fn type_id(&self) -> &'static str {
+            "app_contrast_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Stint Board".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            // Serialized from the unchanged Stint board build_view at f46a711,
+            // using synthetic walkthrough tasks; no CLI operations or user data.
+            let tree = crate::host::wasm_python::decode_ui_tree(include_str!(
+                "../tests/fixtures/stint-board-ui.json"
+            ))
+            .unwrap();
+            crate::host::wasm_render::render_ui_tree_with_surface(
+                ui, &tree, ctx.colors, None, None, 0,
+            );
+        }
+    }
+
+    #[test]
+    fn screenshot_plugin_contrast_stint_board() {
+        for theme in ["plexi-dawn", "plexi-night", "light-overrides"] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.0);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                let mut cfg = crate::ui::theme::preset_colors(if theme == "light-overrides" {
+                    "plexi-night"
+                } else {
+                    theme
+                })
+                .unwrap();
+                if theme == "light-overrides" {
+                    cfg.terminal_bg = Some("#e3e3f0".into());
+                    cfg.bg_active = Some("#b0b0d0".into());
+                }
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(ViewContrastFixture));
+                }
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
+                .unwrap();
+        }
+    }
+
+    /// A plugin view of rows that hand out their width (stints 1358, 1363),
+    /// decoded from the wire as a Python plugin's view arrives.
+    struct RowLayoutFixture;
+
+    impl RowLayoutFixture {
+        fn tree() -> crate::host::wasm_view::UiTree {
+            let button = |label: &str| serde_json::json!({"type": "button", "label": label, "on_click": label});
+            let nodes = [
+                (
+                    0,
+                    serde_json::json!({"type": "column", "children": [1, 2, 3, 4]}),
+                ),
+                // `Row([Back, Spacer(grow=True), Next])`
+                (
+                    1,
+                    serde_json::json!({"type": "row", "children": [10, 11, 12]}),
+                ),
+                (10, button("Back step")),
+                (11, serde_json::json!({"type": "spacer", "grow": true})),
+                (12, button("Next step")),
+                // `Row([..], justify="center")`
+                (
+                    2,
+                    serde_json::json!({"type": "row", "children": [20, 21], "justify": "center"}),
+                ),
+                (20, button("Pause timer")),
+                (21, button("Reset timer")),
+                // Gauntlet card 07: two growing columns side by side.
+                (
+                    3,
+                    serde_json::json!({"type": "row", "children": [30, 31], "align": "start"}),
+                ),
+                (
+                    30,
+                    serde_json::json!({"type": "column", "children": [32, 33], "grow": true}),
+                ),
+                (
+                    31,
+                    serde_json::json!({"type": "column", "children": [34, 35], "grow": true}),
+                ),
+                (32, button("Convert units")),
+                (33, serde_json::json!({"type": "text", "text": "12 in"})),
+                (34, button("Copy result")),
+                (35, serde_json::json!({"type": "text", "text": "30.48 cm"})),
+                // Gauntlet card 10: centered columns as cells of a row.
+                (
+                    4,
+                    serde_json::json!({"type": "row", "children": [40, 41, 42], "gap": 12.0}),
+                ),
+                (
+                    40,
+                    serde_json::json!({"type": "column", "children": [43, 44], "align": "center"}),
+                ),
+                (
+                    41,
+                    serde_json::json!({"type": "column", "children": [45, 46], "align": "center"}),
+                ),
+                (
+                    42,
+                    serde_json::json!({"type": "column", "children": [47, 48], "align": "center"}),
+                ),
+                (
+                    43,
+                    serde_json::json!({"type": "badge", "text": "good", "color": "success"}),
+                ),
+                (44, button("Happy mood")),
+                (
+                    45,
+                    serde_json::json!({"type": "badge", "text": "fine", "color": "warning"}),
+                ),
+                (46, button("Meh mood")),
+                (
+                    47,
+                    serde_json::json!({"type": "badge", "text": "low", "color": "danger"}),
+                ),
+                (48, button("Sad mood")),
+            ];
+            let nodes: Vec<serde_json::Value> = nodes
+                .iter()
+                .map(
+                    |(id, data)| serde_json::json!({"id": id, "key": id.to_string(), "data": data}),
+                )
+                .collect();
+            crate::host::wasm_python::decode_ui_tree(
+                &serde_json::json!({"root": 0, "nodes": nodes}).to_string(),
+            )
+            .expect("row layout tree decodes")
+        }
+    }
+
+    impl crate::app::view_trait::View for RowLayoutFixture {
+        fn type_id(&self) -> &'static str {
+            "row_layout_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Row layout".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            crate::host::wasm_render::render_ui_tree_with_surface(
+                ui,
+                &Self::tree(),
+                ctx.colors,
+                None,
+                None,
+                0,
+            );
+        }
+    }
+
+    /// Stints 1358 and 1363 in a real plugin pane: a grow spacer pins a
+    /// button to the row's right edge, `justify="center"` centers a pair of
+    /// buttons, two growing columns split the row, and centered column cells
+    /// sit side by side instead of each taking the row's width.
+    #[test]
+    fn screenshot_rows_hand_out_width_in_a_plugin_pane() {
+        for (width, height) in [(800.0, 600.0), (420.0, 360.0)] {
+            let mut h = PlexiUiHarness::new_sized_ppp(width, height, 1.0);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                if let Some(Pane::View(pane)) =
+                    app.windows[app.active_window].panes.get_mut(&pane_id)
+                {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(RowLayoutFixture));
+                }
+            });
+            h.run_steps(3);
+            // A row's measuring pass lays each child out once, invisible and
+            // disabled, before painting it, and egui gives those widgets
+            // accessibility nodes too: the painted button is the enabled one.
+            let mut rect = |label: &str| {
+                use egui_kittest::kittest::NodeT;
+                let painted: Vec<egui::Rect> = h
+                    .harness()
+                    .get_all_by_role_and_label(egui::accesskit::Role::Button, label)
+                    .filter(|node| !node.accesskit_node().is_disabled())
+                    .map(|node| node.rect())
+                    .collect();
+                assert_eq!(painted.len(), 1, "{label}: painted once, got {painted:?}");
+                painted[0]
+            };
+            let (back, next) = (rect("Back step"), rect("Next step"));
+            let (pause, reset) = (rect("Pause timer"), rect("Reset timer"));
+            let (convert, copy) = (rect("Convert units"), rect("Copy result"));
+            let moods = [rect("Happy mood"), rect("Meh mood"), rect("Sad mood")];
+            let size = format!("{width}x{height}");
+
+            // The rows share left and right edges: Back starts them, the
+            // spacer pins Next to the end.
+            let (left, right) = (back.min.x, next.max.x);
+            assert!(
+                right - left > width / 2.0,
+                "{size}: Next is pinned right: {back:?} {next:?}"
+            );
+            let pair_middle = (pause.min.x + reset.max.x) / 2.0;
+            assert!(
+                (pair_middle - (left + right) / 2.0).abs() <= 2.0,
+                "{size}: justify center: {pause:?} {reset:?} in {left}..{right}"
+            );
+            let half = (right - left - crate::ui::style::SPACE_SM) / 2.0;
+            assert!(
+                (copy.min.x - (left + half + crate::ui::style::SPACE_SM)).abs() <= 2.0,
+                "{size}: the second grow column starts halfway: {convert:?} {copy:?}"
+            );
+            assert!((convert.min.x - left).abs() <= 2.0, "{size}: {convert:?}");
+            for pair in moods.windows(2) {
+                assert!(
+                    pair[1].min.x - pair[0].max.x <= 12.0 + 2.0,
+                    "{size}: mood cells sit side by side: {moods:?}"
+                );
+            }
+            assert!(moods[2].max.x <= right + 0.5, "{size}: {moods:?}");
+            h.save_screenshot(&evidence_png!(&format!("_{size}")))
+                .expect("row layout screenshot");
+        }
+    }
+
+    #[test]
+    fn screenshot_plexi_theme_family() {
+        use crate::protocol::AgentState;
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
+        let root = h.workspace_root().to_path_buf();
+        let swatches = "printf '\\033[1mPlexi theme family\\033[0m\\n\\033[31mred\\033[0m \\033[32mgreen\\033[0m \\033[33myellow\\033[0m \\033[34mblue\\033[0m \\033[35mmagenta\\033[0m \\033[36mcyan\\033[0m \\033[37mwhite\\033[0m \\033[90mbright black\\033[0m\\nplain text on the terminal surface\\n'; sleep 300";
+        let mut ids = vec![add_focused_pane(&mut h)];
+        for (name, state, script) in [
+            ("Shell: colors", AgentState::Idle, swatches),
+            (
+                "Working: compiling",
+                AgentState::Working,
+                "printf 'Agent workspace\\nReviewing changes and running tests.\\n'; sleep 300",
+            ),
+            (
+                "Needs you: review",
+                AgentState::NeedsYou,
+                "printf 'Waiting for approval\\n'; sleep 300",
+            ),
+        ] {
+            let id = add_focused_pane(&mut h);
+            ids.push(id);
+            h.with_app_mut(|app| {
+                let mut term = crate::host::pane::TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec!["-c".into(), script.into()],
+                        working_directory: Some(root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .unwrap();
+                term.name = Some(name.into());
+                term.agent_role = Some(name.into());
+                if name != "Shell: colors" {
+                    term.agent = Some(crate::protocol::PaneAgentState {
+                        pane_id: id,
+                        state,
+                        agent: "codex".into(),
+                        detail: None,
+                        session_id: None,
+                    });
+                }
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(term)));
+                app.sidebar_visible = true;
+            });
+        }
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            win.zoomed_pane = win.tree.tiles.find_pane(&agents);
+            let tiles = ids
+                .iter()
+                .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                .collect();
+            win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
         });
-        h.run_steps(3);
-        h.harness().key_press_modifiers(
-            egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() },
-            egui::Key::B,
-        );
-        h.run_steps(2);
-        h.harness().get_by_label("No agents need attention.");
-        h.save_screenshot(&evidence_png!()).unwrap();
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+            });
+            h.run_steps(5);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn screenshot_minimap_core_themes() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
+        for name in ["README.md", "notes.md", "project.toml"] {
+            std::fs::write(h.workspace_root().join(name), "Minimap test content\n").unwrap();
+        }
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let ws_id = app.router.active().context_id;
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: crate::testing::scratch_context_root("ui"),
+                tree: egui_tiles::Tree::empty("minimap-evidence"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ws_id,
+            });
+            app.minimap.visible = true;
+        });
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+            });
+            h.run_steps(5);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
+                .unwrap();
+        }
     }
 
     #[test]
@@ -4841,31 +9751,66 @@ mod tests {
         let mut ids = Vec::new();
         for (role, state, detail) in [
             ("Planner", AgentState::Working, None),
-            ("Implementer", AgentState::Blocked, Some("Which branch should receive the fix?")),
-            ("Reviewer", AgentState::NeedsYou, Some("Approve the deployment plan")),
+            (
+                "Implementer",
+                AgentState::Blocked,
+                Some("Which branch should receive the fix?"),
+            ),
+            (
+                "Reviewer",
+                AgentState::NeedsYou,
+                Some("Approve the deployment plan"),
+            ),
             ("Tester", AgentState::Completed, None),
-            ("Researcher", AgentState::Failed, Some("harness exited with code 1 without agent done")),
+            (
+                "Researcher",
+                AgentState::Failed,
+                Some("harness exited with code 1 without agent done"),
+            ),
             ("Writer", AgentState::Idle, None),
             ("Runner", AgentState::Working, None),
         ] {
             let id = add_focused_pane(&mut h);
             ids.push(id);
             h.with_app_mut(|app| {
-                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
-                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                let mut term = crate::host::pane::TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec!["-c".into(), "sleep 300".into()],
+                        working_directory: Some(root.clone()),
+                        ..Default::default()
+                    },
+                    14.0,
+                )
+                .unwrap();
                 term.agent_role = Some(role.into());
                 term.agent_harness = Some("pi".into());
                 term.agent_completed = state == AgentState::Completed;
-                term.tail_preview = Some("Inspected the affected files. Ready for the next step.".into());
+                term.tail_preview =
+                    Some("Inspected the affected files. Ready for the next step.".into());
                 term.parent_pane_id = (role == "Implementer").then_some(ids[0]);
-                term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"pi".into(), detail:detail.map(str::to_string), session_id:None });
-                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                term.agent = Some(crate::protocol::PaneAgentState {
+                    pane_id: id,
+                    state,
+                    agent: "pi".into(),
+                    detail: detail.map(str::to_string),
+                    session_id: None,
+                });
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(term)));
                 app.sidebar_visible = false;
             });
         }
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
-            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            let tiles = ids
+                .iter()
+                .map(|id| win.tree.tiles.find_pane(id).unwrap())
+                .collect();
             win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
         });
         h.with_app_mut(|app| {
@@ -4897,15 +9842,30 @@ mod tests {
         h.harness().key_press(egui::Key::A);
         h.run_steps(2);
         h.harness().get_by_label("Reply to worker");
-        h.harness().input_mut().events.push(egui::Event::Text("Use feature/0846".into()));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("Use feature/0846".into()));
         h.step();
         h.harness().get_by_label("Send reply").click();
         h.run_steps(2);
         h.with_app(|app| {
             let view = app.agents_view(crate::agent::fleet::FleetFilter::All);
-            let row = view.tasks.iter().flat_map(|t| &t.rows).find(|r| r.pane_id == ids[1]).unwrap();
-            assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Working);
-            assert!(app.pane_mailboxes[&ids[1]].front().unwrap().payload.contains("feature/0846"));
+            let row = view
+                .tasks
+                .iter()
+                .flat_map(|t| &t.rows)
+                .find(|r| r.pane_id == ids[1])
+                .unwrap();
+            assert_eq!(
+                row.display_state,
+                crate::agent::fleet::DisplayState::Working
+            );
+            assert!(app.pane_mailboxes[&ids[1]]
+                .front()
+                .unwrap()
+                .payload
+                .contains("feature/0846"));
         });
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(2);
@@ -4919,7 +9879,12 @@ mod tests {
     #[test]
     fn screenshot_command_palette_agent_fleet() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-        h.with_app_mut(|app| app.config.agents.get_or_insert_with(Default::default).palette_agent_results = Some(true));
+        h.with_app_mut(|app| {
+            app.config
+                .agents
+                .get_or_insert_with(Default::default)
+                .palette_agent_results = Some(true)
+        });
         add_focused_pane(&mut h);
         let browser_root = h.workspace.path().to_path_buf();
 
@@ -4933,14 +9898,14 @@ mod tests {
                               state: crate::protocol::AgentState,
                               detail: Option<&str>| {
                 let pane_id = app.host.alloc_pane_id();
-                let pane = Pane::App(Box::new(AppPane {
+                let pane = Pane::View(Box::new(ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "terminal".to_string(),
                     name: pane_name.to_string(),
                     pane_group: None,
@@ -5013,14 +9978,14 @@ mod tests {
             let ordinary_id = app.host.alloc_pane_id();
             squad.push((
                 ordinary_id,
-                Pane::App(Box::new(AppPane {
+                Pane::View(Box::new(ViewPane {
                     pip_status: None,
                     id: ordinary_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "file-browser".to_string(),
                     name: "parked build log".to_string(),
                     pane_group: None,
@@ -5120,7 +10085,9 @@ mod tests {
             h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
             "the palette should be open over all four agent panes"
         );
-        println!("Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)");
+        println!(
+            "Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)"
+        );
     }
 
     #[test]
@@ -5131,8 +10098,11 @@ mod tests {
             let cfg = crate::ui::theme::preset_colors("catppuccin-latte")
                 .expect("catppuccin latte preset must exist");
             app.colors = crate::ui::theme::Colors::from_config(&cfg);
-            app.theme = crate::ui::theme::terminal_theme(&cfg);
-            crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+            app.theme = crate::ui::theme::terminal_theme(
+                &cfg,
+                crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+            );
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
             app.show_command_palette = true;
             app.sync_command_palette_focus();
         });
@@ -5140,7 +10110,7 @@ mod tests {
         let img = h.render().expect("render failed");
         img.save(evidence_png!()).expect("save screenshot");
         // Probe the blank right gutter inside the modal. The image center can
-        // land on a command description as the registered app list changes.
+        // land on a command description as the registered plugin list changes.
         let surface = img.get_pixel(img.width() * 3 / 4, img.height() / 2).0;
         let center_luma =
             (u16::from(surface[0]) + u16::from(surface[1]) + u16::from(surface[2])) / 3;
@@ -5400,22 +10370,38 @@ mod tests {
         // Simulate what Action::RenameContext does: populate rename state and push focus layer.
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "My Project".to_string();
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "My Project".to_string();
         });
 
         // Queue Enter for the next frame — processed by draw_rename_context_overlay.
         h.harness().key_press(egui::Key::Enter);
         h.step();
 
-        let (name, still_renaming) =
-            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
+        let (name, still_renaming) = h.with_app(|app| {
+            (
+                app.router.active().name.clone(),
+                app.context_rename.is_some(),
+            )
+        });
         assert_eq!(name, "My Project");
         assert!(
-            still_renaming.is_none(),
-            "renaming_window must be cleared after commit"
+            !still_renaming,
+            "context rename must be cleared after commit"
         );
+    }
+
+    #[test]
+    fn screenshot_context_1041_rename_with_sidebar() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.rename_context(0, "Project workspace");
+            app.open_context_rename(0);
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!())
+            .expect("render context rename");
     }
 
     /// Escape discards the rename buffer; the context name must be unchanged.
@@ -5428,20 +10414,23 @@ mod tests {
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "Discarded Name".to_string();
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "Discarded Name".to_string();
         });
 
         h.harness().key_press(egui::Key::Escape);
         h.step();
 
-        let (name, still_renaming) =
-            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
+        let (name, still_renaming) = h.with_app(|app| {
+            (
+                app.router.active().name.clone(),
+                app.context_rename.is_some(),
+            )
+        });
         assert_eq!(name, original_name, "name must be unchanged after Escape");
         assert!(
-            still_renaming.is_none(),
-            "renaming_window must be cleared after Escape"
+            !still_renaming,
+            "context rename must be cleared after Escape"
         );
     }
 
@@ -5453,9 +10442,8 @@ mod tests {
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "   ".to_string(); // whitespace-only trims to empty
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "   ".to_string();
         });
 
         h.harness().key_press(egui::Key::Enter);
@@ -5468,21 +10456,13 @@ mod tests {
         );
     }
 
-    /// Regression (stint 0387 follow-up): the inline sidebar context-rename
-    /// TextEdit must receive typed characters even while a terminal pane is the
-    /// focused tile. The terminal-input ownership transfer
-    /// (`take_focused_terminal_input`) runs before the render pass and, before
-    /// the fix, stole every Key/Text event out of `ctx` whenever the focused
-    /// tile was a terminal — starving the sidebar rename box (which is not a
-    /// focus layer when the sidebar is visible). With the fix, the steal is
-    /// gated on egui keyboard focus, so the box (which holds egui focus) keeps
-    /// its keystrokes.
+    /// Context rename receives text while a terminal is focused.
     #[test]
-    fn sidebar_inline_rename_receives_text_with_focused_terminal() {
+    fn context_rename_receives_text_with_focused_terminal() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
 
-        // Need a real focused terminal pane. Seed an app pane, then split — the
+        // Need a real focused terminal pane. Seed a view pane, then split — the
         // split spawns a real TerminalPane and focuses it.
         add_focused_pane(&mut h);
         h.step();
@@ -5504,18 +10484,14 @@ mod tests {
             "focused pane must be a real terminal for this regression to be meaningful"
         );
 
-        // Enter inline sidebar rename: sidebar visible → sync_context_rename_focus
-        // leaves should_own=false, so NO ContextRename focus layer is pushed and
-        // the inline TextEdit (not an overlay) owns keyboard input.
+        // Open the context rename overlay with the sidebar visible.
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer.clear();
-            app.renaming_window = Some(ctx_idx);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer.clear();
         });
-        // Let the TextEdit mount and gain egui focus: the reconciler (stint
-        // 0429) derives InputOwner::Overlay(SidebarRename) and grants the
-        // rename box focus, surrendering the terminal's surface.
+        // Let the field mount and gain focus.
         h.run_steps(3);
 
         // Type into the rename box.
@@ -5530,10 +10506,10 @@ mod tests {
             .push(egui::Event::Text("y".to_string()));
         h.step();
 
-        let buffer = h.with_app(|app| app.rename_buffer.clone());
+        let buffer = h.with_app(|app| app.context_rename.as_ref().unwrap().buffer.clone());
         assert_eq!(
             buffer, "xy",
-            "inline sidebar rename box must receive typed characters even while a terminal is the focused tile"
+            "context rename field must receive typed characters even while a terminal is the focused tile"
         );
     }
 
@@ -5552,14 +10528,14 @@ mod tests {
                 (pane_id_a, "A very long tab title that should not wrap onto a second line under any circumstances"),
                 (pane_id_b, "Short"),
             ] {
-                let app_pane = AppPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "test".to_string(),
                     name: name.to_string(),
                     pane_group: None,
@@ -5571,7 +10547,7 @@ mod tests {
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             }
             let win = &mut app.windows[app.active_window];
             let tile_a = win.tree.tiles.insert_pane(pane_id_a);
@@ -5639,10 +10615,11 @@ mod tests {
             h.save_screenshot(&single_shot)
                 .expect("save single-tab outside_workspace screenshot");
 
-            let layout = h.with_app(|app| {
-                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
-            })
-            .expect("single-tab terminal pane must record tab-bar layout");
+            let layout = h
+                .with_app(|app| {
+                    crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id)
+                })
+                .expect("single-tab terminal pane must record tab-bar layout");
             let label_rect = layout.label_rect.expect("single-tab label_rect");
             let badge_rect = layout
                 .outside_workspace_badge_rect
@@ -5733,10 +10710,11 @@ mod tests {
             h.save_screenshot(&multi_shot)
                 .expect("save multi-tab outside_workspace screenshot");
 
-            let layout = h.with_app(|app| {
-                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id_b)
-            })
-            .expect("multi-tab active terminal pane must record tab-bar layout");
+            let layout = h
+                .with_app(|app| {
+                    crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane_id_b)
+                })
+                .expect("multi-tab active terminal pane must record tab-bar layout");
             let label_rect = layout.label_rect.expect("multi-tab label_rect");
             let badge_rect = layout
                 .outside_workspace_badge_rect
@@ -5829,14 +10807,14 @@ mod tests {
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -5848,7 +10826,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -5887,8 +10865,7 @@ mod tests {
         add_focused_pane(&mut h);
         let inactive_ctx_id = h.with_app_mut(|app| {
             app.sidebar_visible = true;
-            // The minimap overlay only draws when the active workspace has a
-            // second window — seed an empty one on the grid.
+            // Seed a second window to show the grid.
             let ws_id = app.router.active().context_id;
             let win_id = app.next_window_id;
             app.next_window_id += 1;
@@ -6044,6 +11021,7 @@ mod tests {
                     on_dismiss: None,
                     enqueued_at: std::time::Instant::now(),
                     tombstoned: false,
+                    delivery_unknown: false,
                     deliver_after: None,
                     origin_in_view: false,
                 }
@@ -6062,7 +11040,15 @@ mod tests {
         h.run_steps(3);
 
         // Hover a sidebar row so the trailing close glyph is visible in the PNG.
-        let active_title = h.harness().get_by_label("PLEXI Workspace").rect().center();
+        // The zoom path bar repeats the active context name; the sidebar row is
+        // the leftmost match.
+        let active_title = h
+            .harness()
+            .get_all_by_label("PLEXI Workspace")
+            .map(|n| n.rect())
+            .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .expect("sidebar row")
+            .center();
         h.harness()
             .get_by_label("Narrator Video Production Workspace");
         h.harness()
@@ -6092,14 +11078,14 @@ mod tests {
         h.step();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     dir.path().to_path_buf(),
                 ))),
                 workspace_root: dir.path().to_path_buf(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "file-browser".to_string(),
                 name: "Files".to_string(),
                 pane_group: None,
@@ -6111,7 +11097,7 @@ mod tests {
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -6133,28 +11119,96 @@ mod tests {
     //      pixels look crisp, then deletes them. Non-scope: no golden-image
     //      diffing (brittle across font-raster changes).
     //   2. Mechanical assertions on the composited host state that stay green
-    //      without a human: app-surface texture dims scale with ppp (0527),
+    //      without a human: plugin-surface texture dims scale with ppp (0527),
     //      the editor's row metric is integer-physical after a real render
     //      (0529), chrome labels clear the WCAG AA contrast floor (0528), and
     //      hand-painted chrome galley origins land on the physical pixel grid
     //      (0530). Each calls the production code path — it never re-implements
     //      the invariant.
     //
-    // The `paint_app_bar` title+subtitle band is painted only from
-    // `wasm_render`; rather than depend on a fixture app declaring app-chrome,
+    // The `paint_surface_header` title+subtitle band is painted only from
+    // `wasm_render`; rather than depend on a fixture plugin declaring plugin-chrome,
     // its two crispness invariants are frozen mechanically below — the subtitle
     // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
     // galleys snap to the grid.
+    /// Evidence seam for stint 1216: the button gallery at rest, with the Md
+    /// Primary hovered, pressed, and with keyboard focus on the first control.
+    /// Writes /tmp/plexi_screenshot_button_states_<theme>_<state>.png.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_button_states() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+            apply_fixture_theme(&mut h, theme);
+            h.with_app_mut(|app| app.sidebar_visible = false);
+            let root = h.workspace_root().to_path_buf();
+            h.open_target(HarnessOpenTarget::Builtin {
+                id: "button-gallery-fixture",
+                cwd: &root,
+                args: &[],
+            })
+            .expect("open button gallery fixture");
+            h.run_steps(4);
+            let mut primaries: Vec<egui::Rect> = h
+                .harness()
+                .get_all_by_label("Primary")
+                .map(|node| node.rect())
+                .collect();
+            primaries.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            let md_primary = primaries[1];
+            h.save_screenshot(&evidence_png!(format!("_{theme}_rest")))
+                .unwrap();
+            let pos = md_primary.center();
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerMoved(pos));
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_hover")))
+                .unwrap();
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_pressed")))
+                .unwrap();
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerGone);
+            h.run_steps(2);
+            h.harness().key_press(egui::Key::Tab);
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_focus")))
+                .unwrap();
+        }
+    }
+
     mod crispness_gate {
         use super::*;
         use crate::app::permissions::{PermissionState, PermissionStore};
-        use crate::app::text_editor_app::TextEditorApp;
-        use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
+        use crate::app::text_editor_view::TextEditorView;
         use crate::host::wasm_pane::{SysinfoStats, WasmPane};
+        use crate::host::wasm_view::{StateSnapshot, StateStore, WasmView};
 
         /// The two display scales every text surface must stay crisp at: 1.0
         /// (integer) and 2.0 (HiDPI, where off-grid galleys and half-resolution
-        /// app surfaces surface as fuzz).
+        /// plugin surfaces surface as fuzz).
         const GATE_PPP: [f32; 2] = [1.0, 2.0];
 
         fn wasm_fixture(name: &str) -> std::path::PathBuf {
@@ -6167,15 +11221,15 @@ mod tests {
         /// it. Returns `None` if no editor pane is open.
         fn with_editor<R>(
             h: &mut PlexiUiHarness,
-            f: impl FnOnce(&mut TextEditorApp) -> R,
+            f: impl FnOnce(&mut TextEditorView) -> R,
         ) -> Option<R> {
             let mut f = Some(f);
             h.with_app_mut(|app| {
                 for win in &mut app.windows {
                     for pane in win.panes.values_mut() {
-                        if let Pane::App(a) = pane {
-                            if let AppRuntime::Builtin(b) = &mut a.runtime {
-                                if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorApp>() {
+                        if let Pane::View(a) = pane {
+                            if let ViewRuntime::Builtin(b) = &mut a.runtime {
+                                if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorView>() {
                                     return Some((f.take().expect("f consumed once"))(ed));
                                 }
                             }
@@ -6229,14 +11283,14 @@ mod tests {
             std::fs::write(&path, &body).expect("seed note");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(TextEditorApp::new_for_test_note(
+                    runtime: ViewRuntime::Builtin(Box::new(TextEditorView::new_for_test_note(
                         path.clone(),
                     ))),
                     workspace_root: crate::testing::scratch_context_root("ui"),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "text-editor".to_string(),
                     name: "Text Editor".to_string(),
                     pane_group: None,
@@ -6248,7 +11302,7 @@ mod tests {
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 let tile_id = win.tree.tiles.insert_pane(pane_id);
                 if win.tree.root.is_none() {
                     win.tree.root = Some(tile_id);
@@ -6276,14 +11330,14 @@ mod tests {
             std::fs::create_dir_all(root.join("assets")).expect("seed subdir");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(root.clone()),
                     )),
                     workspace_root: root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "file-browser".to_string(),
                     name: "Files".to_string(),
                     pane_group: None,
@@ -6295,7 +11349,7 @@ mod tests {
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 let tile_id = win.tree.tiles.insert_pane(pane_id);
                 if win.tree.root.is_none() {
                     win.tree.root = Some(tile_id);
@@ -6305,21 +11359,21 @@ mod tests {
         }
 
         /// Launch the sysmon WASM fixture through the reviewed-path production
-        /// launcher: text-heavy L1 body plus its `paint_app_bar` title band.
+        /// launcher: text-heavy L1 body plus its `paint_surface_header` title band.
         /// Grants are pre-persisted into the harness profile so the review
         /// auto-approves. The returned guard must outlive the harness.
         fn seed_wasm_text(h: &mut PlexiUiHarness, profile: &std::path::Path) {
             let fixture = wasm_fixture("sysmon.wasm");
-            let app_id = fixture
+            let plugin_id = fixture
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("wasm");
             let workspace_root = fixture.parent().expect("fixture parent");
-            let grants = WasmApp::inspect_required_grants(&fixture).expect("inspect grants");
+            let grants = WasmView::inspect_required_grants(&fixture).expect("inspect grants");
             let mut store = PermissionStore::load_or_default(profile);
             for capability_id in grants.capability_ids() {
                 store.set_wasm(
-                    app_id,
+                    plugin_id,
                     workspace_root,
                     &capability_id,
                     PermissionState::Green,
@@ -6327,7 +11381,7 @@ mod tests {
             }
             store.save();
             h.with_app_mut(|app| {
-                app.launch_app_by_path_with_layout(
+                app.launch_view_by_path_with_layout(
                     &fixture.to_string_lossy(),
                     Some("split_v".to_string()),
                     None,
@@ -6380,7 +11434,8 @@ mod tests {
 
         #[test]
         fn gate_render_wasm_text_ppp_1_and_2() {
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+            let _experiments =
+                crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
             for ppp in GATE_PPP {
                 let profile = tempfile::tempdir().expect("profile dir");
                 let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
@@ -6396,14 +11451,14 @@ mod tests {
 
         // ── Mechanical assertions on composited state ───────────────────────
 
-        /// Stint 0527: a GPU app pane allocates its surface at physical
+        /// Stint 0527: a GPU view pane allocates its surface at physical
         /// resolution (`logical × ppp`), so at ppp 2.0 the texture is exactly
         /// twice the ppp-1.0 texture in each dimension — full-res on HiDPI, no
         /// bilinear upscaling. Drives the production `WasmPane` surface path.
         #[test]
-        fn gate_wasm_app_surface_scales_with_ppp() {
+        fn gate_wasm_view_surface_scales_with_ppp() {
             fn surface_at(ppp: f32) -> (u32, u32) {
-                let app = WasmApp::load_ephemeral_run(
+                let app = WasmView::load_ephemeral_run(
                     "pong-crispness",
                     &wasm_fixture("pong.wasm"),
                     StateStore::ephemeral(),
@@ -6465,9 +11520,9 @@ mod tests {
         }
 
         /// Stint 0528: the labels the host hand-paints in `text_secondary`
-        /// (sidebar context names, app-bar subtitles, pane-name bars) clear the
+        /// (sidebar context names, surface-header subtitles, pane-name bars) clear the
         /// WCAG AA 4.5:1 floor against every background they actually sit on —
-        /// mirroring the contrast check apps get. Reuses the production WCAG
+        /// mirroring the contrast check plugins get. Reuses the production WCAG
         /// math and the default theme.
         #[test]
         fn gate_chrome_labels_meet_wcag_aa_floor() {
@@ -6526,18 +11581,18 @@ mod tests {
         }
     }
 
-    /// Stint 0720 visual review: the todo app's add form, autofocused and
-    /// mid-draft. Drives the real app process through the production paths —
+    /// Stint 0720 visual review: the todo plugin's add form, autofocused and
+    /// mid-draft. Drives the real plugin process through the production paths —
     /// `a` opens the form on the guest's raw KeyEvent path, `autofocus` hands
     /// the cursor to the host TextEdit with no click, and the typed draft is
     /// painted from the host-owned buffer while it round-trips to the guest.
     /// The assertion is the gate; the PNG is for a human/agent to look at.
     #[test]
     fn screenshot_todo_add_form_autofocused_draft() {
-        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
-        let pane_id = h.open_app_at(&app_dir, &[]).expect("launch todo");
-        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+        let pane_id = h.open_view_at(&plugin_dir, &[]).expect("launch todo");
+        h.wait_for_view_frame(pane_id, Duration::from_secs(30))
             .expect("todo renders its first frame");
         h.focus_pane(pane_id).expect("focus todo pane");
         h.run_steps(2);
@@ -6558,7 +11613,7 @@ mod tests {
                 app.windows[app.active_window]
                     .panes
                     .get(&pane_id)
-                    .and_then(Pane::as_app)
+                    .and_then(Pane::as_view)
                     .map(|pane| {
                         pane.semantic_state()
                             .nodes
@@ -6669,10 +11724,11 @@ mod tests {
                 "pane {i} must span the same full vertical band as pane 0 (got {rect:?} vs {:?})",
                 rects[0]
             );
+            // Column widths follow the zoom strip presets (35% leading, 65%
+            // following), so only a non-empty width is required here.
             assert!(
-                (rect.width() - rects[0].width()).abs() < 4.0,
-                "pane {i} must have equal column width (got {rect:?} vs {:?})",
-                rects[0]
+                rect.width() > 1.0,
+                "pane {i} must have a painted width: {rect:?}"
             );
         }
         assert!(
@@ -6706,6 +11762,111 @@ mod tests {
             .expect("render 3-pane squad columns");
     }
 
+    /// Item 4 regression: a context with several windows must lay out the ACTIVE
+    /// window's columns from its own indices. Moving left/right across the window
+    /// boundary used to feed the context-wide scroll offset into the window's tree and
+    /// painted 6% slivers beside one oversized column (and overflowed the viewport).
+    #[test]
+    fn cross_window_navigation_keeps_every_pane_inside_viewport() {
+        use crate::host::keys::Direction;
+        const MIN_COLUMN_WIDTH: f32 = 80.0;
+        let mut h = PlexiUiHarness::new_sized(1100.0, 700.0);
+        let (ctx_id, first_window_panes, second_pane) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let ctx_id = app.router.active().context_id;
+            let p1 = app.add_test_pane().1;
+            let p2 = app.add_test_pane().1;
+            let p3 = app.add_test_pane().1;
+            app.set_context_columns(ctx_id, vec![vec![p1], vec![p2], vec![p3]]);
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: std::path::PathBuf::from("/tmp"),
+                tree: egui_tiles::Tree::empty("plexi-second"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ctx_id,
+            });
+            let second_idx = app.windows.len() - 1;
+            let (tile, p4) = app.add_view_pane_in_window(second_idx, "test");
+            app.windows[second_idx].focused_pane = Some(tile);
+            app.active_window = second_idx;
+            app.context_active_window.insert(ctx_id, win_id);
+            (ctx_id, vec![p1, p2, p3], p4)
+        });
+        h.run_steps(3);
+
+        let check = |h: &mut PlexiUiHarness, step: &str| {
+            h.run_steps(3);
+            h.with_app(|app| {
+                let viewport = app.ctx.content_rect();
+                let window = &app.windows[app.active_window];
+                let mut narrow = 0usize;
+                let mut columns = 0usize;
+                if let Some(root) = window.tree.root() {
+                    let children = match window.tree.tiles.get(root) {
+                        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+                        _ => vec![root],
+                    };
+                    columns = children.len();
+                    for child in children {
+                        let rect = window.tree.tiles.rect(child).expect("painted column rect");
+                        let clipped = rect.intersect(viewport);
+                        if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                            assert!(
+                                viewport.expand(1.0).contains_rect(clipped),
+                                "{step}: clipped column rect {clipped:?} escapes the viewport {viewport:?}"
+                            );
+                        }
+                        if rect.width() < MIN_COLUMN_WIDTH {
+                            narrow += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    narrow, 0,
+                    "{step}: {narrow} of {columns} columns are narrower than {MIN_COLUMN_WIDTH}px"
+                );
+                let focused = app.active_focused_pane_id().expect("focused pane");
+                let tile = window.tree.tiles.find_pane(&focused).expect("focused tile");
+                let rect = window.tree.tiles.rect(tile).expect("focused rect");
+                assert!(
+                    viewport.expand(1.0).contains_rect(rect),
+                    "{step}: focused pane {rect:?} must be revealed inside viewport {viewport:?}"
+                );
+                assert!(
+                    rect.width() >= 200.0 && rect.height() >= 200.0,
+                    "{step}: focused pane squeezed to {rect:?}"
+                );
+            });
+        };
+
+        check(&mut h, "start on second window");
+        for (i, dir) in [
+            Direction::Left,
+            Direction::Left,
+            Direction::Left,
+            Direction::Right,
+            Direction::Right,
+            Direction::Right,
+            Direction::Left,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            h.with_app_mut(|app| {
+                app.navigate(dir);
+            });
+            check(&mut h, &format!("move {i} {dir:?}"));
+        }
+        let _ = (ctx_id, first_window_panes, second_pane);
+    }
+
     #[test]
     fn file_browser_responsive_table_and_font_scaling_screenshots() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -6714,7 +11875,8 @@ mod tests {
         std::fs::create_dir_all(&leaf_dir).expect("create dirs");
         std::fs::write(leaf_dir.join("README.md"), b"# Project\nOverview").expect("write");
         std::fs::write(
-            leaf_dir.join("very_long_component_filename_that_must_elide_cleanly_in_narrow_columns.rs"),
+            leaf_dir
+                .join("very_long_component_filename_that_must_elide_cleanly_in_narrow_columns.rs"),
             b"fn main() {}",
         )
         .expect("write");
@@ -6725,9 +11887,11 @@ mod tests {
         let leaf_clone = leaf_dir.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(leaf_clone.clone())),
-                AppPermissions::builtin(),
+            app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    leaf_clone.clone(),
+                )),
+                PluginPermissions::builtin(),
                 leaf_clone,
                 None,
                 None,
@@ -6787,14 +11951,17 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
-            assert_eq!(fb.cwd, parent_dir, "clicking breadcrumb must navigate to ancestor");
+                .expect("FileBrowserView pane");
+            assert_eq!(
+                fb.cwd, parent_dir,
+                "clicking breadcrumb must navigate to ancestor"
+            );
         });
     }
 
@@ -6826,9 +11993,11 @@ mod tests {
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+            app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    root_clone.clone(),
+                )),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -6865,11 +12034,11 @@ mod tests {
                     .panes
                     .values_mut()
                     .find_map(|p| {
-                        let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                             return None;
                         };
                         b.as_any_mut()
-                            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                            .downcast_mut::<crate::file_browser::FileBrowserView>()
                     })
                     .is_some_and(|fb| fb.search_result_count() >= 3)
             });
@@ -6895,6 +12064,200 @@ mod tests {
     }
 
     #[test]
+    fn file_browser_search_discoverable_and_interactive_in_harness() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("workspace-root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(root.join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
+        std::fs::write(root.join("beta.md"), b"# Beta\n").expect("write beta");
+
+        let mut h = PlexiUiHarness::new_sized_ppp(640.0, 480.0, 2.0);
+        let root_clone = root.clone();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    root_clone.clone(),
+                )),
+                PluginPermissions::builtin(),
+                root_clone,
+                None,
+                None,
+                None,
+            );
+        });
+        h.run_steps(2);
+
+        let pane_id = h
+            .with_app(|app| app.windows[app.active_window].panes.keys().copied().next())
+            .expect("opened pane id");
+
+        // 1. SearchBar affordance is visible on initial open
+        assert!(
+            h.pane_has_label(pane_id, "Search files and contents…"),
+            "SearchBar affordance must be visible on initial File Explorer open"
+        );
+
+        // 2. Cmd+F enters search mode and requests text focus
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.run_steps(2);
+
+        let in_search_cmdf = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(in_search_cmdf, Some(true), "Cmd+F must enter search mode");
+
+        // Escape exits search mode back to normal browsing
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        let exited_search = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(exited_search, Some(false), "Escape must exit search mode");
+
+        // 3. Pointer click on SearchBar enters search mode
+        let search_pos = h
+            .harness()
+            .get_by_label("Search files and contents…")
+            .rect()
+            .center()
+            / 2.0;
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(search_pos),
+            egui::Event::PointerButton {
+                pos: search_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: search_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.run_steps(2);
+
+        let in_search_click = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .map(|fb| fb.is_in_search())
+        });
+        assert_eq!(
+            in_search_click,
+            Some(true),
+            "clicking SearchBar must enter search mode"
+        );
+
+        // Escape exits search mode back to normal browsing
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        // 4. Typing ordinary text ("alp") enters search and filters to alpha.rs
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("alp".to_string()));
+        h.run_steps(2);
+
+        let filtered_count = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.search_result_count()))
+        });
+        assert_eq!(
+            filtered_count,
+            Some((true, 1)),
+            "typing plain text must enter search mode and filter entries"
+        );
+
+        // 5. Activating result (Enter) opens alpha.rs and exits search mode
+        h.harness().input_mut().events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        h.run_steps(2);
+
+        let search_state = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .map(|fb| (fb.is_in_search(), fb.opened_files.len()))
+        });
+        assert_eq!(
+            search_state,
+            Some((false, 1)),
+            "activating search hit must open the file and exit search mode back to browsing"
+        );
+    }
+
+    #[test]
     fn screenshot_file_browser_status_bar_shortcuts_wide_and_narrow() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("workspace-root");
@@ -6908,9 +12271,11 @@ mod tests {
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+            app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    root_clone.clone(),
+                )),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -6923,13 +12288,13 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             let layout = fb
                 .last_status_bar_layout
                 .as_ref()
@@ -6960,6 +12325,37 @@ mod tests {
         h.save_screenshot(&evidence_png!("_wide_1100x720"))
             .expect("render wide 1100x720 status bar");
 
+        h.harness().set_size(egui::vec2(760.0, 520.0));
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            let fb = app.windows[app.active_window]
+                .panes
+                .values_mut()
+                .find_map(|p| {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
+                        return None;
+                    };
+                    b.as_any_mut()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
+                })
+                .expect("FileBrowserView pane");
+            let layout = fb
+                .last_status_bar_layout
+                .as_ref()
+                .expect("medium 760 status bar layout");
+            assert!(
+                !layout.label_rects.is_empty(),
+                "medium 760x520 pane must fit status bar hints"
+            );
+            let last_label = layout.label_rects.last().unwrap();
+            assert!(
+                (layout.row_rect.max.x - last_label.max.x).abs() <= 2.0,
+                "medium 760 rightmost hint label must sit flush with status bar right edge"
+            );
+        });
+        h.save_screenshot(&evidence_png!("_medium_760x520"))
+            .expect("render medium 760x520 status bar");
+
         h.harness().set_size(egui::vec2(640.0, 520.0));
         h.run_steps(3);
         h.with_app_mut(|app| {
@@ -6967,13 +12363,13 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             let layout = fb
                 .last_status_bar_layout
                 .as_ref()
@@ -7046,9 +12442,11 @@ mod tests {
         let cwd = tmp.path().to_path_buf();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::render::cli_renderer_app::CliRendererApp::new(desc_str)),
-                AppPermissions::builtin(),
+            app.open_builtin_view_pane(
+                Box::new(crate::render::cli_renderer_view::CliRendererView::new(
+                    desc_str,
+                )),
+                PluginPermissions::builtin(),
                 cwd,
                 None,
                 None,
@@ -7061,13 +12459,13 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                        .downcast_mut::<crate::render::cli_renderer_view::CliRendererView>()
                 })
-                .expect("CliRendererApp pane");
+                .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
             assert!(cli.last_footer_chip_rects.len() >= 3);
         });
@@ -7088,13 +12486,13 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                        .downcast_mut::<crate::render::cli_renderer_view::CliRendererView>()
                 })
-                .expect("CliRendererApp pane");
+                .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
             assert_eq!(cli.last_footer_chip_rects.len(), 2);
         });
@@ -7117,9 +12515,11 @@ mod tests {
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+            app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    root_clone.clone(),
+                )),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -7149,7 +12549,9 @@ mod tests {
         tap_key(&mut h, egui::Key::Slash, egui::Modifiers::NONE);
         h.run_steps(2);
         assert!(
-            h.host_has_label("Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run"),
+            h.host_has_label(
+                "Type a command or use \u{2191}\u{2193} to choose an action \u{2014} Enter to run"
+            ),
             "bare `/` palette open must show neutral command-mode hint chip"
         );
         h.save_screenshot(&evidence_png!("_slash_open"))
@@ -7215,7 +12617,7 @@ mod tests {
         let ws_cmds = ws_channel_dir.join("commands.toml");
         std::fs::write(
             &ws_cmds,
-            "[commands]\ngs = \"git status -sb\"\n\n[commands.play]\ndescription = \"Open mixer + editor\"\nsteps = [\n  \"pane new --right --name mixer -- echo mix\",\n  \"app open text-editor --split down\",\n]\n",
+            "[commands]\ngs = \"git status -sb\"\n\n[commands.play]\ndescription = \"Open mixer + editor\"\nsteps = [\n  \"pane new --right --name mixer -- echo mix\",\n  \"view open text-editor --split down\",\n]\n",
         )
         .unwrap();
 
@@ -7236,5 +12638,1588 @@ mod tests {
         h.save_screenshot(&out)
             .expect("render edit_commands header scope banner");
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn screenshot_columns_cmd_enter_zoom_toggle_one_and_multi_pane() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let p1 = add_focused_pane(&mut h);
+        h.run_steps(2);
+
+        let p2 = h.with_app_mut(|app| {
+            app.split_focused(true, None, false, false, None)
+                .expect("split right for column 1")
+        });
+        h.run_steps(2);
+        h.focus_pane(p2).unwrap();
+
+        let p3 = h.with_app_mut(|app| {
+            app.split_focused(false, None, false, false, None)
+                .expect("split stacked pane inside column 1")
+        });
+        h.run_steps(2);
+
+        h.with_app_mut(|app| {
+            let ctx = app.router.active().context_id;
+            app.set_context_columns(ctx, vec![vec![p1], vec![p2, p3]]);
+        });
+        h.run_steps(4);
+
+        let tiled_shot = evidence_png!("_tiled_columns");
+        h.save_screenshot(&tiled_shot)
+            .expect("render tiled columns");
+
+        // 1. Zoom the one-pane column (p1) via Cmd+Enter.
+        h.focus_pane(p1).unwrap();
+        h.run_steps(2);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_some(),
+                "one-pane column must be zoomed"
+            );
+        });
+        let one_pane_shot = evidence_png!("_one_pane_column_zoomed");
+        h.save_screenshot(&one_pane_shot)
+            .expect("render zoomed one-pane column");
+
+        // Unzoom p1 via Cmd+Enter.
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_none(),
+                "one-pane column must be unzoomed"
+            );
+        });
+
+        // 2. Zoom stacked pane in multi-pane column (p3) via Cmd+Enter.
+        h.focus_pane(p3).unwrap();
+        h.run_steps(2);
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_some(),
+                "multi-pane column pane must be zoomed"
+            );
+        });
+        let multi_pane_shot = evidence_png!("_multi_pane_column_zoomed");
+        h.save_screenshot(&multi_pane_shot)
+            .expect("render zoomed multi-pane column pane");
+
+        // Unzoom p3 via Cmd+Enter.
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(
+                app.windows[app.active_window].zoomed_pane.is_none(),
+                "multi-pane column pane must be unzoomed"
+            );
+        });
+        let restored_shot = evidence_png!("_tiled_restored");
+        h.save_screenshot(&restored_shot)
+            .expect("render restored tiled columns");
+
+        println!("Screenshots: {tiled_shot}, {one_pane_shot}, {multi_pane_shot}, {restored_shot}");
+        for p in [
+            &tiled_shot,
+            &one_pane_shot,
+            &multi_pane_shot,
+            &restored_shot,
+        ] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn screenshot_attention_queue_all_states_themes() {
+        use crate::app::attention_queue::{QueueBar, QueueCategory, QueueSource};
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.with_app_mut(|app| {
+            app.attention_queue.synthetic_items = [
+                QueueCategory::Ask,
+                QueueCategory::Failed,
+                QueueCategory::Done,
+                QueueCategory::Notice,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, category)| QueueBar {
+                id: format!("fixture-{i}"),
+                category,
+                pane_id: i as u64 + 1,
+                pane_name: format!("Agent {category:?}"),
+                context_id: 0,
+                context_path: "workspace / agent".into(),
+                summary: format!(
+                    "{category:?}: Review the latest agent result and decide what to do next"
+                ),
+                command_text: String::new(),
+                options: vec![],
+                created_at_ms: i as u64,
+                locked: false,
+                source: QueueSource::Synthetic {
+                    id: format!("fixture-{i}"),
+                },
+            })
+            .collect();
+            app.sync_attention_queue();
+            app.attention_queue.open = true;
+        });
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+            });
+            for selected in 0..4 {
+                h.with_app_mut(|app| app.attention_queue.selected_idx = selected);
+                h.run_steps(4);
+                h.with_app(|app| assert_eq!(app.attention_queue.items.len(), 4));
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{selected}")))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_attention_queue_realistic_asks_and_results() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "agent:coder".to_string(),
+                resource: "src/app/attention_queue.rs".to_string(),
+                summary: "Should we return to parent conversation on Enter?".to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+
+        h.with_app_mut(|app| {
+            app.record_child_agent_result(
+                None,
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: 1042,
+                    child_agent: "researcher".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some(
+                        "Analyzed parent-first navigation patterns across codebase".to_string(),
+                    ),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1000,
+                },
+            );
+            app.sync_attention_queue();
+            app.attention_queue.open = true;
+        });
+
+        h.run_steps(4);
+        let shot = evidence_png!();
+        h.save_screenshot(&shot)
+            .expect("render attention queue screenshot");
+        assert!(
+            std::path::Path::new(&shot).exists(),
+            "screenshot must exist at {shot}"
+        );
+        let _ = std::fs::remove_file(&shot);
+    }
+
+    fn add_attention_result_terminal(
+        app: &mut PlexiApp,
+        agent: Option<(&str, &str)>,
+        parent_pane_id: Option<PaneId>,
+        spawned_by: Option<&str>,
+    ) -> PaneId {
+        let pane_id = app.host.alloc_pane_id();
+        let mut terminal = TerminalPane::new(
+            pane_id,
+            app.ctx.clone(),
+            app.pty_event_tx.clone(),
+            egui_term::BackendSettings {
+                shell: "/bin/sh".into(),
+                ..Default::default()
+            },
+            14.0,
+        )
+        .expect("create attention-result terminal");
+        if let Some((harness, role)) = agent {
+            terminal.agent_harness = Some(harness.into());
+            terminal.agent_role = Some(role.into());
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id,
+                state: crate::protocol::AgentState::Idle,
+                agent: harness.into(),
+                detail: None,
+                session_id: None,
+            });
+        }
+        terminal.parent_pane_id = parent_pane_id;
+        terminal.spawned_by = spawned_by.map(str::to_owned);
+        let active_window = app.active_window;
+        let window = &mut app.windows[active_window];
+        window
+            .panes
+            .insert(pane_id, Pane::Terminal(Box::new(terminal)));
+        let tile = window.tree.tiles.insert_pane(pane_id);
+        if window.tree.root().is_none() {
+            window.tree.root = Some(tile);
+            window.focused_pane = Some(tile);
+        }
+        pane_id
+    }
+
+    #[test]
+    fn attention_result_enter_and_click_use_live_parent_activation_paths() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+        let (parent, child) = h.with_app_mut(|app| {
+            let parent = add_attention_result_terminal(app, Some(("claude", "lead")), None, None);
+            let child = add_attention_result_terminal(
+                app,
+                Some(("claude", "result-worker")),
+                Some(parent),
+                Some("agent:lead"),
+            );
+            app.record_child_agent_result(
+                Some(parent),
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: child,
+                    child_agent: "result-worker".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Finished the parent-first navigation review".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1_000,
+                },
+            );
+            app.close_pane_by_id(child);
+            app.sync_attention_queue();
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+            (parent, child)
+        });
+
+        // Keyboard Enter uses the host input path and resolves to the live parent.
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.active_focused_pane_id(), Some(parent));
+            assert!(
+                app.attention_queue
+                    .items
+                    .iter()
+                    .any(|bar| bar.pane_id == child),
+                "Enter must leave the child result reachable"
+            );
+        });
+
+        // Clear focus, then click the rendered queue row through kittest's pointer path.
+        h.with_app_mut(|app| {
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+        });
+        h.run_steps(2);
+        let row_click = h.with_app(|app| {
+            let panel = app
+                .ctx
+                .memory(|memory| memory.area_rect(egui::Id::new("attention_queue_panel")))
+                .expect("rendered attention queue panel");
+            egui::pos2(panel.center().x, panel.max.y - 28.0)
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(row_click),
+            egui::Event::PointerButton {
+                pos: row_click,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: row_click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.active_focused_pane_id(), Some(parent));
+            assert!(
+                app.attention_queue
+                    .items
+                    .iter()
+                    .any(|bar| bar.pane_id == child),
+                "click must leave the child result reachable"
+            );
+        });
+    }
+
+    #[test]
+    fn attention_mailbox_states_and_absence_of_second_queue_bar() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+
+        let path_bar_shape_count = |h: &mut PlexiUiHarness| {
+            let path_bar = egui::Rect::from_min_size(
+                egui::pos2(0.0, crate::ui::style::TOOLBAR_H + 1.0),
+                egui::vec2(
+                    h.with_app(|app| app.ctx.content_rect().width()),
+                    crate::ui::style::PATH_BAR_H,
+                ),
+            );
+            h.harness()
+                .output()
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    let painted = shape.shape.visual_bounding_rect();
+                    painted.is_positive() && path_bar.contains_rect(painted)
+                })
+                .count()
+        };
+
+        // 1. Empty state
+        h.run_steps(4);
+        let empty_path_bar_shape_count = path_bar_shape_count(&mut h);
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in empty state");
+            assert!(mailbox_rect.width() > 0.0 && mailbox_rect.height() > 0.0);
+        });
+
+        // 2. Asks-present state
+        let pane_id = h.with_app_mut(|app| {
+            let pid = app.host.alloc_pane_id();
+            app.enqueue_ask(
+                "ask-mb-1",
+                pid,
+                "permission: allow cargo test",
+                1_000,
+                Vec::new(),
+            );
+            pid
+        });
+        h.run_steps(4);
+        assert_eq!(
+            path_bar_shape_count(&mut h),
+            empty_path_bar_shape_count,
+            "the path bar paint must not gain a second attention queue affordance when asks arrive"
+        );
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in asks state");
+            assert!(mailbox_rect.width() > 0.0);
+            assert_eq!(app.attention_queue.ask_count(), 1);
+        });
+
+        // 3. Failure/result state
+        h.with_app_mut(|app| {
+            app.attention_queue.synthetic_items.clear();
+            app.attention_queue
+                .answered_ask_ids
+                .insert("ask-mb-1".to_string());
+            app.record_child_agent_result(
+                None,
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: pane_id,
+                    child_agent: "worker".to_string(),
+                    status: "failed".to_string(),
+                    summary: Some("Build failed with compilation error".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1000,
+                },
+            );
+            app.sync_attention_queue();
+        });
+        h.run_steps(4);
+        assert_eq!(
+            path_bar_shape_count(&mut h),
+            empty_path_bar_shape_count,
+            "the path bar paint must not gain a second attention queue affordance for failures"
+        );
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in failure state");
+            assert!(mailbox_rect.width() > 0.0);
+            assert_eq!(app.attention_queue.ask_count(), 0);
+            assert!(app.attention_queue.failed_count() > 0);
+            assert_eq!(
+                app.ctx.data(|d| {
+                    d.get_temp::<egui::Color32>(egui::Id::new("attention_mailbox_color"))
+                }),
+                Some(app.colors.zoom_failed),
+                "failed attention mailbox must use the zoom_failed color"
+            );
+        });
+    }
+
+    #[test]
+    fn attention_mailbox_pointer_and_keyboard_activation_preserve_decision_and_parent_first_semantics(
+    ) {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+
+        // Initially closed
+        h.with_app(|app| assert!(!app.attention_queue.open));
+
+        let mb_rect = h.with_app(|app| {
+            app.ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect")
+        });
+
+        // Guard/mutation test: click somewhere else (not the mailbox)
+        let miss_pos = egui::pos2(10.0, 10.0);
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(miss_pos),
+            egui::Event::PointerButton {
+                pos: miss_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: miss_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "clicking outside mailbox must not open queue list"
+            );
+        });
+
+        // Pointer click on mailbox opens the queue list
+        let click_pos = mb_rect.center();
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.open,
+                "pointer click on mailbox must open attention queue list"
+            );
+        });
+
+        // Click again toggles it closed
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "second click on mailbox must close attention queue list"
+            );
+        });
+
+        // Keyboard Cmd+I toggles it open
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.open,
+                "Cmd+I must open attention queue list"
+            );
+        });
+
+        // Close list with Esc
+        h.harness().key_press(egui::Key::Escape);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "Esc must close attention queue list"
+            );
+        });
+
+        // Verify decision actions: an open ask can be opened in Decision Overlay via Enter
+        let ask_pane = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.enqueue_ask(
+                "ask-decision-test",
+                ask_pane,
+                "permission: allow rm -rf",
+                1_000,
+                Vec::new(),
+            );
+            app.toggle_attention_queue_list();
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.decision_overlay.is_some(),
+                "Enter on an ask bar must open Decision Overlay"
+            );
+        });
+
+        // Close overlay with Esc
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            app.attention_queue
+                .answered_ask_ids
+                .insert("ask-decision-test".to_string());
+            app.attention_queue
+                .synthetic_items
+                .retain(|b| b.id != "ask-decision-test");
+            app.close_pane_by_id(ask_pane);
+            app.sync_attention_queue();
+        });
+
+        // Verify parent-first result navigation is preserved (stint 0962)
+        let (parent, child) = h.with_app_mut(|app| {
+            let parent = add_attention_result_terminal(app, Some(("claude", "lead")), None, None);
+            let child = add_attention_result_terminal(
+                app,
+                Some(("claude", "worker")),
+                Some(parent),
+                Some("agent:lead"),
+            );
+            app.record_child_agent_result(
+                Some(parent),
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: child,
+                    child_agent: "worker".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Task finished".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1_000,
+                },
+            );
+            app.close_pane_by_id(child);
+            app.sync_attention_queue();
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+            (parent, child)
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(
+                app.active_focused_pane_id(),
+                Some(parent),
+                "parent-first navigation must activate parent pane"
+            );
+            assert!(
+                app.attention_queue
+                    .items
+                    .iter()
+                    .any(|bar| bar.pane_id == child),
+                "child result remains reachable"
+            );
+        });
+    }
+
+    #[test]
+    fn screenshot_attention_mailbox_theme_states() {
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            for state in ["asks", "failed", "notice"] {
+                let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                    if state == "asks" {
+                        let pid = app.host.alloc_pane_id();
+                        app.enqueue_ask(
+                            "ask-shot",
+                            pid,
+                            "permission: Allow cargo test",
+                            1_000,
+                            Vec::new(),
+                        );
+                    } else {
+                        app.record_child_agent_result(
+                            None,
+                            crate::workspace::QueuedChildResult {
+                                child_pane_id: 1041,
+                                child_agent: "builder".to_string(),
+                                status: if state == "failed" {
+                                    "failed"
+                                } else {
+                                    "completed"
+                                }
+                                .to_string(),
+                                summary: Some("Review build results".to_string()),
+                                result_json: "{}".to_string(),
+                                finished_at_epoch_secs: 1000,
+                            },
+                        );
+                        app.sync_attention_queue();
+                    }
+                });
+                h.run_steps(4);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{state}")))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_attention_mailbox_empty_asks_results_narrow_and_scaled() {
+        // 1. Empty state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.run_steps(4);
+            let shot = evidence_png!("_empty");
+            h.save_screenshot(&shot)
+                .expect("render empty mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 2. Asks-present state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-shot",
+                    pid,
+                    "permission: Allow flash: cargo test --workspace",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_asks");
+            h.save_screenshot(&shot)
+                .expect("render asks mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 3. Failed state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                app.record_child_agent_result(
+                    None,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: 1041,
+                        child_agent: "builder".to_string(),
+                        status: "failed".to_string(),
+                        summary: Some("Build failed with a compiler error".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: 1000,
+                    },
+                );
+                app.sync_attention_queue();
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_failed");
+            h.save_screenshot(&shot)
+                .expect("render failed mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 4. Completed-result state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                app.record_child_agent_result(
+                    None,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: 1042,
+                        child_agent: "researcher".to_string(),
+                        status: "completed".to_string(),
+                        summary: Some("Analyzed navigation patterns".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: 1000,
+                    },
+                );
+                app.sync_attention_queue();
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_results");
+            h.save_screenshot(&shot)
+                .expect("render results mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 5. Narrow width (700.0)
+        {
+            let mut h = PlexiUiHarness::new_sized(700.0, 800.0);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-narrow",
+                    pid,
+                    "permission: Allow narrow layout",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_narrow");
+            h.save_screenshot(&shot)
+                .expect("render narrow mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 6. High UI scale (1.5x)
+        {
+            let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.5);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-scaled",
+                    pid,
+                    "permission: Allow high scale layout",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_scaled");
+            h.save_screenshot(&shot)
+                .expect("render scaled mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+    }
+    #[test]
+    fn tiled_divider_drag_survives_repaint() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h
+            .with_app_mut(|app| app.split_focused(false, None, false, false, None))
+            .unwrap();
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (
+                layout.pane(first).unwrap().outer_rect.width(),
+                layout
+                    .dividers
+                    .iter()
+                    .find(|d| d.is_vertical)
+                    .unwrap()
+                    .rect
+                    .center(),
+            )
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(80.0, 0.0);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: moved,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(4);
+        let after = h.with_app(|app| {
+            app.active_strip_layout()
+                .pane(first)
+                .unwrap()
+                .outer_rect
+                .width()
+        });
+        assert!(
+            after > before + 30.0,
+            "drag must persist: {before} -> {after}; second={second}"
+        );
+    }
+
+    #[test]
+    fn tiled_stack_drag_survives_repaint() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None))
+            .unwrap();
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (
+                layout.pane(first).unwrap().outer_rect.height(),
+                layout
+                    .dividers
+                    .iter()
+                    .find(|d| !d.is_vertical)
+                    .unwrap()
+                    .rect
+                    .center(),
+            )
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(0.0, 80.0);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: moved,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(4);
+        let after = h.with_app(|app| {
+            app.active_strip_layout()
+                .pane(first)
+                .unwrap()
+                .outer_rect
+                .height()
+        });
+        assert!(
+            after > before + 30.0,
+            "stack drag must persist: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn tiled_double_click_resets_only_adjacent_columns() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h
+            .with_app_mut(|app| app.split_focused(false, None, false, false, None))
+            .unwrap();
+        h.run_steps(2);
+        let third = h
+            .with_app_mut(|app| app.split_focused(false, None, false, false, None))
+            .unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let window = &mut app.windows[app.active_window];
+            let root = window.tree.root().unwrap();
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+                window.tree.tiles.get_mut(root)
+            else {
+                panic!("columns")
+            };
+            for (&tile, share) in linear.children.iter().zip([3.0, 4.0, 7.0]) {
+                linear.shares.set_share(tile, share);
+            }
+            app.focus_pane_in_strip(first);
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| {
+            app.active_strip_layout()
+                .dividers
+                .iter()
+                .find(|d| d.is_vertical)
+                .unwrap()
+                .rect
+                .center()
+        });
+        let mut time = h.with_app(|app| app.ctx.input(|input| input.time));
+        for click in 0..2 {
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.step();
+            if click == 1 {
+                assert!(
+                    h.with_app(|app| app.ctx.input(|input| input
+                        .pointer
+                        .button_double_clicked(egui::PointerButton::Primary))),
+                    "fixture must produce a double click"
+                );
+            }
+        }
+        h.run_steps(3);
+        h.with_app(|app| {
+            let window = &app.windows[app.active_window];
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+                window.tree.tiles.get(window.tree.root().unwrap())
+            else {
+                panic!("columns")
+            };
+            assert!(
+                (linear.shares[linear.children[0]] - linear.shares[linear.children[1]]).abs()
+                    < 0.01
+            );
+            assert!((linear.shares[linear.children[2]] - 7.0).abs() < 0.01);
+            let layout = app.active_strip_layout();
+            assert!(
+                layout.pane(second).unwrap().is_visible && layout.pane(third).unwrap().is_visible
+            );
+        });
+    }
+
+    #[derive(Default)]
+    struct StripWheelSnapshot {
+        offset: egui::Vec2,
+        raw_y: f32,
+        keys: usize,
+    }
+    struct StripWheelFixture {
+        horizontal: bool,
+        state: Arc<std::sync::Mutex<StripWheelSnapshot>>,
+    }
+    impl crate::app::view_trait::View for StripWheelFixture {
+        fn type_id(&self) -> &'static str {
+            "strip_wheel_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Scroll fixture".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn handle_key(
+            &mut self,
+            input: &crate::app::input_router::PlexiInput,
+        ) -> crate::app::view_trait::KeyDisposition {
+            if input.key_pressed(egui::Key::X) {
+                self.state.lock().unwrap().keys += 1;
+                return crate::app::view_trait::KeyDisposition::Consumed;
+            }
+            crate::app::view_trait::KeyDisposition::Passthrough
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            _: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            let raw_y = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum::<f32>()
+            });
+            let area = if self.horizontal {
+                egui::ScrollArea::horizontal()
+            } else {
+                egui::ScrollArea::vertical()
+            };
+            let output = area.max_width(300.0).max_height(300.0).show(ui, |ui| {
+                ui.allocate_space(egui::vec2(2000.0, 2000.0));
+            });
+            let mut state = self.state.lock().unwrap();
+            state.offset = output.state.offset;
+            state.raw_y += raw_y;
+        }
+    }
+
+    #[test]
+    fn strip_nested_scroll_controls_keep_their_wheel() {
+        for horizontal in [false, true] {
+            let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+            h.step();
+            let first = add_focused_pane(&mut h);
+            let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+            h.with_app_mut(|app| {
+                let pane = app.windows[app.active_window]
+                    .panes
+                    .get_mut(&first)
+                    .unwrap()
+                    .as_view_mut()
+                    .unwrap();
+                pane.runtime = ViewRuntime::Builtin(Box::new(StripWheelFixture {
+                    horizontal,
+                    state: state.clone(),
+                }));
+            });
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None))
+                .unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None))
+                .unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| {
+                app.focus_pane_in_strip(first);
+            });
+            h.run_steps(3);
+            let (before, pos) = h.with_app(|app| {
+                let layout = app.active_strip_layout();
+                (
+                    layout.scroll_offset_px,
+                    layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0),
+                )
+            });
+            let delta = if horizontal {
+                egui::vec2(-200.0, 0.0)
+            } else {
+                egui::vec2(0.0, -200.0)
+            };
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta,
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            h.run_steps(8);
+            let offset = state.lock().unwrap().offset;
+            assert!(
+                if horizontal {
+                    offset.x > 1.0
+                } else {
+                    offset.y > 1.0
+                },
+                "pane did not scroll: {offset:?}"
+            );
+            assert!(
+                (h.with_app(|app| app.active_strip_layout().scroll_offset_px) - before).abs() < 0.5,
+                "pane control must consume its gesture"
+            );
+        }
+    }
+
+    #[test]
+    fn screenshot_populated_tiled_windows() {
+        for (width, height, scale, suffix) in [
+            (1200.0, 700.0, 1.0, "_wide"),
+            (900.0, 700.0, 1.5, "_narrow"),
+        ] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
+            for index in 0..3 {
+                let path = h.workspace.path().join(format!("note-{index}.md"));
+                std::fs::write(&path, format!("# Project {index}\n\nA populated workspace pane with notes and useful context.\n\n- Review the plan\n- Follow up on the next step\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.launch_view_by_id_with_layout_forced(
+                        "text-editor",
+                        Some("split_h".into()),
+                        &[path.display().to_string()],
+                        None,
+                    )
+                    .expect("open note");
+                });
+                h.run_steps(3);
+            }
+            h.run_steps(4);
+            h.save_screenshot(&evidence_png!(suffix))
+                .expect("render strip");
+        }
+    }
+
+    #[test]
+    fn screenshot_saved_workspace_tiles_and_windows() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        for (name, layout) in [("first", "split_h"), ("second", "split_h")] {
+            let path = h.workspace.path().join(format!("{name}.md"));
+            std::fs::write(
+                &path,
+                format!("# {name} project\n\nReview the migration and record the result.\n"),
+            )
+            .unwrap();
+            h.with_app_mut(|app| {
+                app.launch_view_by_id_with_layout_forced(
+                    "text-editor",
+                    Some(layout.into()),
+                    &[path.display().to_string()],
+                    None,
+                )
+                .unwrap()
+            });
+            h.run_steps(3);
+        }
+        h.save_screenshot(&evidence_png!("_fresh")).unwrap();
+        let path = h.workspace.path().join("window.md");
+        std::fs::write(
+            &path,
+            "# Second window\n\nThe workspace keeps its pane identity.\n",
+        )
+        .unwrap();
+        let (terminal, first_editor) = h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            app.create_page_at(
+                1,
+                0,
+                context,
+                crate::pane_ops::create::TerminalSpawnOptions {
+                    initial_cmd: Some("printf 'Second window ready\\n'"),
+                    close_on_exit: false,
+                    cwd_override: path.parent().map(|p| p.to_path_buf()),
+                    agent_pane: false,
+                    inject_folder_secrets: false,
+                },
+            );
+            let terminal = app.focused_pane_id().expect("new page terminal");
+            let previous: std::collections::HashSet<_> = app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect();
+            app.launch_view_by_id_with_layout_forced(
+                "text-editor",
+                Some("split_h".into()),
+                &[path.display().to_string()],
+                None,
+            )
+            .unwrap();
+            let first_editor = app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .find(|id| !previous.contains(id))
+                .expect("second-page editor");
+            (terminal, first_editor)
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows
+                    .iter_mut()
+                    .find_map(|window| window.panes.get_mut(&terminal))
+                    .and_then(Pane::as_terminal_mut)
+                    .is_some_and(|pane| {
+                        pane.backend
+                            .capture_lines(30)
+                            .iter()
+                            .any(|line| line.contains("Second window ready"))
+                    })
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "second window terminal did not print fixture output"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.run_steps(4);
+        h.save_screenshot(&evidence_png!("_terminal_multi"))
+            .unwrap();
+        let companion = h.workspace.path().join("companion.md");
+        std::fs::write(
+            &companion,
+            "# Companion note\n\nThe second page has two visible panes.\n",
+        )
+        .unwrap();
+        h.with_app_mut(|app| {
+            app.close_pane_by_id(terminal);
+            let previous: std::collections::HashSet<_> = app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect();
+            app.launch_view_by_id_with_layout_forced(
+                "text-editor",
+                Some("split_h".into()),
+                &[companion.display().to_string()],
+                None,
+            )
+            .unwrap();
+            let second_editor = app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .find(|id| !previous.contains(id))
+                .expect("companion editor");
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for (pane, width) in [(first_editor, 480.0), (second_editor, 680.0)] {
+                let column = strip.find_column_for_pane(pane).expect("editor column");
+                strip.columns[column].width = crate::strip::ColumnWidth::CustomPixels(width);
+            }
+            strip.focus_pane(second_editor);
+        });
+        h.run_steps(4);
+        assert!(h.with_app(|app| app.windows.len()) >= 2);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            let pane = layout
+                .pane(first_editor)
+                .expect("second-page editor layout");
+            assert!(
+                pane.is_visible,
+                "visible editor must not be marked off-screen: {pane:?}"
+            );
+            let window = &app.windows[app.active_window];
+            let tile = window.tree.tiles.find_pane(&first_editor).unwrap();
+            let painted = window.tree.tiles.rect(tile).unwrap();
+            let painted_visible = painted.intersect(layout.canvas_rect);
+            assert!(
+                pane.clip_rect.intersect(painted_visible).width() >= painted_visible.width() - 2.0,
+                "editor snapshot and painted tile must agree: snapshot={:?}, tile={painted:?}",
+                pane.clip_rect
+            );
+        });
+        h.save_screenshot(&evidence_png!("_multi_window")).unwrap();
+        h.with_app_mut(|app| app.save_workspace_now());
+        let profile = h._profile_dir.path().to_path_buf();
+        let saved = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+        let mut restored = PlexiUiHarness::new_sized(1200.0, 700.0);
+        restored.with_app_mut(|app| {
+            let config = app.config.clone();
+            let colors = app.colors.clone();
+            let context = app.ctx.clone();
+            let sender = app.pty_event_tx.clone();
+            let workspace = crate::app::restore_workspace(
+                saved,
+                &config,
+                crate::app::WorkspaceRestoreCollaborators {
+                    profile_dir: &profile,
+                    colors: &colors,
+                    hot_reload: &mut app.hot_reload,
+                    state_watch: &mut app.state_watch,
+                    terminal_spawner: Some((&context, &sender)),
+                },
+            )
+            .expect("restore workspace");
+            app.install_restored_workspace(workspace);
+        });
+        restored.run_steps(4);
+        assert!(restored.with_app(|app| app.windows.len()) >= 2);
+        restored
+            .save_screenshot(&evidence_png!("_restored"))
+            .unwrap();
+    }
+
+    #[test]
+    fn tiled_stack_double_click_resets_only_adjacent_shares() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None))
+            .unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None))
+            .unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let window = &mut app.windows[app.active_window];
+            let root = window.tree.root().unwrap();
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+                window.tree.tiles.get_mut(root)
+            else {
+                panic!("rows")
+            };
+            for (&tile, share) in linear.children.iter().zip([1.0, 2.0, 4.0]) {
+                linear.shares.set_share(tile, share);
+            }
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| {
+            app.active_strip_layout()
+                .dividers
+                .iter()
+                .find(|d| !d.is_vertical)
+                .unwrap()
+                .rect
+                .center()
+        });
+        let mut time = h.with_app(|app| app.ctx.input(|input| input.time));
+        for _ in 0..2 {
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.step();
+        }
+        h.run_steps(3);
+        let heights = h.with_app(|app| {
+            let window = &app.windows[app.active_window];
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+                window.tree.tiles.get(window.tree.root().unwrap())
+            else {
+                panic!("rows")
+            };
+            linear
+                .children
+                .iter()
+                .map(|tile| linear.shares[*tile])
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(heights, vec![1.5, 1.5, 4.0]);
+    }
+
+    #[test]
+    fn tiled_nested_editors_pointer_input_and_screenshots() {
+        for (width, height, scale, suffix) in [
+            (1280.0, 800.0, 1.0, "_wide"),
+            (720.0, 600.0, 1.0, "_narrow"),
+            (1280.0, 800.0, 2.0, "_ppp2"),
+        ] {
+            let mut h = PlexiUiHarness::new_sized_ppp(width, height, scale);
+            let mut editors = Vec::new();
+            for (index, layout) in ["split_h", "split_v", "split_h"].into_iter().enumerate() {
+                let path = h.workspace.path().join(format!("plan-{index}.md"));
+                std::fs::write(&path, format!("# Project {}\n\nOrdinary split workspace.\n\n- Review the implementation\n- Check the running build\n- Record the next step\n", index + 1)).unwrap();
+                h.with_app_mut(|app| {
+                    app.launch_view_by_id_with_layout_forced(
+                        "text-editor",
+                        Some(layout.into()),
+                        &[path.display().to_string()],
+                        None,
+                    )
+                    .unwrap()
+                });
+                h.run_steps(3);
+                editors.push((
+                    h.with_app(|app| app.active_focused_pane_id().unwrap()),
+                    path,
+                ));
+            }
+            h.with_app(|app| {
+                let layout = app.active_strip_layout();
+                let top = layout.pane(editors[0].0).unwrap().outer_rect;
+                let left = layout.pane(editors[1].0).unwrap().outer_rect;
+                let right = layout.pane(editors[2].0).unwrap().outer_rect;
+                assert!(top.bottom() <= left.top() + 1.0 && top.bottom() <= right.top() + 1.0);
+                assert!(left.right() <= right.left() + 1.0);
+                for pane in &layout.panes {
+                    assert!(
+                        layout
+                            .canvas_rect
+                            .expand(1.0)
+                            .contains_rect(pane.outer_rect),
+                        "pane outside tiled canvas: {pane:?}"
+                    );
+                }
+            });
+            for (index, (pane, path)) in editors.iter().enumerate() {
+                let pos = h.with_app(|app| {
+                    app.active_strip_layout()
+                        .pane(*pane)
+                        .unwrap()
+                        .hit_rect
+                        .center()
+                });
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.run_steps(2);
+                h.with_app(|app| {
+                    assert_eq!(
+                        app.host_input_owner(),
+                        crate::app::input_owner::InputOwner::Pane(*pane)
+                    )
+                });
+                let marker = format!("typed-in-pane-{index}");
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(marker.clone()));
+                h.run_steps(2);
+                h.harness().key_press_modifiers(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND,
+                    egui::Key::S,
+                );
+                h.run_steps(2);
+                assert!(std::fs::read_to_string(path).unwrap().contains(&marker));
+                for (other, (_, other_path)) in editors.iter().enumerate() {
+                    if other != index {
+                        assert!(!std::fs::read_to_string(other_path)
+                            .unwrap()
+                            .contains(&marker));
+                    }
+                }
+            }
+            h.save_screenshot(&evidence_png!(suffix)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn screenshot_descriptor_kit_dropdown() {
+    use egui_kittest::kittest::Queryable;
+    for theme in ["plexi-dusk", "plexi-dawn"] {
+        let mut h = PlexiUiHarness::new_sized(720.0, 480.0);
+        h.with_app_mut(|app| {
+            let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+            app.colors = crate::ui::theme::Colors::from_config(&cfg);
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
+            app.sidebar_visible = false;
+        });
+        let cwd = h.workspace_root().to_path_buf();
+        h.open_target(HarnessOpenTarget::Builtin {
+            id: "descriptor-dropdown-fixture",
+            cwd: &cwd,
+            args: &[],
+        })
+        .unwrap();
+        h.run_steps(4);
+        assert_eq!(
+            h.harness()
+                .get_by_role(egui::accesskit::Role::ComboBox)
+                .rect()
+                .height(),
+            crate::ui::style::BUTTON_H_MD
+        );
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_closed")))
+            .unwrap();
+        h.harness()
+            .get_by_role(egui::accesskit::Role::ComboBox)
+            .click();
+        h.run_steps(3);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(700.0, 460.0)));
+        h.run_steps(3);
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_open")))
+            .unwrap();
+        h.harness().get_by_label("Staging").hover();
+        h.run_steps(3);
+        let staging = h.harness().get_by_label("Staging").rect();
+        assert_eq!(staging.height(), crate::ui::style::LIST_ROW_DENSE_H);
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}")))
+            .unwrap();
+        h.harness().get_by_label("Staging").click();
+        h.run_steps(3);
+        h.harness().get_by_label("Selected environment: Staging");
     }
 }

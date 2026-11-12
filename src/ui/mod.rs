@@ -1,16 +1,28 @@
 pub mod activity;
-pub mod app_chrome;
 pub mod badge;
+pub(crate) mod bounded;
 pub mod button;
+pub mod card_block;
 pub mod code_viewer;
 pub mod dialog;
+pub(crate) mod dropdown;
 pub mod embedded_bar;
 pub mod focus;
+pub(crate) mod foreground;
 pub mod hints;
 pub mod labels;
+#[cfg(test)]
+mod layout_guard_tests;
+pub(crate) mod layout_report;
 pub mod list;
 pub mod markdown;
 pub mod overlay;
+pub(crate) mod pane_header;
+pub mod provenance;
+#[cfg(test)]
+mod radius_guard_tests;
+#[cfg(test)]
+mod state_matrix_tests;
 pub mod row;
 pub mod search_bar;
 pub mod shortcuts;
@@ -25,3 +37,4 @@ pub mod text_field;
 pub mod theme;
 pub mod toast;
 pub mod typography;
+pub mod view_chrome;

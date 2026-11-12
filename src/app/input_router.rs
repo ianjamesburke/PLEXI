@@ -1,6 +1,6 @@
 //! `PlexiInput`: frame-scoped ownership-transfer router for keyboard/text input.
 //!
-//! Historically every consumer (overlays, app panes, `keys::poll_actions`, the
+//! Historically every consumer (overlays, view panes, `keys::poll_actions`, the
 //! vendored terminal widget) independently peeked or mutated the single shared
 //! `ctx.input()` queue. Ownership was enforced retroactively — whichever
 //! consumer's render call happened to run first got the event, and a stray
@@ -16,7 +16,7 @@
 //!      first consumer of the frame; claims Cmd+Q/W/P etc.
 //!   2. The top [`crate::app::FocusKind`] overlay's `*_handle_key`, when an
 //!      overlay owns input.
-//!   3. `dispatch_app_key_events` — the focused app pane's `App::handle_key`,
+//!   3. `dispatch_plugin_key_events` — the focused view pane's `App::handle_key`,
 //!      which reads this buffer directly (see [`PlexiInput::events`] /
 //!      [`PlexiInput::key_pressed`]) instead of `ctx.input()`.
 //!   4. The focused terminal widget. Because the host takes this buffer *before*
@@ -25,7 +25,7 @@
 //!      no longer swallow a key (e.g. Cmd+A select-all) before the terminal
 //!      sees it — the structural fix for the terminal Cmd+A bug.
 //!
-//! Overlay and app/global consumers `give_back` whatever they don't claim so
+//! Overlay and plugin/global consumers `give_back` whatever they don't claim so
 //! the render pass (focused `TextEdit` widgets) still sees it. The focused
 //! terminal is the sole intended keyboard consumer for its frame, so its host
 //! handoff does *not* give events back: anything the terminal ignores is
@@ -39,7 +39,7 @@
 /// typed text, paste, and the clipboard `Copy`/`Cut` shortcut events (on macOS
 /// Cmd+C / Cmd+X arrive as `Event::Copy` / `Event::Cut`, and both the terminal
 /// widget and focused `TextEdit`s consume them). Widening the taken set is safe
-/// for the overlay/app/global consumers because they `give_back` everything
+/// for the overlay/plugin/global consumers because they `give_back` everything
 /// unclaimed before their render pass, so a `TextEdit` still receives an
 /// unclaimed Copy/Cut.
 ///
@@ -127,6 +127,12 @@ impl PlexiInput {
         self.events.is_empty()
     }
 
+    /// Swallow all remaining input-intent events in this frame's buffer so
+    /// nothing leaks to underlying panes or widgets.
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+
     /// Consume the whole buffer into its owned events + modifiers. Used by the
     /// focused-terminal handoff, which hands every remaining event straight to
     /// `egui_term` (the sole intended keyboard consumer for its frame) and
@@ -146,6 +152,29 @@ impl PlexiInput {
                 e,
                 egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
                     if *k == key && m.matches_logically(modifiers)
+            )
+        }) {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Like [`Self::consume_key`], but Shift/Alt must match the pattern
+    /// exactly so a more specific chord (Cmd+Shift+0) is not swallowed by a
+    /// less specific one (Cmd+0).
+    pub(crate) fn consume_key_exact(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+        if let Some(pos) = self.events.iter().position(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+                    if *k == key
+                        && crate::host::keys::modifiers_match_exact_for_os(
+                            m,
+                            &modifiers,
+                            cfg!(target_os = "macos"),
+                        )
             )
         }) {
             self.events.remove(pos);
@@ -198,6 +227,40 @@ impl PlexiInput {
         }
     }
 
+    /// Consume a Copy action (Cmd+C key press or synthetic `egui::Event::Copy`).
+    pub(crate) fn consume_copy(&mut self) -> bool {
+        if self.consume_key(egui::Modifiers::COMMAND, egui::Key::C) {
+            return true;
+        }
+        if let Some(pos) = self
+            .events
+            .iter()
+            .position(|e| matches!(e, egui::Event::Copy))
+        {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consume a Cut action (Cmd+X key press or synthetic `egui::Event::Cut`).
+    pub(crate) fn consume_cut(&mut self) -> bool {
+        if self.consume_key(egui::Modifiers::COMMAND, egui::Key::X) {
+            return true;
+        }
+        if let Some(pos) = self
+            .events
+            .iter()
+            .position(|e| matches!(e, egui::Event::Cut))
+        {
+            self.events.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Suppress an approval decision key until its physical release. The
     /// matching text/paste events are suppressed too, because OS key repeat can
     /// emit them after the approval overlay has returned focus to a pane.
@@ -224,7 +287,7 @@ impl PlexiInput {
     }
 
     /// Return every event still owned by this buffer to `ctx` so consumers
-    /// later in the frame (a focused `TextEdit`, `dispatch_app_key_events`,
+    /// later in the frame (a focused `TextEdit`, `dispatch_plugin_key_events`,
     /// the terminal widget's own read of `ctx.input()`) see whatever this
     /// frame's router-level consumers didn't claim. No-op if the buffer is
     /// already empty.

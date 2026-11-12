@@ -121,7 +121,7 @@ pub struct Context {
     /// The single directory this context is anchored to. Non-optional: every
     /// context is anchored somewhere (creation defaults to the creating
     /// pane's cwd, or home). New panes in this context open here, context
-    /// scoped app state resolves against it, and `plexi context set-root`
+    /// scoped plugin state resolves against it, and `plexi context set-root`
     /// rewrites it.
     pub root: PathBuf,
     /// Optional description — ambient intent for what you're doing in this context.
@@ -242,28 +242,17 @@ impl Window {
     }
 
     pub(crate) fn find_first_pane_in(&self, tile_id: TileId) -> Option<TileId> {
-        match self.tree.tiles.get(tile_id)? {
-            Tile::Pane(_) => Some(tile_id),
-            Tile::Container(container) => {
-                if let Container::Tabs(tabs) = container {
-                    // Only follow the active tab — others are invisible
-                    return self.find_first_pane_in(tabs.active?);
-                }
-                for &child in container.children() {
-                    if let Some(pane) = self.find_first_pane_in(child) {
-                        return Some(pane);
-                    }
-                }
-                None
-            }
-        }
+        first_visible_pane_in(&self.tree, tile_id)
     }
 
     /// Navigate to a tile: sets focused_pane and activates ALL ancestor Tabs containers
     /// (walking up through nested tab layouts). This is the canonical way to change
-    /// focused_pane — call instead of assigning directly. Does NOT touch zoomed_pane;
-    /// callers own zoom transitions.
+    /// focused_pane. Moving focus away from a zoomed pane exits zoom before the
+    /// new focus is visible, preserving the focus invariant during the frame.
     pub(crate) fn navigate_to(&mut self, tile_id: TileId) {
+        if self.zoomed_pane.is_some_and(|zoomed| zoomed != tile_id) {
+            self.clear_zoom();
+        }
         self.focused_pane = Some(tile_id);
         let mut current = tile_id;
         while let Some((tabs_id, child_id)) = self.find_ancestor_tabs(current) {
@@ -297,8 +286,11 @@ impl Window {
         let mut zoom_cleared = false;
         if let Some(zp) = self.zoomed_pane {
             if !matches!(self.tree.tiles.get(zp), Some(Tile::Pane(_))) {
-                self.zoomed_pane = None;
-                zoom_cleared = true;
+                // A container that took over the zoomed pane's id (simplify
+                // wraps panes in Tabs) still holds that pane: follow it so the
+                // zoom survives. Only a tile with no pane left clears zoom.
+                self.zoomed_pane = self.find_first_pane_in(zp);
+                zoom_cleared = self.zoomed_pane.is_none();
             }
         }
         zoom_cleared
@@ -424,7 +416,7 @@ impl Window {
         if let Some(terminal) = pane.as_terminal() {
             shell::get_pid_cwd(terminal.backend.child_pid())
         } else {
-            pane.as_app().map(|app| app.workspace_root.clone())
+            pane.as_view().map(|app| app.workspace_root.clone())
         }
     }
 }
@@ -531,6 +523,23 @@ pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId)
         Container::Grid(_) => {
             container.remove_child(old);
             container.add_child(new);
+        }
+    }
+}
+
+/// First pane reachable from `tile_id`, following only the active tab of each
+/// Tabs container (other tabs are invisible). Shared by the live window and
+/// the saved-workspace focus heal so both resolve a stale container the same way.
+pub(crate) fn first_visible_pane_in(tree: &Tree<PaneId>, tile_id: TileId) -> Option<TileId> {
+    match tree.tiles.get(tile_id)? {
+        Tile::Pane(_) => Some(tile_id),
+        Tile::Container(container) => {
+            if let Container::Tabs(tabs) = container {
+                return first_visible_pane_in(tree, tabs.active?);
+            }
+            container
+                .children()
+                .find_map(|&child| first_visible_pane_in(tree, child))
         }
     }
 }

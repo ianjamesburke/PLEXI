@@ -51,14 +51,25 @@ impl PlexiApp {
                     let colors = &self.colors;
 
                     ui.horizontal(|ui| {
+                        // Keep both columns inside the shell's content budget. Grid
+                        // minimums and unwrapped chip rows otherwise expand the Area.
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let column_width = (ui.available_width() - 2.0 * style::SPACE_MD) / 2.0;
+                        // Long chords may use up to 60%; descriptions wrap in
+                        // the remaining space (or use more for shorter chords).
+                        let cell_width = (column_width - style::SPACE_SM) * 0.6;
+                        if ui.is_sizing_pass() {
+                            log::info!("shortcuts layout: column_width={column_width:.1} cell_width={cell_width:.1}");
+                        }
                         // ── Left column ──────────────────────────────
                         ui.vertical(|ui| {
-                            ui.set_width(288.0);
+                            ui.set_width(column_width);
 
                             section_label(ui, "LAYOUT", colors);
                             egui::Grid::new("shortcuts_layout")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -85,7 +96,8 @@ impl PlexiApp {
                             section_label(ui, "NAVIGATION", colors);
                             egui::Grid::new("shortcuts_nav")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     crate::ui::shortcuts::key_combo_list(
@@ -102,40 +114,19 @@ impl PlexiApp {
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[
-                                            &["\u{2318}", "\u{21E7}", "L"],
-                                            &["\u{2318}", "\u{21E7}", "H"],
-                                        ],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "]"], &["cmd", "["]], None, colors,
                                     );
                                     shortcut_description(ui, "Next / prev tab", colors);
                                     ui.end_row();
-
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[
-                                            &["\u{2318}", "\u{21E7}", "K"],
-                                            &["\u{2318}", "\u{21E7}", "J"],
-                                        ],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "shift", "H", "J", "K", "L"]], None, colors,
                                     );
-                                    shortcut_description(ui, "First / last tab", colors);
+                                    shortcut_description(ui, "Extend pane selection", colors);
                                     ui.end_row();
-
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "["], &["\u{2318}", "]"]],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "enter"]], None, colors,
                                     );
-                                    shortcut_description(
-                                        ui,
-                                        "Focus history back / forward",
-                                        colors,
-                                    );
+                                    shortcut_description(ui, "Wrap selection / zoom / enter portal", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -149,12 +140,12 @@ impl PlexiApp {
 
                                     crate::ui::shortcuts::key_combo(
                                         ui,
-                                        &["\u{2318}", "\u{21A9}"],
+                                        &["cmd", "escape"],
                                         colors,
                                     );
                                     shortcut_description(
                                         ui,
-                                        "Toggle zoom (Esc passes to pane)",
+                                        "Go to parent context",
                                         colors,
                                     );
                                     ui.end_row();
@@ -183,15 +174,17 @@ impl PlexiApp {
 
                         // ── Vertical divider ──────────────────────────
                         ui.add_space(style::SPACE_MD);
-                        ui.separator();
+                        ui.add(egui::Separator::default().vertical().spacing(0.0));
                         ui.add_space(style::SPACE_MD);
 
                         // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
-                            section_label(ui, "APPS & TOOLS", colors);
+                            ui.set_width(column_width);
+                            section_label(ui, "PLUGINS & TOOLS", colors);
                             egui::Grid::new("shortcuts_apps")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -216,7 +209,8 @@ impl PlexiApp {
                             section_label(ui, "TERMINAL", colors);
                             egui::Grid::new("shortcuts_terminal")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     crate::ui::shortcuts::key_combo_list(
@@ -234,7 +228,27 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    shortcut_description(ui, "Font size +/−", colors);
+                                    shortcut_description(ui, "Text size +/−", colors);
+                                    ui.end_row();
+
+                                    crate::ui::shortcuts::key_combo_list(
+                                        ui,
+                                        &[
+                                            &["\u{2318}", "\u{21E7}", "="],
+                                            &["\u{2318}", "\u{21E7}", "-"],
+                                        ],
+                                        None,
+                                        colors,
+                                    );
+                                    shortcut_description(ui, "UI scale +/−", colors);
+                                    ui.end_row();
+
+                                    crate::ui::shortcuts::key_combo(
+                                        ui,
+                                        &["\u{2318}", "\u{21E7}", "0"],
+                                        colors,
+                                    );
+                                    shortcut_description(ui, "Reset UI scale", colors);
                                     ui.end_row();
                                 });
 
@@ -243,7 +257,8 @@ impl PlexiApp {
                             section_label(ui, "SETTINGS", colors);
                             egui::Grid::new("shortcuts_settings")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -277,6 +292,34 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn toggle_changelog(&mut self) {
+        if self.show_changelog {
+            self.close_changelog();
+        } else {
+            self.show_changelog = true;
+            self.push_focus_layer(crate::app::FocusKind::Changelog);
+            log::info!("changelog: opened");
+        }
+    }
+
+    pub(crate) fn close_changelog(&mut self) {
+        if self.show_changelog {
+            self.show_changelog = false;
+            self.reconcile_focus_layer(crate::app::FocusKind::Changelog, false);
+            log::info!("changelog: closed");
+        }
+    }
+
+    pub(crate) fn changelog_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            self.close_changelog();
+        }
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
     pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_changelog {
             return;
@@ -286,7 +329,6 @@ impl PlexiApp {
         let response = crate::ui::overlay::ModalShell::centered("changelog")
             .title("Changelog")
             .width(560.0)
-            .escape(true)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
                 if let Some(ref latest) = self.update_available.clone() {
                     egui::Frame::new()
@@ -304,25 +346,17 @@ impl PlexiApp {
                                     );
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
-                                        let confirm_btn = egui::Button::new(
-                                            RichText::new(format!("Restart to v{latest}"))
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_on(self.colors.accent)),
-                                        )
-                                        .fill(self.colors.accent)
-                                        .corner_radius(egui::CornerRadius::same(4));
+                                        let restart_label = format!("Restart to v{latest}");
+                                        let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Primary)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(confirm_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                             self.update_quit_pending = true;
                                         }
-                                        let cancel_btn = egui::Button::new(
-                                            RichText::new("Cancel")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        )
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(Stroke::new(1.0_f32, self.colors.border))
-                                        .corner_radius(egui::CornerRadius::same(4));
+                                        let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Ghost)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(cancel_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                         }
@@ -338,13 +372,9 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let btn = egui::Button::new(
-                                                RichText::new("Restart to update")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_on(self.colors.accent)),
-                                            )
-                                            .fill(self.colors.accent)
-                                            .corner_radius(egui::CornerRadius::same(4));
+                                            let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
+                                                .kind(crate::ui::button::ButtonKind::Primary)
+                                                .size(crate::ui::button::ButtonSize::Sm);
                                             if ui.add(btn).clicked() {
                                                 self.update_confirm_prompt = true;
                                             }
@@ -377,7 +407,7 @@ impl PlexiApp {
                 }
             });
         if response.dismissed {
-            self.show_changelog = false;
+            self.close_changelog();
         }
     }
 
@@ -446,14 +476,13 @@ impl PlexiApp {
                 if show_browse {
                     ui.add_space(style::SPACE_SM);
                     ui.horizontal(|ui| {
-                        if crate::ui::button::chrome_button(
-                            ui,
-                            "Browse\u{2026}",
-                            crate::ui::button::ButtonKind::Primary,
-                            &self.colors,
-                            80.0,
-                        )
-                        .clicked()
+                        if ui
+                            .add(
+                                crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors)
+                                    .kind(crate::ui::button::ButtonKind::Secondary)
+                                    .min_width(80.0),
+                            )
+                            .clicked()
                         {
                             browse_clicked = true;
                         }
@@ -540,19 +569,20 @@ impl PlexiApp {
     }
 
     /// The one single-line rename modal: a top-hung, scrim-less popover over
-    /// `self.rename_buffer` whose Enter/Escape are consumed caller-side (before
+    /// the supplied buffer whose Enter/Escape are consumed caller-side (before
     /// the Area) so they cannot bleed into the focused pane this frame. The
     /// overlay owns its own commit/cancel keys — it pairs with `focus_kind`,
     /// which also names the input surface. `id` prefixes the shell and text
     /// field ids and doubles as the field's log name. Returns
     /// `(commit, cancel)`; the caller owns what committing means.
     fn draw_single_line_rename_overlay(
-        &mut self,
         ctx: &egui::Context,
         id: &str,
         title: &str,
         placeholder: &str,
         focus_kind: crate::app::FocusKind,
+        buffer: &mut String,
+        colors: &Colors,
     ) -> (bool, bool) {
         let (commit, cancel) = ctx.input_mut(|i| {
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -560,13 +590,12 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        let colors = self.colors;
         crate::ui::overlay::ModalShell::centered(format!("{id}_overlay"))
             .title(title)
             .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
-            .show(ctx, &colors, |ui| {
+            .show(ctx, colors, |ui| {
                 let te_id = egui::Id::new(format!("{id}_input"));
                 crate::ui::text_field::TextField::singleline(te_id, placeholder)
                     .surface(crate::ui::focus::SurfaceKey::Overlay(
@@ -574,7 +603,7 @@ impl PlexiApp {
                     ))
                     .select_all_on_focus(true)
                     .log_name(id)
-                    .show(ui, &mut self.rename_buffer, &self.colors);
+                    .show(ui, buffer, colors);
             });
 
         (commit, cancel)
@@ -586,12 +615,14 @@ impl PlexiApp {
             None => return,
         };
 
-        let (commit, cancel) = self.draw_single_line_rename_overlay(
+        let (commit, cancel) = Self::draw_single_line_rename_overlay(
             ctx,
             "rename_pane",
             "Rename Pane",
             "Pane name...",
             crate::app::FocusKind::RenamePane,
+            &mut self.rename_buffer,
+            &self.colors,
         );
 
         if cancel {
@@ -607,8 +638,8 @@ impl PlexiApp {
                         log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
                         Some(new_name.clone())
                     };
-                } else if let Some(a) = pane.as_app_mut() {
-                    // Let the app react first — TextEditorApp persists the new
+                } else if let Some(a) = pane.as_view_mut() {
+                    // Let the plugin react first — TextEditorView persists the new
                     // name into the note's frontmatter title.
                     a.runtime.on_pane_renamed(&new_name);
                     a.name = if new_name.is_empty() {
@@ -616,7 +647,7 @@ impl PlexiApp {
                     } else {
                         new_name.clone()
                     };
-                    log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
+                    log::info!("rename_pane: view pane {pane_id} named {:?}", a.name);
                 }
             }
             let context_root = self
@@ -634,28 +665,26 @@ impl PlexiApp {
         }
     }
 
-    /// Modal for naming a newly-created context when the sidebar is hidden.
-    /// Mirrors the inline sidebar rename but as a centred overlay so the
-    /// terminal becomes immediately usable after the user hits Enter or Escape.
+    /// Context rename overlay; Enter commits and Escape cancels.
     pub(crate) fn draw_rename_context_overlay(&mut self, ctx: &egui::Context) {
-        let ctx_idx = match self.renaming_window {
-            Some(idx) => idx,
-            None => return,
+        let Some(edit) = self.context_rename.as_mut() else {
+            return;
         };
 
-        let (commit, cancel) = self.draw_single_line_rename_overlay(
+        let (commit, cancel) = Self::draw_single_line_rename_overlay(
             ctx,
             "rename_context",
             "Name this context",
             "Context name...",
             crate::app::FocusKind::ContextRename,
+            &mut edit.buffer,
+            &self.colors,
         );
 
         if cancel {
-            self.renaming_window = None;
+            self.cancel_context_rename("escape");
         } else if commit {
-            self.rename_context(ctx_idx, &self.rename_buffer.clone());
-            self.renaming_window = None;
+            self.commit_context_rename();
         }
     }
 
@@ -731,36 +760,36 @@ impl PlexiApp {
     pub(crate) fn rename_pane_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_rename_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_description_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn text_input_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn command_palette_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 }
 
@@ -784,7 +813,7 @@ mod tests {
         assert!(should_show_changelog_line("## [0.1.0] — 2026-06-11"));
         assert!(should_show_changelog_line("### Changes"));
         assert!(should_show_changelog_line("- fix: route update checks"));
-        assert!(should_show_changelog_line("- feature: add app launcher"));
+        assert!(should_show_changelog_line("- feature: add plugin launcher"));
     }
 
     #[test]

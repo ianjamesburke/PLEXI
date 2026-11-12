@@ -28,6 +28,13 @@ pub const BAR_CONTENT_H: f32 = 26.0;
 /// safe insets).
 pub const BAR_TOTAL_H: f32 = BAR_CONTENT_H + 2.0 * BAR_INSET_V;
 
+/// The content rectangle of a bar band: `rect` less the safe insets. Callers
+/// that place content by absolute rectangle (for `bounded::allocate`) measure
+/// against this, so their budget is exactly what the bar paints into.
+pub fn inner_rect(rect: egui::Rect) -> egui::Rect {
+    rect.shrink2(egui::vec2(BAR_INSET_H, BAR_INSET_V))
+}
+
 /// Render a chrome bar filling `rect` (a band of height [`BAR_TOTAL_H`] at the
 /// bottom of a pane). Paints `fill`, then lays out `content` inside a child ui
 /// inset by the safe margins and vertically centered, so its widgets can never
@@ -39,7 +46,7 @@ pub fn embedded_bottom_bar(
     content: impl FnOnce(&mut Ui),
 ) {
     ui.painter().rect_filled(rect, 0.0, fill);
-    let inner = rect.shrink2(egui::vec2(BAR_INSET_H, BAR_INSET_V));
+    let inner = inner_rect(rect);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     child.horizontal_centered(content);
 }

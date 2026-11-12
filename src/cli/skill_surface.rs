@@ -422,6 +422,46 @@ fn shipped_skill_frontmatter_is_valid_yaml() {
     }
 }
 
+/// The user-facing CLI skill has exactly one home. `skills/plexi-cli/` is canonical
+/// and `plexi skill install` is the only discovery path; a second copy under
+/// `.agents/skills/` (a symlink or a copied file) is discovered alongside the
+/// installed one, collides by name, and can go stale independently (stint 1050).
+#[test]
+fn plexi_cli_skill_has_exactly_one_canonical_root() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        root.join("skills/plexi-cli/SKILL.md").is_file(),
+        "the canonical CLI skill is missing"
+    );
+
+    let agents_skills = root.join(".agents/skills");
+    let Ok(entries) = std::fs::read_dir(&agents_skills) else {
+        return;
+    };
+    let mut duplicates = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let skill = entry.path().join("SKILL.md");
+        if !skill.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&skill).unwrap_or_default();
+        let name = text
+            .lines()
+            .skip(1)
+            .take_while(|line| *line != "---")
+            .find_map(|line| line.strip_prefix("name:"))
+            .map(|name| name.trim().trim_matches('"').to_string());
+        if name.as_deref() == Some("plexi-cli") {
+            duplicates.push(skill);
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "the user-facing plexi-cli skill must have exactly one root (skills/plexi-cli/); \
+         these second roots collide with the installed skill and must be removed: {duplicates:?}",
+    );
+}
+
 /// Only the generated feature map uses this line format.
 fn map_entries(text: &str) -> Vec<String> {
     text.split_once("## Feature map\n")

@@ -85,8 +85,9 @@ def write_bytes(path: str, content: bytes | bytearray) -> FileWrite:
 class ReadPermissionDecisions:
     """Ask the host for the live permission-monitor inventory.
 
-    The host replies with :class:`events.PermissionInventory`. The app does
-    not keep its own grant store.
+    The host replies with :class:`events.PermissionInventory`. Only the
+    bundled Permissions plugin receives entries; any other plugin gets an
+    empty list with ``status="rejected"``.
     """
 
 
@@ -94,8 +95,11 @@ class ReadPermissionDecisions:
 class PermissionDecision:
     """Change one live permission row.
 
-    ``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
-    Permissions app is a human decision. The host replies with a fresh
+    ``action`` is ``revoke``, ``reset``, or ``allow``. Only the bundled
+    Permissions plugin may send it, and it is never a human decision:
+    ``revoke`` applies, while ``allow`` and ``reset`` file a Needs you item
+    that a person confirms in the host (``status="needs_you"``). Other
+    plugins get ``status="rejected"``. The host replies with a fresh
     :class:`events.PermissionInventory`.
     """
 
@@ -194,6 +198,36 @@ class McpDisconnect:
     """Close a connection and kill the server process. Answered by
     :class:`events.McpClosed`."""
     server_id: str
+
+
+@dataclass
+class CliOperation:
+    """Request one typed command-line operation the app package declares in
+    ``[[cli_operation]]`` (requires the ``cli.operations`` capability and the
+    ``cli_operations`` experiment).
+
+    The app names an ``operation_id`` and supplies typed ``values`` for the
+    slots that operation declares. It never supplies an executable, argument
+    list, environment, working directory or shell text: the host rejects a
+    request that carries anything else. The person approves each operation in
+    the host's approval surface, which states that the program runs with their
+    account's full authority and is not confined.
+
+    Answered by :class:`events.CliOperationResult` carrying the same
+    ``request_id``. The request may wait for a decision, so it can be
+    outstanding for a while; use :class:`CliOperationCancel` to withdraw it.
+    """
+    request_id: str
+    operation_id: str
+    values: dict = field(default_factory=dict)
+
+
+@dataclass
+class CliOperationCancel:
+    """Withdraw an outstanding :class:`CliOperation`. A request still waiting
+    for approval fails with ``cancelled`` and never runs; a running program is
+    killed and answered with ``cancelled``. Unknown ids are ignored."""
+    request_id: str
 
 
 @dataclass
@@ -303,7 +337,7 @@ class EmitEvent:
 @dataclass
 class SubscribeEventStreams:
     request_id: str
-    app_id: str
+    plugin_id: str
     event_names: list[str]
     payload_mode: str = "full"
     trigger_mode: str = "conversation"

@@ -327,7 +327,14 @@ fn write_sealed_with_dir(path: &Path, dir: &Path, body: &[u8]) -> Result<(), Str
 /// Append one fact. Verifies the chain first. A bad chain is quarantined and
 /// the tip is cleared before this returns [`SealError::Untrusted`].
 pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError> {
-    if let Err(reason) = verify_audit(path) {
+    // The append writes the log line and then the authenticated tip. A
+    // concurrent verifier (or appender) between those two writes would see a
+    // tip that trails the log and quarantine a healthy chain.
+    let audit_lock = audit_lock_for(path);
+    let _audit_guard = audit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(reason) = verify_audit_unlocked(path) {
         if super::host_key::is_key_unreadable(&reason) {
             return Err(SealError::Io(reason));
         }
@@ -372,6 +379,28 @@ pub fn append_audit(path: &Path, fact: &impl Serialize) -> Result<(), SealError>
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(path: &Path) -> Result<(), String> {
+    let audit_lock = audit_lock_for(path);
+    let _audit_guard = audit_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    verify_audit_unlocked(path)
+}
+
+/// One lock per audit log, so appends and verifications of the same log are
+/// serialized within this process without a stalled keychain read for one
+/// profile blocking every other profile.
+fn audit_lock_for(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.entry(path.to_path_buf()).or_default().clone()
+}
+
+fn verify_audit_unlocked(path: &Path) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
     let tip = match tip_lookup(path) {
         Ok(value) => value,
@@ -672,7 +701,10 @@ pub(crate) fn remove_profile_credentials(dir: &Path) -> Result<(), String> {
         super::host_key::delete(&account)
             .map_err(|error| format!("remove profile credential {account}: {error}"))?;
     }
-    log::info!("uninstall: removed integrity credentials for {}", dir.display());
+    log::info!(
+        "uninstall: removed integrity credentials for {}",
+        dir.display()
+    );
     Ok(())
 }
 
@@ -820,6 +852,12 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
+    // Audit and Needs-you tips share this signed file.  Serialize the whole
+    // read/mutate/write transaction so one tip update cannot erase the other.
+    let state_lock = seal_state_lock_for(dir);
+    let _state_guard = state_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut state = match read_seal_state(dir) {
         SealStateStatus::Trusted(state) => state,
         SealStateStatus::Absent => SealState {
@@ -852,6 +890,17 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
         return Ok(());
     }
     write_seal_state(dir, &state)
+}
+
+fn seal_state_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.entry(dir.to_path_buf()).or_default().clone()
 }
 
 fn tip_lookup(path: &Path) -> Result<Option<String>, String> {
@@ -1007,11 +1056,12 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
 ///
 /// An auth failure rotates the key and resets grants that cannot be verified.
 /// A delete that still needs a prompt returns that error so startup can file
-/// Needs you without blocking on a dialog. A fresh profile with no seal or
-/// permission files on disk yet is ready immediately without probing the
-/// host seal store.
+/// Needs you without blocking on a dialog. Even a profile without seal files
+/// may have an existing, unreadable key from an earlier run.
 pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
-    if !has_any_profile_seal_files(dir) {
+    // A fresh Linux profile can start without Secret Service. macOS must probe
+    // for an existing Keychain item even when no profile files exist.
+    if !cfg!(target_os = "macos") && !has_any_profile_seal_files(dir) {
         return Ok(MacRecovery::Ready);
     }
     match existing_mac_key(dir) {
@@ -1305,6 +1355,57 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_audit_appends_and_verifies_never_see_a_stale_tip() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let path = profile.join("permission-audit.jsonl");
+        append_audit(&path, &serde_json::json!({"kind": "seed"})).unwrap();
+
+        std::thread::scope(|scope| {
+            for worker in 0..4 {
+                let path = path.clone();
+                scope.spawn(move || {
+                    for n in 0..15 {
+                        append_audit(&path, &serde_json::json!({"worker": worker, "n": n}))
+                            .expect("append must not race the tip");
+                        verify_audit(&path).expect("log and tip must stay in step");
+                    }
+                });
+            }
+        });
+        verify_audit(&path).unwrap();
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 61);
+    }
+
+    #[test]
+    fn concurrent_audit_and_needs_you_tip_updates_preserve_both_tips() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        append_audit(&audit, &serde_json::json!({"kind": "seed"})).unwrap();
+
+        std::thread::scope(|scope| {
+            let audit = &audit;
+            scope.spawn(|| {
+                for n in 0..40 {
+                    append_audit(audit, &serde_json::json!({"kind": "audit", "n": n})).unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for n in 0..40 {
+                    store_needs_you_tip(dir.path(), Some(&format!("needs-{n}"))).unwrap();
+                }
+            });
+        });
+
+        verify_audit(&audit).unwrap();
+        assert!(needs_you_tip_lookup(dir.path()).unwrap().is_some());
+    }
+
+    #[test]
     fn rotating_mac_key_in_profile_a_preserves_profile_b() {
         let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
         let root = tempfile::tempdir().unwrap();
@@ -1353,7 +1454,11 @@ mod tests {
         assert!(state_file.is_file());
 
         // Tamper with seal-state.json -> load_toml rejects and quarantines grants.toml.
-        std::fs::write(&state_file, b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n").unwrap();
+        std::fs::write(
+            &state_file,
+            b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n",
+        )
+        .unwrap();
         let loaded: LoadedToml<toml::Table> = load_toml(&grants);
         assert!(!loaded.trusted);
         assert!(loaded
@@ -1386,6 +1491,7 @@ mod tests {
                 &serde_json::json!({"kind": "pr_test"}),
             )
             .unwrap();
+            assert_eq!(crate::broker::host_key::backend_get_calls(), 0);
         });
 
         let pr_seal_file = dir.path().join("host").join("pr-host-seal.json");
@@ -1397,15 +1503,17 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&pr_seal_file).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&pr_seal_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600);
         }
         // The underlying shared Keychain backend was never written with this profile's MAC key.
         crate::broker::host_key::clear_session_mac_for_test();
-        assert!(
-            crate::broker::host_key::get(&mac_account(dir.path()))
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::broker::host_key::get(&mac_account(dir.path()))
+            .unwrap()
+            .is_none());
     }
 }

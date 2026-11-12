@@ -6,7 +6,9 @@ use crate::protocol::{AgentBlockedReason, AgentState};
 impl PlexiApp {
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
         if let Some(parent) = self.conjoined_parent() {
-            if self.conjoined_parent_focus == Some(parent) { return Some(parent); }
+            if self.conjoined_parent_focus == Some(parent) {
+                return Some(parent);
+            }
         }
         let win = self.windows.get(self.active_window)?;
         Self::find_pane_in_tile(&win.tree, win.focused_pane?)
@@ -20,6 +22,10 @@ impl PlexiApp {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
             {
+                t.program_status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_seen();
                 if !t.fleet_seen && (t.fleet_done_unseen || t.agent_completed) {
                     t.fleet_seen = true;
                     changed = true;
@@ -68,16 +74,7 @@ impl PlexiApp {
                 if !t.is_agent_pane() {
                     continue;
                 }
-                let state = if t.agent_completed {
-                    AgentState::Completed
-                } else {
-                    t.agent
-                        .as_ref()
-                        .or(t.observed_agent.as_ref())
-                        .map(|a| a.state.clone())
-                        .or_else(|| t.standby_session.as_ref().map(|s| s.last_state.clone()))
-                        .unwrap_or(AgentState::Idle)
-                };
+                let (state, _) = t.effective_agent_state();
                 let is_stalled_idle = state == AgentState::Idle
                     && t.ephemeral
                     && !t.fleet_done_unseen
@@ -110,7 +107,9 @@ impl PlexiApp {
                 AgentState::Failed | AgentState::Interrupted | AgentState::ExitedUnreported
             );
             let should_dismiss = match (target, all_failed) {
-                (Some(id), _) => record.pane_id == id && (!record.fleet_dismissed || !record.fleet_seen),
+                (Some(id), _) => {
+                    record.pane_id == id && (!record.fleet_dismissed || !record.fleet_seen)
+                }
                 (None, true) => is_failure && !record.fleet_dismissed,
                 (None, false) => false,
             };
@@ -158,11 +157,7 @@ impl PlexiApp {
                     continue;
                 }
                 let report = pane.agent();
-                let state = if t.agent_completed {
-                    AgentState::Completed
-                } else {
-                    report.map(|a| a.state.clone()).unwrap_or(AgentState::Idle)
-                };
+                let (state, effective_detail) = t.effective_agent_state();
                 let question = report
                     .and_then(|a| a.detail.clone())
                     .filter(|s| !s.is_empty());
@@ -248,29 +243,18 @@ impl PlexiApp {
                             )
                         })
                 });
-                let failure_detail = report
-                    .and_then(|a| a.detail.clone())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        t.standby_session
-                            .as_ref()
-                            .and_then(|s| s.last_detail.clone())
-                            .filter(|s| !s.is_empty())
-                    })
-                    .or_else(|| match t.exit_status {
-                        Some(crate::host::pane_lifecycle::ExitStatus::Code(c)) if c != 0 => {
-                            Some(format!("exited ({c})"))
-                        }
-                        Some(crate::host::pane_lifecycle::ExitStatus::Signal(sig)) => {
-                            Some(format!("killed by signal {sig}"))
-                        }
-                        Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
-                            if state == AgentState::ExitedUnreported =>
-                        {
-                            Some("exited (0) without calling plexi agent done".into())
-                        }
-                        _ => None,
-                    });
+                let failure_detail =
+                    effective_detail
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| match t.exit_status {
+                            Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
+                                if state == AgentState::ExitedUnreported =>
+                            {
+                                Some("exited (0) without calling plexi agent done".into())
+                            }
+                            _ => None,
+                        });
                 let raw_harness = t
                     .agent_harness
                     .clone()
@@ -306,8 +290,19 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        report.and_then(|a| a.detail.clone()).map(|reason| format!("{}: {reason}", if state == AgentState::Failed { "failed" } else { "exited without report" }))
-                    } else { t.capture_tail_preview() },
+                        effective_detail.map(|reason| {
+                            format!(
+                                "{}: {reason}",
+                                if state == AgentState::Failed {
+                                    "failed"
+                                } else {
+                                    "exited without report"
+                                }
+                            )
+                        })
+                    } else {
+                        t.capture_tail_preview()
+                    },
                     result: self
                         .pane_results
                         .get(&pane_id)
@@ -401,7 +396,7 @@ impl PlexiApp {
             self.mark_agent_seen(id);
         }
         let has_agents_pane = self.windows.iter().flat_map(|w| w.panes.values()).any(
-            |p| matches!(p, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "agents"),
+            |p| matches!(p, crate::host::pane::Pane::View(a) if a.runtime.type_id() == "agents"),
         );
         if !has_agents_pane {
             return;
@@ -409,8 +404,8 @@ impl PlexiApp {
         let view = self.agents_view(FleetFilter::All);
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
-                if let crate::host::pane::Pane::App(a) = pane {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                if let crate::host::pane::Pane::View(a) = pane {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut a.runtime {
                         app.sync_agents_view(&view);
                     }
                 }
@@ -450,9 +445,12 @@ impl PlexiApp {
     }
 
     pub(crate) fn open_agents_pane(&mut self) {
+        if self.plugin_blocked("agents") {
+            return;
+        }
         log::info!("agents: open pane");
         if let Err(e) =
-            self.launch_app_by_id_with_layout("agents", Some("split_h".into()), &[], None)
+            self.launch_view_by_id_with_layout("agents", Some("split_h".into()), &[], None)
         {
             log::error!("agents: open failed: {e}");
         }
@@ -467,22 +465,37 @@ mod tests {
     fn agents_view_excludes_closed_runs_but_retains_history() {
         let mut h = HostHarness::new();
         let live = h.add_focused_terminal();
-        h.app.windows[0].panes.get_mut(&live).unwrap().set_agent(Some(
-            crate::protocol::PaneAgentState {
-                pane_id: live, state: crate::protocol::AgentState::Working,
-                agent: "pi".into(), detail: None, session_id: None,
-            },
-        ));
-        for (pane_id, state) in [(900001, "working"), (900002, "blocked"), (900003, "completed")] {
+        h.app.windows[0]
+            .panes
+            .get_mut(&live)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: live,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: None,
+                session_id: None,
+            }));
+        for (pane_id, state) in [
+            (900001, "working"),
+            (900002, "blocked"),
+            (900003, "completed"),
+        ] {
             let record = serde_json::from_value(serde_json::json!({
                 "run_id": format!("old-{pane_id}"), "pane_id": pane_id,
                 "context_id": 1, "context_name": "previous session", "harness": "codex",
                 "cwd": "/tmp", "last_state": state, "closed_at": 1
-            })).unwrap();
+            }))
+            .unwrap();
             h.app.fleet_history.borrow_mut().push(record);
         }
         let view = h.app.agents_view(crate::protocol::FleetFilter::All);
-        let ids: Vec<_> = view.tasks.iter().flat_map(|t| &t.rows).map(|r| r.pane_id).collect();
+        let ids: Vec<_> = view
+            .tasks
+            .iter()
+            .flat_map(|t| &t.rows)
+            .map(|r| r.pane_id)
+            .collect();
         assert_eq!(ids, vec![live]);
         assert_eq!(h.app.fleet_history.borrow().len(), 3);
     }
@@ -502,18 +515,19 @@ mod tests {
                 detail: Some("exit code 1".into()),
                 session_id: None,
             }));
-        let record: crate::workspace::AgentHistoryRecord = serde_json::from_value(serde_json::json!({
-            "run_id": "old-215",
-            "pane_id": 215,
-            "context_id": 1,
-            "context_name": "morning",
-            "harness": "twcodex",
-            "cwd": "/tmp",
-            "last_state": "failed",
-            "last_detail": "command not found: twcodex",
-            "closed_at": 100
-        }))
-        .unwrap();
+        let record: crate::workspace::AgentHistoryRecord =
+            serde_json::from_value(serde_json::json!({
+                "run_id": "old-215",
+                "pane_id": 215,
+                "context_id": 1,
+                "context_name": "morning",
+                "harness": "twcodex",
+                "cwd": "/tmp",
+                "last_state": "failed",
+                "last_detail": "command not found: twcodex",
+                "closed_at": 100
+            }))
+            .unwrap();
         crate::workspace::append_agent_history(&record).unwrap();
         h.app.fleet_history.borrow_mut().push(record);
 
@@ -521,7 +535,10 @@ mod tests {
         assert_eq!(before.tasks.len(), 1);
         assert_eq!(before.tasks[0].rows[0].pane_id, failed_live);
         assert_eq!(before.tasks[0].rows[0].role, "claude-code");
-        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exit code 1"));
+        assert_eq!(
+            before.tasks[0].rows[0].reason.as_deref(),
+            Some("exit code 1")
+        );
         assert_eq!(before.older.len(), 1);
         assert_eq!(before.older[0].pane_id, 215);
 
@@ -539,10 +556,300 @@ mod tests {
     }
 
     #[test]
+    fn dismiss_all_failed_dismisses_live_pi_exit_failure_before_pane_close() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("live terminal must exist")
+            .as_terminal_mut()
+            .expect("focused fixture is a terminal");
+        terminal.agent_role = Some("build-runner".into());
+        terminal.agent_harness = Some("pi".into());
+        terminal.agent = Some(crate::protocol::PaneAgentState {
+            pane_id,
+            state: crate::protocol::AgentState::Working,
+            agent: "pi".into(),
+            detail: Some("building2".into()),
+            session_id: Some("pi-live-exit-3".into()),
+        });
+        terminal.exited = true;
+        terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+
+        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(before.tasks.len(), 1);
+        assert_eq!(
+            before.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(
+            before.tasks[0].rows[0].reason.as_deref(),
+            Some("exited (3)")
+        );
+
+        let dismissed = h.app.dismiss_fleet_agent(None, true);
+        assert_eq!(dismissed, vec![pane_id]);
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .expect("live terminal must not be closed by dismissal")
+            .as_terminal()
+            .expect("focused fixture is a terminal");
+        assert!(terminal.fleet_dismissed);
+        assert!(terminal.fleet_seen);
+        assert!(h
+            .app
+            .agents_view(crate::protocol::FleetFilter::All)
+            .tasks
+            .is_empty());
+    }
+
+    #[test]
+    fn pi_agent_lifecycle_transitions_through_working_waiting_done_failed_in_fleet() {
+        let mut h = HostHarness::new();
+        let pi_pane = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pi_pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap();
+            t.agent_role = Some("reviewer".into());
+            t.agent_harness = Some("pi".into());
+            t.name = Some("review-bot".into());
+        }
+        let other_pane = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("second terminal");
+        h.run_frames(3);
+        h.focus_pane(other_pane);
+
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
+
+        // 1. Working: Pi starts a turn
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Working,
+            agent: "pi".into(),
+            detail: Some("analyzing diff".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: Some("agent_start".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_working = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_working.tasks.len(), 1);
+        let row_working = &view_working.tasks[0].rows[0];
+        assert_eq!(row_working.role, "reviewer");
+        assert_eq!(row_working.harness, "pi");
+        assert_eq!(
+            row_working.display_state,
+            crate::agent::fleet::DisplayState::Working
+        );
+        assert_eq!(view_working.tasks[0].title, "reviewer · Test");
+
+        // 2. Waiting (Blocked on question): Pi asks user for input
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Blocked,
+            agent: "pi".into(),
+            detail: Some("Which branch to compare?".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_waiting = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_waiting.tasks.len(), 1);
+        let row_waiting = &view_waiting.tasks[0].rows[0];
+        assert_eq!(
+            row_waiting.display_state,
+            crate::agent::fleet::DisplayState::Blocked
+        );
+        assert!(row_waiting.needs_you);
+        assert_eq!(
+            row_waiting.blocked_on.as_ref().map(|b| b.label()),
+            Some("Waiting for you: Which branch to compare?".into())
+        );
+        assert_eq!(
+            row_waiting.next_hint.as_deref(),
+            Some(format!("plexi pane focus {pi_pane}").as_str())
+        );
+        assert_eq!(h.app.next_blocked_agent(), Some(pi_pane));
+
+        // 3. Settling to Idle: Pi turn finishes
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Idle,
+            agent: "pi".into(),
+            detail: None,
+            session_id: Some("pi-sess-1".into()),
+            event: Some("agent_end".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_idle = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_idle.tasks.len(), 1);
+        let row_idle = &view_idle.tasks[0].rows[0];
+        assert_eq!(
+            row_idle.display_state,
+            crate::agent::fleet::DisplayState::Idle
+        );
+        assert_eq!(row_idle.blocked_on, None);
+
+        // 4. Failed: Pi reports failure
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Failed,
+            agent: "pi".into(),
+            detail: Some("permission denied reading /private/key".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        let view_failed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let row_failed = &view_failed.tasks[0].rows[0];
+        assert_eq!(
+            row_failed.display_state,
+            crate::agent::fleet::DisplayState::Failed
+        );
+        assert_eq!(
+            row_failed.reason.as_deref(),
+            Some("permission denied (permission denied reading /private/key)")
+        );
+        assert!(row_failed
+            .next_hint
+            .as_deref()
+            .unwrap()
+            .contains(&format!("plexi agent fleet dismiss {pi_pane}")));
+
+        assert!(h.app.pane_navigate(other_pane));
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
+        // 5. Done (Completed): Pi completes
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id: pi_pane,
+            state: crate::protocol::AgentState::Completed,
+            agent: "pi".into(),
+            detail: Some("Review finished".into()),
+            session_id: Some("pi-sess-1".into()),
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pi_pane)
+            .unwrap()
+            .as_terminal()
+            .unwrap();
+        assert!(!terminal.fleet_seen, "agent should remain unseen");
+        assert_eq!(
+            terminal.effective_agent_state().0,
+            crate::protocol::AgentState::Completed
+        );
+        let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(
+            view_done.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::DoneUnseen
+        );
+
+        // Mark pane seen -> Idle
+        h.app.mark_agent_seen(pi_pane);
+        let view_seen = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(
+            view_seen.tasks[0].rows[0].display_state,
+            crate::agent::fleet::DisplayState::Idle
+        );
+        assert!(view_seen.tasks[0].rows[0].seen);
+    }
+
+    #[test]
+    fn pi_agent_exited_failure_preserves_failed_state_in_fleet_and_history_across_close_and_dismiss(
+    ) {
+        let mut h = HostHarness::new();
+        let pi_pane = h.add_focused_terminal();
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&pi_pane)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap();
+            t.agent_role = Some("build-runner".into());
+            t.agent_harness = Some("pi".into());
+            t.exited = true;
+            t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
+            t.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: pi_pane,
+                state: crate::protocol::AgentState::Working,
+                agent: "pi".into(),
+                detail: Some("building2".into()),
+                session_id: Some("pi-exit-3".into()),
+            });
+            t.observed_agent = None;
+        }
+
+        // Live pane with failure exit status reflects Failed in fleet view
+        let view_live = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert_eq!(view_live.tasks.len(), 1);
+        let row = &view_live.tasks[0].rows[0];
+        assert_eq!(row.role, "build-runner");
+        assert_eq!(row.harness, "pi");
+        assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Failed);
+        assert_eq!(row.reason.as_deref(), Some("exited (3)"));
+
+        // Close pane: record_closed_agent_pane archives it into history
+        let win_path = h.app.windows[0].path.clone();
+        let pane = h.app.windows[0].panes.remove(&pi_pane).unwrap();
+        h.app.record_closed_agent_pane(1, &win_path, &pane);
+
+        // Once closed, failure moves into older view
+        let view_closed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(view_closed.tasks.is_empty());
+        assert_eq!(view_closed.older.len(), 1);
+        assert_eq!(view_closed.older[0].pane_id, pi_pane);
+        assert_eq!(view_closed.older[0].role, "build-runner");
+        assert_eq!(view_closed.older[0].reason.as_deref(), Some("exited (3)"));
+
+        // Dismissal removes from older while preserving in history
+        let dismissed = h.app.dismiss_fleet_agent(Some(pi_pane), false);
+        assert_eq!(dismissed, vec![pi_pane]);
+
+        let view_dismissed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(view_dismissed.older.is_empty());
+        let hist = crate::workspace::load_agent_history();
+        let rec = hist
+            .iter()
+            .find(|r| r.pane_id == pi_pane)
+            .expect("archived record");
+        assert_eq!(rec.last_state, crate::protocol::AgentState::Failed);
+        assert!(rec.fleet_dismissed);
+    }
+
+    #[test]
     fn attention_reload_projects_config_without_restart_on_hidden_frame() {
         let mut h = HostHarness::new();
         let path = crate::config::config_path();
-        std::fs::write(&path, "[attention]\nstyle='loud'\nintensity=0.5\ndock='none'\n[theme]\nstate_preset='mono'\n").unwrap();
+        std::fs::write(
+            &path,
+            "[attention]\nstyle='loud'\nintensity=0.5\ndock='none'\n[theme]\nstate_preset='mono'\n",
+        )
+        .unwrap();
         h.app.reload_config();
         h.hidden_frame();
         let visual = crate::ui::activity::attention(&h.app.ctx);
@@ -608,7 +915,7 @@ mod tests {
 #[cfg(test)]
 mod attention_tests {
     use crate::{
-        protocol::{AgentState, AppRequest},
+        protocol::{AgentState, HostRequest},
         testing::HostHarness,
     };
 
@@ -673,7 +980,7 @@ mod attention_tests {
         h.focus_pane(other);
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(AppRequest::AgentNext {
+        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -689,7 +996,8 @@ mod attention_tests {
         let agent = h.add_focused_terminal();
         let other = h.add_test_pane();
         h.focus_pane(other);
-        let report = AppRequest::SetAgentState { peer_ancestry: None,
+        let report = HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "pi".into(),
@@ -725,7 +1033,8 @@ mod attention_tests {
     }
 
     #[test]
-    fn non_attention_state_report_withdraws_agent_attention_and_preserves_broker_permission_request() {
+    fn non_attention_state_report_withdraws_agent_attention_and_preserves_broker_permission_request(
+    ) {
         let mut h = HostHarness::new();
         h.app.notifications_enabled = true;
         let agent = h.add_focused_terminal();
@@ -733,7 +1042,8 @@ mod attention_tests {
         h.focus_pane(other);
 
         // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -744,14 +1054,15 @@ mod attention_tests {
         });
         h.hidden_frame();
 
-        let items = crate::overlays::attention::open_items();
+        let items = crate::app::attention_queue::open_needs_you_items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, crate::broker::gate::NeedsYouKind::Question);
         let question_id = items[0].id.clone();
 
         // 2. Agent reports idle -> withdraws its attention item without recording an approval,
         // clears the attention notification, and removes the agent from `agent next`.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Idle,
             agent: "test".into(),
@@ -763,7 +1074,7 @@ mod attention_tests {
         h.hidden_frame();
 
         assert!(
-            crate::overlays::attention::open_items().is_empty(),
+            crate::app::attention_queue::open_needs_you_items().is_empty(),
             "attention card must be cleared when agent transitions to idle"
         );
         let monitor =
@@ -784,7 +1095,7 @@ mod attention_tests {
 
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(AppRequest::AgentNext {
+        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -801,7 +1112,8 @@ mod attention_tests {
 
         // 3. Also verify working and completed withdraw blocked/needs_you items,
         // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Blocked,
             agent: "test".into(),
@@ -829,9 +1141,10 @@ mod attention_tests {
             .unwrap()
             .0;
         h.hidden_frame();
-        assert_eq!(crate::overlays::attention::open_items().len(), 2);
+        assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 2);
 
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Working,
             agent: "test".into(),
@@ -842,7 +1155,7 @@ mod attention_tests {
         });
         h.hidden_frame();
 
-        let remaining = crate::overlays::attention::open_items();
+        let remaining = crate::app::attention_queue::open_needs_you_items();
         assert_eq!(
             remaining.len(),
             1,
@@ -862,7 +1175,8 @@ mod attention_tests {
                 crate::broker::gate::ResolveSurface::Desktop,
             )
             .unwrap();
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -872,9 +1186,10 @@ mod attention_tests {
             blocked_reason: None,
         });
         h.hidden_frame();
-        assert_eq!(crate::overlays::attention::open_items().len(), 1);
+        assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 1);
 
-        h.inject_ipc(AppRequest::SetAgentState { peer_ancestry: None,
+        h.inject_ipc(HostRequest::SetAgentState {
+            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Completed,
             agent: "test".into(),
@@ -885,7 +1200,7 @@ mod attention_tests {
         });
         h.hidden_frame();
         assert!(
-            crate::overlays::attention::open_items().is_empty(),
+            crate::app::attention_queue::open_needs_you_items().is_empty(),
             "completed state report must withdraw the agent's open needs-you item"
         );
     }
@@ -920,7 +1235,10 @@ impl PlexiApp {
             .retain(|(id, _, _)| *id != pane_id);
         if !matches!(
             state,
-            AgentState::NeedsYou | AgentState::Blocked | AgentState::Completed | AgentState::ExitedUnreported
+            AgentState::NeedsYou
+                | AgentState::Blocked
+                | AgentState::Completed
+                | AgentState::ExitedUnreported
         ) {
             self.clear_agent_attention_notification(pane_id);
             return;
@@ -1025,16 +1343,12 @@ impl PlexiApp {
         &mut self,
         record: &crate::broker::gate::NeedsYouRecord,
     ) -> Option<std::path::PathBuf> {
-        let pane_id = record
-            .details
-            .as_ref()
-            .and_then(|d| d.pane_id)
-            .or_else(|| {
-                record
-                    .actor
-                    .strip_prefix("pane:")
-                    .and_then(|s| s.parse::<u64>().ok())
-            });
+        let pane_id = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+            record
+                .actor
+                .strip_prefix("pane:")
+                .and_then(|s| s.parse::<u64>().ok())
+        });
         let result_path = record
             .details
             .as_ref()
@@ -1068,13 +1382,16 @@ impl PlexiApp {
             });
         if let Some(ref path) = result_path {
             let path_str = path.to_string_lossy().into_owned();
-            if let Err(e) = self.launch_app_by_id_with_layout(
+            if let Err(e) = self.launch_view_by_id_with_layout(
                 "text-editor",
                 Some("split_h".into()),
                 &[path_str],
                 None,
             ) {
-                log::warn!("attention: open result viewer failed for {}: {e}", path.display());
+                log::warn!(
+                    "attention: open result viewer failed for {}: {e}",
+                    path.display()
+                );
             } else {
                 log::info!("attention: opened agent result {}", path.display());
             }
@@ -1088,7 +1405,6 @@ impl PlexiApp {
                 true,
                 crate::broker::gate::ResolveSurface::Desktop,
             );
-        self.attention.open = false;
         result_path
     }
 
@@ -1101,10 +1417,8 @@ impl PlexiApp {
             if self.current_notify_id.as_deref() == Some(notify_id.as_str()) {
                 self.current_notify_id = None;
             }
-            if self.pending_notifications.is_empty() {
-                self.show_notification_modal = false;
-            }
             self.save_notifications();
+            self.sync_attention_queue();
         }
     }
 
@@ -1113,10 +1427,9 @@ impl PlexiApp {
         pane_id: u64,
         session_id: Option<&str>,
     ) {
-        let withdrawn = crate::broker::gate::PermissionMonitor::for_profile(
-            &crate::config::config_dir(),
-        )
-        .withdraw_agent_needs_you(pane_id, session_id);
+        let withdrawn =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .withdraw_agent_needs_you(pane_id, session_id);
         if !withdrawn.is_empty() {
             log::info!(
                 "attention: withdrew {} agent needs-you item(s) for pane_id={pane_id}: {:?}",
@@ -1142,10 +1455,18 @@ impl PlexiApp {
                 .unwrap_or(true);
         let focused = crate::platform::attention::app_focused(ctx);
         let attention = self.config.attention.unwrap_or_default();
-        crate::ui::activity::set_attention(ctx, attention, crate::platform::attention::reduce_motion());
+        crate::ui::activity::set_attention(
+            ctx,
+            attention,
+            crate::platform::attention::reduce_motion(),
+        );
         self.agent_attention.dock.sync(
-            crate::overlays::attention::open_items().into_iter().map(|item| item.id).collect(),
-            attention.dock.unwrap_or_default(), focused,
+            crate::app::attention_queue::open_needs_you_items()
+                .into_iter()
+                .map(|item| item.id)
+                .collect(),
+            attention.dock.unwrap_or_default(),
+            focused,
         );
         let live: std::collections::HashSet<_> = self
             .windows
@@ -1201,24 +1522,6 @@ impl PlexiApp {
             log::info!("attention: no agents need attention");
         }
         target
-    }
-
-    pub(crate) fn draw_agent_attention_toast(&mut self, ctx: &egui::Context) {
-        let Some(until) = self.agent_attention.toast_until else {
-            return;
-        };
-        if std::time::Instant::now() >= until {
-            self.agent_attention.toast_until = None;
-            return;
-        }
-        crate::ui::toast::ToastShell::bottom("agent_attention_empty").show(
-            ctx,
-            &self.colors,
-            |ui| {
-                crate::ui::toast::toast_caption(ui, "No agents need attention.", &self.colors);
-            },
-        );
-        ctx.request_repaint_after(until.saturating_duration_since(std::time::Instant::now()));
     }
 }
 

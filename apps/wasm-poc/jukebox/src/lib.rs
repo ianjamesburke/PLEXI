@@ -18,7 +18,7 @@
 // tracks on top.
 
 wit_bindgen::generate!({
-    world: "plexi-audio-app",
+    world: "plexi-audio-plugin",
     path: "wit/world.wit",
 });
 
@@ -33,8 +33,9 @@ use plexi::platform::audio_rt_control::{self, AudioConfig, AudioFormat};
 use plexi::platform::host_log;
 use plexi::platform::types::{
     Alignment, BadgeColor, BadgeNode, ColumnNode, DeclareToolsEffect, Effect, FilePickerMode,
-    FileReadEffect, IndexedNode, InputEvent, KeyEvent, OpenFilePickerEffect, StateSnapshot,
-    TextNode, TimerEffect, ToolCallEvent, ToolDecl, ToolResultEffect, UiNodeData, UiTree,
+    FileReadEffect, IndexedNode, InputEvent, Justify, KeyEvent, OpenFilePickerEffect,
+    StateSnapshot, TextNode, TimerEffect, ToolCallEvent, ToolDecl, ToolResultEffect, UiNodeData,
+    UiTree,
 };
 
 use model::Jukebox;
@@ -48,7 +49,7 @@ const CAP_FS_PICK: &str = "fs.pick";
 /// Repaint cadence so the playhead in the view tracks the RT cursor.
 const TIMER_REFRESH: u32 = 1;
 
-struct App {
+struct View {
     jb: Jukebox,
     /// Picked tracks awaiting their bytes. `file-read` results carry no
     /// request id, so the head of this queue owns the next `FileReadResult`.
@@ -62,8 +63,8 @@ struct App {
 }
 
 struct Component;
-static mut APP: Option<App> = None;
-fn app() -> &'static mut App {
+static mut APP: Option<View> = None;
+fn app() -> &'static mut View {
     unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().unwrap() }
 }
 
@@ -111,7 +112,7 @@ fn file_stem_name(path: &str) -> String {
     }
 }
 
-impl App {
+impl View {
     fn tool_decls() -> Vec<ToolDecl> {
         tools::tools()
             .into_iter()
@@ -211,7 +212,11 @@ impl App {
     fn nid(&mut self, key: &str, data: UiNodeData) -> IndexedNode {
         let id = self.node_id;
         self.node_id += 1;
-        IndexedNode { id, key: key.to_string(), data }
+        IndexedNode {
+            id,
+            key: key.to_string(),
+            data,
+        }
     }
 
     fn text(&mut self, key: &str, text: String, size: f32, bold: bool) -> IndexedNode {
@@ -254,7 +259,11 @@ impl App {
                 } else {
                     format!("STOPPED · {now}")
                 },
-                color: if playing { BadgeColor::Accent } else { BadgeColor::Neutral },
+                color: if playing {
+                    BadgeColor::Accent
+                } else {
+                    BadgeColor::Neutral
+                },
             }),
         );
         children.push(badge.id);
@@ -265,7 +274,9 @@ impl App {
             format!(
                 "{} / {} · vol {:.2} · {} Hz {} ch",
                 self.jb.position_ms(),
-                self.jb.now_playing_value()["duration_ms"].as_u64().unwrap_or(0),
+                self.jb.now_playing_value()["duration_ms"]
+                    .as_u64()
+                    .unwrap_or(0),
                 self.jb.volume(),
                 self.jb.stream_rate(),
                 self.jb.stream_channels(),
@@ -293,11 +304,19 @@ impl App {
                     model::Load::Pending => "  (loading…)".to_string(),
                     model::Load::Failed(reason) => format!("  (failed: {reason})"),
                 };
-                (format!("{marker} {}. {}{state}", i + 1, t.name), i == current)
+                (
+                    format!("{marker} {}. {}{state}", i + 1, t.name),
+                    i == current,
+                )
             })
             .collect();
         if rows.is_empty() {
-            let empty = self.text("empty", "No tracks. Press o to add audio files.".into(), 12.0, false);
+            let empty = self.text(
+                "empty",
+                "No tracks. Press o to add audio files.".into(),
+                12.0,
+                false,
+            );
             children.push(empty.id);
             nodes.push(empty);
         } else {
@@ -323,11 +342,20 @@ impl App {
 
         let root = self.nid(
             "root",
-            UiNodeData::Column(ColumnNode { children, gap: 6.0, align: Alignment::Start, grow: true }),
+            UiNodeData::Column(ColumnNode {
+                children,
+                gap: 6.0,
+                align: Alignment::Start,
+                justify: Justify::Start,
+                grow: true,
+            }),
         );
         let root_id = root.id;
         nodes.push(root);
-        UiTree { root: root_id, nodes }
+        UiTree {
+            root: root_id,
+            nodes,
+        }
     }
 }
 
@@ -364,7 +392,7 @@ impl Guest for Component {
         ));
 
         unsafe {
-            APP = Some(App {
+            APP = Some(View {
                 jb,
                 read_queue: VecDeque::new(),
                 inflight: None,
@@ -376,8 +404,14 @@ impl Guest for Component {
 
         vec![
             Effect::SetTitle("Jukebox".to_string()),
-            Effect::DeclareTools(DeclareToolsEffect { tools: App::tool_decls() }),
-            Effect::SetTimer(TimerEffect { id: TIMER_REFRESH, delay_ms: 200, repeat: true }),
+            Effect::DeclareTools(DeclareToolsEffect {
+                tools: View::tool_decls(),
+            }),
+            Effect::SetTimer(TimerEffect {
+                id: TIMER_REFRESH,
+                delay_ms: 200,
+                repeat: true,
+            }),
         ]
     }
 
@@ -388,7 +422,9 @@ impl Guest for Component {
             InputEvent::TimerFired(TIMER_REFRESH) => {
                 // Repaint so the playhead advances in the view; no state change.
             }
-            InputEvent::Key(KeyEvent { key, pressed: true, .. }) => {
+            InputEvent::Key(KeyEvent {
+                key, pressed: true, ..
+            }) => {
                 // Two-second nudge for seeks, in frames at the stream rate.
                 let seek_step = a.jb.stream_rate() as u64 * 2;
                 let transport_changed = match key.as_str() {

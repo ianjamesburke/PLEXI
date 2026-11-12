@@ -1,28 +1,28 @@
 //! Outbound MCP stdio transport (stint 0382).
 //!
-//! Plexi consumes external MCP servers through the app-connector plane: a
-//! bridge app hosts the MCP client and re-exposes the server's tools via
-//! `ExposeTools`. This module owns the half of that split the app runtime
+//! Plexi consumes external MCP servers through the plugin-connector plane: a
+//! bridge plugin hosts the MCP client and re-exposes the server's tools via
+//! `ExposeTools`. This module owns the half of that split the plugin runtime
 //! cannot own — the **server process** — and nothing else.
 //!
 //! The split is deliberate:
 //!
-//! - **The host owns the process.** SDK apps run as CPython-in-Wasmtime with no
-//!   ambient process access, so an app physically cannot spawn a server. More
-//!   importantly it must not be able to: an app-supplied argv would be
+//! - **The host owns the process.** SDK plugins run as CPython-in-Wasmtime with no
+//!   ambient process access, so a plugin physically cannot spawn a server. More
+//!   importantly it must not be able to: a plugin-supplied argv would be
 //!   arbitrary native code execution wearing a capability's clothes.
-//! - **The app owns the protocol.** The native MCP visualizer and Python bridge
+//! - **The plugin owns the protocol.** The native MCP visualizer and Python bridge
 //!   share this transport. This module never parses a JSON-RPC body,
 //!   never knows what `tools/list` means, and never decides what a tool is. It
 //!   moves newline-delimited JSON between a configured child process and the
 //!   owning pane. MCP semantics — initialize, discovery, schema translation,
-//!   call proxying — live in the bridge app.
+//!   call proxying — live in the bridge plugin.
 //!
 //! The containment property that makes the capability safe to grant:
-//! **an app names a server by id; the host resolves the id to an argv from
+//! **a plugin names a server by id; the host resolves the id to an argv from
 //! user-owned config.** `mcp.client` therefore authorizes "talk to a server
 //! the user configured", never "run this command". A compromised or malicious
-//! bridge app cannot reach a binary the user did not already list.
+//! bridge plugin cannot reach a binary the user did not already list.
 //!
 //! **The server is external and untrusted, so its transport cannot exist
 //! without bounds.** Every `McpConnection` is constructed under [`McpLimits`].
@@ -57,7 +57,7 @@
 //! - *Responsiveness*: a server that produces no stdout at all within
 //!   [`McpLimits::first_output_deadline`] is killed and reported closed. The
 //!   protocol-level handshake deadline (initialize → tools/list) lives in the
-//!   bridge app, which owns the protocol.
+//!   bridge plugin, which owns the protocol.
 //! - *Delivery*: inbound lines are serviced from the host's **logic** pass
 //!   (`service_python_pane_runtimes`), never only from paint, and every
 //!   enqueued line fires the connection's [`McpWake`] so an idle or occluded
@@ -89,18 +89,18 @@
 //! ```
 //!
 //! Note: this is the *outbound* direction. `PlexiEvent::McpToolCall` and
-//! `AppRequest::McpToolResult` are the inbound direction — an external MCP
-//! client calling into a Plexi app's `[app.mcp]` surface. The two never meet.
+//! `HostRequest::McpToolResult` are the inbound direction — an external MCP
+//! client calling into a Plexi plugin's `[plugin.mcp]` surface. The two never meet.
 //!
-//! **Runtime scope: CPython bridge apps only.** The app-facing messages
+//! **Runtime scope: CPython bridge plugins only.** The plugin-facing messages
 //! (`mcp_connect` / `mcp_send` / `mcp_disconnect` and the `mcp_connected` /
 //! `mcp_message` / `mcp_closed` replies) are handled in `LivePythonPane`,
 //! alongside `http_request` and `file_read`, and never reach the WIT `effect`
-//! variant. Rust WASM component apps therefore cannot open an MCP connection.
+//! variant. Rust WASM component plugins therefore cannot open an MCP connection.
 //! Extending `wit/plexi.wit` changes the component type — the host rejects
 //! every prebuilt component compiled against the old world ("expected variant
 //! of N cases, found M") — so adding the WASM path means rebuilding the
-//! CPython shim bundle and every `apps/wasm-poc/` fixture in the same change.
+//! CPython shim bundle and every `plugins/wasm-poc/` fixture in the same change.
 //! That is a separate unit of work, not a line in this one.
 
 use std::collections::BTreeMap;
@@ -122,14 +122,14 @@ pub const MCP_SERVERS_FILE: &str = "mcp_servers.toml";
 /// resolve an interpreter without them, not because inheritance is the default.
 const INHERITED_ENV: &[&str] = &["PATH", "HOME"];
 
-/// Extra PATH entries prepended for GUI-launched hosts. A macOS app bundle
+/// Extra PATH entries prepended for GUI-launched hosts. A macOS plugin bundle
 /// launched from Finder inherits a minimal `PATH` that omits the Homebrew and
 /// `/usr/local` prefixes where `npx`/`uvx` actually live.
 const PATH_FALLBACK: &str = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin";
 
 /// Max bytes accepted on one stdout line from a server before the connection
 /// is torn down. A single JSON-RPC message larger than this is a runaway
-/// server, not a large legitimate response; truncating it would hand the app
+/// server, not a large legitimate response; truncating it would hand the plugin
 /// a corrupt body, so the connection closes instead.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -160,9 +160,9 @@ const STDERR_LOG_LINES_PER_WINDOW: u32 = 20;
 /// plus the guest-stdin cap, never unbounded.
 const INBOUND_QUEUE_LINES: usize = 16;
 
-/// Depth of the stdin writer queue. Outbound messages come from the app (tool
+/// Depth of the stdin writer queue. Outbound messages come from the plugin (tool
 /// calls), so the queue protects against a *server* that stops reading, not
-/// against the app: when it fills, `send` fails fast instead of blocking the
+/// against the plugin: when it fills, `send` fails fast instead of blocking the
 /// host thread on a pipe write.
 const OUTBOUND_QUEUE_MESSAGES: usize = 64;
 
@@ -172,7 +172,7 @@ const OUTBOUND_QUEUE_MESSAGES: usize = 64;
 pub struct McpLimits {
     /// A server that writes nothing to stdout within this window after spawn
     /// is killed and reported closed. Generous because a cold `npx -y` may
-    /// download the package before the server ever speaks; the bridge app's
+    /// download the package before the server ever speaks; the bridge plugin's
     /// own handshake timer fires earlier for the interactive stuck-pane case.
     pub first_output_deadline: Duration,
 }
@@ -524,15 +524,15 @@ impl McpConnection {
         }
 
         log::info!(
-            "mcp_client: spawning server_id={server_id} command={} args={:?} cwd={}",
-            config.command,
-            config.args,
+            "mcp_client: spawning server_id={server_id} command_chars={} argc={} cwd={}",
+            config.command.chars().count(),
+            config.args.len(),
             cwd.display()
         );
         let mut child = command.spawn().inspect_err(|e| {
             log::warn!(
-                "mcp_client: spawn failed server_id={server_id} command={}: {e}",
-                config.command
+                "mcp_client: spawn failed server_id={server_id} command_chars={}: {e}",
+                config.command.chars().count()
             );
         })?;
 
@@ -540,7 +540,11 @@ impl McpConnection {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let teardown = Arc::new(Teardown {
-            pgid: Mutex::new(if cfg!(unix) { Some(child.id() as i32) } else { None }),
+            pgid: Mutex::new(if cfg!(unix) {
+                Some(child.id() as i32)
+            } else {
+                None
+            }),
             forced_reason: Mutex::new(None),
         });
         let last_stderr = Arc::new(Mutex::new(String::new()));
@@ -593,7 +597,7 @@ impl McpConnection {
                                     continue;
                                 }
                                 if admit(&mut budget) {
-                                    log::info!("mcp_client: [{id}] stderr: {trimmed}");
+                                    log::info!("mcp_client: [{id}] stderr_chars={}", trimmed.chars().count());
                                 }
                                 if let Ok(mut slot) = sink.lock() {
                                     *slot = trimmed.to_string();
@@ -821,7 +825,11 @@ fn read_bounded_line<R: BufRead>(
             Err(e) => return Err(e),
         };
         if available.is_empty() {
-            return Ok(if total == 0 { LineRead::Eof } else { LineRead::Line });
+            return Ok(if total == 0 {
+                LineRead::Eof
+            } else {
+                LineRead::Line
+            });
         }
         let (chunk, consumed, done) = match available.iter().position(|b| *b == b'\n') {
             Some(idx) => (&available[..idx], idx + 1, true),
@@ -890,7 +898,11 @@ mod tests {
         assert_eq!(fs.args.len(), 3);
         assert!(fs.env.is_empty());
         assert_eq!(
-            registry.resolve("git").expect("resolve").env.get("GIT_AUTHOR_NAME"),
+            registry
+                .resolve("git")
+                .expect("resolve")
+                .env
+                .get("GIT_AUTHOR_NAME"),
             Some(&"plexi".to_string())
         );
     }
@@ -920,7 +932,10 @@ mod tests {
     #[test]
     fn unknown_server_against_empty_registry_says_none() {
         let registry = McpServerRegistry::default();
-        let message = registry.resolve("anything").expect_err("must reject").to_string();
+        let message = registry
+            .resolve("anything")
+            .expect_err("must reject")
+            .to_string();
         assert!(message.contains("configured: none"), "{message}");
     }
 
@@ -990,7 +1005,8 @@ mod tests {
     /// transport is exercised against byte shapes a real server produces.
     fn replay_script(dir: &Path, responses: &[&str]) -> PathBuf {
         let path = dir.join("replay.sh");
-        let mut script = String::from("#!/bin/sh\ni=0\nwhile IFS= read -r line; do\n  i=$((i+1))\n");
+        let mut script =
+            String::from("#!/bin/sh\ni=0\nwhile IFS= read -r line; do\n  i=$((i+1))\n");
         for (idx, response) in responses.iter().enumerate() {
             script.push_str(&format!(
                 "  if [ \"$i\" = \"{}\" ]; then printf '%s\\n' '{}'; fi\n",
@@ -1044,8 +1060,14 @@ mod tests {
         let script = replay_script(dir.path(), &[&initialize, &tools_list]);
 
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("filesystem", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn replay");
+        let conn = McpConnection::spawn(
+            "filesystem",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn replay");
 
         conn.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
             .expect("send initialize");
@@ -1057,7 +1079,10 @@ mod tests {
             panic!("expected a message, got {line:?}");
         };
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["result"]["serverInfo"]["name"], "secure-filesystem-server");
+        assert_eq!(
+            parsed["result"]["serverInfo"]["name"],
+            "secure-filesystem-server"
+        );
 
         conn.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)
             .expect("send tools/list");
@@ -1080,8 +1105,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = replay_script(dir.path(), &[]);
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("dead", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn =
+            McpConnection::spawn("dead", &script_config(&script), dir.path(), tx, noop_wake())
+                .expect("spawn");
         drop(conn);
         let (id, line) = rx
             .recv_timeout(Duration::from_secs(10))
@@ -1095,8 +1121,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = replay_script(dir.path(), &[]);
         let (tx, _rx) = inbound_channel();
-        let conn = McpConnection::spawn("framing", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "framing",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         let err = conn
             .send("{\"jsonrpc\":\"2.0\",\n\"id\":1}")
             .expect_err("must reject");
@@ -1161,8 +1193,14 @@ mod tests {
             "#!/bin/sh\nsleep 300 &\nprintf '{\"descendant_pid\":%s}\\n' \"$!\"\nexec sleep 300\n",
         );
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("launcher", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "launcher",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         let (_, line) = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("descendant pid");
@@ -1170,7 +1208,10 @@ mod tests {
             panic!("expected a message, got {line:?}");
         };
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        let pid = parsed["descendant_pid"].as_str().map(str::to_string).unwrap_or_else(|| parsed["descendant_pid"].to_string());
+        let pid = parsed["descendant_pid"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| parsed["descendant_pid"].to_string());
         let pid: libc::pid_t = pid.trim().parse().expect("numeric pid");
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "descendant must be alive");
 
@@ -1200,8 +1241,9 @@ mod tests {
         let script = dir.path().join("deaf.sh");
         write_script(&script, "#!/bin/sh\nexec sleep 300\n");
         let (tx, _rx) = inbound_channel();
-        let conn = McpConnection::spawn("deaf", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn =
+            McpConnection::spawn("deaf", &script_config(&script), dir.path(), tx, noop_wake())
+                .expect("spawn");
 
         // 8 KiB per message: the pipe (~64 KiB) plus the writer queue absorb
         // a bounded amount, then try_send must report Full. Far below the
@@ -1350,8 +1392,14 @@ mod tests {
             ),
         );
         let (tx, rx) = inbound_channel();
-        let conn = McpConnection::spawn("noisy", &script_config(&script), dir.path(), tx, noop_wake())
-            .expect("spawn");
+        let conn = McpConnection::spawn(
+            "noisy",
+            &script_config(&script),
+            dir.path(),
+            tx,
+            noop_wake(),
+        )
+        .expect("spawn");
         conn.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
             .expect("send");
         let (_, line) = rx.recv_timeout(Duration::from_secs(10)).expect("reply");

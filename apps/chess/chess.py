@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import chess_domain as domain
 from chess_engine import FILES, Position, sq_name
-from plexi_sdk import AppPalette, log, state, theme, tools
+from plexi_sdk import PluginPalette, log, state, theme, tools
 from plexi_sdk.effects import (
     DeclareEventStreams,
     EmitEvent,
@@ -33,7 +33,7 @@ from plexi_sdk.effects import (
 )
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, StateChanged
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Canvas,
     CanvasRect,
     CanvasText,
@@ -330,7 +330,7 @@ def view():
     ui = _ui()
     w, h = _canvas_size()
     if game is None:
-        return Column([AppBar("Chess", "No game"), Text("Starting…")], grow=True)
+        return Column([SurfaceHeader("Chess", "No game"), Text("Starting…")], grow=True)
     snap = domain.snapshot(game)
     pos = domain.position(game)
     last = snap["moves"][-1] if snap["moves"] else None
@@ -338,7 +338,7 @@ def view():
                 else f"{snap['status']} {snap['result'] or ''}".strip())
     return Column(
         [
-            AppBar("Chess", f"{snap['game_id']} · rev {snap['revision']} · {subtitle}"),
+            SurfaceHeader("Chess", f"{snap['game_id']} · rev {snap['revision']} · {subtitle}"),
             Canvas(_draw_board(pos, ui, w, h), width=w, height=h, grow=True),
             Text(ui["message"] or (f"Last: {last['san']} by {last['actor']}" if last
                                    else "No moves yet"), size=12.0),
@@ -380,7 +380,7 @@ def _square_at(x: float, y: float) -> tuple[int, int] | None:
     return max(0, min(7, file_idx)), max(0, min(7, rank))
 
 
-BOARD_PALETTE = AppPalette(
+BOARD_PALETTE = PluginPalette(
     dark={
         "light_sq": "#565f89",
         "dark_sq": "#292e42",

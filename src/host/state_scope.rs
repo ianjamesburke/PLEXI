@@ -1,6 +1,6 @@
 //! User-data scope resolution — the addressing layer for files a user owns.
 //!
-//! One `StateScope` pair, applied per [`UserDataKind`]. An app declares which
+//! One `StateScope` pair, applied per [`UserDataKind`]. An plugin declares which
 //! scopes it uses in its manifest (`[state] scopes`); the host owns path
 //! construction. Two rules, both predictable from outside the process so an
 //! external agent can find and write the bytes without asking Plexi anything:
@@ -10,10 +10,10 @@
 //! context  →  <context.root>/.plexi/<kind>/…
 //! ```
 //!
-//! `app_states` was the first kind; `notes` joined it in stint 0746. This is
+//! `plugin_states` was the first kind; `notes` joined it in stint 0746. This is
 //! one of Plexi's three scope models and the only one that addresses files —
 //! see `src/host/AGENTS.md` for how it differs from `host/scope.rs`'s runtime
-//! reachability and `app/registry.rs`'s shadowing config discovery.
+//! reachability and `plugin/registry.rs`'s shadowing config discovery.
 //!
 //! Both tiers are deliberately channel-neutral (`.plexi`, never
 //! `.plexi-<channel>`): user data must not fork when the user runs a beta or
@@ -22,15 +22,15 @@
 //! central store keyed by a sanitized root path — so it is discoverable,
 //! greppable, and moves with the project.
 //!
-//! Scope is a property of the app, not of an instance or a launch: no pane,
-//! placement, or restore decision may change where an app's bytes go.
+//! Scope is a property of the plugin, not of an instance or a launch: no pane,
+//! placement, or restore decision may change where a plugin's bytes go.
 //! Resolution happens against the pane's context root at call time, so
 //! `plexi context set-root` immediately redirects where context-scoped state
 //! resolves.
 
 use std::path::{Path, PathBuf};
 
-/// The directory name shared by both tiers. Consciously kept as `app_states`;
+/// The directory name shared by both tiers. Consciously kept as `plugin_states`;
 /// do not rename it — one data-loss bug from moving a state path is enough.
 const APP_STATES_DIR: &str = "app_states";
 
@@ -48,11 +48,11 @@ const PLEXI_DIR: &str = ".plexi";
 ///
 /// Adding a kind is how a subsystem joins this scope model. It is not a place to
 /// put host config or anything channel-scoped — those belong to
-/// `app/registry.rs`'s discovery model instead.
+/// `plugin/registry.rs`'s discovery model instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum UserDataKind {
-    /// Per-app persisted state, addressed by app id (`[state] scopes`).
-    AppStates,
+    /// Per-plugin persisted state, addressed by plugin id (`[state] scopes`).
+    PluginStates,
     /// Kept notes — a flat directory of Markdown files (stint 0746).
     Notes,
 }
@@ -61,14 +61,14 @@ impl UserDataKind {
     /// The leaf directory name under `.plexi/`.
     pub fn dir(self) -> &'static str {
         match self {
-            Self::AppStates => APP_STATES_DIR,
+            Self::PluginStates => APP_STATES_DIR,
             Self::Notes => NOTES_DIR,
         }
     }
 }
 
-/// A state scope an app may declare. Ordered lists come from the manifest;
-/// the first declared scope is the app's default.
+/// A state scope a plugin may declare. Ordered lists come from the manifest;
+/// the first declared scope is the plugin's default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StateScope {
     /// Cross-project user data: `~/.plexi/<kind>/`.
@@ -101,7 +101,7 @@ impl StateScope {
     }
 }
 
-/// The on-disk format of an app's state file. Declared in the manifest
+/// The on-disk format of a plugin's state file. Declared in the manifest
 /// (`[state] format`); the host is format-blind for anything but JSON — a
 /// markdown file's bytes pass through verbatim under a single `document` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -143,51 +143,51 @@ impl StateFormat {
     }
 }
 
-/// The scopes an app that omits `[state]` gets.
+/// The scopes a plugin that omits `[state]` gets.
 pub fn default_scopes() -> Vec<StateScope> {
     vec![StateScope::Global]
 }
 
-/// Validate an app id before it is used as a state-file name component.
-/// The id becomes `<dir>/<app_id>.<ext>` on disk, so anything that could
+/// Validate a plugin id before it is used as a state-file name component.
+/// The id becomes `<dir>/<plugin_id>.<ext>` on disk, so anything that could
 /// escape the state directory (separators, traversal, hidden-file prefixes)
 /// is rejected loudly.
-pub fn validate_app_id(app_id: &str) -> Result<(), String> {
-    if app_id.is_empty() {
-        return Err("app id is empty — cannot resolve a state file".to_string());
+pub fn validate_plugin_id(plugin_id: &str) -> Result<(), String> {
+    if plugin_id.is_empty() {
+        return Err("plugin id is empty — cannot resolve a state file".to_string());
     }
-    if app_id.starts_with('.') {
+    if plugin_id.starts_with('.') {
         return Err(format!(
-            "app id '{app_id}' starts with '.' — state file names must not be hidden or traversal paths"
+            "plugin id '{plugin_id}' starts with '.' — state file names must not be hidden or traversal paths"
         ));
     }
-    if app_id.contains("..") {
+    if plugin_id.contains("..") {
         return Err(format!(
-            "app id '{app_id}' contains '..' — path traversal is not allowed in state file names"
+            "plugin id '{plugin_id}' contains '..' — path traversal is not allowed in state file names"
         ));
     }
-    if let Some(bad) = app_id
+    if let Some(bad) = plugin_id
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
     {
         return Err(format!(
-            "app id '{app_id}' contains invalid character '{bad}' — allowed: A-Z a-z 0-9 . _ -"
+            "plugin id '{plugin_id}' contains invalid character '{bad}' — allowed: A-Z a-z 0-9 . _ -"
         ));
     }
     Ok(())
 }
 
-/// Resolve a scope + format to the concrete state file for `app_id`,
-/// validating the app id first. New callers route through this; `state_path`
+/// Resolve a scope + format to the concrete state file for `plugin_id`,
+/// validating the plugin id first. New callers route through this; `state_path`
 /// stays as the raw two-rule resolver.
 pub fn state_file(
     scope: StateScope,
-    app_id: &str,
+    plugin_id: &str,
     format: StateFormat,
     context_root: &Path,
 ) -> Result<PathBuf, String> {
-    validate_app_id(app_id)?;
-    Ok(state_path(scope, app_id, format.ext(), context_root))
+    validate_plugin_id(plugin_id)?;
+    Ok(state_path(scope, plugin_id, format.ext(), context_root))
 }
 
 /// Assert that `path`'s parent directory really is the scope's state
@@ -196,7 +196,7 @@ pub fn state_file(
 ///
 /// The comparison anchors on the scope's trusted *base* (the context root, or
 /// the home dir for global scope): the base is canonicalized, the
-/// `.plexi/app_states` tail is appended literally, and the actual parent's
+/// `.plexi/plugin_states` tail is appended literally, and the actual parent's
 /// fully-resolved form must match exactly. Components of the parent that do
 /// not exist yet (first write) cannot hide a symlink and are appended
 /// literally too.
@@ -263,7 +263,7 @@ fn resolve_existing_prefix(path: &Path) -> Result<PathBuf, String> {
 /// Validate a manifest `[state] scopes` list. Rules (fail loud, no silent
 /// fallback — the `join_group` free-form key is the cautionary precedent):
 /// an empty list is an error, an unknown value is an error, a duplicate is an
-/// error. Order is preserved; the first entry is the app's default scope.
+/// error. Order is preserved; the first entry is the plugin's default scope.
 pub fn parse_scopes(raw: &[String]) -> Result<Vec<StateScope>, String> {
     if raw.is_empty() {
         return Err(
@@ -341,12 +341,13 @@ pub fn context_notes_dir(context_root: &Path) -> PathBuf {
     user_data_dir(StateScope::Context, UserDataKind::Notes, context_root)
 }
 
-/// Resolve a scope to the concrete state file for `app_id`. `ext` is the
-/// app's state file extension without the dot (the host's Python runtime
+/// Resolve a scope to the concrete state file for `plugin_id`. `ext` is the
+/// plugin's state file extension without the dot (the host's Python runtime
 /// persists JSON, so it passes `json`). `context_root` is the root of the
 /// pane's context *at call time*, never a launch-captured copy.
-pub fn state_path(scope: StateScope, app_id: &str, ext: &str, context_root: &Path) -> PathBuf {
-    user_data_dir(scope, UserDataKind::AppStates, context_root).join(format!("{app_id}.{ext}"))
+pub fn state_path(scope: StateScope, plugin_id: &str, ext: &str, context_root: &Path) -> PathBuf {
+    user_data_dir(scope, UserDataKind::PluginStates, context_root)
+        .join(format!("{plugin_id}.{ext}"))
 }
 
 #[cfg(test)]
@@ -393,7 +394,7 @@ mod tests {
     #[test]
     fn every_user_data_kind_follows_the_same_two_rules() {
         let root = Path::new("/projects/demo");
-        for kind in [UserDataKind::AppStates, UserDataKind::Notes] {
+        for kind in [UserDataKind::PluginStates, UserDataKind::Notes] {
             let context = user_data_dir(StateScope::Context, kind, root);
             assert_eq!(
                 context,
@@ -412,7 +413,7 @@ mod tests {
         }
     }
 
-    /// Notes are channel-neutral like app state: the tier must never pick up a
+    /// Notes are channel-neutral like plugin state: the tier must never pick up a
     /// `.plexi-<channel>` profile dir, or a user's notes fork the moment they
     /// run a beta or PR build.
     #[test]
@@ -435,8 +436,8 @@ mod tests {
     }
 
     /// The symlink-escape guard is kind-aware: a redirected `notes` directory is
-    /// rejected the same way a redirected `app_states` one is, and the message
-    /// names the kind rather than always saying `app_states`.
+    /// rejected the same way a redirected `plugin_states` one is, and the message
+    /// names the kind rather than always saying `plugin_states`.
     #[test]
     fn assert_within_scope_rejects_a_symlinked_notes_dir() {
         let root = tempfile::tempdir().expect("context root");
@@ -477,25 +478,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_app_id_rejects_traversal_separators_and_empties() {
-        assert!(validate_app_id("").unwrap_err().contains("empty"));
-        assert!(validate_app_id(".hidden").unwrap_err().contains("'.'"));
-        assert!(validate_app_id("a..b").unwrap_err().contains(".."));
-        assert!(validate_app_id("a/b")
+    fn validate_plugin_id_rejects_traversal_separators_and_empties() {
+        assert!(validate_plugin_id("").unwrap_err().contains("empty"));
+        assert!(validate_plugin_id(".hidden").unwrap_err().contains("'.'"));
+        assert!(validate_plugin_id("a..b").unwrap_err().contains(".."));
+        assert!(validate_plugin_id("a/b")
             .unwrap_err()
             .contains("invalid character"));
-        assert!(validate_app_id("a\\b")
+        assert!(validate_plugin_id("a\\b")
             .unwrap_err()
             .contains("invalid character"));
-        assert!(validate_app_id("a b")
+        assert!(validate_plugin_id("a b")
             .unwrap_err()
             .contains("invalid character"));
-        assert!(validate_app_id("todo").is_ok());
-        assert!(validate_app_id("acme.todo-2").is_ok());
+        assert!(validate_plugin_id("todo").is_ok());
+        assert!(validate_plugin_id("acme.todo-2").is_ok());
     }
 
     #[test]
-    fn state_file_refuses_bad_app_ids_and_uses_format_ext() {
+    fn state_file_refuses_bad_plugin_ids_and_uses_format_ext() {
         let root = Path::new("/projects/demo");
         assert!(state_file(StateScope::Context, "../todo", StateFormat::Json, root).is_err());
         assert!(state_file(StateScope::Context, "a/b", StateFormat::Json, root).is_err());
@@ -525,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn assert_within_scope_rejects_a_symlinked_app_states_dir() {
+    fn assert_within_scope_rejects_a_symlinked_plugin_states_dir() {
         let root = tempfile::tempdir().expect("context root");
         let elsewhere = tempfile::tempdir().expect("attacker-controlled dir");
         let plexi_dir = root.path().join(".plexi");
@@ -538,7 +539,7 @@ mod tests {
         let err = assert_within_scope(
             &path,
             StateScope::Context,
-            UserDataKind::AppStates,
+            UserDataKind::PluginStates,
             root.path(),
         )
         .expect_err("a symlinked app_states dir must be rejected");
@@ -546,7 +547,11 @@ mod tests {
 
         // A genuine directory passes.
         let honest = tempfile::tempdir().expect("honest root");
-        let honest_dir = user_data_dir(StateScope::Context, UserDataKind::AppStates, honest.path());
+        let honest_dir = user_data_dir(
+            StateScope::Context,
+            UserDataKind::PluginStates,
+            honest.path(),
+        );
         std::fs::create_dir_all(&honest_dir).expect("create app_states");
         let honest_path = state_file(
             StateScope::Context,
@@ -558,19 +563,19 @@ mod tests {
         assert_within_scope(
             &honest_path,
             StateScope::Context,
-            UserDataKind::AppStates,
+            UserDataKind::PluginStates,
             honest.path(),
         )
         .expect("real app_states dir is within scope");
 
-        // Not-yet-created app_states dir is fine too (first write).
+        // Not-yet-created plugin_states dir is fine too (first write).
         let fresh = tempfile::tempdir().expect("fresh root");
         let fresh_path = state_file(StateScope::Context, "todo", StateFormat::Json, fresh.path())
             .expect("resolve state file");
         assert_within_scope(
             &fresh_path,
             StateScope::Context,
-            UserDataKind::AppStates,
+            UserDataKind::PluginStates,
             fresh.path(),
         )
         .expect("missing app_states dir is within scope before first write");
@@ -580,7 +585,7 @@ mod tests {
     /// channel-suffixed tier would fork a user's data per build.
     #[test]
     fn global_dir_is_channel_neutral() {
-        for kind in [UserDataKind::AppStates, UserDataKind::Notes] {
+        for kind in [UserDataKind::PluginStates, UserDataKind::Notes] {
             let dir = user_data_dir(StateScope::Global, kind, Path::new(""));
             let plexi_component = dir
                 .components()

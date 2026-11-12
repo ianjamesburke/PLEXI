@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import Texture from '../components/Texture.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 
@@ -8,12 +9,15 @@ interface Props {
   description?: string;
   image?: string;
   type?: 'website' | 'article';
+  /** Keep the page out of search indexes (beta-gated or utility pages). */
+  noindex?: boolean;
 }
 const {
-  title = "Plexi — The last app you'll ever need.",
-  description = 'Your terminal, your agents, your apps — all in one window. Build tools with AI and own everything you make.',
+  title = "Plexi: the last app you'll ever need",
+  description = 'Plexi is an agent operating system for developers who work with coding agents. Terminals, agents and plugins in one tiled window, driven by one CLI.',
   image = '/og-default.png',
   type = 'website',
+  noindex = false,
 } = Astro.props;
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
@@ -23,12 +27,14 @@ const imageURL = new URL(image, Astro.site).toString();
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="theme-color" content="#16161e" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Primary -->
   <title>{title}</title>
   <meta name="description" content={description} />
   <link rel="canonical" href={canonicalURL} />
+  {noindex && <meta name="robots" content="noindex" />}
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" href="/favicon.ico" sizes="32x32" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -49,14 +55,10 @@ const imageURL = new URL(image, Astro.site).toString();
   <meta name="twitter:image" content={imageURL} />
 </head>
 <body>
-  <div class="atmosphere">
-    <div class="glow-hero"></div>
-    <div class="glow-funding"></div>
-    <div class="glow-mission"></div>
-    <div class="grain"></div>
-  </div>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <Texture />
   <Nav />
-  <main>
+  <main id="main" tabindex="-1">
     <slot />
   </main>
   <Footer />

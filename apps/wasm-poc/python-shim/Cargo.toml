@@ -16,6 +16,6 @@ package = "plexi:python-shim"
 
 [package.metadata.component.target]
 path = "wit"
-world = "plexi-app"
+world = "plexi-plugin"
 
 [workspace]

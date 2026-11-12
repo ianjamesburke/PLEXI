@@ -1,15 +1,15 @@
-// Host-owned frame pacing and telemetry for WASM surface apps.
+// Host-owned frame pacing and telemetry for WASM surface plugins.
 //
 // The guest never implements its own FPS loop. It requests a continuous
 // cadence; the host's [`FrameClock`] decides how many fixed sim steps to run
 // per repaint (with bounded catch-up and a drop policy), and [`FrameTelemetry`]
 // owns the wall-clock measurements (frame interval, present cost, dropped
-// frames). Apps display host telemetry; they do not invent it.
+// frames). Plugins display host telemetry; they do not invent it.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Cadence bounds an app can steer the host to. Matched to the CPython path's
+/// Cadence bounds a plugin can steer the host to. Matched to the CPython path's
 /// `fps.clamp(1, 240)` so neither runtime lets a guest declare a rate the host
 /// would pay an unbounded repaint cost to honour.
 pub const MIN_TARGET_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 240);
@@ -38,7 +38,7 @@ pub struct FrameClock {
 impl FrameClock {
     /// Build a clock targeting `target_hz` frames per second (clamped to ≥1).
     /// That rate is also the fallback [`retarget`](Self::retarget) restores when
-    /// an app declares no cadence of its own.
+    /// a plugin declares no cadence of its own.
     pub fn new(target_hz: u32) -> Self {
         let hz = target_hz.max(1);
         let interval = Duration::from_secs_f64(1.0 / hz as f64);
@@ -57,12 +57,12 @@ impl FrameClock {
         self.target_interval
     }
 
-    /// Retarget the clock at the cadence the app declared for itself, clamped to
-    /// [`MIN_TARGET_INTERVAL`]..=[`MAX_TARGET_INTERVAL`] — an app steers the
+    /// Retarget the clock at the cadence the plugin declared for itself, clamped to
+    /// [`MIN_TARGET_INTERVAL`]..=[`MAX_TARGET_INTERVAL`] — a plugin steers the
     /// host's repaint rate here, so it never gets to name an arbitrary one.
-    /// `None` means the app declares nothing (or stopped declaring), which
+    /// `None` means the plugin declares nothing (or stopped declaring), which
     /// restores the construction-time default rather than stranding the pane on
-    /// a cadence its app no longer asks for. Idempotent when unchanged; a real
+    /// a cadence its plugin no longer asks for. Idempotent when unchanged; a real
     /// change discards the partial accumulator, which is debt measured against
     /// the old interval and meaningless against the new one.
     pub fn retarget(&mut self, declared: Option<Duration>) {
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn retargeting_clamps_what_an_app_can_ask_the_host_to_repaint_at() {
+    fn retargeting_clamps_what_an_plugin_can_ask_the_host_to_repaint_at() {
         let mut clock = FrameClock::new(60);
         clock.retarget(Some(Duration::from_micros(100)));
         assert_eq!(clock.target_interval(), MIN_TARGET_INTERVAL);
@@ -300,7 +300,7 @@ mod tests {
         let default = clock.target_interval();
         clock.retarget(Some(Duration::from_millis(500)));
         assert_eq!(clock.target_interval(), Duration::from_millis(500));
-        // The app stopped declaring a cadence (cancelled its frame timer): the
+        // The plugin stopped declaring a cadence (cancelled its frame timer): the
         // pane returns to the host default, it does not strand on 500 ms.
         clock.retarget(None);
         assert_eq!(clock.target_interval(), default);

@@ -11,11 +11,11 @@
 ///
 /// `id` is the CoreMIDI unique-id rendered as decimal. It is stable across
 /// reboots (CoreMIDI persists per-endpoint UIDs in `~/Library/Audio/MIDI Devices/`)
-/// but not across machines. Apps that persist a "last selected port" should
+/// but not across machines. Plugins that persist a "last selected port" should
 /// fall back to `default = true` when the saved id is no longer present.
 ///
 /// `default` is best-effort: CoreMIDI has no system-wide "default MIDI port"
-/// concept. We mark the **first** port `default = true` so apps that just
+/// concept. We mark the **first** port `default = true` so plugins that just
 /// want "any" port have a deterministic pick.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MidiPortInfo {

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # bs-start.sh — deterministic start of a stint lane (bs- pipeline).
 #
-# Usage: bs-start.sh <stint-id> [<stint-id> ...]
+# Usage: bs-start.sh [--base feature/alpha-cleanup] [--manifest path] <stint-id> [<stint-id> ...]
 #
-# Asserts alpha is clean and synced with origin (hard error naming what and
-# where otherwise), mints the wtp worktree feature/stint-<id>[-<id>...]-<slug>
-# from alpha HEAD, verifies the base, claims every given stint, and publishes
+# Asserts the selected committed base is synced with origin (hard error naming what and
+# where otherwise), warns about excluded Alpha edits, mints the wtp worktree feature/stint-<id>[-<id>...]-<slug>
+# from that base HEAD, verifies the base, claims every given stint, and publishes
 # a slot report. Multiple ids form one batch lane: one worktree, one PR, and
 # a branch name `just merge-pr` resolves all the stints from.
 # Safe from any cwd inside the repo. The last stdout line is the worktree path.
@@ -13,6 +13,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+base_branch="alpha"
+if [[ "${1:-}" == "--base" ]]; then
+  base_branch="${2:-}"
+  shift 2
+  if [[ "$base_branch" != "feature/alpha-cleanup" ]]; then
+    echo "bs-start: --base only accepts feature/alpha-cleanup" >&2
+    exit 1
+  fi
+fi
+manifest_args=()
+if [[ "${1:-}" == "--manifest" ]]; then
+  if [[ -z "${2:-}" || "$base_branch" != "feature/alpha-cleanup" ]]; then
+    echo "bs-start: --manifest requires a path and aggregate base" >&2
+    exit 1
+  fi
+  manifest_args=(--manifest "$2")
+  shift 2
+fi
 if [[ $# -lt 1 ]]; then
   echo "bs-start: missing stint id. Usage: just bs-start <stint-id> [<stint-id> ...]" >&2
   exit 1
@@ -29,25 +47,47 @@ if [[ -z "$alpha_root" ]]; then
   exit 1
 fi
 
-# Alpha must be clean.
-git -C "$alpha_root" update-index -q --refresh || true
-dirty="$(git -C "$alpha_root" status --porcelain)"
-if [[ -n "$dirty" ]]; then
-  echo "bs-start: alpha is dirty at $alpha_root — commit or restore these before starting a lane:" >&2
-  echo "$dirty" >&2
+base_root="$(git worktree list --porcelain | awk -v target="refs/heads/$base_branch" '
+  /^worktree / { path=substr($0, 10) }
+  /^branch / && $2 == target { print path; exit }
+')"
+if [[ -z "$base_root" ]]; then
+  echo "bs-start: no worktree for base $base_branch" >&2
   exit 1
 fi
+if [[ "$base_branch" == "feature/alpha-cleanup" ]]; then
+  script_root="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [[ "$(git -C "$script_root" branch --show-current)" != "$base_branch" ]]; then
+    echo "bs-start: aggregate mode must run the helper from the $base_branch worktree" >&2
+    exit 1
+  fi
+  # Refuse blocked product dispatch before worktree creation or stint claim.
+  uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" "${manifest_args[@]}" >/dev/null
+fi
 
-# Alpha must be synced with origin (neither ahead nor behind).
-git -C "$alpha_root" fetch -q origin alpha
-behind="$(git -C "$alpha_root" rev-list --count HEAD..origin/alpha)"
-ahead="$(git -C "$alpha_root" rev-list --count origin/alpha..HEAD)"
+# Aggregate bases remain clean; Alpha lanes use committed state and report excluded edits.
+git -C "$base_root" update-index -q --refresh || true
+dirty="$(git -C "$base_root" status --porcelain)"
+if [[ -n "$dirty" ]]; then
+  if [[ "$base_branch" != "alpha" ]]; then
+    echo "bs-start: $base_branch is dirty at $base_root; aggregate base must be clean:" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+  echo "bs-start: Alpha has local edits; the new lane starts from committed Alpha and excludes these edits:" >&2
+  echo "$dirty" >&2
+fi
+
+# The selected base must be synced with origin (neither ahead nor behind).
+git -C "$base_root" fetch -q origin "$base_branch"
+behind="$(git -C "$base_root" rev-list --count "HEAD..origin/$base_branch")"
+ahead="$(git -C "$base_root" rev-list --count "origin/$base_branch..HEAD")"
 if [[ "$behind" != "0" ]]; then
-  echo "bs-start: alpha at $alpha_root is $behind commit(s) behind origin/alpha — run 'git pull --rebase origin alpha' there first." >&2
+  echo "bs-start: $base_branch at $base_root is $behind commit(s) behind origin — sync it first." >&2
   exit 1
 fi
 if [[ "$ahead" != "0" ]]; then
-  echo "bs-start: alpha at $alpha_root has $ahead unpushed commit(s) — push or drop them before starting a lane." >&2
+  echo "bs-start: $base_branch at $base_root has $ahead unpushed commit(s) — push or drop them before starting a lane." >&2
   exit 1
 fi
 
@@ -96,14 +136,14 @@ if git -C "$alpha_root" ls-remote --exit-code --heads origin "$branch" >/dev/nul
   exit 1
 fi
 
-# Mint the worktree from alpha HEAD (wtp, never raw git worktree).
-(cd "$alpha_root" && wtp add -b "$branch" HEAD)
+# Mint the worktree from the selected base (wtp, never raw git worktree).
+(cd "$alpha_root" && wtp add -b "$branch" "refs/heads/$base_branch")
 
-# Verify the base: the new worktree must sit exactly at alpha HEAD.
-alpha_head="$(git -C "$alpha_root" rev-parse HEAD)"
+# Verify the new worktree sits exactly at the selected base HEAD.
+alpha_head="$(git -C "$base_root" rev-parse HEAD)"
 wt_head="$(git -C "$worktree" rev-parse HEAD)"
 if [[ "$wt_head" != "$alpha_head" ]]; then
-  echo "bs-start: worktree base mismatch: $worktree is at ${wt_head:0:8}, alpha HEAD is ${alpha_head:0:8}. Removing the bad worktree." >&2
+  echo "bs-start: worktree base mismatch: $worktree is at ${wt_head:0:8}, $base_branch HEAD is ${alpha_head:0:8}. Removing the bad worktree." >&2
   (cd "$alpha_root" && wtp remove -f --with-branch "$branch") || true
   exit 1
 fi
@@ -114,5 +154,5 @@ for stint_id in "${stint_ids[@]}"; do
 done
 
 bash "$SCRIPT_DIR/bs-slot.sh" start done "stint=${stint_ids[*]}" "detail=branch=$branch head=${alpha_head:0:8}"
-echo "bs-start: stint(s) ${stint_ids[*]} claimed, branch $branch at ${alpha_head:0:8}"
+echo "bs-start: stint(s) ${stint_ids[*]} claimed, branch $branch from $base_branch at ${alpha_head:0:8}"
 echo "$worktree"

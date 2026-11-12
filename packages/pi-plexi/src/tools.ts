@@ -39,7 +39,7 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     name: "plexi_workspace_overview",
     label: "Plexi Workspace Overview",
     description:
-      "Inspect the current Plexi workspace: attachment status, active context, sibling terminal and app panes, live app tools, open Needs you items, and durable continuations.",
+      "Inspect the current Plexi workspace: attachment status, active context, sibling terminal and app panes, registered agents (by name, tier, and harness), live app tools, open Needs you items, and durable continuations.",
     parameters: {
       type: "object",
       properties: {
@@ -122,7 +122,7 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     name: "plexi_app_tools",
     label: "Plexi App Tools",
     description:
-      "Discover live app tools and their JSON input/output schemas in the current Plexi context (`plexi app tools --json`).",
+      "Discover live app tools and their JSON input/output schemas in the current Plexi context (`plexi plugin tools --json`).",
     parameters: {
       type: "object",
       properties: {
@@ -150,7 +150,7 @@ export function buildPlexiTools(deps: PlexiToolDeps) {
     name: "plexi_app_call",
     label: "Plexi App Call",
     description:
-      "Invoke an app-exposed tool (`plexi app call <app> <tool> --args <json>`). Read-only tools run immediately. Mutating tools (`read_only=false`) are gated on the exact target resource and revision; when `wait_approved` is true, waits for the human to click Allow once in Plexi.",
+      "Invoke an app-exposed tool (`plexi plugin call <plugin_id> <tool> --input <json>`). Read-only tools run immediately. Mutating tools (`read_only=false`) are gated on the exact target resource and revision; when `wait_approved` is true, waits for the human to click Allow once in Plexi.",
     parameters: {
       type: "object",
       properties: {

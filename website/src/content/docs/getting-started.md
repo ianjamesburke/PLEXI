@@ -1,98 +1,111 @@
 ---
-title: Installation & Setup
-description: Get Plexi running on macOS, Linux, or Windows.
+title: Install
+description: Install Plexi on an Apple Silicon Mac, open an unsigned build, and learn the first shortcuts.
 order: 1
 ---
 
-Plexi is a tiling terminal host with a scriptable CLI for macOS, Linux, and
-Windows. Its stable v1 surface includes panes, subcontexts, agent status hooks,
-Quick Note, and the local app runtime.
+Plexi runs on Apple Silicon Macs today. Windows and Linux builds are coming soon.
 
 ## Install
 
-Use the [Download page](/download) for the supported platform and channel combinations,
-install commands, prerequisites, and links to the published release assets. That page
-owns current download availability; source-build support does not imply a published archive.
-
-### Linux limitations
-
-Plexi supports X11 sessions. Wayland is not supported. The download is a tar archive,
-not an apt, AUR, Flatpak, AppImage, `.deb`, or `.rpm` package.
-On Linux, secrets are kept in a mode-`0600` file rather than an encrypted OS
-keyring. Hardware video decoding is not implemented on Linux.
-
-### Windows setup
-
-The Windows installer adds its user-owned command directory to the user `PATH`
-and records the installed tag; Windows shell completions are TBD. Use the PowerShell
-command on the Download page; the Unix `curl | bash` command is not a Windows installer.
-
-### Source builds and unsigned releases
-
-From a macOS or Linux checkout, use `scripts/install.sh --from-source alpha` to
-build and install from source; it requires Rust, just, uv and Python 3.11. Windows has no
-equivalent source-install script. All alpha builds are unsigned and not
-notarized. Follow the [unsigned build opening guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
-before bypassing a Gatekeeper or SmartScreen warning. Linux users who unpack an
-archive manually may need `chmod +x plexi`.
-
-Plexi does not request Accessibility permission on first launch. Its app bundle
-declares camera and microphone permissions for video rooms, which macOS requests
-only when a feature uses them.
-
-## Script the Host
-
-The CLI is designed for scripts and tools that need to control a running host.
-It covers panes, contexts, status reporting, notes, and local apps. The v1
-surface exposes agent status hooks; it does not ship a full Assistant product.
-
-If you use a tool that supports [skills](https://skills.sh/), you can install
-the Plexi skill to document that CLI surface:
+Paste this into a terminal:
 
 ```sh
-npx -y skills@latest add ianjamesburke/plexi-skills
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
 ```
 
-Run it in a project to install for that project, or add `-g` for a global install. To update it later, run `npx skills update`.
+The installer downloads the current beta release for your Mac, checks the
+archive's SHA-256 checksum, and installs into your home directory. It needs
+`bash`, `curl`, `tar` and `shasum`. It does not need Rust, Git, a package
+manager or administrator access.
 
-To pin the skill to a Plexi release, use the same current CLI:
+The beta's launcher is `plexi-beta`. Inside a Plexi pane, plain `plexi` runs
+the build that pane belongs to, so the commands in these docs work as written.
+The [Download page](/download) lists which release each channel currently
+installs.
 
-```sh
-npx -y skills@latest add "ianjamesburke/plexi-skills#v0.2.0"
-```
+## Open an unsigned build
 
-If a pinned install reports a clone URL with the `#v…` ref embedded in it and
-ends with `not valid`, a stale `skills` CLI is being used. Run the command above
-instead of bare `npx skills add`.
+Plexi releases are signed with a self-signed identity and are not notarized by
+Apple, so macOS warns the first time you open one.
 
-## Your First Session
+1. Open `Plexi.app` from the `Applications` folder in your home directory, then dismiss the warning.
+2. Open **System Settings > Privacy & Security** and choose **Open Anyway** for Plexi.
+3. Confirm, and authenticate if macOS asks.
 
-Plexi opens with a single terminal pane. From there:
+Only do this for an archive that came from an
+[official Plexi GitHub release](https://github.com/ianjamesburke/PLEXI/releases).
+The [unsigned build guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md)
+has the full steps.
+
+Plexi does not ask for Accessibility permission on first launch. Its app bundle
+declares camera and microphone permissions, which macOS requests only when a
+feature uses them.
+
+## First five shortcuts
+
+Plexi opens with one terminal pane running your shell.
 
 | Action | Shortcut |
 |--------|----------|
 | Split horizontally | `⌘D` |
 | Split vertically | `⌘⇧D` |
-| Navigate panes | `⌘H` / `⌘J` / `⌘K` / `⌘L` |
+| Move focus | `⌘H` / `⌘J` / `⌘K` / `⌘L` |
 | Close pane | `⌘W` |
-| Rename pane | `⌘R` |
+| Command palette | `⌘P` |
 
-## Build Channels
+The command palette lists every action, so you can find the rest from there.
+`plexi demo` runs a short interactive tutorial for splitting and moving
+between panes. [Panes](/docs/panes) has the full set, and
+[Configuration](/docs/config) shows how to rebind any of them.
 
-Plexi ships three channels. Each is a fully isolated instance with its own binary, profile directory, and app bundle — you can run all three simultaneously.
+## Set up AI (optional)
 
-| Channel | Binary | Profile | Workspace Dir |
-|---------|--------|---------|---------------|
+```sh
+plexi ai onboard
+```
+
+This checks your hardware and existing setup, then walks you to a working
+model: local Ollama, your own OpenRouter key, or skip it for now. Plexi does not
+need a model to host your terminals and agents. Plugins that call a model do.
+
+## Channels
+
+Plexi ships three channels. Each one has its own binary, profile directory and
+app bundle, so you can run them side by side.
+
+| Channel | Binary | Profile | Workspace directory |
+|---------|--------|---------|---------------------|
 | Stable | `plexi` | `~/.plexi/` | `<repo>/.plexi/` |
 | Beta | `plexi-beta` | `~/.plexi-beta/` | `<repo>/.plexi-beta/` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `<repo>/.plexi-alpha/` |
 
-Stable v1 keeps Assistant, marketplace, and MCP client surfaces gated. Use a
-beta or worktree channel only when you are explicitly testing those features.
+The install command above passes `--channel beta`. Pass `--channel alpha` for
+the alpha channel instead:
 
-## Next Steps
+```sh
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
+```
 
-- [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
-- [Panes & Pages](/docs/panes) — understand the layout model
-- [Apps](/docs/apps) — build and run Plexi apps
-- [Python SDK](/docs/sdk) — author apps for the local runtime
+Features outside the stable surface are experiments, off by default on every
+channel. `plexi experiments list` shows them.
+
+## Build from source
+
+From a checkout of the repository on macOS:
+
+```sh
+scripts/install.sh --from-source alpha
+```
+
+This needs Rust, just, uv and Python 3.11.
+
+## Update or remove
+
+`plexi update` updates the channel you run it from, and `plexi update --rollback`
+restores the previous build. `plexi uninstall` removes that channel's package
+and launchers and keeps your data unless you pass `--delete-data`.
+
+## Next
+
+[Run your first agent](/docs/first-agent) connects a coding agent to Plexi.

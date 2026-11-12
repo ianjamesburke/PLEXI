@@ -385,6 +385,20 @@ mod tests {
             assert_eq!(redact_argv(&safe, &[]), safe, "redaction is idempotent");
         }
     }
+
+    #[test]
+    fn cli_trace_capture_opt_in_keeps_content_but_still_hides_secrets() {
+        let args = ["plexi", "pane", "send", "42", "hello world"].map(str::to_string);
+        assert_eq!(redact_argv_with_content(&args, &[], true), args);
+        let args = ["plexi", "pane", "send", "42", "API_KEY=private"].map(str::to_string);
+        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
+        let args = ["plexi", "agent", "call", "reviewer", "--task=API_KEY=private"].map(str::to_string);
+        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
+        let args = ["plexi", "agent", "call", "reviewer", "--task=--token=private"].map(str::to_string);
+        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
+        let invalid = ["plexi", "pane", "send", "42", "private", "extra"].map(str::to_string);
+        assert!(!redact_argv_with_content(&invalid, &[], true).join(" ").contains("private"));
+    }
 }
 
 use serde_json::json;
@@ -713,13 +727,18 @@ fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
 /// the sequence remains useful; mask uppercase env assignments, secret keys,
 /// and command arguments that carry free-form user or agent text.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
+    let capture = std::env::var("PLEXI_TRACE_CAPTURE_CONTENT").is_ok_and(|value| value == "1");
+    redact_argv_with_content(argv, known, capture)
+}
+
+fn redact_argv_with_content(argv: &[String], known: &[String], capture: bool) -> Vec<String> {
     let (content, fallback) = redact_content(argv);
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
     argv.iter()
         .enumerate()
         .map(|(index, arg)| {
-            if !fallback {
+            if !fallback && !capture {
                 if let Some(redacted) = &content[index] {
                     return redacted.clone();
                 }
@@ -732,14 +751,19 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
             if secret_set.is_some_and(|start| index > start + 2) && !arg.starts_with('-') {
                 return "<redacted>".to_string();
             }
-            if let Some((key, _)) = arg.split_once('=') {
+            if let Some((key, value)) = arg.split_once('=') {
                 // In an invalid call, even an assignment's key can be payload.
                 // Only retain an option prefix that the grammar recognized.
-                if let Some(redacted) = &content[index] {
+                if let Some(redacted) = content[index].as_ref().filter(|_| fallback || !capture) {
                     return redacted.clone();
                 }
                 if !key.contains(char::is_whitespace) && secret_assignment(key, known) {
                     return format!("{key}=<redacted>");
+                }
+                if let Some((nested, _)) = value.split_once('=') {
+                    if nested.starts_with('-') && secret_name(nested, known) {
+                        return format!("{key}={nested}=<redacted>");
+                    }
                 }
             }
             if (arg.starts_with('-') && secret_name(arg, known))
@@ -748,10 +772,10 @@ pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
                 hide_next = true;
                 return content[index].clone().unwrap_or_else(|| arg.clone());
             }
-            if let Some(redacted) = &content[index] {
+            if let Some(redacted) = content[index].as_ref().filter(|_| fallback || !capture) {
                 return redacted.clone();
             }
-            if arg.starts_with("--") && !arg.contains(char::is_whitespace) {
+            if arg.starts_with("--") && !arg.contains('=') && !arg.contains(char::is_whitespace) {
                 return arg.clone();
             }
             // A shell fragment is one argv value. If it embeds a secret-setting

@@ -1,18 +1,22 @@
-schema_version = 1
-
-[app]
-id = "balls"
-type = "app"
-name = "Balls"
-version = "0.1.0"
-description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
-entry = "balls.py"
-watch = true
-
-[app.capabilities]
-capabilities = []
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "balls.py"
 
 [launch]
+
+[plugin]
+id = "balls"
+name = "Balls"
+version = "0.1.0"
+description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
+watch = true
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "balls.main"
+default = true

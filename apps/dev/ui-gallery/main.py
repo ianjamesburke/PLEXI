@@ -1,7 +1,7 @@
 """UI Gallery — a compact V3 reference for declarative SDK components."""
 
 from plexi_sdk.effects import SetTitle
-from plexi_sdk.ui import AppBar, Column, Divider, FooterKeys, Heading, Label, Spacer
+from plexi_sdk.ui import SurfaceHeader, Column, Divider, FooterKeys, Heading, Label, Spacer
 
 
 def init(_size, _args):
@@ -14,7 +14,7 @@ def update(_event):
 
 def view():
     return Column([
-        AppBar("UI Gallery", subtitle="SDK component reference"),
+        SurfaceHeader("UI Gallery", subtitle="SDK component reference"),
         Heading("Typography", level=2),
         Heading("Heading level 1", level=1),
         Heading("Heading level 2", level=2),

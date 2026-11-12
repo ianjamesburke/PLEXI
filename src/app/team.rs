@@ -75,6 +75,8 @@ mod tests {
         h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":panes[2],"state":"exited_unreported","agent":"script",
             "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
         h.hidden_frame();
+        let worker = h.app.windows.iter().find_map(|window| window.panes.get(&panes[2])).unwrap();
+        assert_eq!(worker.agent().unwrap().state, crate::protocol::AgentState::ExitedUnreported);
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], "PARTIAL");
@@ -974,10 +976,10 @@ impl PlexiApp {
             "error":error,"task_pane":run.root_pane,"members":run.members.iter().map(|(p,_)| p).collect::<Vec<_>>(),
             "member_summaries":summaries,"ballots":ballots_json,"report":report_text,"result_path":run.out.join("RESULT.md")});
         log::info!(
-            "agent_team: finished task={} status={} error={:?}",
+            "agent_team: finished task={} status={} error_chars={:?}",
             run.root_pane,
             reply["status"],
-            error
+            error.map(|value| value.chars().count())
         );
         crate::host::flight_recorder::record(
             "team_finish",
@@ -993,7 +995,7 @@ impl PlexiApp {
 
     pub(crate) fn mark_agent_failed(&mut self, pane_id: u64, reason: &str) {
         let reason = reason.strip_prefix("failed: ").unwrap_or(reason);
-        log::info!("agent_worker: failed pane={pane_id}: {reason}");
+        log::info!("agent_worker: failed pane={pane_id} reason_chars={}", reason.chars().count());
         let mut provenance = crate::host::pane_lifecycle::Provenance {
             source: crate::host::pane_lifecycle::Source::Hook,
             agent_label: "worker".into(),

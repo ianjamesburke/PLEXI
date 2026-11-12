@@ -1,4 +1,4 @@
-// WasmPane — the pane-level driver around a `WasmApp`.
+// WasmPane — the pane-level driver around a `WasmView`.
 //
 // Implements the synchronous Elm effect loop: external input (keys, mouse,
 // resize, focus) is queued, `tick` fires due timers and drains the queue, and
@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 use crossbeam_queue::ArrayQueue;
 use url::Url;
 
-use crate::app::app_trait::KeyDisposition;
 use crate::app::permissions::{PermissionState, PermissionStore};
-use crate::host::app_timeline::{AppTimeline, EmittedEvent};
+use crate::app::view_trait::KeyDisposition;
+use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline};
 use crate::host::services::{
     default_picker_service, FilePickOutcome, FilePickRequest, HttpResponse as HostHttpResponse,
     NetService, PickerService, UreqNetService,
@@ -27,25 +27,25 @@ use crate::host::services::{
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
 use crate::protocol::{
-    parse_enum, AiMessage as ProtocolAiMessage, AppEventActor,
-    EventStreamDecl as ProtocolEventStreamDecl, ModelTier, TriggerMode,
+    parse_enum, AiMessage as ProtocolAiMessage, EventStreamDecl as ProtocolEventStreamDecl,
+    ModelTier, PluginEventActor, TriggerMode,
 };
 use crate::ui::theme::Colors;
 
-use super::wasm_app::bindings::plexi::platform::types::{
-    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, AppEventEvent, DeclareEventStreamsEffect,
+use super::wasm_render::RenderResult;
+use super::wasm_view::bindings::plexi::platform::types::{
+    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, DeclareEventStreamsEffect,
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
     EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
     FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
-    OpenFilePickerEffect, PipeMessageEvent, PipePayload, SubscribeEventStreamsEffect,
-    ToolCallEvent, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
-    UnsubscribeEventStreamsEffect,
+    OpenFilePickerEffect, PipeMessageEvent, PipePayload, PluginEventEvent,
+    SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect, UiActionEvent,
+    UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
-use super::wasm_app::{
+use super::wasm_view::{
     Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
-    SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmApp,
+    SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmView,
 };
-use super::wasm_render::RenderResult;
 
 /// A GPU surface the host allocated for the guest's `surface-node`.
 /// `width`/`height` are physical pixels (`logical × alloc_ppp`, stint 0527);
@@ -74,13 +74,13 @@ pub enum WasmHostEffect {
         icon: Option<String>,
     },
     Spawn {
-        app_id: String,
+        plugin_id: String,
         layout: Option<String>,
         args: Vec<String>,
     },
     SubscribeEvents {
         request_id: String,
-        app_id: String,
+        plugin_id: String,
         event_names: Vec<String>,
         payload_mode: crate::protocol::PayloadMode,
         trigger_mode: crate::protocol::TriggerMode,
@@ -154,7 +154,7 @@ pub trait SystemStatsSource: Send {
 
 /// Production [`SystemStatsSource`] backed by `sysinfo`. CPU usage needs two
 /// refreshes spaced by a real interval to be meaningful, so the first read
-/// after construction reports 0% and subsequent reads (driven by the app's
+/// after construction reports 0% and subsequent reads (driven by the plugin's
 /// poll timer, ≥1s apart) are accurate. Disk and network byte-rates require
 /// interval deltas the host does not yet track and are reported as 0.
 pub struct SysinfoStats {
@@ -342,7 +342,7 @@ pub(crate) fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
     canonicalize_scope(path.to_path_buf(), false)
 }
 
-/// Resolve an app-supplied relative path inside `root`, rejecting absolute
+/// Resolve a plugin-supplied relative path inside `root`, rejecting absolute
 /// paths, `..` components, and symlink escapes. `for_write` permits a
 /// not-yet-existing final component as long as its parent resolves inside the
 /// jail. Shared across WASM and Python guest runtimes.
@@ -382,11 +382,11 @@ pub(crate) fn resolve_jailed_path(
     Ok(resolved)
 }
 
-/// Resolve an app-supplied fs path against the workspace jail and picker
+/// Resolve a plugin-supplied fs path against the workspace jail and picker
 /// grants (stint 0508). Relative paths stay jailed to `workspace_root` via
 /// [`resolve_jailed_path`]; absolute paths are accepted only when they resolve
 /// under a picker-granted root with canonicalize + symlink-escape discipline.
-pub(crate) fn resolve_app_fs_path(
+pub(crate) fn resolve_plugin_fs_path(
     workspace_root: &Path,
     granted_roots: &[PathBuf],
     raw: &str,
@@ -422,7 +422,7 @@ impl WasmCapabilityPrompt {
     }
 }
 
-/// Live RT-audio output for an audio-world app. The host UI thread tops up
+/// Live RT-audio output for an audio-world plugin. The host UI thread tops up
 /// `ring` from the guest's `process-output`; the cpal callback owned by
 /// `_session` drains it on the audio thread. Negotiated `sample_rate`/`channels`
 /// come from the device and may differ from what the guest requested — the
@@ -438,7 +438,7 @@ struct AudioOut {
 }
 
 pub struct WasmPane {
-    app: WasmApp,
+    app: WasmView,
     stats: Box<dyn SystemStatsSource>,
     queue: VecDeque<InputEvent>,
     timers: Vec<Timer>,
@@ -456,9 +456,9 @@ pub struct WasmPane {
     deferred_ai_queries: VecDeque<AiQueryEffect>,
     net: Arc<dyn NetService>,
     ai_broker: Arc<dyn AiBroker>,
-    app_timeline: Arc<Mutex<AppTimeline>>,
+    plugin_timeline: Arc<Mutex<PluginTimeline>>,
     pane_id: u64,
-    /// Host-established context this app instance lives in (stint 0724 Phase
+    /// Host-established context this plugin instance lives in (stint 0724 Phase
     /// D) — stamped onto every stream this pane declares/emits on. `0`
     /// (matches no real context) until `set_context_id` is called from the
     /// pane-placement closure that also calls `set_pane_id`.
@@ -474,12 +474,12 @@ pub struct WasmPane {
     external_inputs: Arc<ArrayQueue<InputEvent>>,
     /// Current display scale, set by the live pane every frame. Surfaces
     /// allocate at physical resolution (`logical × ppp`); headless contexts
-    /// (tests, `plexi app render`) keep the 1.0 default.
+    /// (tests, `plexi view render`) keep the 1.0 default.
     pixels_per_point: f32,
 }
 
 impl WasmPane {
-    pub fn new(app: WasmApp, stats: Box<dyn SystemStatsSource>) -> Self {
+    pub fn new(app: WasmView, stats: Box<dyn SystemStatsSource>) -> Self {
         let (http_tx, http_rx) = mpsc::channel();
         let (picker_tx, picker_rx) = mpsc::channel();
         WasmPane {
@@ -501,7 +501,7 @@ impl WasmPane {
             deferred_ai_queries: VecDeque::new(),
             net: Arc::new(UreqNetService::new()),
             ai_broker: Arc::new(default_live_broker()),
-            app_timeline: crate::host::app_timeline::global(),
+            plugin_timeline: crate::host::plugin_timeline::global(),
             pane_id: 0,
             context_id: 0,
             http_tx,
@@ -568,8 +568,8 @@ impl WasmPane {
     }
 
     #[cfg(test)]
-    fn set_app_timeline(&mut self, app_timeline: Arc<Mutex<AppTimeline>>) {
-        self.app_timeline = app_timeline;
+    fn set_plugin_timeline(&mut self, plugin_timeline: Arc<Mutex<PluginTimeline>>) {
+        self.plugin_timeline = plugin_timeline;
     }
 
     pub fn set_pane_id(&mut self, pane_id: u64) {
@@ -624,7 +624,7 @@ impl WasmPane {
     /// resulting input queue (e.g. the first stats request).
     pub fn init(
         &mut self,
-        snapshot: &super::wasm_app::StateSnapshot,
+        snapshot: &super::wasm_view::StateSnapshot,
         size: (f32, f32),
         now_ms: u64,
         args: &[String],
@@ -725,7 +725,7 @@ impl WasmPane {
         if remember {
             if let Some(store) = &mut self.permission_store {
                 store.set_wasm(
-                    self.app.app_id(),
+                    self.app.plugin_id(),
                     &self.permission_workspace_root,
                     &capability_id,
                     if granted {
@@ -736,8 +736,8 @@ impl WasmPane {
                 );
                 store.save();
                 log::info!(
-                    "wasm capability: remembered app_id={} capability={} granted={}",
-                    self.app.app_id(),
+                    "wasm capability: remembered plugin_id={} capability={} granted={}",
+                    self.app.plugin_id(),
                     capability_id,
                     granted
                 );
@@ -749,7 +749,7 @@ impl WasmPane {
             };
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .grant_capability_id(
-                    self.app.app_id(),
+                    self.app.plugin_id(),
                     &self.permission_workspace_root,
                     &capability_id,
                     decision,
@@ -757,12 +757,12 @@ impl WasmPane {
                 );
         }
         log::info!(
-            "wasm capability: decision app_id={} capability={} granted={}",
-            self.app.app_id(),
+            "wasm capability: decision plugin_id={} capability={} granted={}",
+            self.app.plugin_id(),
             capability_id,
             granted
         );
-        // `permission_workspace_root` is the app's own workspace root — set at
+        // `permission_workspace_root` is the plugin's own workspace root — set at
         // launch via `Self::with_remembered_capabilities` — so it doubles as
         // this event's context root with no new lookup. Empty (the
         // pre-launch default) means "not yet known": route global-only.
@@ -770,7 +770,7 @@ impl WasmPane {
             .then_some(self.permission_workspace_root.as_path());
         crate::host::event_log::emit_scoped(
             crate::host::event_log::HostEvent::PermissionDecision {
-                app_id: self.app.app_id().to_string(),
+                plugin_id: self.app.plugin_id().to_string(),
                 capability: capability_id,
                 granted,
                 timestamp: crate::host::event_log::now_timestamp(),
@@ -859,7 +859,7 @@ impl WasmPane {
 
     /// Allocate the GPU surface and deliver `surface-ready` the first time the
     /// guest's view declares a surface-node. Idempotent: a no-op once allocated
-    /// or when the app has no gpu capability.
+    /// or when the plugin has no gpu capability.
     fn ensure_surface(&mut self, now_ms: u64) -> wasmtime::Result<()> {
         if self.surface.is_some() || !self.app.has_gpu() {
             return Ok(());
@@ -871,11 +871,11 @@ impl WasmPane {
         // Allocate at physical resolution (stint 0527): the composited rect is
         // `logical` points = `logical × ppp` pixels on screen, so a texture
         // allocated at logical dimensions gets bilinearly upscaled and every
-        // HiDPI app pane renders at half resolution. The guest-facing
+        // HiDPI view pane renders at half resolution. The guest-facing
         // coordinate space stays logical — `surface-ready` reports the
         // guest's declared dimensions, its NDC render passes fill the whole
         // (physical) attachment, and its view tree keeps declaring logical
-        // points — so app code is untouched.
+        // points — so plugin code is untouched.
         let ppp = self.pixels_per_point;
         let width = ((logical_w as f32) * ppp).round().max(1.0) as u32;
         let height = ((logical_h as f32) * ppp).round().max(1.0) as u32;
@@ -969,7 +969,7 @@ impl WasmPane {
             queued = true;
         }
         // Canvas pointer events (click and press/move/release drag samples,
-        // stint 0510), already inverted into the app's declared canvas space.
+        // stint 0510), already inverted into the plugin's declared canvas space.
         for click in result.canvas_clicks {
             log::info!(
                 "wasm ui: mouse ({:.1},{:.1}) button={:?} pressed={}",
@@ -1010,16 +1010,16 @@ impl WasmPane {
         self.timers.iter().map(|t| t.next_fire_ms).min()
     }
 
-    /// The cadence the app declared for itself: the shortest repeating timer it
-    /// registered. A surface app drives its simulation off a repeating timer, so
+    /// The cadence the plugin declared for itself: the shortest repeating timer it
+    /// registered. A surface plugin drives its simulation off a repeating timer, so
     /// that interval *is* its requested frame rate — the host's `FrameClock`
-    /// paces to it rather than a construction-time constant. `None` when the app
+    /// paces to it rather than a construction-time constant. `None` when the plugin
     /// declared no repeating timer, which leaves the clock at its default.
     ///
     /// `set-timer` is the general timer API, so this reads a cadence out of a
-    /// signal that is not exclusively about frames: a surface app whose *only*
+    /// signal that is not exclusively about frames: a surface plugin whose *only*
     /// repeating timer is a slow status poll gets paced at that poll rate. That
-    /// is the honest reading of what the app asked to be woken at — and input
+    /// is the honest reading of what the plugin asked to be woken at — and input
     /// still forces an immediate repaint of its own accord — but a dedicated
     /// frame-cadence signal in the WIT world would say it outright. Adding one
     /// is an ABI change, deliberately out of scope for stint 0552.
@@ -1173,9 +1173,9 @@ impl WasmPane {
                 |err| InputEvent::NotifyResult(Err(err)),
             ),
             Effect::Spawn(req) => self.queue_host_effect(
-                "spawn.app",
+                "spawn.plugin",
                 WasmHostEffect::Spawn {
-                    app_id: req.app_id,
+                    plugin_id: req.plugin_id,
                     layout: req.layout,
                     args: req.args,
                 },
@@ -1282,15 +1282,15 @@ impl WasmPane {
     ) {
         if self.has_session_grant(capability_id) {
             log::info!(
-                "wasm effect: app_id={} capability={} effect={effect:?}",
-                self.app.app_id(),
+                "wasm effect: plugin_id={} capability={} effect={effect:?}",
+                self.app.plugin_id(),
                 capability_id
             );
             self.pending_host_effects.push_back(effect);
         } else {
             log::info!(
-                "wasm effect: denied app_id={} capability={capability_id}",
-                self.app.app_id()
+                "wasm effect: denied plugin_id={} capability={capability_id}",
+                self.app.plugin_id()
             );
             self.queue
                 .push_back(denied(format!("capability '{capability_id}' is required")));
@@ -1299,8 +1299,8 @@ impl WasmPane {
 
     fn request_capability(&mut self, capability_id: String) {
         log::info!(
-            "wasm capability: request app_id={} capability={}",
-            self.app.app_id(),
+            "wasm capability: request plugin_id={} capability={}",
+            self.app.plugin_id(),
             capability_id
         );
         if self.session_grants.contains(&capability_id) {
@@ -1333,7 +1333,7 @@ impl WasmPane {
             self.access.grant_net_host(host);
         } else if matches!(
             capability_id,
-            "clipboard.read" | "clipboard.write" | "notify" | "spawn.app"
+            "clipboard.read" | "clipboard.write" | "notify" | "spawn.plugin"
         ) {
             log::info!("wasm capability: session grant enabled {capability_id}");
         } else {
@@ -1406,7 +1406,7 @@ impl WasmPane {
         };
         let broker = Arc::clone(&self.ai_broker);
         let tx = self.http_tx.clone();
-        let app_id = self.app.app_id().to_string();
+        let plugin_id = self.app.plugin_id().to_string();
         let request_id = req.request_id.clone();
         let messages = req
             .messages
@@ -1417,7 +1417,7 @@ impl WasmPane {
             })
             .collect::<Vec<_>>();
         std::thread::Builder::new()
-            .name(format!("wasm-ai-query-{app_id}-{request_id}"))
+            .name(format!("wasm-ai-query-{plugin_id}-{request_id}"))
             .spawn(move || {
                 let chunk_tx = tx.clone();
                 let chunk_request_id = request_id.clone();
@@ -1441,7 +1441,7 @@ impl WasmPane {
                         }
                         // App-facing `ai.query` streams carry only text and
                         // reasoning; tool-call generation progress drives the
-                        // assistant transcript, not app protocol events.
+                        // assistant transcript, not plugin protocol events.
                         crate::plexi_ai::turn_loop::TurnDelta::ToolCallProgress { .. } => return,
                     };
                     if let Err(e) = chunk_tx.send(event) {
@@ -1450,7 +1450,7 @@ impl WasmPane {
                 };
                 let response = broker.dispatch(
                     AiBrokerRequest {
-                        app_id,
+                        plugin_id,
                         model_mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
                         concrete_model: None,
                         reasoning_effort: None,
@@ -1498,9 +1498,9 @@ impl WasmPane {
                 description: stream.description,
             });
         }
-        self.app_timeline.lock().unwrap().declare_streams(
+        self.plugin_timeline.lock().unwrap().declare_streams(
             self.context_id,
-            self.app.app_id(),
+            self.app.plugin_id(),
             streams,
         )
     }
@@ -1513,7 +1513,7 @@ impl WasmPane {
             ),
             None => None,
         };
-        let actor = parse_enum::<AppEventActor>("app event actor", &req.actor)?;
+        let actor = parse_enum::<PluginEventActor>("plugin event actor", &req.actor)?;
         let suggested_trigger = req
             .suggested_trigger
             .as_deref()
@@ -1535,9 +1535,9 @@ impl WasmPane {
             changed_resources: req.changed_resources,
             suggested_trigger,
         };
-        let outcome = self.app_timeline.lock().unwrap().record_event(
+        let outcome = self.plugin_timeline.lock().unwrap().record_event(
             self.context_id,
-            self.app.app_id(),
+            self.app.plugin_id(),
             self.pane_id,
             emitted,
         )?;
@@ -1551,15 +1551,15 @@ impl WasmPane {
         match (payload_mode, trigger_mode) {
             (Ok(payload_mode), Ok(trigger_mode)) => {
                 log::info!(
-                    "wasm events: subscribe app_id={} publisher={} streams={:?}",
-                    self.app.app_id(),
-                    req.app_id,
+                    "wasm events: subscribe plugin_id={} publisher={} streams={:?}",
+                    self.app.plugin_id(),
+                    req.plugin_id,
                     req.event_names
                 );
                 self.pending_host_effects
                     .push_back(WasmHostEffect::SubscribeEvents {
                         request_id: req.request_id,
-                        app_id: req.app_id,
+                        plugin_id: req.plugin_id,
                         event_names: req.event_names,
                         payload_mode,
                         trigger_mode,
@@ -1580,8 +1580,8 @@ impl WasmPane {
 
     fn unsubscribe_event_streams(&mut self, req: UnsubscribeEventStreamsEffect) {
         log::info!(
-            "wasm events: unsubscribe app_id={} subscription={}",
-            self.app.app_id(),
+            "wasm events: unsubscribe plugin_id={} subscription={}",
+            self.app.plugin_id(),
             req.subscription_id
         );
         self.pending_host_effects
@@ -1617,8 +1617,8 @@ impl WasmPane {
         match parsed {
             Ok(tools) => {
                 log::info!(
-                    "wasm tools: app_id={} declared {} tool(s)",
-                    self.app.app_id(),
+                    "wasm tools: plugin_id={} declared {} tool(s)",
+                    self.app.plugin_id(),
                     tools.len()
                 );
                 self.pending_host_effects
@@ -1632,8 +1632,8 @@ impl WasmPane {
 
     fn tool_result(&mut self, req: ToolResultEffect) {
         log::info!(
-            "wasm tools: app_id={} completed call_id={}",
-            self.app.app_id(),
+            "wasm tools: plugin_id={} completed call_id={}",
+            self.app.plugin_id(),
             req.call_id
         );
         self.pending_host_effects
@@ -1803,7 +1803,7 @@ fn default_live_broker() -> LiveAiBroker {
 // known, translates egui key input into guest `InputEvent`s using the host's
 // printable-vs-named key split, and renders the guest's view
 // tree each frame. A fatal guest/runtime error is captured and shown in place
-// rather than propagated — a misbehaving WASM app must never crash the host.
+// rather than propagated — a misbehaving WASM plugin must never crash the host.
 
 pub struct LiveWasmPane {
     inner: WasmPane,
@@ -1835,7 +1835,7 @@ pub struct LiveWasmPane {
     fallback_tex: Option<egui::TextureHandle>,
     /// Host-owned fixed-timestep pacing for the surface.
     clock: super::wasm_frame::FrameClock,
-    /// Host-owned wall-clock metrics. Apps display these; they never invent FPS.
+    /// Host-owned wall-clock metrics. Plugins display these; they never invent FPS.
     telemetry: super::wasm_frame::FrameTelemetry,
     /// Wall-clock instant of the previous presented frame, for interval metrics.
     last_present: Option<Instant>,
@@ -1846,12 +1846,12 @@ pub struct LiveWasmPane {
     /// 60 Hz, truncating each 16.666 ms step to 16 ms would bleed 40 ms of guest
     /// time per real second.
     sim_ns: Option<u64>,
-    /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
+    /// Launch arguments (`plexi view open <path> -- <args>`), forwarded to the
     /// guest's `init` as its argv. Empty for palette/registry launches.
     launch_args: Vec<String>,
     /// Path to the `.wasm` component this pane was loaded from — kept for
     /// `launch_spec()` so a workspace restore (stint 0680) can relaunch the
-    /// exact same binary without going back through app-id registry lookup.
+    /// exact same binary without going back through plugin-id registry lookup.
     wasm_path: PathBuf,
 }
 
@@ -1890,8 +1890,8 @@ impl LiveWasmPane {
 
     /// Enough launch context to relaunch this exact WASM component through
     /// the normal open path on a workspace restore (stint 0680).
-    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
-        crate::workspace::SavedAppLaunch::Wasm {
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedViewLaunch {
+        crate::workspace::SavedViewLaunch::Wasm {
             wasm_path: self.wasm_path.clone(),
             args: self.launch_args.clone(),
         }
@@ -1915,7 +1915,7 @@ impl LiveWasmPane {
     /// clock afterwards and the step the clock granted.
     ///
     /// This is the whole host-owned pacing contract in one place: retarget the
-    /// clock at the cadence the app declared, ask it how many fixed sim steps
+    /// clock at the cadence the plugin declared, ask it how many fixed sim steps
     /// this repaint is owed, run exactly that many, and discard the remainder it
     /// refused to grant. A dropped step is skipped, never banked and replayed
     /// later — that is what keeps a long stall from spiralling.
@@ -1936,14 +1936,14 @@ impl LiveWasmPane {
         self.clock.retarget(declared);
         if self.clock.target_interval() != before {
             log::info!(
-                "app::{}: surface frame clock retargeted {}ms -> {}ms ({})",
+                "plugin::{}: surface frame clock retargeted {}ms -> {}ms ({})",
                 self.spawn_name,
                 before.as_millis(),
                 self.clock.target_interval().as_millis(),
                 if declared.is_some() {
-                    "app-declared cadence"
+                    "plugin-declared cadence"
                 } else {
-                    "app declares none; host default"
+                    "plugin declares none; host default"
                 },
             );
         }
@@ -1981,8 +1981,8 @@ impl LiveWasmPane {
         )
     }
 
-    /// True while the app is alive (no fatal error, has not asked to close).
-    /// `AppRuntime::lifecycle` reads it to report running vs exited.
+    /// True while the plugin is alive (no fatal error, has not asked to close).
+    /// `ViewRuntime::lifecycle` reads it to report running vs exited.
     pub fn is_running(&self) -> bool {
         self.error.is_none() && !self.inner.wants_close()
     }
@@ -2045,7 +2045,7 @@ impl LiveWasmPane {
 
     pub(crate) fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         let event = match event {
-            crate::protocol::PlexiEvent::AppEventsSubscribed {
+            crate::protocol::PlexiEvent::PluginEventsSubscribed {
                 request_id,
                 subscription_id,
                 error,
@@ -2054,7 +2054,7 @@ impl LiveWasmPane {
                 subscription_id,
                 error,
             }),
-            crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+            crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
                 request_id,
                 removed,
                 error,
@@ -2063,9 +2063,9 @@ impl LiveWasmPane {
                 removed,
                 error,
             }),
-            crate::protocol::PlexiEvent::AppEvent {
+            crate::protocol::PlexiEvent::PluginEvent {
                 subscription_id,
-                app_id,
+                plugin_id,
                 event,
                 event_id,
                 resource_id,
@@ -2074,9 +2074,9 @@ impl LiveWasmPane {
                 payload,
                 state_ref,
                 created_at,
-            } => InputEvent::AppEvent(AppEventEvent {
+            } => InputEvent::PluginEvent(PluginEventEvent {
                 subscription_id,
-                app_id,
+                plugin_id,
                 event,
                 event_id,
                 resource_id,
@@ -2147,11 +2147,11 @@ impl LiveWasmPane {
         self.inner.has_pending_inputs()
     }
 
-    /// Deliver `plexi app action` to the guest and refresh the cached semantic
+    /// Deliver `plexi pane action` to the guest and refresh the cached semantic
     /// tree immediately so pane-state callers observe the resulting view.
     pub fn dispatch_ui_action(&mut self, handler_id: impl Into<String>) -> Result<(), String> {
         if self.pending_init.is_some() {
-            return Err("WASM app has not rendered its initial frame yet".to_string());
+            return Err("WASM plugin has not rendered its initial frame yet".to_string());
         }
         self.inner
             .dispatch_ui_action(handler_id, self.guest_now_ms())
@@ -2234,7 +2234,7 @@ impl LiveWasmPane {
             crate::ui::typography::caption(ui, capability_id.clone(), colors);
             crate::ui::typography::caption(
                 ui,
-                "Always decisions are saved for this app and workspace.",
+                "Always decisions are saved for this plugin and workspace.",
                 colors,
             );
         });
@@ -2285,9 +2285,9 @@ impl LiveWasmPane {
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
             log::info!(
-                "app::{}: wasm init args={:?}",
+                "plugin::{}: wasm init argc={}",
                 self.spawn_name,
-                self.launch_args
+                self.launch_args.len()
             );
             self.inner
                 .init(&snapshot, (size.x, size.y), now, &self.launch_args)
@@ -2433,7 +2433,7 @@ impl LiveWasmPane {
             }
         }
 
-        // Host-owned telemetry for surface apps. The clock itself already
+        // Host-owned telemetry for surface plugins. The clock itself already
         // advanced in `step_surface` (it gates the guest's sim steps); here we
         // only record the wall-clock measurements. The guest never measures its
         // own frame rate.
@@ -2463,7 +2463,7 @@ impl LiveWasmPane {
         }
 
         // Schedule the next repaint from the soonest active cadence — egui
-        // coalesces multiple requests to the earliest. Surface apps pace at the
+        // coalesces multiple requests to the earliest. Surface plugins pace at the
         // host frame clock; audio tops up its ring; timers fire on deadline.
         let has_surface = self.inner.surface_size().is_some();
         if has_surface {
@@ -2484,10 +2484,10 @@ impl LiveWasmPane {
     /// Translate egui key input into guest `InputEvent::Key`s and enqueue them.
     ///
     /// WASM guests match key names literally — there is no SDK normalization
-    /// layer as there is for Python apps — so the host emits the canonical short
+    /// layer as there is for Python plugins — so the host emits the canonical short
     /// dialect via [`canonical_key_name`] (`up`/`down`/`left`/`right`, `space`,
     /// `enter`, `escape`, lowercase letters/digits, literal punctuation). Both
-    /// press and release edges are forwarded so apps can track held state (a game
+    /// press and release edges are forwarded so plugins can track held state (a game
     /// paddle, a key being held down); OS auto-repeat is collapsed and Cmd-chords
     /// are reserved for host shortcuts. See [`translate_key_event`].
     pub fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
@@ -2502,10 +2502,10 @@ impl LiveWasmPane {
         for event in input.events() {
             match event {
                 egui::Event::Key { key, modifiers, .. } => {
-                    // Bare Escape is reserved for the host CloseApp binding
-                    // (keys.rs, `BindingContext::AppActive`). Reporting it
+                    // Bare Escape is reserved for the host CloseView binding
+                    // (keys.rs, `BindingContext::ViewActive`). Reporting it
                     // consumed claims Escape out of the frame's input buffer
-                    // before `poll_actions` can fire CloseApp, so the focused
+                    // before `poll_actions` can fire CloseView, so the focused
                     // WASM pane never closes on Escape. Skip it — never forward
                     // to the guest, never count toward `consumed`. Cmd+Escape
                     // (context zoom-out) is already dropped by
@@ -2519,7 +2519,7 @@ impl LiveWasmPane {
                     consumed = true;
                 }
                 // Text composition (shift-resolved characters, IME) is reserved
-                // for a future text-input channel; game/command apps consume the
+                // for a future text-input channel; game/command plugins consume the
                 // raw key edges above. Physical NumpadMultiply emits only
                 // `Event::Text("*")` with no `Event::Key`, so synthesize a `*`
                 // key tap when no `Event::Key` already produced `"*"`.
@@ -2551,7 +2551,7 @@ impl LiveWasmPane {
     }
 
     /// Forward the one bare Escape that released a declarative TextInput.
-    /// Ordinary `handle_key` continues to reserve Escape for host CloseApp.
+    /// Ordinary `handle_key` continues to reserve Escape for host CloseView.
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
@@ -2650,10 +2650,7 @@ pub(crate) fn canonical_key_name(key: egui::Key) -> String {
 /// Resolve the canonical guest key name for a key event, accounting for
 /// shifted punctuation keys that `egui::Key` has no dedicated enum variant for
 /// (notably `Shift+8` → `"*"`).
-pub(crate) fn canonical_key_name_for_event(
-    key: egui::Key,
-    modifiers: egui::Modifiers,
-) -> String {
+pub(crate) fn canonical_key_name_for_event(key: egui::Key, modifiers: egui::Modifiers) -> String {
     if key == egui::Key::Num8
         && modifiers.shift
         && !modifiers.ctrl
@@ -2669,7 +2666,7 @@ pub(crate) fn canonical_key_name_for_event(
 /// Translate a single egui event into a guest key edge, or `None` when it
 /// carries nothing the guest should see: a non-key event, OS auto-repeat
 /// (collapsed so a physical press fires once), or a Cmd-chord (reserved for host
-/// shortcuts). Both press and release edges are returned so apps can track held
+/// shortcuts). Both press and release edges are returned so plugins can track held
 /// state — this is what makes hold-to-move game input work.
 pub(crate) fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
     let egui::Event::Key {
@@ -2699,13 +2696,13 @@ pub(crate) fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::wasm_app::bindings::plexi::platform::types::{
+    use super::super::wasm_view::bindings::plexi::platform::types::{
         AiMessage as WitAiMessage, EventStreamDecl as WitEventStreamDecl, NotificationEffect,
         SpawnEffect,
     };
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
-    use crate::host::wasm_app::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp};
+    use crate::host::wasm_view::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2737,13 +2734,13 @@ mod tests {
     }
 
     fn pane(cpu: f32) -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
             .expect("load");
         WasmPane::new(app, Box::new(FakeStats { cpu }))
     }
 
     fn counter_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run(
+        let app = WasmView::load_ephemeral_run(
             "counter-pane",
             &counter_fixture(),
             StateStore::ephemeral(),
@@ -2755,7 +2752,7 @@ mod tests {
     /// Stint 0724 Phase D 2/2: `WasmPane::set_context_id` — always called
     /// right after `set_pane_id` from the pane-placement closure in
     /// `pane_ops/create.rs` — must stamp the owning `Scope::Pane` onto this
-    /// instance's typed-pipe registry (`WasmApp`'s `HostCtx.pipes`), matching
+    /// instance's typed-pipe registry (`WasmView`'s `HostCtx.pipes`), matching
     /// the SAME pane_id/context_id the placement closure assigned. This is
     /// the one owner-scope test the sub-phase requires: it proves the field
     /// is populated and correct at creation, without inventing a cross-pane
@@ -2891,7 +2888,7 @@ mod tests {
     fn notify_and_spawn_round_trip_through_live_host_effect_queue() {
         let mut p = pane(0.0);
         grant_capability(&mut p, "notify");
-        grant_capability(&mut p, "spawn.app");
+        grant_capability(&mut p, "spawn.plugin");
 
         p.exec(
             Effect::Notify(NotificationEffect {
@@ -2903,7 +2900,7 @@ mod tests {
         );
         p.exec(
             Effect::Spawn(SpawnEffect {
-                app_id: "com.plexi.counter".to_string(),
+                plugin_id: "com.plexi.counter".to_string(),
                 layout: Some("split_h".to_string()),
                 args: vec!["--demo".to_string()],
             }),
@@ -2918,7 +2915,7 @@ mod tests {
                     icon: None,
                 },
                 WasmHostEffect::Spawn {
-                    app_id: "com.plexi.counter".to_string(),
+                    plugin_id: "com.plexi.counter".to_string(),
                     layout: Some("split_h".to_string()),
                     args: vec!["--demo".to_string()],
                 },
@@ -3017,7 +3014,7 @@ mod tests {
     fn emit_event(name: &str) -> Effect {
         Effect::EmitEvent(EmitEventEffect {
             event: name.to_string(),
-            actor: "app".to_string(),
+            actor: "plugin".to_string(),
             actor_id: None,
             caused_by: None,
             summary: "Moved".to_string(),
@@ -3516,10 +3513,181 @@ mod tests {
         }
     }
 
+    /// Stint 1238 characterisation matrix, native WASM rows (see
+    /// `crate::broker::admission_matrix`). Launch goes through
+    /// `PermissionMonitor::materialize_wasm_sets` and
+    /// `with_remembered_capabilities`, as `open_wasm_view_pane` does; the guest
+    /// then asks with `request-capability`. One pane is reused with its
+    /// capability state cleared between cells, so the fixture compiles once.
+    #[test]
+    fn wasm_runtime_admission_matrix() {
+        use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
+        use crate::broker::gate::PermissionMonitor;
+
+        const PLUGIN: &str = "matrix.wasm";
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path();
+        let families = [
+            Family::FsRead,
+            Family::FsWrite,
+            Family::Network,
+            Family::Ai,
+            Family::Clipboard,
+            Family::Panes,
+            Family::Notify,
+        ];
+        let mut reused = Some(pane(0.0));
+        let checked = matrix::verify(Runtime::Wasm, &families, ws, |_, id, state| {
+            let monitor = PermissionMonitor::ephemeral();
+            matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
+            let declared: HashSet<String> = if matrix::plugin_declares(state) {
+                HashSet::from([id.to_string()])
+            } else {
+                HashSet::new()
+            };
+            let (granted, blocked) = monitor.materialize_wasm_sets(PLUGIN, ws, &declared);
+            let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
+                Mech::ManifestAsGrant
+            } else {
+                Mech::LaunchRow
+            };
+            let mut p = reused.take().expect("pane");
+            p.session_grants.clear();
+            p.session_blocks.clear();
+            p.pending_capability_prompts.clear();
+            p.queue.clear();
+            let mut p = p.with_remembered_capabilities(
+                ws.to_path_buf(),
+                PermissionStore::default(),
+                granted,
+                blocked,
+            );
+            p.exec(request_capability(id.to_string()), 0);
+            let observed = if p.has_pending_capability_prompt() {
+                (Outcome::Ask, Mech::WasmQueue)
+            } else {
+                match pop_event(&mut p) {
+                    InputEvent::CapabilityGranted(_) => (Outcome::Admit, mech),
+                    InputEvent::CapabilityDenied(_) => (Outcome::Deny, mech),
+                    other => panic!("{id} {state:?}: unexpected event {other:?}"),
+                }
+            };
+            reused = Some(p);
+            observed
+        });
+        assert_eq!(checked, 9 * matrix::STATES.len());
+    }
+
+    /// Stint 1238 characterisation: the dual-authority write in
+    /// `decide_next_capability_prompt_inner`. A remembered decision lands in
+    /// three places (the pane's session set, `PermissionStore`, and
+    /// `PermissionMonitor`'s `GrantStore`), so a monitor revocation leaves two
+    /// of them standing.
+    #[test]
+    fn wasm_remembered_decision_writes_three_authorities() {
+        use crate::app::permissions::PermissionState;
+        use crate::broker::gate::PermissionMonitor;
+        use crate::broker::Decision;
+
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let cap = "clipboard.read";
+        let plugin = "sysmon-pane";
+        let grant_id = format!("cap:{plugin}:{cap}");
+        // The running host's monitor is open before the pane decides.
+        let monitor = PermissionMonitor::for_profile(profile.path());
+        let mut p = pane(0.0).with_remembered_capabilities(
+            ws.path().to_path_buf(),
+            PermissionStore::load_or_default(profile.path()),
+            HashSet::new(),
+            HashSet::new(),
+        );
+        p.exec(request_capability(cap), 0);
+        p.decide_next_capability_prompt_remembered(true);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::CapabilityGranted(_)
+        ));
+
+        // 1. The pane's runtime-specific session set.
+        assert!(p.has_session_grant(cap));
+        // 2. The legacy PermissionStore file.
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            Some(PermissionState::Green)
+        );
+        // 3. The monitor's GrantStore.
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .any(|record| record.grant_id == grant_id && record.decision == Decision::Allow));
+
+        assert!(monitor.revoke_grant_id(&grant_id));
+        // CUTOVER: expected to change to ask. The live pane keeps its session
+        // grant after the monitor revoked it.
+        p.exec(request_capability(cap), 0);
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::CapabilityGranted(_)
+        ));
+        // CUTOVER: expected to change to ask. The PermissionStore row survives
+        // the monitor revocation; the next monitor load imports it again.
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(plugin, ws.path(), cap),
+            Some(PermissionState::Green)
+        );
+        let restarted = PermissionMonitor::reload_for_test(profile.path());
+        let (granted, _) =
+            restarted.materialize_wasm_sets(plugin, ws.path(), &HashSet::from([cap.to_string()]));
+        assert!(
+            granted.contains(cap),
+            "today a monitor-revoked WASM grant comes back from permissions.toml on restart"
+        );
+    }
+
+    /// Without `remember`, the decision lives only in the pane's session set:
+    /// nothing reaches PermissionStore or the monitor.
+    #[test]
+    fn wasm_session_decision_stays_in_the_pane() {
+        use crate::broker::gate::PermissionMonitor;
+
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempfile::tempdir().unwrap();
+        let cap = "clipboard.read";
+        let monitor = PermissionMonitor::for_profile(profile.path());
+        let mut p = pane(0.0).with_remembered_capabilities(
+            ws.path().to_path_buf(),
+            PermissionStore::load_or_default(profile.path()),
+            HashSet::new(),
+            HashSet::new(),
+        );
+        p.exec(request_capability(cap), 0);
+        p.decide_next_capability_prompt(true);
+        assert!(p.has_session_grant(cap));
+        assert_eq!(
+            PermissionStore::load_or_default(profile.path()).get_wasm(
+                "sysmon-pane",
+                ws.path(),
+                cap
+            ),
+            None
+        );
+        assert!(!monitor
+            .store()
+            .records()
+            .iter()
+            .any(|record| record.target_id == cap));
+    }
+
     // ── Host-owned surface pacing (stint 0552) ──────────────────────────────
     //
     // sysmon declares a repeating poll timer, which is exactly the shape a
-    // surface app uses to declare its cadence, so these drive the real pacing
+    // surface plugin uses to declare its cadence, so these drive the real pacing
     // path without needing a GPU surface allocated.
 
     fn live_pane() -> LiveWasmPane {
@@ -3542,7 +3710,7 @@ mod tests {
         let declared = live
             .inner
             .declared_frame_interval()
-            .expect("app declared a repeating cadence");
+            .expect("plugin declared a repeating cadence");
         assert_eq!(
             declared,
             Duration::from_millis(live.inner.timers[0].delay_ms as u64)
@@ -3574,7 +3742,7 @@ mod tests {
         let mut live = live_pane();
         let t0 = Instant::now();
         // The baseline step lands ON the arming instant, not one interval past
-        // it — otherwise every surface app fires its frame timer early on the
+        // it — otherwise every surface plugin fires its frame timer early on the
         // first paint after init.
         let (baseline, _) = live.step_surface(t0, 7_000).expect("baseline");
         assert_eq!(baseline, 7_000);
@@ -3824,11 +3992,11 @@ mod tests {
     }
 
     #[test]
-    fn app_events_declare_and_emit_into_timeline() {
+    fn plugin_events_declare_and_emit_into_timeline() {
         let mut p = pane(0.0);
         p.set_pane_id(44);
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
-        p.set_app_timeline(Arc::clone(&timeline));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        p.set_plugin_timeline(Arc::clone(&timeline));
 
         p.exec(declare_stream("move.played"), 0);
         match pop_event(&mut p) {
@@ -3851,10 +4019,10 @@ mod tests {
     }
 
     #[test]
-    fn app_event_emit_without_declaration_returns_error() {
+    fn plugin_event_emit_without_declaration_returns_error() {
         let mut p = pane(0.0);
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
-        p.set_app_timeline(Arc::clone(&timeline));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        p.set_plugin_timeline(Arc::clone(&timeline));
 
         p.exec(emit_event("move.played"), 0);
         match pop_event(&mut p) {
@@ -3872,7 +4040,7 @@ mod tests {
         p.exec(
             Effect::SubscribeEventStreams(SubscribeEventStreamsEffect {
                 request_id: "subscribe-1".to_string(),
-                app_id: "python-notes".to_string(),
+                plugin_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
                 payload_mode: "full".to_string(),
                 trigger_mode: "conversation".to_string(),
@@ -3884,7 +4052,7 @@ mod tests {
             p.take_host_effects(),
             vec![WasmHostEffect::SubscribeEvents {
                 request_id: "subscribe-1".to_string(),
-                app_id: "python-notes".to_string(),
+                plugin_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
                 payload_mode: crate::protocol::PayloadMode::Full,
                 trigger_mode: crate::protocol::TriggerMode::Conversation,
@@ -3917,9 +4085,9 @@ mod tests {
             vec![],
             PathBuf::from("/tmp/test.wasm"),
         );
-        live.queue_outbound_event(crate::protocol::PlexiEvent::AppEvent {
+        live.queue_outbound_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
-            app_id: "python-notes".to_string(),
+            plugin_id: "python-notes".to_string(),
             event: "note.saved".to_string(),
             event_id: 9,
             resource_id: "note-1".to_string(),
@@ -3930,12 +4098,12 @@ mod tests {
             created_at: "2026-07-13T00:00:00Z".to_string(),
         });
 
-        let event = live.inner.queue.pop_front().expect("queued AppEvent");
-        let InputEvent::AppEvent(event) = event else {
-            panic!("expected AppEvent, got {event:?}");
+        let event = live.inner.queue.pop_front().expect("queued PluginEvent");
+        let InputEvent::PluginEvent(event) = event else {
+            panic!("expected PluginEvent, got {event:?}");
         };
         assert_eq!(event.subscription_id, "sub-1");
-        assert_eq!(event.app_id, "python-notes");
+        assert_eq!(event.plugin_id, "python-notes");
         assert_eq!(event.event, "note.saved");
         assert_eq!(event.payload_json.as_deref(), Some(r#"{"title":"Hello"}"#));
     }
@@ -3946,7 +4114,7 @@ mod tests {
         p.exec(
             Effect::DeclareTools(DeclareToolsEffect {
                 tools: vec![
-                    super::super::wasm_app::bindings::plexi::platform::types::ToolDecl {
+                    super::super::wasm_view::bindings::plexi::platform::types::ToolDecl {
                         name: "notes.search".to_string(),
                         description: "Search notes".to_string(),
                         input_schema_json: r#"{"type":"object"}"#.to_string(),
@@ -3970,7 +4138,7 @@ mod tests {
         p.exec(
             Effect::DeclareTools(DeclareToolsEffect {
                 tools: vec![
-                    super::super::wasm_app::bindings::plexi::platform::types::ToolDecl {
+                    super::super::wasm_view::bindings::plexi::platform::types::ToolDecl {
                         name: "bad".to_string(),
                         description: "Bad schema".to_string(),
                         input_schema_json: "not-json".to_string(),
@@ -4000,10 +4168,19 @@ mod tests {
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut tree_seq: u64 = 0;
+        // `set_fonts` binds the `ui-medium` family on the next frame, so the
+        // first frame only registers fonts (see src/ui/AGENTS.md).
+        let mut fonts_ready = false;
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(400.0, 300.0))
             .build_ui_state(
                 move |ui, pane| {
+                    if !fonts_ready {
+                        crate::ui::theme::setup_fonts(ui.ctx());
+                        fonts_ready = true;
+                        ui.ctx().request_repaint();
+                        return;
+                    }
                     let tree = pane.view().expect("view");
                     // This runtime re-evaluates `view()` every frame, so every
                     // painted tree is a new generation — mirror the live pane.
@@ -4063,7 +4240,7 @@ mod tests {
     }
 
     fn pong_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
             .expect("load pong (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
@@ -4327,7 +4504,7 @@ mod tests {
         assert_eq!(canonical_key_name(egui::Key::Minus), "-");
     }
 
-    // Regression: handle_key only emitted pressed:true, so held-control apps
+    // Regression: handle_key only emitted pressed:true, so held-control plugins
     // (games) never saw the release and the paddle stuck. Both edges translate.
     #[test]
     fn both_press_and_release_edges_translate() {
@@ -4381,9 +4558,9 @@ mod tests {
         );
     }
 
-    /// Stint 0430: bare Escape is reserved for the host CloseApp binding
-    /// (keys.rs, `BindingContext::AppActive`). A focused WASM pane must report
-    /// `Passthrough` for it so `poll_actions` can fire CloseApp; before the fix
+    /// Stint 0430: bare Escape is reserved for the host CloseView binding
+    /// (keys.rs, `BindingContext::ViewActive`). A focused WASM pane must report
+    /// `Passthrough` for it so `poll_actions` can fire CloseView; before the fix
     /// `handle_key` reported `Consumed` for every key event, claiming Escape out
     /// of the frame buffer and starving the close. Normal keys stay `Consumed`.
     #[test]
@@ -4415,7 +4592,7 @@ mod tests {
                 egui_key(egui::Key::Escape, true, false, egui::Modifiers::NONE)
             ),
             KeyDisposition::Passthrough,
-            "bare Escape must pass through so the host CloseApp binding fires"
+            "bare Escape must pass through so the host CloseView binding fires"
         );
         assert_eq!(
             disposition(
@@ -4478,7 +4655,7 @@ mod tests {
     }
 
     fn daw_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
             .expect("load daw-engine");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
@@ -4515,11 +4692,11 @@ mod tests {
             .expect("tool output is JSON")
     }
 
-    // The app declares the full daw.* surface at init with truthful
+    // The plugin declares the full daw.* surface at init with truthful
     // read-only flags: exactly the four read tools may auto-grant; every
     // mutation (and both POC tools) must prompt.
     #[test]
-    fn daw_app_declares_namespaced_tools_with_correct_read_only_flags() -> wasmtime::Result<()> {
+    fn daw_plugin_declares_namespaced_tools_with_correct_read_only_flags() -> wasmtime::Result<()> {
         let mut p = daw_pane();
         p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let effects = p.take_host_effects();
@@ -4648,7 +4825,7 @@ mod tests {
 
     fn jukebox_pane() -> WasmPane {
         let app =
-            WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
+            WasmView::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
                 .expect("load jukebox");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
@@ -4844,7 +5021,7 @@ mod tests {
         Ok(())
     }
 
-    // A cancelled pick adds nothing and never wedges the app.
+    // A cancelled pick adds nothing and never wedges the plugin.
     #[test]
     fn jukebox_pick_cancel_adds_no_tracks() -> wasmtime::Result<()> {
         let mut p = jukebox_pane();

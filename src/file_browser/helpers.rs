@@ -6,7 +6,7 @@ use std::time::SystemTime;
 const TEXT_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 
 /// Routing classification for a file the user wants to open. Drives the
-/// GUI↔terminal media bridge (#79): video/audio files spawn the in-app
+/// GUI↔terminal media bridge (#79): video/audio files spawn the in-plugin
 /// player examples; everything else falls through to the system default
 /// (`open` / `xdg-open`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl MediaKind {
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp" => Self::Image,
             // Common video container formats. AVFoundation handles the
             // big three on macOS (#346); the rest still route to the
-            // in-app player so it can surface a decoder error rather
+            // in-plugin player so it can surface a decoder error rather
             // than the user double-clicking into QuickTime.
             "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" => Self::Video,
             // Common audio formats. v3.4 audio-player is a
@@ -44,9 +44,9 @@ impl MediaKind {
         }
     }
 
-    /// Manifest id of the in-app player for this media kind. `None`
+    /// Manifest id of the in-plugin player for this media kind. `None`
     /// means "fall through to the system default opener".
-    pub(crate) fn player_app_id(self) -> Option<&'static str> {
+    pub(crate) fn player_plugin_id(self) -> Option<&'static str> {
         match self {
             Self::Image => Some("image-viewer"),
             Self::Video => Some("video-player"),
@@ -545,7 +545,7 @@ pub(crate) fn format_modified(modified: Option<SystemTime>) -> String {
 #[cfg(test)]
 mod media_bridge_tests {
     //! GUI↔Terminal media bridge routing (#79). The file browser opens
-    //! recognised media in the in-app players instead of shelling out to
+    //! recognised media in the in-plugin players instead of shelling out to
     //! the system default — these tests pin the classifier so a renamed
     //! manifest id or a dropped extension surfaces here, not in a smoke
     //! test halfway through release.
@@ -553,7 +553,7 @@ mod media_bridge_tests {
     use std::path::PathBuf;
 
     #[test]
-    fn open_image_file_routes_to_image_viewer_app() {
+    fn open_image_file_routes_to_image_viewer_view() {
         for ext in &["png", "PNG", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"] {
             let p = PathBuf::from(format!("/tmp/photo.{ext}"));
             assert_eq!(
@@ -562,15 +562,15 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Image"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("image-viewer"),
-                "image routes to image-viewer app"
+                "image routes to image-viewer plugin"
             );
         }
     }
 
     #[test]
-    fn open_video_file_routes_to_video_player_app() {
+    fn open_video_file_routes_to_video_player_view() {
         for ext in &["mp4", "MP4", "mov", "mkv", "webm", "m4v", "avi"] {
             let p = PathBuf::from(format!("/tmp/clip.{ext}"));
             assert_eq!(
@@ -579,15 +579,15 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Video"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("video-player"),
-                "video routes to video-player app"
+                "video routes to video-player plugin"
             );
         }
     }
 
     #[test]
-    fn open_audio_file_routes_to_audio_player_app() {
+    fn open_audio_file_routes_to_audio_player_view() {
         for ext in &["mp3", "MP3", "wav", "flac", "m4a", "aac", "ogg", "opus"] {
             let p = PathBuf::from(format!("/tmp/song.{ext}"));
             assert_eq!(
@@ -596,9 +596,9 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Audio"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("audio-player"),
-                "audio routes to audio-player app"
+                "audio routes to audio-player plugin"
             );
         }
     }
@@ -619,9 +619,9 @@ mod media_bridge_tests {
                 "{path} should fall through to system default"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 None,
-                "{path} should not route to an in-app player"
+                "{path} should not route to an in-plugin player"
             );
         }
     }

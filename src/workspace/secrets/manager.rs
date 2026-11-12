@@ -432,7 +432,7 @@ mod tests {
             &monitor,
             &target,
             "SERVICE_TOKEN",
-            Mutation::Set("canary-first-value"),
+            Mutation::Set("SENTINEL_SECRET_0948_DO_NOT_LEAK"),
         )
         .unwrap();
         mutate_secret(
@@ -463,6 +463,7 @@ mod tests {
         assert!(audit.contains("SERVICE_TOKEN"));
         assert!(audit.contains("IMPORT_TOKEN"));
         assert!(!audit.contains("canary-"));
+        assert!(!audit.contains("SENTINEL_SECRET_0948_DO_NOT_LEAK"));
         assert!(!audit.contains("with spaces"));
         let rows = monitor.audit_records();
         assert_eq!(

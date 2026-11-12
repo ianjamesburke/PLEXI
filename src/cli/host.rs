@@ -11,7 +11,7 @@
 //! `host start` seeds panes via the same spawn-queue directory `plexi open`
 //! and `plexi pane new` use outside a pane (`host_config_dir(channel).join("spawn-queue")`),
 //! so no new host-side boot protocol is introduced — `drain_spawn_queue()`
-//! picks the seeded panes up on the launched app's first frame.
+//! picks the seeded panes up on the launched plugin's first frame.
 //!
 //! All channel-scoped paths here go through `host_config_dir(channel)`, not
 //! `crate::config::config_dir()` — the latter lets the bare `plexi` binary
@@ -21,9 +21,9 @@
 #[cfg(windows)]
 mod windows_launch;
 
+use crate::platform::ipc::{self, IpcStream};
 use serde::Deserialize;
 use std::io::Write;
-use crate::platform::ipc::{self, IpcStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -130,7 +130,7 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
 /// The pane/context-scoped `PLEXI_*` vars that must never leak into a
 /// `host start`-launched process — reading them to decide what to launch
 /// would reintroduce the exact channel-leak trap this command exists to
-/// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into app
+/// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into plugin
 /// tooling"). `PLEXI_CHANNEL` itself is stripped unconditionally too, then
 /// re-added explicitly from the resolved channel — never inherited.
 const STRIP_VARS: &[&str] = &[
@@ -147,6 +147,7 @@ const STRIP_VARS: &[&str] = &[
     "PLEXI_AGENT_SPAWNED",
     "PLEXI_AGENT_HARNESS",
     "PLEXI_AGENT_ROLE",
+    "PLEXI_AGENT_ID",
     "PLEXI_PARENT_PANE",
     "PLEXI_EPHEMERAL",
     "PLEXI_RESUME_COMMAND",
@@ -214,7 +215,7 @@ pub(crate) fn host_child_env(
 /// pane's `PLEXI_CHANNEL` would silently redirect every socket/spawn-queue
 /// path to the wrong channel's profile — the exact leak trap this command
 /// exists to eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks
-/// into app tooling"). This function always derives the profile dir from
+/// into plugin tooling"). This function always derives the profile dir from
 /// `channel`, which callers resolve once via `resolve_channel_paths()`
 /// (binary-basename-only, ignoring env).
 fn host_config_dir(channel: Option<&str>) -> PathBuf {
@@ -236,8 +237,11 @@ fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
             PathBuf::new()
         }
     };
-    let bundle = binary.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
-        .map(Path::to_path_buf).unwrap_or_else(|| binary.clone());
+    let bundle = binary
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| binary.clone());
     log::info!("host: resolved channel={channel:?} bundle={bundle:?} binary={binary:?}");
     (channel, bundle, binary)
 }
@@ -255,7 +259,10 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
     let mut pid = 0;
     // SAFETY: a live client pipe handle and a writable PID out-parameter.
     if unsafe { GetNamedPipeServerProcessId(stream.as_raw_handle().cast(), &mut pid) } == 0 {
-        log::warn!("host: pipe owner lookup failed for {socket_path:?}: {}", std::io::Error::last_os_error());
+        log::warn!(
+            "host: pipe owner lookup failed for {socket_path:?}: {}",
+            std::io::Error::last_os_error()
+        );
         None
     } else {
         Some(pid)
@@ -310,11 +317,12 @@ fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
     match super::send_line_to_socket(socket_path, b"", timeout) {
         Ok(_) | Err(super::SocketTransportError::ConnectTimeout) => RunningState::Running,
         Err(super::SocketTransportError::Connect(e))
-            if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                log::info!("host: removing stale endpoint {socket_path:?}");
-                ipc::remove_stale_endpoint(socket_path);
-                RunningState::NotRunning
-            }
+            if e.kind() == std::io::ErrorKind::ConnectionRefused =>
+        {
+            log::info!("host: removing stale endpoint {socket_path:?}");
+            ipc::remove_stale_endpoint(socket_path);
+            RunningState::NotRunning
+        }
         Err(e) => {
             log::info!("host: endpoint {socket_path:?} not reachable: {e:?}");
             RunningState::NotRunning
@@ -330,7 +338,7 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         return None;
     }
     let response_file = crate::rpc::response_file_in(profile_dir, "host-status", "json");
-    let request = crate::protocol::AppRequest::ListPanes {
+    let request = crate::protocol::HostRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
@@ -354,23 +362,36 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
     if Instant::now() >= deadline {
         return None;
     }
-    serde_json::from_str::<Vec<serde_json::Value>>(&content).ok().map(|v| v.len())
+    serde_json::from_str::<Vec<serde_json::Value>>(&content)
+        .ok()
+        .map(|v| v.len())
 }
 
-fn wait_for_ready(socket_path: &Path, timeout: Duration, profile_dir: &Path) -> Result<usize, String> {
+fn wait_for_ready(
+    socket_path: &Path,
+    timeout: Duration,
+    profile_dir: &Path,
+) -> Result<usize, String> {
     let start = Instant::now();
     let deadline = start + timeout;
     log::info!("host_start: readiness poll start socket={socket_path:?} timeout={timeout:?}");
     while Instant::now() < deadline {
         let probe_deadline = deadline.min(Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
         if let Some(count) = query_ready_status(socket_path, profile_dir, probe_deadline) {
-            log::info!("host_start: ready in {:?}, pane_count={count}", start.elapsed());
+            log::info!(
+                "host_start: ready in {:?}, pane_count={count}",
+                start.elapsed()
+            );
             return Ok(count);
         }
-        std::thread::sleep(Duration::from_millis(200).min(deadline.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            Duration::from_millis(200).min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
     log::error!("host_start: readiness timeout after {:?}", start.elapsed());
-    Err(format!("timed out after {timeout:?} waiting for Plexi host to become ready"))
+    Err(format!(
+        "timed out after {timeout:?} waiting for Plexi host to become ready"
+    ))
 }
 
 /// Write one spawn-queue JSON file for `spec`, matching the schema
@@ -512,7 +533,7 @@ fn unix_socket_inode<'a>(line: &'a str, target: &str) -> Option<&'a str> {
     (rest.trim_start() == target).then_some(inode)
 }
 
-/// Launches this channel's app bundle detached (survives the CLI process
+/// Launches this channel's plugin bundle detached (survives the CLI process
 /// exiting), seeds any declared panes via the spawn-queue before launch, and
 /// blocks until a `notify.sock` round trip confirms the host is ready (or the
 /// timeout elapses). Errors non-zero if a host for this channel is already
@@ -554,12 +575,25 @@ pub fn host_start_cli(
         specs.len()
     );
 
-    if matches!(probe_notify_socket(&socket_path, deadline.saturating_duration_since(Instant::now())), RunningState::Running) {
+    if matches!(
+        probe_notify_socket(
+            &socket_path,
+            deadline.saturating_duration_since(Instant::now())
+        ),
+        RunningState::Running
+    ) {
         log::warn!("host_start: endpoint already held socket={socket_path:?}");
-        eprintln!("error: a Plexi host for this channel is already running or busy (socket {})", socket_path.display());
+        eprintln!(
+            "error: a Plexi host for this channel is already running or busy (socket {})",
+            socket_path.display()
+        );
         let running = running_build_info();
         let installed = installed_identity();
-        for line in host_identity_lines(running.as_ref(), installed.as_ref().map(|(t, b)| (t.as_str(), b.as_str())), &restart_hint()) {
+        for line in host_identity_lines(
+            running.as_ref(),
+            installed.as_ref().map(|(t, b)| (t.as_str(), b.as_str())),
+            &restart_hint(),
+        ) {
             eprintln!("{line}");
         }
         return 1;
@@ -634,10 +668,7 @@ pub fn host_start_cli(
     let timeout = deadline.saturating_duration_since(Instant::now());
     match wait_for_ready(&socket_path, timeout, &host_config_dir(channel.as_deref())) {
         Ok(count) => {
-            println!(
-                "Plexi host started (pid {}), {count} pane(s) ready.",
-                pid
-            );
+            println!("Plexi host started (pid {}), {count} pane(s) ready.", pid);
             0
         }
         Err(e) => {
@@ -649,7 +680,7 @@ pub fn host_start_cli(
 }
 
 /// `plexi host stop` — clean shutdown request over `notify.sock` first
-/// (`AppRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
+/// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
 /// Detach the spawned host from this terminal so closing the terminal — or
 /// Ctrl-C in it — does not take the host down with it.
@@ -766,7 +797,8 @@ pub(crate) fn spawn_restart_coordinator(
 #[cfg(unix)]
 fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
     let mut cmd = std::process::Command::new(binary);
-    cmd.env_clear().envs(child_env.iter().cloned())
+    cmd.env_clear()
+        .envs(child_env.iter().cloned())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -804,7 +836,9 @@ fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
 pub(crate) fn stop_for_uninstall() -> Result<(), String> {
     let channel = crate::config::build_channel();
     let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pid = running_build_info().as_ref().and_then(reported_pid)
+    let pid = running_build_info()
+        .as_ref()
+        .and_then(reported_pid)
         .or_else(|| detect_pid(&socket));
     if shutdown_complete(pid, &socket) {
         return Ok(());
@@ -882,11 +916,8 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         }
     };
     if own_host {
-        let mut child = restart_coordinator_command(
-            &exe,
-            std::env::vars().collect(),
-            channel.as_deref(),
-        );
+        let mut child =
+            restart_coordinator_command(&exe, std::env::vars().collect(), channel.as_deref());
         match spawn_restart_coordinator(&mut child) {
             Ok(coordinator_pid) => {
                 log::info!(
@@ -1014,7 +1045,7 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
 
     match IpcStream::connect(&socket_path) {
         Ok(mut stream) => {
-            let payload = serde_json::to_string(&crate::protocol::AppRequest::Shutdown)
+            let payload = serde_json::to_string(&crate::protocol::HostRequest::Shutdown)
                 .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {
@@ -1062,7 +1093,9 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
     match terminate_host_process(pid) {
         Ok(()) => {
             log::info!("host_stop: termination requested pid={pid}");
-            host_stop_stdout(&format!("Termination requested for Plexi host (pid {pid})."));
+            host_stop_stdout(&format!(
+                "Termination requested for Plexi host (pid {pid})."
+            ));
             0
         }
         Err(e) => {
@@ -1140,19 +1173,22 @@ fn clean_panes_after_socket_failure(profile: &Path, pid: u32) {
     // alive long enough for the caller to reach `terminate_host_process`.
     let _fallback_signals = FallbackSignalGuard::ignore_hup_and_term();
     if let Some(marker) = crate::host::process_cleanup::recorded_session_marker(profile, pid) {
+        let restored_roots = crate::host::process_cleanup::restore_pane_roots(profile, &marker);
         let report = crate::host::process_cleanup::stop_pane_processes_for_marker(
             &marker,
             Duration::from_secs(2),
         );
         log::info!(
-            "host_stop: socket fallback cleaned groups={} escalated={} tmux_ms={} total_ms={}",
+            "host_stop: socket fallback restored_roots={restored_roots} cleaned groups={} escalated={} tmux_ms={} total_ms={}",
             report.groups,
             report.escalated,
             report.tmux.as_millis(),
             (report.scan + report.signal + report.grace_waited + report.kill + report.tmux).as_millis()
         );
     } else {
-        log::warn!("host_stop: no matching pane session marker for pid={pid}; skipping pane cleanup");
+        log::warn!(
+            "host_stop: no matching pane session marker for pid={pid}; skipping pane cleanup"
+        );
     }
 }
 
@@ -1234,38 +1270,66 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     let profile = host_config_dir(channel.as_deref());
     let socket = ipc::endpoint_in(&profile);
     let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
-    let request = crate::protocol::AppRequest::GetBuildInfo { response_file: response_file.clone() };
+    let request = crate::protocol::HostRequest::GetBuildInfo {
+        response_file: response_file.clone(),
+    };
     let line = serde_json::to_string(&request).ok()?;
-    super::send_line_to_socket(&socket, format!("{line}\n").as_bytes(), crate::rpc::DEFAULT_TIMEOUT).ok()?;
-    let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    super::send_line_to_socket(
+        &socket,
+        format!("{line}\n").as_bytes(),
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .ok()?;
+    let content =
+        crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
     serde_json::from_str(&content).ok()
 }
 
 /// Human-readable running-vs-installed identity for `host status` and the
-/// `host start` already-running path (stint 0596). Returns no lines when the
-/// installation is unmanaged or the host did not report a build. When the
-/// running build differs from the installed package, the last line is the
-/// restart prompt. Never restarts anything on its own.
+/// `host start` already-running path. Versions come from each binary's own
+/// build info (version text, short commit, build id), never from profile
+/// markers. Unavailable running identity is reported as unverified and an
+/// unavailable installation separately. When the running build differs from
+/// the installed package, the last line is the restart prompt. Never restarts
+/// anything on its own.
 pub(crate) fn host_identity_lines(
     running: Option<&serde_json::Value>,
     installed: Option<(&str, &str)>,
     stop_start: &str,
 ) -> Vec<String> {
-    let (Some(running), Some((installed_tag, installed_build))) = (running, installed) else {
-        return Vec::new();
+    let field = |name: &str| {
+        running
+            .and_then(|r| r.get(name))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
     };
-    let Some(running_build) = running.get("build_id").and_then(|v| v.as_str()) else {
-        return Vec::new();
+    let running_build = field("build_id");
+    let running_line = match running_build {
+        Some(build) => {
+            // Hosts older than `version_text` report only their tag.
+            let text = field("version_text")
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    crate::distribution::generation_version_text(field("tag").unwrap_or(""), build)
+                });
+            format!("Running host: {text}, build {build}")
+        }
+        None => {
+            log::info!("host_status: running build identity unverified");
+            "Running host: unverified (build identity unavailable)".into()
+        }
     };
-    let running_tag = running.get("tag").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let mut lines = vec![
-        format!("Running host: {running_tag} ({running_build})"),
-        format!("Installed:    {installed_tag} ({installed_build})"),
-    ];
-    if running_build != installed_build {
-        lines.push(format!(
-            "The running host is older than the installed build. Restart it to use the update: {stop_start}"
-        ));
+    let installed_line = match installed {
+        Some((tag, build)) => format!(
+            "Installed:    {}, build {build}",
+            crate::distribution::generation_version_text(tag, build)
+        ),
+        None => "Installed:    unavailable or unmanaged".into(),
+    };
+    let mut lines = vec![running_line, installed_line];
+    if matches!((running_build, installed), (Some(running), Some((_, installed))) if running != installed)
+    {
+        lines.push(format!("The running host differs from the installed build. Restart it to use the installed build: {stop_start}"));
     }
     lines
 }
@@ -1275,18 +1339,73 @@ fn installed_identity() -> Option<(String, String)> {
     Some((receipt.active.tag, receipt.active.build_id))
 }
 
+pub fn host_workspace_rollback_cli(to_channel: &str) -> i32 {
+    if to_channel.is_empty()
+        || !to_channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        eprintln!("error: channel must contain only letters, numbers, hyphens, or underscores");
+        return 1;
+    }
+    let source = crate::config::config_dir();
+    let destination = host_config_dir(Some(to_channel));
+    match crate::workspace::export_v2_rollback(&source, &destination) {
+        Ok(()) => {
+            println!("Exported the pre-migration workspace to channel {to_channel}. Later changes remain in the current channel.");
+            0
+        }
+        Err(error) => {
+            log::error!("host workspace rollback export failed: {error}");
+            eprintln!("error: workspace rollback export failed: {error}");
+            1
+        }
+    }
+}
+
 fn restart_hint() -> String {
     let name = crate::config::current_exe_basename();
     format!("{name} host stop && {name} host start")
+}
+
+fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) -> String {
+    if pid.is_some() || socket_exists {
+        format!(
+            "Plexi host readiness and running identity are unverified (pid {}, socket {})",
+            pid.map(|p| p.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            socket.display()
+        )
+    } else {
+        format!("Plexi host is not running (socket {})", socket.display())
+    }
+}
+
+/// CLI discovery follows the running host, or the next startup config when stopped.
+pub(crate) fn plugin_mode_core_only() -> bool {
+    running_build_info()
+        .and_then(|v| v.get("core_only").and_then(serde_json::Value::as_bool))
+        .unwrap_or_else(|| {
+            crate::config::PlexiConfig::load()
+                .core_only
+                .unwrap_or(false)
+        })
 }
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
     let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
-    let pane_count = query_ready_status(&socket_path, &host_config_dir(channel.as_deref()), Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
+    let pane_count = query_ready_status(
+        &socket_path,
+        &host_config_dir(channel.as_deref()),
+        Instant::now() + crate::rpc::DEFAULT_TIMEOUT,
+    );
     let running = running_build_info();
-    let pid = running.as_ref().and_then(reported_pid).or_else(|| detect_pid(&socket_path));
+    let pid = running
+        .as_ref()
+        .and_then(reported_pid)
+        .or_else(|| detect_pid(&socket_path));
     let ready = pane_count.is_some();
     log::info!(
         "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
@@ -1296,6 +1415,7 @@ pub fn host_status_cli(json: bool) -> i32 {
         let payload = serde_json::json!({
             "ready": ready,
             "cli": crate::distribution::build_info(),
+            "core_only": running.as_ref().and_then(|v| v.get("core_only")).cloned(),
             "running": running,
             "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,
@@ -1311,20 +1431,26 @@ pub fn host_status_cli(json: bool) -> i32 {
             pane_count.unwrap_or(0),
             socket_path.display()
         );
-        for line in host_identity_lines(running.as_ref(), installed_identity().as_ref().map(|(t, b)| (t.as_str(), b.as_str())), &restart_hint()) {
+        for line in host_identity_lines(
+            running.as_ref(),
+            installed_identity()
+                .as_ref()
+                .map(|(t, b)| (t.as_str(), b.as_str())),
+            &restart_hint(),
+        ) {
             println!("{line}");
         }
     } else {
         println!(
-            "Plexi host is not running (socket {})",
-            socket_path.display()
+            "{}",
+            not_ready_host_message(pid, socket_path.exists(), &socket_path)
         );
     }
     0
 }
 
 /// `plexi host log --source <tool> <message>` — write one info-level marker
-/// line into the running host's channel log via `AppRequest::LogMarker`.
+/// line into the running host's channel log via `HostRequest::LogMarker`.
 ///
 /// Like every `host` subcommand it talks to the channel's `notify.sock`
 /// directly (derived from the running binary's own channel, see the module
@@ -1373,6 +1499,42 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi host key <key>` — inject a synthetic key into the host-level input
+/// path. This deliberately targets the host rather than a pane, so a chord
+/// such as `cmd+1` exercises numbered context switching without writing bytes
+/// into a focused terminal's PTY.
+pub fn host_key_cli(key: &str) -> i32 {
+    log::info!(
+        "host_key:cli: key={key:?} key_chars={}",
+        key.chars().count()
+    );
+    let content = match super::request(
+        serde_json::json!({
+            "type": "host_key",
+            "key": key,
+        }),
+        "host-key-response",
+        "host key",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(reply) if reply.get("error").is_some() => {
+            eprintln!(
+                "error: {}",
+                reply["error"].as_str().unwrap_or("host key failed")
+            );
+            1
+        }
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("error: malformed host key response: {error}");
             1
         }
     }
@@ -1467,7 +1629,11 @@ mod tests {
             .env(crate::host::process_cleanup::SESSION_ENV, &marker);
         unsafe {
             command.pre_exec(|| {
-                if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
             });
         }
         let mut child = command.spawn().unwrap();
@@ -1480,6 +1646,14 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        let _registration = crate::host::process_cleanup::PaneProcessGroup::record_for_profile(
+            child.id(),
+            &marker,
+            profile.path(),
+        );
+        // The fallback runs in a different CLI process, which has no in-host
+        // root registry. Keep only the durable registration for this seam.
+        crate::host::process_cleanup::forget_pane_root_for_test(child.id());
         super::clean_panes_after_socket_failure(profile.path(), std::process::id());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -1516,12 +1690,33 @@ mod tests {
 
     #[test]
     fn identity_lines_prompt_restart_when_running_build_is_older() {
-        let running = serde_json::json!({"tag": "v0.1.16", "build_id": "old"});
-        let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", "new")), "plexi host stop && plexi host start");
+        let old = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hash";
+        let new = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-hash";
+        let running = serde_json::json!({"tag": "v0.1.16", "build_id": old});
+        let lines = super::host_identity_lines(
+            Some(&running),
+            Some(("v0.2.0", new)),
+            "plexi host stop && plexi host start",
+        );
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].contains("v0.1.16") && lines[0].contains("old"));
-        assert!(lines[1].contains("v0.2.0") && lines[1].contains("new"));
+        assert!(lines[0].contains("0.1.16 (1111111)") && lines[0].contains(old));
+        assert!(lines[1].contains("0.2.0 (2222222)") && lines[1].contains(new));
         assert!(lines[2].contains("plexi host stop && plexi host start"));
+        let running = serde_json::json!({"tag": "v9.9.9", "version_text": "0.4.2 (abc1234)", "build_id": old});
+        assert!(
+            super::host_identity_lines(Some(&running), None, "r")[0].contains("0.4.2 (abc1234)")
+        );
+    }
+
+    #[test]
+    fn unresponsive_socket_reports_unverified_host() {
+        let message = super::not_ready_host_message(None, true, std::path::Path::new("/socket"));
+        assert!(message.contains("unverified"));
+        assert!(!message.contains("not running"));
+        assert!(
+            super::not_ready_host_message(None, false, std::path::Path::new("/socket"))
+                .contains("not running")
+        );
     }
 
     #[test]
@@ -1532,11 +1727,22 @@ mod tests {
     }
 
     #[test]
-    fn identity_lines_are_empty_without_both_identities() {
+    fn identity_lines_report_unverified_or_unavailable_identity() {
         let running = serde_json::json!({"tag": "v0.2.0", "build_id": "x"});
-        assert!(super::host_identity_lines(Some(&running), None, "r").is_empty());
-        assert!(super::host_identity_lines(None, Some(("v1", "x")), "r").is_empty());
-        assert!(super::host_identity_lines(Some(&serde_json::json!({})), Some(("v1", "x")), "r").is_empty());
+        assert!(super::host_identity_lines(Some(&running), None, "r")
+            .join(" ")
+            .contains("Installed:    unavailable"));
+        assert!(super::host_identity_lines(None, None, "r")
+            .join(" ")
+            .contains("unverified"));
+        assert!(super::host_identity_lines(None, Some(("v1", "x")), "r")
+            .join(" ")
+            .contains("unverified"));
+        assert!(
+            super::host_identity_lines(Some(&serde_json::json!({})), Some(("v1", "x")), "r")
+                .join(" ")
+                .contains("unverified")
+        );
     }
 
     #[test]
@@ -1553,7 +1759,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("notify.sock");
         let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let mut original = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut original = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
         let pid = original.id();
         original.kill().unwrap();
         original.wait().unwrap();
@@ -1583,7 +1792,10 @@ mod tests {
         });
         let result = wait_for_ready(&endpoint, Duration::from_millis(40), dir.path());
         server.join().unwrap();
-        assert!(result.is_err(), "a reply after the startup deadline must not mean ready");
+        assert!(
+            result.is_err(),
+            "a reply after the startup deadline must not mean ready"
+        );
     }
 
     use super::*;
@@ -1623,7 +1835,9 @@ mod tests {
                 let stream = listener.incoming().next().unwrap().unwrap();
                 let mut line = String::new();
                 BufReader::new(stream).read_line(&mut line).unwrap();
-                if line.trim() == "stop" { break; }
+                if line.trim() == "stop" {
+                    break;
+                }
                 host.inject_ipc(serde_json::from_str(&line).unwrap());
                 host.hidden_frame();
             }
@@ -1631,19 +1845,30 @@ mod tests {
         let timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
         wait_for_ready(&endpoint, timeout, dir.path()).expect("application ready");
         let send = |request: serde_json::Value| {
-            super::super::send_line_to_socket(&endpoint, format!("{request}\n").as_bytes(), timeout).unwrap();
+            super::super::send_line_to_socket(
+                &endpoint,
+                format!("{request}\n").as_bytes(),
+                timeout,
+            )
+            .unwrap();
         };
         let list = || {
             let response = crate::rpc::response_file_in(dir.path(), "list", "json");
             send(serde_json::json!({"type":"list_panes", "response_file": response}));
             serde_json::from_str::<Vec<serde_json::Value>>(
-                &crate::rpc::poll_string(&response, Some(timeout)).unwrap_or_else(|e| panic!("{e}"))).unwrap()
+                &crate::rpc::poll_string(&response, Some(timeout))
+                    .unwrap_or_else(|e| panic!("{e}")),
+            )
+            .unwrap()
         };
         for cycle in 0..20 {
             let response = crate::rpc::response_file_in(dir.path(), "spawn", "json");
-            send(serde_json::json!({"type":"spawn_pane", "type_id":"file_browser",
-                "name": format!("host01-{cycle}"), "response_file": response}));
-            let reply = crate::rpc::poll_string(&response, Some(timeout)).unwrap_or_else(|e| panic!("{e}"));
+            send(
+                serde_json::json!({"type":"spawn_pane", "type_id":"file_browser",
+                "name": format!("host01-{cycle}"), "response_file": response}),
+            );
+            let reply =
+                crate::rpc::poll_string(&response, Some(timeout)).unwrap_or_else(|e| panic!("{e}"));
             let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
             let id = reply["pane_id"].as_u64().expect("spawn pane id");
             send(serde_json::json!({"type":"focus_pane", "pane_id":id}));
@@ -1799,10 +2024,16 @@ mod tests {
         let parent = vec![
             ("PLEXI_SOCKET".to_string(), "/tmp/x.sock".to_string()),
             ("PLEXI_PANE_ID".to_string(), "7".to_string()),
-            (crate::host::process_cleanup::SESSION_ENV.to_string(), "parent-host".to_string()),
+            (
+                crate::host::process_cleanup::SESSION_ENV.to_string(),
+                "parent-host".to_string(),
+            ),
             ("PLEXI_CONTEXT_ID".to_string(), "3".to_string()),
             ("PLEXI_CONTEXT_NAME".to_string(), "work".to_string()),
-            ("PLEXI_CONTEXT_DESCRIPTION".to_string(), "work context".to_string()),
+            (
+                "PLEXI_CONTEXT_DESCRIPTION".to_string(),
+                "work context".to_string(),
+            ),
             ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
             ("PLEXI_CONTEXT_DEPTH".to_string(), "1".to_string()),
             ("PLEXI_RUNNING".to_string(), "1".to_string()),
@@ -1865,7 +2096,10 @@ mod tests {
     #[test]
     fn restart_coordinator_command_scrubs_host_marker_and_pane_identity() {
         let parent = vec![
-            (crate::host::process_cleanup::SESSION_ENV.to_string(), "old-host".to_string()),
+            (
+                crate::host::process_cleanup::SESSION_ENV.to_string(),
+                "old-host".to_string(),
+            ),
             ("PLEXI_SOCKET".to_string(), "/tmp/notify.sock".to_string()),
             ("PLEXI_PANE_ID".to_string(), "7".to_string()),
             ("PLEXI_CONTEXT_ROOT".to_string(), "/work".to_string()),
@@ -1889,8 +2123,14 @@ mod tests {
         ] {
             assert!(!env.contains_key(std::ffi::OsStr::new(key)), "leaked {key}");
         }
-        assert_eq!(env.get(std::ffi::OsStr::new("PLEXI_CHANNEL")), Some(&std::ffi::OsStr::new("alpha")));
-        assert_eq!(env.get(std::ffi::OsStr::new("PATH")), Some(&std::ffi::OsStr::new("/usr/bin")));
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("PLEXI_CHANNEL")),
+            Some(&std::ffi::OsStr::new("alpha"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("PATH")),
+            Some(&std::ffi::OsStr::new("/usr/bin"))
+        );
     }
 
     #[test]
@@ -1900,11 +2140,9 @@ mod tests {
             "1".to_string(),
         )];
         let foreground = host_child_env(inherited.clone(), Some("alpha"), false, false);
-        assert!(
-            foreground
-                .iter()
-                .all(|(key, _)| key != crate::workspace::BACKGROUND_SESSION_ENV)
-        );
+        assert!(foreground
+            .iter()
+            .all(|(key, _)| key != crate::workspace::BACKGROUND_SESSION_ENV));
 
         let background = host_child_env(inherited, Some("alpha"), false, true);
         assert_eq!(

@@ -1,6 +1,6 @@
 use plexi_wasm_sdk::{
-    effects, ui, Alignment, App, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
-    UiNodeData,
+    effects, ui, Alignment, Effect, InputEvent, Justify, SubscribeEventStreamsEffect, ToolDecl,
+    UiNodeData, View,
 };
 
 #[test]
@@ -36,6 +36,43 @@ fn ui_builder_covers_every_node_variant() {
         .any(|node| matches!(node.data, UiNodeData::Surface(_))));
 }
 
+/// `align` is the cross axis on both containers. The builders pick the
+/// defaults the Python SDK and the host bridge use: a row centers its children
+/// vertically, a column starts them at the left.
+#[test]
+fn row_builder_centers_and_column_builder_starts() {
+    let mut tree = ui::Tree::new();
+    let text = tree.text("text", "Hello");
+    let row = tree.row("row", [text]);
+    let column = tree.column("column", [row]);
+    let tree = tree.finish(column);
+    let align_of = |id: u32| {
+        tree.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
+                UiNodeData::Row(r) => Some(r.align),
+                UiNodeData::Column(c) => Some(c.align),
+                _ => None,
+            })
+    };
+    assert!(matches!(align_of(row), Some(Alignment::Center)));
+    assert!(matches!(align_of(column), Some(Alignment::Start)));
+    // `justify` is the main axis; both builders place children from the start.
+    for id in [row, column] {
+        let justify = tree
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
+                UiNodeData::Row(r) => Some(r.justify),
+                UiNodeData::Column(c) => Some(c.justify),
+                _ => None,
+            });
+        assert!(matches!(justify, Some(Justify::Start)), "node {id}");
+    }
+}
+
 #[test]
 fn effect_helpers_cover_host_effects() {
     let values = vec![
@@ -55,7 +92,7 @@ fn effect_helpers_cover_host_effects() {
         effects::spawn("files"),
         effects::subscribe_event_streams(SubscribeEventStreamsEffect {
             request_id: "subscribe-1".into(),
-            app_id: "notes".into(),
+            plugin_id: "notes".into(),
             event_names: vec!["note.saved".into()],
             payload_mode: "full".into(),
             trigger_mode: "conversation".into(),
@@ -82,7 +119,7 @@ fn effect_helpers_cover_host_effects() {
 #[derive(Default)]
 struct Example;
 
-impl App for Example {
+impl View for Example {
     fn update(&mut self, _event: InputEvent) -> Vec<Effect> {
         Vec::new()
     }
@@ -104,4 +141,36 @@ fn ergonomic_app_trait_has_default_init() {
     );
     assert!(app.init(context).is_empty());
     assert_eq!(Alignment::Start, Alignment::Start);
+}
+
+/// Stint 1358: a guest sets a row's or column's main-axis `justify`; any
+/// other node is refused by id.
+#[test]
+fn set_justify_places_rows_and_columns_and_refuses_other_nodes() {
+    let mut tree = ui::Tree::new();
+    let text = tree.text("text", "Hello");
+    let row = tree.row("row", [text]);
+    let column = tree.column("column", [row]);
+    tree.set_justify(row, Justify::SpaceBetween)
+        .expect("a row takes justify");
+    tree.set_justify(column, Justify::Center)
+        .expect("a column takes justify");
+    let err = tree
+        .set_justify(text, Justify::End)
+        .expect_err("a text has no justify");
+    assert_eq!(err, ui::NotAContainer { id: text });
+    assert!(err.to_string().contains("not a row or column"));
+    let tree = tree.finish(column);
+    let justify_of = |id: u32| {
+        tree.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| match &node.data {
+                UiNodeData::Row(r) => Some(r.justify),
+                UiNodeData::Column(c) => Some(c.justify),
+                _ => None,
+            })
+    };
+    assert!(matches!(justify_of(row), Some(Justify::SpaceBetween)));
+    assert!(matches!(justify_of(column), Some(Justify::Center)));
 }

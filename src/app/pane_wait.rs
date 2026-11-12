@@ -112,6 +112,7 @@ enum SubmitPhase {
 /// heals.
 pub(crate) struct PendingSubmit {
     pub pane_id: u64,
+    pub operation_id: Option<String>,
     /// Plain JSON response file, like the agent-boot path. `None` when the
     /// caller wanted the sequence run but no answer — the host still settles,
     /// submits and confirms, and logs the outcome.
@@ -188,9 +189,10 @@ pub(crate) struct PendingAgentBoot {
 /// so a subsequent retry after approval still consumes the grant).
 pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A parked `AppRequest::SendToPane` waiting on a permission broker approval.
+/// A parked `HostRequest::SendToPane` waiting on a permission broker approval.
 pub(crate) struct PendingSendApproval {
     pub pending_request_id: String,
+    pub operation_id: String,
     pub caller_pane_id: u64,
     pub pane_id: u64,
     pub text: String,
@@ -306,10 +308,10 @@ impl PlexiApp {
             self.pending_slot_waits = live;
             for wait in expired {
                 log::info!(
-                    "pane_slot_wait: pane_id={} slot={:?} pattern={:?} timed out",
+                    "pane_slot_wait: pane_id={} slot={:?} pattern_chars={} timed out",
                     wait.pane_id,
                     wait.slot_name,
-                    wait.pattern.as_str()
+                    wait.pattern.as_str().chars().count()
                 );
                 crate::rpc::write_json_response(
                     &format!("{}.err", wait.response_file),
@@ -387,15 +389,15 @@ impl PlexiApp {
                 // Nothing to park a reply on: the alias is launched, and a
                 // caller that asked for no response cannot be told about boot.
                 log::info!(
-                    "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched with no response file; not waiting for boot",
-                    agent.command
+                    "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched with no response file; not waiting for boot",
+                    agent.command.chars().count()
                 );
                 return;
             };
             let requested_at = Instant::now();
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched, waiting up to {:.1}s for an idle report",
-                agent.command,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched, waiting up to {:.1}s for an idle report",
+                agent.command.chars().count(),
                 agent.timeout.as_secs_f64()
             );
             self.pending_agent_boots.push(PendingAgentBoot {
@@ -539,9 +541,9 @@ impl PlexiApp {
                     boot.agent_cmd
                 );
                 log::warn!(
-                    "pane_agent_boot: pane_id={} agent_cmd={:?} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
+                    "pane_agent_boot: pane_id={} agent_cmd_chars={} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
                     boot.pane_id,
-                    boot.agent_cmd
+                    boot.agent_cmd.chars().count()
                 );
                 crate::rpc::write_json_response(
                     &boot.response_file,
@@ -580,9 +582,9 @@ impl PlexiApp {
                 let timed_out = self.pane_exists(boot.pane_id);
                 let error = if timed_out {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} timed out after {elapsed:.2}s",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} timed out after {elapsed:.2}s",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "timed out after {elapsed:.1}s waiting for `{}` to report ready in pane {}",
@@ -590,9 +592,9 @@ impl PlexiApp {
                     )
                 } else {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} pane closed after {elapsed:.2}s before reporting ready",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} pane closed after {elapsed:.2}s before reporting ready",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "pane {} closed after {elapsed:.1}s before `{}` reported ready",
@@ -650,8 +652,8 @@ impl PlexiApp {
         let payload = self.spawn_pane_success_json(pane_id);
         for boot in booted {
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} reported ready after {:.2}s",
-                boot.agent_cmd,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} reported ready after {:.2}s",
+                boot.agent_cmd.chars().count(),
                 boot.requested_at.elapsed().as_secs_f64()
             );
             crate::rpc::write_json_response(&boot.response_file, payload.clone());
@@ -706,6 +708,7 @@ impl PlexiApp {
         );
         self.pending_submits.push(PendingSubmit {
             pane_id,
+            operation_id: None,
             response_file,
             phase: SubmitPhase::Settle {
                 until: requested_at + SUBMIT_SETTLE_MAX,
@@ -731,7 +734,25 @@ impl PlexiApp {
         let mut still_pending = Vec::with_capacity(self.pending_submits.len());
         for mut submit in std::mem::take(&mut self.pending_submits) {
             match self.advance_submit(&mut submit, now) {
-                Some(reply) => {
+                Some(mut reply) => {
+                    if let Some(operation_id) = &submit.operation_id {
+                        let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        );
+                        let state = if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+                            crate::broker::gate::ContinuationState::Completed
+                        } else {
+                            // Text or Enter may already have been delivered.
+                            crate::broker::gate::ContinuationState::OutcomeUnknown
+                        };
+                        if let Err(error) = monitor.complete_continuation(operation_id, state, None)
+                        {
+                            log::error!(
+                                "pane_submit: could not record operation={operation_id}: {error}"
+                            );
+                            reply = serde_json::json!({"error":"submission outcome could not be recorded", "error_code":"outcome_unknown", "operation_id":operation_id});
+                        }
+                    }
                     log::info!(
                         "pane_submit: pane_id={} resolved after {:.2}s reply={reply}",
                         submit.pane_id,
@@ -908,8 +929,8 @@ impl PlexiApp {
         self.pending_slot_waits = live;
         for wait in matched {
             log::info!(
-                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={:?} matched {} bytes",
-                wait.pattern.as_str(),
+                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern_chars={} matched {} bytes",
+                wait.pattern.as_str().chars().count(),
                 bytes.len()
             );
             crate::rpc::write_response(&wait.response_file, &bytes);
@@ -971,10 +992,7 @@ impl PlexiApp {
             for wait in done {
                 let pane_alive = self.pane_exists(wait.pane_id);
                 let (timeout, error) = if pane_alive {
-                    log::info!(
-                        "pane_message_recv: pane_id={} timed out",
-                        wait.pane_id
-                    );
+                    log::info!("pane_message_recv: pane_id={} timed out", wait.pane_id);
                     (
                         true,
                         format!("timed out waiting for message on pane {}", wait.pane_id),
@@ -1157,12 +1175,7 @@ impl PlexiApp {
                 );
             }
         }
-        let Some(next_expiry) = self
-            .pending_result_waits
-            .iter()
-            .map(|w| w.expires_at)
-            .min()
-        else {
+        let Some(next_expiry) = self.pending_result_waits.iter().map(|w| w.expires_at).min() else {
             return;
         };
         let predicted_frame =
@@ -1198,13 +1211,30 @@ fn unconfirmed_reply(pane_id: u64, tail: &[String], retried: bool) -> Value {
 
 impl PlexiApp {
     /// Common mailbox delivery for CLI send and the Agents pane reply composer.
-    pub(crate) fn enqueue_pane_message(&mut self, pane_id: u64, from_pane_id: Option<u64>, payload: String) -> (u64, bool) {
+    pub(crate) fn enqueue_pane_message(
+        &mut self,
+        pane_id: u64,
+        from_pane_id: Option<u64>,
+        payload: String,
+    ) -> (u64, bool) {
         let id = self.next_pane_message_id;
         self.next_pane_message_id = id.saturating_add(1);
-        let timestamp_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-        self.pane_mailboxes.entry(pane_id).or_default().push_back(PaneMessage {
-            id, pane_id, to_pane_id: pane_id, from_pane_id, sender_pane_id: from_pane_id, payload, timestamp_ms,
-        });
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.pane_mailboxes
+            .entry(pane_id)
+            .or_default()
+            .push_back(PaneMessage {
+                id,
+                pane_id,
+                to_pane_id: pane_id,
+                from_pane_id,
+                sender_pane_id: from_pane_id,
+                payload,
+                timestamp_ms,
+            });
         let delivered = self.complete_message_recvs(pane_id);
         (id, delivered)
     }
@@ -1259,6 +1289,9 @@ impl PlexiApp {
             }),
         );
         self.child_result_events.insert(child_id, item.clone());
+        if let Some(parent_id) = parent_pane_id {
+            self.child_parent_panes.insert(child_id, parent_id);
+        }
 
         let has_blocking_waiter = self
             .pending_agent_waits
@@ -1347,9 +1380,10 @@ impl PlexiApp {
             .find_map(|w| w.panes.get_mut(&parent_pane_id))
             .and_then(|p| p.as_terminal_mut())
         {
-            term.backend.process_command(egui_term::BackendCommand::Write(
-                batch_text.clone().into_bytes(),
-            ));
+            term.backend
+                .process_command(egui_term::BackendCommand::Write(
+                    batch_text.clone().into_bytes(),
+                ));
         }
         self.delivered_child_batches
             .entry(parent_pane_id)
@@ -1385,7 +1419,7 @@ impl PlexiApp {
         })
     }
 
-    /// Handle `AppRequest::AgentWait`: consume any matching queued results from the parent pane
+    /// Handle `HostRequest::AgentWait`: consume any matching queued results from the parent pane
     /// so they are never re-delivered via idle batching, and either reply immediately if all
     /// children have finished or park until they finish or `timeout_secs` expires.
     pub(crate) fn handle_agent_wait(
@@ -1565,6 +1599,48 @@ impl PlexiApp {
         let mut remaining_items = Vec::new();
         let mut approved_to_dispatch = Vec::new();
         for item in items {
+            let caller_exited = item
+                .peer_ancestry
+                .as_ref()
+                .and_then(|ancestry| ancestry.first())
+                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid))
+                || item
+                    .response_file
+                    .as_deref()
+                    .and_then(crate::rpc::ReplyRegistry::connected)
+                    == Some(false);
+            if caller_exited || now >= item.expires_at {
+                let detached = monitor.detach_pane_send_waiter(&item.pending_request_id);
+                if let Err(error) = &detached {
+                    log::error!(
+                        "pane_send_approval: could not persist detached waiter pending={}: {error}",
+                        item.pending_request_id
+                    );
+                }
+                let reason = if caller_exited {
+                    "caller_disconnected"
+                } else {
+                    "approval_wait_timeout"
+                };
+                log::info!(
+                    "pane_send_approval: operation={} pending={} reason={reason}",
+                    item.operation_id,
+                    item.pending_request_id
+                );
+                if let Some(ref rf) = item.response_file {
+                    crate::rpc::write_json_response(
+                        rf,
+                        serde_json::json!({
+                                "error": format!("{reason}: pane send was not executed; run `plexi needs-you reconcile --id {}` before retrying with `--operation-id {}`", item.operation_id, item.operation_id),
+                            "error_code": reason,
+                            "operation_state": if detached.is_ok() { "retry_required" } else { "outcome_unknown" },
+                            "operation_id": item.operation_id,
+                                "pending_request_id": item.pending_request_id,
+                        }),
+                    );
+                }
+                continue;
+            }
             match monitor.approval_resolution(&item.pending_request_id) {
                 Some(
                     crate::broker::gate::ApprovalChoice::Once
@@ -1595,21 +1671,10 @@ impl PlexiApp {
                             rf,
                             serde_json::json!({
                                 "error": "permission_denied: pane send denied",
-                            }),
-                        );
-                    }
-                }
-                None if now >= item.expires_at => {
-                    log::info!(
-                        "pane_send_approval: pending={} timed out waiting for decision (leaving ask open)",
-                        item.pending_request_id
-                    );
-                    if let Some(ref rf) = item.response_file {
-                        crate::rpc::write_json_response(
-                            rf,
-                            serde_json::json!({
-                                "error": "permission_denied: pane send requires approval",
+                                "error_code": "permission_denied",
+                                "operation_id": item.operation_id,
                                 "pending_request_id": item.pending_request_id,
+                                "operation_state": "cancelled",
                             }),
                         );
                     }
@@ -1621,9 +1686,11 @@ impl PlexiApp {
         }
         self.pending_send_approvals = remaining_items;
         for item in approved_to_dispatch {
-            self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+            self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                generated_operation_id: false,
                 pane_id: item.pane_id,
                 text: item.text,
+                operation_id: Some(item.operation_id),
                 submit: item.submit,
                 paste: item.paste,
                 response_file: item.response_file,
@@ -1638,11 +1705,14 @@ impl PlexiApp {
         {
             let predicted_frame =
                 std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
-            ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            let until_expiry = crate::host::wasm_frame::repaint_delay_until(
                 next_expiry,
                 Instant::now(),
                 predicted_frame,
-            ));
+            );
+            ctx.request_repaint_after(
+                until_expiry.min(Duration::from_millis(500) + predicted_frame),
+            );
         }
     }
 }

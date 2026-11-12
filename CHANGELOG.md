@@ -1,6 +1,113 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.6] — 2026-11-11
+
+### Changes
+- fix(release): align local and release gates (#3055)
+- design(plugins): thin core plus core plugins on one capability API (#3024)
+- fix(ui): share kit dropdown rows and popup dismissal (#3054)
+- fix(editor): keyboard-driven unsaved changes dialog (#3050)
+- fix(agent): clear idle hand-launched agent on exit (#3049)
+- feat(palette): open changelog from search (#3046)
+- fix(ui): use global_style in button test (alpha test build break) (#3052)
+- fix(ui): type kit button transparent stroke literal as f32 (#3051)
+- Stabilize button appearance and state geometry (#3041)
+- feat(cli): pane state/status/wait/heartbeat default to the current pane (#3048)
+- fix(restore): verify Claude session transcript exists before resuming (#3047)
+## [0.4.5] — 2026-11-11
+
+### Changes
+- fix(ui): restore titlebar window gestures (#3044)
+- Terminal content inset and top bar profile icon clipping (#3038)
+- fix(workspace): reconcile stale focus before saving (#3042)
+- fix(scheduler): gate routines on experiment (#3040)
+- Settings: open global or repo config from the palette, with shadow notice (#3037)
+- Fix text editor find/replace bar clipping and off-screen matches (#3035)
+- fix: close changelog with Escape (#3039)
+- One kit button: consolidate host, toast and plugin buttons (#3034)
+- Palette scale and zoom commands must match their shortcuts (#3036)
+## [0.4.4] — 2026-11-10
+
+### Changes
+- fix(release): verify self-signed Mac-only stable packages (#3027)
+- fix(context): honor explicit targets and current root (#3031)
+- fix(host): capture fresh UI without window presentation (#3029)
+- fix(ui): readable default app text on resolved surfaces (#3030)
+- fix(ui): toasts hug their content within the bound (#3028)
+- feat(ui): enforce bounded host composition and readable chrome (#3026)
+- perf(host): make shutdown durable, responsive and observable (#3023)
+- fix(cli): isolate cross-channel pane identity (#3022)
+- fix(panes): restore vertical boundary moves (#3020)
+- fix(ui): separate pane focus and state chrome (#3021)
+- fix(ui): fit the window title beside toolbar controls (#3019)
+- fix(notes): move deleted notes to Trash with undo (#3015)
+- fix(sdk): remap container child references (#3017)
+- feat(ui): restore core minimap (#3018)
+- fix(ui): restore attention queue card contrast (#3016)
+- fix(theme): derive attention chrome colors (#3014)
+- feat(terminal): minimum text contrast by default so app-chosen colors stay readable on every theme (#3012)
+- fix(cli): gate agent mesh and enforce v1 command allowlist (#3011)
+- feat(theme): ship Plexi Night, Dusk, Dawn and Day; Dusk becomes the default (#3010)
+- fix(terminal): honor bracketed paste mode (2004) so large pastes into agents keep their content (#3009)
+- feat(sdk): deliver pane focus and visibility events to Python apps (#3007)
+- feat(apps): approved typed one-shot CLI operations (#3006)
+- fix(descriptor): remove inert plexi_app and capabilities fields (#3005)
+- fix(permissions): reject synthetic input in broker decision overlay (#3001)
+- fix(attention): dismiss activated failed bars (#3002)
+- fix(host): report screenshot timeout observations (#3003)
+- fix(sdk): align shared style tokens (#3000)
+- fix(workflow): stabilize source before candidate build
+- fix(terminal): preserve overflowing clock glyphs (#2999)
+## [0.4.3] — 2026-11-07
+
+### Changes
+- fix(ui): bound portal minimap titles (#2998)
+- fix(build): normalize Python interpreter receipt identity
+- fix(build): tighten cache and qualification inputs
+- fix(testing): require explicit candidate check declarations
+- fix(testing): run required behavior checks before candidate
+- fix(build): preserve task cache owner across PR qualification
+- fix(explorer): follow invoking terminal current directory (#2997)
+- Fix pane send approval wait reconciliation (#2992)
+- fix(toolbar): remove context indicator dots (#2996)
+- fix(build): preserve verified reuse through installer dispatch
+- fix(build): carry driver evidence authority into installer
+- fix(build): bind candidate evidence to exact tag metadata
+- fix(build): close candidate and installer provenance gaps
+- fix(build): serialize PR operations and bind Python test environment
+- perf(distribution): cache authoritative cleanup tool and preserve unknown state
+- perf(build): retain owned caches and qualify one PR candidate
+- perf(testing): scope installer SDK smoke to affected boundaries
+- feat(sidebar): show active ancestry and aligned pip rows (#2995)
+- feat(context): reveal sole remaining subcontext (#2990)
+- fix(attention): offer only supported request actions (#2991)
+- fix(panes): distinguish program activity from working agents (#2989)
+- fix(terminal): align selection with the logical grid at fractional scale
+- fix(build): snapshot optional channel for managed Cargo (#2988)
+- Consolidate stint creation guidance
+- fix(testing): streamline targeted validation (#2985)
+- fix(overlays): toggle notes picker with its shortcut (#2984)
+- infra(agents): align risk-based validation workflow (#2983)
+- infra(testing): publish durable PR screenshots (#2982)
+- infra(testing): scope scene validation by risk (#2981)
+- fix(ui): animate working agent indicator (#2980)
+- fix(distribution): ignore foreign package.json when resolving Applications bundle package (#2975)
+- fix(distribution): install a real Applications bundle so Spotlight finds it (#2974)
+- fix(identity): show the running build's version; warn about stray app copies (#2973)
+- fix(config): keep config on every channel; skip only invalid keys (#2971)
+- fix(agent): focus and reveal a newly started interactive conversation (#2970)
+## [0.4.2] — 2026-11-04
+
+### Changes
+- fix(config): keep config on every channel; skip only invalid keys (#2971)
+- fix(agent): focus and reveal a newly started interactive conversation (stint 1117) (#2970)
+## [0.4.1] — 2026-10-29
+
+### Changes
+- fix: land stints 1098, 0948, 1032 onto alpha (#2969)
+- fix(panes): wrap zoomed vertical splits into subcontexts (#2968)
+- fix(context): make Cmd-Escape return to parent (#2967)
 ## [0.4.0] — 2026-10-17
 
 ### Changes

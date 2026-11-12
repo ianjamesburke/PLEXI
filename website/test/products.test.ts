@@ -3,7 +3,7 @@ import { startPg, stopPg, type PgHandle } from './pg';
 import { closePool, query } from '../src/server/db';
 import { getProduct } from '../src/server/commerce';
 import {
-  ensureAppProduct,
+  ensurePluginProduct,
   ensureAiProProduct,
   setProductClient,
   resetProductClient,
@@ -63,13 +63,13 @@ afterAll(async () => {
 beforeEach(async () => {
   fake = new FakePolar();
   setProductClient(fake);
-  await query('DELETE FROM app_products');
+  await query('DELETE FROM plugin_products');
 });
 
-describe('ensureAppProduct (first-party paid app provisioning)', () => {
-  it('creates the Polar product and writes the app_products row on first setup', async () => {
-    const res = await ensureAppProduct({
-      appId: 'reviewed-notes',
+describe('ensurePluginProduct (first-party paid plugin provisioning)', () => {
+  it('creates the Polar product and writes the plugin_products row on first setup', async () => {
+    const res = await ensurePluginProduct({
+      pluginId: 'reviewed-notes',
       name: 'Reviewed Notes',
       priceCents: 1200,
       currency: 'USD',
@@ -84,20 +84,20 @@ describe('ensureAppProduct (first-party paid app provisioning)', () => {
     expect(row!.priceCents).toBe(1200);
     expect(row!.currency).toBe('usd'); // normalized lowercase
     // metadata.app_id is what the order webhook keys off.
-    expect(fake.products.get(res.productId)!.metadata.app_id).toBe('reviewed-notes');
+    expect(fake.products.get(res.productId)!.metadata.plugin_id).toBe('reviewed-notes');
   });
 
   it('is idempotent: a re-run updates the existing product, never duplicates', async () => {
-    const first = await ensureAppProduct({
-      appId: 'reviewed-notes',
+    const first = await ensurePluginProduct({
+      pluginId: 'reviewed-notes',
       name: 'Reviewed Notes',
       priceCents: 1200,
       currency: 'usd',
       publisher: 'plexi',
     });
     // Price change → update the same product, keep the same product_id.
-    const second = await ensureAppProduct({
-      appId: 'reviewed-notes',
+    const second = await ensurePluginProduct({
+      pluginId: 'reviewed-notes',
       name: 'Reviewed Notes',
       priceCents: 1500,
       currency: 'usd',
@@ -112,15 +112,15 @@ describe('ensureAppProduct (first-party paid app provisioning)', () => {
     const row = await getProduct('reviewed-notes');
     expect(row!.priceCents).toBe(1500);
     // Still exactly one row.
-    const count = await query('SELECT count(*)::int AS n FROM app_products WHERE app_id = $1', ['reviewed-notes']);
+    const count = await query('SELECT count(*)::int AS n FROM plugin_products WHERE plugin_id = $1', ['reviewed-notes']);
     expect(count.rows[0].n).toBe(1);
   });
 
-  it('rejects a free/zero price — free apps are never registered', async () => {
+  it('rejects a free/zero price — free plugins are never registered', async () => {
     await expect(
-      ensureAppProduct({ appId: 'free-app', name: 'Free', priceCents: 0, currency: 'usd', publisher: 'plexi' }),
+      ensurePluginProduct({ pluginId: 'free-plugin', name: 'Free', priceCents: 0, currency: 'usd', publisher: 'plexi' }),
     ).rejects.toThrow(/positive integer/);
-    expect(await getProduct('free-app')).toBeNull();
+    expect(await getProduct('free-plugin')).toBeNull();
     expect(fake.createCount).toBe(0);
   });
 });

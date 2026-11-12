@@ -1,21 +1,24 @@
 ---
 name: plexi
-description: "Operate a live Plexi workspace from Pi: inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you."
+description: "Operate a live Plexi workspace from Pi: resolve registered agents by name — talk to paul means an agent, not an app — inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you."
 ---
 
 # Plexi Workspace Skill for Pi
 
 Use the installed `plexi-cli` skill (or its channel-specific `plexi-cli-<channel>`
-name) for CLI commands, channel routing, agent creation and bounded worker waits.
-Install it with `plexi skill install --agent pi` if it is missing.
+name) for CLI commands, channel routing, agent creation and bounded agent waits.
+Install it with `plexi skill install --agent pi` if it is missing. For what an agent
+is — harness vs agent, identity vs authority, lifetimes — see `src/agent/AGENTS.md`.
 
 When the registered `plexi_*` tools are available, use them for workspace and
-app operations. Print-mode workers may have extensions disabled; follow the
+app operations. Print-mode agents may have extensions disabled; follow the
 CLI workflows in `plexi-cli` in that case.
 
 1. **Orient first**:
-   - Call `plexi_workspace_overview` to see the active context, sibling panes, running apps, and any pending `Needs you` items or durable continuations.
+   - Call `plexi_workspace_overview` to see the active context, sibling panes, registered agents, running apps, and any pending `Needs you` items or durable continuations.
+   - Its `agents` list is the agent registry: a bare name — "talk to paul", "ask the researcher" — means an agent defined under `.plexi/agents/`, not an app or a person in Contacts. Read one with `plexi agent show <name>` (or the `plexi-cli` skill) before reaching for anything outside Plexi.
    - Use `plexi_pane_inspect` to read another pane's state or terminal output (`capture: true`).
+   - Plexi has a built-in notes editor: `plexi note open` opens it, `plexi note "<text>"` captures, `plexi note list` then `plexi note show <path>` reads, and `plexi note rm <path>` retires one after the person confirms. Do not read or delete a note's backing file directly; the `plexi-cli` skill has the full workflow.
 
 2. **App tool discovery and invocation**:
    - Call `plexi_app_tools` to list all live app tools and their JSON schemas in the current context.
@@ -39,6 +42,6 @@ CLI workflows in `plexi-cli` in that case.
 
 For a registry role with `can_call` or `can_handoff`, the extension registers
 `agent_call_<role>`, `agent_message`, and `agent_handoff` from that role's
-allowlists. Isolated Pi workers must explicitly include the extension in their
+allowlists. Isolated Pi agents must explicitly include the extension in their
 harness `extensions` list to use these tools. Follow `plexi-cli` for the
 corresponding CLI workflows and result collection.

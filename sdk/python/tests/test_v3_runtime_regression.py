@@ -5,7 +5,7 @@ effect type emitted back to the host, state management, frame timing, and
 all Core 9 apps booting correctly.
 
 These tests serve as the safety net during the runtime refactor
-(ProtocolTransport extraction + V3AppRuntime rewrite).
+(ProtocolTransport extraction + PluginRuntime rewrite).
 """
 
 import json
@@ -41,11 +41,11 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/4"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
-        "app_id": "regression-test",
+        "plugin_id": "regression-test",
         "workspace_root": "/tmp",
         "capabilities": capabilities or [],
         "feature_flags": [],
@@ -244,7 +244,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            assert not _find_events(events, "save_app_state")
+            assert not _find_events(events, "save_plugin_state")
         finally:
             proc.kill()
 
@@ -253,7 +253,7 @@ class TestEffects:
         proc = _spawn_v3_app(app)
         try:
             events = _init_and_render(proc)
-            saves = _find_events(events, "save_app_state")
+            saves = _find_events(events, "save_plugin_state")
             assert len(saves) == 1
             assert saves[0]["payload"]["count"] == 99
         finally:
@@ -390,7 +390,7 @@ class TestEffects:
             assert subscriptions == [{
                 "type": "subscribe_event_streams",
                 "request_id": "subscribe-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event_names": ["count.changed"],
                 "payload_mode": "full",
                 "trigger_mode": "conversation",
@@ -478,9 +478,9 @@ class TestEventDispatch:
         try:
             _init_app(proc)
             _send_event(proc, {
-                "type": "app_event",
+                "type": "plugin_event",
                 "subscription_id": "sub-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event": "count.changed",
                 "event_id": 7,
                 "resource_id": "counter-1",
@@ -491,7 +491,7 @@ class TestEventDispatch:
             })
             events = _render(proc)
             trees = _find_events(events, "component_tree")
-            assert any("events=AppEvent" in json.dumps(tree) for tree in trees)
+            assert any("events=PluginEvent" in json.dumps(tree) for tree in trees)
         finally:
             proc.kill()
 
@@ -975,9 +975,9 @@ class TestFrameTiming:
 
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
-        from plexi_sdk.testing import AppHarness
+        from plexi_sdk.testing import PluginHarness
         balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
-        with AppHarness(balls_path, timeout=3.0) as h:
+        with PluginHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
             cmds2 = h.run(1)
@@ -1068,11 +1068,11 @@ class TestTimers:
 ])
 def test_core_app_boots_and_renders(relative_path: str) -> None:
     """Every Core app must satisfy Init -> Ready -> Render -> FrameDone."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert cmds, f"{relative_path} should emit draw/control commands"
     trees = [c for c in cmds if c.get("type") == "component_tree"]
@@ -1089,11 +1089,11 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 ])
 def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str) -> None:
     """Apps that need timers/schedulers must emit them during boot."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert any(c.get("type") == expected_effect for c in cmds), (
         f"{relative_path} should emit {expected_effect}"
@@ -1106,11 +1106,11 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""
-    from plexi_sdk.testing import AppHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    from plexi_sdk.testing import PluginHarness
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds_before = h.run(1)
         h.key(key)
         cmds_after = h.run(1)
@@ -1206,3 +1206,47 @@ def test_pipe_message_event_dispatched_and_replies(tmp_path):
     finally:
         proc.kill()
 
+
+
+class TestUnsupportedEffectsFailLoudly:
+    """An effect the live runtime cannot execute must raise, never vanish."""
+
+    def _run(self, tmp_path, effect_expr):
+        app = tmp_path / "app.py"
+        app.write_text(
+            "from plexi_sdk.effects import *\n"
+            "from plexi_sdk.ui import Text\n"
+            f"def init(size, args):\n    return [{effect_expr}]\n"
+            "def update(event):\n    return []\n"
+            "def view():\n    return Text('x')\n"
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            proc.stdin.write(json.dumps({
+                "type": "init", "plugin_id": "fail-loud", "workspace_root": "/tmp",
+                "capabilities": [], "feature_flags": [], "protocol": "pgap/4",
+                "width": 640.0, "height": 360.0,
+            }) + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+            # The refusal ends the run, so it arrives as the runtime's
+            # structured `fatal_error` report rather than a stderr traceback.
+            messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
+            fatal = next(m for m in messages if m.get("type") == "fatal_error")
+            assert fatal["phase"] == "init"
+            return fatal["message"]
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_ai_query_is_refused_with_a_named_error(self, tmp_path):
+        err = self._run(tmp_path, "AiQuery('r', 'fast', '', [])")
+        assert "fail-loud" in err and "AiQuery" in err and "not available" in err
+
+    def test_get_system_stats_is_refused_with_a_named_error(self, tmp_path):
+        err = self._run(tmp_path, "GetSystemStats()")
+        assert "GetSystemStats" in err and "not available" in err
+
+    def test_unknown_effect_type_is_refused(self, tmp_path):
+        err = self._run(tmp_path, "object()")
+        assert "fail-loud" in err and "object" in err and "not a supported effect" in err

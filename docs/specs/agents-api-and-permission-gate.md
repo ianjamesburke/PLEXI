@@ -3,6 +3,8 @@ Stint: none yet
 
 # Agents API and one permission gate (P1–P5)
 
+Phone and relay passages describe deferred design ideas. The former phone client and relay were removed from V1; a future plugin requires a separate design and qualification.
+
 ## Purpose and product story
 
 Plexi lets Ian talk with several team leads at once, queue work that runs without
@@ -32,8 +34,8 @@ implementation by line number. Symbols are included for subsequent navigation.
 | Architecture package: alignment (Grok Bot, 2026-10-05; not in repo) | Every numbered drift has a disposition in the drift table. |
 | Architecture package: Munder lessons (Grok Bot, 2026-10-05; not in repo) | Typed identities, receipts, assignments, and one host-owned control plane; MCP is an adapter. |
 | Architecture package: agent-team model (Grok Bot, 2026-10-05; not in repo) | Durable heads, narrowing subagent runs, broad read/narrow write, explicit full trust. |
-| Architecture package: journeys (Grok Bot, 2026-10-05; not in repo) | Directory lead, unconfigured folder, app launch, phone approval, creative editing, and multi-lead shell. |
-| Architecture package: proof apps (Grok Bot, 2026-10-05; not in repo) | Chess before creative editing; this document's P1–P5 order governs these proofs. |
+| Architecture package: journeys (Grok Bot, 2026-10-05; not in repo) | Directory lead, unconfigured folder, plugin launch, phone approval, creative editing, and multi-lead shell. |
+| Architecture package: proof plugins (Grok Bot, 2026-10-05; not in repo) | Chess before creative editing; this document's P1–P5 order governs these proofs. |
 | Architecture package: Astra recommendation (Grok Bot, 2026-10-05; not in repo) | Mandatory dispatch gate, exact-call binding, host-approved Chess, parameterized harness proof. |
 | Architecture package: cloud specification (Grok Bot, 2026-10-05; not in repo) | §4.2 intake, §4.4 allocation tree, §4.5 events; E2E-B delegation shape. |
 
@@ -74,7 +76,7 @@ that plan. Its older uncertainty about locating Chess is resolved by evidence E8
 | run token | Revocable host-issued credential bound to principal, agent, run, assignment, delegation and host generation. Possession does not bypass live policy checks. |
 | Message + receipt | Attributed speech act and durable delivery/execution state. Information is not delegated authority. |
 | Request | Typed unresolved human decision: `needs_input` or `permission`. Discussion, snooze, reading, and approval are different operations. |
-| ChangeSet | Prepared delta against an app-owned resource, with revisions, footprint, preview, selected hunks and attributed commit/revert receipts. |
+| ChangeSet | Prepared delta against a plugin-owned resource, with revisions, footprint, preview, selected hunks and attributed commit/revert receipts. |
 | Event / drain | Host-stamped, versioned, addressable record and the lossless append/read service for agent records. Bus delivery and UI projections derive from it. |
 
 A head may own many successive runs. A child run has its own transcript and can
@@ -89,22 +91,21 @@ or live test. Negative findings are bounded to the inspected implementations.
 | Ref | Source in this worktree | Observation |
 |---|---|---|
 | E1 | `src/plexi_ai/tool_dispatch.rs:187` `snapshot_for_caller`; `:477` `from_registry`; `:513` `namespaced_for` | Discovery uses `evaluate_reach` and host context ownership. Constructors initialize `hooks: None`; raw root equality is not today's boundary. |
-| E2 | `src/plexi_ai/tool_dispatch.rs:551` `set_hooks`; `:594` `dispatch_call`; `:644` `dispatch_inner` | Hooks are optional on host and app tool calls. Inner dispatch sends the caller string; a snapshot is not a live grant check. |
+| E2 | `src/plexi_ai/tool_dispatch.rs:551` `set_hooks`; `:594` `dispatch_call`; `:644` `dispatch_inner` | Hooks are optional on host and plugin tool calls. Inner dispatch sends the caller string; a snapshot is not a live grant check. |
 | E3 | `src/broker/mod.rs:133` `GrantRecord`; `:183` `matches`; `:208` `PermissionRequest`; `:435` `record` | Resource fields exist on grants but are absent from requests/matching/replacement identity. Expiry is checked; duration itself is not enforced by matching. |
-| E4 | `src/assistant/mod.rs:149` `AssistantToolHooks`; `:963` `gated_dispatcher`; `:1039` `set_hooks` | Assistant installs the ask hook, keeps session approval by tool name, and auto-allows app-asserted read-only tools under Ask. |
+| E4 | `src/assistant/mod.rs:149` `AssistantToolHooks`; `:963` `gated_dispatcher`; `:1039` `set_hooks` | Assistant installs the ask hook, keeps session approval by tool name, and auto-allows plugin-asserted read-only tools under Ask. |
 | E5 | `src/agent/mod.rs:740` `gated_dispatcher` | AgentHost filters a turn snapshot from broker decisions and does not install the Assistant hook. |
 | E6 | `src/app/host_mcp.rs:73` `register_pane_credential`; `:349` dispatcher construction; `:385` tool routing; `:393` `dispatch_call` | MCP bearer binds a pane/context/root. App tools dispatch without a grant hook; event tools have separate service routing. |
-| E7 | `src/app/app_call.rs:19` `caller_identity`; `:40` context lookup; `:56` dispatcher; `src/app/lifecycle.rs:2305` `CallAppTool`; `src/app/mod.rs:583` `handle_socket_line` | App-call accepts a forwarded pane ID; existence is checked, peer ownership is not established on this path. No pane maps to `user`. Notification peer stamping does not fix app-call. |
+| E7 | `src/app/plugin_call.rs:19` `caller_identity`; `:40` context lookup; `:56` dispatcher; `src/app/lifecycle.rs:2305` `CallAppTool`; `src/app/mod.rs:583` `handle_socket_line` | App-call accepts a forwarded pane ID; existence is checked, peer ownership is not established on this path. No pane maps to `user`. Notification peer stamping does not fix plugin-call. |
 | E8 | `apps/chess/chess.py:170` `_tool_play`; `apps/chess/chess_domain.py:137` `play`; `:158` receipt lookup; `:283` `_authorize` | Host caller string reaches Chess. Seat checks are separate; revision, operation ID, immutable next-game value and receipt/outbox already exist. |
 | E9 | `src/assistant/audit.rs:11` `AuditEvent`; `:27` `now` | Audit schema lacks call/grant IDs and stamps the literal `agent:assistant`. |
 | E10 | `src/agent/mod.rs:281` `AgentRegistry::load`; `:346` `workspace_agents_dir`; `src/assistant/skills.rs:65` `SkillRegistry::load` | Agent tiers are builtin/user/workspace, with later IDs shadowing earlier ones. Workspace agents use the channel dir; workspace skills use literal `.plexi/skills`. |
 | E11 | `src/assistant/mod.rs:2414` agent creation; `src/app/registry.rs:949` `resolve_workspace_root_with_channel` | Agent creation writes the profile tier. Workspace resolution seeks the channel marker and excludes home before checking it. |
-| E12 | `src/app/lifecycle.rs:219` `SubmitAssistantTurn`; `src/cli/app.rs:1932` `assistant_send_cli` | Text and request ID go to the first matching Assistant pane, optionally filtered by pane/context. No durable agent/conversation addressing here. |
-| E13 | `src/host/event_log.rs:278` `emit_scoped`; `src/host/app_timeline.rs:285` `AppTimeline`; `:638` `begin_rollback`; `:678` `resolve_rollback_verify` | Event writer drops on full. Timeline is in memory; rollback entrypoints are compiled only for tests. |
-| E14 | `src/editor/transaction.rs:72` `Transaction`; `src/editor/history.rs:24` `EditHistory`; `src/app/text_editor_app.rs:1000` `impl App` | Grouped editor transactions exist without actor/run/op tags. The inspected builtin App implementation has no `ExposeTools` or `ToolCall` handling. |
+| E12 | `src/app/lifecycle.rs:219` `SubmitAssistantTurn`; `src/cli/plugin.rs:1932` `assistant_send_cli` | Text and request ID go to the first matching Assistant pane, optionally filtered by pane/context. No durable agent/conversation addressing here. |
+| E13 | `src/host/event_log.rs:278` `emit_scoped`; `src/host/plugin_timeline.rs:285` `AppTimeline`; `:638` `begin_rollback`; `:678` `resolve_rollback_verify` | Event writer drops on full. Timeline is in memory; rollback entrypoints are compiled only for tests. |
+| E14 | `src/editor/transaction.rs:72` `Transaction`; `src/editor/history.rs:24` `EditHistory`; `src/app/text_editor_view.rs:1000` `impl App` | Grouped editor transactions exist without actor/run/op tags. The inspected builtin App implementation has no `ExposeTools` or `ToolCall` handling. |
 | E15 | `src/app/assistant_host_tools.rs:465` file edit routing; `:1229` `edit_scoped_file` | Assistant editing reaches a direct filesystem string replacement/write, outside editor history and without expected revision. |
-| E16 | `src/media/video.rs:119` `VideoDecoder`; `:212` non-macOS implementation; `:694` `MockVideoDecoder`; `src/app/video_player_app.rs:27` `new` | Existing player uses the decoder service. Production non-macOS open returns `NotImplemented`; a procedural mock exists for tests. |
-| E17 | `clients/phone-web/server.py:232` `HostStore`; `:253` CLI call; `:216` cancel; `:404` flags; `:412` token policy | Host mode invokes Assistant send; receipts are in memory, cancel changes phone state only, and host mode requires a bearer even on loopback. |
+| E16 | `src/media/video.rs:119` `VideoDecoder`; `:212` non-macOS implementation; `:694` `MockVideoDecoder`; `src/app/video_player_view.rs:27` `new` | Existing player uses the decoder service. Production non-macOS open returns `NotImplemented`; a procedural mock exists for tests. |
 | E18 | `src/testing/mod.rs:160` `HostHarness`; `:194` `new`; `:411` `hidden_frame`; `:544` `inject_ipc`; `:639` `wait_for_app_event` | Harness provides the production host seam, isolated profile and hidden-frame/event observation helpers. |
 | E19 | `src/cli/agent.rs:793` `registerPlexiHostMcp`; `website/railway.json:1` | Pi registers the host MCP endpoint from its pane environment. Railway configuration exists for the website; this is not a phone relay. |
 | E20 | `src/cli/args.rs:273` Assistant `Send`; `:570` App `Open`; `:631` App `Install`; `:883` App `Call`; `:897` Host `Start`; `:956` Host `Screenshot`; `:1087` Pane `List`; `src/mcp_http.rs:38` route | Existing command spellings and `/mcp` endpoint used in the P1 demonstration below. |
@@ -140,7 +141,7 @@ human/automation views of the same operations, not a new agent RPC protocol.
 
 | Head/profile | Proposed default policy | Never implied |
 |---|---|---|
-| Global head | Audited broad reads of ordinary home files and permitted cross-context summaries, represented by a visible baseline read grant. | Secret access, terminal scrollback, writes, sends, process execution, app control, or blanket export of home content to a model. |
+| Global head | Audited broad reads of ordinary home files and permitted cross-context summaries, represented by a visible baseline read grant. | Secret access, terminal scrollback, writes, sends, process execution, plugin control, or blanket export of home content to a model. |
 | Directory head | Reads default to its selected root; write scope offered for an assignment defaults to that root or a narrower selection. | Root discovery or `team.toml` alone granting writes. |
 | Member / child | Only the parent-authorized intersection, including read scope and budget. | Inheritance of the global head's full visibility simply because it is the parent. |
 | Full trust | Explicit opt-in per head; a named, visible grant profile for broad reversible work, with persistent desktop/phone indicator and revoke action. | Impersonating the human, sharing tokens, bypassing deny rules, or suppressing irreversible-action approval. |
@@ -175,7 +176,7 @@ other irreversible effects always require a fresh exact-action permission
 request, including exact destination/content where relevant. Approval cannot be
 relayed by another agent. Denies take priority over any profile.
 
-Host classification, not an app's `read_only` claim, decides risk. Unknown tools
+Host classification, not a plugin's `read_only` claim, decides risk. Unknown tools
 ask. Broad read excludes credential stores, known secret files and terminal
 output by default; a redactor is a backstop, not proof arbitrary files contain
 no secrets. Read authorization and remote model transmission are distinct:
@@ -184,7 +185,7 @@ The profile UI makes this distinction visible.
 
 **Runtime limit:** host checks constrain host-mediated calls. They cannot
 constrain a CLI agent that disables/bypasses its own sandbox and reads or writes
-through native OS syscalls, nor prove that a malicious app's claimed footprint
+through native OS syscalls, nor prove that a malicious plugin's claimed footprint
 is honest. A cwd or git worktree is not OS isolation. Untrusted code/workflows
 run in a qualified VM/sandbox with explicit mounts, network and secrets policy.
 P2 may supervise trusted CLI work but must not advertise a native isolation
@@ -206,8 +207,8 @@ command-worker sandbox and secret-injection implementation.
 Prove one human approval authorizes one exact attributed move, independent of
 which ingress proposes it. Close optional-hook and socket identity bypasses.
 
-Scope includes app and host tools, Assistant and AgentHost, host MCP, socket
-app-call and CLI; resource/argument-bound grants; one pending permission service;
+Scope includes plugin and host tools, Assistant and AgentHost, host MCP, socket
+plugin-call and CLI; resource/argument-bound grants; one pending permission service;
 structured errors; correlated audit; host-approved Chess mutations.
 Discovery remains a filter, never authorization to invoke cached tools.
 
@@ -371,7 +372,7 @@ Persist `grant`, `use`, `outcome`, `deny`, `ask` and `revoke` records with actua
 principal/actor, call ID, grant ID, resource identity, argument fingerprint,
 operation ID and before/after revisions. P1 supplies durable correlated audit
 writes; P2 folds them into the general lossless drain without a second authority
-log. Outcomes after a crash can be reconciled from app receipts, or explicitly
+log. Outcomes after a crash can be reconciled from plugin receipts, or explicitly
 unknown. Log info-level boundaries without recording tokens or secret payloads.
 
 ### Migration
@@ -404,8 +405,8 @@ addressing with durable IDs and revokes superseded pane-only credentials.
    A revocation/commit race test proves no new commit starts after revoke wins.
 3. **AT-P1-03 — No constructor or host-tool bypass:** HostHarness test
    `all_dispatchers_require_monitor` covers Assistant, AgentHost, host MCP,
-   app-call, native host tools, app launch and event subscription. Remove a grant
-   after discovery; invocation still refuses. An app claiming `read_only=true`
+   plugin-call, native host tools, plugin launch and event subscription. Remove a grant
+   after discovery; invocation still refuses. An plugin claiming `read_only=true`
    cannot suppress a host-classified mutation prompt.
 4. **AT-P1-04 — Socket provenance:** Rust socket-ingress fixture
    `app_call_rejects_forged_or_missing_identity` submits another live pane ID,
@@ -428,7 +429,7 @@ addressing with durable IDs and revokes superseded pane-only credentials.
 
 ### Exit gate: live VM demonstration
 
-**Human e4 → phone requests Black reply → one host approval → attributed e7e5
+**Human e4 → CLI requests Black reply → one host approval → attributed e7e5
 on the same board; ungranted MCP/CLI mutation is refused, and a human correction
 before a pending commit produces a stale-state result.**
 
@@ -438,7 +439,7 @@ spec. Use an isolated VM user/profile and an explicit installed PR channel.
 profile isolation. Record platform, build SHA, channel, fixture, and actor IDs.
 A qualified graphical Linux VM can prove Chess; P5 real playback needs macOS.
 
-Existing command syntax, verified by E20 and E17 (replace `NNN` and paths):
+Existing command syntax, verified by E20 (replace `NNN` and paths):
 
 ```sh
 # Run only during implementation validation, on a disposable VM.
@@ -448,29 +449,24 @@ plexi-pr-NNN host status
 ```
 
 Create the fixture directory before startup. Install/open the reviewed Chess
-fixture and open the Assistant in that context using the existing app surfaces:
+fixture and open the Assistant in that context using the existing plugin surfaces:
 
 ```sh
 # Run inside the newly created PR-host terminal, not an ambient beta pane.
-plexi-pr-NNN app install /absolute/path/to/PLEXI/apps/chess
-plexi-pr-NNN app open chess
-plexi-pr-NNN app open assistant
+plexi-pr-NNN plugin install /absolute/path/to/PLEXI/apps/chess
+plexi-pr-NNN view open chess
+plexi-pr-NNN view open assistant
 plexi-pr-NNN pane list
-plexi-pr-NNN app call chess chess.state
-uv run --python 3.11 clients/phone-web/server.py \
-  --backend host --plexi-bin plexi-pr-NNN --lan --port 8788
+plexi-pr-NNN plugin call chess chess.state
 ```
 
 Fixture setup uses host-authenticated human interaction/consent for install/open
 and observation; it must not grant the negative-test callers mutation rights.
-The phone server's printed LAN URL supplies its prototype bearer. The URL is
-sensitive fixture material and must be redacted from evidence. The current
-server has no pane-selector flag; isolate a single Assistant in this P1 fixture.
-P2 replaces that constraint with agent/conversation addressing.
+
 
 1. On the board, the human plays `e2e4`; observe the actual board and record the
    game ID and resulting revision from `chess.state`.
-2. Open the phone page with `--backend host`; submit “For this game, play exactly
+2. Use `assistant send` to submit “For this game, play exactly
    e7e5 as Black once at the current revision.” The deterministic provider
    fixture scripts this tool call. Also run a bounded real-provider variant;
    it must play the requested legal move, not merely describe it.
@@ -499,17 +495,17 @@ curl --fail-with-body -sS "http://127.0.0.1:${PLEXI_HOST_MCP_PORT}/mcp" \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chess__chess.play","arguments":{"game_id":"GAME","expected_revision":REV,"operation_id":"negative-mcp","move":"g1f3"}}}'
 
-plexi-pr-NNN app call chess chess.play \
+plexi-pr-NNN plugin call chess chess.play \
   --input '{"game_id":"GAME","expected_revision":REV,"operation_id":"negative-cli","move":"g1f3"}'
 ```
 
 `GAME` and numeric `REV` are template substitutions, not literal valid fixtures.
-The doubled `chess__chess.play` follows `<app_id>__<declared_tool>`; confirm it in
+The doubled `chess__chess.play` follows `<plugin_id>__<declared_tool>`; confirm it in
 `tools/list`. Inspect the MCP tool-result error body even if HTTP is successful.
 Expected P1 output is `permission_required` or `permission_denied`, with no move.
 Do not approve these negative probes. Discard/expire their pending requests.
 
-Existing targeted CLI intake can diagnose the phone path independently:
+Existing targeted CLI intake:
 
 ```sh
 plexi-pr-NNN assistant send --pane-id ASSISTANT_PANE \
@@ -520,8 +516,7 @@ plexi-pr-NNN host stop
 ```
 
 `ASSISTANT_PANE` is the numeric pane from discovery; choose a fresh request ID
-for independent fixtures. Do not submit both phone and CLI turns as if they
-were one operation. P1's resumable pending-request observation and approval API
+for independent fixtures. P1's resumable pending-request observation and approval API
 are new: proposed `plexi agent request show ID` / `resolve ID --decision …`
 spellings belong to P2. P1 must expose a sanctioned observation seam for its
 pending IDs; no existing grant CLI is assumed. Desktop approval is required
@@ -744,7 +739,7 @@ credentials and process handles do not. This amends Host Assistant's blanket
 channel-aware storage rule for Agents API records only. A second channel must
 attach through the owning host or request a handoff, never open another writer.
 
-App state stays app-owned. Commit state, operation receipt and outbox together;
+App state stays plugin-owned. Commit state, operation receipt and outbox together;
 forward to the existing bus/drain with idempotent record IDs. Acknowledged drain
 receipt advances the outbox/consumer cursor. At-least-once delivery plus dedup is
 the guarantee, not exactly-once arbitrary external effects. A crash between a
@@ -781,8 +776,8 @@ version, but a shadowing file cannot replace an instance's identity or grants.
 through an authorized write; it does not silently create a global agent.
 First creation before P3 uses an exact reviewed file-write operation; P3 routes
 it through ChangeSet preparation. Root discovery for teams recognizes neutral
-`.plexi` independently of channel app discovery and still excludes home as an
-accidental workspace. No unrelated app-loader rewrite is implied.
+`.plexi` independently of channel plugin discovery and still excludes home as an
+accidental workspace. No unrelated plugin-loader rewrite is implied.
 
 Migration is explicit, transactional and one-way: enumerate legacy definitions,
 preview collisions, assign stable IDs, select the authoritative definition,
@@ -1225,12 +1220,12 @@ not progress state. Deferred work has a reason and is not part of a passed gate.
 
 | Drift | Resolution / phase | Boundary or deferral |
 |---|---|---|
-| 1 — Split authority across hooks, AgentHost, subscriptions and launch; MCP/CLI bypass | P1 replaces permission decisions with the mandatory monitor in dispatch, including launch/subscription host operations and shared grant store. | Runtime capability checks and app legality remain defense in depth, not competing authorizers. |
+| 1 — Split authority across hooks, AgentHost, subscriptions and launch; MCP/CLI bypass | P1 replaces permission decisions with the mandatory monitor in dispatch, including launch/subscription host operations and shared grant store. | Runtime capability checks and plugin legality remain defense in depth, not competing authorizers. |
 | 2 — Rich grants ignore resource/duration | P1 matches complete binding and enforces once/session/expiry; replacement and session cache use the same key. | Old broad grants are invalidated unless a signed-off explicit reissue flow replaces that default. |
 | 3 — LAN phone vs paired HTTPS relay | P2 fixes durable receipts, addressed intake and real cancellation; P4 displays canonical queue/inbox. | HTTPS, single-use pairing, device revocation and outbound relay remain cloud phase P4 work. Deferred because this spec proves local host behavior and authorizes no deployment. Prototype bearer/LAN is explicitly not equivalent. |
 | 4 — Text to first matching pane | P2 versioned envelope addresses opaque agent/conversation with request ID, expiry and target revision. | P1 uses one isolated Assistant only for its existing phone demo; this is not the final routing model. |
 | 5 — Channel-specific agents vs neutral skills | P2 moves definitions/team to `.plexi/agents` and `.plexi/team.toml`, adds `/agent new --here`, explicit import and ownership lease. | Credentials/operational channel state are not indiscriminately moved. |
-| 6 — Lossy events and volatile timeline | P1 durable correlated authority audit; P2 lossless agent drain, IDs, versioning, recovery; P3 persistent checkpoint references and rollback. | Ordinary UI telemetry may remain best effort. App state remains app-owned, not duplicated in the drain. |
+| 6 — Lossy events and volatile timeline | P1 durable correlated authority audit; P2 lossless agent drain, IDs, versioning, recovery; P3 persistent checkpoint references and rollback. | Ordinary UI telemetry may remain best effort. App state remains plugin-owned, not duplicated in the drain. |
 | 7 — Pi on ungated MCP | P1 gates Pi because every MCP call reaches the same monitor; P2 upgrades credentials to run bindings. | First-party Pi loop-driver adoption still needs authority-model sign-off and its own backend qualification; transport safety cannot wait for it. |
 | 8 — Stale docs | P1 documentation task set below corrects scope, phone auth and “no Railway” wording against E1/E17/E19. | This spec commit changes only its document and Active PRMs index, as requested. No third file is silently added. |
 | 9 — Home access vs proposed roots | Authority-default section specifies explicit baseline read grants and per-head full trust; P2 installs them only after approval, P4 displays them. | Ian must sign off on amendments before default widening ships; context/root discovery itself grants nothing. |
@@ -1293,7 +1288,7 @@ any acceptance criterion passed.
 | Layer | Required evidence during implementation |
 |---|---|
 | Rust invariants | Grant binding, normalization, revocation, schema validation, allocation arithmetic, idempotency, journal recovery, editor/video transaction and projection tests. |
-| HostHarness | Production command/tool ingress, real app runtime, scripted Assistant loop, correlated replies/events and hidden/inactive/no-view service paths. |
+| HostHarness | Production command/tool ingress, real plugin runtime, scripted Assistant loop, correlated replies/events and hidden/inactive/no-view service paths. |
 | TOML scenes | Observable board, editor review, request/conversation/Desk and video timeline behavior; seeded realistic content and semantic assertions. |
 | Installed host | Isolated profile/VM, explicit PR channel and build provenance, actual CLI/socket/MCP/phone boundaries, restart and conditional mutation evidence. |
 | Visual review | Identify scene/screenshot surface before UI implementation; render, open and inspect PNG, delete it, record what was reviewed. Sanctioned `plexi host screenshot` only for live capture. |

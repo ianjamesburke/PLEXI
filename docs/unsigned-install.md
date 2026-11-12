@@ -1,32 +1,24 @@
-# Opening an unsigned Plexi build
+# Opening a Plexi build
 
-Public stable, alpha and beta builds currently lack Developer ID notarization
-and Windows Authenticode signing. Your operating system may show a
-warning the first time you open a downloaded build. Only bypass that warning
+Public Mac releases are signed with the self-signed `Plexi Dev` identity and
+are not notarized. macOS Gatekeeper can warn on first open because the identity
+is not an Apple Developer ID. Windows builds lack Authenticode signing. Only bypass that warning
 when the archive came from an [official Plexi GitHub release](https://github.com/ianjamesburke/PLEXI/releases).
 
 ## macOS
 
-If macOS says it cannot verify Plexi, or that the app cannot be opened because
-it is from an unidentified developer:
+If macOS blocks the app as an unidentified developer:
 
-1. In Finder, find `Plexi.app` in your home directory's `Applications` folder.
-2. Control-click or right-click `Plexi.app`, then choose **Open**.
-3. In the confirmation dialog, choose **Open** again.
+1. Open `Plexi.app` from your home directory's `Applications` folder once,
+   then dismiss the warning.
+2. Open **System Settings > Privacy & Security**. Under Security, choose
+   **Open Anyway** for Plexi.
+3. Confirm **Open Anyway** and authenticate if macOS asks.
 
-This approves that copy of Plexi. Opening the app normally afterward works as
-expected.
+On macOS versions that offer it, Control-click the app in Finder, choose
+**Open**, and confirm. macOS remembers the approval for that app.
 
-If Finder still blocks the app, remove the download quarantine attribute in
-Terminal. Adjust the path if you placed the app somewhere else:
-
-```sh
-xattr -cr "$HOME/Applications/Plexi.app"
-open "$HOME/Applications/Plexi.app"
-```
-
-`xattr -cr` removes extended attributes from the app bundle. Run it only for a
-Plexi app you downloaded from the official release page.
+Only approve a copy from the official release linked above.
 
 ## Windows
 

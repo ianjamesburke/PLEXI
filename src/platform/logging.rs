@@ -50,7 +50,7 @@ pub fn set_level(level: log::LevelFilter) -> bool {
 
 /// Targets that follow the user-configured level: `plexi::*` (the crate is
 /// named `plexi` on every channel — channels only rename the binary) and
-/// `app::<id>` targets emitted by the SDK log bridge. Everything else is
+/// `plugin::<id>` targets emitted by the SDK log bridge. Everything else is
 /// third-party.
 fn is_plexi_target(target: &str) -> bool {
     ["plexi", "app"].iter().any(|prefix| {
@@ -284,12 +284,16 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
             }
         }
         Err(e) => {
-            setup_errors.push(format!("could not open log file {log_file_path:?}: {e}; falling back to stderr only"));
+            setup_errors.push(format!(
+                "could not open log file {log_file_path:?}: {e}; falling back to stderr only"
+            ));
             if cli_mode {
-                dispatch.chain(fern::Dispatch::new()
-                    .level(log::LevelFilter::Warn)
-                    .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
-                    .chain(std::io::stderr()))
+                dispatch.chain(
+                    fern::Dispatch::new()
+                        .level(log::LevelFilter::Warn)
+                        .filter(move |meta| stderr_log_allowed(cli_mode, meta.target()))
+                        .chain(std::io::stderr()),
+                )
             } else {
                 dispatch.chain(std::io::stderr())
             }
@@ -320,8 +324,8 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
 /// Shared counter bumped by the UI thread each frame so the heartbeat can detect freezes.
 pub type FrameTick = Arc<AtomicU64>;
 
-/// Last host phase reached by the UI thread. The phase and its monotonic
-/// timestamp are packed into one atomic word so the heartbeat can take a
+/// Last host phase reached by the UI thread. The phase, expected-shutdown flag
+/// and monotonic timestamp are packed into one atomic word so the heartbeat can take a
 /// coherent snapshot without contending with the UI thread.
 pub type UiPhaseTracker = Arc<AtomicU64>;
 
@@ -359,7 +363,8 @@ pub(crate) enum UiPhase {
     EventDeliveries = 26,
     PythonRuntimes = 27,
     AgentTick = 28,
-    AppCommands = 29,
+    ViewCommands = 29,
+    ShutdownCleanup = 30,
 }
 
 impl UiPhase {
@@ -394,7 +399,8 @@ impl UiPhase {
             Self::EventDeliveries => "event_deliveries",
             Self::PythonRuntimes => "python_runtimes",
             Self::AgentTick => "agent_tick",
-            Self::AppCommands => "app_commands",
+            Self::ViewCommands => "view_commands",
+            Self::ShutdownCleanup => "shutdown_cleanup",
         }
     }
 
@@ -428,7 +434,8 @@ impl UiPhase {
             26 => Self::EventDeliveries,
             27 => Self::PythonRuntimes,
             28 => Self::AgentTick,
-            29 => Self::AppCommands,
+            29 => Self::ViewCommands,
+            30 => Self::ShutdownCleanup,
             _ => Self::Startup,
         }
     }
@@ -436,6 +443,7 @@ impl UiPhase {
 
 #[derive(Clone, Copy, Debug)]
 struct UiPhaseSnapshot {
+    expected_shutdown_wait: bool,
     name: &'static str,
     age: Duration,
 }
@@ -449,6 +457,10 @@ fn ui_phase_millis() -> u64 {
         .try_into()
         .unwrap_or(u64::MAX >> 8)
 }
+
+// The high bit of the phase byte records accepted, hidden shutdown atomically
+// with the phase and timestamp; ordinary phase writes clear this exception.
+const EXPECTED_SHUTDOWN_WAIT: u8 = 0x80;
 
 fn pack_ui_phase(phase: UiPhase, millis: u64) -> u64 {
     (millis.min(u64::MAX >> 8) << 8) | phase as u64
@@ -465,15 +477,33 @@ pub(crate) fn mark_ui_phase(tracker: &UiPhaseTracker, phase: UiPhase) {
     tracker.store(pack_ui_phase(phase, ui_phase_millis()), Ordering::Release);
 }
 
+pub(crate) fn mark_shutdown_cleanup(
+    tracker: &UiPhaseTracker,
+    quit_accepted: bool,
+    window_hidden: bool,
+) {
+    let flag = if quit_accepted && window_hidden {
+        u64::from(EXPECTED_SHUTDOWN_WAIT)
+    } else {
+        0
+    };
+    tracker.store(
+        pack_ui_phase(UiPhase::ShutdownCleanup, ui_phase_millis()) | flag,
+        Ordering::Release,
+    );
+}
+
 fn ui_phase_snapshot(tracker: &UiPhaseTracker) -> UiPhaseSnapshot {
     let packed = tracker.load(Ordering::Acquire);
     unpack_ui_phase(packed, ui_phase_millis())
 }
 
 fn unpack_ui_phase(packed: u64, now_ms: u64) -> UiPhaseSnapshot {
-    let phase = UiPhase::from_byte(packed as u8);
+    let phase = UiPhase::from_byte(packed as u8 & !EXPECTED_SHUTDOWN_WAIT);
     let marked_at_ms = packed >> 8;
     UiPhaseSnapshot {
+        expected_shutdown_wait: phase == UiPhase::ShutdownCleanup
+            && packed as u8 & EXPECTED_SHUTDOWN_WAIT != 0,
         name: phase.name(),
         age: Duration::from_millis(now_ms.saturating_sub(marked_at_ms)),
     }
@@ -539,8 +569,23 @@ pub(crate) fn freeze_verdict(counter_stalled: bool, repaint_pending: Option<bool
     counter_stalled && repaint_pending == Some(true)
 }
 
+fn heartbeat_stall_line(now: &str, frozen_secs: u64, phase: UiPhaseSnapshot) -> String {
+    let phase_age_ms = phase.age.as_millis();
+    if phase.expected_shutdown_wait {
+        return format!(
+            "[{now}] [INFO] [plexi::heartbeat] [SHUTDOWN_WAIT] shutdown cleanup waiting for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+            phase.name
+        );
+    }
+    format!(
+        "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
+        phase.name
+    )
+}
+
 /// Spawn a background thread that detects UI-thread freezes via `frame_tick`
-/// and logs `[FREEZE]` / `[THAW]` lines.
+/// and logs `[FREEZE]` / `[THAW]` lines. Accepted, hidden shutdown instead
+/// reports an info-level `[SHUTDOWN_WAIT]` with its cleanup phase and age.
 ///
 /// `egui_ctx` gates the verdict: with zero-frame idle, a stalled counter only
 /// counts as frozen while egui has a repaint request pending (see
@@ -561,6 +606,7 @@ pub fn spawn_heartbeat(
             // Track when we last saw the frame counter advance so freeze duration is accurate.
             let mut last_tick_seen_at = Instant::now();
             let mut freeze_reported = false;
+            let mut shutdown_wait_reported = false;
 
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
@@ -574,20 +620,24 @@ pub fn spawn_heartbeat(
                     // Frame counter stalled — frozen only if egui has a
                     // repaint pending that the UI thread isn't servicing.
                     // Zero frames with nothing pending is healthy idle.
-                    let repaint_pending = egui_ctx
-                        .lock()
-                        .ok()
-                        .and_then(|slot| slot.as_ref().map(|c| c.has_requested_repaint()));
-                    if freeze_verdict(true, repaint_pending) {
-                        let frozen_secs = last_tick_seen_at.elapsed().as_secs();
-                        if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
-                            freeze_reported = true;
-                            let phase = ui_phase_snapshot(&ui_phase);
-                            let phase_age_ms = phase.age.as_millis();
-                            lines.push_str(&format!(
-                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s phase={} phase_age_ms={phase_age_ms}\n",
-                                phase.name
-                            ));
+                    let phase = ui_phase_snapshot(&ui_phase);
+                    let repaint_pending = if phase.expected_shutdown_wait {
+                        // Accepted, hidden cleanup intentionally runs on this
+                        // thread. Its observability must not depend on egui.
+                        None
+                    } else {
+                        egui_ctx.lock().ok()
+                            .and_then(|slot| slot.as_ref().map(|c| c.has_requested_repaint()))
+                    };
+                    if phase.expected_shutdown_wait || freeze_verdict(true, repaint_pending) {
+                        let (stalled_secs, reported) = if phase.expected_shutdown_wait {
+                            (phase.age.as_secs(), &mut shutdown_wait_reported)
+                        } else {
+                            (last_tick_seen_at.elapsed().as_secs(), &mut freeze_reported)
+                        };
+                        if stalled_secs >= FREEZE_THRESHOLD_SECS && !*reported {
+                            *reported = true;
+                            lines.push_str(&heartbeat_stall_line(&now.to_string(), stalled_secs, phase));
                         }
                     } else if !freeze_reported {
                         // Healthy idle: keep the freeze clock pinned to now so
@@ -607,6 +657,7 @@ pub fn spawn_heartbeat(
                         ));
                         freeze_reported = false;
                     }
+                    shutdown_wait_reported = false;
                     last_tick = now_tick;
                     last_tick_seen_at = Instant::now();
                 }
@@ -631,6 +682,50 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use std::fs;
+
+    #[test]
+    fn shutdown_watchdog_distinguishes_hidden_wait_from_visible_freeze() {
+        for expected_shutdown_wait in [false, true] {
+            let line = heartbeat_stall_line(
+                "fixture",
+                2,
+                UiPhaseSnapshot {
+                    expected_shutdown_wait,
+                    name: "shutdown_cleanup",
+                    age: Duration::from_secs(2),
+                },
+            );
+            assert!(line.contains("phase=shutdown_cleanup"));
+            if expected_shutdown_wait {
+                assert!(line.contains("[INFO]"), "{line}");
+                assert!(line.contains("[SHUTDOWN_WAIT]"), "{line}");
+                assert!(!line.contains("[FREEZE]"), "{line}");
+            } else {
+                assert!(line.contains("[WARN]"), "{line}");
+                assert!(line.contains("[FREEZE]"), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_watchdog_requires_acceptance_and_hide_and_resets_on_normal_phase() {
+        let tracker = new_ui_phase_tracker();
+        for (accepted, hidden) in [(false, false), (false, true), (true, false), (true, true)] {
+            mark_shutdown_cleanup(&tracker, accepted, hidden);
+            let phase = ui_phase_snapshot(&tracker);
+            assert_eq!(phase.name, "shutdown_cleanup");
+            assert_eq!(phase.expected_shutdown_wait, accepted && hidden);
+            let line = heartbeat_stall_line("fixture", 2, phase);
+            assert_eq!(line.contains("[WARN]"), !(accepted && hidden), "{line}");
+        }
+        mark_ui_phase(&tracker, UiPhase::WorkspaceSave);
+        let phase = ui_phase_snapshot(&tracker);
+        assert!(!phase.expected_shutdown_wait);
+        let line = heartbeat_stall_line("fixture", 2, phase);
+        assert!(line.contains("[WARN]"));
+        assert!(line.contains("[FREEZE]"));
+        assert!(line.contains("phase=workspace_save"));
+    }
 
     #[test]
     fn ui_phase_snapshot_tracks_last_phase_without_locking() {
@@ -676,7 +771,8 @@ mod tests {
             UiPhase::EventDeliveries,
             UiPhase::PythonRuntimes,
             UiPhase::AgentTick,
-            UiPhase::AppCommands,
+            UiPhase::ViewCommands,
+            UiPhase::ShutdownCleanup,
         ];
         for variant in variants {
             let round_tripped = UiPhase::from_byte(variant as u8);
@@ -759,7 +855,7 @@ mod tests {
         assert!(stderr_log_allowed(false, "plexi::cli::pane"));
     }
 
-    /// SDK log-bridge targets (`app::<id>`) follow the dynamic level too.
+    /// SDK log-bridge targets (`plugin::<id>`) follow the dynamic level too.
     #[test]
     fn log_allowed_app_bridge_targets_follow_dynamic_level() {
         assert!(log_allowed(
@@ -961,7 +1057,10 @@ mod tests {
         // mtime is "now" == today, exactly as after a shutdown write.
         let msgs = rotate_and_prune(&log_path, dir.path(), today, 30);
         let expected = format!("plexi-{}.log", started.format("%Y-%m-%d"));
-        assert!(dir.path().join(&expected).exists(), "should rotate to {expected}");
+        assert!(
+            dir.path().join(&expected).exists(),
+            "should rotate to {expected}"
+        );
         assert!(!log_path.exists());
         assert!(msgs.iter().any(|m| m.contains("rotated")));
     }
@@ -1000,12 +1099,25 @@ mod tests {
             fs::write(path, b"{}\n").unwrap();
         }
         let long_ago = std::time::SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
-        fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
-        fs::File::options().write(true).open(&latest).unwrap().set_modified(long_ago).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&latest)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
         let pruned = prune_controlled_logs(dir.path(), today_plus(0), 30);
         assert_eq!(pruned, 1);
         assert!(!old.exists());
         assert!(fresh.exists());
-        assert!(latest.exists(), "latest.jsonl is a pointer, never pruned by age");
+        assert!(
+            latest.exists(),
+            "latest.jsonl is a pointer, never pruned by age"
+        );
     }
 }

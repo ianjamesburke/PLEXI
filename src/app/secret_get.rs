@@ -96,7 +96,10 @@ impl PlexiApp {
         let reply_path = PathBuf::from(response_file);
         let rpc_dir = crate::config::config_dir().join("rpc");
         if reply_path.parent() != Some(rpc_dir.as_path()) {
-            log::warn!("secret_get: refused reply path outside {}", rpc_dir.display());
+            log::warn!(
+                "secret_get: refused reply path outside {}",
+                rpc_dir.display()
+            );
             return;
         }
         let monitor =
@@ -223,13 +226,15 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
     let Some(root) = workspace_root.filter(|_| !global) else {
         return Ok(SecretScope::Global);
     };
-    Ok(match crate::workspace::secrets::WorkspaceConfig::load(root)? {
-        Some(cfg) => SecretScope::Workspace {
-            id: cfg.id,
-            root: crate::platform::path::canonical_or_self(root),
+    Ok(
+        match crate::workspace::secrets::WorkspaceConfig::load(root)? {
+            Some(cfg) => SecretScope::Workspace {
+                id: cfg.id,
+                root: crate::platform::path::canonical_or_self(root),
+            },
+            None => SecretScope::Global,
         },
-        None => SecretScope::Global,
-    })
+    )
 }
 
 fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
@@ -249,10 +254,17 @@ mod list_tests {
     use crate::testing::HostHarness;
     use crate::workspace::secrets;
 
-    fn request(h: &mut HostHarness, context: &str, claimed_pid: u32, peer: &[u32]) -> serde_json::Value {
+    fn request(
+        h: &mut HostHarness,
+        context: &str,
+        claimed_pid: u32,
+        peer: &[u32],
+    ) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-list-test", "json");
-        let request = crate::protocol::AppRequest::PaneSecretList {
-            context: context.into(), peer_ancestry: vec![claimed_pid], response_file: response_file.clone(),
+        let request = crate::protocol::HostRequest::PaneSecretList {
+            context: context.into(),
+            peer_ancestry: vec![claimed_pid],
+            response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
         crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
@@ -278,23 +290,52 @@ mod list_tests {
         let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
         let name = format!("CONTEXT_{}", uuid::Uuid::new_v4().simple());
         let account = secrets::keychain_workspace_name(&cfg.id, &name);
-        secrets::system_store().set(&account, "not-for-output").unwrap();
+        secrets::system_store()
+            .set(&account, "not-for-output")
+            .unwrap();
         for target in [&context, "inventory-target", root.to_str().unwrap()] {
             let human = request(&mut h, target, pid, &[pid]);
-            assert!(human["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
+            assert!(human["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == name));
         }
         // The listener overwrites forged ancestry before dispatch, including while hidden.
-        assert_eq!(request(&mut h, &context, pid, &[])["error_code"], "permission_denied");
-        h.app.windows[0].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().agent_spawned = true;
+        assert_eq!(
+            request(&mut h, &context, pid, &[])["error_code"],
+            "permission_denied"
+        );
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .as_terminal_mut()
+            .unwrap()
+            .agent_spawned = true;
         let denied = request(&mut h, &context, pid, &[pid]);
         let error = denied["error"].as_str().unwrap();
         assert!(error.contains("secret.list") && error.contains("Needs you"));
-        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let pending = monitor.list_entries().into_iter().find(|row| row.tool == "secret.list").unwrap();
-        monitor.approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once).unwrap();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let pending = monitor
+            .list_entries()
+            .into_iter()
+            .find(|row| row.tool == "secret.list")
+            .unwrap();
+        monitor
+            .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
+            .unwrap();
         let allowed = request(&mut h, &context, pid, &[pid]);
-        assert!(allowed["entries"].as_array().unwrap().iter().any(|entry| entry["name"] == name));
-        assert_eq!(request(&mut h, &context, pid, &[pid])["error_code"], "permission_denied");
+        assert!(allowed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == name));
+        assert_eq!(
+            request(&mut h, &context, pid, &[pid])["error_code"],
+            "permission_denied"
+        );
         secrets::system_store().delete(&account).unwrap();
     }
 
@@ -313,7 +354,7 @@ mod list_tests {
 
     fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-get", "json");
-        let request = crate::protocol::AppRequest::PaneSecretGet {
+        let request = crate::protocol::HostRequest::PaneSecretGet {
             name: name.into(),
             global: false,
             workspace_root: Some(h.workspace_root()),
@@ -326,11 +367,8 @@ mod list_tests {
         crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut server_stream);
         drop(server_stream);
         h.hidden_frame();
-        let body = crate::rpc::poll_string(
-            &response_file,
-            Some(std::time::Duration::from_secs(2)),
-        )
-        .unwrap();
+        let body = crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(2)))
+            .unwrap();
         assert!(
             !std::path::Path::new(&response_file).exists(),
             "secret_get must never create a response file on disk"
@@ -478,12 +516,14 @@ mod list_tests {
 
         // `pane send` from a denied worker is refused before reaching the target pane.
         let send_resp = crate::rpc::response_file("pane-send-denied", "json");
-        let send_req = crate::protocol::AppRequest::SendToPane {
+        let send_req = crate::protocol::HostRequest::SendToPane {
             pane_id: target_pane,
             text: "echo hi".into(),
             submit: false,
             paste: false,
             response_file: Some(send_resp.clone()),
+            operation_id: None,
+            generated_operation_id: false,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
@@ -521,11 +561,175 @@ mod list_tests {
         assert_eq!(ask_reply["status"], "permission_required", "{ask_reply}");
         assert_eq!(monitor.list_pending().len(), 1);
 
+        let pending_id = ask_reply["pending_request_id"].as_str().unwrap();
+        monitor
+            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
+            .unwrap();
+        let val_reply = secret_get_request(&mut h, "FOO", &[ask_pid]);
+        assert_eq!(val_reply["status"], "value", "{val_reply}");
+        assert_eq!(val_reply["value"], "top-secret");
+
+        let audit_json = serde_json::to_string(&monitor.audit_records()).unwrap();
+        assert!(
+            !audit_json.contains("top-secret"),
+            "audit records must never retain real secret values: {audit_json}"
+        );
+        assert!(
+            audit_json.contains("FOO"),
+            "audit records must retain resource identifier FOO: {audit_json}"
+        );
+
         secrets::system_store().delete(&account).unwrap();
     }
 
     #[test]
-    fn child_worker_inherits_parent_posture_restrictions_and_subcontext_reuse_keeps_grants_distinct() {
+    fn worker_missing_snapshot_fallback_and_boundary_qualification() {
+        let mut h = HostHarness::new();
+        let target_pane = h.add_focused_terminal();
+        let ws = h.workspace_root();
+        let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
+        let account = secrets::keychain_workspace_name(&cfg.id, "QUAL");
+        secrets::system_store()
+            .set(&account, "qual-secret")
+            .unwrap();
+
+        // Spawn a worker without a settings.toml or valid role definition.
+        let (worker_pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "unconfigured-worker",
+                "pi",
+                "sleep 30",
+                "Fallback check",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let worker_pid = h.terminal_backend(worker_pane).child_pid();
+
+        // Missing posture snapshot: pane_permission_posture returns None.
+        assert!(
+            h.app.pane_permission_posture(worker_pane).is_none(),
+            "unconfigured worker must have no posture snapshot"
+        );
+
+        // 1. Missing-snapshot fallback on secret.get enters broker and requires approval (Decision::Ask).
+        let secret_reply = secret_get_request(&mut h, "QUAL", &[worker_pid]);
+        assert_eq!(
+            secret_reply["status"], "permission_required",
+            "missing-snapshot fallback on secret.get must enter broker gate and ask, never bypass: {secret_reply}"
+        );
+
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        assert_eq!(
+            monitor.list_pending().len(),
+            1,
+            "missing-snapshot secret.get must file an approval request"
+        );
+
+        // 2. Missing-snapshot fallback on SendToPane must also enter the broker
+        //    (Decision::Ask) instead of bypassing the gate: a worker with no
+        //    snapshotted posture is still agent-owned, not human-owned.
+        let send_resp = crate::rpc::response_file("pane-send-fallback", "json");
+        let send_req = crate::protocol::HostRequest::SendToPane {
+            pane_id: target_pane,
+            text: "fallback message".into(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp.clone()),
+            operation_id: None,
+            generated_operation_id: false,
+            peer_ancestry: None,
+        };
+        let send_line = serde_json::to_string(&send_req).unwrap();
+        crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[worker_pid]), &mut Vec::new());
+        h.hidden_frame();
+        assert!(
+            !std::path::Path::new(&send_resp).exists(),
+            "missing-snapshot SendToPane must park on an approval instead of proceeding un-gated"
+        );
+        let send_pending = monitor
+            .list_pending()
+            .into_iter()
+            .find(|row| row.tool == "pane.send")
+            .expect("missing-snapshot pane.send must file an approval request");
+        assert_eq!(send_pending.actor_id, format!("pane:{worker_pane}"));
+
+        // Approving releases the parked send and writes the deferred reply.
+        monitor
+            .approve_pending(
+                &send_pending.pending_request_id,
+                crate::broker::gate::ApprovalChoice::Once,
+            )
+            .unwrap();
+        h.hidden_frame();
+        let send_reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&send_resp).unwrap()).unwrap();
+        assert_eq!(
+            send_reply["ok"], true,
+            "approved missing-snapshot send must deliver: {send_reply}"
+        );
+
+        secrets::system_store().delete(&account).unwrap();
+    }
+
+    /// Boundary guard for the missing-snapshot fallback: a human-owned pane has
+    /// no posture snapshot either, and must keep sending without broker gating.
+    #[test]
+    fn human_owned_caller_pane_sends_without_broker_gating() {
+        let mut h = HostHarness::new();
+        let human_pane = h.add_focused_terminal();
+        let human_pid = h.terminal_backend(human_pane).child_pid();
+        assert!(
+            h.app.is_human_owned_pane(human_pane),
+            "fixture must be a human-owned terminal pane"
+        );
+        assert!(
+            h.app.pane_permission_posture(human_pane).is_none(),
+            "human-owned pane must have no posture snapshot"
+        );
+
+        let send_resp = crate::rpc::response_file("pane-send-human", "json");
+        let send_req = crate::protocol::HostRequest::SendToPane {
+            pane_id: human_pane,
+            text: "human message".into(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp.clone()),
+            operation_id: None,
+            generated_operation_id: false,
+            peer_ancestry: None,
+        };
+        let send_line = serde_json::to_string(&send_req).unwrap();
+        crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[human_pid]), &mut Vec::new());
+        h.hidden_frame();
+        let send_reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&send_resp).unwrap()).unwrap();
+        assert_eq!(
+            send_reply["ok"], true,
+            "human-owned pane must send without broker gating: {send_reply}"
+        );
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        assert!(
+            !monitor
+                .list_pending()
+                .iter()
+                .any(|row| row.tool == "pane.send"),
+            "human-owned pane must not file a pane.send approval request"
+        );
+    }
+
+    #[test]
+    fn child_worker_inherits_parent_posture_restrictions_and_subcontext_reuse_keeps_grants_distinct(
+    ) {
         let mut h = HostHarness::new();
         let ws = h.workspace_root();
         let pane_pid = |h: &HostHarness, pane_id: u64| {
@@ -552,11 +756,7 @@ mod list_tests {
             "child-permissive",
             "[permissions]\ndefault_posture = \"allow\"\nallow = [\"secret.get\"]",
         );
-        write_agent_role(
-            &ws,
-            "peer-ask",
-            "[permissions]\ndefault_posture = \"ask\"",
-        );
+        write_agent_role(&ws, "peer-ask", "[permissions]\ndefault_posture = \"ask\"");
 
         let (parent_pane, _) = h
             .app

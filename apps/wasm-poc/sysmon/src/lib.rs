@@ -9,14 +9,14 @@
 // Build target: wasm32-wasip2 via `cargo component build`.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit/world.wit",
 });
 
 use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, ProgressBarNode, RowNode,
-    StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, Justify, ProgressBarNode,
+    RowNode, StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 use plexi::platform::{host_log, host_state};
 
@@ -48,13 +48,21 @@ impl Sysmon {
             })
             .unwrap_or(DEFAULT_POLL_MS);
 
-        Sysmon { stats: None, poll_interval_ms, next_id: 0 }
+        Sysmon {
+            stats: None,
+            poll_interval_ms,
+            next_id: 0,
+        }
     }
 
     fn node(&mut self, key: &str, data: UiNodeData) -> IndexedNode {
         let id = self.next_id;
         self.next_id += 1;
-        IndexedNode { id, key: key.to_string(), data }
+        IndexedNode {
+            id,
+            key: key.to_string(),
+            data,
+        }
     }
 
     // ── View ─────────────────────────────────────────────────────────────────
@@ -64,124 +72,189 @@ impl Sysmon {
         let mut nodes: Vec<IndexedNode> = Vec::new();
 
         // Header
-        let header = self.node("header", UiNodeData::Text(TextNode {
-            text: "System Monitor".to_string(),
-            size: Some(20.0),
-            bold: true,
-            color: None,
-            truncate: false,
-            align: Alignment::Start,
-        }));
+        let header = self.node(
+            "header",
+            UiNodeData::Text(TextNode {
+                text: "System Monitor".to_string(),
+                size: Some(20.0),
+                bold: true,
+                color: None,
+                truncate: false,
+                align: Alignment::Start,
+            }),
+        );
         let header_id = header.id;
         nodes.push(header);
 
         match &self.stats.clone() {
             None => {
-                let loading = self.node("loading", UiNodeData::Text(TextNode {
-                    text: "Collecting stats…".to_string(),
-                    size: Some(13.0),
-                    bold: false,
-                    color: Some(Color { r: 148, g: 148, b: 160, a: 255 }),
-                    truncate: false,
-                    align: Alignment::Start,
-                }));
+                let loading = self.node(
+                    "loading",
+                    UiNodeData::Text(TextNode {
+                        text: "Collecting stats…".to_string(),
+                        size: Some(13.0),
+                        bold: false,
+                        color: Some(Color {
+                            r: 148,
+                            g: 148,
+                            b: 160,
+                            a: 255,
+                        }),
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                );
                 let loading_id = loading.id;
                 nodes.push(loading);
 
-                let col = self.node("root", UiNodeData::Column(ColumnNode {
-                    children: vec![header_id, loading_id],
-                    gap: 12.0,
-                    align: Alignment::Start,
-                    grow: true,
-                }));
+                let col = self.node(
+                    "root",
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![header_id, loading_id],
+                        gap: 12.0,
+                        align: Alignment::Start,
+                        justify: Justify::Start,
+                        grow: true,
+                    }),
+                );
                 let root_id = col.id;
                 nodes.push(col);
-                UiTree { root: root_id, nodes }
+                UiTree {
+                    root: root_id,
+                    nodes,
+                }
             }
 
             Some(stats) => {
                 let stats = stats.clone();
 
                 // CPU row
-                let cpu_bar = self.node("cpu-bar", UiNodeData::ProgressBar(ProgressBarNode {
-                    value: stats.cpu_usage_pct,
-                    max: 100.0,
-                    color: Some(Color { r: 137, g: 180, b: 250, a: 255 }), // blue
-                    label: None,
-                }));
-                let cpu_label = self.node("cpu-label", UiNodeData::Text(TextNode {
-                    text: format!("CPU  {:.1}%", stats.cpu_usage_pct),
-                    size: Some(13.0),
-                    bold: false,
-                    color: None,
-                    truncate: false,
-                    align: Alignment::End,
-                }));
-                let cpu_row = self.node("cpu-row", UiNodeData::Row(RowNode {
-                    children: vec![cpu_bar.id, cpu_label.id],
-                    gap: 8.0,
-                    align: Alignment::Center,
-                    grow: true,
-                }));
+                let cpu_bar = self.node(
+                    "cpu-bar",
+                    UiNodeData::ProgressBar(ProgressBarNode {
+                        value: stats.cpu_usage_pct,
+                        max: 100.0,
+                        color: Some(Color {
+                            r: 137,
+                            g: 180,
+                            b: 250,
+                            a: 255,
+                        }), // blue
+                        label: None,
+                    }),
+                );
+                let cpu_label = self.node(
+                    "cpu-label",
+                    UiNodeData::Text(TextNode {
+                        text: format!("CPU  {:.1}%", stats.cpu_usage_pct),
+                        size: Some(13.0),
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::End,
+                    }),
+                );
+                let cpu_row = self.node(
+                    "cpu-row",
+                    UiNodeData::Row(RowNode {
+                        children: vec![cpu_bar.id, cpu_label.id],
+                        gap: 8.0,
+                        align: Alignment::Center,
+                        justify: Justify::Start,
+                        grow: true,
+                    }),
+                );
                 nodes.extend([cpu_bar, cpu_label]);
                 let cpu_row_id = cpu_row.id;
                 nodes.push(cpu_row);
 
                 // Memory row
-                let mem_pct = stats.memory_used_bytes as f32 / stats.memory_total_bytes.max(1) as f32 * 100.0;
-                let mem_bar = self.node("mem-bar", UiNodeData::ProgressBar(ProgressBarNode {
-                    value: mem_pct,
-                    max: 100.0,
-                    color: Some(Color { r: 166, g: 227, b: 161, a: 255 }), // green
-                    label: None,
-                }));
-                let mem_label = self.node("mem-label", UiNodeData::Text(TextNode {
-                    text: format!(
-                        "Mem  {:.1} / {:.1} GB",
-                        stats.memory_used_bytes as f32 / 1_073_741_824.0,
-                        stats.memory_total_bytes as f32 / 1_073_741_824.0,
-                    ),
-                    size: Some(13.0),
-                    bold: false,
-                    color: None,
-                    truncate: false,
-                    align: Alignment::End,
-                }));
-                let mem_row = self.node("mem-row", UiNodeData::Row(RowNode {
-                    children: vec![mem_bar.id, mem_label.id],
-                    gap: 8.0,
-                    align: Alignment::Center,
-                    grow: true,
-                }));
+                let mem_pct =
+                    stats.memory_used_bytes as f32 / stats.memory_total_bytes.max(1) as f32 * 100.0;
+                let mem_bar = self.node(
+                    "mem-bar",
+                    UiNodeData::ProgressBar(ProgressBarNode {
+                        value: mem_pct,
+                        max: 100.0,
+                        color: Some(Color {
+                            r: 166,
+                            g: 227,
+                            b: 161,
+                            a: 255,
+                        }), // green
+                        label: None,
+                    }),
+                );
+                let mem_label = self.node(
+                    "mem-label",
+                    UiNodeData::Text(TextNode {
+                        text: format!(
+                            "Mem  {:.1} / {:.1} GB",
+                            stats.memory_used_bytes as f32 / 1_073_741_824.0,
+                            stats.memory_total_bytes as f32 / 1_073_741_824.0,
+                        ),
+                        size: Some(13.0),
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::End,
+                    }),
+                );
+                let mem_row = self.node(
+                    "mem-row",
+                    UiNodeData::Row(RowNode {
+                        children: vec![mem_bar.id, mem_label.id],
+                        gap: 8.0,
+                        align: Alignment::Center,
+                        justify: Justify::Start,
+                        grow: true,
+                    }),
+                );
                 nodes.extend([mem_bar, mem_label]);
                 let mem_row_id = mem_row.id;
                 nodes.push(mem_row);
 
                 // Network row
-                let net = self.node("net", UiNodeData::Text(TextNode {
-                    text: format!(
-                        "Net  ↑ {}/s  ↓ {}/s",
-                        fmt_bytes(stats.net_tx_bps),
-                        fmt_bytes(stats.net_rx_bps),
-                    ),
-                    size: Some(12.0),
-                    bold: false,
-                    color: Some(Color { r: 148, g: 148, b: 160, a: 255 }),
-                    truncate: false,
-                    align: Alignment::Start,
-                }));
+                let net = self.node(
+                    "net",
+                    UiNodeData::Text(TextNode {
+                        text: format!(
+                            "Net  ↑ {}/s  ↓ {}/s",
+                            fmt_bytes(stats.net_tx_bps),
+                            fmt_bytes(stats.net_rx_bps),
+                        ),
+                        size: Some(12.0),
+                        bold: false,
+                        color: Some(Color {
+                            r: 148,
+                            g: 148,
+                            b: 160,
+                            a: 255,
+                        }),
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                );
                 let net_id = net.id;
                 nodes.push(net);
 
                 // Uptime row
-                let uptime = self.node("uptime", UiNodeData::Text(TextNode {
-                    text: format!("Up   {}", fmt_uptime(stats.uptime_secs)),
-                    size: Some(12.0),
-                    bold: false,
-                    color: Some(Color { r: 148, g: 148, b: 160, a: 255 }),
-                    truncate: false,
-                    align: Alignment::Start,
-                }));
+                let uptime = self.node(
+                    "uptime",
+                    UiNodeData::Text(TextNode {
+                        text: format!("Up   {}", fmt_uptime(stats.uptime_secs)),
+                        size: Some(12.0),
+                        bold: false,
+                        color: Some(Color {
+                            r: 148,
+                            g: 148,
+                            b: 160,
+                            a: 255,
+                        }),
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                );
                 let uptime_id = uptime.id;
                 nodes.push(uptime);
 
@@ -189,26 +262,47 @@ impl Sysmon {
                 let divider_id = divider.id;
                 nodes.push(divider);
 
-                let hint = self.node("hint", UiNodeData::Text(TextNode {
-                    text: format!("Polling every {}s  ·  q to close", self.poll_interval_ms / 1000),
-                    size: Some(11.0),
-                    bold: false,
-                    color: Some(Color { r: 108, g: 112, b: 134, a: 255 }),
-                    truncate: false,
-                    align: Alignment::Start,
-                }));
+                let hint = self.node(
+                    "hint",
+                    UiNodeData::Text(TextNode {
+                        text: format!(
+                            "Polling every {}s  ·  q to close",
+                            self.poll_interval_ms / 1000
+                        ),
+                        size: Some(11.0),
+                        bold: false,
+                        color: Some(Color {
+                            r: 108,
+                            g: 112,
+                            b: 134,
+                            a: 255,
+                        }),
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                );
                 let hint_id = hint.id;
                 nodes.push(hint);
 
-                let col = self.node("root", UiNodeData::Column(ColumnNode {
-                    children: vec![header_id, cpu_row_id, mem_row_id, net_id, uptime_id, divider_id, hint_id],
-                    gap: 10.0,
-                    align: Alignment::Start,
-                    grow: true,
-                }));
+                let col = self.node(
+                    "root",
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![
+                            header_id, cpu_row_id, mem_row_id, net_id, uptime_id, divider_id,
+                            hint_id,
+                        ],
+                        gap: 10.0,
+                        align: Alignment::Start,
+                        justify: Justify::Start,
+                        grow: true,
+                    }),
+                );
                 let root_id = col.id;
                 nodes.push(col);
-                UiTree { root: root_id, nodes }
+                UiTree {
+                    root: root_id,
+                    nodes,
+                }
             }
         }
     }
@@ -223,7 +317,11 @@ impl Sysmon {
     fn startup_effects(&self) -> Vec<Effect> {
         vec![
             Effect::GetSystemStats,
-            Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: self.poll_interval_ms, repeat: true }),
+            Effect::SetTimer(TimerEffect {
+                id: TIMER_POLL,
+                delay_ms: self.poll_interval_ms,
+                repeat: true,
+            }),
         ]
     }
 
@@ -259,13 +357,20 @@ impl Sysmon {
     fn retimer_effects(&self) -> Vec<Effect> {
         vec![
             Effect::CancelTimer(TIMER_POLL),
-            Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: self.poll_interval_ms, repeat: true }),
+            Effect::SetTimer(TimerEffect {
+                id: TIMER_POLL,
+                delay_ms: self.poll_interval_ms,
+                repeat: true,
+            }),
             Effect::GetSystemStats,
         ]
     }
 
     fn persist_interval(&self) {
-        let _ = host_state::set(POLL_INTERVAL_KEY, &self.poll_interval_ms.to_le_bytes().to_vec());
+        let _ = host_state::set(
+            POLL_INTERVAL_KEY,
+            &self.poll_interval_ms.to_le_bytes().to_vec(),
+        );
     }
 }
 
@@ -281,9 +386,14 @@ fn app() -> &'static mut Sysmon {
 impl Guest for Component {
     fn init(state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         let sysmon = Sysmon::new(&state);
-        host_log::info(&format!("sysmon: init poll_interval_ms={}", sysmon.poll_interval_ms));
+        host_log::info(&format!(
+            "sysmon: init poll_interval_ms={}",
+            sysmon.poll_interval_ms
+        ));
         let effects = sysmon.startup_effects();
-        unsafe { APP = Some(sysmon); }
+        unsafe {
+            APP = Some(sysmon);
+        }
         effects
     }
 
@@ -313,9 +423,13 @@ fn fmt_uptime(secs: u64) -> String {
     let d = secs / 86400;
     let h = (secs % 86400) / 3600;
     let m = (secs % 3600) / 60;
-    if d > 0 { format!("{}d {}h {}m", d, h, m) }
-    else if h > 0 { format!("{}h {}m", h, m) }
-    else { format!("{}m", m) }
+    if d > 0 {
+        format!("{}d {}h {}m", d, h, m)
+    } else if h > 0 {
+        format!("{}h {}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
 }
 
 // ── G2: pure-function unit tests ──────────────────────────────────────────────
@@ -370,13 +484,19 @@ mod tests {
         let mut app = Sysmon::new(&empty());
         app.handle(InputEvent::SystemStatsResult(mock_stats(42.0)));
         let tree = app.build_tree();
-        assert!(tree_text(&tree).contains("42.0%"), "view should show CPU 42.0%");
+        assert!(
+            tree_text(&tree).contains("42.0%"),
+            "view should show CPU 42.0%"
+        );
     }
 
     #[test]
     fn startup_sets_timer_at_persisted_interval() {
         let snap = StateSnapshot {
-            entries: vec![(POLL_INTERVAL_KEY.to_string(), 5000u32.to_le_bytes().to_vec())],
+            entries: vec![(
+                POLL_INTERVAL_KEY.to_string(),
+                5000u32.to_le_bytes().to_vec(),
+            )],
         };
         let effects = Sysmon::new(&snap).startup_effects();
         assert!(effects

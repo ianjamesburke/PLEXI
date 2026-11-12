@@ -7,13 +7,13 @@
 //! and shrinking into the inner UI — these renderers operate on the inner UI
 //! and should not repaint the background.
 
-pub mod app_chrome;
-pub mod app_pane;
-pub mod cli_renderer_app;
+pub mod cli_renderer_view;
 pub mod descriptor_widgets;
 pub mod headless_renderer;
 pub mod minimap;
 pub mod terminal_pane;
+pub mod view_chrome;
+pub mod view_pane;
 
 pub mod mcp_descriptor;
-pub mod mcp_renderer_app;
+pub mod mcp_renderer_view;

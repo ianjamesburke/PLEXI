@@ -1,6 +1,7 @@
 //! Package validation and channel-scoped installation shared by every installer.
 pub mod package;
 pub mod release;
+pub mod strays;
 pub mod transaction;
 
 #[derive(Debug, thiserror::Error)]

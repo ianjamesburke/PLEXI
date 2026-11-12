@@ -1,7 +1,7 @@
 # CLI v1 Tree-Shake Inventory
 
 **Status:** active
-**Evidence date:** 2026-09-20; reconciled to `origin/alpha` on 2026-09-22
+**Evidence date:** 2026-09-20; reconciled to `origin/alpha` on 2026-09-22 and 2026-11-09
 
 ## Current v1 tags (G-13 reconciliation)
 
@@ -15,19 +15,32 @@ same clap command tree and is checked by `just check-cli-docs`.
 |---|---|---|
 | `run`, `workspace`, `secret` | v1 | Workspace and secret basics. |
 | `agent report`, `agent status`, `agent hook` | v1 | Status hooks only; this does not promote the Assistant or agent mesh. |
+| `agent done`, `agent ask` | v1 (worker completion) | The worker contract injected into every spawned agent session, including GUI and palette spawns, tells the harness to run them. Gating them would strand those sessions. |
+| `agent list`, `agent show`, `agent call`, `agent message`, `agent handoff` | v1 (retained) | `scripts/v1-acceptance.sh` V1-01 and the pi-plexi package call them on a default config. GUI and palette role spawns are not experiment gated, so a role pane can exist with `agent_mesh` off and pi-plexi's role tools then run `agent show`, `call`, `message` and `handoff`. Gating the GUI entry points is a separate decision. |
+| every other `agent` subcommand (`create`, `start`, `spawn`, `wait`, `result`, `next`, `flags`, `fleet`, `history`, `reopen`, `team`) | beta | `ReleaseFeature::AgentMesh` (`agent_mesh`); hidden from help and refused until the experiment is on. |
 | `context`, `pane`, `host`, `notify`, `note`, `notes`, `config`, `completions`, `demo`, `update`, `uninstall` | v1 | Terminal-host control and observation surface. `demo` refuses on platforms without a supported keymap. |
-| `app` local-runtime commands | v1 | Local/remote/pack install, list/info/prune/freeze, open, uninstall, render, check/validate/inspect, state, init/test/package, action/update, plus `--cli`, `--mcp`, `cli:`, and `mcp:` wrappers. |
+| `plugin` local-runtime commands | v1 | Local/remote/pack install, list/info/prune/freeze, open, uninstall, render, check/validate/inspect, state, init/test/package, action/update, plus `--cli`, `--mcp`, `cli:`, and `mcp:` wrappers. |
 | `registry watch`, `descriptor probe`, `doctor`, `ai` diagnostics/setup | v1 | App-runtime and local CLI support surfaces; they are not the hosted Assistant product. |
-| `events list`, `declare`, `emit`, `subscribe` | v1 | Brokered app-event surface. |
+| `events list`, `declare`, `emit`, `subscribe` | v1 | Brokered plugin-event surface. |
 | `routine` and every routine subcommand | beta | `ReleaseFeature::Routines`; hidden from stable help and refused on stable execution. |
-| `app publish`, `app browse`, `app search`, and bare marketplace-ID `app install` | beta | `ReleaseFeature::Marketplace`; local paths, remotes, and packs remain v1. |
+| `plugin publish`, `plugin browse`, `plugin search`, and bare marketplace-ID `plugin install` | beta | `ReleaseFeature::Marketplace`; local paths, remotes, and packs remain v1. |
 | `account` and every account subcommand | beta | `ReleaseFeature::Marketplace`. |
 | `events mcp-config` | beta | `ReleaseFeature::McpClient`; stable never emits an MCP endpoint or token. |
-| `pane set-title`, `update apps` | removed | Former deceptive compatibility aliases; not part of the current command tree. |
+| `experiments`, `skill`, `cli`, `needs-you`, `permissions`, `lease`, `debug`, `plugin call`, `plugin tools`, `plugin trust` | public, untagged | Added after the 2026-09-22 reconciliation. Each is called by Plexi itself or by the shipped skill, so it stays public until the V1 sweep (stint 1182) decides core, core plugin or removal. Reasons are recorded per entry in `src/cli/v1_surface.txt`. |
+| `pane set-title`, `update plugins` | removed | Former deceptive compatibility aliases; not part of the current command tree. |
+
+The table is enforced. `src/cli/v1_surface.txt` is the machine-readable
+allowlist of every command path visible with all experiments off, and the
+`every_visible_command_is_v1_or_owned_by_an_experiment` test in
+`src/cli/v1_surface.rs` fails when a visible path is neither listed there nor
+owned by an experiment in `ReleaseFeature::owned_paths`. A new public command
+must therefore be tagged v1 here and in the allowlist, or gated. The table
+lists `notes` as a v1 command, but no such command exists in the clap tree; the
+`note` entry is the real one.
 
 There are no current `dead` entries: the five historical dead/deceptive
 entries were either repaired or removed. This table deliberately keeps local
-app runtime and SDK authoring in v1 while excluding marketplace, MCP client,
+plugin runtime and SDK authoring in v1 while excluding marketplace, MCP client,
 routines, and the full Assistant, matching the website CLI reference.
 
 ## Historical 2026-09-20 tree-shake evidence
@@ -45,7 +58,7 @@ platform, the marketplace, DAW, media, and the browser surface.
 
 - **`v1`** — needed for the terminal host, subcontexts, agent status, Quick
   Note, or workspace/pane/host basics.
-- **`beta`** — release-gated already, or plainly Assistant / apps / SDK /
+- **`beta`** — release-gated already, or plainly Assistant / plugins / SDK /
   marketplace / MCP / DAW / media.
 - **`dead`** — broken, a stub that lies, unreachable, or `--help` promises
   something the command gets wrong on stable.
@@ -100,18 +113,18 @@ shows that one line and nothing else:
 ```
 $ diff <(plexi --help) <(plexi-alpha --help)
 21a22
->   account       Manage your Plexi marketplace account (only needed to publish or buy paid apps)
+>   account       Manage your Plexi marketplace account (only needed to publish or buy paid plugins)
 ```
 
-`plexi app --help` is byte-identical across channels apart from the binary name
+`plexi plugin --help` is byte-identical across channels apart from the binary name
 in the usage line, so stable lists `publish`, `browse` and `search` as if they
 were available. They are not — the gate fires only at execution:
 
 ```
-$ plexi app browse
+$ plexi plugin browse
 error: marketplace requires the beta channel and is not part of the stable v1 surface. Use plexi-beta or plexi-alpha to try it.   (exit 1)
-$ plexi app search notes      → same message, exit 1
-$ plexi app publish .         → same message, exit 1
+$ plexi plugin search notes      → same message, exit 1
+$ plexi plugin publish .         → same message, exit 1
 $ plexi account status        → same message, exit 1
 $ plexi account logout        → same message, exit 1
 ```
@@ -122,7 +135,7 @@ the group list.
 
 ### 3. `events mcp-config` bypasses the `McpClient` gate
 
-`ReleaseFeature::McpClient` has a Beta minimum tier, and `src/cli/app_check.rs`
+`ReleaseFeature::McpClient` has a Beta minimum tier, and `src/cli/plugin_check.rs`
 honours it. `plexi events mcp-config` does not — on stable, run inside a pane,
 it hands out a live host MCP endpoint and bearer token:
 
@@ -200,7 +213,7 @@ do not own prompts for host consent". The CLI prints nothing about that, offers
 no timeout flag, and never returns:
 
 ```
-$ timeout 25 plexi events declare inv.app inv.stream
+$ timeout 25 plexi events declare inv.plugin inv.stream
 (exit 124 — killed by timeout; zero bytes on stdout and stderr)
 ```
 
@@ -297,18 +310,18 @@ keystroke that does not exist on the platform it is running on.
 ### 12. Help text leaks internal ticket ids and SDK authoring docs onto stable
 
 ```
-$ plexi app --help | grep state
-  state      Read or replace a file-backed app's state document (stint 0645)
+$ plexi plugin --help | grep state
+  state      Read or replace a file-backed plugin's state document (stint 0645)
 ```
 
 `src/cli/args.rs` carries `(stint 0645)` in a user-facing doc comment.
-Separately, `plexi app init --help` prints a multi-screen `APP DEVELOPMENT
+Separately, `plexi plugin init --help` prints a multi-screen `APP DEVELOPMENT
 GUIDE` — SDK authoring content — on the stable channel where the app/SDK
 platform is explicitly not v1.
 
 ### 13. Two aliases are pure duplication
 
-`plexi update apps` is documented as a "Compatibility alias for `plexi app
+`plexi update plugins` is documented as a "Compatibility alias for `plexi plugin
 update`" and both produce identical output; `plexi pane set-title` is
 `hide = true` and its own help says "Deprecated: use `plexi pane name`
 instead".
@@ -324,7 +337,7 @@ errors plus eleven `-D warnings` failures:
 - `src/app/mod.rs` calls `UnixStream::peer_cred()`, an unstable library feature
   (`peer_credentials_unix_socket`, `E0658`, twice).
 - Nine unused-import / unused-variable / unnecessary-`mut` errors in
-  `src/app/secrets_app.rs`, `src/host/shell.rs`, `src/plexi_ai/broker.rs` and
+  `src/app/secrets_view.rs`, `src/host/shell.rs`, `src/plexi_ai/broker.rs` and
   the secrets and route modules, all Linux-only dead code under
   `RUSTFLAGS="-D warnings"`.
 
@@ -354,7 +367,7 @@ Recorded because they were driven and passed, not assumed:
   pipeline.
 - With the host stopped, every host-dependent command fails fast with exit 1.
   Nothing hung.
-- `app render <path>` renders headlessly without a host.
+- `view render <path>` renders headlessly without a host.
 
 ## The matrix
 
@@ -389,7 +402,7 @@ above.
 | `agent status` | v1 | exit 0, table | |
 | `agent hook install` | v1 | help only (mutates agent configs) | |
 | `agent hook uninstall` | v1 | help only | |
-| `agent init` | beta | scaffolds an app with `ai.query` + chat UI → SDK/Assistant | |
+| `agent init` | beta | scaffolds a plugin with `ai.query` + chat UI → SDK/Assistant | |
 | `agent add` | beta | exit 1, clean error | |
 | `agent update` | beta | exit 1, clean error | |
 | `agent list` | beta | exit 0 | |
@@ -430,8 +443,8 @@ above.
 | `pane heartbeat` | v1 | exit 0, `{"heartbeat":null,"ok":true}` | |
 | `pane drop` | v1 | exit 1 on a terminal pane, clean error | |
 | `pane slot *` | v1 | full round-trip verified | 9 |
-| `pane click` | beta | app-pane only → app platform | 9 |
-| `pane drag` | beta | app-pane only → app platform | |
+| `pane click` | beta | plugin-pane only → plugin platform | 9 |
+| `pane drag` | beta | plugin-pane only → plugin platform | |
 
 ### Host (v1 feature)
 
@@ -459,26 +472,26 @@ above.
 | `completions` | v1 | bash/fish emitted; exit 1 on unknown shell | |
 | `demo` | v1 | exit 124 in-pane, teaches ⌘D on Linux | **11** |
 | `update` | v1 | help only (self-update) | |
-| `update apps` | **dead** | self-described compatibility alias | **13** |
+| `update plugins` | **dead** | self-described compatibility alias | **13** |
 | `uninstall` | v1 | help only | |
 | `_complete-open` / `_complete-run` | v1 | hidden completion helpers | |
 
-### Apps / SDK / marketplace (beta)
+### Plugins / SDK / marketplace (beta)
 
 | Command | Tag | Driven | Finding |
 |---|---|---|---|
-| `app list` / `info` / `prune` / `freeze` | beta | driven, exit 0 / clean exit 1 | |
-| `app open` / `uninstall` / `install` / `trust` | beta | clean exit 1 on bad input | |
-| `app render` | beta | exit 0, JSON frame tree | |
-| `app check` / `validate` / `inspect` | beta | clean exit 1 on a non-app dir | |
-| `app state` / `state get` / `state set` | beta | clean exit 1 for a stateless app | **12** |
-| `app action` | beta | exit 1, `pane 1 is not an app pane` | |
-| `app update` | beta | exit 0 | |
-| `app init` / `test` / `package` | beta | help only | **12** |
-| `app publish` / `browse` / `search` | beta | gate fires at execution, listed in help | **2** |
+| `plugin list` / `info` / `prune` / `freeze` | beta | driven, exit 0 / clean exit 1 | |
+| `view open` / `uninstall` / `install` / `trust` | beta | clean exit 1 on bad input | |
+| `view render` | beta | exit 0, JSON frame tree | |
+| `plugin check` / `validate` / `inspect` | beta | clean exit 1 on a non-plugin dir | |
+| `plugin state` / `state get` / `state set` | beta | clean exit 1 for a stateless plugin | **12** |
+| `pane action` | beta | exit 1, `pane 1 is not a plugin pane` | |
+| `plugin update` | beta | exit 0 | |
+| `plugin init` / `test` / `package` | beta | help only | **12** |
+| `plugin publish` / `browse` / `search` | beta | gate fires at execution, listed in help | **2** |
 | `registry watch` | beta | exit 0, `[STALE] git …` | |
 | `descriptor probe` | beta | exit 1, hidden already | 9 |
-| `doctor` | beta | exit 0; audits installed apps | |
+| `doctor` | beta | exit 0; audits installed plugins | |
 
 ### AI / Assistant (beta)
 

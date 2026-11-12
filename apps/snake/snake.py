@@ -9,7 +9,7 @@ from plexi_sdk import dim, log, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, TimerFired
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Canvas,
     CanvasRect,
     CanvasText,
@@ -164,7 +164,7 @@ def view():
     )
     return Column(
         [
-            AppBar("Snake", subtitle),
+            SurfaceHeader("Snake", subtitle),
             Canvas(commands, width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             Spacer(8.0),
             FooterKeys(keys),

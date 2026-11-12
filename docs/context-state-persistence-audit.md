@@ -4,7 +4,7 @@
 **Status:** active
 **Date of evidence:** 2026-07-31, alpha at the branch point of this task
 
-An audit of why app state — todo's in particular — does not survive a restart.
+An audit of why plugin state — todo's in particular — does not survive a restart.
 Everything below is reproduced, not reasoned: each answer names the test, the
 log trace, or the bytes on disk that produced it. Where alpha's behaviour and
 stint 0652's behaviour differ, both are stated separately; 0652 is **not
@@ -14,17 +14,17 @@ merged** (see [Interaction with 0652](#interaction-with-0652)).
 
 State loss is not one bug. Three independent defects sit on the same path, and
 each of them alone is sufficient to lose a todo item. In order of how early
-they bite: **(1)** a Python app pane is not restored at all on the next boot —
-it is saved under its *runtime kind* (`python-wasm`), never its app id, so
-restore cannot rebuild it and substitutes a terminal; **(2)** a re-launched app
+they bite: **(1)** a Python plugin pane is not restored at all on the next boot —
+it is saved under its *runtime kind* (`python-wasm`), never its plugin id, so
+restore cannot rebuild it and substitutes a terminal; **(2)** a re-launched plugin
 resolves its state file from the *launch-time* `workspace_root`, so an item
 written under one root is invisible from another and nothing merges or warns;
-**(3)** when two instances of one app are live under the same root — the normal
+**(3)** when two instances of one plugin are live under the same root — the normal
 case, because contexts freely share a root — they address one file with no
 coordination, and whichever instance persists last writes its own launch-time
 map over the other's. None of the three is a write that never happens: the
 write always happens. Two of them are writes to a path nobody reads next, and
-one is a read that never occurs because the app is never relaunched.
+one is a read that never occurs because the plugin is never relaunched.
 
 ## Method
 
@@ -36,7 +36,7 @@ one is a read that never occurs because the app is never relaunched.
   `audit_0678` module — `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`,
   `audit_0678_set_context_root_leaves_a_running_app_at_the_old_address`, and
   `audit_0678_a_launch_seeded_from_the_global_fallback_never_writes_back_to_it`,
-  each of which launches a real CPython-WASM app through the production path.
+  each of which launches a real CPython-WASM plugin through the production path.
   In `src/app/tests/context_tests.rs`:
   `audit_0678_two_contexts_accept_the_same_root` and
   `audit_0678_keyboard_sub_context_inherits_the_parents_stale_path_not_its_root`.
@@ -47,7 +47,7 @@ one is a read that never occurs because the app is never relaunched.
   precedence.
 - **Live host logs**: `~/.plexi-alpha/plexi.log` and `~/.plexi-beta/plexi.log`
   from Ian's running sessions on the evidence date
-  (`launch_app_by_id_with_layout`, `workspace_restore`, `app::todo: persisted
+  (`launch_app_by_id_with_layout`, `workspace_restore`, `plugin::todo: persisted
   WASM Python state`).
 - **Bytes on disk**: the saved workspace files under each channel profile's
   `workspaces/` dir, and every `app_states/` directory beneath the home
@@ -76,21 +76,21 @@ implementation — plus the log evidence below. Closing that gap is stint 0686.
 
 ## The resolution chain
 
-**Write** — `PersistState` from the guest → `save_app_state` message →
+**Write** — `PersistState` from the guest → `save_plugin_state` message →
 `LivePythonPane::save_state` → `python_state_path(&self.config)` →
 `write_python_state_atomic`. The path is
-`<config.workspace_root>/.plexi/app_states/<app_id>.json`. `config` is the
+`<config.workspace_root>/.plexi/app_states/<plugin_id>.json`. `config` is the
 `PythonLaunchConfig` captured at launch; nothing mutates `workspace_root`
 afterwards. There is exactly one write path.
 
 **Read** — `LivePythonPane::launch` → `load_python_state` →
 `python_state_path` (same value as the write) → on miss only, a second
-candidate: `<parent of config_dir()>/.plexi/app_states/<app_id>.json`, the
+candidate: `<parent of config_dir()>/.plexi/app_states/<plugin_id>.json`, the
 channel-neutral global fallback. Both candidates run
 `reclaim_python_state_orphans` first, which adopts or archives
-`<root>/.plexi-<channel>/app_states/<app_id>.json` copies left by builds that
+`<root>/.plexi-<channel>/app_states/<plugin_id>.json` copies left by builds that
 wrote channel-suffixed paths. **Read has two candidates; write has one.** An
-app that loaded from the global fallback persists to the workspace path, so its
+plugin that loaded from the global fallback persists to the workspace path, so its
 next launch under a different root reads the stale global copy again.
 
 *Evidence.* The asymmetry itself is pinned by a pre-existing test,
@@ -104,11 +104,11 @@ Precedence between the two candidates is pinned by
 `python_state_local_candidate_wins_over_global_fallback`.
 
 **Where `workspace_root` comes from**, in resolution order at launch:
-`AppRegistry::InstalledApp::workspace_root` when the app was found inside a
+`PluginRegistry::InstalledApp::workspace_root` when the plugin was found inside a
 workspace (`resolve_workspace_root_with_channel` walks up from the cwd to the
 nearest channel-dir anchor), else the launch `cwd`, which
 `resolve_new_pane_cwd` resolves as *context root → focused pane cwd → home*.
-For a globally installed app such as todo, `InstalledApp::workspace_root` is
+For a globally installed plugin such as todo, `InstalledApp::workspace_root` is
 `None`, so the context root wins in practice — and a context with no root falls
 through to whatever directory the focused pane happened to be in.
 
@@ -116,7 +116,7 @@ through to whatever directory the focused pane happened to be in.
 owns the state path *and* the fs jail), `AppPane::workspace_root` (launch-time,
 what workspace-save records as the pane's `cwd`), and `Context::root`
 (mutable, what `set_context_root` changes). Only the third can change while an
-app is running, and it steers nothing that a running app reads or writes.
+plugin is running, and it steers nothing that a running plugin reads or writes.
 
 ## The five questions
 
@@ -144,10 +144,10 @@ On disk, `~/.plexi-alpha/workspaces/default.json` holds contexts `Default` and
 `Context 2` both rooted at `/Users/ianburke` — a duplicate root in a live saved
 workspace, not a constructed one.
 
-### 2. Two panes of one app — how many state files, and who wins?
+### 2. Two panes of one plugin — how many state files, and who wins?
 
 **One file, and the last instance to persist wins with whatever it loaded at
-its own launch.** The state path is a pure function of `app_id` and
+its own launch.** The state path is a pure function of `plugin_id` and
 `workspace_root`; no pane id, instance counter, or context id enters it. Two
 instances under one root therefore share a file, and each keeps its own
 in-memory `persisted_state` that it serializes whole on every `PersistState` —
@@ -165,22 +165,22 @@ instances addressing one file, exactly the shape the test reproduces. The alpha
 log for the same session shows the hot-reload watcher firing separately for each
 of those pane ids.
 
-### 3. Does `set-root` after launch move a running app?
+### 3. Does `set-root` after launch move a running plugin?
 
-**No. A running app keeps its launch-time root.** `set_context_root` mutates
+**No. A running plugin keeps its launch-time root.** `set_context_root` mutates
 `Context::root` and, only for the active context, re-runs
 `apply_context_transition_effects` (registry rescan, watcher restart, config
 reload). No pane's `workspace_root` and no `PythonLaunchConfig` is touched, so
-a live app keeps reading and writing where it launched while *new* launches in
+a live plugin keeps reading and writing where it launched while *new* launches in
 that context go somewhere else. The CLI half-says this already — `plexi context
 set-root` prints a tip that `PLEXI_CONTEXT_ROOT` is only picked up by newly
-opened panes — but nothing says it about app state.
+opened panes — but nothing says it about plugin state.
 
 *Evidence.* `audit_0678_set_context_root_leaves_a_running_app_at_the_old_address`
-launches a real CPython-WASM app through the production launch path with its
+launches a real CPython-WASM plugin through the production launch path with its
 root set to the context's, seeds an item at the address the running instance
 reports from its own `PythonLaunchConfig`, changes the context root through the
-production entry point, and then asserts both halves: the running app still
+production entry point, and then asserts both halves: the running plugin still
 writes the launch-time address, and that address is not the one the context now
 resolves — where nothing exists at all.
 
@@ -202,7 +202,7 @@ directory at audit time, with mtimes: `~/.plexi/app_states/todo.json`
 `.superseded` archives under `~/.plexi-beta/` and `~/.plexi-alpha/` left by the
 orphan reclaim. The launch traces that produced the first two are in the logs:
 `launch_app_by_id_with_layout: id=todo cwd="/Users/ianburke/Documents/GitHub/nooise"`
-(2026-07-30) and `... cwd="/Users/ianburke"` (2026-07-31). Same app id, same
+(2026-07-30) and `... cwd="/Users/ianburke"` (2026-07-31). Same plugin id, same
 user, one afternoon apart, two files — and neither launch could see the other's
 items.
 
@@ -214,18 +214,18 @@ moment, which is the whole defect: it is not a property of the app.
 **Never the first. Both of the others, plus a fourth shape the question did not
 anticipate: a read that never happens at all.**
 
-- *Read that never happens* — after a restart the app is not relaunched.
-  Workspace save records an app pane's `app_id` as `AppRuntime::type_id()`,
-  which is `python-wasm` for every CPython app and `wasm` for every native one.
-  The app's real identity is on the pane the whole time, in `manifest_id`, and
+- *Read that never happens* — after a restart the plugin is not relaunched.
+  Workspace save records a plugin pane's `plugin_id` as `AppRuntime::type_id()`,
+  which is `python-wasm` for every CPython plugin and `wasm` for every native one.
+  The plugin's real identity is on the pane the whole time, in `manifest_id`, and
   is not what gets written. `serialize_state` returns `None` for both runtimes,
-  so `app_state` is saved as null — correctly, since an app's state belongs in
+  so `app_state` is saved as null — correctly, since a plugin's state belongs in
   its state file rather than duplicated into workspace JSON, which is precisely
   why the recorded identity is the *only* route back to it. Restore looks the
   saved id up in `builtin_factory`, finds nothing, and the caller substitutes a
   `TerminalPane` in the pane's place. The state file is never opened.
   *Evidence:* `audit_0678_a_saved_app_pane_cannot_re_address_its_own_state`
-  launches a real CPython app, seeds its state file, saves the workspace
+  launches a real CPython plugin, seeds its state file, saves the workspace
   through `save_workspace`, reloads it from disk, and asserts that the address
   derivable from the saved record is neither the file that holds the bytes nor
   any file at all — while `manifest_id`, which would have addressed it, sits
@@ -236,7 +236,7 @@ anticipate: a read that never happens at all.**
   reads a different file. *Evidence:*
   `audit_0678_state_written_under_one_root_is_invisible_under_another`, and the
   nooise/home file pair above.
-- *Read that resolves elsewhere* — the global fallback is read-only: an app that
+- *Read that resolves elsewhere* — the global fallback is read-only: a plugin that
   loads from `<parent of config_dir()>/.plexi/app_states/` persists to its
   workspace path, and can load the same stale global bytes again on a later
   launch under another root.
@@ -247,7 +247,7 @@ anticipate: a read that never happens at all.**
 nothing in the system guarantees that address is stable, unique, or revisited.**
 Every symptom follows: contexts duplicate roots freely, so one address serves
 several instances; the address is captured at launch, so moving the context does
-not move the app; and the pane that owned the address is not rebuilt at boot, so
+not move the plugin; and the pane that owned the address is not rebuilt at boot, so
 the address is not even re-read. The item is written every time. It is the
 addressing that fails, in three separable places.
 
@@ -260,28 +260,28 @@ re-litigate them and the audit does not depend on them.
 
 0652 introduces `src/host/state_scope.rs` as the single owner of path
 construction, with two rules: `global` →
-`~/.plexi/app_states/<app_id>.<ext>`, `context` →
-`<context.root>/.plexi/app_states/<app_id>.<ext>`. An app declares its scopes
+`~/.plexi/app_states/<plugin_id>.<ext>`, `context` →
+`<context.root>/.plexi/app_states/<plugin_id>.<ext>`. An plugin declares its scopes
 in the manifest (`[state] scopes`); an omitted `[state]` means `["global"]`.
 Resolution moves to **call time** against the pane's live context root, pushed
-into each app pane every frame, so `set-root` redirects context-scoped state
+into each plugin pane every frame, so `set-root` redirects context-scoped state
 immediately. 0651 makes `Context::root` non-optional, which removes the
 rootless-context fallback that lets a launch cwd leak into the address.
 
 Mapped onto the five questions:
 
-- **Q3 is fixed by 0652** for context-scoped apps: call-time resolution is
+- **Q3 is fixed by 0652** for context-scoped plugins: call-time resolution is
   exactly the missing half. The launch-captured `workspace_root` survives only
   as the fs jail.
 - **Q4/Q5 second shape are fixed for todo specifically, by accident of the
   default**: todo's manifest declares no `[state]`, so on that branch it
   resolves `global` — one file for the whole machine, no root in the address.
-  Any app that declares `context` keeps the per-root split, which is the
+  Any plugin that declares `context` keeps the per-root split, which is the
   intended behaviour, not a defect.
 - **Q1 is untouched.** 0651 makes every context have a root; nothing makes it
   unique. Two contexts rooted at one directory still share one context-scoped
   file.
-- **Q2 is untouched.** Scope is a property of the app, not of an instance —
+- **Q2 is untouched.** Scope is a property of the plugin, not of an instance —
   by design — so two live instances still address one file and still overwrite
   each other whole. 0652's own doc comment states the design intent; the
   multi-instance write conflict is out of its scope.
@@ -298,10 +298,10 @@ for 0678.
 
 | Stint | Defect | Question |
 |---|---|---|
-| 0680 | WASM/Python app panes are saved under their runtime kind and are not restored — the pane returns as a terminal | Q5 |
-| 0681 | Two live instances of one app overwrite each other's state whole; no merge, no reload-before-write, no conflict signal | Q2 |
-| 0682 | The state read path has a second candidate the write path does not, so a load can resolve to bytes the app will never write back | Q5 |
-| 0683 | State reads and writes are unobservable — the persist trace names no path, so where an app's bytes went cannot be answered from the log | method |
+| 0680 | WASM/Python plugin panes are saved under their runtime kind and are not restored — the pane returns as a terminal | Q5 |
+| 0681 | Two live instances of one plugin overwrite each other's state whole; no merge, no reload-before-write, no conflict signal | Q2 |
+| 0682 | The state read path has a second candidate the write path does not, so a load can resolve to bytes the plugin will never write back | Q5 |
+| 0683 | State reads and writes are unobservable — the persist trace names no path, so where a plugin's bytes went cannot be answered from the log | method |
 | 0686 | Workspace restore is unobservable to tests — the restore loop is inside `PlexiApp::new` alongside socket, MCP, and update-check startup, so no test can boot it | method |
 
 The duplicate-root rule that question 1 exposes is a design question, not a bug

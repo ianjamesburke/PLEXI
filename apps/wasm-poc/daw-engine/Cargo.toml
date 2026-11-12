@@ -26,6 +26,6 @@ package = "plexi:daw-engine-poc"
 
 [package.metadata.component.target]
 path = "wit"
-world = "plexi-audio-app"
+world = "plexi-audio-plugin"
 
 [workspace]

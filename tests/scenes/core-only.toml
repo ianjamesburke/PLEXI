@@ -1,0 +1,24 @@
+sizes = [[520.0, 640.0], [1100.0, 700.0]]
+core_only = true
+macos_only = true
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+assert = { pane_count = 0 }
+
+[[steps]]
+assert_label = { target = "host", label = "Plugin 'notes' is unavailable because core-only mode is on. Set core_only = false in the profile config and restart Plexi." }
+
+[[steps]]
+shot = "core-only-notes-unavailable.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+shot = "core-only-palette.png"

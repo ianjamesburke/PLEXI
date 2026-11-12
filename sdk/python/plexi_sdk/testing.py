@@ -59,9 +59,9 @@ def _find_renderer() -> str:
     )
 
 
-def _is_v3_module_app(app_path: "str | Path") -> bool:
+def _is_v3_module_plugin(plugin_path: "str | Path") -> bool:
     try:
-        source = Path(app_path).read_text()
+        source = Path(plugin_path).read_text()
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return False
@@ -310,11 +310,11 @@ def save_snapshot(png_bytes: bytes, path: Union[str, Path]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# AppHarness — headless Python app subprocess runner (issue #865)
+# PluginHarness — headless Python app subprocess runner (issue #865)
 # ---------------------------------------------------------------------------
 
 
-class AppHarness:
+class PluginHarness:
     """Headless runner for Plexi Python apps.
 
     Spawns the app script as a subprocess, communicates over stdin/stdout
@@ -322,14 +322,14 @@ class AppHarness:
 
     Usage::
 
-        with AppHarness("my_app.py", width=400, height=300) as h:
+        with PluginHarness("my_app.py", width=400, height=300) as h:
             cmds = h.run(1)                  # step one render frame
             h.key("enter")                   # inject a key event
             cmds = h.run(1)                  # render again to see effects
             h.assert_pixel(10, 10, "#1e1e2e")  # pixel assertion (needs plexi binary)
     """
 
-    def __init__(self, app_path: "str | Path", width: int = 800, height: int = 600,
+    def __init__(self, plugin_path: "str | Path", width: int = 800, height: int = 600,
                  timeout: float = 5.0, host_log_path: "str | Path | None" = None) -> None:
         self._width = width
         self._height = height
@@ -354,13 +354,13 @@ class AppHarness:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
-        command = [sys.executable, str(app_path)]
-        if _is_v3_module_app(app_path):
+        command = [sys.executable, str(plugin_path)]
+        if _is_v3_module_plugin(plugin_path):
             command = [
                 sys.executable,
                 "-m",
                 "plexi_sdk._v3_process",
-                str(app_path),
+                str(plugin_path),
             ]
 
         self._proc = _subprocess.Popen(
@@ -376,7 +376,7 @@ class AppHarness:
         self._reader.start()
 
         # Handshake
-        self._send({"type": "init", "protocol": "pgap/3", "app_id": "test-harness",
+        self._send({"type": "init", "protocol": "pgap/4", "plugin_id": "test-harness",
                     "workspace_root": "/tmp", "capabilities": [], "feature_flags": []})
         ev = self._wait_for(lambda e: e.get("type") == "ready")
         if ev is None:
@@ -389,7 +389,7 @@ class AppHarness:
                     f"traceback={fatal.get('traceback', '')[:500]!r}"
                 )
             raise RuntimeError(
-                f"AppHarness: app did not send 'ready' within {timeout}s. "
+                f"PluginHarness: app did not send 'ready' within {timeout}s. "
                 f"stderr: {stderr[:500]!r}{fatal_msg}"
             )
 
@@ -433,7 +433,7 @@ class AppHarness:
 
     def _raise_fatal(self, ev: dict) -> None:
         raise RuntimeError(
-            f"AppHarness: fatal_error: {ev.get('message', '')}\n"
+            f"PluginHarness: fatal_error: {ev.get('message', '')}\n"
             f"{ev.get('traceback', '')}"
         )
 
@@ -518,7 +518,7 @@ class AppHarness:
                             self._raise_fatal(fatal)
                         stderr = self._proc.stderr.read() if self._proc.stderr else ""
                         raise RuntimeError(
-                            f"AppHarness: app exited before frame_done. "
+                            f"PluginHarness: app exited before frame_done. "
                             f"returncode={self._proc.returncode} stderr={stderr[:500]!r}"
                         )
                     continue
@@ -536,7 +536,7 @@ class AppHarness:
                     self._raise_fatal(fatal)
                 stderr = self._proc.stderr.read() if self._proc.stderr and self._proc.poll() is not None else ""
                 raise RuntimeError(
-                    f"AppHarness: app did not emit frame_done within {self._timeout}s. "
+                    f"PluginHarness: app did not emit frame_done within {self._timeout}s. "
                     f"stderr={stderr[:500]!r}"
                 )
         self._draw_commands = cmds
@@ -553,6 +553,14 @@ class AppHarness:
     def ui_action(self, handler_id: str) -> None:
         """Inject a synthetic UI action — a button/tab/node click by handler id."""
         self._send({"type": "ui_action", "handler_id": handler_id})
+
+    def set_focus(self, focused: bool) -> None:
+        """Inject the host's per-pane focus event (``FocusGained`` / ``FocusLost``)."""
+        self._send({"type": "focus_gained" if focused else "focus_lost"})
+
+    def set_visible(self, visible: bool) -> None:
+        """Inject the host's per-pane visibility event (``PaneShown`` / ``PaneHidden``)."""
+        self._send({"type": "pane_shown" if visible else "pane_hidden"})
 
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""
@@ -587,7 +595,7 @@ class AppHarness:
 
         Example::
 
-            with AppHarness("my_app.py", width=400, height=300) as h:
+            with PluginHarness("my_app.py", width=400, height=300) as h:
                 h.run(1)
                 h.assert_no_overlap()
         """
@@ -639,7 +647,7 @@ class AppHarness:
         except _subprocess.TimeoutExpired:
             self._proc.kill()
 
-    def __enter__(self) -> "AppHarness":
+    def __enter__(self) -> "PluginHarness":
         return self
 
     def __exit__(self, *_: object) -> None:

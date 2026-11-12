@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -48,12 +48,27 @@ class Resize:
 
 @dataclass
 class FocusGained:
-    pass
+    """This pane is now the focused pane of the active context and the host
+    window is visible and OS-focused. Delivered after :class:`PaneShown`."""
 
 
 @dataclass
 class FocusLost:
-    pass
+    """This pane stopped being the focused pane (another pane or context took
+    focus, or the host window lost OS focus or was hidden). Delivered before
+    :class:`PaneHidden`."""
+
+
+@dataclass
+class PaneShown:
+    """This pane became visible: its context is active, the host window is not
+    minimized or occluded, and no other pane is zoomed over it."""
+
+
+@dataclass
+class PaneHidden:
+    """This pane stopped being visible. A pane that was focused always receives
+    :class:`FocusLost` first."""
 
 
 @dataclass
@@ -209,6 +224,36 @@ class McpClosed:
 
 
 @dataclass
+class CliOperationResult:
+    """Host reply to :class:`effects.CliOperation`, correlated by
+    ``request_id``. On success ``ok`` is true and ``data`` holds the program's
+    output, bounded by the operation's declared limit: parsed JSON for a
+    ``json`` operation, a string for ``text``. On failure ``ok`` is false and
+    ``error_code`` is one of ``invalid_request``, ``disabled``,
+    ``capability_missing``, ``busy``, ``unknown_operation``,
+    ``package_invalid``, ``invalid_argument``, ``flag_like_argument``,
+    ``executable_missing``, ``executable_mismatch``,
+    ``executable_not_self_contained``, ``denied``,
+    ``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
+    ``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
+    ``error`` is a human-readable message. For ``nonzero_exit``, ``exit_code`` is
+    set, ``stderr`` holds a bounded tail, and ``data`` holds the program's stdout
+    when it passes the same bound and format check as a success (parsed JSON for
+    a ``json`` operation, a string for ``text``); ``data_available`` says whether
+    it did, and unparseable output is never put in ``data``. A failure other than a nonzero exit, timeout or
+    cancellation means the program did not run."""
+    request_id: str
+    operation_id: str
+    ok: bool
+    data: Any = None
+    error_code: Optional[str] = None
+    error: Optional[str] = None
+    exit_code: Optional[int] = None
+    stderr: Optional[str] = None
+    data_available: Optional[bool] = None
+
+
+@dataclass
 class AiStreamChunk:
     request_id: str
     delta: str
@@ -249,9 +294,9 @@ class EventUnsubscriptionResult:
 
 
 @dataclass
-class AppEvent:
+class PluginEvent:
     subscription_id: str
-    app_id: str
+    plugin_id: str
     event: str
     event_id: int
     resource_id: str

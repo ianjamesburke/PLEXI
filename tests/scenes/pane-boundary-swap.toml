@@ -1,0 +1,26 @@
+# A stacked pane can move to either edge of its context's window row.
+macos_only = true
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "top", args = ["{tmp}/boundary.md"] }
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+d" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 2, window_count = 1 }
+
+[[steps]]
+focus = "top"
+
+[[steps]]
+key = { target = "host", value = "cmd+ctrl+k" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { target = "top", focused = true, pane_count = 1, window_count = 2 }

@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import zipfile
@@ -22,6 +23,10 @@ WASI_VERSION = "3.12.12"
 WASI_SHA = "e40dac3ae68c988b9dcbf2ff6a1fb1b84435aa05b20defcd155801339f35feb2"
 STDLIB_SHA = "487c908ddf4097a1b9ba859f25fe46d22ccaabfb335880faac305ac62bffb79b"
 MODULE_SHA = "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272"
+
+
+def macos_deployment_target():
+    return tomllib.loads((REPO / ".cargo/config.toml").read_text())["env"]["MACOSX_DEPLOYMENT_TARGET"]
 
 
 def digest(path):
@@ -145,7 +150,7 @@ def assemble(args):
             "CFBundleIdentifier": "com.ianjamesburke.plexi" + ("" if channel == "stable" else "-" + channel),
             "CFBundleExecutable": name, "CFBundlePackageType": "APPL", "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleShortVersionString": identity["version"], "CFBundleVersion": identity["version"],
-            "CFBundleIconFile": "app-icon.icns", "LSMinimumSystemVersion": "12.0", "NSHighResolutionCapable": True,
+            "CFBundleIconFile": "app-icon.icns", "LSMinimumSystemVersion": macos_deployment_target(), "NSHighResolutionCapable": True,
             "NSMicrophoneUsageDescription": "Plexi uses the microphone for audio input.",
         }
         fragment = (REPO / "assets/Info.plist.fragment").read_text()

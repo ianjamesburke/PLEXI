@@ -1,6 +1,9 @@
 # Directional navigation leaves pane fullscreen so the destination's tiled
 # layout is visible again. The Rust regression covers cross-page and boundary
 # state; this scene keeps the rendered host surface under review.
+# macOS only: on other platforms Cmd folds into Ctrl and Cmd+J is also the
+# Cmd+Ctrl+J swap chord. The Rust test covers every platform.
+macos_only = true
 size = [1280.0, 800.0]
 
 [[steps]]

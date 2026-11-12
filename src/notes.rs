@@ -11,6 +11,81 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// Maximum saved-note payload admitted by the one-note proposal contract.
+pub const MAX_PROPOSAL_NOTE_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OneNoteInputError {
+    NotFound,
+    PathOutsideTier,
+    Oversized { bytes: usize },
+    InvalidEncoding,
+    Io(String),
+    StaleSourceHash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OneNoteProposalInput {
+    pub canonical_path: PathBuf,
+    pub source_hash: String,
+    pub byte_size: usize,
+    pub source_content: String,
+    pub payload: String,
+}
+
+/// Read and stage exactly one saved note for a proposal worker.
+///
+/// The returned payload is deliberately self-contained: callers must pass it
+/// to a worker over stdin and must not give the worker a note directory or a
+/// filesystem tool. Attachments and neighboring notes are never read here.
+pub fn prepare_one_note_proposal_input(
+    path: &Path,
+) -> Result<OneNoteProposalInput, OneNoteInputError> {
+    let canonical_path = std::fs::canonicalize(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            OneNoteInputError::NotFound
+        } else {
+            OneNoteInputError::Io(error.to_string())
+        }
+    })?;
+    if tier_root_for_note(&canonical_path).is_none() {
+        return Err(OneNoteInputError::PathOutsideTier);
+    }
+    let bytes =
+        std::fs::read(&canonical_path).map_err(|error| OneNoteInputError::Io(error.to_string()))?;
+    if bytes.len() > MAX_PROPOSAL_NOTE_BYTES {
+        return Err(OneNoteInputError::Oversized { bytes: bytes.len() });
+    }
+    let content = std::str::from_utf8(&bytes).map_err(|_| OneNoteInputError::InvalidEncoding)?;
+    if content.contains('\0') {
+        return Err(OneNoteInputError::InvalidEncoding);
+    }
+    let source_hash = format!("{:x}", Sha256::digest(&bytes));
+    let payload = format!(
+        "PLEXI_ONE_NOTE_PROPOSAL_V1\nsource_hash: {source_hash}\nbyte_size: {}\n---\n{content}",
+        bytes.len()
+    );
+    Ok(OneNoteProposalInput {
+        canonical_path,
+        source_hash,
+        byte_size: bytes.len(),
+        source_content: content.to_string(),
+        payload,
+    })
+}
+
+/// Confirm that the saved source still has the hash captured at intake.
+pub fn verify_one_note_source_unchanged(
+    input: &OneNoteProposalInput,
+) -> Result<(), OneNoteInputError> {
+    let current = prepare_one_note_proposal_input(&input.canonical_path)?;
+    if current.source_hash != input.source_hash {
+        return Err(OneNoteInputError::StaleSourceHash);
+    }
+    Ok(())
+}
 
 // ─── Frontmatter ─────────────────────────────────────────────────────────────
 
@@ -25,9 +100,43 @@ pub(crate) struct NoteFrontmatter {
     pub title: Option<String>,
 }
 
+/// Keys the capture paths write into a note's `---` header block.
+const NOTE_METADATA_KEYS: [&str; 4] = ["title", "captured_at", "source", "cwd"];
+
+/// Split `content` into the Plexi capture metadata header and the body after it.
+///
+/// `None` unless the leading `---` block is one Plexi wrote: every line must be
+/// a `key: value` pair for a known [`NOTE_METADATA_KEYS`] key, and the block must
+/// be terminated. An absent, unterminated, empty, or unrecognized header is user
+/// text, so the whole content is the body — a delimiter block a person typed
+/// must never be silently dropped.
+fn split_note_metadata(content: &str) -> Option<(&str, &str)> {
+    let rest = content.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n")?;
+    let header = &rest[..end];
+    let is_metadata = !header.trim().is_empty()
+        && header.lines().all(|line| {
+            line.split_once(':')
+                .is_some_and(|(key, _)| NOTE_METADATA_KEYS.contains(&key.trim()))
+        });
+    // `+ 5` skips the `\n---\n` terminator.
+    is_metadata.then_some((header, &rest[end + 5..]))
+}
+
+/// The user-authored body of a note: the file text minus a Plexi capture
+/// metadata envelope. This is what the picker previews and what copy/cut put on
+/// the clipboard, so storage provenance never leaks into pasted text.
+pub(crate) fn note_body(content: &str) -> &str {
+    split_note_metadata(content).map_or(content, |(_, body)| body)
+}
+
 /// Parse a `---\nkey: value\n---\nbody` note into its frontmatter and body.
 /// Returns an empty frontmatter and the full content as the body when the note
 /// does not have a YAML front-matter block.
+///
+/// Deliberately looser than [`note_body`]: this also parses generic Markdown
+/// frontmatter (`name:`, arbitrary keys) that a non-note file may carry, because
+/// the text editor titles any Markdown file from its `title:` line.
 pub(crate) fn parse_note(content: &str) -> (NoteFrontmatter, String) {
     let mut fm = NoteFrontmatter::default();
 
@@ -162,7 +271,7 @@ pub(crate) fn fuzzy_match(query: &str, haystack: &str) -> bool {
 // ─── Notes tiers ─────────────────────────────────────────────────────────────
 //
 // Notes are user data, so they use the two-tier `StateScope` model from
-// `crate::host::state_scope` — the same one app state uses, and the reason this
+// `crate::host::state_scope` — the same one plugin state uses, and the reason this
 // module owns no path arithmetic of its own beyond locating tiers:
 //
 //   global   →  ~/.plexi/notes/
@@ -1316,6 +1425,57 @@ mod tests {
         assert_eq!(body, "body\n");
     }
 
+    /// The clipboard projection: a Plexi capture envelope is dropped, the body
+    /// after it is returned verbatim (Markdown, links, fenced code, newlines).
+    #[test]
+    fn note_body_strips_the_capture_envelope_and_keeps_the_body() {
+        let content = "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n\n# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n";
+        let body = note_body(content);
+        assert!(!body.contains("captured_at"), "{body:?}");
+        assert!(!body.contains("source:"), "{body:?}");
+        assert_eq!(
+            body,
+            "\n# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n"
+        );
+        // The parser's body and the clipboard projection agree.
+        assert_eq!(parse_note(content).1, body);
+    }
+
+    /// A plain note has no envelope; every byte is body.
+    #[test]
+    fn note_body_returns_plain_notes_unchanged() {
+        let content = "just a plain note\nsecond line\n";
+        assert_eq!(note_body(content), content);
+    }
+
+    /// A `---` block a person typed is not storage metadata. Neither an
+    /// unrecognized key nor a non-`key: value` line may be stripped, or the
+    /// clipboard would silently lose the top of the user's note.
+    #[test]
+    fn note_body_preserves_user_authored_delimiter_blocks() {
+        let frontmatter_like = "---\ntags: [a, b]\n---\nuser body\n";
+        assert_eq!(note_body(frontmatter_like), frontmatter_like);
+
+        let prose_header = "---\nchapter one\n---\nuser body\n";
+        assert_eq!(note_body(prose_header), prose_header);
+
+        // An empty block is not metadata either.
+        let empty = "---\n\n---\nuser body\n";
+        assert_eq!(note_body(empty), empty);
+    }
+
+    /// Unterminated or partially recognized headers are malformed metadata, not
+    /// a reason to drop text: the whole file is preserved.
+    #[test]
+    fn note_body_preserves_malformed_or_unterminated_headers() {
+        let unterminated = "---\ntitle: \"x\"\ncaptured_at: 2026-01-01\nbody without a close\n";
+        assert_eq!(note_body(unterminated), unterminated);
+
+        // One unrecognized line makes the whole block user text.
+        let mixed = "---\ntitle: \"x\"\nnot a pair\ncaptured_at: 2026-01-01\n---\nbody\n";
+        assert_eq!(note_body(mixed), mixed);
+    }
+
     /// A rewrite keeps provenance lines the parser ignores — they are the record
     /// of where a note came from, so losing them on a title edit is data loss.
     #[test]
@@ -1478,6 +1638,55 @@ mod tests {
         assert!(
             tier_root_for_note(&env.root.join("README.md")).is_none(),
             "arbitrary Markdown is not a note"
+        );
+    }
+
+    #[test]
+    fn one_note_review_intake_boundary_and_hash_qualification() {
+        let env = tier_env("one-note-intake");
+        let ctx_tier = context_notes_dir(&env.root);
+        let note_path = ctx_tier.join("scratch.md");
+        let initial_bytes = b"---\ntitle: Scratch\n---\nInitial review target.\n";
+        seed(&note_path, std::str::from_utf8(initial_bytes).unwrap());
+
+        let intake = prepare_one_note_proposal_input(&note_path).unwrap();
+        assert_eq!(
+            intake.canonical_path,
+            std::fs::canonicalize(&note_path).unwrap()
+        );
+        assert_eq!(intake.byte_size, initial_bytes.len());
+        assert_eq!(intake.source_hash.len(), 64);
+        assert!(intake
+            .payload
+            .contains(std::str::from_utf8(initial_bytes).unwrap()));
+        assert!(intake.payload.contains(&intake.source_hash));
+
+        // Attachments and outside files are rejected before their bytes enter a payload.
+        let asset_path = ctx_tier.join("assets").join("diagram.png");
+        std::fs::create_dir_all(asset_path.parent().unwrap()).unwrap();
+        std::fs::write(&asset_path, b"fake png").unwrap();
+        assert_eq!(
+            prepare_one_note_proposal_input(&asset_path),
+            Err(OneNoteInputError::PathOutsideTier)
+        );
+
+        let outside_path = env.root.join("config.toml");
+        std::fs::write(&outside_path, b"key = 'val'").unwrap();
+        assert_eq!(
+            prepare_one_note_proposal_input(&outside_path),
+            Err(OneNoteInputError::PathOutsideTier)
+        );
+
+        std::fs::write(&note_path, b"changed after intake\n").unwrap();
+        assert_eq!(
+            verify_one_note_source_unchanged(&intake),
+            Err(OneNoteInputError::StaleSourceHash)
+        );
+
+        std::fs::write(&note_path, b"a\0b\n").unwrap();
+        assert_eq!(
+            prepare_one_note_proposal_input(&note_path),
+            Err(OneNoteInputError::InvalidEncoding)
         );
     }
 

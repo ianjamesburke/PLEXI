@@ -9,11 +9,11 @@ on:
         type: string
         required: true
     secrets:
-      PLEXI_ALPHA_SIGNING_P12_BASE64:
+      PLEXI_RELEASE_SIGNING_P12_BASE64:
         required: false
-      PLEXI_ALPHA_SIGNING_P12_PASSWORD:
+      PLEXI_RELEASE_SIGNING_P12_PASSWORD:
         required: false
-      PLEXI_ALPHA_SIGNING_CERT_SHA1:
+      PLEXI_RELEASE_SIGNING_CERT_SHA1:
         required: false
   pull_request:
     paths:
@@ -36,8 +36,8 @@ jobs:
     strategy:
       fail-fast: false
       # Alpha/PR builds require Apple Silicon and opportunistically package Linux.
-      # Beta/stable retain their complete required platform matrix.
-      matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":false},{"os":"windows-latest","platform":"windows-x64","optional":false},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-14","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true}]}') }}
+      # Beta/stable try the other platforms without blocking the Mac release.
+      matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true},{"os":"windows-latest","platform":"windows-x64","optional":true},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true}]}') }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
     env:
@@ -64,15 +64,11 @@ jobs:
         if: runner.os == 'macOS' && inputs.tag != ''
         timeout-minutes: 2
         env:
-          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
-          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
-          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+          PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_RELEASE_SIGNING_P12_BASE64 }}
+          PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_RELEASE_SIGNING_P12_PASSWORD }}
+          PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_RELEASE_SIGNING_CERT_SHA1 }}
         shell: bash
-        run: |
-          case '${{ inputs.tag }}' in
-            *-alpha.*) bash scripts/setup-alpha-release-signing.sh ;;
-            *) echo 'error: public beta/stable macOS releases require Developer ID signing and notarization; this Alpha-only identity may not be used' >&2; exit 1 ;;
-          esac
+        run: bash scripts/setup-release-signing.sh
       - name: Fetch the verified package runtime
         shell: bash
         run: uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
@@ -87,8 +83,12 @@ jobs:
         run: |
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
           uv run --no-project python scripts/test-distribution.py --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}'
-      # Release tags only: on PRs and alpha pushes the Rust host workflow already
-      # runs this exact test + clippy, so repeating it here just doubles the wait.
+      - name: Build the release host
+        shell: bash
+        run: |
+          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
+      # Release tags only: pre-landing host acceptance is local; nightly.yml
+      # runs hosted Rust verification after Alpha landing.
       - name: Test and lint the host
         if: inputs.tag != ''
         shell: bash
@@ -98,16 +98,9 @@ jobs:
             # bin test target contains Unix-only socket/permission fixtures.
             cargo test --test windows_host_launch
           else
-            # Phone seal tests shell out to phone_crypto.py, which imports
-            # cryptography. The relay process itself does not.
-            PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
             cargo test --bin plexi
           fi
           cargo clippy --bin plexi -- -D warnings
-      - name: Build the release host
-        shell: bash
-        run: |
-          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth
@@ -127,7 +120,9 @@ jobs:
             command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
             if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
             if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' != '' ]]; then
-              uv run --no-project python scripts/test-macos-signing.py --archive "dist/plexi-${{ matrix.platform }}${channel:+-$channel}.tar.gz" --expected-authority 'Plexi Dev' --expected-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1"
+              archive_suffix="${channel/#stable/}"
+              archive_suffix="${archive_suffix:+-$archive_suffix}"
+              uv run --no-project python scripts/test-macos-signing.py --archive "dist/plexi-${{ matrix.platform }}${archive_suffix}.tar.gz" --expected-authority 'Plexi Dev' --expected-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1"
             fi
           done
           if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' == *-alpha.* ]]; then
@@ -143,7 +138,7 @@ jobs:
         if: always() && runner.os == 'macOS' && inputs.tag != ''
         shell: bash
         run: |
-          bash scripts/setup-alpha-release-signing.sh --cleanup
+          bash scripts/setup-release-signing.sh --cleanup
       - uses: actions/upload-artifact@v4
         if: always()
         with:

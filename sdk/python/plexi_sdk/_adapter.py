@@ -16,14 +16,14 @@ from . import events as event_types
 _module = None
 
 
-def load_app(module_name: str) -> None:
+def load_plugin(module_name: str) -> None:
     global _module
     _module = importlib.import_module(module_name)
 
 
 def call_lifecycle(fn_name: str, json_arg: str) -> str:
     if _module is None:
-        raise RuntimeError("no Plexi app module loaded")
+        raise RuntimeError("no Plexi plugin module loaded")
     fn = getattr(_module, fn_name)
     arg = json.loads(json_arg) if json_arg else {}
 
@@ -151,6 +151,12 @@ def _require_view_component(root: Any) -> None:
             f"view() returned the effect {type(root).__name__}. Effects are returned "
             "from update() or init(); view() returns exactly one component."
         )
+    if not (isinstance(root, dict) or hasattr(root, "to_node") or is_dataclass(root)):
+        raise TypeError(
+            f"view() returned {type(root).__name__}, which is not a component. "
+            "Return exactly one plexi_sdk.ui component, for example "
+            "Column(children=[Text(...)])."
+        )
 
 
 def _encode_uitree(root: Any) -> dict[str, Any]:
@@ -205,9 +211,9 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "entries": data.get("entries", []),
             "divider": data.get("divider", True),
         }
-    if node_type == "app_bar":
+    if node_type == "surface_header":
         return {
-            "type": "AppBar",
+            "type": "SurfaceHeader",
             "title": data.get("title", ""),
             "subtitle": data.get("subtitle", ""),
         }
@@ -225,6 +231,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "type": "Column",
             "children": child_ids,
             "align": data.get("align", "start"),
+            "justify": data.get("justify", "start"),
             "grow": data.get("grow", False),
         }
         # Carry gap only when the app set one: absence lets the host apply its
@@ -284,7 +291,8 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         out = {
             "type": "Row",
             "children": child_ids,
-            "align": data.get("align", "start"),
+            "align": data.get("align", "center"),
+            "justify": data.get("justify", "start"),
             "grow": data.get("grow", False),
         }
         if data.get("gap") is not None:

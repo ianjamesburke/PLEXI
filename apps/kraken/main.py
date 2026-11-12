@@ -10,7 +10,7 @@ from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import HttpResponse, KeyEvent, TimerFired, UiAction
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Badge,
     Banner,
     Card,
@@ -146,7 +146,7 @@ def view():
     subtitle = "market ticker · refreshing…" if data["loading"] else "market ticker"
     return Column(
         [
-            AppBar("Kraken", subtitle),
+            SurfaceHeader("Kraken", subtitle),
             SelectList(rows, selected_idx=data["selected"], on_select="pair")
             if rows
             else Text("No pairs configured.", size=12.0),

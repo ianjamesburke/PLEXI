@@ -1,18 +1,18 @@
 //! Built-in error tile rendered when a capability pre-flight check fails.
 
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::ui::style;
 use egui::RichText;
 
-/// Rendered as a `Pane::App(AppRuntime::Builtin(...))` when the host detects
-/// that an app's declared capabilities cannot be satisfied by the current
+/// Rendered as a `Pane::App(ViewRuntime::Builtin(...))` when the host detects
+/// that a plugin's declared capabilities cannot be satisfied by the current
 /// config. No Python process is ever spawned for this pane.
-pub struct LaunchFailedApp {
-    pub app_id: String,
+pub struct LaunchFailedView {
+    pub plugin_id: String,
     pub missing: Vec<String>,
 }
 
-impl App for LaunchFailedApp {
+impl View for LaunchFailedView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -23,20 +23,20 @@ impl App for LaunchFailedApp {
     }
 
     fn display_name(&self) -> String {
-        format!("Cannot launch {}", self.app_id)
+        format!("Cannot launch {}", self.plugin_id)
     }
 
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
         ui.vertical_centered(|ui| {
             ui.add_space(style::SPACE_XL * 2.0);
             ui.label(
-                RichText::new(format!("Cannot launch {}", self.app_id))
+                RichText::new(format!("Cannot launch {}", self.plugin_id))
                     .size(style::TEXT_BODY)
                     .color(colors.text_primary)
                     .strong(),
@@ -59,7 +59,7 @@ impl App for LaunchFailedApp {
         });
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         vec![]
     }
 }

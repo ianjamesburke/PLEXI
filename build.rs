@@ -9,9 +9,23 @@ fn main() {
     let channel = std::fs::read_to_string(".channel").unwrap_or_default();
     let title = match channel.trim() { "alpha" => "Plexi Alpha", "beta" => "Plexi Beta", _ => "Plexi" };
     println!("cargo:rustc-env=PLEXI_APP_TITLE={title}");
-    println!("cargo:rerun-if-changed=.channel");
+    // Managed invocations supply a fresh fingerprint before Cargo checks its
+    // cache. A missing file cannot be watched without rebuilding every time.
+    println!("cargo:rerun-if-env-changed=PLEXI_BUILD_CHANNEL_ROOT");
+    println!("cargo:rerun-if-env-changed=PLEXI_BUILD_CHANNEL_INPUT");
+    let managed_root = std::env::var_os("PLEXI_BUILD_CHANNEL_ROOT").map(std::path::PathBuf::from);
+    let manifest_root = std::env::var_os("CARGO_MANIFEST_DIR")
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    let managed = managed_root.is_some()
+        && managed_root == manifest_root
+        && std::env::var_os("PLEXI_BUILD_CHANNEL_INPUT").is_some();
+    if !managed {
+        // Raw Cargo retains conservative creation/change/removal detection.
+        println!("cargo:rerun-if-changed=.channel");
+    }
     println!("cargo:rerun-if-env-changed=PLEXI_BUILD_TAG");
     let commit = git(&["rev-parse", "HEAD"]);
+    let short_commit = commit.get(..7).unwrap_or("unknown");
     for name in ["HEAD", &git(&["symbolic-ref", "-q", "HEAD"])] {
         if !name.is_empty() { println!("cargo:rerun-if-changed={}", git(&["rev-parse", "--git-path", name])); }
     }
@@ -34,4 +48,10 @@ fn main() {
     println!("cargo:rustc-env=PLEXI_SOURCE_COMMIT={commit}");
     println!("cargo:rustc-env=PLEXI_BUILD_ID={build_id}");
     println!("cargo:rustc-env=PLEXI_BUILD_TAG={tag}");
+    // The one human-readable identity of this binary: compiled tag (or crate
+    // version) plus short commit. Never derived from profile markers.
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let shown = Some(tag.trim_start_matches('v')).filter(|t| !t.is_empty()).unwrap_or(&version);
+    println!("cargo:rustc-env=PLEXI_SHORT_COMMIT={short_commit}");
+    println!("cargo:rustc-env=PLEXI_VERSION_TEXT={shown} ({short_commit})");
 }

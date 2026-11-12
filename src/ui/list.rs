@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, Response, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, Pos2, Response, Stroke, StrokeKind, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -219,6 +219,7 @@ pub(crate) struct ListRowPips {
     pub hidden_indices: Vec<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
     pub activities: Vec<Option<crate::protocol::AgentState>>,
+    pub static_health_pips: Vec<usize>,
 }
 
 pub struct ListRow<'a> {
@@ -231,6 +232,7 @@ pub struct ListRow<'a> {
     selected: bool,
     danger_trailing: bool,
     dense: bool,
+    body_color: Option<Color32>,
 }
 
 impl<'a> ListRow<'a> {
@@ -245,7 +247,15 @@ impl<'a> ListRow<'a> {
             selected: false,
             danger_trailing: false,
             dense: false,
+            body_color: None,
         }
+    }
+
+    /// Preferred colour for the primary line (a state colour). It is still
+    /// contrast-corrected against the painted row surface.
+    pub fn body_color(mut self, color: Color32) -> Self {
+        self.body_color = Some(color);
+        self
     }
 
     /// Single-line row at `LIST_ROW_DENSE_H` for data-dense listings.
@@ -293,14 +303,47 @@ impl<'a> ListRow<'a> {
     }
 
     pub fn show(self, ui: &mut egui::Ui, colors: &Colors) -> ListRowResponse {
-        let row_h = if self.dense {
+        // Below this minimum the parent must provide scrolling or a wider
+        // container; a mandatory action never becomes a blank sliver.
+        ui.set_min_width(style::BUTTON_H_MD + style::LIST_ROW_PAD_H + TRAILING_PAD_H);
+        let base_h = if self.dense {
             style::LIST_ROW_DENSE_H
         } else {
             style::LIST_ROW_H
+        }
+        .max(if self.trailing.is_some() {
+            style::BUTTON_H_MD
+        } else {
+            0.0
+        });
+        let content_width =
+            (ui.available_width() - style::LIST_ROW_PAD_H - TRAILING_PAD_H).max(style::BUTTON_H_MD);
+        let action = self.trailing.map(|label| {
+            ui.fonts_mut(|f| {
+                f.layout(
+                    label.into(),
+                    egui::FontId::proportional(style::TEXT_CAPTION),
+                    Color32::PLACEHOLDER,
+                    content_width,
+                )
+            })
+        });
+        let action_size = action
+            .as_ref()
+            .map(|g| g.size().max(Vec2::splat(style::BUTTON_H_MD)));
+        let stacked = action_size.is_some_and(|size| {
+            size.x + style::LIST_ROW_GAP + style::PANE_HEADER_TITLE_MIN > content_width
+        });
+        let row_h = if stacked {
+            base_h + style::SPACE_SM + action_size.map_or(0.0, |s| s.y)
+        } else {
+            base_h
         };
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
-        // Custom-painted titles still need an accessible, unelided label.
+        let primary_rect = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), base_h));
+        let mut capture = super::layout_report::Capture::begin(ui.painter(), "list");
+        capture.scrolling();
         response.widget_info(|| {
             egui::WidgetInfo::selected(
                 egui::WidgetType::Button,
@@ -312,113 +355,195 @@ impl<'a> ListRow<'a> {
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-
-        let center_y = rect.center().y;
-
-        // Trailing rect is computable before any painting — needed early so
-        // the danger glow can be drawn behind the row content.
-        let trailing_rect = self.trailing.map(|label| {
-            let size = trailing_size(ui, label);
-            egui::Rect::from_center_size(
-                Pos2::new(rect.right() - TRAILING_PAD_H - size.x / 2.0, center_y),
-                size,
-            )
+        let trailing_rect = action_size.map(|size| {
+            if stacked {
+                egui::Rect::from_min_size(
+                    egui::pos2(
+                        rect.left() + style::LIST_ROW_PAD_H,
+                        rect.top() + base_h + style::SPACE_XS,
+                    ),
+                    size,
+                )
+            } else {
+                egui::Rect::from_center_size(
+                    egui::pos2(
+                        rect.right() - TRAILING_PAD_H - size.x / 2.0,
+                        primary_rect.center().y,
+                    ),
+                    Vec2::new(size.x, base_h),
+                )
+            }
         });
         let trailing_hovered = trailing_rect.is_some_and(|r| ui.rect_contains_pointer(r));
-
-        let inset = selection_inset(rect);
-        if self.selected {
+        let background = if self.selected {
             paint_selection(ui.painter(), rect, colors);
+            colors.bg_sidebar.blend(colors.accent.gamma_multiply(0.14))
         } else if self.danger_trailing && trailing_hovered {
-            // Hovering a destructive action warns at row level: soft danger
-            // tint + hairline danger outline before anything is clicked.
-            ui.painter()
-                .rect_filled(inset, style::RADIUS_SM, colors.danger.gamma_multiply(0.07));
+            ui.painter().rect_filled(
+                selection_inset(rect),
+                style::RADIUS_SM,
+                colors.danger.gamma_multiply(0.07),
+            );
             ui.painter().rect_stroke(
-                inset,
+                selection_inset(rect),
                 style::RADIUS_SM,
                 Stroke::new(1.0_f32, colors.danger.gamma_multiply(0.35)),
                 StrokeKind::Inside,
             );
+            colors.bg_sidebar.blend(colors.danger.gamma_multiply(0.07))
         } else if response.hovered() {
             ui.painter()
-                .rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
-        }
-
-        let x = rect.left() + style::LIST_ROW_PAD_H;
-
-        let _ = self
-            .trailing
-            .zip(trailing_rect)
-            .map(|(label, trailing_rect)| {
-                let id = response.id.with("_trailing_action");
-                let trailing_response = ui.interact(trailing_rect, id, egui::Sense::click());
-                // Destructive actions read as destructive at rest — soft danger,
-                // escalating to full danger on hover.
-                let color = if self.danger_trailing {
-                    if trailing_response.hovered() {
-                        colors.danger
-                    } else {
-                        colors.danger.gamma_multiply(0.75)
-                    }
-                } else {
-                    colors.text_dim
-                };
-                crate::ui::snap::text_snapped(
-                    ui.painter(),
-                    trailing_rect.center(),
-                    Align2::CENTER_CENTER,
-                    label,
-                    egui::FontId::proportional(style::TEXT_CAPTION),
-                    color,
-                );
-                trailing_response
-            });
-
-        let text_right = self.text_right(ui, rect);
-        // The chip trails the title so every row's title starts at the same
-        // x — variable-width leading chips made list starts ragged. Reserve
-        // its width out of the primary line's budget only; secondary metadata
-        // gets the full width.
-        let chip_reserved = self
-            .chip
-            .map(|label| chip_size(ui, label).x + style::LIST_ROW_GAP)
-            .unwrap_or(0.0);
-        let primary_max = (text_right - x - chip_reserved).max(0.0);
-        let secondary_max = (text_right - x).max(0.0);
-        let text_metrics =
-            draw_text_block(ui, &self, colors, x, center_y, primary_max, secondary_max);
-        if let Some(label) = self.chip {
-            draw_chip(
-                ui,
-                label,
-                colors,
-                text_metrics.primary_end_x + style::LIST_ROW_GAP,
-                text_metrics.primary_center_y,
-            );
-        }
-        self.draw_metadata(ui, colors, rect, trailing_rect, text_metrics);
-
-        ListRowResponse { row: response }
-    }
-
-    fn action_left(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
-        self.trailing
-            .map(|label| rect.right() - TRAILING_PAD_H - trailing_size(ui, label).x)
-            .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H)
-    }
-
-    fn text_right(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
-        let action_left = self.action_left(ui, rect);
-        let has_trailing = self.trailing.is_some();
-        let metadata_width = self.bounded_metadata_width(ui, rect);
-        if metadata_width > 0.0 {
-            action_left - style::LIST_ROW_GAP - metadata_width - style::LIST_ROW_GAP
-        } else if has_trailing {
-            action_left - style::LIST_ROW_GAP
+                .rect_filled(selection_inset(rect), style::RADIUS_SM, colors.bg_hover);
+            colors.bg_hover
         } else {
-            action_left
+            colors.bg_sidebar
+        };
+        let surface = super::foreground::Surface::over(colors.bg_sidebar, background);
+        let mut readable = *colors;
+        readable.bg_sidebar = background;
+        readable.text_primary =
+            surface.foreground(colors.text_primary, super::foreground::Role::SmallText);
+        let mut body_colors = readable;
+        if let Some(color) = self.body_color {
+            body_colors.text_primary =
+                surface.foreground(color, super::foreground::Role::SmallText);
         }
+        readable.text_dim = surface.foreground(colors.text_dim, super::foreground::Role::SmallText);
+        let mut actions = Vec::new();
+        let mut trailing_clicked = false;
+        if let Some(((label, galley), hit)) = self.trailing.zip(action).zip(trailing_rect) {
+            let action_response = ui.interact(
+                hit,
+                response.id.with("_trailing_action"),
+                egui::Sense::click(),
+            );
+            action_response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+            });
+            let preferred = if self.danger_trailing {
+                colors.danger
+            } else {
+                colors.text_dim
+            };
+            let color = surface.foreground(preferred, super::foreground::Role::SmallText);
+            capture.text_slot("action", &galley, hit);
+            ui.painter().galley_with_override_text_color(
+                hit.center() - galley.size() / 2.0,
+                galley,
+                color,
+            );
+            trailing_clicked = action_response.clicked();
+            actions.push(super::layout_report::Action {
+                id: "action".into(),
+                name: label.into(),
+                painted_label: label.into(),
+                hit,
+                minimum: Vec2::splat(style::BUTTON_H_MD),
+                inactive: false,
+            });
+        }
+        if stacked {
+            static REFLOW: std::sync::Once = std::sync::Once::new();
+            REFLOW.call_once(|| log::info!("ui: reflowing list action below its title"));
+        }
+        let lanes = self.lanes(ui, primary_rect, !stacked);
+        let chip_width = self.chip.map(|label| chip_size(ui, label).x);
+        let chip_slots: Vec<_> = chip_width
+            .map(|width| super::bounded::Slot {
+                id: "chip",
+                width,
+                compact: None,
+                required: false,
+            })
+            .into_iter()
+            .collect();
+        if let Ok(title) = super::bounded::allocate(
+            lanes.text,
+            style::PANE_HEADER_TITLE_MIN,
+            style::LIST_ROW_GAP,
+            &chip_slots,
+        ) {
+            let metrics = draw_text_block(
+                ui,
+                &self,
+                &body_colors,
+                lanes.text.left(),
+                primary_rect.center().y,
+                title.text.width(),
+                lanes.text.width(),
+            );
+            if let Some(label) = self.chip.filter(|_| {
+                title
+                    .slots
+                    .iter()
+                    .any(|s| s.presentation != super::bounded::Presentation::Hidden)
+            }) {
+                draw_chip(
+                    ui,
+                    label,
+                    &readable,
+                    metrics.primary_end_x + style::LIST_ROW_GAP,
+                    metrics.primary_center_y,
+                );
+            }
+            if let Some(metadata) = lanes.slots.iter().find(|s| s.id == "metadata") {
+                self.draw_metadata(ui, &readable, primary_rect, metadata.rect, metrics);
+            }
+        }
+        capture.finish(ui.painter(), rect, colors.bg_sidebar, actions, vec![]);
+        ListRowResponse {
+            row: response,
+            trailing_clicked,
+        }
+    }
+
+    fn lanes(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        reserve_action: bool,
+    ) -> super::bounded::RowLayout<'static> {
+        let bounds = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + style::LIST_ROW_PAD_H, rect.top()),
+            egui::pos2(
+                (rect.right() - TRAILING_PAD_H).max(rect.left() + style::LIST_ROW_PAD_H),
+                rect.bottom(),
+            ),
+        );
+        let mut slots = Vec::new();
+        if let Some(label) = self.trailing.filter(|_| reserve_action) {
+            slots.push(super::bounded::Slot {
+                id: "action",
+                width: trailing_size(ui, label).x,
+                compact: None,
+                required: true,
+            });
+        }
+        let metadata = self.metadata_lane_width(ui);
+        if metadata > 0.0 {
+            slots.push(super::bounded::Slot {
+                id: "metadata",
+                width: metadata,
+                compact: Some(metadata.min(bounds.width() * 0.45)),
+                required: false,
+            });
+        }
+        super::bounded::allocate(
+            bounds,
+            style::PANE_HEADER_TITLE_MIN,
+            style::LIST_ROW_GAP,
+            &slots,
+        )
+        .unwrap_or_else(|error| {
+            log::info!(
+                "ui: insufficient list row space; required={}",
+                error.minimum_width
+            );
+            super::bounded::RowLayout {
+                text: bounds,
+                slots: Vec::new(),
+            }
+        })
     }
 
     fn metadata_lane_width(&self, ui: &egui::Ui) -> f32 {
@@ -431,33 +556,19 @@ impl<'a> ListRow<'a> {
         chip_width.max(pip_width)
     }
 
-    // Preserve a readable title lane and the action before admitting metadata.
-    fn bounded_metadata_width(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
-        let available = (self.action_left(ui, rect)
-            - rect.left()
-            - style::LIST_ROW_PAD_H
-            - style::LIST_ROW_GAP * 2.0)
-            .max(0.0);
-        self.metadata_lane_width(ui).min(available * 0.45)
-    }
-
     fn draw_metadata(
         &self,
         ui: &egui::Ui,
         colors: &Colors,
         rect: egui::Rect,
-        trailing_rect: Option<egui::Rect>,
+        lane: egui::Rect,
         text_metrics: TextBlockMetrics,
     ) {
-        let lane_width = self.bounded_metadata_width(ui, rect);
-        if lane_width <= 0.0 {
+        if lane.width() <= 0.0 {
             return;
         }
-        let action_left = trailing_rect
-            .map(|r| r.left())
-            .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H);
-        let lane_right = action_left - style::LIST_ROW_GAP;
-        let lane_left = lane_right - lane_width;
+        let lane_left = lane.left();
+        let lane_right = lane.right();
 
         let has_compact_pips =
             self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
@@ -497,11 +608,21 @@ impl<'a> ListRow<'a> {
 
 pub struct ListRowResponse {
     row: Response,
+    trailing_clicked: bool,
 }
 
 impl ListRowResponse {
+    pub(crate) fn response(&self) -> egui::Response {
+        self.row.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rect(&self) -> egui::Rect {
+        self.row.rect
+    }
+
     pub fn row_clicked(&self) -> bool {
-        self.row.clicked()
+        self.row.clicked() || self.trailing_clicked
     }
 
     pub fn row_hovered(&self) -> bool {
@@ -692,12 +813,16 @@ fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
 }
 
 fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32) {
-    let text_color = colors.text_on(colors.bg_active);
+    let text_color = super::foreground::Surface::over(colors.bg_sidebar, colors.bg_active)
+        .foreground(
+            colors.text_on(colors.bg_active),
+            super::foreground::Role::SmallText,
+        );
     let galley = chip_galley(ui, label, text_color);
     let size = chip_size(ui, label);
     let rect = egui::Rect::from_min_size(Pos2::new(x, center_y - size.y / 2.0), size);
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(4), colors.bg_active);
+        .rect_filled(rect, crate::ui::style::RADIUS_SMALL, colors.bg_active);
     crate::ui::snap::galley_snapped(
         ui.painter(),
         Pos2::new(
@@ -837,15 +962,26 @@ fn draw_pips(
             time,
             dot_i,
         );
-        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, agent_state, color, hidden);
+        let glyph_state = agent_state.filter(|_| !pips.static_health_pips.contains(&dot_i));
+        crate::ui::activity::paint_pip(
+            ui.painter(),
+            center,
+            PANE_PIP_RADIUS,
+            glyph_state,
+            color,
+            hidden,
+        );
     }
     if pips.count > capped {
         let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;
-        let overflow_color = if pips.focused_idx.is_some_and(|idx| idx >= capped) {
+        let preferred = if pips.focused_idx.is_some_and(|idx| idx >= capped) {
             colors.accent
         } else {
-            colors.text_dim.gamma_multiply(0.55)
+            colors.text_dim
         };
+        let overflow_color =
+            super::foreground::Surface::over(colors.bg_sidebar, Color32::TRANSPARENT)
+                .foreground(preferred, super::foreground::Role::SmallText);
         crate::ui::snap::text_snapped(
             ui.painter(),
             Pos2::new(overflow_x, center_y),
@@ -860,6 +996,52 @@ fn draw_pips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_color_paints_the_primary_line_in_the_requested_state_colour() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let paint = |body: Option<Color32>| {
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            let mut row = ListRow::new("Planner state").dense();
+                            if let Some(color) = body {
+                                row = row.body_color(color);
+                            }
+                            row.show(ui, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "Planner state" => {
+                        Some(t.override_text_color.unwrap_or(t.fallback_color))
+                    }
+                    _ => None,
+                })
+                .expect("row body")
+        };
+        let plain = paint(None);
+        let stated = paint(Some(colors.danger));
+        assert_ne!(plain, stated, "state colour must reach the painted body");
+        let surface = crate::ui::foreground::Surface::over(colors.bg_sidebar, colors.bg_sidebar);
+        assert_eq!(
+            stated,
+            surface.foreground(colors.danger, crate::ui::foreground::Role::SmallText),
+            "state colour is contrast-corrected against the row surface"
+        );
+    }
 
     fn collect_chip_shapes(
         shape: &egui::Shape,
@@ -880,6 +1062,75 @@ mod tests {
     }
 
     #[test]
+    fn adoption_reflowed_action_activates_row_through_pointer() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let mut hit = egui::Rect::NOTHING;
+        let mut clicked = false;
+        for stage in 0..3 {
+            let mut input = egui::RawInput::default();
+            if stage > 0 {
+                input.events.push(egui::Event::PointerMoved(hit.center()));
+                input.events.push(egui::Event::PointerButton {
+                    pos: hit.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: stage == 1,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let _ = ctx.run_ui(input, |ui| {
+                ui.set_width(160.0);
+                clicked |= ListRow::new("Release evidence")
+                    .trailing_action("Restore and open in a new window")
+                    .show(ui, &colors)
+                    .row_clicked();
+            });
+            let reports = super::super::layout_report::snapshot(&ctx);
+            hit = reports
+                .iter()
+                .find(|r| r.surface == "list")
+                .unwrap()
+                .actions[0]
+                .hit;
+        }
+        assert!(
+            clicked,
+            "the reflowed trailing action must activate its row"
+        );
+    }
+
+    #[test]
+    fn adoption_long_list_action_and_chip_fit() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+        );
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(160.0);
+            ui.set_clip_rect(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(180.0, 800.0),
+            ));
+            let capture =
+                crate::ui::layout_report::Capture::begin(ui.painter(), "adoption-fixture");
+            let result = ListRow::new("A long identifier with distinguishing suffix")
+                .secondary("/an/unbroken/path/with/a/long/detail")
+                .chip("an exceptionally long annotation that must collapse")
+                .trailing_action("Wiederherstellen und in einem neuen Fenster öffnen")
+                .show(ui, &colors);
+            let rect = result.row.rect;
+            capture.finish(ui.painter(), rect, colors.bg_sidebar, vec![], vec![]);
+        });
+        let reports = crate::ui::layout_report::snapshot(&ctx);
+        assert!(!reports.is_empty());
+        let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    #[test]
     fn list_chip_text_has_optical_vertical_centering() {
         for ppp in [1.0_f32, 2.0] {
             let ctx = egui::Context::default();
@@ -889,7 +1140,7 @@ mod tests {
                 &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
             );
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                draw_chip(ui, "app", &colors, 12.0, 30.0);
+                draw_chip(ui, "view", &colors, 12.0, 30.0);
             });
 
             let mut rects = Vec::new();
@@ -903,7 +1154,7 @@ mod tests {
                 .expect("chip background");
             let (text_pos, galley) = texts
                 .into_iter()
-                .find(|(_, galley)| galley.job.text == "app")
+                .find(|(_, galley)| galley.job.text == "view")
                 .expect("chip text");
             let line_box_center = text_pos.y + galley.size().y / 2.0;
             let center_delta = line_box_center - chip.center().y;
@@ -919,10 +1170,10 @@ mod tests {
 
     #[test]
     fn list_row_builder_keeps_optional_secondary_empty_by_default() {
-        let row = ListRow::new("note").secondary("").chip("app");
+        let row = ListRow::new("note").secondary("").chip("view");
         assert_eq!(row.body, "note");
         assert!(row.secondary.is_none());
-        assert_eq!(row.chip, Some("app"));
+        assert_eq!(row.chip, Some("view"));
         assert!(row.metadata_chips.is_empty());
         assert!(!row.selected);
     }
@@ -933,13 +1184,14 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let row_rect =
                 egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
-            let plain = ListRow::new("Assistant").secondary("Long app description");
+            let plain = ListRow::new("Assistant").secondary("Long plugin description");
             let metadata = ListRow::new("Assistant")
-                .secondary("Long app description")
-                .metadata_chips(&["app", "ws"]);
+                .secondary("Long plugin description")
+                .metadata_chips(&["view", "ws"]);
 
             assert!(
-                metadata.text_right(ui, row_rect) < plain.text_right(ui, row_rect),
+                metadata.lanes(ui, row_rect, true).text.right()
+                    < plain.lanes(ui, row_rect, true).text.right(),
                 "metadata lane must reduce the text area so secondary text truncates before chips"
             );
         });
@@ -956,10 +1208,14 @@ mod tests {
                 focused_idx: Some(1),
                 hidden_indices: vec![2],
                 activities: vec![None, None, None],
+                static_health_pips: vec![],
             });
 
             assert!(row.metadata_lane_width(ui) > 0.0);
-            assert!(row.text_right(ui, row_rect) < row_rect.right() - style::LIST_ROW_PAD_H);
+            assert!(
+                row.lanes(ui, row_rect, true).text.right()
+                    < row_rect.right() - style::LIST_ROW_PAD_H
+            );
         });
     }
 
@@ -982,7 +1238,7 @@ mod tests {
     /// Drives one frame of a 30-row list with the given selection and reports
     /// whether the selected row's rect ended up fully inside the scroll
     /// viewport. Uses real egui layout — row spacing, section headers, and
-    /// scroll state all behave exactly as in the app.
+    /// scroll state all behave exactly as in the plugin.
     fn run_list_frame(ctx: &egui::Context, selected: usize) -> bool {
         let mut visible = false;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {

@@ -1,18 +1,22 @@
-schema_version = 1
+schema_version = 2
 
-[app]
-id = "mcp-bridge"
-type = "app"
-name = "MCP Bridge"
+[runtime]
+python_compat = true
+kind = "python"
 entry = "mcp_bridge.py"
+
+[launch]
+
+[plugin]
+id = "mcp-bridge"
+name = "MCP Bridge"
 version = "0.1.0"
 description = "Bridges configured MCP servers onto the Plexi connector tool plane"
 watch = true
 
-[runtime]
-python_compat = true
-
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["mcp.client"]
 
-[launch]
+[[contributes.views]]
+id = "mcp-bridge.main"
+default = true

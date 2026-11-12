@@ -4,13 +4,13 @@ description: Browse your filesystem without leaving Plexi.
 order: 8
 ---
 
-The file explorer is a built-in overlay that lets you browse and open files from within any Plexi context. Open it with `⌘E` from a terminal pane — no shell command required.
+The file explorer is a built-in overlay for browsing and opening files from any Plexi context. Open it with `⌘E` from a terminal pane.
 
 The layout adapts to the pane width. Narrow splits use a compact list, medium and wide panes switch to a details table, and wide panes can show an explicit inspector with preview metadata for the selected item. Press `Space` for Quick Look in any width.
 
 ## Opening the File Explorer
 
-Press `⌘E` from any focused terminal pane. The overlay opens over your current layout. It starts at the current working directory of that pane (tracked via OSC 7).
+Press `⌘E` from any focused terminal pane. The overlay opens over your current layout. A fresh Explorer starts at the invoking terminal’s current working directory, including changes made with `cd`. When no live terminal directory is available, it falls back to the context root, then your home directory. Reopening an existing Explorer preserves its navigation state.
 
 ## Navigation
 
@@ -27,7 +27,7 @@ Press `⌘E` from any focused terminal pane. The overlay opens over your current
 | Refresh listing | `r` |
 | Close | `Escape` |
 
-Files open in the focused terminal pane. Directories are entered in place — the overlay stays open until you press `Escape`.
+Files open in the focused terminal pane. Directories are entered in place, and the overlay stays open until you press `Escape`.
 
 ## Selection And File Operations
 
@@ -43,7 +43,7 @@ Use `Shift+↑` and `Shift+↓` to extend the current selection, or `⌘A` to se
 | Paste into current folder | `⌘V` |
 | Move selected items to trash | `⌘Backspace` |
 | Reveal selected items with the system opener | `⌘Enter` |
-| Open selected items with default app | `⌘O` |
+| Open selected items in their default macOS app | `⌘O` |
 
 Moving items to trash opens a confirmation modal before changing the filesystem. File operations log success and failure details to the Plexi log.
 

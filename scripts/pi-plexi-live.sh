@@ -92,17 +92,17 @@ FIRST_CTX_ID="$(python3 -c 'import json,sys; panes=json.loads(sys.argv[1]); prin
 echo "==> Initial terminal pane=$FIRST_PANE_ID context=$FIRST_CTX_ID"
 
 echo "==> [3/6] Launching deterministic editor fixture apps/dev/clip-editor-probe..."
-APP_LAUNCH_JSON="$(plexi_iso app open "$ROOT_DIR/apps/dev/clip-editor-probe" --from "$FIRST_PANE_ID")"
+APP_LAUNCH_JSON="$(plexi_iso view open "$ROOT_DIR/apps/dev/clip-editor-probe" --from "$FIRST_PANE_ID")"
 echo "App launch: $APP_LAUNCH_JSON"
 
 for _ in {1..40}; do
-  TOOLS_JSON="$(plexi_iso app tools --json --context "$FIRST_CTX_ID" || true)"
+  TOOLS_JSON="$(plexi_iso plugin tools --json --context "$FIRST_CTX_ID" || true)"
   if echo "$TOOLS_JSON" | grep -q '"clip.crop"'; then
     break
   fi
   sleep 0.25
 done
-echo "==> Discovered app tools in context $FIRST_CTX_ID:"
+echo "==> Discovered plugin tools in context $FIRST_CTX_ID:"
 echo "$TOOLS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print([t["name"] for t in d.get("tools",[])])'
 
 # Verify ask-tier gate (`clip.state` and `clip.crop` without grant return permission_required),
@@ -132,31 +132,31 @@ EOF
   return 1
 }
 
-STATE_ASK_JSON="$(run_in_pane1 "app call clip-editor-probe clip.state --json --input '{\"clip_id\":\"intro\"}'" "$WORKSPACE_DIR/state_ask.json")"
+STATE_ASK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.state --json --input '{\"clip_id\":\"intro\"}'" "$WORKSPACE_DIR/state_ask.json")"
 echo "clip.state unapproved: $STATE_ASK_JSON"
 STATE_REQ_ID="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is False and d["error_code"] == "permission_required"; print(d["pending_request_id"])' "$STATE_ASK_JSON")"
 
 plexi_iso permissions allow "$STATE_REQ_ID"
-STATE_CALL_JSON="$(run_in_pane1 "app call clip-editor-probe clip.state --json --input '{\"clip_id\":\"intro\"}'" "$WORKSPACE_DIR/state_ok.json")"
+STATE_CALL_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.state --json --input '{\"clip_id\":\"intro\"}'" "$WORKSPACE_DIR/state_ok.json")"
 echo "clip.state approved: $STATE_CALL_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["output"]["clip"]["revision"] == "rev-1", d' "$STATE_CALL_JSON"
 
-CROP_ASK_JSON="$(run_in_pane1 "app call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_ask.json")"
+CROP_ASK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_ask.json")"
 echo "clip.crop unapproved: $CROP_ASK_JSON"
 CROP_REQ_ID="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is False and d["error_code"] == "permission_required"; print(d["pending_request_id"])' "$CROP_ASK_JSON")"
 
 plexi_iso permissions allow "$CROP_REQ_ID"
-CROP_OK_JSON="$(run_in_pane1 "app call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_ok.json")"
+CROP_OK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_ok.json")"
 echo "clip.crop approved: $CROP_OK_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["output"]["revision_after"] == "rev-2" and d["output"]["deduplicated"] is False, d' "$CROP_OK_JSON"
 
 # Duplicate operation_id returns cached receipt without mutating to rev-3
-CROP_DUP_JSON="$(run_in_pane1 "app call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_dup.json")"
+CROP_DUP_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"intro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-1\"}'" "$WORKSPACE_DIR/crop_dup.json")"
 echo "clip.crop deduplicated: $CROP_DUP_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["output"]["revision_after"] == "rev-2" and d["output"]["deduplicated"] is True, d' "$CROP_DUP_JSON"
 
 # Resource scoping: grant for clip_id="intro" must NOT cover clip_id="outro"
-OUTRO_ASK_JSON="$(run_in_pane1 "app call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"outro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-2\"}'" "$WORKSPACE_DIR/outro_ask.json")"
+OUTRO_ASK_JSON="$(run_in_pane1 "plugin call clip-editor-probe clip.crop --json --input '{\"clip_id\":\"outro\",\"crop_preset\":\"9:16\",\"expected_revision\":\"rev-1\",\"operation_id\":\"op-live-2\"}'" "$WORKSPACE_DIR/outro_ask.json")"
 echo "clip.crop outro (unapproved): $OUTRO_ASK_JSON"
 python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is False and d["error_code"] == "permission_required", d' "$OUTRO_ASK_JSON"
 
@@ -214,7 +214,7 @@ plexi_iso agent status
 if plexi_iso host screenshot --output "$SHOT_PATH" 2>/dev/null && [[ -s "$SHOT_PATH" ]]; then
   echo "==> Host screenshot captured ($SHOT_PATH)"
 else
-  plexi_iso app render "$ROOT_DIR/apps/dev/clip-editor-probe" --png --output "$SHOT_PATH" >/dev/null
+  plexi_iso view render "$ROOT_DIR/apps/dev/clip-editor-probe" --png --output "$SHOT_PATH" >/dev/null
   test -s "$SHOT_PATH"
   echo "==> Headless PNG render captured ($SHOT_PATH; background host window occluded)"
 fi

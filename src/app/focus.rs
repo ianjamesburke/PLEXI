@@ -46,58 +46,53 @@ impl FocusSegmentReason {
 /// so that state cannot move into the owner without duplicating it.
 ///
 /// When any kind is on top, `input_captured_by_overlay()` is `true` for the
-/// rest of the frame: `dispatch_app_key_events` does not run, and the top
+/// rest of the frame: `dispatch_plugin_key_events` does not run, and the top
 /// owner's `handle_key` (called before its `draw`) gets first access to the
 /// frame's keyboard input. Global keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are
 /// handled in `keys::poll_actions`, which always runs (see
 /// `src/app/input_router.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
-    NotificationModal,
-    /// Needs attention review (list/detail of unresolved Needs-you items).
-    /// Routing rule: `src/overlays/attention.rs`.
-    AttentionOverlay,
     ApprovalBanner,
     ConfirmClose,
+    UnsavedChanges,
     CommandPalette,
     RenamePane,
-    /// Context naming modal shown when a new context is created while the
-    /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
-    /// overlay so the terminal is immediately usable after dismissal.
+    /// Context naming overlay.
     ContextRename,
     /// Context description editor overlay.
     ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
-    /// Shared text-input overlay (context root, future: context rename).
+    /// Shared text-input overlay for context roots.
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
     ContextCloseConfirm,
     /// Capability consent modal for a focused WASM pane.
     /// Promoted to the focus stack when the focused pane has pending prompts,
     /// so the modal renders in step 2 of `update()` with exclusive keyboard
-    /// ownership — before `dispatch_app_key_events` can steal Escape.
+    /// ownership — before `dispatch_plugin_key_events` can steal Escape.
     CapabilityModal,
     /// Host event-subscription consent modal. Promoted when a CLI/MCP agent's
     /// subscribe request hit the broker's `Ask` decision and is parked in
     /// `pending_event_consents`, so the Allow/Always/Deny modal owns the
-    /// keyboard before `dispatch_app_key_events` can steal Enter/Escape.
+    /// keyboard before `dispatch_plugin_key_events` can steal Enter/Escape.
     EventConsent,
     /// Pre-launch review for raw `.wasm` path opens. Promoted before the pane is
     /// spawned so link-time host imports are remembered before wasmtime links.
     RawWasmReview,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
+    Changelog,
 }
 
 impl FocusKind {
     /// Stable name for logging and test assertions.
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::NotificationModal => "NotificationModal",
-            Self::AttentionOverlay => "AttentionOverlay",
             Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
+            Self::UnsavedChanges => "UnsavedChanges",
             Self::CommandPalette => "CommandPalette",
             Self::RenamePane => "RenamePane",
             Self::ContextRename => "ContextRename",
@@ -109,6 +104,7 @@ impl FocusKind {
             Self::EventConsent => "EventConsent",
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
+            Self::Changelog => "Changelog",
         }
     }
 
@@ -117,10 +113,9 @@ impl FocusKind {
     /// frame's keyboard/render dispatch should call.
     pub(crate) fn owner(self) -> &'static dyn FocusOwner {
         match self {
-            Self::NotificationModal => &NotificationModalOwner,
-            Self::AttentionOverlay => &AttentionOverlayOwner,
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
+            Self::UnsavedChanges => &UnsavedChangesOwner,
             Self::CommandPalette => &CommandPaletteOwner,
             Self::RenamePane => &RenamePaneOwner,
             Self::ContextRename => &ContextRenameOwner,
@@ -132,6 +127,7 @@ impl FocusKind {
             Self::EventConsent => &EventConsentOwner,
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
+            Self::Changelog => &ChangelogOwner,
         }
     }
 }
@@ -159,7 +155,7 @@ pub(crate) trait FocusOwner {
         app: &mut PlexiApp,
         ctx: &egui::Context,
         input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition;
+    ) -> crate::app::view_trait::KeyDisposition;
 
     /// Render the overlay (visual only — key reads already happened in
     /// `handle_key`). Returns any commands the render produced; only the
@@ -168,7 +164,7 @@ pub(crate) trait FocusOwner {
         &self,
         app: &mut PlexiApp,
         ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand>;
+    ) -> Vec<crate::app::view_trait::ViewCommand>;
 }
 
 /// Define the stateless owner tokens whose `handle_key` returns a
@@ -186,14 +182,14 @@ macro_rules! focus_owner_tokens {
                     app: &mut PlexiApp,
                     _ctx: &egui::Context,
                     input: &mut crate::app::input_router::PlexiInput,
-                ) -> crate::app::app_trait::KeyDisposition {
+                ) -> crate::app::view_trait::KeyDisposition {
                     app.$key_fn(input)
                 }
                 fn draw(
                     &self,
                     app: &mut PlexiApp,
                     ctx: &egui::Context,
-                ) -> Vec<crate::app::app_trait::AppCommand> {
+                ) -> Vec<crate::app::view_trait::ViewCommand> {
                     app.$draw_fn(ctx);
                     Vec::new()
                 }
@@ -203,8 +199,9 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
+    Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
-    AttentionOverlay => AttentionOverlayOwner { key: attention_handle_key, draw: draw_attention_overlay },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
@@ -218,27 +215,6 @@ focus_owner_tokens! {
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
 }
 
-/// Notification modal — the only overlay whose render produces commands
-/// (`DeliverNotifyAction`, routed back to the originating pane).
-pub(crate) struct NotificationModalOwner;
-impl FocusOwner for NotificationModalOwner {
-    fn handle_key(
-        &self,
-        app: &mut PlexiApp,
-        _ctx: &egui::Context,
-        input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        app.notification_modal_handle_key(input)
-    }
-    fn draw(
-        &self,
-        app: &mut PlexiApp,
-        ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand> {
-        app.draw_notification_modal(ctx)
-    }
-}
-
 /// Notes picker — its handler drives selection but never claims the key, so the
 /// key still reaches the focused text-editor pane (forced `Passthrough`).
 pub(crate) struct NotesPickerOwner;
@@ -246,17 +222,18 @@ impl FocusOwner for NotesPickerOwner {
     fn handle_key(
         &self,
         app: &mut PlexiApp,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
         input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         app.notes_picker_handle_key(input);
-        crate::app::app_trait::KeyDisposition::Passthrough
+        app.notes_picker_flush_copy(ctx);
+        crate::app::view_trait::KeyDisposition::Passthrough
     }
     fn draw(
         &self,
         app: &mut PlexiApp,
         ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand> {
+    ) -> Vec<crate::app::view_trait::ViewCommand> {
         app.draw_notes_picker(ctx);
         Vec::new()
     }
@@ -284,7 +261,7 @@ pub(crate) struct ContextCloseState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRawWasmLaunch {
-    pub app_id: String,
+    pub plugin_id: String,
     pub wasm_path: PathBuf,
     pub workspace_root: PathBuf,
     pub missing_capabilities: Vec<String>,
@@ -300,7 +277,7 @@ pub(crate) struct PaneMetadata {
     pub cwd: Option<String>,
     pub pty_title: Option<String>,
     pub pane_name: Option<String>,
-    pub app_type_id: Option<String>,
+    pub plugin_type_id: Option<String>,
 }
 
 impl PlexiApp {
@@ -324,13 +301,13 @@ impl PlexiApp {
             .context_root_for(win.context_id)
             .map(|p| p.to_string_lossy().into_owned());
 
-        let (cwd, pty_title, pane_name, app_type_id) = match pane {
+        let (cwd, pty_title, pane_name, plugin_type_id) = match pane {
             crate::host::pane::Pane::Terminal(t) => {
                 let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
                     .map(|p| p.to_string_lossy().into_owned());
                 (cwd, t.pty_title.clone(), t.name.clone(), None)
             }
-            crate::host::pane::Pane::App(a) => {
+            crate::host::pane::Pane::View(a) => {
                 let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
                 let type_id = Some(a.manifest_id.clone());
                 (cwd, None, None, type_id)
@@ -346,7 +323,7 @@ impl PlexiApp {
             cwd,
             pty_title,
             pane_name,
-            app_type_id,
+            plugin_type_id,
         })
     }
 
@@ -390,14 +367,12 @@ impl PlexiApp {
         };
 
         log::info!(
-            "focus_changed: pane_id={} reason={} context={:?} context_root={:?} duration_secs={duration_secs} pty_title={:?} pane_name={:?} app_type_id={:?}",
+            "focus_changed: pane_id={} reason={} context={:?} context_root={:?} duration_secs={duration_secs} plugin_type_id={:?}",
             meta.pane_id,
             reason.as_str(),
             meta.context_name,
             meta.context_root,
-            meta.pty_title,
-            meta.pane_name,
-            meta.app_type_id,
+            meta.plugin_type_id,
         );
         // On a clean close the journal is no longer needed — delete it so we
         // don't emit a spurious crash_recovery on the next startup.
@@ -416,7 +391,7 @@ impl PlexiApp {
                 cwd: meta.cwd,
                 pty_title: meta.pty_title,
                 pane_name: meta.pane_name,
-                app_type_id: meta.app_type_id,
+                plugin_type_id: meta.plugin_type_id,
                 reason: Some(reason.as_str().to_string()),
                 duration_secs,
                 timestamp: crate::host::event_log::now_timestamp(),
@@ -455,11 +430,84 @@ impl PlexiApp {
             cwd: meta.cwd,
             pty_title: meta.pty_title,
             pane_name: meta.pane_name,
-            app_type_id: meta.app_type_id,
+            plugin_type_id: meta.plugin_type_id,
             started_at: crate::platform::clock::iso_z(started_at_wall),
             last_checkpoint_at: crate::platform::clock::iso_z(std::time::SystemTime::now()),
         };
         crate::app::focus_journal::write_checkpoint(&self.focus_journal_path, &entry);
+    }
+
+    /// Per-pane presence a Python guest should currently believe: visible when
+    /// its window is the active one, the host window is not hidden, the tree
+    /// atlas is closed, the tile is on screen (active tabs, not hidden) and no
+    /// other tile is zoomed over it; focused when it is also the active
+    /// context's focused pane and the OS window has focus. Modal overlays do
+    /// not change focus here.
+    fn python_pane_presence(
+        &self,
+        window_index: usize,
+        pane_id: u64,
+        window_hidden: bool,
+        os_focused: bool,
+        active_focused: Option<u64>,
+    ) -> crate::host::wasm_python::PanePresence {
+        let hidden = crate::host::wasm_python::PanePresence::default();
+        let window = &self.windows[window_index];
+        let Some(tile) = window.tree.tiles.find_pane(&pane_id) else {
+            return hidden;
+        };
+        let on_screen = window_index == self.active_window
+            && !window_hidden
+            && self.zoom.level == crate::app::zoom::ZoomLevel::Columns
+            && window
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| !pane.is_hidden())
+            && window.tree.active_tiles().contains(&tile)
+            && window.zoomed_pane.is_none_or(|zoomed| zoomed == tile);
+        crate::host::wasm_python::PanePresence {
+            visible: on_screen,
+            focused: on_screen && os_focused && active_focused == Some(pane_id),
+        }
+    }
+
+    /// Deliver focus and visibility transitions to every Python view pane.
+    /// Called from `App::logic` so it also runs while the window is occluded.
+    pub(super) fn sync_python_pane_presence(&mut self, ctx: &egui::Context) {
+        let window_hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
+        let os_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let active_focused = self.active_focused_pane_id();
+        let mut targets = Vec::new();
+        for (window_index, window) in self.windows.iter().enumerate() {
+            for (&pane_id, pane) in &window.panes {
+                if matches!(
+                    pane.as_view().map(|app| &app.runtime),
+                    Some(crate::host::pane::ViewRuntime::Python(_))
+                ) {
+                    targets.push((
+                        window_index,
+                        pane_id,
+                        self.python_pane_presence(
+                            window_index,
+                            pane_id,
+                            window_hidden,
+                            os_focused,
+                            active_focused,
+                        ),
+                    ));
+                }
+            }
+        }
+        for (window_index, pane_id, presence) in targets {
+            if let Some(crate::host::pane::ViewRuntime::Python(python)) = self.windows[window_index]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|pane| pane.as_view_mut())
+                .map(|app| &mut app.runtime)
+            {
+                python.sync_presence(pane_id, presence);
+            }
+        }
     }
 
     pub(crate) fn current_focus_target(&self) -> Option<(u64, egui_tiles::TileId)> {
@@ -525,20 +573,20 @@ impl PlexiApp {
         FocusLogOutcome::Heartbeat
     }
 
-    /// Returns `(app_active, keyboard_capture_active)` for the pane focused in
-    /// the active window. `app_active` is true whenever the focused pane is
-    /// running an app surface at all; `keyboard_capture_active` mirrors that
+    /// Returns `(view_active, keyboard_capture_active)` for the pane focused in
+    /// the active window. `view_active` is true whenever the focused pane is
+    /// running a plugin surface at all; `keyboard_capture_active` mirrors that
     /// pane's own declared `App::keyboard_capture()` (e.g. file-browser
-    /// rename/quick-look mode, a CLI-backed app's Form view) — an advisory
+    /// rename/quick-look mode, a CLI-backed plugin's Form view) — an advisory
     /// policy flag `keys::poll_actions` reads to suppress global shortcuts
-    /// while the app owns text input. This is intentionally separate from
+    /// while the plugin owns text input. This is intentionally separate from
     /// `focus_stack`/`FocusKind`: overlay layers are exclusive (they block
-    /// `dispatch_app_key_events` entirely), while app-declared capture must
-    /// NOT block the app from still receiving its own keys — folding the two
-    /// into one stack would make an app go deaf on the frame it starts
+    /// `dispatch_plugin_key_events` entirely), while plugin-declared capture must
+    /// NOT block the plugin from still receiving its own keys — folding the two
+    /// into one stack would make a plugin go deaf on the frame it starts
     /// capturing. Deduplicates what was previously an inline block
     /// re-computed at the `poll_actions` call site.
-    pub(crate) fn focused_app_capture_state(&self) -> (bool, bool) {
+    pub(crate) fn focused_view_capture_state(&self) -> (bool, bool) {
         let context = &self.windows[self.active_window];
         let focused_pane = context.focused_pane.and_then(|tile_id| {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
@@ -548,11 +596,11 @@ impl PlexiApp {
             }
         });
         let active = focused_pane
-            .map(|pane| pane.as_app().is_some())
+            .map(|pane| pane.as_view().is_some())
             .unwrap_or(false);
         let capture = if active {
             focused_pane
-                .and_then(|p| p.as_app())
+                .and_then(|p| p.as_view())
                 .map(|a| a.runtime.keyboard_capture())
                 .unwrap_or(false)
         } else {
@@ -569,7 +617,7 @@ impl PlexiApp {
                 Some(egui_tiles::Tile::Pane(pane_id)) => context.panes.get(pane_id),
                 _ => None,
             })
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .is_some_and(|a| a.runtime.captures_editor_shortcuts())
     }
 
@@ -581,33 +629,21 @@ impl PlexiApp {
     /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
     /// dismissed so QuickNote can open on top.
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
-        matches!(
-            self.focus_stack.last(),
-            Some(FocusKind::NotificationModal) | Some(FocusKind::CommandPalette)
-        )
+        matches!(self.focus_stack.last(), Some(FocusKind::CommandPalette))
     }
 
     /// Dismiss the current non-critical modal so QuickNote can open on top.
     /// Only call after `is_quick_note_preemptable()` returns `true`.
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
-        match self.focus_stack.last().cloned() {
-            Some(FocusKind::NotificationModal) => {
-                log::info!("quick_note: dismissing NotificationModal to open QuickNote");
-                self.show_notification_modal = false;
-                self.focus_stack
-                    .retain(|l| *l != FocusKind::NotificationModal);
-            }
-            Some(FocusKind::CommandPalette) => {
-                log::info!("quick_note: dismissing CommandPalette to open QuickNote");
-                self.show_command_palette = false;
-                self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
-            }
-            _ => {}
+        if let Some(FocusKind::CommandPalette) = self.focus_stack.last().cloned() {
+            log::info!("quick_note: dismissing CommandPalette to open QuickNote");
+            self.show_command_palette = false;
+            self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
         }
     }
 
     /// True when a host overlay surface owns keyboard input: any modal on the
-    /// focus stack, or the inline sidebar rename editor. Thin wrapper over
+    /// focus stack or another host overlay. Thin wrapper over
     /// [`Self::overlay_surface`] (stint 0429) — the one derivation of overlay
     /// ownership. Used by `update()` to keep key events away from panes.
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
@@ -679,7 +715,7 @@ impl PlexiApp {
         self.config.confirm_close.unwrap_or(false)
     }
 
-    /// If the currently focused pane is an app with a non-empty nav stack,
+    /// If the currently focused pane is a plugin with a non-empty nav stack,
     /// emit `PlexiEvent::NavBack` to it and return `true`. Returns `false`
     /// when there is no nav-active focused pane (caller may fall back to
     /// default behaviour such as closing the pane or cycling tabs).
@@ -691,7 +727,7 @@ impl PlexiApp {
         let nav_result = active_ctx.focused_pane.and_then(|tile_id| {
             if let Some(egui_tiles::Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(tile_id) {
                 active_ctx.panes.get(pane_id).and_then(|pane| {
-                    pane.as_app().and_then(|app| {
+                    pane.as_view().and_then(|app| {
                         if app.runtime.nav_stack_depth() > 0 {
                             Some((*pane_id, app.runtime.nav_back_view_id()))
                         } else {
@@ -706,7 +742,7 @@ impl PlexiApp {
 
         if let Some((pane_id, view_id)) = nav_result {
             if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
-                if let Some(app) = pane.as_app_mut() {
+                if let Some(app) = pane.as_view_mut() {
                     app.runtime
                         .queue_outbound_event(crate::protocol::PlexiEvent::NavBack { view_id });
                 }
@@ -757,6 +793,10 @@ impl PlexiApp {
                 continue;
             };
             let ctx_id = self.windows[idx].context_id;
+            if self.revealed_child(ctx_id).is_some() {
+                log::info!("focus_history: skipping revealed portal context={ctx_id}");
+                continue;
+            }
             self.save_minimap_before_context_navigation(ctx_id);
 
             // Save current focus to future stack before navigating.
@@ -807,6 +847,10 @@ impl PlexiApp {
                 continue;
             };
             let ctx_id = self.windows[idx].context_id;
+            if self.revealed_child(ctx_id).is_some() {
+                log::info!("focus_history: skipping revealed portal context={ctx_id}");
+                continue;
+            }
             self.save_minimap_before_context_navigation(ctx_id);
 
             // Save current focus to history stack before navigating.
@@ -867,9 +911,9 @@ impl PlexiApp {
         self.reload_config_for_active_context();
     }
 
-    /// Ensures the active context's `AppRegistry` view exists (a cache hit
+    /// Ensures the active context's `PluginRegistry` view exists (a cache hit
     /// after the first call — `RegistryViews` no longer needs a staleness
-    /// comparison the way the old single shared `AppRegistry` did, stint 0724
+    /// comparison the way the old single shared `PluginRegistry` did, stint 0724
     /// Phase B) and reloads config for the active workspace. Registry views
     /// for OTHER contexts are resolved independently at their own point of
     /// use (`RegistryViews::view_for_context`); this only guarantees the
@@ -884,6 +928,17 @@ impl PlexiApp {
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
+        self.reload_config_inner(active_workspace, true);
+    }
+
+    pub(crate) fn reload_config_after_global_save(&mut self, key: &str) {
+        let root = self.router.active().root.clone();
+        self.reload_config_inner(Some(&root), false);
+        self.config_notice = None;
+        self.report_config_shadows(&root, Some(key), "Saved globally");
+    }
+
+    fn reload_config_inner(&mut self, active_workspace: Option<&Path>, report_shadows: bool) {
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
         if let Some(root) = active_workspace {
             let project_path = root
@@ -896,12 +951,7 @@ impl PlexiApp {
 
         let warnings: Vec<_> = all_diags.iter().filter(|d| !d.is_error()).collect();
         if !warnings.is_empty() {
-            let body = warnings
-                .iter()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            log::warn!("config: unknown keys found:\n{body}");
+            log::warn!("config: unknown keys found count={}", warnings.len());
         }
 
         if has_errors {
@@ -911,25 +961,41 @@ impl PlexiApp {
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            log::warn!("config: parse error, keeping current config:\n{error_msg}");
-            let notify_id = crate::app::notifications::new_notify_id("config-error");
-            self.enqueue_notification(
-                crate::app::notifications::NotifySource::HostInternal,
-                PendingNotification {
-                    notify_id,
-                    title: "Config Error".to_string(),
-                    body: error_msg,
-                    // A broken config is not a property of one context — it
-                    // affects the whole workspace, so this stays the explicit
-                    // global case rather than taking the shared default.
-                    scope: crate::protocol::NotifyScope::Global,
-                    ..Default::default()
-                },
+            let keep_current = all_diags.iter().any(|d| d.blocks_reload());
+            log::error!(
+                "config: errors on reload count={} keeping_current_config={keep_current}",
+                all_diags.iter().filter(|d| d.is_error()).count()
             );
-            return;
+            if self.last_config_error.as_deref() == Some(error_msg.as_str()) {
+                log::info!("config: errors unchanged since last reload, not re-notifying");
+            } else {
+                self.last_config_error = Some(error_msg.clone());
+                let notify_id = crate::app::notifications::new_notify_id("config-error");
+                self.enqueue_notification(
+                    crate::app::notifications::NotifySource::HostInternal,
+                    PendingNotification {
+                        notify_id,
+                        title: "Config Error".to_string(),
+                        body: error_msg,
+                        // A broken config is not a property of one context — it
+                        // affects the whole workspace, so this stays the explicit
+                        // global case rather than taking the shared default.
+                        scope: crate::protocol::NotifyScope::Global,
+                        ..Default::default()
+                    },
+                );
+            }
+            // The loader skips invalid keys and applies the rest of the file.
+            if keep_current {
+                return;
+            }
+        } else {
+            self.last_config_error = None;
         }
 
-        let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
+        let mut fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
+        // Plugin mode is a startup policy, never a partial live transition.
+        fresh.core_only = self.config.core_only;
 
         // Log level — applies live; the fern filter reads it atomically per record.
         let new_level = fresh
@@ -942,18 +1008,12 @@ impl PlexiApp {
         }
 
         // Theme
-        let theme_cfg = Self::resolve_theme_config(&fresh);
+        let theme_cfg = crate::ui::theme::resolve_theme_config(&fresh);
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors;
-            let dark_mode = !crate::ui::theme::is_light_preset(
-                fresh
-                    .theme
-                    .as_ref()
-                    .and_then(|t| t.preset.as_deref())
-                    .unwrap_or(""),
-            );
-            crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+            let dark_mode = new_colors.is_dark();
+            crate::ui::theme::setup_style(&self.ctx, &new_colors);
             let window_theme = if dark_mode {
                 egui::SystemTheme::Dark
             } else {
@@ -966,7 +1026,11 @@ impl PlexiApp {
         }
 
         // Terminal theme
-        self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
+        let minimum_contrast = fresh.terminal_minimum_contrast();
+        if (minimum_contrast - self.theme.minimum_contrast()).abs() > f32::EPSILON {
+            log::info!("terminal: minimum_contrast={minimum_contrast} (config reload)");
+        }
+        self.theme = crate::ui::theme::terminal_theme(&theme_cfg, minimum_contrast);
 
         // Font size
         if let Some(size) = fresh.font_size {
@@ -974,6 +1038,8 @@ impl PlexiApp {
                 self.default_font_size = size;
             }
         }
+
+        self.adopt_config_ui_scale(fresh.ui_scale);
 
         // Notifications
         self.notifications_enabled = fresh
@@ -999,6 +1065,12 @@ impl PlexiApp {
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
+        if report_shadows {
+            self.config_notice = None;
+            if let Some(root) = active_workspace {
+                self.report_config_shadows(root, None, "Reloaded");
+            }
+        }
         log::info!(
             "Configuration reloaded from disk. active_workspace={}",
             active_workspace
@@ -1007,7 +1079,54 @@ impl PlexiApp {
         );
     }
 
-    /// Push the current host `Colors` to every running app as a `Theme` event.
+    pub(crate) fn report_config_shadows(&mut self, root: &Path, only: Option<&str>, prefix: &str) {
+        self.config_notice = None;
+        let shadows: Vec<_> = crate::config::workspace_config_shadows(root, only)
+            .into_iter()
+            .filter(|(key, _)| only.is_none_or(|wanted| key == wanted))
+            .collect();
+        if shadows.is_empty() {
+            return;
+        }
+        log::info!(
+            "config: workspace overrides {}",
+            shadows
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let summary = shadows
+            .iter()
+            .take(3)
+            .map(|(key, value)| format!("{key} ({value})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.config_notice = Some((
+            format!("{prefix}. This repo overrides {summary}."),
+            std::time::Instant::now(),
+        ));
+    }
+
+    pub(crate) fn draw_config_notice(&self, ctx: &egui::Context) {
+        if let Some((message, at)) = &self.config_notice {
+            let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                crate::ui::toast::ToastShell::bottom("config_notice").show(
+                    ctx,
+                    &self.colors,
+                    |ui| {
+                        crate::ui::toast::toast_caption(ui, message, &self.colors);
+                    },
+                );
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
+        }
+    }
+
+    /// Push the current host `Colors` to every running plugin as a `Theme` event.
     /// Called after `self.colors` is updated on config hot-reload.
     pub(crate) fn broadcast_theme_event(&mut self) {
         let event = crate::protocol::PlexiEvent::Theme {
@@ -1016,7 +1135,7 @@ impl PlexiApp {
         let mut delivered = 0;
         for window in &mut self.windows {
             for pane in window.panes.values_mut() {
-                if let Some(app) = pane.as_app_mut() {
+                if let Some(app) = pane.as_view_mut() {
                     app.runtime.queue_outbound_event(event.clone());
                     delivered += 1;
                 }
@@ -1026,7 +1145,7 @@ impl PlexiApp {
             app.queue_outbound_event(event.clone());
             delivered += 1;
         }
-        log::info!("theme: broadcast Theme event to {delivered} running apps");
+        log::info!("theme: broadcast Theme event to {delivered} running plugins");
     }
 
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
@@ -1034,7 +1153,53 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::ConfirmClose, self.pending_close);
+        let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
+        self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
+    }
+
+    pub(crate) fn sync_unsaved_changes_focus(&mut self) {
+        let wanted = self.focused_unsaved_changes().is_some();
+        self.reconcile_promoted_focus_layer(FocusKind::UnsavedChanges, wanted);
+    }
+
+    fn focused_unsaved_changes(&self) -> Option<(u64, crate::ui::dialog::UnsavedChangesDialog)> {
+        let id = self.focused_pane_id()?;
+        let pane = self.windows[self.active_window].panes.get(&id)?.as_view()?;
+        match &pane.runtime {
+            crate::host::pane::ViewRuntime::Builtin(app) => {
+                app.unsaved_changes_dialog().map(|dialog| (id, dialog))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unsaved_changes_handle_key(
+        &mut self,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        // ActionModal consumes shortcuts after the router gives the buffer back.
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn draw_unsaved_changes(&mut self, ctx: &egui::Context) {
+        let Some((id, dialog)) = self.focused_unsaved_changes() else {
+            return;
+        };
+        if let Some(choice) = dialog.show(ctx, &self.colors) {
+            if let Some(pane) = self.windows[self.active_window]
+                .panes
+                .get_mut(&id)
+                .and_then(|p| p.as_view_mut())
+            {
+                if let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime {
+                    app.resolve_unsaved_changes(choice);
+                }
+            }
+        }
+        // The complete input pass belongs to the modal, including paired Text
+        // events and unrecognized shortcuts on the frame that resolves it.
+        let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
+        input.clear();
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {
@@ -1084,7 +1249,7 @@ impl PlexiApp {
                             name,
                         });
                     }
-                    crate::host::pane::Pane::App(a) => {
+                    crate::host::pane::Pane::View(a) => {
                         items.push(ContextCloseItem {
                             kind: "App",
                             name: a.name.clone(),
@@ -1120,10 +1285,6 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn sync_notification_modal_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::NotificationModal, self.show_notification_modal);
-    }
-
     /// Reconcile the command-palette focus layer with `show_command_palette`.
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
@@ -1146,14 +1307,14 @@ impl PlexiApp {
             // share an mtime.
             pane_entries.sort_by_key(|(id, _)| *id);
             for (_, pane) in pane_entries {
-                let Some(app) = pane.as_app() else { continue };
-                let crate::host::pane::AppRuntime::Builtin(builtin) = &app.runtime else {
+                let Some(app) = pane.as_view() else { continue };
+                let crate::host::pane::ViewRuntime::Builtin(builtin) = &app.runtime else {
                     continue;
                 };
                 let Some(path) = builtin.open_note_path() else {
                     continue;
                 };
-                let identity = crate::app::text_editor_app::note_path_identity(path);
+                let identity = crate::app::text_editor_view::note_path_identity(path);
                 if seen.insert(identity) {
                     paths.push(path.to_path_buf());
                 }
@@ -1177,6 +1338,9 @@ impl PlexiApp {
     /// Navigate to a pane by id, updating both `focused_pane` on its window and
     /// `active_window`. Returns `true` if the pane was found.
     pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {
+        if self.focus_revealed_portal(pane_id) {
+            return true;
+        }
         // Read-only pass: find the window index, tile_id, and context_id before mutating.
         // Using iter() instead of iter_mut() so self.windows borrow ends before we call
         // push_focus_history (which needs &mut self).
@@ -1228,6 +1392,15 @@ impl PlexiApp {
                 "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
             );
         }
+        self.zoom.context_last_pane.insert(ctx_id, pane_id);
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.focus_pane(pane_id);
+        if let Some(col_idx) = strip.find_column_for_pane(pane_id) {
+            strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+        }
+        self.sync_attention_queue();
         true
     }
 
@@ -1236,12 +1409,19 @@ impl PlexiApp {
         self.reconcile_focus_layer(FocusKind::RenamePane, self.renaming_pane.is_some());
     }
 
-    /// Reconcile the context-rename focus layer. Active when `renaming_window`
-    /// is set AND the sidebar is hidden -- in that case the inline sidebar row
-    /// never renders, so we promote the rename to a modal overlay instead.
+    /// Reconcile the context-rename overlay with its editing state.
     pub(crate) fn sync_context_rename_focus(&mut self) {
-        let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
-        self.reconcile_focus_layer(FocusKind::ContextRename, should_own);
+        let invalid = self.context_rename.as_ref().is_some_and(|edit| {
+            self.router.active().context_id != edit.origin_id
+                || !self
+                    .router
+                    .iter()
+                    .any(|c| c.context_id == edit.target_id && !c.parked)
+        });
+        if invalid {
+            self.cancel_context_rename("context changed or unavailable");
+        }
+        self.reconcile_focus_layer(FocusKind::ContextRename, self.context_rename.is_some());
     }
 
     /// Reconcile the text-input overlay focus layer with `text_overlay`.
@@ -1249,7 +1429,7 @@ impl PlexiApp {
         self.reconcile_focus_layer(FocusKind::TextInput, self.text_overlay.is_some());
     }
 
-    /// Push/pop `FocusKind::CapabilityModal` based on whether the focused app
+    /// Push/pop `FocusKind::CapabilityModal` based on whether the focused plugin
     /// pane has pending prompts. Called every frame (both before and after the
     /// overlay render block) so the layer tracks prompt state without polling
     /// lag.
@@ -1271,7 +1451,7 @@ impl PlexiApp {
         self.reconcile_promoted_focus_layer(FocusKind::RawWasmReview, should_own);
     }
 
-    /// Returns true when the focused app pane has at least one pending prompt.
+    /// Returns true when the focused view pane has at least one pending prompt.
     ///
     /// `win.focused_pane` holds a `TileId`. After egui_tiles renders a bare-pane
     /// root for the first time it wraps that tile in a Container, so the stored
@@ -1288,10 +1468,10 @@ impl PlexiApp {
             None => return false,
         };
         match win.panes.get(&pane_id) {
-            Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
-                crate::host::pane::AppRuntime::Builtin(_) => false,
-                crate::host::pane::AppRuntime::Python(_) => false,
-                crate::host::pane::AppRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
+            Some(crate::host::pane::Pane::View(view_pane)) => match &view_pane.runtime {
+                crate::host::pane::ViewRuntime::Builtin(_) => false,
+                crate::host::pane::ViewRuntime::Python(_) => false,
+                crate::host::pane::ViewRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
             },
             _ => false,
         }
@@ -1313,16 +1493,16 @@ impl PlexiApp {
         }
     }
 
-    /// Route `DeliverNotifyAction` commands back to the originating app pane as
+    /// Route `DeliverNotifyAction` commands back to the originating view pane as
     /// `NotifyAction` events. Shared by the modal and the sidebar panel so both
     /// surfaces dispatch identically.
     pub(crate) fn dispatch_notify_action_cmds(
         &mut self,
-        cmds: Vec<crate::app::app_trait::AppCommand>,
+        cmds: Vec<crate::app::view_trait::ViewCommand>,
     ) {
-        use crate::app::app_trait::AppCommand;
+        use crate::app::view_trait::ViewCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction {
+            if let ViewCommand::DeliverNotifyAction {
                 pane_id,
                 notify_id,
                 action_label,

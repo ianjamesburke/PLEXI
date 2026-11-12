@@ -92,7 +92,7 @@ This follows the repo's standing configuration rule, and it matters more here th
 
 ## 6. The agent creation surface
 
-The destination for `plexi agent` is creating and configuring agents — the one thing the noun should mean, replacing the unrelated referents the mesh appendix inventories. Eventually it is an app rather than a command: memory on or off, tool grants chosen from the centrally enumerated MCP and tool list with pre-approved credentials linked at grant time, an initial permission scope, and an initial trust that is **always low**. Grants come from the enumerated list rather than a typed-in one for the same reason the mesh enumerates capability cards — a hand-written grant list describes an agent nobody verified exists. And creation never sets trust: a creation surface able to set it would be an edit path to a derived number, which is the one thing §3 forbids.
+The destination for `plexi agent` is creating and configuring agents — the one thing the noun should mean, replacing the unrelated referents the mesh appendix inventories. Eventually it is a plugin rather than a command: memory on or off, tool grants chosen from the centrally enumerated MCP and tool list with pre-approved credentials linked at grant time, an initial permission scope, and an initial trust that is **always low**. Grants come from the enumerated list rather than a typed-in one for the same reason the mesh enumerates capability cards — a hand-written grant list describes an agent nobody verified exists. And creation never sets trust: a creation surface able to set it would be an edit path to a derived number, which is the one thing §3 forbids.
 
 ## Staging — the record first, the numbers later
 
@@ -107,7 +107,7 @@ Nothing in the first pass is throwaway: the second pass activates dormant fields
 ## Non-goals
 
 - **This is not an authority mechanism.** Restated because it is the failure that would matter: trust never widens what an agent may reach, and the reference monitor never consults it.
-- **No trust scores for third-party apps.** This plane scores the judgment of agents. Apps are governed by capability grants, and nothing here softens that.
+- **No trust scores for third-party plugins.** This plane scores the judgment of agents. Plugins are governed by capability grants, and nothing here softens that.
 - **No shared or cross-machine reputation.** Trust is local and personal to one Plexi instance, like every other record in it. An agent's calibration is evidence about how it performed here, and it does not travel.
 - **No auto-resolution of the reserved categories**, however high a score climbs. §2's fourth rule is a floor, not a default.
 - **No trust in the model's self-report.** A score is computed from recorded outcomes only. An agent stating its own confidence is a field in a record, never an input to its own trust.

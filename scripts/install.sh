@@ -7,7 +7,9 @@ if [[ "${1:-}" != --from-source ]]; then
 fi
 shift
 cd "$repo"
-channel="${1:-}"
+# Optional channel, then installer flags (e.g. --trash-strays) passed through.
+channel=""
+if [[ $# -gt 0 && "$1" != --* ]]; then channel="$1"; shift; fi
 if [[ -z "$channel" ]]; then
   branch="$(git branch --show-current)"
   case "$branch" in main|alpha|beta) channel="$branch" ;; *) channel="$(cat .channel 2>/dev/null || echo alpha)" ;; esac
@@ -18,16 +20,21 @@ if [[ "$channel" == pr-* ]]; then export PLEXI_BUILD_TEST_CHANNEL="$channel"; el
 metadata="$(cargo metadata --format-version=1 --no-deps)"
 target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 if [[ "${PLEXI_REUSE_RELEASE_BUILD:-}" == 1 && "$channel" == pr-* && -x "$target/release/plexi" ]]; then
+  if [[ -z "${PLEXI_BUILD_EVIDENCE:-}" || ! -f "$PLEXI_BUILD_EVIDENCE" ]]; then
+    echo "install: reuse requires the driver evidence checker" >&2
+    exit 1
+  fi
+  python3 "$PLEXI_BUILD_EVIDENCE" check "$repo" "$(git rev-parse HEAD)" "$channel" "$target/release/plexi"
   echo "install: reusing provenance-checked release binary (PLEXI_REUSE_RELEASE_BUILD)"
 else
   just build
 fi
-bash scripts/cargo-with-lease.sh cargo build --release -p plexi-distribution --bin plexi-installer
+installer="$(bash scripts/distribution-tool.sh prepare)"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/plexi-source-package.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 if [[ "$os" == macos && -z "${PLEXI_SIGN_IDENTITY:-}" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q 'Plexi Dev'; then
   export PLEXI_SIGN_IDENTITY='Plexi Dev'
 fi
-uv run --no-project --python 3.11 python scripts/package.py --binary "$target/release/plexi" --installer "$target/release/plexi-installer" --platform "$os-$arch" --channel "$channel" --output "$stage"
+uv run --no-project --python 3.11 python scripts/package.py --binary "$target/release/plexi" --installer "$installer" --platform "$os-$arch" --channel "$channel" --output "$stage"
 normalized="$channel"; [[ "$normalized" != main ]] || normalized=stable
-"$target/release/plexi-installer" --package "$stage/package-$os-$arch-$normalized" --channel "$normalized" --install-only
+"$installer" --package "$stage/package-$os-$arch-$normalized" --channel "$normalized" --install-only "$@"

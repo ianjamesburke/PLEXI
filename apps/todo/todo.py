@@ -17,7 +17,7 @@ from plexi_sdk.events import KeyEvent, StateChanged, UiAction, UiValueChange
 from plexi_sdk.state_format import ChecklistItem, parse_checklist, render_checklist
 from plexi_sdk.ui import (
     Actions,
-    AppBar,
+    SurfaceHeader,
     Button,
     Column,
     FooterKeys,
@@ -222,7 +222,7 @@ def view():
     data = _data()
     if data["adding"]:
         return Column([
-            AppBar("Todo", "New item"),
+            SurfaceHeader("Todo", "New item"),
             # autofocus: the field takes the cursor the frame the form appears.
             FormField("todo-draft", "Item", placeholder="What needs doing?",
                       value=data["draft"], autofocus=True,
@@ -242,7 +242,7 @@ def view():
         for item in data["items"]
     ]
     return Column([
-        AppBar("Todo", _status(data)),
+        SurfaceHeader("Todo", _status(data)),
         SelectList(rows, selected_idx=data["selected"], on_select=SELECT) if rows
         else Text("Nothing yet — press a to add an item.", size=13.0),
         Spacer(grow=True),

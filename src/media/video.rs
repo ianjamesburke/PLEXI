@@ -6,7 +6,7 @@
 //!      [`VideoOpenAck`] carrying the negotiated `width`/`height`/`fps`/
 //!      `duration_ms` plus an opaque `handle_id`. Subsequent operations
 //!      (`set_state`, `close`) take that `handle_id`. The trait lives behind
-//!      `Arc<dyn VideoDecoder>` on each `WASM app runtime` instance.
+//!      `Arc<dyn VideoDecoder>` on each `WASM plugin runtime` instance.
 //!
 //!   2. [`AvfVideoDecoder`] — production decoder. macOS: AVFoundation
 //!      pipeline (`AVURLAsset` → `AVAssetReader` → `AVAssetReaderTrackOutput`
@@ -17,10 +17,10 @@
 //!
 //!   3. [`MockVideoDecoder`] — procedural RGBA gradient at configurable fps.
 //!      Frames are pushed via the binary-pipe ring (one frame per packet).
-//!      Used by tests and by POC video-player apps driven
+//!      Used by tests and by POC video-player plugins driven
 //!      with `PLEXI_VIDEO=mock://...`.
 //!
-//! Wire shape: apps `OpenVideo { request_id, source, pipe_id }` and the host
+//! Wire shape: plugins `OpenVideo { request_id, source, pipe_id }` and the host
 //! replies with `VideoOpenAck { request_id, handle_id, width, height, fps,
 //! duration_ms }` on success or `VideoOpenError { request_id, error }` on
 //! failure. Frames travel on the binary pipe as raw RGBA8 packed
@@ -46,7 +46,7 @@ use crate::protocol::VideoState;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
-/// Result of `VideoDecoder::open` on success. Reported back to the app as
+/// Result of `VideoDecoder::open` on success. Reported back to the plugin as
 /// `PlexiEvent::VideoOpenAck`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoOpenAck {
@@ -76,7 +76,7 @@ pub enum VideoError {
 }
 
 /// Opaque video session. Drop tears down the worker thread (mock) or the
-/// AVFoundation player (#346). Owned by `WASM app runtime::video_handles`.
+/// AVFoundation player (#346). Owned by `WASM plugin runtime::video_handles`.
 pub struct VideoHandle {
     pub handle_id: u64,
     pub width: u32,
@@ -120,7 +120,7 @@ pub trait VideoDecoder: Send + Sync {
     /// Open `source` and return its negotiated dimensions / fps / duration
     /// plus an opaque handle id. The handle is returned via the `VideoHandle`
     /// the caller must store; the returned `VideoOpenAck` is what we send to
-    /// the app on the wire.
+    /// the plugin on the wire.
     ///
     /// `frame_ring` is where decoded RGBA frames are pushed. Each push is
     /// `width * height * 4` bytes, packed RGBA8. The mock spawns a worker
@@ -428,10 +428,7 @@ mod avf_impl {
         objc2::rc::Retained<AVAssetReaderTrackOutput>,
     );
 
-    unsafe fn build_reader(
-        path: &str,
-        start_ms: Option<u64>,
-    ) -> Result<ReaderParts, VideoError> {
+    unsafe fn build_reader(path: &str, start_ms: Option<u64>) -> Result<ReaderParts, VideoError> {
         let asset = build_asset(path)?;
         let video_type = AVMediaTypeVideo
             .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
@@ -871,7 +868,7 @@ fn render_gradient_frame(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
 /// otherwise instantiates the production [`AvfVideoDecoder`] stub.
 ///
 /// Tests inject `Arc::new(MockVideoDecoder::new(cfg))` directly into
-/// `WASM app runtime::video_device` and skip the env var altogether.
+/// `WASM plugin runtime::video_device` and skip the env var altogether.
 #[cfg(not(test))]
 pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     if let Ok(url) = std::env::var("PLEXI_VIDEO") {
@@ -897,7 +894,7 @@ pub fn default_video_device() -> Arc<dyn VideoDecoder> {
 #[cfg(test)]
 pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     // Tests that exercise the routing path inject their own MockVideoDecoder
-    // directly into `WASM app runtime::video_device`. The harness factory returns
+    // directly into `WASM plugin runtime::video_device`. The harness factory returns
     // the production stub so the no-injection path errors loudly with
     // `NotImplemented` rather than silently producing frames.
     Arc::new(AvfVideoDecoder::new())
@@ -1084,7 +1081,10 @@ mod tests {
         // deadline rather than assuming a loaded CI runner schedules it in 120 ms.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while ring.pop().is_none() {
-            assert!(std::time::Instant::now() < deadline, "after resume frames must flow again");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "after resume frames must flow again"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
@@ -1113,7 +1113,7 @@ mod tests {
         // Under `cfg(test)`, the factory always returns the production
         // AvfVideoDecoder — tests that need the mock inject
         // `Arc::new(MockVideoDecoder::new(...))` into
-        // `WASM app runtime::video_device` directly. The default decoder rejects
+        // `WASM plugin runtime::video_device` directly. The default decoder rejects
         // a non-existent file via Decoder/InvalidSource — never NotImplemented
         // (post-#346) on macOS, never panic anywhere.
         let dev = default_video_device();

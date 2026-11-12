@@ -13,7 +13,7 @@ impl PlexiApp {
                 .find_map(|w| w.panes.get(&parent))
                 .and_then(|p| match p {
                     crate::host::pane::Pane::Terminal(t) => t.name.clone(),
-                    crate::host::pane::Pane::App(a) => Some(a.name.clone()),
+                    crate::host::pane::Pane::View(a) => Some(a.name.clone()),
                     crate::host::pane::Pane::Portal(_) => None,
                 })
                 .unwrap_or_else(|| parent.to_string())
@@ -176,18 +176,28 @@ impl PlexiApp {
                             Some(&root),
                             self.config.pane_title_font_size.unwrap_or(12.0),
                             pane_input,
+                            false,
                         );
-                    } else if let Some(app) = pane.as_app_mut() {
-                        crate::render::app_pane::render(ui, app, &self.colors, false, None, &root);
+                    } else if let Some(app) = pane.as_view_mut() {
+                        crate::render::view_pane::render(ui, app, &self.colors, false, None, &root);
                     }
                 }
             },
         );
+        let radius = crate::ui::style::pane_radius(self.config.pane_corner_radius, left);
+        crate::ui::style::mask_pane_corners(ui.painter(), left, radius, self.colors.bg_darkest);
+        if let Some(color) = self.windows[window]
+            .panes
+            .get(&parent)
+            .and_then(|pane| crate::ui::activity::pane_state_color(pane, &self.colors))
+        {
+            crate::ui::style::paint_pane_state_ring(ui.painter(), left, radius, focused, color);
+        }
         if focused {
             ui.painter().rect_stroke(
                 left,
-                0.0,
-                egui::Stroke::new(gap.max(1.0), self.colors.accent),
+                radius,
+                egui::Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, self.colors.accent),
                 egui::StrokeKind::Inside,
             );
         }

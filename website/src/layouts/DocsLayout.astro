@@ -1,25 +1,39 @@
 ---
 import '../styles/global.css';
+import '../styles/docs.css';
+import Texture from '../components/Texture.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
-import { docsNav } from '../lib/docsNav';
+import DocsSidebar from '../components/docs/DocsSidebar.astro';
+import DocsToc from '../components/docs/DocsToc.astro';
+import DocsPager from '../components/docs/DocsPager.astro';
+import { docEntry } from '../lib/docsNav';
+
 interface Props {
   title: string;
   description?: string;
   currentSlug?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+  /** The docs start page: no article header, no prose wrapper, no page outline. */
+  landing?: boolean;
 }
 
-const { title, description = '', currentSlug } = Astro.props;
-const pageTitle = `${title} — Plexi Docs`;
+const { title, description = '', currentSlug, headings = [], landing = false } = Astro.props;
+const entry = docEntry(currentSlug);
+const summary = entry?.summary ?? description;
+const pageTitle = landing ? 'Plexi Docs' : `${title} · Plexi Docs`;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
+const outline = headings.filter(h => h.depth === 2);
+const showToc = !landing && outline.length > 1;
 ---
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="theme-color" content="#16161e" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{pageTitle}</title>
-  <meta name="description" content={description} />
+  <meta name="description" content={description || summary} />
   <link rel="canonical" href={canonicalURL} />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="icon" type="image/png" href="/favicon.ico" sizes="32x32" />
@@ -27,141 +41,94 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
   <meta property="og:type" content="article" />
   <meta property="og:url" content={canonicalURL} />
   <meta property="og:title" content={pageTitle} />
-  <meta property="og:description" content={description} />
+  <meta property="og:description" content={description || summary} />
   <meta property="og:site_name" content="Plexi" />
 </head>
-<body>
+<body class="docs-body">
+  <a class="skip-link" href="#article">Skip to article</a>
+  <Texture />
   <Nav />
-  <div class="docs-shell">
-    <aside class="docs-sidebar">
-      <div class="sidebar-inner">
-        <a href="/docs" class="sidebar-home">← Docs</a>
-        {docsNav.map(group => (
-          <div class="nav-group">
-            <span class="nav-group-label">{group.section}</span>
-            {group.items.map(item => (
-              <a
-                href={`/docs/${item.slug}`}
-                class:list={['nav-item', { active: currentSlug === item.slug }]}
-              >
-                {item.title}
-              </a>
-            ))}
+  <div class:list={['docs-shell', { 'no-toc': !showToc }]}>
+    <DocsSidebar currentSlug={currentSlug} landing={landing} />
+    <main class="docs-main" id="article" tabindex="-1">
+      {landing ? (
+        <slot />
+      ) : (
+        <article class:list={['docs-article', { reference: Boolean(entry?.generatedFrom) }]}>
+          <header class="doc-header">
+            <nav class="doc-crumbs" aria-label="Breadcrumb">
+              <a href="/docs">Docs</a>
+              {entry && <span aria-hidden="true">/</span>}
+              {entry && <span>{entry.section}</span>}
+            </nav>
+            <h1>{title}</h1>
+            {summary && <p class="doc-summary">{summary}</p>}
+            {entry?.generatedFrom && (
+              <p class="doc-generated">
+                <span class="doc-generated-tag">Generated</span>
+                <span>Built from {entry.generatedFrom}. It tracks the <code>alpha</code> branch, so it can be ahead of the release you have installed.</span>
+              </p>
+            )}
+            {showToc && (
+              <details class="doc-outline">
+                <summary>On this page</summary>
+                <ul>{outline.map(h => <li><a href={`#${h.slug}`}>{h.text}</a></li>)}</ul>
+              </details>
+            )}
+          </header>
+          <div class="prose prose-invert max-w-none">
+            <slot />
           </div>
-        ))}
-      </div>
-    </aside>
-    <main class="docs-main">
-      <div class="docs-content">
-        <header class="doc-header">
-          <h1>{title}</h1>
-        </header>
-        <div class="prose prose-invert max-w-none">
-          <slot />
-        </div>
-      </div>
+          <DocsPager currentSlug={currentSlug} />
+        </article>
+      )}
     </main>
+    {showToc && <DocsToc headings={outline} />}
   </div>
   <Footer />
 </body>
 </html>
 
-<style>
-  .docs-shell {
-    display: flex;
-    min-height: calc(100vh - 68px);
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 32px;
-    gap: 0;
-    position: relative;
-    z-index: 1;
-  }
+<script>
+  // Sidebar: open on wide screens, collapsed behind its summary on narrow ones.
+  const menu = document.querySelector<HTMLDetailsElement>('.docs-navigation');
+  const narrow = window.matchMedia('(max-width: 980px)');
+  const syncMenu = () => { if (menu) menu.open = !narrow.matches; };
+  syncMenu();
+  narrow.addEventListener('change', syncMenu);
 
-  .docs-sidebar {
-    width: 220px;
-    flex-shrink: 0;
-    border-right: 1px solid var(--border);
-  }
+  // Wide tables and code blocks scroll on their own; make the scroller keyboard reachable.
+  const syncScrollStops = () => {
+    document.querySelectorAll<HTMLElement>('.prose pre, .prose table').forEach(el => {
+      if (el.scrollWidth > el.clientWidth) el.tabIndex = 0;
+      else el.removeAttribute('tabindex');
+    });
+  };
+  syncScrollStops();
+  window.addEventListener('resize', syncScrollStops);
 
-  .sidebar-inner {
-    position: sticky;
-    top: 68px;
-    padding: 40px 0 40px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .sidebar-home {
-    font-size: 12px;
-    color: var(--fg-3);
-    letter-spacing: 0.04em;
-    padding: 0 0 24px;
-    display: block;
-    transition: color 150ms;
-  }
-  .sidebar-home:hover { color: var(--accent-light); }
-
-  .nav-group {
-    margin-bottom: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .nav-group-label {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--fg-4);
-    font-weight: 600;
-    padding: 0 12px 6px;
-  }
-
-  .nav-item {
-    display: block;
-    padding: 6px 12px;
-    font-size: 13px;
-    color: var(--fg-3);
-    border-radius: 5px;
-    transition: color 150ms, background 150ms;
-  }
-  .nav-item:hover { color: var(--fg); background: var(--bg-3); }
-  .nav-item.active { color: var(--accent-light); background: var(--accent-dim); }
-
-  .docs-main {
-    flex: 1;
-    min-width: 0;
-    padding: 48px 0 48px 56px;
-  }
-
-  .docs-content {
-    max-width: 800px;
-  }
-
-  .doc-header {
-    margin-bottom: 40px;
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .doc-header h1 {
-    font-size: 32px;
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1.15;
-    color: var(--fg);
-  }
-
-  @media (max-width: 980px) {
-    .docs-shell { flex-direction: column; padding: 0 20px; gap: 0; }
-    .docs-sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
-    .sidebar-inner { position: static; padding: 24px 0 20px; }
-    .nav-group { margin-bottom: 16px; }
-    .docs-main { padding: 32px 0; }
-    .doc-header h1 { font-size: 26px; }
-  }
-</style>
+  // Copy button on every code block.
+  document.querySelectorAll<HTMLPreElement>('.prose pre').forEach(pre => {
+    const frame = document.createElement('div');
+    frame.className = 'code-frame';
+    pre.replaceWith(frame);
+    frame.append(pre);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-copy';
+    button.textContent = 'Copy';
+    let reset: ReturnType<typeof setTimeout> | undefined;
+    button.addEventListener('click', async () => {
+      clearTimeout(reset);
+      try {
+        await navigator.clipboard.writeText(pre.innerText.replace(/\n$/, ''));
+        button.textContent = 'Copied';
+      } catch (error) {
+        console.error('docs: copying a code block failed', error);
+        button.textContent = 'Copy failed';
+      }
+      reset = setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+    });
+    frame.append(button);
+  });
+</script>

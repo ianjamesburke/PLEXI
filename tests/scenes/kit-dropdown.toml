@@ -1,0 +1,39 @@
+size = [720.0, 480.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+
+# A seeded popup endpoint; real clicks on both production callers are covered
+# by screenshot_descriptor_kit_dropdown and the secrets scope popup regression.
+[[steps]]
+sidebar = false
+[[steps]]
+open = { kind = "builtin", id = "kit-dropdown-fixture", as = "settings" }
+[[steps]]
+# F6 is a fixture-only hook to seed the shared popup after pane focus settles.
+key = { target = "host", value = "f6" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert_label = { target = "host", label = "Staging" }
+[[steps]]
+assert_label = { target = "host", label = "Options open" }
+[[steps]]
+assert = { layout_valid = true, layout_surfaces = ["list"] }
+[[steps]]
+shot = "kit-dropdown-open.png"
+[[steps]]
+key = { target = "host", value = "escape" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert_label = { target = "host", label = "Options closed" }
+[[steps]]
+assert_label = { target = "host", label = "Selected environment: Development" }
+[[steps]]
+shot = "kit-dropdown-closed.png"
+[[steps]]
+# With no popup, Escape retains the host's existing CloseView behavior.
+key = { target = "host", value = "escape" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { target = "settings", exists = false }

@@ -10,9 +10,12 @@ import {
   verifyLiveIdentity,
   PlexiEventSubscriber,
   migrateLegacyPiHook,
+  PlexiCliClient,
   formatStatusText,
   formatWidgetLines,
   createPiPlexiExtension,
+  buildContainerContext,
+  PLEXI_CONTAINER_SECTION,
 } from "../index.ts";
 
 function makeFakePiHarness() {
@@ -199,15 +202,15 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
         stderr: "",
       };
     }
-    if (cmd === "app tools") {
+    if (cmd === "plugin tools") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({
           ok: true,
           context_id: 10,
           tools: [
-            { name: "clip.state", app_id: "clip-editor-probe", pane_id: 2, read_only: true },
-            { name: "clip.crop", app_id: "clip-editor-probe", pane_id: 2, read_only: false },
+            { name: "clip.state", plugin_id: "clip-editor-probe", pane_id: 2, read_only: true },
+            { name: "clip.crop", plugin_id: "clip-editor-probe", pane_id: 2, read_only: false },
           ],
         }),
         stderr: "",
@@ -263,7 +266,7 @@ test("Acceptance 2, 3, 4, 5, 6, 7: workspace overview, app tool calls, event str
         stderr: "",
       };
     }
-    if (cmd === "app call") {
+    if (cmd === "plugin call") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({
@@ -473,7 +476,7 @@ test("Stint 0815: session_start and session_shutdown omit sessionId until sessio
         stderr: "",
       };
     }
-    if (cmd === "app tools") {
+    if (cmd === "plugin tools") {
       return {
         exitCode: 0,
         stdout: JSON.stringify({ ok: true, context_id: 10, tools: [] }),
@@ -654,4 +657,235 @@ test("session start synthesizes agent tools from the live pane role", async () =
   assert.equal(tools.has("agent_message"), true);
   assert.ok(calls.some(args => args.join(" ") === "agent show lead --json"));
   await pi.emit("session_shutdown", {}, {});
+});
+
+test("buildContainerContext describes the pane and the native surfaces", () => {
+  const attached = buildContainerContext({
+    status: "attached",
+    attached: true,
+    paneId: 7,
+    contextId: 10,
+    channel: "alpha",
+    plexiBin: "plexi",
+    env: {},
+  });
+  assert.match(attached, /pane #7/);
+  assert.match(attached, /channel: alpha/);
+  assert.match(attached, /plexi view open text-editor/);
+  assert.match(attached, /image-viewer/);
+  assert.match(attached, /video-player/);
+  assert.match(attached, /audio-player/);
+  assert.match(attached, /file_browser/);
+
+  assert.equal(
+    buildContainerContext({
+      status: "detached_outside_plexi",
+      attached: false,
+      channel: "stable",
+      plexiBin: "plexi",
+      env: {},
+    }),
+    undefined,
+  );
+});
+
+test("an attached session injects the Plexi container section into the system prompt", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock",
+      PLEXI_PANE_ID: "7",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-attached-")),
+  })(pi);
+
+  const event = { systemPromptOptions: { sections: {} } };
+  await pi.emit("before_agent_start", event, {});
+  const text = event.systemPromptOptions.sections[PLEXI_CONTAINER_SECTION];
+  assert.equal(typeof text, "string");
+  assert.match(text, /pane #7/);
+  assert.match(text, /plexi view open text-editor/);
+  // Stint 1050: an attached agent must know the notes editor exists without
+  // having to load the (model-invocation-disabled) `plexi-cli` skill.
+  assert.match(text, /plexi note open/);
+  assert.match(text, /plexi note rm/);
+});
+
+test("a detached session injects no Plexi container section", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {},
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-detached-")),
+  })(pi);
+
+  const event = { systemPromptOptions: { sections: {} } };
+  await pi.emit("before_agent_start", event, {});
+  assert.deepEqual(event.systemPromptOptions.sections, {});
+});
+
+test("before_agent_start tolerates a prompt event with no system prompt options", async () => {
+  const { pi } = makeFakePiHarness();
+  const runner = async () => ({ exitCode: 0, stdout: "[]", stderr: "" });
+  createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock",
+      PLEXI_PANE_ID: "7",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-container-noopts-")),
+  })(pi);
+  await pi.emit("before_agent_start", {}, {});
+});
+
+test("Stint 1026: orient reports registered agents from the one gather it already runs", async () => {
+  const calls = [];
+  const seen = new Set();
+  const batch = new Set([
+    "pane list",
+    "context list",
+    "agent list",
+    "plugin tools",
+    "needs-you reconcile",
+  ]);
+  let releaseBatch;
+  const batchIssued = new Promise((resolve) => {
+    releaseBatch = resolve;
+  });
+  // Every call must be in flight before any of them resolves: `agent list`
+  // rides the existing Promise.all instead of becoming a sequential
+  // round-trip. A sequential implementation never releases the barrier.
+  const barrier = Promise.race([
+    batchIssued,
+    new Promise((_resolve, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `orient did not issue its whole batch concurrently (missing: ${[...batch]
+                .filter((cmd) => !seen.has(cmd))
+                .join(", ")})`,
+            ),
+          ),
+        5000,
+      ),
+    ),
+  ]);
+  const runner = async (_bin, args) => {
+    calls.push(args);
+    const cmd = args.slice(0, 2).join(" ");
+    seen.add(cmd);
+    if (seen.size === batch.size) releaseBatch();
+    await barrier;
+    if (cmd === "pane list") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          { id: 1, type: "terminal", title: "pi-agent", context_id: 10, context_name: "Work" },
+        ]),
+        stderr: "",
+      };
+    }
+    if (cmd === "context list") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([{ context_id: 10, name: "Work", is_active: true }]),
+        stderr: "",
+      };
+    }
+    if (cmd === "agent list") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          agents: [
+            { name: "default", tier: "built-in", harness: "pi" },
+            { name: "paul", display_name: "Paul", tier: "global", harness: "claude" },
+            { name: "paul", display_name: "Paul", tier: "workspace", harness: "pi" },
+            { name: "researcher", display_name: "Researcher", tier: "workspace", harness: "pi" },
+          ],
+          unrecognised_agent_directories: [],
+        }),
+        stderr: "",
+      };
+    }
+    if (cmd === "plugin tools") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ ok: true, context_id: 10, tools: [] }),
+        stderr: "",
+      };
+    }
+    if (cmd === "needs-you reconcile") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ ok: true, items: [], continuations: [] }),
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: "[]", stderr: "" };
+  };
+
+  const client = new PlexiCliClient(
+    {
+      status: "attached",
+      attached: true,
+      channel: "alpha",
+      paneId: 1,
+      contextId: 10,
+      socketPath: "/tmp/plexi-alpha/notify.sock",
+      plexiBin: "plexi",
+      env: { PLEXI_PANE_ID: "1" },
+    },
+    runner,
+  );
+
+  const snapshot = await client.fetchWorkspaceOverview("sess-1");
+  assert.deepEqual(
+    snapshot.agents,
+    [
+      { name: "default", tier: "built-in", harness: "pi" },
+      { name: "paul", tier: "workspace", harness: "pi" },
+      { name: "researcher", tier: "workspace", harness: "pi" },
+    ],
+    "a workspace definition shadows the global one and is reported once",
+  );
+  assert.equal(
+    calls.filter((args) => args.slice(0, 2).join(" ") === "agent list").length,
+    1,
+    "`agent list --json` is issued exactly once",
+  );
+  assert.equal(calls.length, batch.size, "orient issues no extra CLI invocation");
+
+  const { pi, tools } = makeFakePiHarness();
+  createPiPlexiExtension({
+    env: {
+      PLEXI_SOCKET: "/tmp/plexi-alpha/notify.sock",
+      PLEXI_PANE_ID: "1",
+      PLEXI_CONTEXT_ID: "10",
+      PLEXI_CHANNEL: "alpha",
+    },
+    checkSocketExists: () => true,
+    runner,
+    homeDir: mkdtempSync(join(tmpdir(), "pi-agents-")),
+  })(pi);
+  assert.match(
+    tools.get("plexi_workspace_overview").description,
+    /registered agents/i,
+    "the tool declaration must name what it returns",
+  );
+
+  // The skill that opens with `plexi agent list` must select on a bare agent name.
+  const skill = readFileSync(new URL("../skills/plexi/SKILL.md", import.meta.url), "utf8");
+  const description = skill.match(/^description: "(.*)"$/m)?.[1] ?? "";
+  assert.match(description, /registered agents/i);
+  assert.match(skill, /agent registry/, "Orient first must name the registry step");
 });

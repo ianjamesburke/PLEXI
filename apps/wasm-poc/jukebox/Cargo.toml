@@ -24,6 +24,6 @@ package = "plexi:jukebox"
 
 [package.metadata.component.target]
 path = "wit"
-world = "plexi-audio-app"
+world = "plexi-audio-plugin"
 
 [workspace]

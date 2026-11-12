@@ -16,7 +16,7 @@ scope models, the CLI surface and the pane model are platform-neutral already;
 only the platform seam (IPC, secrets, menus, process control, shell probes)
 is macOS-shaped and needs Windows arms.
 
-Scope is the **v1 cut**: terminal host + scriptable CLI. Assistant, apps, SDK
+Scope is the **v1 cut**: terminal host + scriptable CLI. Assistant, plugins, SDK
 and marketplace are explicitly out — they must compile, not work.
 
 ## Relationship to PR #1604
@@ -99,7 +99,7 @@ The platform seam:
 - **Liveness** — `OpenProcess` + `GetExitCodeProcess`; no signal-0 equivalent.
 - **`typed_pipes`** — overlapped named pipe. The overlap is load-bearing: it
   is what lets the drain thread poll for a client while still observing
-  `shutdown`, so an app that never connects cannot wedge `close()` → `join()`.
+  `shutdown`, so a plugin that never connects cannot wedge `close()` → `join()`.
 - **Shell** — `$SHELL` → `pwsh` → `powershell` → `%ComSpec%`.
 - **wgpu** — the base manifest entry names only `metal`; a
   `cfg(target_os = "windows")` table adds `dx12`, without which
@@ -122,7 +122,7 @@ Two honest differences from macOS, both documented at the impl:
 
 Without this the whole subsystem is dead on Windows — `plexi secret`,
 `plexi ai onboard`, the OpenRouter lookup, terminal env injection and the
-Secrets app all take the "no secret store on this platform" branch. That is
+Secrets plugin all take the "no secret store on this platform" branch. That is
 how ~35 dead-code warnings pointed at it.
 
 ## Phase 3 — CI ⏳
@@ -196,9 +196,9 @@ compile gate; all are v1-relevant except where noted.
 | ⌘/⇧ glyph swap in shortcut hints | `a19d44c2`, `55b7bbb8` | Blocked with Phase 4 — the hints must render whatever the keymap decides. |
 | Inno Setup installer + PowerShell install/uninstall | `5e86c9c7`, `6318eb59`, `5cf07446`, `a03d9d66` | Needs a Windows machine to test; `installer/`, `scripts/*.ps1`. |
 | App icon embedded in `plexi.exe` (`winresource`) | `ca0b84d7` | Cosmetic. |
-| Bundled Python runtime | `97f14a2b` | Apps/SDK — **out of v1 scope**. |
+| Bundled Python runtime | `97f14a2b` | Plugins/SDK — **out of v1 scope**. |
 | Per-pane cwd sidecar file | `818996ac` | Windows cannot read a shell's cwd from the OS; the prompt hook writes it to a file. Needed for context-root and pane-cwd features. |
-| `.py` app launch via `python.exe`, console-window hiding | `b1608fa1`, `e0128bc6` | Apps — **out of v1 scope**. |
+| `.py` plugin launch via `python.exe`, console-window hiding | `b1608fa1`, `e0128bc6` | Plugins — **out of v1 scope**. |
 
 ## Known blockers
 

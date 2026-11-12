@@ -2,7 +2,7 @@
 
 An app declares its state scopes in the manifest; the host passes them to the
 runtime in the init message (``state_scopes`` + per-scope ``states``). The
-runtime addresses state by scope name, emits ``save_app_state`` with an
+runtime addresses state by scope name, emits ``save_plugin_state`` with an
 explicit ``scope``, and refuses a scope the app did not declare — never a
 silent fallback to another scope's data.
 """
@@ -22,11 +22,11 @@ from test_v3_runtime_regression import (
 def _init_scoped(proc, *, scopes=None, states=None, state=None):
     msg = {
         "type": "init",
-        "app_id": "scope-test",
+        "plugin_id": "scope-test",
         "workspace_root": "/tmp",
         "capabilities": [],
         "feature_flags": [],
-        "protocol": "pgap/3",
+        "protocol": "pgap/4",
         "width": 640.0,
         "height": 360.0,
     }
@@ -69,7 +69,7 @@ def test_persist_default_scope_emits_first_declared_scope(tmp_path):
     try:
         events = _init_scoped(proc, scopes=["context", "global"])
         events += _render(proc)
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert len(saves) == 1
         assert saves[0]["scope"] == "context", "default scope is the first declared"
         assert saves[0]["payload"] == {"n": 1}
@@ -87,7 +87,7 @@ def test_persist_explicit_scope_targets_only_that_scope(tmp_path):
             states={"global": {"g": 1}, "context": {"c": 1}},
         )
         events += _render(proc)
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert len(saves) == 1
         assert saves[0]["scope"] == "context"
         # The persisted snapshot is the context scope's merged map — the
@@ -110,7 +110,7 @@ def test_scoped_state_reads_resolve_per_scope(tmp_path):
             states={"global": {"k": "g"}, "context": {"k": "c"}},
         )
         events += _render(proc)
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert len(saves) == 1
         assert saves[0]["payload"]["echo"] == ["g", "c"]
     finally:
@@ -129,7 +129,7 @@ def test_flat_state_init_key_is_ignored(tmp_path):
     try:
         events = _init_scoped(proc, state={"count": 41})
         events += _render(proc)
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert len(saves) == 1
         assert saves[0]["scope"] == "global"
         assert saves[0]["payload"]["bump"] == 1
@@ -143,7 +143,7 @@ def test_scoped_states_init_seeds_the_default_scope(tmp_path):
     try:
         events = _init_scoped(proc, states={"global": {"count": 41}})
         events += _render(proc)
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert len(saves) == 1
         assert saves[0]["scope"] == "global"
         assert saves[0]["payload"]["bump"] == 42
@@ -160,7 +160,7 @@ def test_undeclared_scope_never_persists(tmp_path):
             events += _render(proc)
         except Exception:
             pass  # the raising update loop may kill the frame — that is fine
-        saves = _find_events(events, "save_app_state")
+        saves = _find_events(events, "save_plugin_state")
         assert saves == [], "an undeclared scope must not emit a persist"
     finally:
         proc.kill()

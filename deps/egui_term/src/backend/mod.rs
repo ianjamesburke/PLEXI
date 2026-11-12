@@ -1,4 +1,6 @@
+mod paste;
 pub mod settings;
+pub mod tap;
 
 use crate::types::Size;
 use alacritty_terminal::event::{
@@ -69,11 +71,14 @@ fn terminal_config() -> term::Config {
 #[derive(Debug, Clone)]
 pub enum BackendCommand {
     Write(Vec<u8>),
+    /// Clipboard paste. Encoded against the live terminal mode (bracketed
+    /// paste, mode 2004) and written to the PTY as one contiguous frame.
+    Paste(String),
     Scroll(i32),
     ScrollToTop,
     ScrollToBottom,
-    SelectStart(SelectionType, f32, f32, f32),
-    SelectUpdate(f32, f32, f32),
+    SelectStart(SelectionType, f32, f32),
+    SelectUpdate(f32, f32),
     ClearSelection,
     ProcessLink(LinkAction, Point),
     MouseReport(MouseButton, Modifiers, Point, bool),
@@ -292,6 +297,7 @@ impl TerminalBackend {
         settings: BackendSettings,
     ) -> Result<Self> {
         let dynamic_colors = settings.dynamic_colors.clone();
+        let byte_tap = settings.byte_tap.clone();
         let pty_config = tty::Options {
             shell: Some(tty::Shell::new(settings.shell, settings.args)),
             working_directory: settings.working_directory,
@@ -330,8 +336,28 @@ impl TerminalBackend {
         let term = Arc::new(FairMutex::new(term));
         let reaped_exit_status: Arc<Mutex<Option<PtyExitStatus>>> =
             Arc::new(Mutex::new(None));
+        // The PTY master is both reader and writer on Unix; the tap reads
+        // through a dup of the fd (same open file description, same
+        // non-blocking mode) so it can own its reader.
+        #[cfg(unix)]
+        let reader = tap::TapReader::new(
+            pty.file().try_clone()?,
+            byte_tap,
+            {
+                let proxy = event_proxy.clone();
+                Box::new(move |bytes: Vec<u8>| {
+                    proxy.send_event(Event::PtyWrite(
+                        String::from_utf8_lossy(&bytes).into_owned(),
+                    ));
+                })
+            },
+        );
+        #[cfg(not(unix))]
+        let _ = byte_tap;
         let pty = ReapingPty {
             inner: pty,
+            #[cfg(unix)]
+            reader,
             #[cfg(unix)]
             child_pid,
             exit_status: reaped_exit_status.clone(),
@@ -437,6 +463,17 @@ impl TerminalBackend {
                 self.write(input);
                 term.scroll_display(Scroll::Bottom);
             },
+            BackendCommand::Paste(text) => {
+                let bracketed = term.mode().contains(TermMode::BRACKETED_PASTE);
+                let frame = paste::encode_paste(&text, bracketed);
+                log::info!(
+                    "terminal paste: bracketed={bracketed} input_bytes={} written_bytes={}",
+                    text.len(),
+                    frame.len()
+                );
+                self.write(frame);
+                term.scroll_display(Scroll::Bottom);
+            },
             BackendCommand::Scroll(delta) => {
                 self.scroll(&mut term, delta);
             },
@@ -448,11 +485,11 @@ impl TerminalBackend {
                 log::info!("terminal scroll: jump to bottom");
                 term.grid_mut().scroll_display(Scroll::Bottom);
             },
-            BackendCommand::SelectStart(selection_type, x, y, ppp) => {
-                self.start_selection(&mut term, selection_type, x, y, ppp);
+            BackendCommand::SelectStart(selection_type, x, y) => {
+                self.start_selection(&mut term, selection_type, x, y);
             },
-            BackendCommand::SelectUpdate(x, y, ppp) => {
-                self.update_selection(&mut term, x, y, ppp);
+            BackendCommand::SelectUpdate(x, y) => {
+                self.update_selection(&mut term, x, y);
             },
             BackendCommand::ClearSelection => {
                 term.selection = None;
@@ -471,22 +508,15 @@ impl TerminalBackend {
         y: f32,
         terminal_size: &TerminalSize,
         display_offset: usize,
-        pixels_per_point: f32,
     ) -> Point {
-        // Snap cell dimensions to physical pixels so hit-testing matches the
-        // renderer, which calls .round_to_pixels() on each cell rect. Without
-        // snapping, rounding errors accumulate across columns on high-DPI
-        // displays, causing selection to lag one cell behind the visual grid.
-        let snapped_w = (terminal_size.cell_width as f32 * pixels_per_point)
-            .round()
-            / pixels_per_point;
-        let snapped_h = (terminal_size.cell_height as f32 * pixels_per_point)
-            .round()
-            / pixels_per_point;
-        let col = (x / snapped_w) as usize;
+        // Pointer coordinates and committed cell dimensions are logical
+        // points. The renderer rounds final cell edges, not the grid pitch:
+        // rounding the pitch here accumulates drift at fractional UI scales
+        // and disagrees with the half-cell boundary used by selection_side.
+        let col = (x / terminal_size.cell_width as f32) as usize;
         let col = min(Column(col), Column(terminal_size.num_cols as usize - 1));
 
-        let line = (y / snapped_h) as usize;
+        let line = (y / terminal_size.cell_height as f32) as usize;
         let line = min(line, terminal_size.num_lines as usize - 1);
 
         viewport_to_point(display_offset, Point::new(line, col))
@@ -1000,47 +1030,36 @@ impl TerminalBackend {
         selection_type: SelectionType,
         x: f32,
         y: f32,
-        pixels_per_point: f32,
     ) {
-        let location = Self::selection_point(
-            x,
-            y,
-            &self.size,
-            terminal.grid().display_offset(),
-            pixels_per_point,
+        let location = Self::selection_point(x, y, &self.size, terminal.grid().display_offset());
+        log::info!(
+            "terminal_selection: start pane={} cell={}x{} point={:?} type={:?}",
+            self.id,
+            self.size.cell_width,
+            self.size.cell_height,
+            location,
+            selection_type
         );
         terminal.selection = Some(Selection::new(
             selection_type,
             location,
-            self.selection_side(x),
+            Self::selection_side(x, &self.size),
         ));
     }
 
-    fn update_selection(
-        &mut self,
-        terminal: &mut Term<EventProxy>,
-        x: f32,
-        y: f32,
-        pixels_per_point: f32,
-    ) {
+    fn update_selection(&mut self, terminal: &mut Term<EventProxy>, x: f32, y: f32) {
         let display_offset = terminal.grid().display_offset();
         if let Some(ref mut selection) = terminal.selection {
-            let location = Self::selection_point(
-                x,
-                y,
-                &self.size,
-                display_offset,
-                pixels_per_point,
-            );
-            selection.update(location, self.selection_side(x));
+            let location = Self::selection_point(x, y, &self.size, display_offset);
+            selection.update(location, Self::selection_side(x, &self.size));
         }
     }
 
-    fn selection_side(&self, x: f32) -> Side {
-        let cell_x = x as usize % self.size.cell_width as usize;
-        let half_cell_width = (self.size.cell_width as f32 / 2.0) as usize;
-
-        if cell_x > half_cell_width {
+    fn selection_side(x: f32, size: &TerminalSize) -> Side {
+        let width = size.cell_width as f32;
+        // Beyond the grid, stay at the outer edge of the clamped cell rather
+        // than wrapping the side back to Left in unused pane space.
+        if x >= width * size.num_cols as f32 || x.max(0.0) % width >= width / 2.0 {
             Side::Right
         } else {
             Side::Left
@@ -1062,10 +1081,16 @@ impl TerminalBackend {
     /// geometry — the trailing edge of the drag. A `Deferred` outcome obliges
     /// the caller to schedule another frame, otherwise a drag that ends between
     /// frames would strand the last size.
+    ///
+    /// `immediate` opts a frame out of the debounce for a *discrete* layout
+    /// jump (a column scrolling into view, a tile swapped in): the new
+    /// geometry is already final, so deferring it only paints one frame of the
+    /// stale grid inside the new rect.
     pub fn request_resize(
         &mut self,
         layout_size: Size,
         font_size: Size,
+        immediate: bool,
     ) -> ResizeOutcome {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
@@ -1088,7 +1113,7 @@ impl TerminalBackend {
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
 
-        if !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
             self.pending_resize = Some(PendingResize {
                 geometry,
                 deferred_frames,
@@ -1102,7 +1127,9 @@ impl TerminalBackend {
             geometry.cols,
             geometry.lines,
             deferred_frames - 1,
-            if settled {
+            if immediate {
+                "immediate"
+            } else if settled {
                 "layout settled"
             } else {
                 "defer cap reached"
@@ -1143,6 +1170,11 @@ impl TerminalBackend {
     /// has committed. Monotonic for the life of the backend.
     pub fn resize_commits(&self) -> u64 {
         self.resize_commits
+    }
+
+    /// Width in pixels of one cell of the committed grid.
+    pub fn committed_cell_width(&self) -> u16 {
+        self.size.cell_width
     }
 
     /// The grid geometry the PTY was last told about, as `(cols, lines)`.
@@ -1564,12 +1596,18 @@ fn reap_child(pid: u32) {
 /// via `ExitStatus::code()`.
 struct ReapingPty {
     inner: tty::Pty,
+    // Windows readers are not clonable, so the tap is Unix-only.
+    #[cfg(unix)]
+    reader: tap::TapReader<std::fs::File>,
     #[cfg(unix)]
     child_pid: u32,
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
 }
 
 impl tty::EventedReadWrite for ReapingPty {
+    #[cfg(unix)]
+    type Reader = tap::TapReader<std::fs::File>;
+    #[cfg(not(unix))]
     type Reader = <tty::Pty as tty::EventedReadWrite>::Reader;
     type Writer = <tty::Pty as tty::EventedReadWrite>::Writer;
 
@@ -1596,7 +1634,14 @@ impl tty::EventedReadWrite for ReapingPty {
     }
 
     fn reader(&mut self) -> &mut Self::Reader {
-        self.inner.reader()
+        #[cfg(unix)]
+        {
+            &mut self.reader
+        }
+        #[cfg(not(unix))]
+        {
+            self.inner.reader()
+        }
     }
 
     fn writer(&mut self) -> &mut Self::Writer {
@@ -1676,6 +1721,88 @@ impl EventListener for EventProxy {
 mod tests {
     use super::is_url_char;
     use super::TerminalBackend;
+
+    #[test]
+    fn selection_points_match_rendered_grid_at_fractional_scales() {
+        use super::TerminalSize;
+        for ppp in [1.0, 1.1, 1.3, 2.0, 2.2, 2.6] {
+            for width in [7, 8, 9, 11] {
+                let size = TerminalSize {
+                    cell_width: width,
+                    cell_height: 17,
+                    num_cols: 160,
+                    num_lines: 50,
+                    ..Default::default()
+                };
+                for col in [0, 3, 40, 100, 159] {
+                    for row in [0, 10, 49] {
+                        // The renderer positions cells with the committed
+                        // logical pitch, then rounds their final edges.
+                        let left = (col as f32 * width as f32 * ppp).round() / ppp;
+                        let right = ((col + 1) as f32 * width as f32 * ppp).round() / ppp;
+                        let x = (left + right) / 2.0;
+                        let y = (row as f32 + 0.5) * 17.0;
+                        let point = TerminalBackend::selection_point(x, y, &size, 5);
+                        assert_eq!(point.column.0, col, "ppp={ppp}, width={width}, x={x}");
+                        assert_eq!(point.line.0, row - 5, "ppp={ppp}, y={y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_drag_is_monotonic_and_clamps_to_outer_cell_edges() {
+        use super::{
+            Column, EventProxy, Line, Point, Selection, SelectionType, Side, Term, TerminalSize,
+        };
+        for width in [7, 8, 9, 11] {
+            let size = TerminalSize {
+                cell_width: width,
+                cell_height: 17,
+                num_cols: 160,
+                num_lines: 50,
+                ..Default::default()
+            };
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let term = Term::new(super::terminal_config(), &size, EventProxy(sender));
+            let mut selection = Selection::new(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            let mut previous = 0;
+            for step in 1..=(size.num_cols as usize + 3) * width as usize * 4 {
+                let x = step as f32 / 4.0;
+                let point = TerminalBackend::selection_point(x, 0.0, &size, 0);
+                selection.update(point, TerminalBackend::selection_side(x, &size));
+                let selected = selection
+                    .to_range(&term)
+                    .map_or(0, |range| range.end.column.0 + 1);
+                assert!(
+                    selected >= previous,
+                    "width={width}, x={x}: {previous}->{selected}"
+                );
+                previous = selected;
+            }
+            assert_eq!(previous, size.num_cols as usize);
+            for (x, side, col) in [
+                (-30.0, Side::Left, 0),
+                (0.0, Side::Left, 0),
+                (width as f32 * 160.0 + 2.0, Side::Right, 159),
+            ] {
+                assert_eq!(TerminalBackend::selection_side(x, &size), side);
+                assert_eq!(
+                    TerminalBackend::selection_point(x, -20.0, &size, 7),
+                    Point::new(Line(-7), Column(col))
+                );
+            }
+            assert_eq!(
+                TerminalBackend::selection_point(0.0, 9999.0, &size, 7).line,
+                Line(42)
+            );
+        }
+    }
 
     #[test]
     fn kitty_negotiation_queries_and_screen_stacks() {
@@ -2107,3 +2234,189 @@ mod tests {
     }
 }
 
+/// Stint 1184: real-PTY paste framing. The child puts the tty in raw mode,
+/// optionally enables bracketed paste (`CSI ? 2004 h`), and logs every
+/// `read(2)` as a hex line so framing is judged from what the program saw.
+#[cfg(all(test, unix))]
+mod paste_pty_tests {
+    use super::settings::BackendSettings;
+    use super::{BackendCommand, TerminalBackend};
+    use alacritty_terminal::term::TermMode;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    const CHILD: &str = r#"
+import os, sys, tty, time, select
+out, mode = sys.argv[1], sys.argv[2]
+tty.setraw(0)
+if mode == "on":
+    sys.stdout.write("\x1b[?2004h"); sys.stdout.flush()
+open(out + ".ready", "w").close()
+log = open(out + ".reads", "w")
+last = time.time()
+while time.time() - last < 1.2:
+    r, _, _ = select.select([0], [], [], 0.2)
+    if r:
+        b = os.read(0, 65536)
+        log.write(b.hex() + "\n"); log.flush()
+        last = time.time()
+log.close()
+open(out + ".done", "w").close()
+"#;
+
+    fn wait_for(
+        deadline_secs: u64,
+        what: &str,
+        mut ready: impl FnMut() -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    struct Outcome {
+        reads: Vec<Vec<u8>>,
+        tap: Vec<u8>,
+    }
+
+    impl Outcome {
+        fn stream(&self) -> Vec<u8> {
+            self.reads.concat()
+        }
+    }
+
+    /// Spawn the child, paste `text` once, return what the child read and
+    /// what the input tap recorded.
+    fn paste_through_pty(tag: &str, bracketed: bool, text: &str) -> Outcome {
+        let dir: PathBuf = std::env::temp_dir()
+            .join(format!("egui_term_paste_{}_{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("run").to_string_lossy().to_string();
+        let ctx = egui::Context::default();
+        let (tx, _rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/usr/bin/python3".to_string(),
+            args: vec![
+                "-c".into(),
+                CHILD.into(),
+                out.clone(),
+                if bracketed { "on" } else { "off" }.into(),
+            ],
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
+        wait_for(10, "child ready", || {
+            Path::new(&format!("{out}.ready")).exists()
+        });
+        if bracketed {
+            // The host's own terminal model must have parsed `?2004h`.
+            wait_for(10, "TermMode::BRACKETED_PASTE", || {
+                backend
+                    .term
+                    .lock()
+                    .mode()
+                    .contains(TermMode::BRACKETED_PASTE)
+            });
+        } else {
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(!backend
+                .term
+                .lock()
+                .mode()
+                .contains(TermMode::BRACKETED_PASTE));
+        }
+        backend.enable_input_tap();
+        backend.process_command(BackendCommand::Paste(text.to_string()));
+        let tap = backend.take_input_tap();
+        wait_for(15, "child done", || {
+            Path::new(&format!("{out}.done")).exists()
+        });
+        let reads = std::fs::read_to_string(format!("{out}.reads"))
+            .expect("reads log")
+            .lines()
+            .map(unhex)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        Outcome { reads, tap }
+    }
+
+    fn sample(n: usize) -> String {
+        (0..n)
+            .map(|i| {
+                if i % 40 == 39 {
+                    '\n'
+                } else {
+                    (b'a' + (i % 26) as u8) as char
+                }
+            })
+            .collect()
+    }
+
+    const OPEN: &[u8] = b"\x1b[200~";
+    const CLOSE: &[u8] = b"\x1b[201~";
+
+    #[test]
+    fn bracketed_paste_frames_payload_at_every_size() {
+        for n in [100usize, 1000, 4000, 16000, 64000] {
+            let text = sample(n);
+            let o = paste_through_pty(&format!("sz{n}"), true, &text);
+            assert!(
+                o.reads.first().is_some_and(|r| r.starts_with(OPEN)),
+                "size {n}: first read must start with ESC[200~, got {:?}",
+                o.reads.first().map(|r| &r[..r.len().min(12)])
+            );
+            let stream = o.stream();
+            assert!(
+                stream.ends_with(CLOSE),
+                "size {n}: stream must end with ESC[201~"
+            );
+            let body = &stream[OPEN.len()..stream.len() - CLOSE.len()];
+            assert_eq!(
+                body,
+                text.as_bytes(),
+                "size {n}: payload must be byte-identical"
+            );
+            assert_eq!(
+                o.tap, stream,
+                "size {n}: input tap must record the framed bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_strips_esc_and_etx_so_payload_cannot_close_frame() {
+        let text = "before\x1b[201~echo pwned\n\x03after\x1b";
+        let o = paste_through_pty("inject", true, text);
+        let stream = o.stream();
+        assert!(stream.starts_with(OPEN));
+        assert!(stream.ends_with(CLOSE));
+        let body = &stream[OPEN.len()..stream.len() - CLOSE.len()];
+        assert_eq!(body, b"before[201~echo pwned\nafter");
+        assert!(
+            !body.contains(&0x1b) && !body.contains(&0x03),
+            "payload must contain no ESC or ETX"
+        );
+        let closes =
+            stream.windows(CLOSE.len()).filter(|w| *w == CLOSE).count();
+        assert_eq!(closes, 1, "exactly one end marker, at the very end");
+    }
+
+    #[test]
+    fn plain_mode_paste_converts_newlines_to_cr_without_markers() {
+        let text = "one\ntwo\r\nthree\x1b\x03\nfour";
+        let o = paste_through_pty("plain", false, text);
+        assert_eq!(o.stream(), b"one\rtwo\rthree\rfour");
+        assert_eq!(o.tap, o.stream());
+    }
+}

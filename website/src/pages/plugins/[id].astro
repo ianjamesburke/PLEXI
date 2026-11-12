@@ -1,0 +1,61 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import PageHead from '../../components/PageHead.astro';
+import Notice from '../../components/Notice.astro';
+import Arrow from '../../components/Arrow.astro';
+import registry from '../../../public/registry/v1/index.json';
+
+// Detail pages are generated from the hosted registry index
+// (website/public/registry/v1/index.json). Only `public` apps get a page; the
+// build reads the committed index so it never depends on a live registry.
+export async function getStaticPaths() {
+  const plugins = (registry.plugins as any[]).filter(
+    (a) => (a.visibility ?? 'private') === 'public'
+  );
+  return plugins.map((plugin: any) => ({ params: { id: plugin.id }, props: { plugin } }));
+}
+
+const { plugin } = Astro.props;
+
+function priceLabel(price: any): string {
+  if (!price || price === 'free') return 'Free';
+  if (typeof price === 'object') {
+    const major = Math.floor(price.amount_cents / 100);
+    const minor = String(price.amount_cents % 100).padStart(2, '0');
+    const sym = price.currency?.toLowerCase() === 'usd' ? '$' : '';
+    return `${sym}${major}.${minor} ${price.currency?.toUpperCase() ?? ''}`.trim();
+  }
+  return 'Free';
+}
+
+const sourceUrl = plugin.source?.startsWith('github:')
+  ? `https://github.com/${plugin.source.slice('github:'.length)}`
+  : null;
+---
+
+<Layout noindex title={`${plugin.name} | Plexi plugins`} description={`${plugin.description} This marketplace listing is beta-gated.`}>
+  <PageHead title={plugin.name} lede={plugin.description} compact>
+    <a class="link-arrow" href="/plugins">All plugins <Arrow /></a>
+  </PageHead>
+
+  <div class="wrap detail">
+    <Notice title="Registry listing, in beta">
+      <p>Installing plugins from a registry is in beta and off by default. Today the supported path is a local plugin that you scaffold and open by name or by path. See the <a href="/docs/plugins">plugin guide</a>.</p>
+    </Notice>
+
+    <dl class="facts">
+      <div><dt>Version</dt><dd>{plugin.version}</dd></div>
+      <div><dt>Price</dt><dd>{priceLabel(plugin.price)}</dd></div>
+      {plugin.publisher && <div><dt>Publisher</dt><dd>@{plugin.publisher}</dd></div>}
+      {plugin.trust_label && <div><dt>Trust</dt><dd>{plugin.trust_label}</dd></div>}
+      {sourceUrl && <div><dt>Source</dt><dd><a class="text-link" href={sourceUrl} rel="noopener noreferrer">{plugin.source}</a></dd></div>}
+      <div><dt>Asks for</dt><dd>{plugin.capabilities?.length > 0 ? <code>{plugin.capabilities.join(', ')}</code> : 'No capabilities.'}</dd></div>
+    </dl>
+  </div>
+</Layout>
+
+<style>
+  .detail { display: grid; gap: 40px; padding-block: clamp(40px, 5vw, 72px) var(--space-section); }
+  .detail .facts { max-width: 920px; }
+  .detail code { font-size: 14px; color: var(--fg); }
+</style>

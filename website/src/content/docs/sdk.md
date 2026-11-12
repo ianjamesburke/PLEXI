@@ -13,7 +13,7 @@ The Python SDK and local app runtime are part of stable v1. MCP client APIs list
 Plexi Python SDK.
 
 Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
-functions. The V3AppRuntime drives the event loop: host sends JSON events on
+functions. The PluginRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 
 Python apps are sandboxed. They run through the CPython-in-WASM adapter
@@ -100,8 +100,9 @@ ReadPermissionDecisions()
 
 Ask the host for the live permission-monitor inventory.
 
-The host replies with :class:`events.PermissionInventory`. The app does
-not keep its own grant store.
+The host replies with :class:`events.PermissionInventory`. Only the
+bundled Permissions plugin receives entries; any other plugin gets an
+empty list with ``status="rejected"``.
 
 ### `PermissionDecision`
 
@@ -111,8 +112,11 @@ PermissionDecision(id: str, action: str)
 
 Change one live permission row.
 
-``action`` is ``revoke``, ``reset``, or ``allow``. A click in the
-Permissions app is a human decision. The host replies with a fresh
+``action`` is ``revoke``, ``reset``, or ``allow``. Only the bundled
+Permissions plugin may send it, and it is never a human decision:
+``revoke`` applies, while ``allow`` and ``reset`` file a Needs you item
+that a person confirms in the host (``status="needs_you"``). Other
+plugins get ``status="rejected"``. The host replies with a fresh
 :class:`events.PermissionInventory`.
 
 ### `ReadHostLog`
@@ -187,6 +191,37 @@ McpDisconnect(server_id: str)
 
 Close a connection and kill the server process. Answered by
 :class:`events.McpClosed`.
+
+### `CliOperation`
+
+```python
+CliOperation(request_id: str, operation_id: str, values: dict = dict())
+```
+
+Request one typed command-line operation the app package declares in
+``[[cli_operation]]`` (requires the ``cli.operations`` capability and the
+``cli_operations`` experiment).
+
+The app names an ``operation_id`` and supplies typed ``values`` for the
+slots that operation declares. It never supplies an executable, argument
+list, environment, working directory or shell text: the host rejects a
+request that carries anything else. The person approves each operation in
+the host's approval surface, which states that the program runs with their
+account's full authority and is not confined.
+
+Answered by :class:`events.CliOperationResult` carrying the same
+``request_id``. The request may wait for a decision, so it can be
+outstanding for a while; use :class:`CliOperationCancel` to withdraw it.
+
+### `CliOperationCancel`
+
+```python
+CliOperationCancel(request_id: str)
+```
+
+Withdraw an outstanding :class:`CliOperation`. A request still waiting
+for approval fails with ``cancelled`` and never runs; a running program is
+killed and answered with ``cancelled``. Unknown ids are ignored.
 
 ### `AiMessage`
 
@@ -281,7 +316,7 @@ EmitEvent(event: str, actor: str, summary: str, resource_id: str, revision_after
 ### `SubscribeEventStreams`
 
 ```python
-SubscribeEventStreams(request_id: str, app_id: str, event_names: list[str], payload_mode: str = 'full', trigger_mode: str = 'conversation', resource_id: Optional[str] = None)
+SubscribeEventStreams(request_id: str, plugin_id: str, event_names: list[str], payload_mode: str = 'full', trigger_mode: str = 'conversation', resource_id: Optional[str] = None)
 ```
 
 ### `UnsubscribeEventStreams`
@@ -357,11 +392,36 @@ Resize(width: float, height: float)
 FocusGained()
 ```
 
+This pane is now the focused pane of the active context and the host
+window is visible and OS-focused. Delivered after :class:`PaneShown`.
+
 ### `FocusLost`
 
 ```python
 FocusLost()
 ```
+
+This pane stopped being the focused pane (another pane or context took
+focus, or the host window lost OS focus or was hidden). Delivered before
+:class:`PaneHidden`.
+
+### `PaneShown`
+
+```python
+PaneShown()
+```
+
+This pane became visible: its context is active, the host window is not
+minimized or occluded, and no other pane is zoomed over it.
+
+### `PaneHidden`
+
+```python
+PaneHidden()
+```
+
+This pane stopped being visible. A pane that was focused always receives
+:class:`FocusLost` first.
 
 ### `FocusChanged`
 
@@ -487,6 +547,30 @@ A connection ended — the server exited, a send failed, or the app
 disconnected. Every in-flight request against that server will never be
 answered; the app must fail them rather than wait.
 
+### `CliOperationResult`
+
+```python
+CliOperationResult(request_id: str, operation_id: str, ok: bool, data: Any = None, error_code: Optional[str] = None, error: Optional[str] = None, exit_code: Optional[int] = None, stderr: Optional[str] = None, data_available: Optional[bool] = None)
+```
+
+Host reply to :class:`effects.CliOperation`, correlated by
+``request_id``. On success ``ok`` is true and ``data`` holds the program's
+output, bounded by the operation's declared limit: parsed JSON for a
+``json`` operation, a string for ``text``. On failure ``ok`` is false and
+``error_code`` is one of ``invalid_request``, ``disabled``,
+``capability_missing``, ``busy``, ``unknown_operation``,
+``package_invalid``, ``invalid_argument``, ``flag_like_argument``,
+``executable_missing``, ``executable_mismatch``,
+``executable_not_self_contained``, ``denied``,
+``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
+``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
+``error`` is a human-readable message. For ``nonzero_exit``, ``exit_code`` is
+set, ``stderr`` holds a bounded tail, and ``data`` holds the program's stdout
+when it passes the same bound and format check as a success (parsed JSON for
+a ``json`` operation, a string for ``text``); ``data_available`` says whether
+it did, and unparseable output is never put in ``data``. A failure other than a nonzero exit, timeout or
+cancellation means the program did not run.
+
 ### `AiStreamChunk`
 
 ```python
@@ -517,10 +601,10 @@ EventSubscriptionResult(request_id: str, subscription_id: Optional[str], error: 
 EventUnsubscriptionResult(request_id: str, removed: bool, error: Optional[str])
 ```
 
-### `AppEvent`
+### `PluginEvent`
 
 ```python
-AppEvent(subscription_id: str, app_id: str, event: str, event_id: int, resource_id: str, trigger_mode: str, summary: Optional[str], payload_json: Optional[str], state_ref: Optional[str], created_at: str)
+PluginEvent(subscription_id: str, plugin_id: str, event: str, event_id: int, resource_id: str, trigger_mode: str, summary: Optional[str], payload_json: Optional[str], state_ref: Optional[str], created_at: str)
 ```
 
 ### `DeclareEventStreamsResult`
@@ -697,11 +781,29 @@ Usage::
 
     from plexi_sdk import theme
     from plexi_sdk.ui import (
-        AppBar, Badge, Button, Card, Column, DataTable, Divider,
+        SurfaceHeader, Badge, Button, Card, Column, DataTable, Divider,
         FooterKeys, HStack, Heading, Label, Pending, Scrollable,
         Section, SelectList, Skeleton, Spacer, Text, TextInput,
         SPACE_SM, SPACE_MD,
     )
+
+### `BadgeColor`
+
+```python
+BadgeColor = Literal['accent', 'success', 'warning', 'danger', 'neutral', 'red', 'green', 'yellow']
+```
+
+Semantic color roles accepted by ``Badge`` and ``Banner``.
+
+### `TextColor`
+
+```python
+TextColor = Literal['accent', 'success', 'warning', 'danger', 'neutral', 'muted', 'red', 'green', 'yellow']
+```
+
+Semantic color roles accepted by ``Text``, ``Label`` and ``Heading`` (the
+``BadgeColor`` roles plus ``"muted"``), in addition to ``#rrggbb`` /
+``#rrggbbaa`` hex strings from ``plexi_sdk.theme``.
 
 ### `ensure_visible(scroll_offset: float, viewport_h: float, item_top: float, item_bottom: float, margin: float = 0.0)`
 
@@ -733,23 +835,41 @@ Give a component a stable explicit key for lists and local state.
 ### `Column`
 
 ```python
-Column(children: list[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', grow: bool = False)
+Column(children: Sequence[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', justify: str = 'start', grow: bool = False)
 ```
 
 Vertical stack of child components.
 
+``align`` places children across the column: ``"start"`` (left, the
+default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
+child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
+``child`` vertically and a single grow spacer pins what follows it to the
+bottom. ``justify`` places children down a column without grow spacers:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``;
+the column then fills the height it is given.
+
 ### `HStack`
 
 ```python
-HStack(children: list[Component] | None = None, gap: float | None = None, align: str = 'start', grow: bool = False)
+HStack(children: Sequence[Component] | None = None, gap: float | None = None, align: str = 'center', justify: str = 'start', grow: bool = False)
 ```
 
 Horizontal stack of child components (`Row` alias).
 
+``align`` is the cross axis, as on ``Column``: it places children at the
+top (``"start"``), the middle (``"center"``, the default) or the bottom
+(``"end"``) of the row. ``justify`` places them along the row:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``.
+Leftover width is shared equally by every ``Spacer(grow=True)``,
+``Column(grow=True)`` and ``Row(grow=True)`` child, which then takes
+precedence over ``justify``; a ``Column`` that does not grow is as wide as
+its content. A ``Text`` child too long for the row wraps in the width its
+later siblings leave.
+
 ### `Card`
 
 ```python
-Card(children: list[Component] | None = None, padding: float = SPACE_MD, gap: float | None = SPACE_SM, bg_color: str | None = None, border_color: str | None = None, radius: float = RADIUS_MD)
+Card(children: Sequence[Component] | None = None, padding: float = SPACE_MD, gap: float | None = SPACE_SM, bg_color: str | None = None, border_color: str | None = None, radius: float = RADIUS_MD)
 ```
 
 Elevated surface container with rounded border and inner padding.
@@ -765,15 +885,15 @@ Scrollable viewport wrapping a single child component.
 ### `Grid`
 
 ```python
-Grid(columns: int, children: list[Component] | None = None, gap: float = SPACE_SM)
+Grid(columns: int, children: Sequence[Component] | None = None, gap: float = SPACE_SM)
 ```
 
 Multi-column grid layout composed onto rows and columns.
 
-### `AppBar`
+### `SurfaceHeader`
 
 ```python
-AppBar(title: str, subtitle: str = '', accent: str | None = None)
+SurfaceHeader(title: str, subtitle: str = '', accent: str | None = None)
 ```
 
 Top application header bar with title and optional subtitle.
@@ -781,7 +901,7 @@ Top application header bar with title and optional subtitle.
 ### `Section`
 
 ```python
-Section(title: str, children: list[Component] | Component | None = None, *more_children, gap: float = SPACE_SM)
+Section(title: str, children: Sequence[Component] | Component | None = None, *more_children, gap: float = SPACE_SM)
 ```
 
 Titled section header with a divider, optionally wrapping body children.
@@ -816,7 +936,10 @@ Declarative text primitive with font size, styling, color, truncation, and align
 Spacer(size: float = SPACE_MD, grow: bool = False, flex: bool = False)
 ```
 
-Fixed or flex gap. ``grow=True`` expands to consume remaining space.
+Fixed or flex gap.
+
+``grow=True`` in a ``Column`` takes an equal share of the column's leftover
+height with every other grow spacer in it.
 
 ### `Divider`
 
@@ -853,18 +976,26 @@ Interactive button dispatching ``UiAction(on_click)`` when activated.
 ### `Actions`
 
 ```python
-Actions(buttons: list[Button] | None = None, actions: list[Button] | None = None, gap: float = SPACE_SM, align: str = 'start')
+Actions(buttons: Sequence[Button] | None = None, actions: Sequence[Button] | None = None, gap: float = SPACE_SM, align: str = 'center')
 ```
 
 Horizontal row of ``Button`` components (`ActionBar` alias).
 
+``align`` places the buttons at the top, middle (the default) or bottom of
+the row. Buttons that do not fit the pane width wrap onto further lines as
+whole buttons; a label never breaks inside a word.
+
 ### `TextInput`
 
 ```python
-TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '', multiline: bool = False, max_length: int | None = None, height: float = 0.0)
+TextInput(id: str = '', value: str = '', placeholder: str = '', on_change: str = '', on_submit: str = '', password: bool = False, autofocus: bool = False, node_id: str = '')
 ```
 
-Editable text input rendered natively by the host (`TextEdit` alias).
+Single-line editable text input rendered natively by the host (`TextEdit` alias).
+
+The host sends ``UiValueChange(on_change, value)`` on every edit and
+``UiAction(on_submit)`` when Enter is pressed in the field. Both ids default
+to ``id``. There is no multi-line input yet.
 
 ### `FormField`
 
@@ -1112,10 +1243,18 @@ CanvasLine(x1: float, y1: float, x2: float, y2: float, color: str = '#cdd6f4', w
 CanvasText(x: float, y: float, text: str, size: float = 14.0, color: str = '#ffffff', bold: bool = False, align: str = 'left_top', monospace: bool = False)
 ```
 
+### `CanvasCommand`
+
+```python
+CanvasCommand = CanvasRect | CanvasCircle | CanvasLine | CanvasText
+```
+
+Any one drawing command accepted by ``Canvas``.
+
 ### `Canvas`
 
 ```python
-Canvas(commands: list[Any] | None = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '', on_click: str = '')
+Canvas(commands: Sequence[CanvasCommand] | None = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '', on_click: str = '')
 ```
 
 2D vector drawing surface rendered natively by the host.
@@ -1181,10 +1320,10 @@ Raises:
 
 Write PNG bytes to path. Creates parent directories as needed.
 
-### `AppHarness`
+### `PluginHarness`
 
 ```python
-AppHarness(app_path: 'str | Path', width: int = 800, height: int = 600, timeout: float = 5.0, host_log_path: 'str | Path | None' = None)
+PluginHarness(plugin_path: 'str | Path', width: int = 800, height: int = 600, timeout: float = 5.0, host_log_path: 'str | Path | None' = None)
 ```
 
 Headless runner for Plexi Python apps.
@@ -1194,7 +1333,7 @@ using the PGAP v3 protocol. No display or running Plexi host required.
 
 Usage::
 
-    with AppHarness("my_app.py", width=400, height=300) as h:
+    with PluginHarness("my_app.py", width=400, height=300) as h:
         cmds = h.run(1)                  # step one render frame
         h.key("enter")                   # inject a key event
         cmds = h.run(1)                  # render again to see effects
@@ -1291,10 +1430,10 @@ Overlay host-provided roles. Unknown keys and non-string/empty
 values are ignored so a partial payload never blanks a color.
 
 
-### `AppPalette`
+### `PluginPalette`
 
 ```python
-AppPalette(dark: 'dict[str, str]', light: 'dict[str, str]')
+PluginPalette(dark: 'dict[str, str]', light: 'dict[str, str]')
 ```
 
 Light/dark palette for app-defined color tokens.

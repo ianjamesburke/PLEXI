@@ -176,8 +176,8 @@ pub fn routine_run(name: &str, force: bool) -> i32 {
     // the host errors back when the context does not exist.
     let context = Some(routine.context.as_str()).filter(|c| !c.is_empty());
     log::info!(
-        "cli: routine run '{name}' — dispatching command: {} context={context:?}",
-        routine.command
+        "cli: routine run '{name}' command_chars={} context={context:?}",
+        routine.command.chars().count()
     );
     pane_new_cli(PaneNewCliArgs {
         cmd: Some(&routine.command),

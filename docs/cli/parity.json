@@ -1,7 +1,7 @@
 {
   "SplitHorizontal": {
     "cli": "pane new --right",
-    "note": ""
+    "note": "CLI creates a sibling directly. The zoomed desktop shortcut first wraps the pane into a child context."
   },
   "SplitVertical": {
     "cli": "pane new --down",
@@ -9,11 +9,11 @@
   },
   "SplitRight": {
     "cli": "pane new --right",
-    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+    "note": "CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type."
   },
   "SplitDown": {
     "cli": "pane new --down",
-    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+    "note": "CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type."
   },
   "Navigate": {
     "cli": "pane focus 42",
@@ -59,12 +59,12 @@
     "cli": "pane name 42 name",
     "note": ""
   },
-  "CloseApp": {
+  "CloseView": {
     "cli": "pane close 42",
     "note": ""
   },
   "OpenFileBrowser": {
-    "cli": "app open file_browser",
+    "cli": "view open file_browser",
     "note": ""
   },
   "OpenAgents": {
@@ -87,17 +87,17 @@
     "note": ""
   },
   "OpenSecretsManager": {
-    "cli": "app open secrets_manager"
+    "cli": "view open secrets_manager"
   },
   "OpenAssistant": {
-    "cli": "app open assistant",
+    "cli": "view open assistant",
     "note": ""
   },
   "RenameContext": {
     "cli": "context rename name --context-id 42",
     "note": ""
   },
-  "ForceReloadApp": {
+  "ForceReloadView": {
     "ui-only": "Developer recovery gesture for a focused app; normal source edits reload through the file watcher."
   },
   "NewPageRight": {
@@ -112,10 +112,6 @@
     "cli": "config reload",
     "note": ""
   },
-  "NavBackApp": {
-    "cli": "pane focus --back",
-    "note": "CLI traverses host focus history; app-local navigation remains owned by each app."
-  },
   "FocusHistoryForward": {
     "cli": "pane focus --forward",
     "note": ""
@@ -125,7 +121,7 @@
     "note": ""
   },
   "OpenScratchpad": {
-    "cli": "app open text-editor"
+    "cli": "view open text-editor"
   },
   "PushPaneToSubcontext": {
     "cli": "context push name --pane-id 42",
@@ -175,6 +171,9 @@
   "ToggleShortcuts": {
     "ui-only": "Displays the keyboard reference overlay; agents use CLI help."
   },
+  "OpenChangelog": {
+    "ui-only": "Opens the changelog overlay; release notes are available in CHANGELOG.md."
+  },
   "ToggleCommandPalette": {
     "ui-only": "Displays a human command chooser; agents invoke the selected command directly."
   },
@@ -184,19 +183,45 @@
   "DecreasePaneFontSize": {
     "ui-only": "Per-pane visual text size preference."
   },
+  "ResetPaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
+  "UiScaleUp": {
+    "ui-only": "Steps the app-wide UI scale up; the persistent equivalent is the `ui_scale` config key."
+  },
+  "UiScaleDown": {
+    "ui-only": "Steps the app-wide UI scale down; the persistent equivalent is the `ui_scale` config key."
+  },
+  "UiScaleReset": {
+    "ui-only": "Resets the app-wide UI scale to 1.0; the persistent equivalent is the `ui_scale` config key."
+  },
   "ScrollUp": {
     "ui-only": "Moves the visible viewport; agents read pane capture output."
   },
   "ScrollDown": {
     "ui-only": "Moves the visible viewport; agents read pane capture output."
   },
-  "ToggleNotificationModal": {
-    "ui-only": "Opens the desktop notification viewer; agents inspect needs-you and notification records."
+  "ToggleAttentionQueue": {
+    "ui-only": "Toggles the desktop attention queue list; agents inspect needs-you and notification records."
+  },
+  "ZoomIn": {
+    "cli": "context zoom 42",
+    "note": "CLI targets an existing context id. The desktop shortcut also wraps multiple selected panes or toggles pane zoom; those selection gestures are UI-only."
   },
   "ToggleMinimap": {
     "ui-only": "Toggles a visual navigation overlay."
   },
   "SendPane": {
     "ui-only": "Focus-preserving spatial layout gesture; pane swap exposes the corresponding layout move with focus following."
+  },
+  "SelectPane": {
+    "ui-only": "Extends the transient desktop selection highlight; selection gestures have no CLI state."
+  },
+  "CancelPaneSelection": {
+    "ui-only": "Clears transient desktop selection without changing pane ownership or layout."
+  },
+  "NavBackView": {
+    "cli": "pane focus --back",
+    "note": "CLI traverses host focus history; app-local navigation remains owned by each app."
   }
 }

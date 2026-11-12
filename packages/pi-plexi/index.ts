@@ -10,9 +10,14 @@ export {
   PlexiCliClient,
   type CliResult,
   type ExecRunner,
+  type WorkspaceAgentSummary,
   type WorkspaceOverviewSnapshot,
 } from "./src/cli-client.ts";
 export { PlexiEventSubscriber, type PlexiEventRecord } from "./src/events.ts";
+export {
+  buildContainerContext,
+  PLEXI_CONTAINER_SECTION,
+} from "./src/container-context.ts";
 export {
   isLegacyPlexiPiExtensionContent,
   LEGACY_PI_EXTENSION_FILENAME,

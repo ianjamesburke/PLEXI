@@ -1,12 +1,12 @@
 # AUTO-GENERATED — do not edit by hand.
 # Regenerate with: just gen-schema
-# Protocol: pgap/3
+# Protocol: pgap/4
 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-PROTOCOL_VERSION = "pgap/3"
+PROTOCOL_VERSION = "pgap/4"
 
 
 @dataclass

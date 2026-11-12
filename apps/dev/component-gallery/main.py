@@ -16,7 +16,7 @@ from plexi_sdk.events import UiAction, UiValueChange
 from plexi_sdk.ui import (
     Accordion,
     ActionBar,
-    AppBar,
+    SurfaceHeader,
     Avatar,
     Badge,
     Banner,
@@ -168,7 +168,7 @@ def view():
         ], selected_idx=state.get(LIST, 0)),
 
         Section("Navigation"),
-        Breadcrumb(items=["Home", "Apps", "Gallery"]),
+        Breadcrumb(items=["Home", "Plugins", "Gallery"]),
         TabBar("gallery-tabs", tabs=["Overview", "Details", "Logs"],
                active=state.get(TAB, 0)),
         Pagination("gallery-page", page=state.get(PAGE, 0), total=5),
@@ -223,7 +223,7 @@ def view():
     _SCROLL.child = Column(children=children)
     return Column(
         [
-            AppBar("Component Gallery", "Every host-rendered primitive"),
+            SurfaceHeader("Component Gallery", "Every host-rendered primitive"),
             _SCROLL,
             ActionBar([
                 Button("Open modal", "gallery-modal-open", style="secondary"),

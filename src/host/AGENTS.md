@@ -65,11 +65,9 @@ copy. Anything that must be *current* therefore has exactly two options:
 - derive it from the working directory, which is always current — the nearest
   ancestor holding a `.plexi` directory (`notes::anchored_root_for`).
 
-The second is why notes and app state are host-independent from the CLI without
-being wrong: their addresses are predictable from outside the process. This is the
-answer to stint 0745's open question — that split is correct, not a missing
-migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
-same reason.
+Notes use the filesystem resolver. App state uses the host in a pane and file
+scope outside one; the CLI contract lives in `src/cli/AGENTS.md`. `ScopeOrigin`'s
+module doc bans env vars as authority inputs for the same reason.
 
 ## Experiment data
 
@@ -119,7 +117,7 @@ An experiment owns its storage in its own versioned location and never writes co
   process exit to observe yet. `HeadlessDeadline` runs the two clocks separately
   for that reason. This hides locally and fires in CI, where the runners are
   roughly 4x slower (`PLEXI_SCENE_TIMEOUT_SCALE: '4'` in
-  `.github/workflows/roadmap-evidence.yml` is the standing measurement) and 2000+
+  `.github/workflows/distribution.yml` is the standing measurement) and 2000+
   tests compete for cores.
 - **CPython-WASM perf samples stay at debug.** `record_render_perf` writes one
   line per painted Python pane per sample window. The Logs app tails the same
@@ -128,6 +126,9 @@ An experiment owns its storage in its own versioned location and never writes co
   must honor the SDK `level` field for the same reason: a debug inventory poll
   that the host rewrites as info refills the tail. Unrecognized guest message
   types warn once per type per window; repeats stay at debug.
+- **A verified executable cannot be exec'd by descriptor on macOS.** `execve("/dev/fd/N")` returns EACCES (measured on macOS 14.5) and there is no `fexecve`, so `src/host/cli_ops/exec.rs` seals the exact approved bytes into a private `0700` copy cached by app id, program name and content digest (a superseded digest loses its copy; uninstalling the app removes all of its copies), re-verifies that copy from a descriptor immediately before spawn, and spawns only the copy. Because it runs a copy, a program that loads `@executable_path`, `@loader_path` or `@rpath` libraries fails with the typed `executable_not_self_contained` error. Never replace this with hash-then-spawn-by-path: the path can change between the two. A same-user process racing inside the random private directory is the recorded residual.
+- **CLI operation grants bind package content and the operation binding, not the pane.** `TargetType::CliOperation` ignores instance and context ids in `GrantRecord::matches` on purpose, so a remembered grant survives a restart that renumbers panes. The binding digest in `resource_id` and the package digest in `package_id` carry the authority; a request that omits either matches nothing. Never name a CLI operation input key `operation_id`: the broker would treat a consumed one-shot grant as replayable for it.
+- **Install staging lives outside `apps/`.** The registry loads every manifest-bearing subdirectory of `apps/`, so a leftover staging tree there would shadow the real app. `src/app/install_swap.rs` stages under `run/install-staging`, writes the completion marker last, and swaps in place.
 
 ## Approval keyboard ownership
 

@@ -1,6 +1,6 @@
 // GPU host backend for the WASM runtime (G7 surface lifecycle, G11 render pass).
 //
-// The `gpu` WIT import is a WebGPU-aligned subset of wgpu. WASM apps issue GPU
+// The `gpu` WIT import is a WebGPU-aligned subset of wgpu. WASM plugins issue GPU
 // command descriptors (pipelines, buffers, bind groups, render/compute passes)
 // across the component boundary; the host executes them against a real wgpu
 // device. No framebuffer data crosses the boundary — only command descriptors.
@@ -25,10 +25,10 @@ use std::sync::OnceLock;
 #[cfg(test)]
 use std::time::Instant;
 
-use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
+use crate::host::wasm_view::bindings::plexi::platform::gpu as wit;
 
 /// The host's shared egui/wgpu render state, registered once at eframe startup.
-/// `None` in headless/test processes that never construct an eframe app.
+/// `None` in headless/test processes that never construct an eframe plugin.
 static HOST_RENDER_STATE: OnceLock<egui_wgpu::RenderState> = OnceLock::new();
 
 /// Register eframe's shared render state so live WASM surfaces can be composited
@@ -229,7 +229,7 @@ impl AsyncSurfaceReadbackRing {
 }
 
 /// Owns a wgpu device and the opaque-handle registries the `gpu` import refers
-/// to. One per app with the gpu capability granted; lives inside `HostCtx`.
+/// to. One per plugin with the gpu capability granted; lives inside `HostCtx`.
 pub struct GpuDevice {
     device: wgpu::Device,
     queue: wgpu::Queue,

@@ -12,7 +12,7 @@ from __future__ import annotations
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTitle
 from plexi_sdk.events import MouseEvent
-from plexi_sdk.ui import AppBar, Canvas, CanvasLine, CanvasRect, CanvasText, Column, FooterKeys
+from plexi_sdk.ui import SurfaceHeader, Canvas, CanvasLine, CanvasRect, CanvasText, Column, FooterKeys
 
 CANVAS_W = 360.0
 CANVAS_H = 360.0
@@ -52,7 +52,7 @@ def view():
     clicks = state.get("clicks", 0)
     return Column(
         [
-            AppBar("Canvas Grid", f"{clicks} clicks"),
+            SurfaceHeader("Canvas Grid", f"{clicks} clicks"),
             Canvas(_draw(selected), width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             FooterKeys([("click", "select cell")]),
         ],

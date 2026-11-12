@@ -14,20 +14,20 @@
 // storage buffer read by the vertex shader.
 
 wit_bindgen::generate!({
-    world: "plexi-gpu-app",
+    world: "plexi-gpu-plugin",
     path: "wit/world.wit",
 });
 
 use bytemuck::{Pod, Zeroable};
+use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::gpu::{
     self, BufferUsage, DrawCall, RenderPassDesc, RenderPipelineDesc, TextureFormat, VertexAttr,
 };
 use plexi::platform::host_log;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
-use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent, StateSnapshot, SurfaceEvent,
-    SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, Justify, KeyEvent, StateSnapshot,
+    SurfaceEvent, SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── WGSL ──────────────────────────────────────────────────────────────────────
@@ -71,8 +71,8 @@ fn fs_main(v: VOut) -> @location(0) vec4<f32> {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Instance {
-    pos:   [f32; 2],
-    size:  [f32; 2],
+    pos: [f32; 2],
+    size: [f32; 2],
     color: [f32; 4],
 }
 
@@ -84,7 +84,11 @@ impl Instance {
         let ny = 1.0 - (y / ch) * 2.0;
         let nw = (w / cw) * 2.0;
         let nh = (h / ch) * 2.0;
-        Instance { pos: [nx, ny - nh], size: [nw, nh], color }
+        Instance {
+            pos: [nx, ny - nh],
+            size: [nw, nh],
+            color,
+        }
     }
 }
 
@@ -100,14 +104,17 @@ const PADDLE_SPEED: f32 = 4.0;
 const BALL_SIZE: f32 = 8.0;
 const BALL_SPEED: f32 = 3.0;
 
-const BG:     [f32; 4] = [0.118, 0.118, 0.180, 1.0]; // Catppuccin base
-const WHITE:  [f32; 4] = [0.804, 0.839, 0.957, 1.0]; // text
-const PINK:   [f32; 4] = [0.953, 0.545, 0.659, 1.0]; // ball (red)
-const DIM:    [f32; 4] = [0.271, 0.278, 0.353, 1.0]; // centre line
+const BG: [f32; 4] = [0.118, 0.118, 0.180, 1.0]; // Catppuccin base
+const WHITE: [f32; 4] = [0.804, 0.839, 0.957, 1.0]; // text
+const PINK: [f32; 4] = [0.953, 0.545, 0.659, 1.0]; // ball (red)
+const DIM: [f32; 4] = [0.271, 0.278, 0.353, 1.0]; // centre line
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
-struct Vec2 { x: f32, y: f32 }
+struct Vec2 {
+    x: f32,
+    y: f32,
+}
 
 struct Pong {
     // GPU handles
@@ -125,8 +132,10 @@ struct Pong {
     vel: Vec2,
     left_y: f32,
     right_y: f32,
-    left_up: bool, left_down: bool,
-    right_up: bool, right_down: bool,
+    left_up: bool,
+    left_down: bool,
+    right_up: bool,
+    right_down: bool,
     score_left: u32,
     score_right: u32,
 
@@ -136,15 +145,28 @@ struct Pong {
 impl Pong {
     fn new() -> Self {
         Pong {
-            pipeline: None, instance_buf: None,
-            surface_view: None, surface_w: CANVAS_W, surface_h: CANVAS_H,
+            pipeline: None,
+            instance_buf: None,
+            surface_view: None,
+            surface_w: CANVAS_W,
+            surface_h: CANVAS_H,
             score_pipe: None,
-            ball: Vec2 { x: CANVAS_W / 2.0, y: CANVAS_H / 2.0 },
-            vel: Vec2 { x: BALL_SPEED, y: BALL_SPEED * 0.7 },
-            left_y: CANVAS_H / 2.0, right_y: CANVAS_H / 2.0,
-            left_up: false, left_down: false,
-            right_up: false, right_down: false,
-            score_left: 0, score_right: 0,
+            ball: Vec2 {
+                x: CANVAS_W / 2.0,
+                y: CANVAS_H / 2.0,
+            },
+            vel: Vec2 {
+                x: BALL_SPEED,
+                y: BALL_SPEED * 0.7,
+            },
+            left_y: CANVAS_H / 2.0,
+            right_y: CANVAS_H / 2.0,
+            left_up: false,
+            left_down: false,
+            right_up: false,
+            right_down: false,
+            score_left: 0,
+            score_right: 0,
             node_id: 0,
         }
     }
@@ -156,8 +178,7 @@ impl Pong {
         self.surface_h = h as f32;
 
         // Create a view into the surface-node texture.
-        let view = gpu::create_surface_view(surface_handle)
-            .expect("create_surface_view");
+        let view = gpu::create_surface_view(surface_handle).expect("create_surface_view");
         self.surface_view = Some(view);
 
         // Compile the instanced quad pipeline once.
@@ -166,16 +187,27 @@ impl Pong {
             fs_entry: "fs_main".to_string(),
             vertex_stride: std::mem::size_of::<Instance>() as u32,
             attrs: vec![
-                VertexAttr { location: 0, format: "float32x2".to_string(), offset: 0 },
-                VertexAttr { location: 1, format: "float32x2".to_string(), offset: 8 },
-                VertexAttr { location: 2, format: "float32x4".to_string(), offset: 16 },
+                VertexAttr {
+                    location: 0,
+                    format: "float32x2".to_string(),
+                    offset: 0,
+                },
+                VertexAttr {
+                    location: 1,
+                    format: "float32x2".to_string(),
+                    offset: 8,
+                },
+                VertexAttr {
+                    location: 2,
+                    format: "float32x4".to_string(),
+                    offset: 16,
+                },
             ],
             output_format: TextureFormat::Rgba8Unorm,
             blend_alpha: true,
         };
         self.pipeline = Some(
-            gpu::create_render_pipeline("pong", PONG_WGSL, &desc)
-                .expect("create_render_pipeline")
+            gpu::create_render_pipeline("pong", PONG_WGSL, &desc).expect("create_render_pipeline"),
         );
 
         // Allocate instance buffer (32 objects × 32 bytes).
@@ -184,7 +216,8 @@ impl Pong {
                 "instances",
                 (32 * std::mem::size_of::<Instance>()) as u64,
                 BufferUsage::VERTEX | BufferUsage::COPY_DST,
-            ).expect("create_buffer")
+            )
+            .expect("create_buffer"),
         );
 
         host_log::info(&format!("pong: GPU ready {}×{}", w, h));
@@ -194,15 +227,25 @@ impl Pong {
 
     fn tick(&mut self) {
         let half_p = PADDLE_H / 2.0;
-        if self.left_up   { self.left_y  = (self.left_y  - PADDLE_SPEED).max(half_p); }
-        if self.left_down { self.left_y  = (self.left_y  + PADDLE_SPEED).min(self.surface_h - half_p); }
-        if self.right_up  { self.right_y = (self.right_y - PADDLE_SPEED).max(half_p); }
-        if self.right_down{ self.right_y = (self.right_y + PADDLE_SPEED).min(self.surface_h - half_p); }
+        if self.left_up {
+            self.left_y = (self.left_y - PADDLE_SPEED).max(half_p);
+        }
+        if self.left_down {
+            self.left_y = (self.left_y + PADDLE_SPEED).min(self.surface_h - half_p);
+        }
+        if self.right_up {
+            self.right_y = (self.right_y - PADDLE_SPEED).max(half_p);
+        }
+        if self.right_down {
+            self.right_y = (self.right_y + PADDLE_SPEED).min(self.surface_h - half_p);
+        }
 
         self.ball.x += self.vel.x;
         self.ball.y += self.vel.y;
 
-        if self.ball.y <= 0.0 || self.ball.y >= self.surface_h { self.vel.y = -self.vel.y; }
+        if self.ball.y <= 0.0 || self.ball.y >= self.surface_h {
+            self.vel.y = -self.vel.y;
+        }
 
         let left_x = 20.0 + PADDLE_W;
         if self.ball.x <= left_x && (self.ball.y - self.left_y).abs() < half_p + BALL_SIZE / 2.0 {
@@ -215,22 +258,42 @@ impl Pong {
             self.vel.y += (self.ball.y - self.right_y) / half_p * 1.5;
         }
 
-        if self.ball.x < 0.0 { self.score_right += 1; self.reset_ball(-1.0); self.push_score(); }
-        if self.ball.x > self.surface_w { self.score_left += 1; self.reset_ball(1.0); self.push_score(); }
+        if self.ball.x < 0.0 {
+            self.score_right += 1;
+            self.reset_ball(-1.0);
+            self.push_score();
+        }
+        if self.ball.x > self.surface_w {
+            self.score_left += 1;
+            self.reset_ball(1.0);
+            self.push_score();
+        }
 
         let speed = (self.vel.x.powi(2) + self.vel.y.powi(2)).sqrt().max(1.0);
-        if speed > 10.0 { self.vel.x = self.vel.x / speed * 10.0; self.vel.y = self.vel.y / speed * 10.0; }
+        if speed > 10.0 {
+            self.vel.x = self.vel.x / speed * 10.0;
+            self.vel.y = self.vel.y / speed * 10.0;
+        }
     }
 
     fn reset_ball(&mut self, dir: f32) {
-        self.ball = Vec2 { x: self.surface_w / 2.0, y: self.surface_h / 2.0 };
-        self.vel = Vec2 { x: BALL_SPEED * dir, y: BALL_SPEED * 0.7 };
+        self.ball = Vec2 {
+            x: self.surface_w / 2.0,
+            y: self.surface_h / 2.0,
+        };
+        self.vel = Vec2 {
+            x: BALL_SPEED * dir,
+            y: BALL_SPEED * 0.7,
+        };
     }
 
     // Push score update to the score pipe (if a visualiser is connected).
     fn push_score(&self) {
         if let Some(h) = self.score_pipe {
-            let msg = format!("{{\"left\":{},\"right\":{}}}", self.score_left, self.score_right);
+            let msg = format!(
+                "{{\"left\":{},\"right\":{}}}",
+                self.score_left, self.score_right
+            );
             let _ = pipes::send_json(h, &msg);
         }
     }
@@ -259,11 +322,35 @@ impl Pong {
         }
 
         // Paddles
-        instances.push(Instance::from_px(20.0, self.left_y - PADDLE_H / 2.0, PADDLE_W, PADDLE_H, cw, ch, WHITE));
-        instances.push(Instance::from_px(cw - 20.0 - PADDLE_W, self.right_y - PADDLE_H / 2.0, PADDLE_W, PADDLE_H, cw, ch, WHITE));
+        instances.push(Instance::from_px(
+            20.0,
+            self.left_y - PADDLE_H / 2.0,
+            PADDLE_W,
+            PADDLE_H,
+            cw,
+            ch,
+            WHITE,
+        ));
+        instances.push(Instance::from_px(
+            cw - 20.0 - PADDLE_W,
+            self.right_y - PADDLE_H / 2.0,
+            PADDLE_W,
+            PADDLE_H,
+            cw,
+            ch,
+            WHITE,
+        ));
 
         // Ball
-        instances.push(Instance::from_px(self.ball.x - BALL_SIZE / 2.0, self.ball.y - BALL_SIZE / 2.0, BALL_SIZE, BALL_SIZE, cw, ch, PINK));
+        instances.push(Instance::from_px(
+            self.ball.x - BALL_SIZE / 2.0,
+            self.ball.y - BALL_SIZE / 2.0,
+            BALL_SIZE,
+            BALL_SIZE,
+            cw,
+            ch,
+            PINK,
+        ));
 
         let bytes: &[u8] = bytemuck::cast_slice(&instances);
         gpu::write_buffer(buf, 0, bytes).expect("write_buffer");
@@ -283,7 +370,8 @@ impl Pong {
                 first_vertex: 0,
                 first_instance: 0,
             }],
-        }).expect("submit_render_pass");
+        })
+        .expect("submit_render_pass");
     }
 
     // ── View ─────────────────────────────────────────────────────────────────
@@ -291,44 +379,72 @@ impl Pong {
     fn nid(&mut self, key: &str, data: UiNodeData) -> IndexedNode {
         let id = self.node_id;
         self.node_id += 1;
-        IndexedNode { id, key: key.to_string(), data }
+        IndexedNode {
+            id,
+            key: key.to_string(),
+            data,
+        }
     }
 
     fn build_tree(&mut self) -> UiTree {
         self.node_id = 0;
         let mut nodes: Vec<IndexedNode> = Vec::new();
 
-        let score = self.nid("score", UiNodeData::Text(TextNode {
-            text: format!("{}  —  {}", self.score_left, self.score_right),
-            size: Some(22.0), bold: true, color: None, truncate: false,
-            align: Alignment::Center,
-        }));
+        let score = self.nid(
+            "score",
+            UiNodeData::Text(TextNode {
+                text: format!("{}  —  {}", self.score_left, self.score_right),
+                size: Some(22.0),
+                bold: true,
+                color: None,
+                truncate: false,
+                align: Alignment::Center,
+            }),
+        );
         let score_id = score.id;
         nodes.push(score);
 
-        let canvas = self.nid("canvas", UiNodeData::Surface(SurfaceNode {
-            width: self.surface_w as u32,
-            height: self.surface_h as u32,
-            texture_handle: self.surface_view,
-        }));
+        let canvas = self.nid(
+            "canvas",
+            UiNodeData::Surface(SurfaceNode {
+                width: self.surface_w as u32,
+                height: self.surface_h as u32,
+                texture_handle: self.surface_view,
+            }),
+        );
         let canvas_id = canvas.id;
         nodes.push(canvas);
 
-        let hint = self.nid("hint", UiNodeData::Text(TextNode {
-            text: "W/S — left   ↑/↓ — right   q to quit".to_string(),
-            size: Some(11.0), bold: false, color: None, truncate: false,
-            align: Alignment::Center,
-        }));
+        let hint = self.nid(
+            "hint",
+            UiNodeData::Text(TextNode {
+                text: "W/S — left   ↑/↓ — right   q to quit".to_string(),
+                size: Some(11.0),
+                bold: false,
+                color: None,
+                truncate: false,
+                align: Alignment::Center,
+            }),
+        );
         let hint_id = hint.id;
         nodes.push(hint);
 
-        let root = self.nid("root", UiNodeData::Column(ColumnNode {
-            children: vec![score_id, canvas_id, hint_id],
-            gap: 8.0, align: Alignment::Center, grow: true,
-        }));
+        let root = self.nid(
+            "root",
+            UiNodeData::Column(ColumnNode {
+                children: vec![score_id, canvas_id, hint_id],
+                gap: 8.0,
+                align: Alignment::Center,
+                justify: Justify::Start,
+                grow: true,
+            }),
+        );
         let root_id = root.id;
         nodes.push(root);
-        UiTree { root: root_id, nodes }
+        UiTree {
+            root: root_id,
+            nodes,
+        }
     }
 }
 
@@ -336,11 +452,15 @@ impl Pong {
 
 struct Component;
 static mut GAME: Option<Pong> = None;
-fn game() -> &'static mut Pong { unsafe { (*core::ptr::addr_of_mut!(GAME)).as_mut().unwrap() } }
+fn game() -> &'static mut Pong {
+    unsafe { (*core::ptr::addr_of_mut!(GAME)).as_mut().unwrap() }
+}
 
 impl Guest for Component {
     fn init(_state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
-        unsafe { GAME = Some(Pong::new()); }
+        unsafe {
+            GAME = Some(Pong::new());
+        }
         host_log::info("pong: init (GPU path)");
 
         // Open a JSON pipe for score updates — a visualiser pane can connect.
@@ -351,19 +471,31 @@ impl Guest for Component {
 
         vec![
             Effect::SetTitle("Pong".to_string()),
-            Effect::SetTimer(TimerEffect { id: TIMER_TICK, delay_ms: TICK_MS, repeat: true }),
+            Effect::SetTimer(TimerEffect {
+                id: TIMER_TICK,
+                delay_ms: TICK_MS,
+                repeat: true,
+            }),
         ]
     }
 
     fn update(event: InputEvent) -> Vec<Effect> {
         match event {
-            InputEvent::SurfaceReady(SurfaceEvent { texture_handle, width, height }) => {
+            InputEvent::SurfaceReady(SurfaceEvent {
+                texture_handle,
+                width,
+                height,
+            }) => {
                 game().setup_gpu(texture_handle, width, height);
                 game().render();
                 vec![]
             }
 
-            InputEvent::SurfaceResized(SurfaceEvent { texture_handle, width, height }) => {
+            InputEvent::SurfaceResized(SurfaceEvent {
+                texture_handle,
+                width,
+                height,
+            }) => {
                 game().setup_gpu(texture_handle, width, height);
                 vec![]
             }
@@ -377,10 +509,10 @@ impl Guest for Component {
             InputEvent::Key(KeyEvent { key, pressed, .. }) => {
                 let g = game();
                 match key.as_str() {
-                    "w"      => g.left_up    = pressed,
-                    "s"      => g.left_down  = pressed,
-                    "up"     => g.right_up   = pressed,
-                    "down"   => g.right_down = pressed,
+                    "w" => g.left_up = pressed,
+                    "s" => g.left_down = pressed,
+                    "up" => g.right_up = pressed,
+                    "down" => g.right_down = pressed,
                     "q" | "escape" if pressed => return vec![Effect::CloseSelf],
                     _ => {}
                 }
@@ -391,7 +523,9 @@ impl Guest for Component {
         }
     }
 
-    fn view() -> UiTree { game().build_tree() }
+    fn view() -> UiTree {
+        game().build_tree()
+    }
 }
 
 export!(Component);

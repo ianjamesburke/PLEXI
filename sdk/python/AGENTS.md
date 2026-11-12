@@ -18,6 +18,7 @@
 - **Packaged Python apps use the package SDK.** An installed release does not read an edited checkout or accept `PLEXI_SDK_PATH` as a replacement for its package-owned SDK. Rebuild and package the SDK change before validating it with the installed host. Resource ownership and source-build discovery are defined in `scripts/DISTRIBUTION.md`.
 - **`McpConnect`/`McpSend`/`McpDisconnect` are CPython-runtime-only.** They ride the raw JSON bridge in `LivePythonPane` and never appear in `wit/plexi.wit`, so Rust WASM component apps cannot use them. Do not add effects to the WIT world casually: extending it changes the component type and the host rejects every prebuilt component (CPython shim bundle, `apps/wasm-poc/*`) built against the old world — all fixtures must be rebuilt in the same change.
 - **`McpConnect` carries a server id, never a command.** The host resolves argv from user-owned `mcp_servers.toml` (`src/host/mcp_client.rs`). If a command/argv field ever appears on the wire, `mcp.client` has silently become arbitrary process execution.
+- **`CliOperation` carries an operation id and typed values, never a program.** The wire has no executable, argv, environment, working-directory or shell field, and the host refuses a request with any extra key (`src/host/cli_ops/service.rs`). If such a field ever appears, `cli.operations` has silently become arbitrary process execution. Keep `sdk/python/tests/test_cli_operation.py` pinning the wire shape.
 
 ## Style
 

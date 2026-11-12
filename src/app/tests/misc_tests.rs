@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[test]
-fn parse_key_str_to_event_uses_sdk_key_names_for_app_panes() {
+fn parse_key_str_to_event_uses_sdk_key_names_for_view_panes() {
     let (key, modifiers) = parse_key_str_to_event("plus");
     assert_eq!(key, "plus");
     assert!(!modifiers.ctrl);
@@ -82,7 +82,10 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
 #[test]
 fn clipboard_chord_matches_egui_winit_vocabulary() {
     let cmd = egui::Modifiers::COMMAND;
-    assert_eq!(clipboard_chord(cmd, egui::Key::X), Some(ClipboardChord::Cut));
+    assert_eq!(
+        clipboard_chord(cmd, egui::Key::X),
+        Some(ClipboardChord::Cut)
+    );
     assert_eq!(
         clipboard_chord(cmd, egui::Key::C),
         Some(ClipboardChord::Copy)
@@ -213,13 +216,13 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 #[test]
 fn socket_line_queues_request_and_requests_repaint() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
     handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
-        matches!(rx.try_recv(), Ok(crate::protocol::AppRequest::Wake)),
+        matches!(rx.try_recv(), Ok(crate::protocol::HostRequest::Wake)),
         "request must be queued on the pane-IPC channel"
     );
     assert!(
@@ -232,7 +235,7 @@ fn socket_line_queues_request_and_requests_repaint() {
 #[test]
 fn socket_line_parse_error_queues_nothing() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -245,16 +248,15 @@ fn socket_line_parse_error_queues_nothing() {
 
 fn run_socket_connection(
     payload: &[u8],
-) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::AppRequest> {
+) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::HostRequest> {
     use std::io::Write as _;
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
-    let (mailbox, rx) =
-        crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
-            wake.clone(),
-            "pane_ipc",
-        );
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+        wake.clone(),
+        "pane_ipc",
+    );
     let (subscribe_mailbox, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >::channel(wake.clone(), "event_subscribe");
@@ -267,8 +269,331 @@ fn run_socket_connection(
         .shutdown(std::net::Shutdown::Write)
         .expect("close write half");
     let profile = tempfile::tempdir().unwrap();
-    handle_socket_connection(profile.path(), server, mailbox, subscribe_mailbox, publish_mailbox, None);
+    handle_socket_connection(
+        profile.path(),
+        server,
+        mailbox,
+        subscribe_mailbox,
+        publish_mailbox,
+        None,
+    );
     rx
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_disconnected_socket_does_not_dispatch_after_approval() {
+    pane_send_socket_approval(true, false);
+}
+
+#[test]
+fn pane_send_rejects_missing_reply_stream_before_dispatch() {
+    #[derive(Default)]
+    struct MissingReply(Vec<u8>);
+    impl std::io::Write for MissingReply {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl SocketAckWriter for MissingReply {
+        fn requires_reply_stream(&self) -> bool {
+            true
+        }
+    }
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "test");
+    let profile = tempfile::tempdir().unwrap();
+    let mut reply = MissingReply::default();
+    let request = serde_json::json!({"type":"send_to_pane", "pane_id":1, "text":"hello", "response_file":profile.path().join("response")});
+    handle_socket_line_in(
+        profile.path(),
+        &request.to_string(),
+        &mailbox,
+        None,
+        &mut reply,
+    );
+    assert!(rx.try_recv().is_err());
+    let response: serde_json::Value = serde_json::from_slice(&reply.0).unwrap();
+    assert_eq!(response["error_code"], "reply_connection_unavailable");
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_connected_socket_receives_approval_and_dispatches_once() {
+    pane_send_socket_approval(false, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_persistent_grant_deduplicates_and_unknown_claim_never_replays() {
+    pane_send_socket_approval(false, true);
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
+    use std::io::{Read as _, Write as _};
+    let mut h = crate::testing::HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
+    h.terminal_backend(target).enable_input_tap();
+    let caller_pid = h.app.windows[0].panes[&caller]
+        .as_terminal()
+        .unwrap()
+        .backend
+        .child_pid();
+    let profile = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+            egui::Context::default(),
+        ));
+        let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >::channel(wake.clone(), "subscribe");
+        let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostPublishRequest,
+        >::channel(wake, "publish");
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let profile_path = profile.path().to_path_buf();
+        let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target, "text":"hello", "operation_id":"human-explicit", "response_file":profile.path().join("response")});
+        let mailbox = h.ipc_tx.clone();
+        let worker = std::thread::spawn(move || {
+            handle_socket_connection(
+                &profile_path,
+                server,
+                mailbox,
+                subscribe,
+                publish,
+                Some(vec![std::process::id(), caller_pid]),
+            )
+        });
+        writeln!(client, "{payload}").unwrap();
+        worker.join().unwrap();
+        h.hidden_frame();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["error_code"],
+            "idempotency_unavailable"
+        );
+    }
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
+}
+
+#[cfg(unix)]
+fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
+    use std::io::Read as _;
+    use std::io::Write as _;
+    use std::time::Duration;
+    let mut h = crate::testing::HostHarness::new();
+    let target = h.add_focused_terminal();
+    h.terminal_backend(target).enable_input_tap();
+    let ws = h.workspace_root();
+    let agent = ws.join(".plexi/agents/socket-test");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(agent.join("AGENT.md"), "Test agent").unwrap();
+    std::fs::write(agent.join("settings.toml"), "[agent]\nid = \"socket-test\"\ndisplay_name = \"Socket test\"\ndefault_tier = \"medium\"\n[harness]\ncli = \"claude\"\n[permissions]\ndefault_posture = \"allow\"\nask = [\"pane.send\"]\n").unwrap();
+    let (caller, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "socket-test",
+            "claude",
+            "sleep 30",
+            "test",
+            None,
+            false,
+            None,
+            Some(ws),
+            None,
+            None,
+            true,
+            None,
+        )
+        .unwrap();
+    let caller_pid = h.app.windows[0].panes[&caller]
+        .as_terminal()
+        .unwrap()
+        .backend
+        .child_pid();
+    let mailbox = h.ipc_tx.clone();
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "subscribe");
+    let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "publish");
+    let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+    let profile = tempfile::tempdir().unwrap();
+    let profile_path = profile.path().to_path_buf();
+    let response = profile.path().join("send-response");
+    let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target,
+        "text":"hello", "operation_id":"socket-liveness-test", "response_file": response});
+    let worker = std::thread::spawn(move || {
+        handle_socket_connection(
+            &profile_path,
+            server,
+            mailbox,
+            subscribe,
+            publish,
+            Some(vec![std::process::id(), caller_pid]),
+        );
+    });
+    writeln!(client, "{payload}").unwrap();
+    worker.join().unwrap();
+    let deadline =
+        std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+    while std::time::Instant::now() < deadline {
+        h.hidden_frame();
+        if !h.app.pending_send_approvals.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pending = h
+        .app
+        .pending_send_approvals
+        .first()
+        .expect("request parked")
+        .pending_request_id
+        .clone();
+    let mut client = Some(client);
+    // The peer process remains alive while only its socket is closed.
+    if disconnect {
+        drop(client.take());
+    }
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    monitor
+        .approve_pending(
+            &pending,
+            if persistent {
+                crate::broker::gate::ApprovalChoice::Always
+            } else {
+                crate::broker::gate::ApprovalChoice::Once
+            },
+        )
+        .unwrap();
+    h.hidden_frame();
+    if disconnect {
+        assert!(
+            h.terminal_backend(target).take_input_tap().is_empty(),
+            "a disconnected caller must not trigger a late write"
+        );
+        assert_eq!(
+            monitor
+                .get_continuation("socket-liveness-test")
+                .unwrap()
+                .state,
+            crate::broker::gate::ContinuationState::Paused
+        );
+    } else {
+        let mut client = client.unwrap();
+        use std::os::fd::AsRawFd as _;
+        let mut poll = libc::pollfd {
+            fd: client.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll points to one valid pollfd.
+        assert!(
+            unsafe { libc::poll(&mut poll, 1, 3_000) } > 0,
+            "reply must arrive within deadline"
+        );
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"],
+            true
+        );
+        assert_eq!(
+            h.terminal_backend(target).take_input_tap(),
+            b"hello",
+            "one approval writes exactly once"
+        );
+        assert_eq!(
+            monitor
+                .get_continuation("socket-liveness-test")
+                .unwrap()
+                .state,
+            crate::broker::gate::ContinuationState::Completed
+        );
+        if persistent {
+            let dispatch = |h: &mut crate::testing::HostHarness, operation: &str, name: &str| {
+                let reply = profile.path().join(name);
+                h.inject_ipc(
+                    serde_json::from_value(serde_json::json!({
+                        "type": "send_to_pane", "pane_id": target, "text": "hello",
+                        "operation_id": operation, "response_file": reply,
+                        "peer_ancestry": [std::process::id(), caller_pid]
+                    }))
+                    .unwrap(),
+                );
+                h.hidden_frame();
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(reply).unwrap()).unwrap()
+            };
+            let duplicate = dispatch(&mut h, "socket-liveness-test", "duplicate");
+            assert_eq!(duplicate["duplicate"], true, "{duplicate}");
+            assert!(h.terminal_backend(target).take_input_tap().is_empty());
+
+            let fresh = dispatch(&mut h, "persistent-fresh", "fresh");
+            assert_eq!(
+                fresh["ok"], true,
+                "the persistent grant permits a fresh operation: {fresh}"
+            );
+            assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello");
+            assert!(monitor.list_pending().is_empty());
+
+            // Seed the durable pre-effect claim left by a crash. The boundary
+            // must return unknown and never execute it under the still-live grant.
+            let text_hash = crate::broker::gate::fingerprint_args(
+                &serde_json::json!({"text":"hello"}).to_string(),
+            )
+            .unwrap();
+            let fingerprint = crate::broker::gate::fingerprint_args(
+                &serde_json::json!({
+                    "pane_id":target, "submit":false, "paste":false,
+                    "text_fingerprint":text_hash, "operation_id":"persistent-unknown"
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let context = h
+                .app
+                .windows
+                .iter()
+                .find(|window| window.panes.contains_key(&caller))
+                .unwrap()
+                .context_id;
+            assert_eq!(
+                monitor
+                    .claim_pane_send(
+                        "persistent-unknown",
+                        &format!("pane:{caller}"),
+                        context,
+                        target,
+                        &fingerprint
+                    )
+                    .unwrap(),
+                crate::broker::gate::PaneSendClaim::Claimed
+            );
+            let unknown = dispatch(&mut h, "persistent-unknown", "unknown");
+            assert_eq!(unknown["error_code"], "outcome_unknown", "{unknown}");
+            assert!(
+                h.terminal_backend(target).take_input_tap().is_empty(),
+                "unknown claimed operation must not replay"
+            );
+        }
+    }
 }
 
 #[test]
@@ -285,7 +610,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
     assert!(matches!(
         rx.try_recv(),
-        Ok(crate::protocol::AppRequest::Wake)
+        Ok(crate::protocol::HostRequest::Wake)
     ));
     assert!(
         rx.try_recv().is_err(),
@@ -293,7 +618,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     );
 }
 
-/// `AppRequest::Wake` through the host handler is a pure no-op: no panic,
+/// `HostRequest::Wake` through the host handler is a pure no-op: no panic,
 /// no window/pane state change.
 #[test]
 fn wake_request_is_noop_on_host() {
@@ -301,7 +626,7 @@ fn wake_request_is_noop_on_host() {
     let windows_before = h.app.windows.len();
     let panes_before: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
 
-    h.inject_ipc(crate::protocol::AppRequest::Wake);
+    h.inject_ipc(crate::protocol::HostRequest::Wake);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -314,10 +639,10 @@ fn wake_request_is_noop_on_host() {
 }
 
 /// #2283: a `[file_handlers]` entry routes a matching extension into the named
-/// Plexi app via the host open resolver (OpenInPane), rather than falling
+/// Plexi plugin via the host open resolver (OpenInPane), rather than falling
 /// through to the OS opener. Proves resolution tier (a) + the launch path.
 #[test]
-fn file_handler_config_routes_extension_to_app() {
+fn file_handler_config_routes_extension_to_plugin() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
@@ -346,14 +671,14 @@ fn file_handler_config_routes_extension_to_app() {
 
     let opened_text_editor = app.windows.iter().any(|w| {
         w.panes.values().any(|p| {
-            p.as_app()
+            p.as_view()
                 .map(|a| a.runtime.type_id() == "text-editor")
                 .unwrap_or(false)
         })
     });
     assert!(
         opened_text_editor,
-        "the file_handler-routed pane should be the text-editor app"
+        "the file_handler-routed pane should be the text-editor plugin"
     );
 }
 
@@ -387,7 +712,7 @@ fn stable_routes_only_images_to_native_viewer_apps() {
             assert!(
                 app.windows.iter().any(|w| {
                     w.panes.values().any(|p| {
-                        p.as_app()
+                        p.as_view()
                             .map(|a| a.runtime.type_id() == expected_id)
                             .unwrap_or(false)
                     })
@@ -412,12 +737,12 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let selected_path = dir.path().join("photo.png");
     std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
 
-    let browser: Box<dyn crate::app::app_trait::App> = Box::new(
-        crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()),
+    let browser: Box<dyn crate::app::view_trait::View> = Box::new(
+        crate::file_browser::FileBrowserView::new(dir.path().to_path_buf()),
     );
-    app.open_builtin_app_pane(
+    app.open_builtin_view_pane(
         browser,
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.path().to_path_buf(),
         Some("cwd".to_string()),
         Some("split_v"),
@@ -432,7 +757,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let browser_state_before = app.windows[0]
         .panes
         .get(&browser_pane_id)
-        .and_then(|p| p.as_app())
+        .and_then(|p| p.as_view())
         .and_then(|a| a.runtime.serialize_state())
         .expect("browser state before");
     assert_eq!(browser_state_before["selected"], 0);
@@ -456,7 +781,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
         app.windows[0]
             .panes
             .get(&viewer_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .map(|a| a.runtime.type_id() == "image-viewer")
             .unwrap_or(false),
         "selected image should open in native image viewer"
@@ -464,15 +789,21 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
 
     app.close_focused();
 
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = app.windows[0].focused_pane.expect("explorer focused");
+    assert!(matches!(
+        app.windows[0].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
     assert_eq!(
-        app.windows[0].focused_pane,
-        Some(browser_tile),
+        PlexiApp::find_pane_in_tile(&app.windows[0].tree, focus),
+        Some(browser_pane_id),
         "closing viewer should return focus to explorer sibling"
     );
     let browser_state_after = app.windows[0]
         .panes
         .get(&browser_pane_id)
-        .and_then(|p| p.as_app())
+        .and_then(|p| p.as_view())
         .and_then(|a| a.runtime.serialize_state())
         .expect("browser state after");
     assert_eq!(
@@ -481,11 +812,9 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     );
 }
 
-/// The file browser must open at the context root when one is set, not the
-/// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
-/// (context.root → focused cwd → home) that every other new-pane path uses.
+/// Without an invoking terminal, Explorer falls back to the context root.
 #[test]
-fn file_browser_opens_at_context_root() {
+fn file_browser_without_terminal_opens_at_context_root() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
@@ -498,7 +827,7 @@ fn file_browser_opens_at_context_root() {
 
     let fb_root = app.windows.iter().find_map(|w| {
         w.panes.values().find_map(|p| {
-            p.as_app()
+            p.as_view()
                 .filter(|a| a.runtime.type_id() == "file_browser")
                 .map(|a| a.workspace_root.clone())
         })
@@ -507,7 +836,7 @@ fn file_browser_opens_at_context_root() {
     assert_eq!(
         fb_root.as_deref(),
         Some(root.as_path()),
-        "file browser should open at the context root, not the focused pane CWD"
+        "file browser without a terminal should use the context root"
     );
 }
 
@@ -555,7 +884,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let windows_before = app.windows.len();
 
     // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("new_window".to_string()),
         args: vec![],
@@ -641,7 +970,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
 
     // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
     // while window 1 is active.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("tab".to_string()),
         args: vec![],
@@ -735,7 +1064,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
     // fallback branch.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -853,7 +1182,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         delays_cb.lock().unwrap().push(info.delay);
     });
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -861,7 +1190,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     handle_socket_line(line, &mailbox, None, &mut std::io::sink());
 
     match rx.try_recv() {
-        Ok(crate::protocol::AppRequest::LogMarker { source, .. }) => {
+        Ok(crate::protocol::HostRequest::LogMarker { source, .. }) => {
             assert_eq!(source, "test");
         }
         other => panic!("expected queued LogMarker request, got {other:?}"),
@@ -886,7 +1215,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     assert!(
         matches!(
             rx.try_recv(),
-            Ok(crate::protocol::AppRequest::ListPanes { .. })
+            Ok(crate::protocol::HostRequest::ListPanes { .. })
         ),
         "post-idle pane list must queue on the pane-IPC channel"
     );
@@ -925,7 +1254,7 @@ fn socket_line_parse_error_does_not_wake() {
     let woke_cb = woke.clone();
     ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -936,14 +1265,505 @@ fn socket_line_parse_error_does_not_wake() {
 }
 
 #[test]
+fn displayed_version_is_build_info_not_profile_installed_tag() {
+    let _h = crate::testing::HostHarness::new();
+    std::fs::write(
+        crate::config::config_dir().join("installed_tag"),
+        "v999.0.0",
+    )
+    .unwrap();
+    let (app, _ipc) = PlexiApp::new_for_test(
+        egui::Context::default(),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    );
+    assert_eq!(app.display_version, env!("PLEXI_VERSION_TEXT"));
+    assert!(app
+        .display_version
+        .ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))));
+    assert!(!app.display_version.contains("999"));
+}
+
+#[test]
 fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let mut h = crate::testing::HostHarness::new();
-    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
+    std::fs::write(
+        crate::config::config_dir().join("installed_tag"),
+        "v999.0.0",
+    )
+    .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let reply = dir.path().join("build.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
+    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo {
+        response_file: reply.to_string_lossy().into_owned(),
+    });
     h.hidden_frame();
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
     assert_ne!(value["tag"], "v999.0.0");
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_fresh_open_tracks_terminal_cd() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let terminal = h.add_focused_terminal();
+    let _unrelated = h.add_focused_terminal();
+    h.focus_pane(terminal);
+    for name in ["first", "second"] {
+        let directory = root.join(name);
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(terminal)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "terminal did not execute cd"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.focus_pane(terminal);
+        let pid = h.terminal_backend(terminal).child_pid();
+        assert_eq!(
+            crate::host::shell::get_pid_cwd_fresh(pid)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "shell must remain in the executed cd directory"
+        );
+        h.app.open_file_browser();
+        h.run_frames(3);
+        // Overlay replacement retains the invoking terminal slot. The harness
+        // seed is also a FileBrowser runtime, so never pick an arbitrary runtime.
+        let browser = h.app.windows[0].panes[&terminal].as_view().unwrap();
+        assert_eq!(browser.manifest_id, "file_browser");
+        assert_eq!(
+            browser.workspace_root.canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
+        h.app.open_file_browser(); // focused Explorer toggles closed, restoring the terminal
+        h.focus_pane(terminal);
+    }
+}
+
+#[test]
+fn file_browser_fallback_uses_explicit_context_not_active_router() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let caller_context = h.app.windows[0].context_id;
+    let caller = h.add_test_pane();
+    let other = tempfile::tempdir().unwrap();
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(),
+        root: other.path().to_path_buf(),
+        description: None,
+        context_id: caller_context + 100000,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.router.set_active(1);
+    for pane in [Some(caller), Some(u64::MAX), None] {
+        assert_eq!(
+            h.app.file_browser_start_directory(pane, caller_context),
+            root
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_unavailable_terminal_directory_falls_back() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let context = h.app.windows[0].context_id;
+    let terminal = h.add_focused_terminal();
+    let directory = root.join("removed");
+    std::fs::create_dir(&directory).unwrap();
+    let marker = root.join("ready");
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!(
+                "cd '{}' && touch '{}'\n",
+                directory.display(),
+                marker.display()
+            )
+            .into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::remove_dir(&directory).unwrap();
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
+}
+
+#[test]
+fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
+    let mut h = crate::testing::HostHarness::new();
+    let expected = h.workspace_root().join("external-caller");
+    std::fs::create_dir(&expected).unwrap();
+    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+        type_id: "file_browser".into(),
+        layout: Some("split_h".into()),
+        args: vec![],
+        from_pane_id: None,
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: Some(expected.to_string_lossy().into_owned()),
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let browser = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_view()
+                .filter(|app| app.manifest_id == "file_browser")
+        })
+        .expect("external plugin spawned");
+    assert_eq!(browser.workspace_root, expected);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let terminal = h.add_focused_terminal();
+    let expected = h.workspace_root().join("caller-directory");
+    let unrelated_directory = h.workspace_root().join("focused-directory");
+    let unrelated = h.add_focused_terminal();
+    for (pane, directory) in [(terminal, &expected), (unrelated, &unrelated_directory)] {
+        std::fs::create_dir(directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(pane)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    h.focus_pane(unrelated);
+    let caller_context = h.app.windows[0].context_id;
+    let other_root = tempfile::tempdir().unwrap();
+    let other_context = caller_context + 100000;
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(),
+        root: other_root.path().to_path_buf(),
+        description: None,
+        context_id: other_context,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(crate::host::context::Window {
+        name: "Other".into(),
+        path: other_root.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("explorer_other"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 90001,
+        context_id: other_context,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+        type_id: "file_browser".into(),
+        layout: Some("split_h".into()),
+        args: vec![],
+        from_pane_id: Some(terminal),
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: None,
+        no_focus: true,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let browser = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_view()
+                .filter(|app| app.manifest_id == "file_browser")
+        })
+        .unwrap();
+    assert_eq!(
+        browser.workspace_root.canonicalize().unwrap(),
+        expected.canonicalize().unwrap()
+    );
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(h.app.router.active().context_id, other_context);
+    assert!(h.app.windows[1].panes.is_empty());
+    let browser_id = browser.id;
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    let runtime_cwd = |h: &crate::testing::HostHarness| {
+        let state = h.app.windows[0].panes[&browser_id]
+            .as_view()
+            .unwrap()
+            .runtime
+            .serialize_state()
+            .unwrap();
+        std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap()
+    };
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "unrelated focus must not retarget Explorer"
+    );
+    h.focus_pane(browser_id);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "Explorer focus must preserve its caller's directory"
+    );
+
+    let next = h.workspace_root().join("caller-after-open");
+    std::fs::create_dir(&next).unwrap();
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!("cd '{}'\n", next.display()).into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while runtime_cwd(&h) != next.canonicalize().unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Explorer must still follow its own linked terminal"
+        );
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        next.canonicalize().unwrap(),
+        "dead linked owner must not fall back to an unrelated terminal"
+    );
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let saved = root.join("saved-navigation");
+    std::fs::create_dir(&saved).unwrap();
+    std::fs::write(saved.join("one.txt"), "one").unwrap();
+    std::fs::write(saved.join("two.txt"), "two").unwrap();
+    let browser_id = h.add_test_pane();
+    let state = serde_json::json!({"cwd": saved, "selected": 1});
+    let restored = crate::pane_ops::create::restore_builtin_view_pane(
+        "file_browser",
+        browser_id,
+        root,
+        Some(&state),
+    )
+    .unwrap();
+    h.app.windows[0].panes.insert(browser_id, restored);
+    let _unrelated = h.add_focused_terminal();
+    h.run_frames(3);
+    let app = h.app.windows[0].panes[&browser_id].as_view().unwrap();
+    assert!(app.linked_pane_id.is_none());
+    let after = app.runtime.serialize_state().unwrap();
+    assert_eq!(after["cwd"], state["cwd"]);
+    assert_eq!(after["selected"], 1);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_explicit_directory_artifact_keeps_requested_root() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for surface in ["artifact", "generic", "ipc", "generic-default"] {
+        let mut h = crate::testing::HostHarness::new();
+        let sender = h.add_test_pane();
+        let terminal = h.add_focused_terminal();
+        let directory = h.workspace_root().join("explicit-directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("requested.txt"), "requested").unwrap();
+        if surface == "generic-default" {
+            let marker = directory.join("ready");
+            h.terminal_backend(terminal)
+                .process_command(egui_term::BackendCommand::Write(
+                    format!(
+                        "cd '{}' && touch '{}'\n",
+                        directory.display(),
+                        marker.display()
+                    )
+                    .into_bytes(),
+                ));
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+            while !marker.exists() {
+                assert!(std::time::Instant::now() < deadline);
+                h.run_frames(1);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            h.focus_pane(terminal);
+        }
+        match surface {
+            "generic-default" => {
+                h.app
+                    .launch_view_by_id_with_layout(
+                        "file_browser",
+                        Some("split_h".into()),
+                        &[],
+                        None,
+                    )
+                    .unwrap();
+            }
+            "artifact" => h.app.dispatch_open_artifact(
+                sender,
+                directory.display().to_string(),
+                crate::protocol::ArtifactOpenMode::OpenInPane,
+            ),
+            "generic" => {
+                h.app
+                    .launch_view_by_id_with_layout(
+                        "file_browser",
+                        Some("split_h".into()),
+                        &[],
+                        Some(directory.clone()),
+                    )
+                    .unwrap();
+            }
+            _ => {
+                h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+                    type_id: "file_browser".into(),
+                    layout: Some("split_h".into()),
+                    args: vec![],
+                    from_pane_id: Some(terminal),
+                    request_id: None,
+                    response_file: None,
+                    ephemeral: false,
+                    cwd: Some(directory.display().to_string()),
+                    no_focus: false,
+                    path: None,
+                    workspace_root: None,
+                    target_context: None,
+                    context_name: None,
+                    name: None,
+                    agent_cmd: None,
+                    boot_timeout_secs: None,
+                    worktree: None,
+                    result_schema: None,
+                    peer_ancestry: None,
+                });
+                h.hidden_frame();
+            }
+        }
+        if surface == "generic-default" {
+            let browser = h.app.windows[0]
+                .panes
+                .values()
+                .find_map(|pane| {
+                    pane.as_view()
+                        .filter(|app| app.manifest_id == "file_browser")
+                })
+                .unwrap();
+            assert_eq!(
+                browser.workspace_root.canonicalize().unwrap(),
+                directory.canonicalize().unwrap(),
+                "implicit generic caller must bind before first frame"
+            );
+        }
+        h.run_frames(3);
+        let browser = h.app.windows[0]
+            .panes
+            .values()
+            .find_map(|pane| {
+                pane.as_view()
+                    .filter(|app| app.manifest_id == "file_browser")
+            })
+            .unwrap();
+        let state = browser.runtime.serialize_state().unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "{surface} explicit directory must survive frame synchronization"
+        );
+    }
 }

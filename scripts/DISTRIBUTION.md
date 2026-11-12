@@ -38,7 +38,34 @@ may need the printed PATH command; new shells read the idempotent PATH block.
 roots. Their canonical paths are persisted in the receipt and reused for
 updates. Source builds use `scripts/install.sh --from-source [channel]`, which
 builds and feeds the same package to the same transaction. It requires Rust,
-just, uv and Python 3.11 or newer.
+just, uv and Python 3.11 or newer. Arguments after the optional channel pass
+through to the installer, e.g. `scripts/install.sh --from-source beta --trash-strays`.
+
+After activation the installer lists other copies of the channel's Mac app
+outside the managed installation (`strays::find_strays`): `/Applications`,
+`~/Applications`, `~/Downloads` and `~/Desktop`, matched by
+`CFBundleIdentifier` or, without a readable identifier, by bundle name. The
+Trash, the installation root and owned integrations are excluded. By default it
+only warns. `--trash-strays`, or answering yes to the prompt shown when stdin
+is a terminal, renames them into `~/.Trash` (numbered on collision); nothing
+is deleted. The public bootstrap forwards the flag unchanged.
+
+## Repository installer cache
+
+`scripts/distribution-tool.sh` runs the authoritative native installer through a
+small verified executable cache outside disposable worktrees. Each input identity has its own immutable executable path, so a later build cannot replace an installer already handed to packaging. The cache checks
+installer source, lockfile, toolchain, platform, flags and binary digest. Warm
+locate/remove calls do not invoke Cargo or its global lease. Missing or mismatched
+evidence rebuilds the native installer under the existing lease; this cold path
+is reported explicitly. `PLEXI_DISTRIBUTION_CACHE_ROOT` relocates this cache.
+Source installation uses the same helper.
+
+Cleanup accepts absence only from the native locator's exit code 2. Lookup,
+ownership or self-uninstall failures preserve files and return failure. A missing managed host executable is a recovery case: stop that channel, obtain its receipt root from the native `list` output, then use `scripts/distribution-tool.sh remove --receipt <root>`; cleanup does not guess a root or bypass native ownership checks. The
+native locator rejects a registry pointing to another channel. Bundles,
+launchers, receipts and generations are removed by the owning native transaction,
+never by guessing channel filenames. Explicit ephemeral profile cleanup remains
+separate; standing-channel cleanup retains user data.
 
 ## Package
 
@@ -54,24 +81,22 @@ The builder assembles channel-specific Mac bundle names, executable names and
 identifiers before signing. A stable release contains separate alpha and beta
 variants so those channels can consume it without changing a signed bundle.
 `PLEXI_SIGN_IDENTITY` selects an available signing identity; local builds may
-fall back to ad-hoc signing. A public Alpha build may not: release CI imports
+fall back to ad-hoc signing. A public release build may not: release CI imports
 the protected persistent `Plexi Dev` PKCS#12 identity and compares its leaf
-certificate SHA-1 against `PLEXI_ALPHA_SIGNING_CERT_SHA1`. Package assembly
+certificate SHA-1 against the pinned release signing secret. Package assembly
 records the authority, certificate digest, and designated requirement; CI
 re-extracts the published archive and verifies those facts before publication.
 Replacing that identity is a security migration, not routine certificate
 rotation: it invalidates the Keychain ACL that protects sealed grants and
 Needs-you journals across updates.
 
-Public beta and stable builds are deliberately refused until a separate
-Developer ID plus notarization implementation supplies its own credentials and
-clean-machine acceptance. Windows Authenticode remains outside the Alpha
-contract. Broad nontechnical distribution still needs those credentials and OS
-trust validation.
+Public Mac releases use the self-signed `Plexi Dev` identity and are not
+notarized. See [the opening guide](../docs/unsigned-install.md) for the macOS
+warning and first-open steps. Developer ID and notarization remain future work.
 
 Release-owner setup: retain the existing `Plexi Dev` certificate and private
 key together in a password-protected PKCS#12 backup. Configure repository Actions
-secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
+existing repository secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
 `PLEXI_ALPHA_SIGNING_P12_PASSWORD`, and `PLEXI_ALPHA_SIGNING_CERT_SHA1` (the
 certificate fingerprint, not its name). Never generate a replacement identity
 in CI. Missing credentials or a fingerprint mismatch stop publication. The
@@ -84,7 +109,7 @@ removal APIs, which can block on authorization even during cancellation.
 The temporary Keychain is prepended to the runner's search list for codesign's
 internal identity lookup; cleanup restores the saved original list.
 
-`scripts/test-macos-keychain-continuity.py` installs distinct A and B packages
+For Alpha releases, `scripts/test-macos-keychain-continuity.py` installs distinct A and B packages
 into temporary destinations, files a question under A, and requires the same
 sealed Needs-you record under B without key recreation, rotation, or recovery.
 It uses a disposable private Keychain and checks that the user's default
@@ -94,7 +119,8 @@ build tag; identical executable bytes are rejected as insufficient evidence.
 For CI qualification without publication, dispatch `release.yml` with
 `verify_only=true` and `tag` set to the source ref to test. This runs the real
 package/signing acceptance with a synthetic Alpha build tag, then skips the
-publish job. It creates neither a Git tag nor a GitHub Release.
+publish job. Add `verify_stable=true` to exercise the stable matrix and
+all three consumer channels with a synthetic stable tag. It creates neither a Git tag nor a GitHub Release.
 For a fast credential check, use `signing_only=true` instead: it imports the
 same identity, signs a disposable executable, verifies the fingerprint and
 designated requirement, and removes the runner's temporary Keychain files.
@@ -105,7 +131,7 @@ sudo so it cannot wait on a user-domain authorization dialog.
 ## Layout and ownership
 
 macOS uses per-user `~/Applications/Plexi.app`, `Plexi Alpha.app` and
-`Plexi Beta.app` links to immutable generations. Linux uses an XDG data
+`Plexi Beta.app` bundles copied from the active immutable generation. Linux uses an XDG data
 installation with a command launcher, desktop entry and packaged icon. Windows
 uses LocalAppData, versioned host executables, a stable launcher, user PATH
 registration and a Start Menu shortcut. A command launcher contains no second
@@ -119,6 +145,31 @@ cannot identify an executable. After a successful install the installer writes
 that marker in the channel profile directory. The file contains the package
 tag, or the build id when the tag is empty. SDK and core-app refresh stamps use the compiled
 build identity, including source changes between prerelease builds.
+
+The Applications bundle is a real directory, not a link: Spotlight indexes
+neither symlinks nor hidden directories, so a link into
+`~/.local/share/plexi/<channel>/generations/<hash>/` was unsearchable, and
+LaunchServices kept one record per generation path for `open -a` to choose
+from. Activation copies the generation's bundle with `ditto` (preserving the
+signature and extended attributes) into a hidden sibling scratch directory,
+then renames the old item aside and the copy into place under the transaction
+journal. After commit it runs `lsregister -f` on the copy and `lsregister -u` on
+the bundles inside the generation store; failures are logged, not fatal. Only
+our old link into this installation root or a copy the receipt records is
+replaced; anything else is refused. The receipt records the copy's main
+executable digest rather than a marker file, because a file inside `Contents/`
+would break the code-signature seal. A copy lacks `package.json`, so the host
+locates its package through the receipt by build id. Uninstall unregisters and
+removes the owned copy. Command shims and receipt launches still execute the
+generation directly.
+
+The UI version label, `--version`, the menu title and `host status` show the
+running binary's compiled tag (or crate version) and short commit. At launch
+the host compares its build id with the channel receipt's active build, logs a
+warning and posts one notification naming the relaunch path when they differ.
+On macOS it also notifies about strays in `/Applications` and `~/Applications`;
+Downloads and Desktop are left to the installer because reading them from the
+app triggers privacy prompts. Launch never moves anything.
 
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
 Outside a pane it launches stable. Channel-named commands retain their channel.
@@ -180,25 +231,18 @@ An explicit tag remains exact. Selection paginates releases, orders candidates
 semantically within that policy, excludes drafts, and requires both the correct
 channel/platform archive and checksum. The installation channel stays fixed.
 
-Alpha releases (`vX.Y.Z-alpha.N`) require macOS Apple Silicon (ARM64) and
-opportunistically publish Linux x64 when its optional package job succeeds.
-Linux failures remain visible without blocking the Mac alpha release.
+All releases require macOS Apple Silicon. Alpha releases also attempt Linux x64.
+Beta and stable releases attempt Linux x64, Windows x64 and Intel Mac; each is
+optional. The publisher logs each omitted optional platform and publishes a
+platform only when its complete asset set and checksums pass. Archive names come
+from `release::archive_name`, with channel suffixes for alpha and beta.
 
-The same rule applies to pull-request and alpha-push CI: `distribution.yml` runs the
-Apple Silicon job plus an optional Linux x64 job unless the `tag` input is a stable or beta release tag, and `build-windows.yml`
-runs only on `feature/windows-**` pushes and on demand, not on every PR.
-The package job's host test + clippy step runs only for release tags; on PRs and alpha pushes
-`rust-host.yml` already runs it.
-
-Beta and stable releases require macOS Apple Silicon, Linux x64 and Windows x64.
-macOS Intel is optional for those releases; publication waits for its job and
-includes its complete result if successful. Archive names come from `release::archive_name` and
-include a channel suffix for alpha and beta. Each archive and native installer
-has a matching `.sha256` sidecar.
+Pull requests use the Alpha matrix. `build-windows.yml` runs on Windows feature
+branches and on demand. Package jobs run host tests and Clippy for release tags.
 
 `distribution.yml` runs host tests, lint/build gates, native transaction fixtures
-and real package installation/GUI checks for Alpha only on Alpha releases, and
-for every consumer channel on Beta/stable releases and pull requests. Publication
+and real package installation/GUI checks for Alpha on Alpha releases, and
+for every consumer channel on Beta/stable releases. Publication
 requires that workflow, checks the exact required artifact set, creates a draft,
 attaches verified assets and only then publishes. Published tags and assets are
 immutable. Retry a failed draft only after inspecting its existing assets;

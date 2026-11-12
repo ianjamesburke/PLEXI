@@ -12,10 +12,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::model::{PendingPermission, PermissionChoice, Turn, TurnRole};
-use super::AssistantApp;
+use super::AssistantView;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use crate::plexi_ai::turn_loop::TurnDelta;
-use crate::protocol::AppRequest;
+use crate::protocol::HostRequest;
 use crate::testing::HostHarness;
 
 struct ReplyBroker {
@@ -125,7 +125,7 @@ fn submit_to(
     conversation_id: Option<&str>,
     join_desktop: bool,
 ) {
-    h.inject_ipc(AppRequest::SubmitAssistantTurn {
+    h.inject_ipc(HostRequest::SubmitAssistantTurn {
         text: text.to_string(),
         request_id: request_id.to_string(),
         response_file: path.to_string_lossy().into_owned(),
@@ -140,7 +140,7 @@ fn submit_to(
 }
 
 fn status_for(h: &HostHarness, path: &Path, request_id: &str, turn_id: &str) {
-    h.inject_ipc(AppRequest::SubmitAssistantTurn {
+    h.inject_ipc(HostRequest::SubmitAssistantTurn {
         text: String::new(),
         request_id: request_id.to_string(),
         response_file: path.to_string_lossy().into_owned(),
@@ -173,7 +173,7 @@ fn pump_until_file(h: &mut HostHarness, path: &Path) -> String {
 }
 
 fn submit_desktop(h: &mut HostHarness, pane: u64, text: &str) {
-    let assistant: &mut AssistantApp = h.assistant_mut(pane);
+    let assistant: &mut AssistantView = h.assistant_mut(pane);
     assistant.model.composer = text.to_string();
     let effects = assistant.model.submit();
     assistant.execute_effects(effects);
@@ -331,10 +331,7 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
         .as_ref()
         .unwrap()
         .prompt_line();
-    assert!(
-        prompt.contains("requested from a phone/CLI turn"),
-        "{prompt}"
-    );
+    assert!(prompt.contains("requested from a CLI turn"), "{prompt}");
 
     let (_dir, next_path) = response_path();
     submit(&h, &next_path, "phone-next", "while the sheet is up");
@@ -357,7 +354,10 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
     // file so a reader waiting on it sees the outcome.
     let after = pump_until_terminal(&path);
     assert_eq!(after["state"], "failed");
-    assert!(after["error"].as_str().unwrap_or("").contains("denied"), "{after}");
+    assert!(
+        after["error"].as_str().unwrap_or("").contains("denied"),
+        "{after}"
+    );
     assert!(after.get("reply").is_none());
     let assistant = h.assistant_mut(pane);
     assert!(

@@ -2,7 +2,7 @@
 //!
 //! Routes to any OpenRouter model via SSE streaming using `ureq` (blocking,
 //! no tokio). The host reads `OPENROUTER_API_KEY` from the environment at
-//! dispatch time; apps never see the key.
+//! dispatch time; plugins never see the key.
 //!
 //! The SSE streaming worker (`stream_openai_compatible`) speaks the plain
 //! OpenAI chat-completions protocol against any endpoint URL — the `local`
@@ -255,7 +255,7 @@ pub(crate) fn openrouter_api_root() -> String {
                 return DEFAULT_OPENROUTER_ROOT.to_string();
             }
             if root != DEFAULT_OPENROUTER_ROOT {
-                log::info!("openrouter: base url override {root}");
+                log::info!("openrouter: base url override configured");
             }
             root
         }
@@ -386,8 +386,11 @@ pub(super) fn stream_openai_compatible(
             // OpenRouter error shape: {"error":{"code":N,"message":"…",
             // "metadata":{"raw":"<the upstream provider's actual error>"}}}.
             // "Provider returned error" alone is undiagnosable — always
-            // surface metadata.raw when present and log the full body.
-            log::warn!("openai_compat[{endpoint}]: http {status} error body: {body}");
+            // surface metadata.raw when present while keeping the log free of response content.
+            log::warn!(
+                "openai_compat: http status={status} error_body_bytes={}",
+                body.len()
+            );
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
             let message = parsed
                 .as_ref()
@@ -408,9 +411,7 @@ pub(super) fn stream_openai_compatible(
             return;
         }
         Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!(
-                "io error from {endpoint}: {e}"
-            )));
+            let _ = tx.send(StreamEvent::Error(format!("io error from {endpoint}: {e}")));
             return;
         }
     };
@@ -443,7 +444,7 @@ pub(super) fn stream_openai_compatible(
             }
         };
         let (input_tokens, output_tokens, cost_usd) = deliver_json_completion(&parsed, gen_id, &tx);
-        log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+        log_usage_capture(input_tokens, output_tokens, cost_usd);
         return;
     }
 
@@ -464,7 +465,7 @@ pub(super) fn stream_openai_compatible(
         // the token. Stop reading and drop `tx` — the turn loop returns the
         // partial text accumulated so far rather than draining the full stream.
         if request.cancel.is_cancelled() {
-            log::info!("openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream");
+            log::info!("openai_compat: stream cancelled by caller — aborting read mid-stream");
             return;
         }
         let line = match line_result {
@@ -523,7 +524,7 @@ pub(super) fn stream_openai_compatible(
             }
             // Surface generation progress so the transcript can animate while
             // the model writes a long tool call (stint 0467) — these argument
-            // streams are the longest silent stretch of an app-build turn.
+            // streams are the longest silent stretch of a plugin-build turn.
             let arg_chars: usize = partial_tool_calls.values().map(|p| p.arguments.len()).sum();
             let name = partial_tool_calls
                 .iter()
@@ -589,7 +590,7 @@ pub(super) fn stream_openai_compatible(
         cost_usd,
         generation_id: gen_id,
     });
-    log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+    log_usage_capture(input_tokens, output_tokens, cost_usd);
 }
 
 /// Emit one non-streaming chat completion: assistant text, then `Done`
@@ -618,19 +619,14 @@ fn deliver_json_completion(
     (input_tokens, output_tokens, cost_usd)
 }
 
-fn log_usage_capture(
-    endpoint: &str,
-    input_tokens: Option<u32>,
-    output_tokens: Option<u32>,
-    cost_usd: Option<f64>,
-) {
+fn log_usage_capture(input_tokens: Option<u32>, output_tokens: Option<u32>, cost_usd: Option<f64>) {
     if input_tokens.is_some() || output_tokens.is_some() || cost_usd.is_some() {
         log::info!(
-            "openai_compat[{endpoint}]: captured usage prompt={input_tokens:?} completion={output_tokens:?} cost_usd={cost_usd:?}"
+            "openai_compat: captured usage prompt={input_tokens:?} completion={output_tokens:?} cost_usd={cost_usd:?}"
         );
     } else {
         log::info!(
-            "openai_compat[{endpoint}]: response completed without usage metadata; ledger will record unknown token counts and cost"
+            "openai_compat: response completed without usage metadata; ledger will record unknown token counts and cost"
         );
     }
 }
@@ -1114,7 +1110,11 @@ mod tests {
             r#"data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":194,"completion_tokens":12,"cost":"0.021"}}"#,
             "data: [DONE]",
         ]);
-        assert_eq!(cost, Some(0.021), "the final chunk's cost replaces an earlier one");
+        assert_eq!(
+            cost,
+            Some(0.021),
+            "the final chunk's cost replaces an earlier one"
+        );
     }
 
     /// OpenRouter needs `usage.include` (and still accepts the OpenAI
@@ -1151,7 +1151,10 @@ mod tests {
             openrouter_url("http://127.0.0.1:9/v1/", "generation?id=gen-1"),
             "http://127.0.0.1:9/v1/generation?id=gen-1"
         );
-        assert_eq!(normalize_openrouter_root("  http://127.0.0.1:9/v1/ "), "http://127.0.0.1:9/v1");
+        assert_eq!(
+            normalize_openrouter_root("  http://127.0.0.1:9/v1/ "),
+            "http://127.0.0.1:9/v1"
+        );
         assert!(is_json_completion("application/json; charset=utf-8"));
         assert!(!is_json_completion("text/event-stream"));
     }
@@ -1178,7 +1181,12 @@ mod tests {
         assert!(matches!(events.first(), Some(StreamEvent::Text(text)) if text == "json-body"));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Done { input_tokens: Some(50), output_tokens: Some(7), cost_usd: None, generation_id: None })
+            Some(StreamEvent::Done {
+                input_tokens: Some(50),
+                output_tokens: Some(7),
+                cost_usd: None,
+                generation_id: None
+            })
         ));
 
         let (tx, rx) = mpsc::channel();
@@ -1191,7 +1199,11 @@ mod tests {
         let events: Vec<_> = rx.into_iter().collect();
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Done { input_tokens: None, output_tokens: None, .. })
+            Some(StreamEvent::Done {
+                input_tokens: None,
+                output_tokens: None,
+                ..
+            })
         ));
     }
 }

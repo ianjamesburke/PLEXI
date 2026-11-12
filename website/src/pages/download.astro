@@ -1,265 +1,92 @@
 ---
 import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import CopyCommand from '../components/CopyCommand.astro';
+import Arrow from '../components/Arrow.astro';
 import Newsletter from '../components/Newsletter.astro';
+import { release } from '../lib/release';
 
-const UNIX_INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | bash';
-const WINDOWS_INSTALL_CMD = 'irm https://plexiapp.com/install.ps1 | iex';
+const ALPHA_CMD = 'curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha';
+const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
 ---
-<Layout title="Download Plexi" description="Install the Plexi tiling terminal host and CLI on macOS, Linux, and Windows.">
-  <header class="dl-hero">
-    <div class="wrap">
-      <h1>Install Plexi</h1>
-      <p class="tagline">Install the tiling terminal host and CLI.</p>
+<Layout
+  title="Download | Plexi"
+  description={`Install Plexi on an Apple Silicon Mac with one command. Beta ${release.beta.version}. Builds are self-signed and not notarized. Windows and Linux are coming soon.`}
+>
+  <PageHead title="Install Plexi." lede="For Apple Silicon Macs. One command, no admin password, no Rust toolchain." />
+
+  <section class="wrap install" aria-labelledby="install-title">
+    <div class="install-main">
+      <h2 class="title" id="install-title">Paste this in a terminal</h2>
+      <CopyCommand cmd={release.installBeta} label="install command" />
+      <p class="under">Installs <a class="text-link" href={release.beta.url}>Beta {release.beta.version}</a> for {release.beta.platform}.</p>
+
+      <dl class="facts">
+        <div><dt>Needs</dt><dd><code class="inline">bash</code>, <code class="inline">curl</code>, <code class="inline">tar</code> and <code class="inline">shasum</code>. All four come with macOS.</dd></div>
+        <div><dt>Does</dt><dd>Downloads the release archive, verifies its SHA-256 checksum and installs into directories you own.</dd></div>
+        <div><dt>Then</dt><dd>Open Plexi. The beta's launcher is <code class="inline">plexi-beta</code>; inside a Plexi pane, plain <code class="inline">plexi</code> runs the build that pane belongs to. <code class="inline">plexi --help</code> lists the commands and <code class="inline">plexi ai onboard</code> walks through AI setup, which you can skip.</dd></div>
+        <div><dt>Update</dt><dd><code class="inline">plexi update</code> moves to the newest build on your channel. <code class="inline">plexi update --rollback</code> restores the previous one.</dd></div>
+        <div><dt>Remove</dt><dd><code class="inline">plexi uninstall</code> removes the package and its launchers. It keeps your data unless you pass <code class="inline">--delete-data</code>.</dd></div>
+      </dl>
+      <a class="link-arrow" href="/docs/getting-started">First steps after install <Arrow /></a>
     </div>
-  </header>
+  </section>
 
-  <section class="dl-section">
-    <div class="wrap">
-      <div class="install-intro">
-        <p class="eyebrow">Current release channel</p>
-        <h2>Choose your platform</h2>
-        <p>The command installs the current Plexi stable release.</p>
-      </div>
-
-      <div class="install-list">
-      <div class="install-block">
-        <div class="install-heading">
-          <span class="platform-mark">01</span>
-          <div class="install-label">macOS <span>(Apple Silicon and Intel)</span></div>
-        </div>
-        <div class="install-cmd-row">
-          <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
-          <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy to clipboard">
-            <span class="copy-icon">&#x2398;</span>
-            <span class="copy-label">Copy</span>
-          </button>
-        </div>
-        <p class="install-note">
-          Downloads the matching current macOS stable release. Requires <code>bash</code>,
-          <code>curl</code>, <code>tar</code>, and <code>shasum</code>; it does not need Rust,
-          Git, or administrator access. The installer selects the archive for your architecture.
-        </p>
-      </div>
-
-      <div class="install-block">
-        <div class="install-heading">
-          <span class="platform-mark">02</span>
-          <div class="install-label">Linux <span>(x86_64, X11)</span></div>
-        </div>
-        <div class="install-cmd-row">
-          <code class="install-cmd">{UNIX_INSTALL_CMD}</code>
-          <button class="copy-btn" data-cmd={UNIX_INSTALL_CMD} aria-label="Copy Linux install command"><span class="copy-label">Copy</span></button>
-        </div>
-        <p class="install-note">Downloads the Linux x64 stable archive into user-owned directories.
-          Requires bash, curl, tar, and sha256sum or shasum. Wayland is not supported.
-          See <a href="/docs/getting-started#linux-limitations">Linux limitations</a>.</p>
-      </div>
-
-      <div class="install-block">
-        <div class="install-heading">
-          <span class="platform-mark">03</span>
-          <div class="install-label">Windows <span>(x64)</span></div>
-        </div>
-        <div class="install-cmd-row">
-          <code class="install-cmd">{WINDOWS_INSTALL_CMD}</code>
-          <button class="copy-btn" data-cmd={WINDOWS_INSTALL_CMD} aria-label="Copy Windows install command"><span class="copy-label">Copy</span></button>
-        </div>
-        <p class="install-note">Run in Windows PowerShell 5.1 or later. Downloads the Windows x64
-          stable archive, verifies its SHA-256 checksum, and adds the command directory to your user PATH.
-          Rust and Visual Studio are not required.</p>
-      </div>
-      </div>
-
-      <p class="install-note">
-        Release assets verified on 2026-10-21:
-        <a href="https://github.com/ianjamesburke/PLEXI/releases/tag/v0.3.5">stable v0.3.5</a>
-        publishes all platforms listed above.
-        <a href="https://github.com/ianjamesburke/PLEXI/releases/tag/v0.4.0-alpha.6">Alpha v0.4.0-alpha.6</a>
-        publishes macOS Apple Silicon only. The commands above select stable, not alpha.
-        Check <a href="https://github.com/ianjamesburke/PLEXI/releases">release assets</a>
-        before selecting another channel; an available installer does not imply an archive exists for every channel.
-      </p>
-
-      <p class="install-note trust-note">
-        Stable, alpha and beta builds are unsigned and not notarized. Before bypassing an operating-system warning,
-        read the <a href="https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/unsigned-install.md">unsigned-build opening guide</a>.
-        From a macOS checkout, <code>scripts/install.sh --from-source alpha</code> is
-        the explicit source-build path and requires Rust, just, uv and Python 3.11.
-      </p>
-
+  <section class="wrap split" id="trust" aria-labelledby="trust-title">
+    <h2 class="h2" id="trust-title">Before you open it.</h2>
+    <div class="trust-body">
+      <p class="lead">Plexi builds are self-signed and not notarized by Apple. macOS will warn you the first time you open one.</p>
+      <p class="muted">The installer verifies the archive's SHA-256 checksum before it installs anything. The <a class="text-link" href={release.unsignedGuide}>guide to opening the build</a> explains the warning and how to get past it.</p>
+      <p class="muted">If you would rather build it yourself, clone the repository and run the source install. It needs Rust, just, uv and Python 3.11.</p>
+      <CopyCommand cmd={SOURCE_CMD} label="source install command" />
+      <p class="muted">Plexi is pre-1.0 beta software. Commands, config keys and the plugin API can change between releases, and the permission system is being hardened for {release.next}. Install only plugins you wrote or trust.</p>
     </div>
+  </section>
+
+  <section class="wrap split" id="channels" aria-labelledby="channels-title">
+    <h2 class="h2" id="channels-title">Channels.</h2>
+    <div>
+      <dl class="facts">
+        <div><dt>Beta</dt><dd><strong>{release.beta.tag}.</strong> The current build and the one this site describes. The command above installs it.</dd></div>
+        <div><dt>Alpha</dt><dd><strong>Moves fast and can break.</strong> For following development closely.</dd></div>
+        <div><dt>Stable</dt><dd><strong>{release.stable.tag}.</strong> Published before the 0.4 line, so it is older than everything described here. A new stable comes after {release.next}.</dd></div>
+      </dl>
+      <div class="alt-cmd">
+        <p>Alpha channel</p>
+        <CopyCommand cmd={ALPHA_CMD} label="alpha install command" />
+      </div>
+      <p class="under">Each channel installs separately and keeps its own data. Every published build is on the <a class="text-link" href={release.releases}>releases page</a>.</p>
+    </div>
+  </section>
+
+  <section class="wrap split" id="platforms" aria-labelledby="platforms-title">
+    <h2 class="h2" id="platforms-title">Other platforms.</h2>
+    <dl class="facts platforms">
+      <div><dt>Windows</dt><dd>Coming soon.</dd></div>
+      <div><dt>Linux</dt><dd>Coming soon.</dd></div>
+      <div><dt>Intel Mac</dt><dd>Not available yet.</dd></div>
+    </dl>
   </section>
 
   <Newsletter compact />
 </Layout>
 
-<script>
-  document.querySelectorAll('.copy-btn').forEach((btn) => {
-    let resetTimer;
-    btn.addEventListener('click', async () => {
-      const cmd = btn.getAttribute('data-cmd');
-      if (!cmd) return;
-      const label = btn.querySelector('.copy-label');
-      clearTimeout(resetTimer);
-      try {
-        await navigator.clipboard.writeText(cmd);
-        if (label) {
-          label.textContent = 'Copied';
-          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
-        }
-      } catch {
-        if (label) {
-          label.textContent = 'Failed';
-          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
-        }
-      }
-    });
-  });
-</script>
-
 <style>
-  .dl-hero { padding: 112px 0 32px; }
-  .dl-hero h1 {
-    font-size: 56px; line-height: 1.05; letter-spacing: 0;
-    font-weight: 600; margin: 0 0 16px;
-  }
-  .dl-hero .tagline { font-size: 16px; color: var(--fg-2); max-width: 560px; }
+  .install { padding-block: clamp(48px, 6vw, 88px); }
+  .install-main { max-width: 920px; }
+  .install-main .title { margin-bottom: 20px; }
+  .under { margin-top: 12px; color: var(--fg-2); font-size: 15px; }
+  .install-main .facts { margin-top: 40px; }
+  .install-main .facts > div { grid-template-columns: 100px minmax(0, 1fr); }
+  .install-main .link-arrow { margin-top: 24px; }
 
-  .dl-section { padding: 32px 0 88px; }
+  .trust-body { display: grid; gap: 18px; }
+  .trust-body .muted { max-width: 62ch; }
 
-  .install-intro { max-width: 620px; margin-bottom: 30px; }
-  .install-intro .eyebrow {
-    color: var(--accent-light);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin-bottom: 10px;
-  }
-  .install-intro h2 {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
-    margin-bottom: 8px;
-  }
-  .install-intro > p:last-child { color: var(--fg-2); font-size: 14px; }
+  .alt-cmd { margin-top: 28px; }
+  .alt-cmd p { font: 700 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-2); margin-bottom: 10px; }
 
-  .install-list { max-width: 860px; display: grid; gap: 14px; }
+  .platforms dd { color: var(--fg-3); }
 
-  .install-block {
-    background: var(--bg-2);
-    border: 1px solid var(--border-2);
-    border-radius: 10px;
-    padding: 28px 30px 30px;
-    transition: border-color 150ms, transform 150ms, box-shadow 150ms;
-  }
-  .install-block:hover {
-    border-color: var(--border-3);
-    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.2);
-    transform: translateY(-1px);
-  }
-  .install-block.disabled { opacity: 0.45; filter: grayscale(1); }
-  .install-block.disabled:hover { border-color: var(--border-2); box-shadow: none; transform: none; }
-  .install-block.disabled .install-heading { margin-bottom: 0; }
-  .soon-badge {
-    margin-left: auto;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--fg-3);
-    border: 1px solid var(--border-2);
-    border-radius: 999px;
-    padding: 3px 10px;
-  }
-  .install-heading { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; }
-  .platform-mark {
-    color: var(--accent-light);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    line-height: 1;
-  }
-
-  .install-label {
-    font-size: 14px;
-    color: var(--fg-2);
-    font-size: 16px;
-    font-weight: 600;
-    line-height: 1.3;
-  }
-  .install-label span { color: var(--fg-3); font-size: 13px; font-weight: 400; }
-
-  .install-cmd-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border-2);
-    border-radius: 8px;
-    padding: 13px 14px 13px 16px;
-    overflow-x: auto;
-  }
-
-  .install-cmd {
-    flex: 1;
-    font-family: var(--mono);
-    font-size: 14px;
-    color: var(--fg);
-    white-space: nowrap;
-    user-select: all;
-  }
-
-  .copy-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 500;
-    font-family: var(--mono);
-    color: var(--fg-2);
-    background: var(--bg-2);
-    border: 1px solid var(--border-2);
-    border-radius: 6px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 150ms, border-color 150ms;
-  }
-  .copy-btn:hover {
-    color: var(--fg);
-    border-color: var(--fg-3);
-  }
-
-  .copy-icon { font-size: 14px; }
-
-  .install-note {
-    margin-top: 14px;
-    font-size: 13px;
-    color: var(--fg-3);
-    line-height: 1.6;
-  }
-
-  .trust-note {
-    max-width: 860px;
-    border-left: 2px solid var(--accent);
-    padding: 2px 0 2px 16px;
-  }
-
-  @media (max-width: 720px) {
-    .dl-hero h1 { font-size: 40px; }
-    .install-block { padding: 24px 20px; }
-    .install-intro h2 { font-size: 24px; }
-    .install-cmd-row { align-items: stretch; }
-    .copy-btn { justify-content: center; }
-  }
-
-  @media (max-width: 480px) {
-    .dl-hero { padding-top: 72px; }
-    .install-heading { align-items: flex-start; }
-    .install-label { font-size: 15px; }
-    .install-label span { display: block; margin-top: 2px; }
-    .install-cmd-row { flex-direction: column; gap: 10px; }
-    .install-cmd { font-size: 12px; overflow-x: auto; padding-bottom: 2px; }
-    .copy-btn { width: 100%; padding: 9px 12px; }
-  }
+  @media (max-width: 620px) { .install-main .facts > div { grid-template-columns: 1fr; } }
 </style>

@@ -4,22 +4,22 @@
 //! 1. **Keychain** stores raw values under namespaced names:
 //!    `plexi:<workspace-id>:<friendly-name>` for workspace-scoped, and
 //!    `plexi:user:<friendly-name>` for cross-workspace fallback.
-//! 2. **App manifest** declares canonical secret names — the app calls
+//! 2. **App manifest** declares canonical secret names — the plugin calls
 //!    `ctx.secret("OPENAI_API_KEY")` but never knows the friendly Keychain name.
 //! 3. **Workspace router** at `<workspace_root>/.plexi/secrets.toml` maps
-//!    canonical names per-app (and a shared `[default]` route) to friendly
+//!    canonical names per-plugin (and a shared `[default]` route) to friendly
 //!    Keychain names. Plus a required `fallback` flag controlling whether
 //!    `plexi:user:*` is consulted on a miss.
 //!
 //! ## Runtime resolution (4-step order)
 //!
-//! When app `<app-id>` in workspace `<root>` calls `ctx.secret("X")`:
-//! 1. `[apps.<app-id>] X = "fname"` → return `plexi:<workspace-id>:fname`.
+//! When plugin `<plugin-id>` in workspace `<root>` calls `ctx.secret("X")`:
+//! 1. `[plugins.<plugin-id>] X = "fname"` → return `plexi:<workspace-id>:fname`.
 //! 2. `[default] X = "fname"` → return `plexi:<workspace-id>:fname`.
 //! 3. `fallback = true` AND `plexi:user:X` exists → return user-scope value.
 //! 4. Else: missing-secret prompt (or hard error if `fallback = false` and no
 //!    route is defined). Out-of-band of this module — resolved by the host at
-//!    app launch, not here.
+//!    plugin launch, not here.
 //!
 //! ## Module layout
 //!
@@ -35,9 +35,9 @@
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
 
 mod file;
-pub(crate) mod manager;
 mod folder;
 mod folder_store;
+pub(crate) mod manager;
 mod pane_read;
 mod reconcile;
 mod resolver;
@@ -46,9 +46,9 @@ mod store;
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
-pub use store::{NonDestructiveStore, SecretStore};
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_call_lock;
+pub use store::{NonDestructiveStore, SecretStore};
 
 // Only test code outside this module names these. `SecretError` is named from
 // the macOS keychain-counting tests; every platform's tests name the in-memory
@@ -68,17 +68,17 @@ pub use folder::{
     SECRET_READ_TOOL,
 };
 pub use folder_store::backend_label;
-pub use pane_read::{read_pane_secret_with_posture, SecretScope};
 #[cfg(test)]
 pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
+pub use pane_read::{read_pane_secret_with_posture, SecretScope};
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,
 };
 
-pub(crate) use file::ensure_app_state_gitignore;
+pub(crate) use file::ensure_plugin_state_gitignore;
 pub use file::{init_workspace, write_default_route, write_terminal_env_inject};
 
 // ── Keychain naming ──────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ pub fn reserved_secret_error(workspace_id: &str) -> String {
 /// not exist inside a test binary.
 ///
 /// Why (2026-07-28): macOS keychain ACLs are per-binary, so every freshly
-/// compiled test binary is a new unsigned app and each login-keychain value
+/// compiled test binary is a new unsigned plugin and each login-keychain value
 /// read from a test fires its own credential dialog — an unattended agent
 /// gate cannot click one, so a prompting test silently stalls automation.
 /// Windows Credential Manager does not prompt, but a test binary writing into

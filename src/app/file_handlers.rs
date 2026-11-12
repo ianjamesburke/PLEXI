@@ -4,9 +4,11 @@
 //! A handler spec is a `kind:value` string chosen by the user per file
 //! extension. The grammar is prefix-namespaced by *handler kind* (not by
 //! `plexi:`) so the value space stays open-ended — new kinds (`mcp:`, `url:`,
-//! …) slot in without colliding with the app-id namespace:
+//! …) slot in without colliding with the plugin-id namespace:
 //!
-//!   `app:<id>`      — open in a Plexi app by its registry id
+//!   `app:<id>`      — stored spelling for opening a plugin's default view
+//! This persisted config grammar stays unchanged to preserve user associations.
+//! It is not a CLI alias; new CLI calls use `view open`.
 //!   `os`            — hand to the OS default opener (`open` / `xdg-open`)
 //!   `cmd:<command>` — reserved; parsed now, executed in a follow-up
 //!
@@ -16,8 +18,8 @@
 /// A parsed file-open handler. See the module docs for the grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileHandler {
-    /// Open in a Plexi app by registry id.
-    App(String),
+    /// Open in a Plexi plugin by registry id.
+    View(String),
     /// Hand to the OS default opener.
     Os,
     /// Run an external command with the path appended. Reserved — not yet
@@ -36,7 +38,7 @@ impl FileHandler {
         }
         if let Some(id) = spec.strip_prefix("app:") {
             let id = id.trim();
-            return (!id.is_empty()).then(|| FileHandler::App(id.to_string()));
+            return (!id.is_empty()).then(|| FileHandler::View(id.to_string()));
         }
         if let Some(cmd) = spec.strip_prefix("cmd:") {
             let cmd = cmd.trim();
@@ -51,10 +53,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_app_handler() {
+    fn parses_plugin_handler() {
         assert_eq!(
             FileHandler::parse("app:text-editor"),
-            Some(FileHandler::App("text-editor".to_string()))
+            Some(FileHandler::View("text-editor".to_string()))
         );
     }
 
@@ -75,7 +77,7 @@ mod tests {
     fn trims_surrounding_whitespace() {
         assert_eq!(
             FileHandler::parse("  app:text-editor  "),
-            Some(FileHandler::App("text-editor".to_string()))
+            Some(FileHandler::View("text-editor".to_string()))
         );
     }
 

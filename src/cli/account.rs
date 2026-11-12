@@ -5,7 +5,7 @@
 //! This is a plain network client — it never touches the host socket. `logout`
 //! revokes the token server-side (best effort) and clears the local session;
 //! `status` reads the on-disk session. Local use does not need an account. A
-//! session only links this desktop to relay and cloud features.
+//! session only links this desktop to cloud features.
 
 use crate::app::account::{
     account_provider, device_poll, device_start, revoke_token, AccountError, AccountSession,
@@ -36,7 +36,7 @@ fn status_lines(session: Option<&AccountSession>) -> Vec<String> {
         ],
         None => vec![
             "Not logged in. Local use does not need an account.".to_string(),
-            "An account only links this desktop to relay and cloud features. Run `plexi account login` to sign in.".to_string(),
+            "An account only links this desktop to cloud features. Run `plexi account login` to sign in.".to_string(),
         ],
     }
 }

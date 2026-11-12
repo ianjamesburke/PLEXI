@@ -5,7 +5,7 @@ from pathlib import Path
 from plexi_sdk import tools
 from plexi_sdk.effects import ExposeTools, SetState, ToolResult
 from plexi_sdk.events import ToolCall
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -217,7 +217,7 @@ def test_tools_dispatch_issues_list_and_open():
 
 
 def test_app_harness_exercises_github_issues_tools_end_to_end():
-    with AppHarness(str(APP), width=800, height=600) as h:
+    with PluginHarness(str(APP), width=800, height=600) as h:
         h.run(1)
         exposed = [c for c in h._events_seen if c.get("type") == "expose_tools"]
         assert exposed, "init must emit expose_tools"

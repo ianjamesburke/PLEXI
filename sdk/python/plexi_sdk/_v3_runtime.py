@@ -1,4 +1,4 @@
-"""V3AppRuntime: standalone runtime for module-level Plexi apps.
+"""PluginRuntime: standalone runtime for module-level Plexi apps.
 
 Replaces the V3ProcessApp(App) inheritance adapter with a composition-based
 runtime that owns its own protocol transport, frame clock, and state. No
@@ -18,11 +18,12 @@ import time
 import threading
 import uuid
 from pathlib import Path
+from typing import NoReturn
 
 import plexi_sdk as sdk
-from plexi_sdk import _v3_state, effects, events
+from plexi_sdk import _v3_errors, _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
-from plexi_sdk._v3_delta import node_patch as _node_patch
+from plexi_sdk._v3_delta import CONTAINER_FIELDS, child_refs, node_patch as _node_patch
 from plexi_sdk._v3_state import _COMPONENT_STATE_NAMESPACE, StateSnapshot
 
 
@@ -82,24 +83,28 @@ def _finish_emit_batch() -> None:
         sys.stdout.flush()
 
 
-def _load_module(app_path: Path):
-    parent = str(app_path.parent)
+def _load_module(plugin_path: Path):
+    parent = str(plugin_path.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    spec = importlib.util.spec_from_file_location("plexi_v3_app", app_path)
+    spec = importlib.util.spec_from_file_location("plexi_v3_app", plugin_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load app module from {app_path!s}")
+        raise RuntimeError(f"could not load app module from {plugin_path!s}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["plexi_v3_app"] = module
     spec.loader.exec_module(module)
     return module
 
 
-class V3AppRuntime:
+class PluginRuntime:
     """Purpose-built runtime for SDK v3 module-level apps (init/update/view)."""
 
-    def __init__(self, app_path: Path, launch_args: list[str] | None = None) -> None:
-        self._module = _load_module(app_path)
+    def __init__(self, plugin_path: Path, launch_args: list[str] | None = None) -> None:
+        self._plugin_root = plugin_path.parent
+        self._module = _load_module(plugin_path)
+        # Which entry function the runtime is serving, for the fatal-error
+        # report. None while it runs its own code between plugin calls.
+        self._phase: str | None = None
         self._launch_args = launch_args or []
         # Per-scope state, keyed by declared scope name. The first entry of
         # ``_scopes`` is the app's default scope; ``_values`` always aliases
@@ -114,7 +119,7 @@ class V3AppRuntime:
         self._keyed_tree_delta = False
         self._next_tree_node_id = 0
         self._frame_id = 0
-        self._app_id = ""
+        self._plugin_id = ""
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._http_tags: dict[str, str] = {}
@@ -136,10 +141,20 @@ class V3AppRuntime:
             _begin_emit_batch()
             try:
                 self._handle(ev)
+            except Exception as exc:
+                # Queued behind whatever this event already emitted; the
+                # `finally` below flushes both before the process exits.
+                _exit_with_fatal_error(
+                    exc,
+                    phase=self._phase or "runtime",
+                    plugin_root=self._plugin_root,
+                    module=self._module,
+                )
             finally:
                 _finish_emit_batch()
 
     def _handle(self, ev: dict) -> None:
+        self._phase = None
         t = ev.get("type", "")
 
         if t == "init":
@@ -166,6 +181,18 @@ class V3AppRuntime:
                 server_id=ev.get("server_id", ""),
                 error=ev.get("error"),
             ))
+        elif t == "cli_operation_result":
+            self._dispatch(events.CliOperationResult(
+                request_id=ev.get("request_id", ""),
+                operation_id=ev.get("operation_id", ""),
+                ok=bool(ev.get("ok", False)),
+                data=ev.get("data"),
+                error_code=ev.get("error_code"),
+                error=ev.get("error"),
+                exit_code=ev.get("exit_code"),
+                stderr=ev.get("stderr"),
+                data_available=ev.get("data_available"),
+            ))
         elif t == "mcp_message":
             self._handle_mcp_message(ev)
         elif t == "mcp_closed":
@@ -181,23 +208,23 @@ class V3AppRuntime:
                 caller_id=ev.get("caller_id", ""),
                 authorization=ev.get("authorization"),
             ))
-        elif t == "app_events_subscribed":
+        elif t == "plugin_events_subscribed":
             self._dispatch(events.EventSubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 subscription_id=ev.get("subscription_id"),
                 error=ev.get("error"),
             ))
-        elif t == "app_events_unsubscribed":
+        elif t == "plugin_events_unsubscribed":
             self._dispatch(events.EventUnsubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 removed=bool(ev.get("removed", False)),
                 error=ev.get("error"),
             ))
-        elif t == "app_event":
+        elif t == "plugin_event":
             payload = ev.get("payload")
-            self._dispatch(events.AppEvent(
+            self._dispatch(events.PluginEvent(
                 subscription_id=ev.get("subscription_id", ""),
-                app_id=ev.get("app_id", ""),
+                plugin_id=ev.get("plugin_id", ""),
                 event=ev.get("event", ""),
                 event_id=int(ev.get("event_id", 0)),
                 resource_id=ev.get("resource_id", ""),
@@ -265,6 +292,14 @@ class V3AppRuntime:
             self._handle_ui_action(ev)
         elif t == "focus_changed":
             self._handle_focus_changed(ev)
+        elif t == "focus_gained":
+            self._dispatch(events.FocusGained())
+        elif t == "focus_lost":
+            self._dispatch(events.FocusLost())
+        elif t == "pane_shown":
+            self._dispatch(events.PaneShown())
+        elif t == "pane_hidden":
+            self._dispatch(events.PaneHidden())
         elif t == "capability_granted":
             self._dispatch(events.CapabilityGranted(name=ev.get("name", "")))
         elif t == "capability_denied":
@@ -337,11 +372,11 @@ class V3AppRuntime:
         ))
 
     def _handle_init(self, ev: dict) -> None:
-        self._app_id = ev.get("app_id", "")
+        self._plugin_id = ev.get("plugin_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
         self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])
-        # Host-provided launch args (plexi app open <id> -- <args>, scene
+        # Host-provided launch args (plexi view open <id> -- <args>, scene
         # `open` args). Under the CPython-in-WASM bridge the process argv
         # carries no app args, so the init event is their only route to
         # init(size, args); argv args stay authoritative for bare
@@ -374,7 +409,10 @@ class V3AppRuntime:
         size = ev.get("size")
         if not isinstance(size, (list, tuple)) or len(size) != 2:
             size = [ev.get("width", 0.0), ev.get("height", 0.0)]
-        init_effects = self._module.init(tuple(size), self._launch_args)
+        self._phase = "init"
+        init_effects = _v3_errors.call_entry(
+            self._module, "init", tuple(size), self._launch_args
+        )
         self._apply_effects(init_effects)
 
     def _handle_render(self, ev: dict) -> None:
@@ -396,7 +434,8 @@ class V3AppRuntime:
 
         self._set_state(in_view=True)
         try:
-            root = self._module.view()
+            self._phase = "view"
+            root = _v3_errors.call_entry(self._module, "view")
         finally:
             self._set_state(in_view=False)
 
@@ -520,12 +559,11 @@ class V3AppRuntime:
         self._next_tree_node_id = next_id
         def remap_data(data: dict) -> dict:
             data = dict(data)
-            if data.get("type") in ("Column", "Row", "DataTable"):
-                data["children"] = [mapping[item] for item in data.get("children", [])]
-            elif data.get("type") == "ListView":
-                data["items"] = [mapping[item] for item in data.get("items", [])]
-            elif data.get("type") in ("Scroll", "Pinned"):
-                data["child"] = mapping[data["child"]]
+            spec = CONTAINER_FIELDS.get(data.get("type", "").lower())
+            if spec is not None:
+                field, many = spec
+                data[field] = ([mapping[item] for item in child_refs(data)] if many
+                               else mapping[data[field]])
             return data
         return {"root": mapping[encoded["root"]], "nodes": [
             {**node, "id": mapping[node["id"]], "data": remap_data(node["data"])}
@@ -544,13 +582,11 @@ class V3AppRuntime:
         saw_structure = bool(old_keys ^ new_keys)
         for node_id in old_by_id.keys() & new_by_id.keys():
             old, new = old_by_id[node_id], new_by_id[node_id]
-            field = {"Column": "children", "Row": "children", "DataTable": "children",
-                     "ListView": "items"}.get(new["data"].get("type"))
-            if field is None or old["data"].get(field, []) == new["data"].get(field, []):
+            if child_refs(old["data"]) == child_refs(new["data"]):
                 continue
             saw_structure = True
             parent_key = new["key"] + "/@"
-            for child_id in [*old["data"].get(field, []), *new["data"].get(field, [])]:
+            for child_id in [*child_refs(old["data"]), *child_refs(new["data"])]:
                 child = old_by_id.get(child_id) or new_by_id.get(child_id)
                 if child is None or not child["key"].startswith(parent_key):
                     return False
@@ -723,7 +759,8 @@ class V3AppRuntime:
 
     def _dispatch(self, event, *, schedule_render: bool = True) -> None:
         self._set_state(in_view=False)
-        app_effects = self._module.update(event)
+        self._phase = "update"
+        app_effects = _v3_errors.call_entry(self._module, "update", event)
         self._apply_effects(app_effects)
         if schedule_render:
             _emit({"type": "schedule_render", "after_ms": 16})
@@ -736,7 +773,7 @@ class V3AppRuntime:
             return self._scopes[0]
         if scope not in self._scoped_values:
             raise ValueError(
-                f"state scope '{scope}' is not declared in this app's manifest "
+                f"state scope '{scope}' is not declared in this plugin's manifest "
                 f"[state] scopes {self._scopes}"
             )
         return scope
@@ -768,7 +805,7 @@ class V3AppRuntime:
                 self._merge_state_effect(scoped, effect.data)
                 state_changed = True
                 _emit({
-                    "type": "save_app_state",
+                    "type": "save_plugin_state",
                     "scope": scope_name,
                     "payload": dict(scoped),
                 })
@@ -831,6 +868,20 @@ class V3AppRuntime:
                 })
             elif isinstance(effect, effects.McpDisconnect):
                 _emit({"type": "mcp_disconnect", "server_id": effect.server_id})
+            elif isinstance(effect, effects.CliOperation):
+                if not isinstance(effect.values, dict):
+                    raise TypeError(
+                        "CliOperation.values must be a dict of typed slot values, got "
+                        f"{type(effect.values).__name__}"
+                    )
+                _emit({
+                    "type": "cli_operation",
+                    "request_id": effect.request_id,
+                    "operation_id": effect.operation_id,
+                    "values": effect.values,
+                })
+            elif isinstance(effect, effects.CliOperationCancel):
+                _emit({"type": "cli_operation_cancel", "request_id": effect.request_id})
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.OpenFilePicker):
@@ -936,7 +987,7 @@ class V3AppRuntime:
                 _emit({
                     "type": "subscribe_event_streams",
                     "request_id": effect.request_id,
-                    "app_id": effect.app_id,
+                    "plugin_id": effect.plugin_id,
                     "event_names": effect.event_names,
                     "payload_mode": effect.payload_mode,
                     "trigger_mode": effect.trigger_mode,
@@ -962,6 +1013,16 @@ class V3AppRuntime:
                     "pipe_id": str(effect.pipe_id),
                     "payload": effect.payload,
                 })
+            elif isinstance(effect, (effects.AiQuery, effects.GetSystemStats)):
+                raise TypeError(
+                    f"plugin {self._plugin_id!r}: effect {type(effect).__name__} is not "
+                    "available in this runtime (the host has no handler for it)"
+                )
+            else:
+                raise TypeError(
+                    f"plugin {self._plugin_id!r}: update() returned "
+                    f"{type(effect).__name__}, which is not a supported effect"
+                )
         if state_changed:
             self._set_state(in_view=False)
 
@@ -994,14 +1055,34 @@ def _host_log(level: str, msg: str) -> None:
     _emit({"type": "log", "level": level, "message": msg})
 
 
+def _exit_with_fatal_error(exc: Exception, *, phase: str, plugin_root: Path, module) -> NoReturn:
+    """Send the structured `fatal_error` report for `exc`, then end the process.
+
+    The report replaces CPython's own stderr traceback: the host leads with the
+    plugin's exception instead of a generic "exited before responding".
+    """
+    _emit({
+        "type": "fatal_error",
+        **_v3_errors.fatal_error_fields(
+            exc, phase=phase, plugin_root=plugin_root, module=module
+        ),
+    })
+    raise SystemExit(1) from None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         raise SystemExit("usage: python -m plexi_sdk._v3_runtime <app.py> [args...]")
-    app_path = Path(args[0]).resolve()
+    plugin_path = Path(args[0]).resolve()
     launch_args = args[1:]
     _v3_state._host_log = _host_log
-    runtime = V3AppRuntime(app_path, launch_args)
+    try:
+        runtime = PluginRuntime(plugin_path, launch_args)
+    except Exception as exc:
+        _exit_with_fatal_error(
+            exc, phase="import", plugin_root=plugin_path.parent, module=None
+        )
     runtime.run()
 
 

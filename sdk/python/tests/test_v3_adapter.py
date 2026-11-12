@@ -12,7 +12,7 @@ import plexi_sdk as sdk
 from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
-from plexi_sdk._adapter import call_lifecycle, load_app
+from plexi_sdk._adapter import call_lifecycle, load_plugin
 from plexi_sdk.effects import (
     AiTool,
     ExposeTools,
@@ -37,6 +37,7 @@ from plexi_sdk.ui import (
     CanvasRect,
     Column,
     FooterKeys,
+    Row,
     Scrollable,
     SelectList,
     Text,
@@ -84,12 +85,12 @@ def test_tool_effects_encode_rust_wire_shape() -> None:
 def test_subscription_effects_encode_rust_wire_shape() -> None:
     assert _encode_effect(SubscribeEventStreams(
         request_id="subscribe-1",
-        app_id="notes",
+        plugin_id="notes",
         event_names=["note.saved"],
     )) == {
         "type": "SubscribeEventStreams",
         "request_id": "subscribe-1",
-        "app_id": "notes",
+        "plugin_id": "notes",
         "event_names": ["note.saved"],
         "payload_mode": "full",
         "trigger_mode": "conversation",
@@ -140,6 +141,16 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert tree["nodes"][0]["data"]["type"] == "Column"
     assert tree["nodes"][1]["data"]["type"] == "text"
     assert tree["nodes"][2]["data"]["type"] == "Button"
+
+
+def test_ui_tree_carries_row_and_column_justify() -> None:
+    """Stint 1358: the adapter forwards ``justify`` for rows and columns."""
+    tree = _encode_uitree(
+        Column([Row([Text("a")], justify="space-between")], justify="center", padding=0)
+    )
+    assert tree["nodes"][0]["data"]["justify"] == "center"
+    assert tree["nodes"][1]["data"]["type"] == "Row"
+    assert tree["nodes"][1]["data"]["justify"] == "space-between"
 
 
 def test_ui_tree_serializes_text_input_and_select_list() -> None:
@@ -212,7 +223,8 @@ def test_ui_tree_serializes_row_children() -> None:
         "type": "Row",
         "children": [1, 2],
         "gap": 8.0,
-        "align": "start",
+        "align": "center",
+        "justify": "start",
         "grow": False,
     }
     assert nodes[1]["data"]["type"] == "Button"
@@ -344,7 +356,7 @@ def test_view_lifecycle_resets_view_guard(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    load_app("sample_app")
+    load_plugin("sample_app")
     call_lifecycle("view", json.dumps({"state": {}}))
 
     assert _v3_state._in_view is False

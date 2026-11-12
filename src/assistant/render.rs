@@ -15,15 +15,15 @@ use std::hash::{Hash, Hasher};
 
 use egui::RichText;
 
-use crate::ui::button::{chrome_button, ButtonKind};
+use crate::ui::button::{ButtonKind, KitButton};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::ListRow;
 use crate::ui::style;
 use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
-use crate::protocol::ModelTier;
 use crate::broker::Decision;
+use crate::protocol::ModelTier;
 
 use super::commands;
 
@@ -61,7 +61,7 @@ pub enum ComposerEvent {
     Submit,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
-    /// Open the Permissions app from a denied tool row.
+    /// Open the Permissions plugin from a denied tool row.
     ReviewPermissions,
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
@@ -163,7 +163,7 @@ impl AssistantRenderer {
         colors: &Colors,
         host_pane_id: u64,
     ) -> Option<ComposerEvent> {
-        // Match the terminal/editor surface, not the darker app-pane base
+        // Match the terminal/editor surface, not the darker plugin-pane base
         // fill — the assistant is host chrome, same as the scratchpad.
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
@@ -465,8 +465,11 @@ impl AssistantRenderer {
                 });
         }
         let review = if turn.text.contains("plexi permissions list") {
-            let response = chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
-            response.clicked().then_some(ComposerEvent::ReviewPermissions)
+            let response =
+                ui.add(KitButton::new("Review permissions", colors).kind(ButtonKind::Secondary));
+            response
+                .clicked()
+                .then_some(ComposerEvent::ReviewPermissions)
         } else {
             None
         };
@@ -571,7 +574,7 @@ impl AssistantRenderer {
         } = *ctx;
         let text = turn.text.as_str();
         match turn.role {
-            // Delivered app events are compact single-line rows.
+            // Delivered plugin events are compact single-line rows.
             TurnRole::Event => {
                 ui.label(
                     RichText::new(text)
@@ -652,7 +655,7 @@ impl AssistantRenderer {
         // Braille spinner keyed to wall clock — the assistant already
         // repaints continuously while a turn is in flight, so this animates
         // without extra repaint requests. Elapsed seconds make a long tool
-        // call (a 60s+ `app check`) read as progress, not a hang.
+        // call (a 60s+ `plugin check`) read as progress, not a hang.
         let elapsed = active.started.elapsed();
         let frame = SPINNER_FRAMES[(elapsed.as_millis() / 100) as usize % SPINNER_FRAMES.len()];
         let elapsed_label = if elapsed.as_secs() >= 2 {
@@ -736,17 +739,17 @@ impl AssistantRenderer {
                 let actions: [(&str, ButtonKind, PermissionChoice); 5] = [
                     (
                         "Allow once",
-                        ButtonKind::Accent,
+                        ButtonKind::Primary,
                         PermissionChoice::AllowOnce,
                     ),
                     (
                         "Allow this session",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowSession,
                     ),
                     (
                         "Always allow",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowAlways,
                     ),
                     (
@@ -762,7 +765,7 @@ impl AssistantRenderer {
                 let mut painted: Vec<(&str, [f64; 4])> = Vec::new();
                 ui.horizontal_wrapped(|ui| {
                     for (i, (label, kind, value)) in actions.into_iter().enumerate() {
-                        let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        let resp = ui.add(KitButton::new(label, colors).kind(kind));
                         let rect = resp.rect;
                         // Pane state reads accesskit. The chrome button's
                         // glyph runs are not a labeled button, so the click
@@ -802,9 +805,9 @@ impl AssistantRenderer {
                 // The click driver reads these bounds from `assistant permission
                 // list` when pane state has no labeled button. Window points,
                 // same space as the accesskit rect above.
-                if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
-                    &crate::config::config_dir(),
-                ) {
+                if let Some(monitor) =
+                    crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+                {
                     monitor.publish_sheet_buttons(&painted);
                 }
             });
@@ -986,7 +989,7 @@ impl AssistantRenderer {
     }
 
     /// The model is writing a tool call — the longest otherwise-silent
-    /// stretch of an app-build turn. Spinner + tool name + cumulative
+    /// stretch of a plugin-build turn. Spinner + tool name + cumulative
     /// argument size + elapsed, so a 60s code generation reads as progress.
     fn draw_tool_progress_row(
         ui: &mut egui::Ui,

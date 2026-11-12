@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn disable_of_an_absent_key_is_a_noop() {
         let (_d, path) = fixture();
-        assert_eq!(set_at(&path, "relay", false), 0);
+        assert_eq!(set_at(&path, "assistant", false), 0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), FIXTURE);
     }
 
@@ -136,6 +136,7 @@ mod tests {
     fn enable_unknown_name_fails_and_writes_nothing() {
         let (_d, path) = fixture();
         assert_eq!(set_at(&path, "assistent", true), 1);
+        assert_eq!(set_at(&path, "relay", true), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), FIXTURE);
     }
 
@@ -143,9 +144,9 @@ mod tests {
     fn enable_creates_the_table_in_a_missing_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        assert_eq!(set_at(&path, "relay", true), 0);
+        assert_eq!(set_at(&path, "assistant", true), 0);
         let enabled = crate::config::experiments_from_path(&path).unwrap();
-        assert!(enabled.contains(&ReleaseFeature::Relay));
+        assert!(enabled.contains(&ReleaseFeature::Assistant));
         assert_eq!(enabled.len(), 1);
     }
 
@@ -160,7 +161,7 @@ mod tests {
             .unwrap();
         assert!(ledger.1);
         assert!(!ReleaseFeature::Ledger.requires_restart());
-        assert!(ReleaseFeature::Relay.requires_restart());
+        assert!(ReleaseFeature::Assistant.requires_restart());
         assert!(rows.iter().filter(|(_, on)| *on).count() == 1);
     }
 }

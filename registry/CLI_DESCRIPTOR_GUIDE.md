@@ -1,6 +1,6 @@
 # CLI Descriptor Authoring Guide (`--plexi`)
 
-Plexi discovers how to render a UI for any CLI by running `<cli> --plexi` and parsing the JSON it prints. A CLI that responds with a valid descriptor gets a rendered interface automatically — form inputs, live state polling, or a full PGAP app — with no Plexi-specific SDK required.
+Plexi discovers how to render a UI for any CLI by running `<cli> --plexi` and parsing the JSON it prints. A CLI that responds with a valid descriptor gets a rendered interface automatically — form inputs, live state polling, or a full PGAP plugin — with no Plexi-specific SDK required.
 
 This guide explains how to write that descriptor.
 
@@ -49,8 +49,6 @@ The smallest valid JSON that Plexi accepts:
 | `default_view` | `ui_hint` | no | Initial render mode when no command is selected. See [ui_hint guide](#4-ui_hint-guide). |
 | `commands` | array | yes | Top-level subcommands. May be empty. |
 | `live_state` | object | no | Tells Plexi how to watch out-of-band state changes. See below. |
-| `plexi_app` | string | no | Shell command to spawn as a PGAP process instead of the auto-generated form UI. |
-| `capabilities` | array | no | Capability strings granted to the `plexi_app` process (same vocabulary as `manifest.toml`). |
 
 ### `commands[]`
 
@@ -107,19 +105,6 @@ Tells Plexi to watch an external source for state changes while the user is look
 | `path` | string | Filesystem path, socket path, or HTTP URL depending on `source`. Required. |
 | `poll_ms` | integer | How often Plexi re-reads the source. Minimum 50 ms. Required. |
 | `format` | string | How to parse the payload: `"json"`, `"yaml"`, or `"text"`. Required. |
-
-### `plexi_app` + `capabilities`
-
-When your CLI has a custom UI that goes beyond form inputs, set `plexi_app` to the shell command Plexi should spawn as a PGAP app:
-
-```json
-{
-  "plexi_app": "mytool-ui --pane",
-  "capabilities": ["ai.query", "panes.spawn"]
-}
-```
-
-Plexi splits `plexi_app` on whitespace — first token is the binary, rest are initial args. `capabilities` uses the same vocabulary as `manifest.toml`. `plexi_app` is the escape hatch for rich custom UI; use it only when the auto-generated form UI is insufficient.
 
 ---
 

@@ -1,6 +1,6 @@
 //! Deterministic Assistant turn-loop harness.
 //!
-//! The harness drives `AssistantApp` without egui. A scripted broker observes
+//! The harness drives `AssistantView` without egui. A scripted broker observes
 //! the real broker request, dispatches through the real gated tool snapshot,
 //! and records every orchestration boundary as typed data.
 
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::model::PermissionChoice;
-use super::{AssistantApp, SkillRegistry};
-use crate::app::app_trait::{App, AppCommand};
+use super::{AssistantView, SkillRegistry};
+use crate::app::view_trait::{View, ViewCommand};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use crate::plexi_ai::tool_dispatch::ToolCallResult;
 use crate::plexi_ai::turn_loop::TurnDelta;
@@ -84,7 +84,7 @@ impl From<HarnessPermission> for PermissionChoice {
 
 #[derive(Debug, Clone)]
 pub struct ScriptedCall {
-    /// Native `host.*` tool. Connector calls need a real registered app and
+    /// Native `host.*` tool. Connector calls need a real registered plugin and
     /// belong in HostHarness integration tests.
     pub name: String,
     pub arguments: serde_json::Value,
@@ -495,7 +495,7 @@ impl AiBroker for ScriptedBroker {
 pub struct AssistantHarness {
     _root: tempfile::TempDir,
     workspace: PathBuf,
-    app: AssistantApp,
+    app: AssistantView,
     broker: Arc<ScriptedBroker>,
     trace: Arc<Mutex<Vec<OrchestrationEvent>>>,
 }
@@ -553,7 +553,7 @@ impl AssistantHarness {
             skills: Mutex::new(probes),
             agent_id: Mutex::new("default".to_string()),
         });
-        let mut app = AssistantApp::new(workspace.clone(), broker.clone(), &profile, 1);
+        let mut app = AssistantView::new(workspace.clone(), broker.clone(), &profile, 1);
         if let Some((agent_id, _, _)) = route {
             app.model.active_agent_id = agent_id.to_string();
         }
@@ -577,7 +577,7 @@ impl AssistantHarness {
             .find(|call| !call.name.starts_with("host."))
         {
             return Err(format!(
-                "scripted result injection supports native host tools only; '{}' needs a registered app connector",
+                "scripted result injection supports native host tools only; '{}' needs a registered plugin connector",
                 call.name
             ));
         }
@@ -626,8 +626,8 @@ impl AssistantHarness {
                     });
                 self.app.resolve_permission(decision.into());
             }
-            for command in App::take_pending_commands(&mut self.app) {
-                let AppCommand::AssistantHostTool {
+            for command in View::take_pending_commands(&mut self.app) {
+                let ViewCommand::AssistantHostTool {
                     name,
                     input_json,
                     reply,
@@ -713,7 +713,7 @@ mod tests {
                 model: Some("test/cheap".to_string()),
             }),
             offered_skills: Some(vec![
-                "build-plexi-app".to_string(),
+                "build-plexi-plugin".to_string(),
                 "pane-audit".to_string(),
             ]),
             activated_skill: Some("pane-audit".to_string()),
@@ -736,7 +736,7 @@ mod tests {
             }],
             ordered_events: vec![
                 ExpectedEvent::SkillsOffered(vec![
-                    "build-plexi-app".to_string(),
+                    "build-plexi-plugin".to_string(),
                     "pane-audit".to_string(),
                 ]),
                 ExpectedEvent::SkillActivated("pane-audit".to_string()),
@@ -922,10 +922,10 @@ mod tests {
         }
         harness.app.build_exe = stub;
 
-        let args = serde_json::json!({"args": ["app", "init", "demo-app"]});
+        let args = serde_json::json!({"args": ["plugin", "init", "demo-app"]});
         let trace = harness
             .run_turn(
-                "build me a demo app",
+                "build me a demo plugin",
                 ScriptedTurn {
                     calls: vec![ScriptedCall::success(
                         "host.build.run",
@@ -968,7 +968,7 @@ mod tests {
             output["stdout"]
                 .as_str()
                 .unwrap()
-                .contains("stub-build app init demo-app"),
+                .contains("stub-build plugin init demo-app"),
             "{output}"
         );
     }
@@ -1010,7 +1010,7 @@ mod tests {
         let mut harness = AssistantHarness::new(&[]);
         let error = harness
             .run_turn(
-                "query app",
+                "query plugin",
                 ScriptedTurn {
                     calls: vec![ScriptedCall::success(
                         "csv.read",
@@ -1032,19 +1032,18 @@ mod tests {
     #[test]
     fn scope_refusal_is_final_and_never_routes_through_a_terminal() {
         for guidance in [
-            crate::agent::DEFAULT_AGENT_PROMPT,
+            crate::assistant::ASSISTANT_AGENT_PROMPT,
             &crate::assistant::skills::SkillRegistry::load(
                 std::path::Path::new("/nonexistent-profile"),
                 std::path::Path::new("/nonexistent-workspace"),
             )
             .get(crate::assistant::skills::APP_BUILD_SKILL_NAME)
-            .expect("builtin app-build skill")
+            .expect("builtin plugin-build skill")
             .instructions
             .clone(),
         ] {
             assert!(
-                guidance.contains("path_out_of_scope")
-                    && guidance.contains("command_not_allowed"),
+                guidance.contains("path_out_of_scope") && guidance.contains("command_not_allowed"),
                 "guidance must name both refusal codes: {guidance}"
             );
             assert!(

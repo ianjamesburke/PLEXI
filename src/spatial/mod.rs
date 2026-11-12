@@ -35,6 +35,7 @@ use crate::app::PlexiApp;
 /// recently visited column), falling back to `cur_x` if the row is unvisited.
 ///
 /// Returns `None` if no page exists in the target direction.
+#[allow(dead_code)]
 fn find_navigation_target(
     pages: &[(u32, u32, u64)],
     workspace_id: u64,
@@ -81,6 +82,7 @@ impl PlexiApp {
     /// most recently visited column in that row (`last_page_x_per_row`).
     ///
     /// Does **not** create pages — silently no-ops at the grid boundary.
+    #[allow(dead_code)]
     pub(crate) fn navigate_page(&mut self, dx: i32, dy: i32) {
         let cur_x = self.windows[self.active_window].grid_x;
         let cur_y = self.windows[self.active_window].grid_y;

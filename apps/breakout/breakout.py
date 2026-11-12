@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import math
 
-from plexi_sdk import AppPalette, log, theme
+from plexi_sdk import PluginPalette, log, theme
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame, Resize
-from plexi_sdk.ui import AppBar, Canvas, CanvasCircle, CanvasRect, CanvasText, Column, FooterKeys
+from plexi_sdk.ui import SurfaceHeader, Canvas, CanvasCircle, CanvasRect, CanvasText, Column, FooterKeys
 
 TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
@@ -17,7 +17,7 @@ BRICK_COLS = 10
 BRICK_ROWS = 5
 BRICK_GAP = 4.0
 
-BREAKOUT_PALETTE = AppPalette(
+BREAKOUT_PALETTE = PluginPalette(
     dark={
         "row0": "#f7768e",
         "row1": "#ff9e64",
@@ -354,7 +354,7 @@ def view():
     w, h = _canvas_width, _canvas_height
     return Column(
         [
-            AppBar("Breakout", _subtitle(data)),
+            SurfaceHeader("Breakout", _subtitle(data)),
             Canvas(_draw(data, w, h), width=w, height=h, grow=True),
             FooterKeys([("←/→", "move"), ("space", "launch / restart")]),
         ],

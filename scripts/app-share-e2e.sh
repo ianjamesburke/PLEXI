@@ -108,31 +108,66 @@ start_host
 export PLEXI_SOCKET="$SOCKET"
 
 echo "scaffolding $APP_ID"
-"$BIN" app init "$APP_ID" --global >"$WORK/init.log" 2>&1
-APP_DIR="$PROFILE/apps/$APP_ID"
+"$BIN" plugin init "$APP_ID" --global >"$WORK/init.log" 2>&1
+APP_DIR="$PROFILE/plugins/$APP_ID"
 if [[ ! -f "$APP_DIR/manifest.toml" ]]; then
   echo "error: scaffold did not write $APP_DIR/manifest.toml" >&2
   cat "$WORK/init.log" >&2
   exit 1
 fi
+# The scaffold is a skeleton with no capabilities and no tools (stint 1330).
+# This check needs one auto-granted capability, one sensitive capability and
+# one assistant tool, so it declares and writes them itself.
 python3 - "$APP_DIR/manifest.toml" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = 'capabilities = ["timer"]'
+old = 'capabilities = []'
 new = 'capabilities = ["timer", "permissions.manage"]'
 if old not in text:
-    sys.exit(f"scaffold manifest has no timer capability list:\n{text}")
+    sys.exit(f"scaffold manifest has no empty capability list:\n{text}")
 path.write_text(text.replace(old, new, 1))
+PY
+rm -rf "$APP_DIR/tests" "$APP_DIR/fixtures"
+cat >"$APP_DIR/main.py" <<'PY'
+"""Share sample: one read-only assistant tool, written by app-share-e2e.sh."""
+
+from plexi_sdk import log, tools
+from plexi_sdk.effects import SetTitle
+from plexi_sdk.ui import Column, SurfaceHeader, Text
+
+
+@tools.tool(
+    "demo.greet",
+    "Greet someone by name.",
+    {"name": str},
+    {"greeting": str},
+    read_only=True,
+)
+def greet(name: str) -> dict:
+    return {"greeting": f"Hello, {name}!"}
+
+
+def init(size, args):
+    log.info("share sample: init")
+    return [SetTitle("Share Sample"), tools.expose()]
+
+
+def update(event):
+    return tools.dispatch(event) or []
+
+
+def view():
+    return Column([SurfaceHeader("Share Sample"), Text("Share sample")], grow=True)
 PY
 
 echo "validating and packaging"
-"$BIN" app validate "$APP_DIR" >"$WORK/validate.log" 2>&1
-"$BIN" app package "$APP_DIR" --out "$WORK/$APP_ID.plexipkg" >"$WORK/package.log" 2>&1
+"$BIN" plugin validate "$APP_DIR" >"$WORK/validate.log" 2>&1
+"$BIN" plugin package "$APP_DIR" --out "$WORK/$APP_ID.plexipkg" >"$WORK/package.log" 2>&1
 test -f "$WORK/$APP_ID.plexipkg"
 
 echo "installing package"
-"$BIN" app install "$WORK/$APP_ID.plexipkg" --yes >"$WORK/install.log" 2>&1
+"$BIN" plugin install "$WORK/$APP_ID.plexipkg" --yes >"$WORK/install.log" 2>&1
 if ! grep -q timer "$WORK/install.log"; then
   echo "error: install trust sheet did not name timer" >&2
   cat "$WORK/install.log" >&2
@@ -140,8 +175,8 @@ if ! grep -q timer "$WORK/install.log"; then
 fi
 
 echo "opening app"
-if ! "$BIN" app open "$APP_ID" >"$WORK/open.log" 2>&1; then
-  echo "warning: app open returned non-zero; the grant check still decides" >&2
+if ! "$BIN" view open "$APP_ID" >"$WORK/open.log" 2>&1; then
+  echo "warning: view open returned non-zero; the grant check still decides" >&2
   cat "$WORK/open.log" >&2 || true
 fi
 
@@ -333,7 +368,7 @@ PY
     cat "$WORK/set-root.err" >&2
     exit 1
   }
-  "$BIN" app open "$APP_ID" >"$WORK/reopen.log" 2>&1 || true
+  "$BIN" view open "$APP_ID" >"$WORK/reopen.log" 2>&1 || true
   local ready=0
   for _ in $(seq 1 40); do
     "$BIN" pane list >"$WORK/app-panes.json" 2>/dev/null || true
@@ -341,7 +376,7 @@ PY
 import json, sys
 rows=json.load(open(sys.argv[1]))
 want=sys.argv[2]
-raise SystemExit(0 if any(want in str(r.get("title","")) or want in str(r.get("app_id","")) for r in rows) else 1)
+raise SystemExit(0 if any(want in str(r.get("title","")) or want in str(r.get("plugin_id","")) for r in rows) else 1)
 PY
     then
       ready=1
@@ -359,7 +394,7 @@ PY
 import json, sys
 rows=json.load(open(sys.argv[1]))
 want=sys.argv[2]
-hits=[str(r["id"]) for r in rows if want in str(r.get("title","")) or want in str(r.get("app_id",""))]
+hits=[str(r["id"]) for r in rows if want in str(r.get("title","")) or want in str(r.get("plugin_id",""))]
 print(hits[-1] if hits else "")
 PY
 )"
@@ -378,7 +413,7 @@ PY
     exit 1
   fi
   echo "sample app exposed tools on pane $app_pane"
-  "$BIN" app open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
+  "$BIN" view open assistant >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
   local assist=""
   for _ in $(seq 1 20); do
     "$BIN" pane list >"$WORK/panes.json" 2>/dev/null || true

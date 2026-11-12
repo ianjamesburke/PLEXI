@@ -21,7 +21,7 @@ fn open_req() -> OpenPaneRequest {
 // ── ID allocation invariants ──────────────────────────────────────────────────
 
 #[test]
-fn alloc_pane_id_is_monotone_across_app() {
+fn alloc_pane_id_is_monotone_across_view() {
     let mut app = make_app();
     let a = app.host.alloc_pane_id();
     let b = app.host.alloc_pane_id();

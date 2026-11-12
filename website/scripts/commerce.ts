@@ -9,13 +9,13 @@
  * resolve without a build step:
  *
  *   POLAR_ACCESS_TOKEN=... POLAR_SERVER=sandbox DATABASE_URL=... \
- *     npm run commerce -- set-app <app_id> --price 4.99 --name "Reviewed Notes"
+ *     npm run commerce -- set-plugin <plugin_id> --price 4.99 --name "Reviewed Notes"
  *   POLAR_ACCESS_TOKEN=... POLAR_SERVER=sandbox \
  *     npm run commerce -- ensure-ai-pro
  *
  * Prices accept dollars ("4.99") or explicit cents ("--price 499 --cents").
  */
-import { ensureAppProduct, ensureAiProProduct, AI_PRO_PRICE_CENTS } from '../src/server/products';
+import { ensurePluginProduct, ensureAiProProduct, AI_PRO_PRICE_CENTS } from '../src/server/products';
 import { closePool } from '../src/server/db';
 
 interface Flags {
@@ -24,7 +24,7 @@ interface Flags {
   bools: Set<string>;
 }
 
-/** Parse `set-app foo --price 4.99 --name "X" --cents` into positionals/options/bools. */
+/** Parse `set-plugin foo --price 4.99 --name "X" --cents` into positionals/options/bools. */
 function parseArgs(argv: string[]): Flags {
   const positional: string[] = [];
   const options: Record<string, string> = {};
@@ -66,7 +66,7 @@ function requireOption(flags: Flags, key: string): string {
 }
 
 const USAGE = `Usage:
-  commerce set-app <app_id> --price <dollars> [--cents] [--currency usd] [--publisher plexi] [--name "Display Name"]
+  commerce set-plugin <plugin_id> --price <dollars> [--cents] [--currency usd] [--publisher plexi] [--name "Display Name"]
   commerce ensure-ai-pro [--price <dollars>] [--cents] [--currency usd]`;
 
 async function main(): Promise<void> {
@@ -74,16 +74,16 @@ async function main(): Promise<void> {
   const flags = parseArgs(rest);
 
   switch (command) {
-    case 'set-app': {
-      const appId = flags.positional[0];
-      if (!appId) throw new Error('set-app requires an <app_id>');
+    case 'set-plugin': {
+      const pluginId = flags.positional[0];
+      if (!pluginId) throw new Error('set-plugin requires an <plugin_id>');
       const priceCents = toCents(requireOption(flags, 'price'), flags.bools.has('cents'));
       const currency = flags.options.currency ?? 'usd';
       const publisher = flags.options.publisher ?? 'plexi';
-      const name = flags.options.name ?? appId;
-      const result = await ensureAppProduct({ appId, name, priceCents, currency, publisher });
+      const name = flags.options.name ?? pluginId;
+      const result = await ensurePluginProduct({ pluginId, name, priceCents, currency, publisher });
       console.info(
-        `[commerce-cli] app "${appId}" is now PAID at ${(priceCents / 100).toFixed(2)} ${currency.toUpperCase()} — ` +
+        `[commerce-cli] plugin "${pluginId}" is now PAID at ${(priceCents / 100).toFixed(2)} ${currency.toUpperCase()} — ` +
           `product ${result.created ? 'created' : 'updated'} product_id=${result.productId}`,
       );
       break;

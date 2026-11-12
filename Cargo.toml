@@ -1,11 +1,11 @@
 [workspace]
-members = ["crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
+members = ["deps/eframe-0.34.3", "deps/egui-wgpu-0.34.3", "crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
 exclude = ["apps/wasm-poc"]
 resolver = "2"
 
 [package]
 name = "plexi"
-version = "0.4.0"
+version = "0.4.6"
 edition = "2021"
 
 [package.metadata.bundle]
@@ -68,9 +68,7 @@ tiny-skia = "0.11"
 fontdue = "0.9"
 # HTTP broker (step 9a). Pure-Rust blocking client — no tokio.
 ureq = { version = "2", default-features = false, features = ["tls"] }
-# Phone relay desktop link. rustls is already in the tree via ureq; ring is its provider.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "0.26"
+# Folder secret encryption.
 ring = "0.17"
 # URL parsing for hardened allowed_hosts validation (#1179). Already transitive via ureq.
 url = "2"
@@ -157,8 +155,8 @@ core-foundation = "0.10"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-user-notifications = "0.3"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSFileManager", "NSUserDefaults"] }
 # AVFoundation video decoder (#346).
 objc2-av-foundation = { version = "0.3", features = [
     "AVAsset",
@@ -204,7 +202,8 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [dev-dependencies]
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
 serde_yaml = "0.9"
 # DAW release gate (stint 0519): the host test build drives the pure-model
 # fuzzer (via the `gate` feature) and the offline render engine, so
@@ -213,6 +212,9 @@ plexi-daw-model = { path = "crates/daw-model", features = ["gate"] }
 plexi-daw-engine = { path = "crates/daw-engine" }
 
 [patch.crates-io]
+# Render requested host captures without requiring a composited window drawable.
+eframe = { path = "deps/eframe-0.34.3" }
+egui-wgpu = { path = "deps/egui-wgpu-0.34.3" }
 # Vendored because accesskit_consumer 0.38 still panics when a root-change
 # update removes the stale focused node before global validation.
 accesskit_consumer = { path = "deps/accesskit_consumer-0.38.0" }

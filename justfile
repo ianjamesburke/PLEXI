@@ -4,9 +4,7 @@
 PYTHON_VERSION := "3.12.13"
 PYTHON_PBS_DATE := "20260414"
 
-# Rust 1.97 warns on f64-to-f32 literal fallback throughout egui call sites.
-# Keep the global warning gate while upstream APIs transition to typed literals.
-export RUSTFLAGS := "-D warnings -A float-literal-f32-fallback"
+export RUSTFLAGS := "-D warnings"
 
 # Pane-inherited Plexi vars that must not reach a test process: they would let
 # a test resolve real channel state instead of its own isolated profile.
@@ -28,7 +26,7 @@ wasm-python-shim:
     bash scripts/build-wasm-python-shim.sh
 
 dev:
-    bash scripts/cargo-with-lease.sh cargo build
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build
     target/debug/plexi
 
 # Run the website dev server at http://localhost:4321
@@ -43,24 +41,48 @@ website-deploy:
 # under website/public/registry/v1/. Republishing after an app fix is one
 # command. Builds the binary first so packaging uses the current tree.
 website-registry:
-    bash scripts/cargo-with-lease.sh cargo build --bin plexi
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --bin plexi
     python3 website/scripts/build-registry.py
 
 # Smoke-check production: pages, install redirect, registry index + artifact checksums.
 website-smoke:
     bash website/scripts/prod-smoke.sh
 
-# Run the full test suite — HostHarness regression tests + unit tests.
+# Run the host test suite MINUS the patterns below. This is not the full suite:
+# libtest --skip is a substring match on the full test path, so each pattern also
+# drops unrelated tests whose names contain it. The recipe prints how many tests
+# were skipped, and by which pattern, before and after the run.
+# `just release-host-gate` is the full suite.
 test:
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test
+    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py suite -- assistant daw cloud account:: marketplace ledger routine changes scene_suite
 
-# Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
-# This includes scenes that opt out of scene_suite.
-roadmap-evidence:
-    python3 scripts/roadmap-evidence.py
+# Full release host suite, test-target compilation and strict lint.
+release-host-gate:
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee release-host-gate -- bash scripts/release-host-gate.sh
 
-roadmap-evidence-fixtures:
-    python3 scripts/test-roadmap-evidence.py
+# Run any long command with the full output in a named log, a one-line heartbeat,
+# a bounded error tail on failure, and one final machine-readable line:
+#   RESULT name=<name> status=<pass|fail> exit=<code> seconds=<n> log=<abs path>
+# The same line is written to <name>.status beside the log (.stint/runs/logs/ by
+# default, PLEXI_RUN_LOG_DIR to override), so a later process can check completion
+# without reading output. The exit code is the command's. See scripts/run_logged.py.
+#   just run-logged build-1 -- just build
+[positional-arguments, no-exit-message]
+run-logged name *command:
+    @python3 scripts/run_logged.py "$@"
+
+# Run selected host tests with the same flags and isolation as `just scene`.
+# Pass libtest filters and options after the recipe name. A filter that matches
+# no test fails (exit 1) with the nearest real module and test names; it never
+# reports a pass for zero tests. See scripts/filter_check.py.
+test-host +args:
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-host -- python3 scripts/filter_check.py host -- {{args}} < /dev/null
+
+# Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
+# A file with no table entry falls back to its own module tests and says so.
+#   just test-for src/host/model.rs
+test-for path:
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
@@ -94,10 +116,18 @@ coverage-summary:
 # Scoped to the perf lint set only (`-A clippy::all` silences unrelated lints);
 # vendored deps/egui_term opts out via crate-level allows in its lib.rs.
 perf-clippy:
-    RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh cargo clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
+    RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
+
+# Strict lint gate with the same managed build inputs and warning flags.
+clippy:
+    python3 scripts/run_logged.py --tee clippy -- bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
+
+# Verify host surface registration and scoped raw-composition exceptions.
+check-ui-layout:
+    python3 scripts/check-ui-layout.py --test
 
 build:
-    bash scripts/cargo-with-lease.sh cargo build --release
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 
 # Linux bringup smoke check: drives a real host through the CLI on an X
 # display and asserts a signal at every step. Needs `just build` first.
@@ -113,14 +143,14 @@ pi-plexi-live:
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
 # Run after any change to src/protocol/.
 gen-schema:
-    bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
+    bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
     @echo "Schema and Python protocol models regenerated."
 
 # Regenerate the CLI reference docs from the clap Command tree.
 # Run after any change to src/cli_args.rs.
 gen-cli-docs:
-    bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
+    bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs
     @echo "CLI reference regenerated."
     git add website/src/content/docs/cli.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
@@ -145,18 +175,18 @@ check-generated artifact generator regen ok:
 
 # Verify the committed CLI docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/cli.md is stale.
-check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
+check-cli-docs: (check-generated "website/src/content/docs/cli.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs" "gen-cli-docs" "CLI docs are up to date.")
 
 # Generate the installed agent skill without committing or pushing.
 gen-skill-docs:
-    bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+    bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill
 
-check-skill-docs: (check-generated "skills/plexi-cli/SKILL.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill" "gen-skill-docs" "CLI skill is up to date.")
+check-skill-docs: (check-generated "skills/plexi-cli/SKILL.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill" "gen-skill-docs" "CLI skill is up to date.")
 
 # Regenerate the config reference docs from the serde config structs.
 # Run after any change to src/config/mod.rs or scripts/default-config.toml.
 gen-config-docs:
-    bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
+    bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs
     @echo "Config reference regenerated."
     git add website/src/content/docs/config.md
     git diff --cached --quiet || git commit -m "chore(website): regenerate config reference docs"
@@ -164,11 +194,11 @@ gen-config-docs:
 
 # Verify the committed config docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/config.md is stale.
-check-config-docs: (check-generated "website/src/content/docs/config.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs" "gen-config-docs" "Config docs are up to date.")
+check-config-docs: (check-generated "website/src/content/docs/config.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs" "gen-config-docs" "Config docs are up to date.")
 
 # Verify the committed schema is up to date with the current Rust source.
 # Fails if sdk/protocol/pgap.schema.json is stale.
-check-schema: (check-generated "sdk/protocol/pgap.schema.json" "bash scripts/cargo-with-lease.sh cargo run -p gen_schema" "gen-schema" "Schema is up to date.")
+check-schema: (check-generated "sdk/protocol/pgap.schema.json" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema" "gen-schema" "Schema is up to date.")
 
 # Generate SDK reference docs from Python docstrings.
 # Run after any change to sdk/python/plexi_sdk/.
@@ -216,6 +246,13 @@ check-docs-coverage:
 check-authoring-docs:
     python3 tools/check_authoring_docs.py
 
+# Generate/check the manifest reference from its Rust owners and fixture.
+gen-manifest-docs:
+    uv run --no-project python tools/gen_manifest_docs.py
+
+check-manifest-docs:
+    uv run --no-project python tools/gen_manifest_docs.py --check
+
 # Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
 # Verify sdk/python/uv.lock matches sdk/python/pyproject.toml.
 # Fails when a version bump moved pyproject.toml without re-locking.
@@ -228,10 +265,10 @@ check-sdk-lock:
     fi
     echo "SDK lock is up to date."
 
-check-docs: check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
+check-docs: check-manifest-docs check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
-    bash scripts/cargo-with-lease.sh cargo build --release
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
     target/release/plexi
 
 # Regenerate generated artifacts only when their source files changed.
@@ -250,22 +287,22 @@ regen-if-stale:
     set -euo pipefail
     if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
         echo "CLI docs source changed — regenerating CLI docs..."
-        bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs
+        bash scripts/gen-doc-safe.sh website/src/content/docs/cli.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs
     fi
     for source in Cargo.toml src/cli/args.rs src/release/catalog.rs skills/plexi-cli/intro.md tools/gen_cli_docs/Cargo.toml tools/gen_cli_docs/src/main.rs tools/gen_cli_docs/src/skill.rs; do
         if [[ "$source" -nt skills/plexi-cli/SKILL.md ]]; then
             echo "CLI skill source changed — regenerating skill..."
-            bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --skill
+            bash scripts/gen-doc-safe.sh skills/plexi-cli/SKILL.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --skill
             break
         fi
     done
     if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
         echo "Config source changed — regenerating config docs..."
-        bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_config_docs
+        bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs
     fi
     if [[ -n "$(find src/protocol -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
         echo "src/protocol/ changed — regenerating schema..."
-        bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh cargo run -p gen_schema
+        bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi
 
@@ -298,9 +335,19 @@ sdk-smoke:
 # this does not boot it. Tester flows then run `plexi-pr-<N> host start --background`.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Resolves the PR head via gh and builds THAT tree — run from anywhere inside
-# the repo: just pr-install 123
+# the repo: just pr-install 123 [scoped|full]. Scoped is the batch default; full
+# is reserved for the configured final combined candidate. Broad automatic
+# selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
 # Removes the previous managed PR installation and profile first.
-pr-install number:
+pr-install number test_scope="scoped":
+    python3 scripts/run_logged.py --tee pr-install-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
+
+# Build the final PR-channel candidate once, without installing it.
+pr-candidate number test_scope="scoped":
+    python3 scripts/run_logged.py --tee pr-candidate-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
+
+[private]
+_pr-prepare number test_scope action:
     #!/usr/bin/env bash
     set -euo pipefail
     # pr-install must never build whatever tree the caller happens to be
@@ -310,13 +357,15 @@ pr-install number:
     _repo_root="$(git rev-parse --path-format=absolute --git-common-dir)"
     _repo_root="${_repo_root%/.git}"
     _driver_root="$(git rev-parse --show-toplevel)"
-    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid 2>/dev/null || echo "")"
+    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null || echo "")"
     if [[ -z "$_head_json" ]]; then
       echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
       exit 1
     fi
     _head_ref="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefName"])' <<<"$_head_json")"
     _head_oid="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])' <<<"$_head_json")"
+    _base_oid="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefOid"])' <<<"$_head_json")"
+    _base_ref="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefName"])' <<<"$_head_json")"
     if [[ -z "$_head_oid" ]]; then
       echo "Error: PR #{{number}} has no resolvable head commit."
       exit 1
@@ -344,27 +393,39 @@ pr-install number:
     if [[ -n "$_branch_wt" && -z "$_wt" && "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" != "$_head_oid" ]]; then
       echo "note: worktree for $_head_ref is not at the PR head — building the PR head in the canonical pr-install tree instead."
     fi
-    # Canonical path: a dedicated detached worktree pinned to the PR's exact
-    # head. Shared across PRs so its target dir stays warm-ish.
+    # A separate detached source tree per PR; dependency warmth lives in the
+    # exclusive persistent slot, never in a shared mutable source checkout.
     if [[ -z "$_wt" ]]; then
-      _wt="$_repo_root/worktrees/pr-install"
+      _wt="$_repo_root/worktrees/pr-install-{{number}}"
       git -C "$_repo_root" worktree prune 2>/dev/null || true
       if [[ -d "$_wt" ]]; then
-        git -C "$_wt" checkout -qf --detach "$_head_oid"
+        if [[ -n "$(git -C "$_wt" status --porcelain)" ]]; then
+          echo "Error: detached PR source tree is dirty; preserving it: $_wt" >&2
+          exit 1
+        fi
+        git -C "$_wt" checkout -q --detach "$_head_oid"
       else
         git -C "$_repo_root" worktree add -q --detach "$_wt" "$_head_oid"
       fi
     fi
     # Backstop (PR #2463 guard, kept as defense in depth): the selected tree
     # must contain the PR's head commit.
-    if ! git -C "$_wt" merge-base --is-ancestor "$_head_oid" HEAD 2>/dev/null; then
+    if [[ "$(git -C "$_wt" rev-parse HEAD)" != "$_head_oid" ]]; then
       echo "Error: selected tree $_wt does not contain PR #{{number}}'s head commit ${_head_oid:0:8}."
       exit 1
     fi
     echo "pr-install: PR #{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
     # Pre-install tests and the build both run inside the resolved worktree,
     # never the caller's cwd.
-    ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
+    export PLEXI_BUILD_TEST_CHANNEL="pr-{{number}}"
+    export PLEXI_BUILD_EVIDENCE="$_driver_root/scripts/build-evidence.py"
+    python3 "$_driver_root/scripts/build-evidence.py" pretests "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
+    if [[ "{{action}}" == candidate ]]; then
+      ( cd "$_wt" && just build clippy )
+      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi"
+      echo "pr-candidate: release artifact ready; remaining qualification and independent validation still required"
+      exit 0
+    fi
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
     # Binary reuse (stint 0637): skip the release build only when the selected
     # tree already holds a binary whose embedded sha equals the PR head, stamped
@@ -374,26 +435,27 @@ pr-install number:
     _reuse_note="built release binary"
     _reuse_env=""
     if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      if _reuse_verdict="$(bash "$_driver_root/scripts/pr-install-reuse.sh" check "$_wt" "$_head_oid" "pr-{{number}}")"; then
+      if _reuse_verdict="$(python3 "$_driver_root/scripts/build-evidence.py" check "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi")"; then
         _reuse_env="1"
         _reuse_note="reused existing artifact @ ${_head_oid:0:8}"
       else
         echo "pr-install: not reusing a prior binary ($_reuse_verdict)"
       fi
     fi
-    if rg -q 'cargo-with-lease\.sh' "$_wt/scripts/install.sh"; then
+    if rg -q 'cargo-with-lease\.sh|distribution-tool\.sh' "$_wt/scripts/install.sh"; then
       ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" bash scripts/install.sh --from-source "pr-{{number}}" )
     else
       # Older PR heads predate the leaf wrapper. Treat their opaque install
       # script as the compatibility leaf; newer heads acquire inside their
-      # own bundle invocation and must never acquire twice.
-      ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
+      # build/helper invocation and must never lease the whole packaging step.
+      # Preserve verified reuse even for older supported installer leaves.
+      ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
     bash "$_driver_root/scripts/pr-install-seed-profile.sh" seed "{{number}}"
     # Record that this binary was built for pr-<N> at this head, so a later
     # install of the same head can prove it may reuse it.
     if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      bash "$_driver_root/scripts/pr-install-reuse.sh" stamp "$_wt" "$_head_oid" "pr-{{number}}" \
+      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi" \
         || echo "pr-install: warning: could not stamp the release binary for reuse"
     fi
     # SDK guard (stint 0657): the binary's head sha says nothing about the
@@ -406,7 +468,7 @@ pr-install number:
     # Provenance trace: which head this channel is actually running. Written
     # after install.sh; path matches
     # install.sh's profile_dir for channel pr-{{number}}.
-    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt build=\"$_reuse_note\" $_sdk_prov"
+    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt test_scope={{test_scope}} test_base=$_base_oid build=\"$_reuse_note\" $_sdk_prov"
     mkdir -p "$HOME/.plexi-pr-{{number}}"
     echo "$_prov" | tee -a "$HOME/.plexi-pr-{{number}}/install.log"
 
@@ -461,19 +523,6 @@ trim-targets:
 channel-list:
     bash scripts/channel-list.sh
 
-# Remove ALL Plexi channels plus shell integration and completions.
-# Same as: just uninstall all
-channel-uninstall channel="all":
-    bash scripts/uninstall.sh {{channel}}
-
-# Wipe a channel's installed apps directory then re-sync from examples/.
-# Useful when an app is renamed or removed — rsync won't delete stale dirs.
-#   just clear-apps alpha
-#   just clear-apps beta
-#   just clear-apps main
-clear-apps channel="":
-    bash scripts/clear-apps.sh {{channel}}
-
 # Preview what the next changelog would look like without committing anything.
 changelog:
     git cliff --unreleased --bump --tag-pattern 'v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -519,38 +568,52 @@ uninstall channel="all":
 
 # Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, close issue.
 # Intended for the merge-pr skill — run from repo root.
-#   just merge-pr 2155
-#   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
+#   just merge-pr 2155 --reviewed-head <SHA>
+#   just merge-pr 2202 --reviewed-head <SHA> no-issue   — standalone follow-up PR, skips issue/stint close
 merge-pr PR *FLAGS:
     bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
 
-# Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
-test-infra-scripts:
+# Real Cargo fixtures for managed optional channel inputs (offline builds).
+test-build-inputs:
+    uv run --no-project python scripts/test_cargo_channel_inputs.py
+
+# Infrastructure checks, including offline Cargo build-input fixtures.
+test-infra-scripts: test-build-inputs
+    python3 scripts/test_release_evidence.py
+    uv run --no-project python scripts/test_docs_gate_scope.py
+    uv run --no-project python scripts/test_babysitter_policy.py
+    uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_filter_check.py
+    uv run --no-project python scripts/test_run_logged.py
+    uv run --no-project python scripts/test_build_lifecycle.py
+    uv run --no-project python scripts/test_distribution_cache.py
+    uv run --no-project python scripts/test_publish_pr_image.py
+    uv run --no-project python scripts/test_probe_one_note_authority.py
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
-    bash scripts/pr-install-reuse.sh self-test
+    python3 scripts/test_landing_safety.py
     bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
 
 # Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
-#   just merge-squash 2155               — squash-merge only
+#   just merge-squash 2155 <SHA>         — squash-merge reviewed head only
 #   just merge-sync                      — reset local alpha to origin/alpha
-#   just merge-cleanup 2155 feature/2155-foo
+#   just merge-cleanup 2155 feature/2155-foo <SHA>
 #   just merge-close 2144 2155
 #   just merge-close-stints 2186 0015 0016
 merge-rebase BRANCH:
     bash scripts/merge-pr.sh rebase {{BRANCH}}
 
-merge-squash PR:
-    bash scripts/merge-pr.sh squash {{PR}}
+merge-squash PR SHA:
+    bash scripts/merge-pr.sh squash {{PR}} {{SHA}}
 
 merge-sync:
     bash scripts/merge-pr.sh sync
 
-merge-cleanup PR BRANCH:
-    bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}}
+merge-cleanup PR BRANCH SHA:
+    bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}} {{SHA}}
 
 merge-close ISSUE PR:
     bash scripts/merge-pr.sh close {{ISSUE}} {{PR}}
@@ -580,27 +643,24 @@ bs-validate-setup pr:
 
 # Merge + retire the lane: `just merge-pr`, uninstall plexi-pr-<N>, confirm
 # the worktree was reaped (hard error if it survived).
-#   just bs-merge 2542
-#   just bs-merge 2542 no-issue
+#   just bs-merge 2542 --reviewed-head <SHA>
+#   just bs-merge 2542 --reviewed-head <SHA> no-issue
 bs-merge pr *flags:
     bash scripts/bs-merge.sh {{pr}} {{flags}}
 
-# Dispatch Claude agents at one or more issues. Labels each "in progress" first
-# to prevent double-claiming when multiple dispatches run close together.
-# TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
-# is validated — if this comment still exists, that replacement never happened.
-ship +issues:
-    for issue in {{issues}}; do \
-        gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
-        plexi pane new "c '/ship-issue $issue'" --window; \
-    done
+# Aggregate batch integration: `integrate` then `channel-clean`, both run from
+# the aggregate worktree so the caller's cwd is irrelevant. The head's single
+# action once a batch's gate is green.
+#   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
+bs-integrate pr record manifest:
+    bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
 
 # Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to
 # the out dir. shots="0" skips screenshot steps (state-only, faster).
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.
@@ -644,8 +704,8 @@ e2e-test:
     uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring
 
 # Verify every host Action has a CLI mapping or explicit UI-only waiver.
-check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity" "gen-parity" "UI-to-CLI parity is up to date.")
+check-parity: (check-generated "docs/cli/PARITY.md" "bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --parity" "gen-parity" "UI-to-CLI parity is up to date.")
 
 # Regenerate the UI-to-CLI parity table.
 gen-parity:
-    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh cargo run -p gen_cli_docs -- --parity
+    bash scripts/gen-doc-safe.sh docs/cli/PARITY.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_cli_docs -- --parity

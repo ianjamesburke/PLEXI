@@ -3,7 +3,7 @@
 use super::PlexiApp;
 
 /// Stable terminal values returned to notification producers. These are values
-/// so CLI response files and app `NotifyAction` events share one contract.
+/// so CLI response files and plugin `NotifyAction` events share one contract.
 pub(crate) const NOTIFY_OUTCOME_CANCELLED: &str = "cancelled";
 pub(crate) const NOTIFY_OUTCOME_DISABLED: &str = "disabled";
 pub(crate) const NOTIFY_OUTCOME_INVALID: &str = "invalid_choice";
@@ -16,6 +16,13 @@ pub(crate) const NOTIFY_OUTCOME_QUEUE_FULL: &str = "queue_full";
 /// receives an error result. Persisted history is subject to the same bound on
 /// the next live arrival, rather than growing without limit for a session.
 pub(crate) const MAX_PENDING_NOTIFICATIONS: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyDelivery {
+    Delivered,
+    Unavailable,
+    OutcomeUnknown,
+}
 
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
@@ -50,6 +57,7 @@ pub(crate) struct PendingNotification {
     /// Optional pipe-referenced image attachment (#74). The host drains the
     /// matching binary ring on first render and caches the texture under
     /// `PlexiApp::notification_images`.
+    #[allow(dead_code)]
     pub image_pipe_id: Option<String>,
     /// Path to a file the CLI polls for the chosen key. Set when the
     /// notification was queued by `plexi notify --choice ...`. The host writes
@@ -60,9 +68,11 @@ pub(crate) struct PendingNotification {
     pub on_dismiss: Option<String>,
     /// When the notification was pushed to the queue. Used for timeout tracking.
     pub enqueued_at: std::time::Instant,
-    /// True when the originating app pane has exited. The notification stays
+    /// True when the originating view pane has exited. The notification stays
     /// in the queue so the user can read it, but action buttons are hidden.
     pub tombstoned: bool,
+    /// Persisted before attempting an action; prevents replay after a crash.
+    pub delivery_unknown: bool,
     /// When `Some(t)`, the notification is invisible and exempt from timeout
     /// until `t` has elapsed (snooze). `None` means deliver immediately.
     pub deliver_after: Option<std::time::Instant>,
@@ -88,10 +98,17 @@ impl PendingNotification {
     }
 
     pub(crate) fn agent_source_pane(&self) -> u64 {
-        if self.sender_pane_id != 0 { self.sender_pane_id } else { self.dismiss_owner_pane_id }
+        if self.sender_pane_id != 0 {
+            self.sender_pane_id
+        } else {
+            self.dismiss_owner_pane_id
+        }
     }
     pub(crate) fn agent_event(&self) -> crate::agent::fleet::AgentEvent {
-        crate::agent::fleet::AgentEvent { title: self.title.clone(), body: self.body.clone() }
+        crate::agent::fleet::AgentEvent {
+            title: self.title.clone(),
+            body: self.body.clone(),
+        }
     }
 }
 
@@ -120,6 +137,7 @@ impl Default for PendingNotification {
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -164,6 +182,8 @@ struct PersistedNotification {
     /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
     enqueued_at_secs: u64,
     tombstoned: bool,
+    #[serde(default)]
+    delivery_unknown: bool,
     // deliver_after (snooze) is session-only — not persisted.
     // image_pipe_id and response_file are session handles — not persisted.
 }
@@ -174,6 +194,15 @@ pub(crate) fn save_pending_notifications_to(
     notifications: &[PendingNotification],
     path: &std::path::Path,
 ) {
+    if let Err(error) = try_save_pending_notifications_to(notifications, path) {
+        log::warn!("notify:persist: failed to save {:?}: {error}", path);
+    }
+}
+
+pub(crate) fn try_save_pending_notifications_to(
+    notifications: &[PendingNotification],
+    path: &std::path::Path,
+) -> Result<(), String> {
     let now_sys = crate::platform::clock::now_secs();
     let persisted: Vec<PersistedNotification> = notifications
         .iter()
@@ -200,19 +229,17 @@ pub(crate) fn save_pending_notifications_to(
                 on_dismiss: n.on_dismiss.clone(),
                 enqueued_at_secs,
                 tombstoned: n.tombstoned,
+                delivery_unknown: n.delivery_unknown,
             }
         })
         .collect();
-    match serde_json::to_string(&persisted) {
-        Ok(json) => match crate::platform::fs::atomic_write(path, json.as_bytes()) {
-            Ok(()) => log::info!(
-                "notify:persist: saved {} notification(s)",
-                notifications.len()
-            ),
-            Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-        },
-        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
-    }
+    let json = serde_json::to_string(&persisted).map_err(|e| e.to_string())?;
+    crate::platform::fs::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string())?;
+    log::info!(
+        "notify:persist: saved {} notification(s)",
+        notifications.len()
+    );
+    Ok(())
 }
 
 /// Load persisted notifications from `path`. Drops entries older than 7 days.
@@ -265,7 +292,8 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 timeout_secs: p.timeout_secs,
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
-                tombstoned: true,      // source pane is gone
+                tombstoned: true, // source pane is gone
+                delivery_unknown: p.delivery_unknown,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
             })
@@ -284,8 +312,8 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
 pub(crate) enum NotifySource {
     /// `plexi notify` over the command socket.
     Cli,
-    /// An app pane's `ShowNotification` command.
-    App,
+    /// An view pane's `ShowNotification` command.
+    View,
     /// A WASM guest's `Notify` host effect.
     Wasm,
     /// Raised by the host itself (config errors and the like).
@@ -296,7 +324,7 @@ impl NotifySource {
     fn as_str(self) -> &'static str {
         match self {
             NotifySource::Cli => "cli",
-            NotifySource::App => "app",
+            NotifySource::View => "view",
             NotifySource::Wasm => "wasm",
             NotifySource::HostInternal => "host",
         }
@@ -347,7 +375,7 @@ pub(crate) fn notification_counts_toward_context(
 impl PlexiApp {
     /// Execute a `DeliverNotifyAction`: record the event, run the host-side
     /// action, unblock any waiting CLI through its response file, then hand
-    /// the action to the sender app. Both drain paths — `dispatch.rs`'s
+    /// the action to the sender plugin. Both drain paths — `dispatch.rs`'s
     /// command loop and `dispatch_notify_action_cmds` — route through here.
     pub(crate) fn deliver_notify_action(
         &mut self,
@@ -357,7 +385,7 @@ impl PlexiApp {
         value: Option<String>,
         response_file: Option<String>,
         host_action: Option<String>,
-    ) {
+    ) -> NotifyDelivery {
         log::info!(
             "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
         );
@@ -374,21 +402,35 @@ impl PlexiApp {
         );
         // Execute host-side action synchronously before writing the response
         // file so the navigation is complete before the shell unblocks.
+        let mut delivered = false;
+        let mut failed = false;
+        let mut uncertain = false;
         if let Some(ref action) = host_action {
             if let Some(id_str) = action.strip_prefix("pane_focus:") {
                 if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                    self.pane_navigate(pane_id_target);
+                    if self.pane_navigate(pane_id_target) {
+                        delivered = true;
+                    } else {
+                        failed = true;
+                    }
                 } else {
                     log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                    failed = true;
                 }
             } else {
                 log::warn!("notify:action: unknown host_action {:?}", action);
+                failed = true;
             }
         }
         if let Some(rf) = &response_file {
             let content = value.as_deref().unwrap_or("");
             if crate::rpc::write_response(rf, content.as_bytes()) {
                 log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+                delivered = true;
+            } else {
+                // A failed stream write may have delivered a partial response.
+                failed = true;
+                uncertain = true;
             }
         }
         // Search all windows for the sender pane — it may not be in the
@@ -399,23 +441,47 @@ impl PlexiApp {
             .position(|w| w.panes.contains_key(&pane_id));
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
-                if let Some(app) = pane.as_app_mut() {
-                    app.runtime
-                        .queue_outbound_event(crate::protocol::PlexiEvent::NotifyAction {
+                if let Some(app) = pane.as_view_mut() {
+                    match app.runtime.try_queue_notify_action(
+                        crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        });
+                        },
+                    ) {
+                        Some(Ok(())) => delivered = true,
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Encode(error))) => {
+                            log::warn!("notify:action: plugin event encoding failed: {error}");
+                            failed = true;
+                        }
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Send(error))) => {
+                            log::warn!("notify:action: plugin delivery failed: {error}");
+                            failed = true;
+                            uncertain = true;
+                        }
+                        None => log::info!(
+                            "notify:action: plugin runtime does not support notification responses"
+                        ),
+                    }
                 }
             }
         }
+        if uncertain || (failed && delivered) {
+            NotifyDelivery::OutcomeUnknown
+        } else if failed {
+            NotifyDelivery::Unavailable
+        } else if delivered {
+            NotifyDelivery::Delivered
+        } else {
+            NotifyDelivery::Unavailable
+        }
     }
 
-    /// Resolve app-notification provenance without consulting focus. A live
+    /// Resolve plugin-notification provenance without consulting focus. A live
     /// sender pane supplies its window; a parked or gone sender has only the
     /// context stamped on the command, so window visibility narrows to that
     /// context rather than borrowing the currently active window.
-    pub(crate) fn resolve_app_notification_provenance(
+    pub(crate) fn resolve_plugin_notification_provenance(
         &self,
         sender_pane_id: u64,
         scope: crate::protocol::NotifyScope,
@@ -428,7 +494,7 @@ impl PlexiApp {
         }
         if scope == crate::protocol::NotifyScope::Window {
             log::info!(
-                "notify: app sender pane_id={} has no live window — narrowing window scope to context",
+                "notify: plugin sender pane_id={} has no live window — narrowing window scope to context",
                 sender_pane_id
             );
             return (crate::protocol::NotifyScope::Context, 0);
@@ -470,10 +536,8 @@ impl PlexiApp {
         if self.current_notify_id.as_deref() == Some(notify_id) {
             self.current_notify_id = None;
         }
-        if self.pending_notifications.is_empty() {
-            self.show_notification_modal = false;
-        }
         self.save_notifications();
+        self.sync_attention_queue();
         log::info!(
             "notify: dismissed id={} resolved_pane_id={}",
             notify_id,
@@ -501,12 +565,21 @@ impl PlexiApp {
         mut notification: PendingNotification,
     ) -> bool {
         let source_pane = notification.agent_source_pane();
-        let source_is_agent = self.windows.iter().find_map(|w| w.panes.get(&source_pane))
+        let source_is_agent = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&source_pane))
             .is_some_and(|p| p.as_terminal().is_some_and(|t| t.is_agent_pane()));
         if source_is_agent && self.fleet_focused_pane() == Some(source_pane) {
             log::info!("agents: suppress focused notification pane_id={source_pane}");
-            self.deliver_notify_action(notification.sender_pane_id, notification.notify_id,
-                "cancelled".into(), Some(NOTIFY_OUTCOME_CANCELLED.into()), notification.response_file, None);
+            self.deliver_notify_action(
+                notification.sender_pane_id,
+                notification.notify_id,
+                "cancelled".into(),
+                Some(NOTIFY_OUTCOME_CANCELLED.into()),
+                notification.response_file,
+                None,
+            );
             return false;
         }
         if !self.notifications_enabled {
@@ -568,17 +641,15 @@ impl PlexiApp {
 
         let is_visible = self.notification_is_visible(&notification);
         let may_interrupt = self.notification_may_interrupt(&notification);
-        let cue_played = !notification.notify_id.starts_with("agent-attention-") && self.play_notification_cue(&notification);
+        let cue_played = !notification.notify_id.starts_with("agent-attention-")
+            && self.play_notification_cue(&notification);
         self.pending_notifications.push(notification);
         self.save_notifications();
 
-        if may_interrupt {
-            self.show_notification_modal = true;
-            // Only pin the arrival as current when nothing is already pinned.
-            if self.current_notify_id.is_none() {
-                self.current_notify_id = Some(notify_id.clone());
-            }
+        if may_interrupt && self.current_notify_id.is_none() {
+            self.current_notify_id = Some(notify_id.clone());
         }
+        self.sync_attention_queue();
 
         log::info!(
             "notify: queued source={} id={} title={:?} visible={} interrupt={} cue={}",
@@ -656,7 +727,7 @@ impl PlexiApp {
         let source = request.source.clone();
         match crate::media::audio::start_playback(request) {
             Ok(session) => {
-                // Held on the app: dropping the session stops playback.
+                // Held on the plugin: dropping the session stops playback.
                 self.notification_cue_playback = Some(session);
                 true
             }
@@ -674,6 +745,14 @@ impl PlexiApp {
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
         );
+    }
+
+    pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
+        self.prune_notification_images();
+        try_save_pending_notifications_to(
+            &self.pending_notifications,
+            &crate::config::config_dir().join("notifications.json"),
+        )
     }
 
     /// Drop decoded image state as soon as its notification leaves the live
@@ -783,6 +862,7 @@ impl PlexiApp {
     /// Revalidate the pinned queue id whenever the modal is about to render.
     /// A context/window switch can leave a still-existing id outside the
     /// current visibility scope; existence alone is not a valid selection.
+    #[allow(dead_code)]
     pub(crate) fn revalidate_notification_selection(&mut self) {
         let current_is_visible = self.current_notify_id.as_ref().is_some_and(|id| {
             self.pending_notifications
@@ -798,6 +878,7 @@ impl PlexiApp {
     /// (1-based position-in-sort-order, total visible len) for the current
     /// notify id, or `None` when modal is empty / current id is missing from
     /// visible queue. Renderer uses this for the "X of N" indicator.
+    #[allow(dead_code)]
     pub(crate) fn position_of_current(&self) -> Option<(usize, usize)> {
         let current = self.current_notify_id.as_ref()?;
         let sorted = self.sorted_notification_ids();
@@ -808,10 +889,8 @@ impl PlexiApp {
     /// Move `current_notify_id` forward (`direction = 1`) or backward
     /// (`direction = -1`) through the visible queue. No wrap
     /// at the ends. Called by Cmd+] / Cmd+[.
+    #[allow(dead_code)]
     pub(crate) fn cycle_notification(&mut self, direction: i32) {
-        if !self.show_notification_modal {
-            return;
-        }
         let sorted = self.sorted_notification_ids();
         if sorted.is_empty() {
             return;
@@ -869,11 +948,11 @@ impl PlexiApp {
             .iter()
             .filter(|n| woken_ids.contains(&n.notify_id))
             .any(|n| self.notification_may_interrupt(n));
-        if woken_notification_may_interrupt {
-            self.show_notification_modal = true;
-            if self.current_notify_id.is_none() {
-                self.current_notify_id = self.select_next_notification();
-            }
+        if woken_notification_may_interrupt && self.current_notify_id.is_none() {
+            self.current_notify_id = self.select_next_notification();
+        }
+        if !woken_ids.is_empty() {
+            self.sync_attention_queue();
         }
         for id in &expired_ids {
             let Some(pos) = self
@@ -895,7 +974,7 @@ impl PlexiApp {
                 dismiss_value
             );
             if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
-                let cmds = vec![crate::app::app_trait::AppCommand::DeliverNotifyAction {
+                let cmds = vec![crate::app::view_trait::ViewCommand::DeliverNotifyAction {
                     pane_id: n.sender_pane_id,
                     notify_id: n.notify_id.clone(),
                     action_label: "timeout".to_string(),
@@ -913,6 +992,7 @@ impl PlexiApp {
         }
         if !expired_ids.is_empty() {
             self.save_notifications();
+            self.sync_attention_queue();
         }
     }
 
@@ -947,12 +1027,14 @@ impl PlexiApp {
             );
         }
         self.save_notifications();
+        self.sync_attention_queue();
     }
 
     /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
     /// Used for per-context sidebar badges on inactive contexts. Global notifications
     /// are excluded — they already appear everywhere via notification_is_visible.
     /// Returns 0 for parked contexts — they produce no visual noise.
+    #[allow(dead_code)]
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
         let ctx = self.router.get(ctx_idx);
         if ctx.parked {
@@ -999,6 +1081,7 @@ impl PlexiApp {
 
     /// Count of visible notifications for the active context (context-scoped
     /// from active + all globals). Used for the toolbar badge.
+    #[cfg(test)]
     pub(crate) fn visible_notification_count(&self) -> usize {
         self.pending_notifications
             .iter()
@@ -1053,12 +1136,8 @@ impl PlexiApp {
             }
         }
 
-        if self.show_notification_modal && self.sorted_notification_ids().is_empty() {
-            self.show_notification_modal = false;
-            log::info!("notify:auto_dismiss: modal closed — no visible notifications remain");
-        }
-
         self.save_notifications();
+        self.sync_attention_queue();
     }
 
     /// True when `pane_id` is a pane a person would actually be looking at
@@ -1132,7 +1211,6 @@ impl PlexiApp {
                 continue;
             }
 
-            self.show_notification_modal = true;
             if self.current_notify_id.is_none() {
                 self.current_notify_id = Some(notify_id.clone());
             }

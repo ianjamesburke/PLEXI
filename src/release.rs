@@ -18,12 +18,12 @@
 //! Experiment gate rule: a gate guards only the experiment's own surface,
 //! never a shared servicing path that also does core work. An off experiment
 //! preserves the established contract of every core command; it must not turn
-//! that command into a different fallback behavior. Core app I/O must run with
+//! that command into a different fallback behavior. Core plugin I/O must run with
 //! every experiment off, including during hidden-window logic passes.
 //!
 //! The enabled set is read from the *global* config only. A workspace config
 //! must not be able to turn an experiment on, or a cloned repository could
-//! enable the relay by shipping a `.plexi/config.toml`.
+//! enable an experiment by shipping a `.plexi/config.toml`.
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
@@ -165,13 +165,12 @@ mod tests {
         let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         std::fs::write(
             profile.path().join("config.toml"),
-            "[experiments]\nassistant = true\nrelay = false\n",
+            "[experiments]\nassistant = true\n",
         )
         .unwrap();
         for channel in CHANNELS {
             let _channel = channel.map(crate::config::set_test_channel);
             assert!(feature_enabled(ReleaseFeature::Assistant), "{channel:?}");
-            assert!(!feature_enabled(ReleaseFeature::Relay), "{channel:?}");
             assert!(!feature_enabled(ReleaseFeature::Ledger), "{channel:?}");
         }
     }
@@ -203,7 +202,7 @@ mod tests {
     #[test]
     fn unavailable_text_names_the_enable_command() {
         assert_eq!(
-            feature_unavailable_text(ReleaseFeature::CommandView),
+            feature_unavailable_text(ReleaseFeature::AgentsDashboard),
             "command_view is an experiment. Turn it on with: plexi experiments enable command_view"
         );
     }
@@ -215,8 +214,8 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let ws_cfg = crate::config::workspace_config_path(workspace.path());
         std::fs::create_dir_all(ws_cfg.parent().unwrap()).unwrap();
-        std::fs::write(&ws_cfg, "[experiments]\nrelay = true\n").unwrap();
+        std::fs::write(&ws_cfg, "[experiments]\nledger = true\n").unwrap();
         let _cfg = crate::config::PlexiConfig::load_with_workspace(Some(workspace.path()));
-        assert!(!feature_enabled(ReleaseFeature::Relay));
+        assert!(!feature_enabled(ReleaseFeature::Ledger));
     }
 }

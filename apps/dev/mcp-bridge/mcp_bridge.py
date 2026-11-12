@@ -40,7 +40,7 @@ from plexi_sdk.effects import (
     ToolResult,
 )
 from plexi_sdk.events import KeyEvent, McpClosed, McpConnected, McpMessage, TimerFired, ToolCall
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Section, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, Section, Text
 
 # MCP revision this bridge speaks. Bumping it is a deliberate act: a server may
 # negotiate down, but the client must not claim a revision it has not been
@@ -604,13 +604,13 @@ def view():
     fatal = state.get("fatal", None)
     if fatal:
         return Column(
-            [AppBar("MCP Bridge"), Section("Not configured"), Text(fatal)],
+            [SurfaceHeader("MCP Bridge"), Section("Not configured"), Text(fatal)],
             padding=12.0,
             gap=8.0,
         )
 
     servers = _servers()
-    children: list = [AppBar("MCP Bridge", subtitle=_summary(servers))]
+    children: list = [SurfaceHeader("MCP Bridge", subtitle=_summary(servers))]
     for server_id, server in sorted(servers.items()):
         children.append(Section(server_id))
         children.append(Text(f"status: {server.get('status', 'unknown')}"))

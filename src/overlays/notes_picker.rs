@@ -1,14 +1,20 @@
 //! Notes picker overlay (Cmd+O).
 //!
-//! One navigable list, grouped by notes tier: the active context's own tier
-//! first, then each tier nested below its root, then the global tier. Keys:
-//!   j/k or arrows — navigate          ↵ — open in focused pane
-//!   s — open in new pane
-//!   / — fuzzy-find (title, file name, body)
-//!   r — rename (frontmatter title)    x — delete
-//!   Esc — close (or exit search/rename mode first)
+//! Two halves: on the left a search field over one navigable list grouped by
+//! notes tier (the active context's own tier first, then each tier nested below
+//! its root, then the global tier); on the right a wrapped, scrollable preview
+//! of the selected note's full content. Keys:
+//!   arrows / ⌘J ⌘K — navigate         ↵ — open in focused pane
+//!   ⌘S — open in new pane              type — fuzzy-find (title, file name, body)
+//!   ⌘C — copy the note body            ⌘X — copy and move to Trash
+//!   ⌘⌫ / ⌘Del — move to Trash          ⌘Z — undo the last deletion
+//!   Esc — clear the query, else close
+//!
+//! Deleting a note that is open in a text-editor pane closes that pane first so
+//! the editor cannot write the file back, then moves the file to Trash; the
+//! picker stays open.
 
-use crate::app::text_editor_app::note_path_identity;
+use crate::app::text_editor_view::note_path_identity;
 use crate::app::{FocusKind, PlexiApp};
 use crate::ui::style;
 use crate::ui::{
@@ -18,17 +24,123 @@ use crate::ui::{
     text_field::TextField,
 };
 
+/// Recoverable destination returned by the platform trash operation.
+pub(crate) trait NotesTrash {
+    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String>;
+}
+
+pub(crate) struct DeletedNote {
+    entry: crate::notes::NotePickerEntry,
+    index: usize,
+    trashed_path: std::path::PathBuf,
+    context_root: std::path::PathBuf,
+    at: std::time::Instant,
+    closed_editor: bool,
+}
+
+#[cfg(not(test))]
+struct PlatformTrash;
+
+// NSFileManager returns the actual location on the source volume, unlike a
+// guessed ~/.Trash path: https://developer.apple.com/documentation/foundation/filemanager/trashitem(at:resultingitemurl:)
+#[cfg(all(not(test), target_os = "macos"))]
+impl NotesTrash for PlatformTrash {
+    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        use objc2_foundation::{NSFileManager, NSString, NSURL};
+        let path = path.to_str().ok_or("Note path is not valid UTF-8")?;
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        let mut result = None;
+        NSFileManager::defaultManager()
+            .trashItemAtURL_resultingItemURL_error(&url, Some(&mut result))
+            .map_err(|e| e.to_string())?;
+        let result = result.ok_or("Trash did not return the moved item's location")?;
+        let path = result.path().ok_or("Trash returned a non-file URL")?;
+        Ok(std::path::PathBuf::from(path.to_string()))
+    }
+}
+
+// Each move has a private directory; the file has no .md extension, so the
+// notes index cannot rediscover it. The directory stays in the note's tier.
+#[cfg(any(test, not(target_os = "macos")))]
+fn move_to_recovery(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let root_type = std::fs::symlink_metadata(root)
+        .map_err(|e| e.to_string())?
+        .file_type();
+    if !root_type.is_dir() {
+        return Err("Recovery location must be a real directory".into());
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("note-")
+        .tempdir_in(root)
+        .map_err(|e| e.to_string())?;
+    let mut name = path
+        .file_name()
+        .ok_or("Note has no filename")?
+        .to_os_string();
+    name.push(".trashed");
+    let dest = dir.path().join(name);
+    std::fs::rename(path, &dest).map_err(|e| e.to_string())?;
+    let _ = dir.keep();
+    Ok(dest)
+}
+
+#[cfg(all(not(test), not(target_os = "macos")))]
+impl NotesTrash for PlatformTrash {
+    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        let parent = path.parent().ok_or("Note has no parent directory")?;
+        move_to_recovery(path, &parent.join(".plexi-notes-trash"))
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct FakeNotesTrash {
+    dir: tempfile::TempDir,
+    pub(crate) fail: bool,
+}
+#[cfg(test)]
+impl FakeNotesTrash {
+    pub(crate) fn new() -> Self {
+        Self {
+            dir: tempfile::tempdir().unwrap(),
+            fail: false,
+        }
+    }
+}
+#[cfg(test)]
+impl NotesTrash for FakeNotesTrash {
+    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        if self.fail {
+            return Err("injected trash failure".into());
+        }
+        move_to_recovery(path, self.dir.path())
+    }
+}
+pub(crate) fn default_notes_trash() -> Box<dyn NotesTrash> {
+    #[cfg(test)]
+    {
+        Box::new(FakeNotesTrash::new())
+    }
+    #[cfg(not(test))]
+    {
+        Box::new(PlatformTrash)
+    }
+}
+
 impl PlexiApp {
     fn text_editor_path_for_pane(
         window: &crate::host::context::Window,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<std::path::PathBuf> {
         let pane = window.panes.get(&pane_id)?;
-        let app_pane = pane.as_app()?;
-        if app_pane.runtime.type_id() != "text-editor" {
+        let view_pane = pane.as_view()?;
+        if view_pane.runtime.type_id() != "text-editor" {
             return None;
         }
-        app_pane.runtime.serialize_state().and_then(|state| {
+        view_pane.runtime.serialize_state().and_then(|state| {
             state
                 .get("path")
                 .and_then(|v| v.as_str())
@@ -62,8 +174,10 @@ impl PlexiApp {
         &self,
         path: &std::path::Path,
     ) -> Option<crate::spatial::tiling::PaneId> {
-        (0..self.windows.len())
-            .find_map(|idx| self.find_open_text_editor_tile(idx, path).map(|(_, pane)| pane))
+        (0..self.windows.len()).find_map(|idx| {
+            self.find_open_text_editor_tile(idx, path)
+                .map(|(_, pane)| pane)
+        })
     }
 
     /// Indices into `notes_picker_entries` matching the current query, ranked:
@@ -82,8 +196,8 @@ impl PlexiApp {
             .enumerate()
             .filter_map(|(i, e)| {
                 let title = e.title.to_lowercase();
-                let candidate = crate::search::CandidateInput::new(&e.title)
-                    .with_secondary(&e.search_text);
+                let candidate =
+                    crate::search::CandidateInput::new(&e.title).with_secondary(&e.search_text);
                 let score = crate::search::score_candidate(&query, &candidate, now)
                     .map(|m| m.total)
                     .unwrap_or(0);
@@ -109,60 +223,321 @@ impl PlexiApp {
             .copied()
     }
 
-    fn notes_picker_delete_entry(&mut self, entry_idx: usize) {
-        let Some(entry) = self.notes_picker_entries.get(entry_idx).cloned() else {
-            return;
-        };
-        let active = self.active_window;
-        if let Some((existing_tile_id, existing_pane_id)) =
-            self.find_open_text_editor_tile(active, &entry.path)
-        {
-            log::info!(
-                "notes_picker: refusing to delete open note in pane {existing_pane_id} — close it first"
-            );
-            self.set_window_focused_pane(active, existing_tile_id);
-            self.pop_focus_layer(&FocusKind::NotesPicker);
-            return;
+    /// Content of the selected note for the preview half, read once per path
+    /// and cached until the selection moves to another note or the note goes.
+    pub(crate) fn notes_picker_preview_text(&mut self) -> Option<std::sync::Arc<str>> {
+        let path = self
+            .notes_picker_selected_entry()
+            .map(|idx| self.notes_picker_entries[idx].path.clone())?;
+        if let Some((cached, text)) = &self.notes_picker_preview {
+            if *cached == path {
+                return Some(text.clone());
+            }
         }
+        let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
+            // Preview and clipboard share one projection: the note body, with a
+            // Plexi capture metadata envelope stripped and user text preserved.
+            Ok(text) => crate::notes::note_body(&text).into(),
+            Err(e) => {
+                log::warn!("notes_picker: preview read failed for {path:?}: {e}");
+                format!("Could not read note: {e}").into()
+            }
+        };
+        self.notes_picker_preview = Some((path, text.clone()));
+        Some(text)
+    }
 
-        let deleted = match std::fs::remove_file(&entry.path) {
-            Ok(()) => {
-                log::info!("notes_picker: deleted {:?}", entry.path);
-                true
+    /// Dismiss the notes picker overlay and restore focus to the originating pane.
+    pub(crate) fn close_notes_picker(&mut self) {
+        log::info!("notes_picker: closed");
+        self.notes_picker_status = None;
+        self.notes_picker_last_drawn_selected = None;
+        self.pop_focus_layer(&FocusKind::NotesPicker);
+    }
+
+    /// Flush any pending copied note contents to egui's clipboard output.
+    pub(crate) fn notes_picker_flush_copy(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.notes_picker_copy_unsent) {
+            if let Some(text) = &self.notes_picker_last_copied {
+                ctx.copy_text(text.clone());
+            }
+        }
+    }
+
+    /// Copy the selected note's body to the clipboard, stripping a Plexi capture
+    /// metadata envelope. Returns the path copied so cut can reuse it.
+    fn notes_picker_copy_selected(&mut self) -> Option<std::path::PathBuf> {
+        let entry_idx = self.notes_picker_selected_entry()?;
+        let path = self.notes_picker_entries[entry_idx].path.clone();
+        let title = self.notes_picker_entries[entry_idx].title.clone();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let body = crate::notes::note_body(&text).to_string();
+                log::info!("notes_picker: copied {} byte(s) from {path:?}", body.len());
+                self.notes_picker_last_copied = Some(body);
+                self.notes_picker_copy_unsent = true;
+                Some(path)
             }
             Err(e) => {
-                log::warn!("notes_picker: failed to delete {:?}: {e}", entry.path);
-                false
+                log::warn!("notes_picker: copy failed for {path:?}: {e}");
+                self.notes_picker_status =
+                    Some(format!("Can't copy \u{201c}{title}\u{201d}: {e}."));
+                None
+            }
+        }
+    }
+
+    /// Whether the open text-editor pane for `path` (if any) has unsaved edits.
+    pub(crate) fn open_text_editor_pane_is_dirty(&self, path: &std::path::Path) -> bool {
+        let identity = note_path_identity(path);
+        self.windows.iter().any(|window| {
+            window.panes.iter().any(|(&pane_id, pane)| {
+                Self::text_editor_path_for_pane(window, pane_id).as_deref()
+                    == Some(identity.as_path())
+                    && pane
+                        .as_view()
+                        .and_then(|app| app.runtime.editor_buffer())
+                        .is_some_and(|buffer| buffer.dirty)
+            })
+        })
+    }
+
+    fn notes_picker_refuse_if_dirty(
+        &mut self,
+        path: &std::path::Path,
+        title: &str,
+        cut: bool,
+    ) -> bool {
+        if !self.open_text_editor_pane_is_dirty(path) {
+            return false;
+        }
+        let verb = if cut { "cut" } else { "delete" };
+        let msg = format!(
+            "Can't {verb} \u{201c}{title}\u{201d}: its pane has unsaved edits. Save or close it first."
+        );
+        log::info!(
+            "notes_picker: refusing {verb} of {path:?} — open editor pane has unsaved edits"
+        );
+        self.notes_picker_status = Some(msg);
+        true
+    }
+
+    fn notes_picker_cut_selected(&mut self) {
+        let Some(idx) = self.notes_picker_selected_entry() else {
+            return;
+        };
+        let entry = &self.notes_picker_entries[idx];
+        let (path, title) = (entry.path.clone(), entry.title.clone());
+        if self.notes_picker_refuse_if_dirty(&path, &title, true) {
+            return;
+        }
+        if self.notes_picker_copy_selected().is_some() {
+            self.notes_picker_delete_entry(idx);
+        }
+    }
+
+    fn notes_picker_request_delete(&mut self) {
+        let Some(idx) = self.notes_picker_selected_entry() else {
+            return;
+        };
+        let entry = &self.notes_picker_entries[idx];
+        let (path, title) = (entry.path.clone(), entry.title.clone());
+        if !self.notes_picker_refuse_if_dirty(&path, &title, false) {
+            self.notes_picker_delete_entry(idx);
+        }
+    }
+
+    pub(crate) fn notes_picker_delete_entry(&mut self, entry_idx: usize) -> bool {
+        let Some(entry) = self.notes_picker_entries.get(entry_idx).cloned() else {
+            return false;
+        };
+        if self.notes_picker_refuse_if_dirty(&entry.path, &entry.title, false) {
+            return false;
+        }
+        let context_root = self.router.active().root.clone();
+        let closed_editor = self
+            .find_open_text_editor_pane_any_window(&entry.path)
+            .is_some();
+        while let Some(pane_id) = self.find_open_text_editor_pane_any_window(&entry.path) {
+            self.close_pane_by_id(pane_id);
+            if self.find_open_text_editor_pane_any_window(&entry.path) == Some(pane_id) {
+                self.notes_picker_status =
+                    Some("Can't delete: the editor pane could not close.".into());
+                log::info!("notes_picker: trash failed; editor pane {pane_id} did not close");
+                return false;
+            }
+        }
+        let trashed_path = match self.notes_trash.trash(&entry.path) {
+            Ok(path) => path,
+            Err(e) => {
+                log::info!("notes_picker: trash failed for {:?}: {e}", entry.path);
+                self.notes_picker_status = Some(format!("Can't delete “{}”: {e}.", entry.title));
+                return false;
             }
         };
+        log::info!(
+            "notes_picker: trashed {:?} to {:?}",
+            entry.path,
+            trashed_path
+        );
         self.notes_picker_entries.remove(entry_idx);
+        self.notes_picker_notice = None;
+        self.notes_picker_undo = Some(DeletedNote {
+            entry,
+            index: entry_idx,
+            trashed_path,
+            context_root,
+            at: std::time::Instant::now(),
+            closed_editor,
+        });
+        self.notes_picker_preview = None;
         let visible = self.notes_picker_filtered().len();
-        if self.notes_picker_selected >= visible {
-            self.notes_picker_selected = visible.saturating_sub(1);
+        self.notes_picker_selected = self.notes_picker_selected.min(visible.saturating_sub(1));
+        self.notes_picker_shown_paths = self
+            .notes_picker_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.invalidate_notes_index();
+        true
+    }
+
+    pub(crate) fn notes_picker_undo_delete(&mut self) {
+        let Some(mut deleted) = self.notes_picker_undo.take() else {
+            return;
+        };
+        // Linking refuses to overwrite a newly created file at the original path.
+        let result = std::fs::hard_link(&deleted.trashed_path, &deleted.entry.path);
+        if let Err(e) = result {
+            log::info!(
+                "notes_picker: undo failed for {:?}: {e}",
+                deleted.entry.path
+            );
+            self.notes_picker_status = Some(format!(
+                "Can't undo delete of “{}”: {e}.",
+                deleted.entry.title
+            ));
+            deleted.at = std::time::Instant::now();
+            self.notes_picker_undo = Some(deleted);
+            return;
         }
-        if deleted {
+        if let Err(e) = std::fs::remove_file(&deleted.trashed_path) {
+            log::info!(
+                "notes_picker: restored but could not remove trash link {:?}: {e}",
+                deleted.trashed_path
+            );
+        }
+        log::info!("notes_picker: restored {:?}", deleted.entry.path);
+        let title = deleted.entry.title.clone();
+        if self.router.active().root == deleted.context_root {
+            let idx = deleted.index.min(self.notes_picker_entries.len());
+            self.notes_picker_entries.insert(idx, deleted.entry);
             self.notes_picker_shown_paths = self
                 .notes_picker_entries
                 .iter()
                 .map(|entry| entry.path.clone())
                 .collect();
-            self.invalidate_notes_index();
+            self.notes_picker_preview = None;
         }
+        self.invalidate_notes_index();
+        let message = if deleted.closed_editor {
+            format!("Restored: {title}; its editor was closed.")
+        } else {
+            format!("Restored: {title}")
+        };
+        self.notes_picker_status = None;
+        self.notes_picker_notice = Some((message, std::time::Instant::now()));
+    }
+
+    pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
+        let Some(deleted) = self.notes_picker_undo.as_ref() else {
+            if let Some((message, at)) = &self.notes_picker_notice {
+                let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
+                if !remaining.is_zero() {
+                    crate::ui::toast::ToastShell::bottom("notes_delete_notice").show(
+                        ctx,
+                        &self.colors,
+                        |ui| {
+                            crate::ui::toast::toast_caption(ui, message, &self.colors);
+                        },
+                    );
+                    ctx.request_repaint_after(
+                        remaining
+                            + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                    );
+                }
+            }
+            return;
+        };
+        const DURATION: std::time::Duration = std::time::Duration::from_secs(8);
+        let remaining = DURATION.saturating_sub(deleted.at.elapsed());
+        if remaining.is_zero() {
+            return;
+        }
+        let caption = format!("Deleted {}", deleted.entry.title);
+        let undo_error = self
+            .notes_picker_status
+            .as_deref()
+            .filter(|status| status.starts_with("Can't undo"));
+        let colors = self.colors;
+        let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
+            .offset(egui::vec2(0.0, -style::SPACE_SM))
+            .action(ctx, &colors, &caption, "Undo", undo_error);
+        #[cfg(test)]
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
+        });
+        if response.clicked() {
+            self.notes_picker_undo_delete();
+        }
+        ctx.request_repaint_after(
+            remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+        );
     }
 
     pub(crate) fn notes_picker_handle_key(
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) {
+        // Normal host bindings are suppressed while an overlay owns input. The
+        // picker must claim its configured invocation chord itself.
+        let (modifiers, key) = self.key_bindings.open_notes_picker;
+        if input.consume_key_no_repeat(modifiers, key) {
+            self.claimed_host_key_releases.insert(key);
+            self.close_notes_picker();
+            return;
+        }
+        // A held invocation chord must not immediately close the picker that
+        // its first press opened, nor leak repeat events to the focused pane.
+        if input.consume_key(modifiers, key) {
+            self.claimed_host_key_releases.insert(key);
+            return;
+        }
         let visible = self.notes_picker_filtered().len();
+
+        if input.events().iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key { pressed: true, .. }
+                    | egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Copy
+                    | egui::Event::Cut
+            )
+        }) {
+            self.notes_picker_status = None;
+        }
 
         #[derive(Clone, Copy)]
         enum PickerKey {
+            Copy,
+            Cut,
             Escape,
             Down,
             Up,
             Enter,
-            Delete,
+            Delete(egui::Key),
+            Undo,
             OpenNew,
         }
 
@@ -181,40 +556,72 @@ impl PlexiApp {
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             Some(PickerKey::OpenNew)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
-            Some(PickerKey::Delete)
+            Some(PickerKey::Delete(egui::Key::Backspace))
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Delete) {
+            Some(PickerKey::Delete(egui::Key::Delete))
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+            Some(PickerKey::Undo)
+        } else if input.consume_copy() {
+            Some(PickerKey::Copy)
+        } else if input.consume_cut() {
+            Some(PickerKey::Cut)
         } else {
             None
         };
         match action {
             Some(PickerKey::Escape) => {
                 if self.notes_picker_query.is_empty() {
-                    self.pop_focus_layer(&FocusKind::NotesPicker);
+                    self.close_notes_picker();
                 } else {
                     self.notes_picker_query.clear();
                     self.notes_picker_selected = 0;
+                    self.notes_picker_last_drawn_selected = None;
                 }
             }
             Some(PickerKey::Down) => {
                 if visible > 0 {
+                    let prev = self.notes_picker_selected;
                     self.notes_picker_selected = (self.notes_picker_selected + 1).min(visible - 1);
+                    if self.notes_picker_selected != prev {
+                        log::info!(
+                            "notes_picker: selection down {} -> {}",
+                            prev,
+                            self.notes_picker_selected
+                        );
+                    }
                 }
             }
             Some(PickerKey::Up) => {
+                let prev = self.notes_picker_selected;
                 self.notes_picker_selected = self.notes_picker_selected.saturating_sub(1);
-            }
-            Some(PickerKey::Enter) => self.notes_picker_open_selected(),
-            Some(PickerKey::Delete) => {
-                if let Some(entry_idx) = self.notes_picker_selected_entry() {
-                    log::info!("notes_picker: cmd+backspace — deleting entry {entry_idx}");
-                    self.notes_picker_delete_entry(entry_idx);
+                if self.notes_picker_selected != prev {
+                    log::info!(
+                        "notes_picker: selection up {} -> {}",
+                        prev,
+                        self.notes_picker_selected
+                    );
                 }
             }
+            Some(PickerKey::Enter) => self.notes_picker_open_selected(),
+            Some(PickerKey::Delete(key)) => {
+                self.claimed_host_key_releases.insert(key);
+                self.notes_picker_request_delete();
+            }
+            Some(PickerKey::Undo) => self.notes_picker_undo_delete(),
+            Some(PickerKey::Copy) => {
+                if self.notes_picker_copy_selected().is_some() {
+                    log::info!("notes_picker: copy successful — closing picker");
+                    self.close_notes_picker();
+                }
+            }
+            Some(PickerKey::Cut) => self.notes_picker_cut_selected(),
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
             None => {}
         }
     }
 
     fn notes_picker_open_selected(&mut self) {
+        self.notes_picker_status = None;
         let Some(entry_idx) = self.notes_picker_selected_entry() else {
             return;
         };
@@ -226,11 +633,11 @@ impl PlexiApp {
             log::info!("notes_picker: already open in pane {existing_pane_id}, focusing");
             self.set_window_focused_pane(active, existing_tile_id);
             emit_note_opened(&path, Some(&self.router.active().root));
-            self.pop_focus_layer(&FocusKind::NotesPicker);
+            self.close_notes_picker();
             return;
         }
         // Reuse the focused pane only when it's already a text-editor;
-        // terminals and other apps get a new pane instead.
+        // terminals and other plugins get a new pane instead.
         let focused_editor = self.windows[active].focused_pane.and_then(|tile_id| {
             match self.windows[active].tree.tiles.get(tile_id) {
                 Some(egui_tiles::Tile::Pane(id)) => {
@@ -242,16 +649,16 @@ impl PlexiApp {
         match focused_editor {
             Some(pane_id) => {
                 let state = serde_json::json!({ "path": path.to_string_lossy() });
-                if let Some(crate::host::pane::Pane::App(app_pane)) =
+                if let Some(crate::host::pane::Pane::View(view_pane)) =
                     self.windows[active].panes.get_mut(&pane_id)
                 {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut app_pane.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut view_pane.runtime {
                         log::info!("notes_picker: opening {:?} in focused pane", path);
                         app.restore_state(&state);
                         emit_note_opened(&path, Some(&self.router.active().root));
                     }
                 }
-                self.pop_focus_layer(&FocusKind::NotesPicker);
+                self.close_notes_picker();
             }
             None => {
                 log::info!(
@@ -264,6 +671,7 @@ impl PlexiApp {
     }
 
     fn notes_picker_open_in_new(&mut self) {
+        self.notes_picker_status = None;
         let Some(entry_idx) = self.notes_picker_selected_entry() else {
             return;
         };
@@ -272,12 +680,12 @@ impl PlexiApp {
         log::info!("notes_picker: opening {:?} in new text-editor pane", path);
         let context_root = self.router.active().root.clone();
         if self
-            .launch_app_by_id_with_layout("text-editor", None, &[path_str], None)
+            .launch_view_by_id_with_layout("text-editor", None, &[path_str], None)
             .is_ok()
         {
             emit_note_opened(&path, Some(&context_root));
         }
-        self.pop_focus_layer(&FocusKind::NotesPicker);
+        self.close_notes_picker();
     }
 
     pub(crate) fn draw_notes_picker(&mut self, ctx: &egui::Context) {
@@ -285,17 +693,39 @@ impl PlexiApp {
         let filtered = self.notes_picker_filtered();
         let selected = self.notes_picker_selected;
         let selection_changed = self.notes_picker_last_drawn_selected != Some(selected);
+        if self
+            .notes_picker_last_drawn_selected
+            .is_some_and(|prev| prev != selected)
+        {
+            self.notes_picker_status = None;
+        }
         let total = self.notes_picker_entries.len();
+        let preview = self.notes_picker_preview_text();
+        let status = self.notes_picker_status.clone();
+        self.notes_picker_flush_copy(ctx);
 
         let open_cell = std::cell::Cell::new(None::<usize>);
 
         let mut query = self.notes_picker_query.clone();
 
-        let list_max_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        // The list and preview take the usable share of the canvas after the
+        // modal's search, status, and shortcut chrome. The earlier nested
+        // 0.8 cap applied the margin twice, leaving a dead band at high UI
+        // scales and clipping the scroll area's final row.
+        let list_max_h = (ctx.content_rect().height() * style::NOTES_PICKER_MODAL_HEIGHT_FRACTION
+            - style::NOTES_PICKER_BODY_CHROME_HEIGHT)
+            .max(style::LIST_ROW_H * 2.0);
+
+        // Never wider than the window; below the compact modal width the
+        // preview half is dropped and the list takes the whole modal.
+        let modal_width = style::MODAL_WIDTH_NOTES_PICKER
+            .min((ctx.content_rect().width() - style::SPACE_XL * 2.0).max(0.0));
+        let show_preview = modal_width >= style::MODAL_WIDTH_MD;
 
         let modal_response = ModalShell::centered("notes_picker")
+            .own_scroll()
             .title("Notes")
-            .width(style::MODAL_WIDTH_PALETTE)
+            .width(modal_width)
             .escape(true)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("notes_picker_search");
@@ -328,87 +758,200 @@ impl PlexiApp {
                     return;
                 }
 
-                // Tier headers: entries arrive grouped by tier, so a header is
-                // emitted whenever the tier label changes from the previous row.
-                let mut current_tier: Option<Option<String>> = None;
-                egui::ScrollArea::vertical()
-                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
-                    .animated(false)
-                    .id_salt("notes_picker_list")
-                    .max_height(list_max_h)
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.spacing_mut().item_spacing.y = style::SPACE_SM;
-                        for (row, &entry_idx) in filtered.iter().enumerate() {
-                            let entry = &self.notes_picker_entries[entry_idx];
-                            // Header per tier group. The primary tier gets none —
-                            // the modal title already names it, and `None` means
-                            // "needs no disambiguation" by construction. Rolled-up
-                            // tiers and the global tier each get one.
-                            if current_tier.as_ref() != Some(&entry.tier_label) {
-                                current_tier = Some(entry.tier_label.clone());
-                                if let Some(label) = entry.tier_label.as_deref() {
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        egui::RichText::new(label)
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                            }
+                let list_width = if show_preview {
+                    ((ui.available_width() - style::SPACE_MD) * style::NOTES_PICKER_LIST_FRACTION)
+                        .floor()
+                } else {
+                    ui.available_width()
+                };
+                let preview_width = ui.available_width() - list_width - style::SPACE_MD;
+                let halves = egui::UiBuilder::new()
+                    .id_salt("notes_picker_halves")
+                    .layout(egui::Layout::left_to_right(egui::Align::Min));
+                ui.scope_builder(halves, |ui| {
+                    // A modal Area offers unbounded height; without this cap the
+                    // vertical separator and preview stretch past the window.
+                    ui.set_max_height(list_max_h);
+                    ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+                    let list_half = egui::UiBuilder::new()
+                        .id_salt("notes_picker_list_half")
+                        .layout(egui::Layout::top_down(egui::Align::Min));
+                    ui.scope_builder(list_half, |ui| {
+                        ui.set_width(list_width);
+                        // Tier headers: entries arrive grouped by tier, so a header is
+                        // emitted whenever the tier label changes from the previous row.
+                        let mut current_tier: Option<Option<String>> = None;
+                        egui::ScrollArea::vertical()
+                            // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                            .animated(false)
+                            .id_salt("notes_picker_list")
+                            .max_height(list_max_h)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = style::SPACE_SM;
+                                for (row, &entry_idx) in filtered.iter().enumerate() {
+                                    let entry = &self.notes_picker_entries[entry_idx];
+                                    // Header per tier group. The primary tier gets none —
+                                    // the modal title already names it, and `None` means
+                                    // "needs no disambiguation" by construction. Rolled-up
+                                    // tiers and the global tier each get one.
+                                    if current_tier.as_ref() != Some(&entry.tier_label) {
+                                        current_tier = Some(entry.tier_label.clone());
+                                        if let Some(label) = entry.tier_label.as_deref() {
+                                            ui.add_space(style::SPACE_XS);
+                                            ui.label(
+                                                egui::RichText::new(label)
+                                                    .size(style::TEXT_CAPTION)
+                                                    .color(colors.text_dim),
+                                            );
+                                            ui.add_space(style::SPACE_XS);
+                                        }
+                                    }
 
-                            let is_selected = row == selected;
-                            let secondary = if entry.preview == entry.title {
-                                String::new()
-                            } else {
-                                entry.preview.chars().take(50).collect()
-                            };
-                            // Notes rolled up from a nested tier, or from the
-                            // global tier, carry where they came from so a root
-                            // "master view" stays legible.
-                            let chip: &str = entry.tier_label.as_deref().unwrap_or("note");
-                            let row_response = ListRow::new(&entry.title)
-                                .metadata_chips(std::slice::from_ref(&chip))
-                                .secondary(&secondary)
-                                .selected(is_selected)
-                                .show(ui, &colors);
-                            if is_selected {
-                                row_response.scroll_into_view(ui, selection_changed);
-                            }
-                            if row_response.row_clicked() {
-                                open_cell.set(Some(row));
-                            }
-                        }
+                                    let is_selected = row == selected;
+                                    let secondary = if entry.preview == entry.title {
+                                        String::new()
+                                    } else {
+                                        entry.preview.chars().take(50).collect()
+                                    };
+                                    // Notes rolled up from a nested tier, or from the
+                                    // global tier, carry where they came from so a root
+                                    // "master view" stays legible.
+                                    let chip: &str = entry.tier_label.as_deref().unwrap_or("note");
+                                    let row_response = ListRow::new(&entry.title)
+                                        .metadata_chips(std::slice::from_ref(&chip))
+                                        .secondary(&secondary)
+                                        .selected(is_selected)
+                                        .show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, selection_changed);
+                                    }
+                                    if row_response.row_clicked() {
+                                        open_cell.set(Some(row));
+                                    }
+                                }
+                            });
                     });
+                    if show_preview {
+                        let preview_half = egui::UiBuilder::new()
+                            .id_salt("notes_picker_preview_half")
+                            .layout(egui::Layout::top_down(egui::Align::Min));
+                        ui.scope_builder(preview_half, |ui| {
+                            ui.set_width(preview_width);
+                            let font_id = egui::FontId::monospace(self.default_font_size);
+                            egui::Frame::new()
+                                .fill(colors.bg_active)
+                                .stroke(style::hairline_border(colors.border))
+                                .corner_radius(style::RADIUS_MD)
+                                .inner_margin(egui::Margin::symmetric(12, 10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.set_min_height((list_max_h - 20.0).max(60.0));
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("notes_picker_preview")
+                                        .max_height((list_max_h - 20.0).max(60.0))
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            let body_text = preview.as_deref().unwrap_or("");
+                                            if body_text.trim().is_empty() {
+                                                ui.label(
+                                                    egui::RichText::new("Empty note")
+                                                        .font(font_id.clone())
+                                                        .color(colors.text_dim),
+                                                );
+                                            } else {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(body_text)
+                                                            .font(font_id.clone())
+                                                            .color(colors.text_primary),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                            }
+                                        });
+                                });
+                        });
+                    }
+                });
 
                 ui.add_space(style::SPACE_SM);
+                let status_message = status.clone();
+                let (status_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), style::NOTES_PICKER_STATUS_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                if let Some(msg) = status_message {
+                    let mut status_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(status_rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    status_ui.set_clip_rect(status_rect.intersect(ui.clip_rect()));
+                    let mut job = egui::text::LayoutJob::single_section(
+                        msg,
+                        egui::TextFormat {
+                            font_id: egui::FontId::proportional(style::TEXT_CAPTION),
+                            color: colors.danger,
+                            ..Default::default()
+                        },
+                    );
+                    job.wrap = egui::text::TextWrapping {
+                        max_width: status_rect.width(),
+                        max_rows: 2,
+                        break_anywhere: false,
+                        overflow_character: Some('\u{2026}'),
+                    };
+                    status_ui.add(egui::Label::new(job));
+                }
+                ui.add_space(style::SPACE_XS);
                 HintBar::new(&[
-                    HintGroup::new(&["\u{2318}J", "\u{2318}K"], "navigate"),
+                    HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
                     HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["\u{2318}C"], "copy"),
+                    HintGroup::new(&["\u{2318}X"], "cut"),
                     HintGroup::new(&["\u{2318}\u{232b}"], "delete"),
-                    HintGroup::new(&["esc"], "dismiss"),
+                    HintGroup::new(&["esc"], "close"),
                 ])
                 .show(ui, &colors);
             });
 
-        if query != self.notes_picker_query {
-            self.notes_picker_query = query;
-            self.notes_picker_selected = 0;
-        }
+        let query_changed = self.notes_picker_apply_query(query);
 
         if let Some(row) = open_cell.get() {
             self.notes_picker_selected = row;
+            self.notes_picker_status = None;
             self.notes_picker_open_selected();
         }
 
-        self.notes_picker_last_drawn_selected = Some(selected);
+        // A query can reset the selection after its old row was rendered. Keep
+        // the reset through the next frame so the selected first result is
+        // scrolled into view instead of inheriting a deliberate wheel offset
+        // from the prior result set.
+        if !query_changed {
+            self.notes_picker_last_drawn_selected = Some(selected);
+        }
 
         // Dismiss on click outside the modal (processed after picker Area so it
         // doesn't fire when clicking inside the modal itself).
         if modal_response.dismissed {
-            self.pop_focus_layer(&FocusKind::NotesPicker);
+            self.close_notes_picker();
         }
+    }
+
+    /// Applies a search query after its frame has painted. Reset the selection
+    /// scroll marker with it so the next frame cannot retain a wheel offset
+    /// belonging to the previous result set.
+    fn notes_picker_apply_query(&mut self, query: String) -> bool {
+        if query == self.notes_picker_query {
+            return false;
+        }
+        self.notes_picker_query = query;
+        self.notes_picker_selected = 0;
+        self.notes_picker_last_drawn_selected = None;
+        self.notes_picker_status = None;
+        true
     }
 }
 
@@ -425,8 +968,8 @@ fn emit_note_opened(path: &std::path::Path, context_root: Option<&std::path::Pat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::permissions::AppPermissions;
-    use crate::host::pane::{AppPane, AppRuntime, Pane};
+    use crate::app::permissions::PluginPermissions;
+    use crate::host::pane::{Pane, ViewPane, ViewRuntime};
     use crate::notes::NotePickerEntry;
 
     fn picker_entry(path: std::path::PathBuf, preview: &str) -> NotePickerEntry {
@@ -440,14 +983,14 @@ mod tests {
     }
 
     fn replace_with_text_editor(app: &mut PlexiApp, pane_id: u64, path: std::path::PathBuf) {
-        let app_pane = AppPane {
+        let view_pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorApp::new(path),
+            runtime: ViewRuntime::Builtin(Box::new(
+                crate::app::text_editor_view::TextEditorView::new(path),
             )),
             workspace_root: std::env::temp_dir(),
-            permissions: AppPermissions::builtin(),
+            permissions: PluginPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
             pane_group: None,
@@ -461,7 +1004,7 @@ mod tests {
 
         app.windows[0]
             .panes
-            .insert(pane_id, Pane::App(Box::new(app_pane)));
+            .insert(pane_id, Pane::View(Box::new(view_pane)));
     }
 
     fn state_path(state: &serde_json::Value) -> String {
@@ -498,6 +1041,7 @@ mod tests {
         let _ = ctx.run_ui(input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
         });
     }
 
@@ -505,11 +1049,25 @@ mod tests {
         let id = egui::Id::new("notes_picker")
             .with("overlay")
             .with(egui::Id::from("child"))
+            .with(egui::Id::new("notes_picker_halves"))
+            .with(egui::Id::new("notes_picker_list_half"))
             .with(egui::Id::new("notes_picker_list"));
         egui::scroll_area::State::load(ctx, id)
             .expect("notes picker scroll state")
             .offset
             .y
+    }
+
+    fn set_picker_scroll_offset(ctx: &egui::Context, offset: f32) {
+        let id = egui::Id::new("notes_picker")
+            .with("overlay")
+            .with(egui::Id::from("child"))
+            .with(egui::Id::new("notes_picker_halves"))
+            .with(egui::Id::new("notes_picker_list_half"))
+            .with(egui::Id::new("notes_picker_list"));
+        let mut state = egui::scroll_area::State::load(ctx, id).expect("notes picker scroll state");
+        state.offset.y = offset;
+        state.store(ctx, id);
     }
 
     #[test]
@@ -530,7 +1088,10 @@ mod tests {
         draw_picker_frame(&mut app, &ctx);
         let offset_after_down = picker_scroll_offset(&ctx);
         assert_eq!(app.notes_picker_selected, 18);
-        assert!(offset_after_down > 0.0, "selection past the visible window must scroll down");
+        assert!(
+            offset_after_down > 0.0,
+            "selection past the visible window must scroll down"
+        );
 
         for _ in 0..15 {
             press_picker_key(&mut app, &ctx, egui::Key::ArrowUp);
@@ -538,7 +1099,35 @@ mod tests {
         draw_picker_frame(&mut app, &ctx);
         let offset_after_up = picker_scroll_offset(&ctx);
         assert_eq!(app.notes_picker_selected, 3);
-        assert!(offset_after_up < offset_after_down, "selection above the visible window must scroll back up");
+        assert!(
+            offset_after_up < offset_after_down,
+            "selection above the visible window must scroll back up"
+        );
+    }
+
+    #[test]
+    fn notes_picker_query_reset_keeps_first_result_visible_after_wheel_scroll() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        app.notes_picker_entries = (0..30)
+            .map(|i| picker_entry(format!("/tmp/note-{i}.md").into(), &format!("note {i}")))
+            .collect();
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        draw_picker_frame(&mut app, &ctx);
+        set_picker_scroll_offset(&ctx, 480.0);
+        // Query handling happens after the list has been drawn for the frame.
+        // The reset must survive into the next draw, otherwise the selected
+        // first result retains a wheel offset from the prior result set.
+        assert!(app.notes_picker_apply_query("note".into()));
+        draw_picker_frame(&mut app, &ctx);
+
+        assert!(
+            picker_scroll_offset(&ctx) < 480.0,
+            "a new query must restore its selected first result instead of preserving an old wheel offset"
+        );
     }
 
     #[test]
@@ -577,7 +1166,7 @@ mod tests {
         let focused_state = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.serialize_state())
             .expect("focused text editor state");
         assert_eq!(
@@ -620,7 +1209,7 @@ mod tests {
         let focused_state = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.serialize_state())
             .expect("focused text editor state");
         assert!(state_path(&focused_state).ends_with("other.md"));
@@ -845,7 +1434,7 @@ mod tests {
         let semantic = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.semantic_details())
             .expect("focused text editor semantic state");
         assert_eq!(
@@ -860,52 +1449,240 @@ mod tests {
             .panes
             .get_mut(&focused_pane)
             .expect("focused pane")
-            .as_app_mut()
-            .expect("editor app")
+            .as_view_mut()
+            .expect("editor plugin")
             .runtime;
-        let AppRuntime::Builtin(editor) = runtime else {
+        let ViewRuntime::Builtin(editor) = runtime else {
             panic!("expected builtin editor")
         };
         let editor = editor
             .as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
             .expect("text editor");
         assert_eq!(
             editor.test_view().pending_reveal,
-            Some(crate::editor::cursor::Cursor::new(2, "third line".len()))
+            Some(crate::editor::view::Reveal::caret(
+                crate::editor::cursor::Cursor::new(2, "third line".len())
+            ))
         );
 
         let _ = std::fs::remove_dir_all(&profile);
     }
 
-    #[test]
-    fn notes_picker_refuses_to_delete_open_text_editor_note() {
+    /// Dispatch one picker chord and return the frame output, so a test can read
+    /// the real egui clipboard command rather than only intermediate state.
+    fn press_picker_chord(
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+        modifiers: egui::Modifiers,
+        key: egui::Key,
+    ) -> egui::FullOutput {
+        let mut input = picker_frame_input();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        ctx.run_ui(input, |ui| {
+            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+            app.notes_picker_handle_key(&mut input);
+            app.notes_picker_flush_copy(ui.ctx());
+        })
+    }
+
+    /// The text egui was actually handed for the clipboard during a frame.
+    fn clipboard_text(output: &egui::FullOutput) -> Option<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    fn picker_with_notes(
+        tag: &str,
+        bodies: &[&str],
+    ) -> (PlexiApp, egui::Context, Vec<std::path::PathBuf>) {
         let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
         let frame_tick = crate::platform::logging::FrameTick::default();
-        let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
-        let note_path = std::env::temp_dir().join(format!(
-            "plexi-notes-picker-delete-open-{}.md",
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let paths: Vec<std::path::PathBuf> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, body)| {
+                let path = std::env::temp_dir().join(format!(
+                    "plexi-notes-picker-{tag}-{}-{i}.md",
+                    std::process::id()
+                ));
+                std::fs::write(&path, body).expect("seed note");
+                path
+            })
+            .collect();
+        app.notes_picker_entries = paths
+            .iter()
+            .zip(bodies)
+            .map(|(p, b)| picker_entry(p.clone(), b))
+            .collect();
+        app.notes_picker_selected = 0;
+        app.push_focus_layer(FocusKind::NotesPicker);
+        (app, ctx, paths)
+    }
+
+    #[test]
+    fn notes_picker_preview_shows_selected_content_and_follows_selection() {
+        let (mut app, ctx, paths) = picker_with_notes("preview", &["alpha body", "beta body"]);
+        assert_eq!(
+            app.notes_picker_preview_text().as_deref(),
+            Some("alpha body")
+        );
+        draw_picker_frame(&mut app, &ctx);
+        press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert_eq!(
+            app.notes_picker_preview_text().as_deref(),
+            Some("beta body")
+        );
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Baseline regression: a real saved capture's clipboard payload is exactly
+    /// its parsed body. The assertion reads the egui clipboard command, and
+    /// reverting the body projection in `notes_picker_copy_selected` makes it
+    /// fail because the envelope returns to the payload.
+    #[test]
+    fn notes_picker_preview_and_copy_share_the_note_body_without_metadata() {
+        // Written the way `write_note` writes a capture.
+        let body = "\n# Heading\n\nbody line 1\nbody line 2\n";
+        let full = format!(
+            "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n{body}"
+        );
+        let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full.as_str()]);
+        let before = std::fs::read(&paths[0]).expect("read note before copy");
+        assert_eq!(app.notes_picker_preview_text().as_deref(), Some(body));
+
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(
+            clipboard_text(&output).as_deref(),
+            Some(body),
+            "clipboard must carry the body, not storage metadata"
+        );
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(body));
+        assert_eq!(
+            std::fs::read(&paths[0]).expect("read note after copy"),
+            before,
+            "copy must not modify the backing file"
+        );
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "successful copy must close the picker"
+        );
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// A delimiter block the user typed is not storage metadata; the clipboard
+    /// payload keeps it, along with fenced code and line breaks.
+    #[test]
+    fn notes_picker_copy_preserves_user_delimiter_blocks_and_markdown() {
+        let content = "---\ntags: [a, b]\n---\n\ntop line\n\n```sh\necho hi\n```\n";
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let path = std::env::temp_dir().join(format!(
+            "plexi-notes-picker-user-delimiter-{}.md",
             std::process::id()
         ));
-        std::fs::write(&note_path, "keep").expect("seed note");
-
-        let (existing_tile, existing_pane) = app.add_test_pane();
-        let (focused_tile, _focused_pane) = app.add_test_pane();
-        replace_with_text_editor(&mut app, existing_pane, note_path.clone());
-
-        app.windows[0].focused_pane = Some(focused_tile);
-        app.notes_picker_entries = vec![picker_entry(note_path.clone(), "keep")];
+        std::fs::write(&path, content).expect("seed note");
+        app.notes_picker_entries = vec![picker_entry(path.clone(), content)];
         app.notes_picker_selected = 0;
         app.push_focus_layer(FocusKind::NotesPicker);
 
-        app.notes_picker_delete_entry(0);
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(clipboard_text(&output).as_deref(), Some(content));
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(content));
+        let _ = std::fs::remove_file(&path);
+    }
 
-        assert_eq!(app.windows[0].focused_pane, Some(existing_tile));
-        assert_eq!(app.notes_picker_entries.len(), 1);
-        assert!(note_path.exists());
-        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
+    /// Copy closes the picker by popping its layer, so whatever owned focus
+    /// before the picker opened owns it again.
+    #[test]
+    fn notes_picker_copy_restores_the_layer_under_it() {
+        let (mut app, ctx, paths) = picker_with_notes("copy-focus", &["copy me"]);
+        // Stands in for the surface that owned focus before the picker opened.
+        app.focus_stack.insert(0, FocusKind::CommandPalette);
+        let _ = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(
+            app.focus_stack.last(),
+            Some(&FocusKind::CommandPalette),
+            "the layer under the picker must be restored"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
 
-        let _ = std::fs::remove_file(&note_path);
+    #[test]
+    fn notes_picker_cmd_c_copies_content_and_closes_picker() {
+        let (mut app, ctx, paths) = picker_with_notes("copy", &["copy me"]);
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(clipboard_text(&output).as_deref(), Some("copy me"));
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some("copy me"));
+        assert!(paths[0].exists());
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "Cmd+C must close the notes picker on successful copy"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
+    #[test]
+    fn notes_picker_cmd_c_read_failure_keeps_picker_open_with_error() {
+        let (mut app, ctx, paths) = picker_with_notes("copy-fail", &["missing note"]);
+        let _ = std::fs::remove_file(&paths[0]);
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert!(app.notes_picker_last_copied.is_none());
+        assert!(
+            app.focus_stack.contains(&FocusKind::NotesPicker),
+            "failed copy must keep the notes picker open"
+        );
+        let status = app.notes_picker_status.as_deref().expect("error status");
+        assert!(status.contains("Can't copy"));
+    }
+
+    #[test]
+    fn notes_picker_delete_closes_open_editor_pane_and_does_not_recreate_file() {
+        let (mut app, ctx, paths) = picker_with_notes("delete-open", &["open note"]);
+        let (_tile, pane_id) = app.add_test_pane();
+        replace_with_text_editor(&mut app, pane_id, paths[0].clone());
+        let (focused_tile, _other) = app.add_test_pane();
+        app.windows[0].focused_pane = Some(focused_tile);
+
+        press_picker_chord(
+            &mut app,
+            &ctx,
+            egui::Modifiers::COMMAND,
+            egui::Key::Backspace,
+        );
+
+        assert!(
+            !app.windows[0].panes.contains_key(&pane_id),
+            "editor pane must close"
+        );
+        assert!(!paths[0].exists());
+        assert!(app.notes_picker_entries.is_empty());
+        assert!(app.focus_stack.contains(&FocusKind::NotesPicker));
+        draw_picker_frame(&mut app, &ctx);
+        assert!(
+            !paths[0].exists(),
+            "closed editor must not recreate the note"
+        );
     }
 
     #[test]
@@ -944,7 +1721,7 @@ mod tests {
         };
         app.notes_picker_entries = vec![
             mk("groceries", "milk and eggs"),
-            mk("project ideas", "groceries app concept"),
+            mk("project ideas", "groceries plugin concept"),
             mk("unrelated", "nothing here"),
         ];
 
@@ -954,5 +1731,118 @@ mod tests {
 
         app.notes_picker_query.clear();
         assert_eq!(app.notes_picker_filtered(), vec![0, 1, 2]);
+    }
+
+    fn set_editor_pane_unsaved(app: &mut PlexiApp, pane_id: u64, text: &str) {
+        let runtime = &mut app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("editor pane")
+            .as_view_mut()
+            .expect("view pane")
+            .runtime;
+        let ViewRuntime::Builtin(editor) = runtime else {
+            panic!("expected builtin editor");
+        };
+        editor
+            .as_any_mut()
+            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
+            .expect("text editor")
+            .test_set_unsaved(text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_picker_recovery_refuses_symlinked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("outside");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("recovery");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, b"original").unwrap();
+        assert!(move_to_recovery(&note, &link).is_err());
+        assert_eq!(std::fs::read(&note).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn notes_picker_refuses_if_any_matching_editor_is_dirty() {
+        let (mut app, ctx, paths) = picker_with_notes("dirty-duplicate", &["shared note"]);
+        let (_, first) = app.add_test_pane();
+        let (_, second) = app.add_test_pane();
+        replace_with_text_editor(&mut app, first, paths[0].clone());
+        replace_with_text_editor(&mut app, second, paths[0].clone());
+        let initially_found = app
+            .find_open_text_editor_pane_any_window(&paths[0])
+            .unwrap();
+        let dirty = if initially_found == first {
+            second
+        } else {
+            first
+        };
+        set_editor_pane_unsaved(&mut app, dirty, "unsaved draft");
+        press_picker_chord(
+            &mut app,
+            &ctx,
+            egui::Modifiers::COMMAND,
+            egui::Key::Backspace,
+        );
+        assert!(paths[0].exists());
+        assert!(app
+            .notes_picker_status
+            .as_deref()
+            .unwrap()
+            .contains("unsaved edits"));
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
+    #[test]
+    fn notes_picker_refuses_delete_and_cut_when_open_editor_pane_is_dirty() {
+        let (mut app, ctx, paths) = picker_with_notes("dirty-pane", &["dirty note", "other note"]);
+        let (_tile, pane_id) = app.add_test_pane();
+        replace_with_text_editor(&mut app, pane_id, paths[0].clone());
+        set_editor_pane_unsaved(&mut app, pane_id, "unsaved draft");
+
+        press_picker_chord(
+            &mut app,
+            &ctx,
+            egui::Modifiers::COMMAND,
+            egui::Key::Backspace,
+        );
+        assert!(paths[0].exists(), "dirty note file must remain on disk");
+        assert!(
+            app.windows[0].panes.contains_key(&pane_id),
+            "dirty editor pane must remain open"
+        );
+        let delete_err = app
+            .notes_picker_status
+            .as_deref()
+            .expect("status error set on refused delete");
+        assert!(delete_err.contains("delete"));
+        assert!(delete_err.contains("unsaved edits"));
+
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        assert!(paths[0].exists(), "dirty note file must remain on disk");
+        assert!(app.windows[0].panes.contains_key(&pane_id));
+        assert!(
+            app.notes_picker_last_copied.is_none(),
+            "refused cut must not copy to clipboard"
+        );
+        let cut_err = app
+            .notes_picker_status
+            .as_deref()
+            .expect("status error set on refused cut");
+        assert!(cut_err.contains("cut"));
+        assert!(cut_err.contains("unsaved edits"));
+
+        // Moving selection clears the status error.
+        press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert!(app.notes_picker_status.is_none());
+        press_picker_key(&mut app, &ctx, egui::Key::ArrowUp);
+
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }

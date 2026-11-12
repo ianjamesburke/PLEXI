@@ -28,7 +28,10 @@ still need review when behavior changes.
 `skills/plexi-cli/SKILL.md` in this repo is **canonical**. `plexi skill install`
 writes the bytes compiled into the binary that runs the command, under the
 agent's user skill directory (`~/.claude/skills/plexi-cli/SKILL.md`,
-`~/.codex/skills/plexi-cli/SKILL.md`). The public repo
+`~/.codex/skills/plexi-cli/SKILL.md`). That install is the **only** discovery
+path for the user-facing CLI skill: it is deliberately not symlinked under
+`.agents/skills/`, because a second copy there collides by name with the
+installed one and can go stale independently (stint 1050). The public repo
 [`ianjamesburke/plexi-skills`](https://github.com/ianjamesburke/plexi-skills) is a
 manually published **mirror** consumed by the `npx skills` installer
 (vercel-labs). Never edit the mirror directly; edit here, then republish at

@@ -102,8 +102,8 @@ cleanup_gate_host() {
 trap cleanup_gate_host EXIT INT TERM HUP
 
 # Attach-eligible scene set. Only scenes that can run against a live installed
-# host belong here: raw-WASM review is pre-approved by the live runner
-# (`plexi app trust`), and the file picker is scripted through the host's
+# host belong here. The live runner uses ordinary view admission and never
+# pre-approves WASM review. The file picker is scripted through the host's
 # PLEXI_PICKER_SCRIPT (set below) — never an in-scene `picker_script`, which is
 # headless-only. daw-timeline drives transport/edit via named keys;
 # daw-gate-bundle is the attach counterpart of the headless daw-bundle scene.

@@ -443,13 +443,13 @@ fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommen
     out.push_str("   You can use non-AI apps immediately. Come back with `plexi ai onboard`.\n");
 
     out.push_str("\n3. Install an app\n");
-    out.push_str("   Try the built-in starter pack: `plexi app install --pack core`.\n");
-    out.push_str("   Install a reviewed app: `plexi app install <id>`.\n");
-    out.push_str("   Install from GitHub: `plexi app install github:owner/repo`.\n");
+    out.push_str("   Try the built-in starter pack: `plexi plugin install --pack core`.\n");
+    out.push_str("   Install a reviewed app: `plexi plugin install <id>`.\n");
+    out.push_str("   Install from GitHub: `plexi plugin install github:owner/repo`.\n");
 
     out.push_str("\nUseful checks\n");
     out.push_str("   `plexi ai doctor` shows hardware, Ollama, and OpenRouter status.\n");
-    out.push_str("   `plexi app list` shows installed apps.\n");
+    out.push_str("   `plexi plugin list` shows installed plugins.\n");
 
     out
 }
@@ -706,7 +706,7 @@ pub fn ai_setup_cli() -> i32 {
     println!();
     println!("{bold}Setup complete!{reset}");
     if backend_selected {
-        println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+        println!("  Plexi plugins using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
     } else {
         println!("  [ai.ollama] is configured with {green}{recommended_model}{reset}; your existing `ai.backend` was left unchanged.");
         println!("  Set `backend = \"ollama\"` under [ai] to switch to it.");
@@ -835,8 +835,8 @@ mod tests {
         assert!(guide.contains("install Ollama"));
         assert!(guide.contains("plexi ai setup"));
         assert!(guide.contains("plexi secret set OPENROUTER_API_KEY --global"));
-        assert!(guide.contains("plexi app install --pack core"));
-        assert!(guide.contains("plexi app install <id>"));
+        assert!(guide.contains("plexi plugin install --pack core"));
+        assert!(guide.contains("plexi plugin install <id>"));
     }
 
     #[test]
@@ -852,7 +852,7 @@ mod tests {
 
         assert!(guide.contains("Cloud AI is ready"));
         assert!(guide.contains("plexi ai doctor"));
-        assert!(guide.contains("plexi app install --pack core"));
+        assert!(guide.contains("plexi plugin install --pack core"));
     }
 
     #[test]

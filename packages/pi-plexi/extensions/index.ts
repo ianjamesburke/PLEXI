@@ -13,6 +13,7 @@ import {
   resolveSessionIdFromContext,
 } from "../src/lifecycle.ts";
 import { buildAgentTools, buildPlexiTools } from "../src/tools.ts";
+import { buildContainerContext, PLEXI_CONTAINER_SECTION } from "../src/container-context.ts";
 import { applyWorkspaceUi } from "../src/ui.ts";
 
 export interface PiPlexiExtensionOptions {
@@ -169,8 +170,12 @@ export function createPiPlexiExtension(options: PiPlexiExtensionOptions = {}) {
       await refreshUi(ctx);
     });
 
-    pi.on("before_agent_start", async (_event: any, ctx: any) => {
+    pi.on("before_agent_start", async (event: any, ctx: any) => {
       lastContext = ctx;
+      const containerContext = buildContainerContext(attachConfig);
+      if (containerContext && event?.systemPromptOptions?.sections) {
+        event.systemPromptOptions.sections[PLEXI_CONTAINER_SECTION] = containerContext;
+      }
       lifecycle.markTurnStarted();
       const sid = resolveSessionIdFromContext(ctx);
       await lifecycle.report("working", { sessionId: sid, force: true });

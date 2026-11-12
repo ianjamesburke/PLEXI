@@ -8,7 +8,10 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Workspace",
         &["run", "workspace", "secret", "routine", "agent", "context"],
     ),
-    ("Apps", &["app", "account", "registry", "events"]),
+    (
+        "Plugins",
+        &["plugin", "view", "account", "registry", "events"],
+    ),
     ("Panes", &["pane", "notify"]),
     (
         "AI",
@@ -16,11 +19,10 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "assistant",
             "ai",
             "changes",
-            "command-view",
+            "agents-dashboard",
             "ledger",
             "needs-you",
             "permissions",
-            "relay",
         ],
     ),
     (
@@ -146,7 +148,11 @@ pub fn blocked_incomplete_arg(
     fn relax(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
         match path.split_first() {
             Some((head, rest)) => cmd.mut_subcommand(*head, |sub| relax(sub, rest, id)),
-            None => cmd.mut_arg(id, |arg| arg.num_args(0..=1).value_parser(clap::builder::StringValueParser::new()).default_missing_value("missing-experiment-value")),
+            None => cmd.mut_arg(id, |arg| {
+                arg.num_args(0..=1)
+                    .value_parser(clap::builder::StringValueParser::new())
+                    .default_missing_value("missing-experiment-value")
+            }),
         }
     }
     let mut cmd = Cli::command();
@@ -290,9 +296,7 @@ pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<Stri
     }
     let bin = invoked_bin_name(args);
     let suggestion = closest_subcommand_suggestion(word, cmd);
-    log::info!(
-        "cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}"
-    );
+    log::info!("cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}");
     let headline = match suggestion {
         Some(matched) => format!("error: unknown command '{word}'. Did you mean `{matched}`?"),
         None => format!("error: unknown command '{word}'"),
@@ -459,6 +463,15 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn removed_relay_is_not_a_command_or_experiment() {
+        assert!(Cli::command().find_subcommand("relay").is_none());
+        let args = vec!["plexi".to_string(), "relay".to_string()];
+        let diagnostic = unknown_command_help(&args, &Cli::command()).unwrap();
+        assert!(diagnostic.contains("unknown command 'relay'"));
+        assert!(ReleaseFeature::from_key("relay").is_none());
+    }
+
     fn sub_at<'a>(cmd: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
         path.iter().fold(cmd, |c, name| {
             c.find_subcommand(name)
@@ -474,31 +487,6 @@ mod tests {
                 .find(|a| a.get_id() == id)
                 .unwrap_or_else(|| panic!("owned arg {p:?} --{id} is not in the clap tree"))
                 .is_hide_set(),
-        }
-    }
-
-    /// Experiments with no clap path of their own: a runtime surface only.
-    const RUNTIME_ONLY: [ReleaseFeature; 5] = [
-        ReleaseFeature::WasmApps,
-        ReleaseFeature::PageGrid,
-        ReleaseFeature::Daw,
-        ReleaseFeature::MediaIo,
-        ReleaseFeature::Accessibility,
-    ];
-
-    #[test]
-    fn every_variant_hides_at_least_one_path_when_off() {
-        let cmd = all_off();
-        for feature in ReleaseFeature::ALL {
-            let paths = feature.owned_paths();
-            if RUNTIME_ONLY.contains(feature) {
-                assert!(paths.is_empty(), "{} is runtime-only", feature.key());
-                continue;
-            }
-            assert!(!paths.is_empty(), "{} owns no clap path", feature.key());
-            for path in paths {
-                assert!(path_hidden(&cmd, *path), "{}: {path:?}", feature.key());
-            }
         }
     }
 
@@ -532,10 +520,9 @@ mod tests {
         let top = visible_subs(&cmd);
         for name in [
             "assistant",
-            "relay",
             "changes",
             "ledger",
-            "command-view",
+            "agents-dashboard",
             "account",
             "routine",
         ] {
@@ -546,20 +533,19 @@ mod tests {
         assert_eq!(
             agent,
             [
-                "team", "next", "fleet", "create", "list", "show", "call", "message", "handoff",
-                "start", "spawn", "done", "result", "wait", "ask", "report", "status", "history",
-                "reopen", "hook"
+                "list", "show", "call", "message", "handoff", "done", "ask", "report", "status",
+                "hook"
             ],
             "{agent:?}"
         );
-        let app = visible_subs(cmd.find_subcommand("app").unwrap());
+        let app = visible_subs(cmd.find_subcommand("plugin").unwrap());
         for gated in ["publish", "browse", "search"] {
             assert!(!app.contains(&gated.to_string()), "{app:?}");
         }
-        for core in ["open", "install", "list", "render", "check"] {
+        for core in ["install", "list", "check"] {
             assert!(app.contains(&core.to_string()), "{app:?}");
         }
-        let open = sub_at(&cmd, &["app", "open"]);
+        let open = sub_at(&cmd, &["view", "open"]);
         let hidden = |id: &str| {
             open.get_arguments()
                 .find(|a| a.get_id() == id)
@@ -636,15 +622,14 @@ mod tests {
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
             (
-                &["plexi", "command-view", "--json"],
-                ReleaseFeature::CommandView,
+                &["plexi", "agents-dashboard", "--json"],
+                ReleaseFeature::AgentsDashboard,
             ),
             (
                 &["plexi", "changes", "refresh", "x"],
                 ReleaseFeature::ChangeSets,
             ),
             (&["plexi", "ledger"], ReleaseFeature::Ledger),
-            (&["plexi", "relay", "status"], ReleaseFeature::Relay),
             (
                 &["plexi", "account", "status"],
                 ReleaseFeature::CloudAccount,
@@ -658,14 +643,27 @@ mod tests {
                 ReleaseFeature::FolderSecrets,
             ),
             (
-                &["plexi", "app", "open", "--mcp", "x"],
+                &["plexi", "view", "open", "--mcp", "x"],
                 ReleaseFeature::McpClient,
             ),
             (
-                &["plexi", "app", "search", "x"],
+                &["plexi", "plugin", "search", "x"],
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
+            (&["plexi", "agent", "start", "x"], ReleaseFeature::AgentMesh),
+            (
+                &["plexi", "agent", "spawn", "x", "--task", "y"],
+                ReleaseFeature::AgentMesh,
+            ),
+            (
+                &["plexi", "agent", "fleet", "dismiss", "1"],
+                ReleaseFeature::AgentMesh,
+            ),
+            (
+                &["plexi", "agent", "team", "show", "x"],
+                ReleaseFeature::AgentMesh,
+            ),
         ];
         for (args, feature) in cases {
             assert_eq!(blocked(args, &[]), Some(*feature), "{args:?}");
@@ -678,8 +676,13 @@ mod tests {
         for args in [
             &["plexi", "agent", "report", "--state", "idle"][..],
             &["plexi", "agent", "status"],
+            &["plexi", "agent", "list", "--json"],
+            &["plexi", "agent", "show", "x"],
+            &["plexi", "agent", "done", "--result", "{}"],
+            &["plexi", "agent", "ask", "q"],
+            &["plexi", "agent", "hook", "install"],
             &["plexi", "ai", "doctor"],
-            &["plexi", "app", "open", "--cli", "htop"],
+            &["plexi", "view", "open", "--cli", "htop"],
             &["plexi", "secret", "set", "A"],
             &["plexi", "secret", "get", "A"],
             &["plexi", "needs-you", "list"],
@@ -687,20 +690,6 @@ mod tests {
         ] {
             assert_eq!(blocked(args, &[]), None, "{args:?}");
         }
-    }
-
-    #[test]
-    fn a_hidden_command_explains_how_to_turn_it_on() {
-        let mut cmd = all_off();
-        let relay = cmd.find_subcommand_mut("relay").unwrap();
-        let help = relay.render_long_help().to_string();
-        assert!(
-            help.contains(
-                "relay is an experiment. Turn it on with: plexi experiments enable relay"
-            ),
-            "{help}"
-        );
-        assert!(!help.contains("pair"), "{help}");
     }
 
     #[test]
@@ -792,7 +781,9 @@ mod tests {
                 "arg0={arg0:?} output={out}"
             );
             assert!(
-                out.contains(&format!("For more information, try '{expected_bin} --help'.")),
+                out.contains(&format!(
+                    "For more information, try '{expected_bin} --help'."
+                )),
                 "arg0={arg0:?} output={out}"
             );
         }

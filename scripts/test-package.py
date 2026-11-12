@@ -14,13 +14,33 @@ import tempfile
 import time
 import threading
 
+from package import macos_deployment_target
+
 REPO = Path(__file__).resolve().parent.parent
+
+
+def verify_macos_minimum(binary, target):
+    output = subprocess.check_output(['vtool', '-show-build', str(binary)], text=True)
+    versions = re.findall(r'^\s*minos\s+(\d+(?:\.\d+)+)\s*$', output, re.M)
+    if not versions:
+        raise ValueError(f'{binary}: missing macOS minimum version in build metadata')
+    def version(value):
+        parts = tuple(map(int, value.split('.')))
+        return parts + (0,) * max(0, 3 - len(parts))
+    for minimum in versions:
+        if version(minimum) > version(target):
+            raise ValueError(f'{binary}: minimum macOS {minimum} exceeds {target}')
+    print(f'{binary}: macOS minimum {", ".join(versions)} <= {target}')
 
 
 def main(args):
     package = args.package.resolve()
     manifest = json.loads((package / 'package.json').read_text())
     args.output.mkdir(parents=True, exist_ok=True)
+    if manifest['platform'].startswith('macos-'):
+        target = macos_deployment_target()
+        verify_macos_minimum(package / manifest['executable'], target)
+        verify_macos_minimum(package / 'plexi-installer', target)
     # Keep Unix socket paths below sockaddr_un.sun_path on macOS.
     with tempfile.TemporaryDirectory(prefix='plexi pkg ', dir='/tmp' if os.name != 'nt' else None) as temporary:
         root = Path(temporary)

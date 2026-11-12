@@ -2,13 +2,40 @@ Plexi reads config.toml from the active channel profile. Alpha uses ~/.plexi-alp
 
 Changes take effect on the next launch unless a command says otherwise.
 
+The plugin rename preserves permanent user-data keys: workspace secrets use
+`[apps.<plugin-id>]`, agent event subscriptions use `app`, connector authority
+targets keep `app.<tool>`, and AI budgets keep `per_app_daily_usd`. These are the
+single stored representations, not alternate plugin command or manifest forms.
+Existing routes, subscriptions, sealed grants and denials remain bound to the
+same identities.
+
 ## Channel discipline
 
-Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
+See the [configuration reference](../website/src/content/docs/config.md#channel-discipline) for channel profiles and installation behavior.
 
-Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
+## Core-only startup
 
-PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
+Set `core_only = true` at the top level of the channel-global config to start
+with every plugin disabled. The default is false. Workspace overrides are
+ignored for this key. Changes require a host restart, including changes made
+with config reload.
+
+For a PR profile, use `plexi-pr-<N> config set -g core_only=true`, then restart
+that PR host. `plexi-pr-<N> host status --json` reports the running value in
+`core_only` and `running.core_only`; a stopped host reports null.
+Use `plexi-pr-<N> config set -g core_only=false` and restart to return to normal.
+The terminal remains available to edit config with `$EDITOR`.
+
+Core-only startup skips plugin seeding, registry discovery and every plugin
+launch, including native views and direct paths. Plugin commands and shortcuts
+report which plugin is unavailable. Notes capture/picker and UI gallery are
+also withheld; trusted attention and consent remain host services.
+
+Restored plugin panes show an inert “Core-only mode” view. Saving preserves the
+original plugin identity, launch arguments, working folder and serialized state.
+A later normal startup restores the original plugin. Closing a placeholder is
+an explicit layout edit and removes that pane, as closing a normal pane would.
+Plugin packages and user documents stay on disk.
 
 ## Experiments
 
@@ -21,7 +48,7 @@ assistant = true
 
 Manage the table with `plexi experiments list`, `plexi experiments enable <name>`, and `plexi experiments disable <name>`. Those edit config.toml in place and keep your comments and other keys. When the host reads an experiment at runtime, enabling it prints `restart required: run `plexi host restart``. An unknown name is a config error that lists the valid names; `plexi experiments`, `plexi config`, and `--help` still run so you can fix it.
 
-Experiments are read from the global config only. A workspace `.plexi` config that sets `[experiments]` has no effect, so a cloned repository can never switch on the relay, cloud, or agent surfaces for you.
+Experiments are read from the global config only. A workspace `.plexi` config that sets `[experiments]` has no effect, so a cloned repository can never switch on the cloud or agent surfaces for you.
 
 `plexi skill install` and `plexi completions` snapshot the enabled set when they run; rerun them after changing an experiment.
 
@@ -52,7 +79,7 @@ terminal_bg  = "#292a44"
 text_primary = "#cdd6f4"
 ```
 
-Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light.
+Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day. A fresh profile starts in `plexi-dusk` (dark, the default); `plexi-night` is the near-black dark theme, and `plexi-dawn` and `plexi-day` are the light themes. All four share the Plexi violet accent, tuned per background to keep at least 3:1 contrast.
 
 Known color keys: bg_darkest, bg_sidebar, bg_toolbar, terminal_bg, bg_hover, bg_sidebar_hover, bg_active, text_primary, text_dim, text_section, accent, border, foreground, background, black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white, bright_foreground.
 
@@ -126,6 +153,13 @@ toggle_command_palette = "cmd+p"
 open_config            = "cmd+comma"
 ```
 
+`ui_scale_up` / `ui_scale_down` (Cmd+= / Cmd+-) step one global UI scale that
+scales everything together: terminal text, UI text, spacing, cards, overlays and
+modals. `ui_scale_reset` (Cmd+Shift+0) returns to 100%. The scale persists as
+top-level `ui_scale` (0.6-2.0, default 1.0; out-of-range values are clamped).
+`increase_font_size` (Cmd+=) / `decrease_font_size` (Cmd+-) adjust the focused
+pane's text size independently of global interface scale.
+
 `focus_approval` defaults to Cmd+Alt+P and focuses the oldest pending permission
 banner. After its dimmed hint arms, `a` allows once, `d` denies, and Escape leaves
 the request pending and returns keyboard focus. Typing in a pane never decides a
@@ -134,11 +168,27 @@ Enter confirms after a fresh arm delay, and Escape leaves it pending. Session
 approval has no default decision key. See `ApprovalKeyboard` in
 `src/app/approval_keyboard.rs` for the delay and focus contract.
 
+Pane selection uses Cmd+Shift+H/J/K/L to extend from the focused pane. The first
+pane remains the anchor. Cmd+Enter wraps two or more selected panes into a child
+context and enters it; with fewer selected, it keeps the usual zoom or portal
+behavior. Escape, plain Cmd+H/J/K/L, or closing a selected pane clears selection.
+Portals cannot be wrapped, and at least one pane must remain outside the child.
+Cmd+D on a zoomed pane wraps it and creates a second pane beside it in the child.
+
+`context_zoom_out` (Cmd+Escape) closes an open Plexi surface first, then moves
+up one context level. The sidebar shows the active ancestry under its root; clicking an ancestor breadcrumb uses the same parent-return restoration and folds deeper rows. Explicit breadcrumb targets can show a parent whose sole portal is revealed; ordinary context navigation retains its reveal behavior. At the root it stays in panes. The `tree_atlas` experiment
+is off by default; when enabled, Cmd+Escape at the root opens the context tree
+and Enter or Cmd+Enter opens the selected context directly.
+
+Next/previous tab use Cmd+] / Cmd+[. `next_context`, `prev_context`, `nav_back`,
+and `focus_history_forward` have no default shortcuts; they can be assigned in
+`[keybindings]`.
+
 Modifiers: cmd, shift, ctrl, alt. Aliases: command, control, opt, option.
 
 Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down, left, right, open_bracket, close_bracket, backslash, slash, comma, period, equals, minus.
 
-Known actions: focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_app, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
+Known actions: select_pane_left, select_pane_down, select_pane_up, select_pane_right, focus_approval, quit, close_pane, toggle_command_palette, split_horizontal, split_vertical, split_right, split_down, swap_pane_left, swap_pane_down, swap_pane_up, swap_pane_right, send_pane_left, send_pane_down, send_pane_up, send_pane_right, navigate_left, navigate_down, navigate_up, navigate_right, new_tab, next_tab, prev_tab, next_context, prev_context, move_context_up, move_context_down, nav_back, focus_history_forward, toggle_sidebar, toggle_zoom, toggle_shortcuts, rename_context, rename_pane, new_context, new_page_right, toggle_minimap, scroll_up, scroll_down, increase_font_size, decrease_font_size, reset_font_size, ui_scale_up, ui_scale_down, ui_scale_reset, open_file_browser, open_quick_note, open_config, reload_config, open_secrets_manager, open_assistant, force_reload_plugin, toggle_notification_modal, open_scratchpad, push_to_subcontext, new_child_context, set_context_root_from_cwd, hide_pane, park_context, open_notes_picker, close_context.
 
 Unknown keys or conflicting overrides log a warning at startup and keep the default binding.
 
@@ -160,7 +210,7 @@ Scope decides which contexts a notification is visible in: `window` (only the or
 **A notification that does not request a scope is `context`.** It belongs to the context that produced it; following the user into unrelated contexts is the deliberate, opt-in case. Precedence, highest first:
 
 1. An explicitly requested scope — `plexi notify --scope global|context|window`.
-2. For app panes, the app's own `manifest.toml` `[launch] notification_scope`, which is a per-app policy declared by the app author and defaults to `window`.
+2. For plugin panes, the plugin's own `manifest.toml` `[launch] notification_scope`, which is a per-plugin policy declared by the plugin author and defaults to `window`.
 3. Otherwise the shared default, `context`.
 
 A `context`- or `window`-scoped notification needs a sender to attach to. `plexi notify` stamps the caller's own identity (`PLEXI_CONTEXT_ID` / `PLEXI_PANE_ID`) onto the request; the host attaches the notification to that context — never to whichever context happens to be active when the request is handled. When the sender cannot support the requested scope, the host resolves to the nearest wider scope it can honor (logged): `window` with a resolvable context but no live window narrows to `context`; a caller with no resolvable identity at all (a script running outside any pane with `PLEXI_SOCKET` exported, or a stale id) has no home context, so an explicit `--scope context|window` fails with an error at the CLI and an unscoped notification escalates to `global` — reachable everywhere rather than attached to a context that never produced it.
@@ -223,10 +273,10 @@ A server runs in its own process group and is killed — including anything an
 that never produces output, or never completes the MCP handshake, is
 disconnected after a deadline with a visible error rather than left running.
 
-An app never supplies a command: it names a server id and the host resolves the
+A plugin never supplies a command: it names a server id and the host resolves the
 rest here, so the `mcp.client` capability means "talk to a server you
 configured", not "run this command". Servers reach the assistant through the
-bridge app (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
+bridge plugin (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
 connector tools. Format and process contract: `src/host/mcp_client.rs`.
 
 ## Default config.toml
@@ -240,7 +290,9 @@ This is the built-in template Plexi writes when it creates or resets the active 
 config_version = 1
 
 font_size = 14.0
+# ui_scale = 1.0               # host-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
+# pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
 
 confirm_quit  = true
@@ -251,8 +303,8 @@ confirm_context_close = true
 osc_pane_title = true
 
 [theme]
-preset = "catppuccin-mocha"
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light
+preset = "plexi-dusk"
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"
 # bg_darkest   = "#11111b"
@@ -264,6 +316,12 @@ preset = "catppuccin-mocha"
 crt           = false
 ghost         = true
 ghost_opacity = 0.75
+
+[terminal]
+# Lowest allowed contrast ratio (1.0-21.0) between text and its cell background.
+# Colors a program picks for itself are moved toward black or white until they
+# reach it. 1.0 turns it off. 3.0 is the WCAG floor for readable text.
+minimum_contrast = 3.0
 
 [notifications]
 # enabled = true
@@ -288,9 +346,8 @@ ghost_opacity = 0.75
 
 # [cloud]
 # Local use never needs an account. Signing in only links this desktop to
-# relay and cloud features. Unset, local ledger rows and assistant
-# conversations are kept. Relay registry rows, queued envelopes, and the log
-# archives above are still pruned.
+# cloud features. Unset, local ledger rows and assistant conversations are kept.
+# The log archives above are still pruned.
 # retain_local_history = false
 
 # [keybindings]
@@ -309,16 +366,16 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 tips = true
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =
 # login fails closed. An account is optional: local use never needs one. A
-# session only links this desktop to relay and cloud features.
+# session only links this desktop to cloud features.
 # account_backend = "plexi"
 # Accounts service base URL. Unset = the official plexiapp.com service. Override
 # only to point `plexi account login` at a private deployment.

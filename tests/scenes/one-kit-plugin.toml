@@ -1,0 +1,18 @@
+size = [1100.0, 900.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+suite = false
+
+[[steps]]
+open = { kind = "process", path = "apps/dev/component-gallery", as = "plugin" }
+[[steps]]
+wait_view_frame = { target = "plugin", timeout_s = 30.0 }
+[[steps]]
+assert = { target = "plugin", lifecycle = "running", tree_contains = "Primary" }
+[[steps]]
+assert = { target = "plugin", tree_contains = "Secondary" }
+[[steps]]
+assert = { target = "plugin", tree_contains = "Danger" }
+[[steps]]
+assert = { target = "plugin", tree_contains = "Ghost" }
+[[steps]]
+shot = "one-kit-plugin.png"

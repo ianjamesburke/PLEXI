@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::tap::ByteTapHandle;
+
 // Fallback only — the host overrides via `shell::detect_shell()` in practice.
 #[cfg(unix)]
 const DEFAULT_SHELL: &str = "/bin/bash";
@@ -14,6 +16,8 @@ pub struct BackendSettings {
     pub working_directory: Option<PathBuf>,
     pub env: HashMap<String, String>,
     pub dynamic_colors: HashMap<usize, [u8; 3]>,
+    /// Optional observe-only tap on PTY output (see `PtyByteTap`).
+    pub byte_tap: Option<ByteTapHandle>,
 }
 
 impl Default for BackendSettings {
@@ -24,6 +28,7 @@ impl Default for BackendSettings {
             working_directory: None,
             env: HashMap::new(),
             dynamic_colors: HashMap::new(),
+            byte_tap: None,
         }
     }
 }

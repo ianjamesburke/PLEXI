@@ -107,18 +107,46 @@ impl Package {
         })
     }
 
+    /// The package whose manifest names `exe` as its executable. Only the two
+    /// layouts `scripts/package.py` produces are probed: `<root>/<bin>` and
+    /// `<root>/<X>.app/Contents/MacOS/<bin>`. A `package.json` there that is not
+    /// a Plexi manifest (e.g. an npm file beside a copied app) is not a package.
     pub fn at_executable(exe: &Path) -> Result<Option<Self>> {
-        // A release binary is at the root or inside its Mac bundle; never search
-        // arbitrary parent directories beyond the package layout.
-        for root in exe.ancestors().skip(1).take(5) {
-            if root.join(MANIFEST).is_file() {
-                let package = Self::load(root)?;
-                if package.executable()? == exe.canonicalize().context("resolve executable")? {
-                    return Ok(Some(package));
-                }
+        let mut resolved = None;
+        for root in package_roots(exe) {
+            let Some(package) = Self::probe(root)? else {
+                continue;
+            };
+            let exe = match &resolved {
+                Some(exe) => exe,
+                None => resolved.insert(exe.canonicalize().context("resolve executable")?),
+            };
+            if package.executable()? == *exe {
+                return Ok(Some(package));
             }
         }
         Ok(None)
+    }
+
+    /// Loads `root/package.json` only if it claims to be a Plexi manifest (a
+    /// JSON object with `schema`). Such a manifest that then fails to parse is
+    /// a corrupt package and errors; anything else is foreign and ignored.
+    fn probe(root: &Path) -> Result<Option<Self>> {
+        let path = root.join(MANIFEST);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).context(format!("read {}", path.display()))?;
+        let claims_plexi = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .is_ok_and(|v| v.get("schema").is_some());
+        if !claims_plexi {
+            log::info!(
+                "distribution: ignoring non-Plexi {} beside executable",
+                path.display()
+            );
+            return Ok(None);
+        }
+        Self::load(root).map(Some)
     }
 
     pub fn executable(&self) -> Result<PathBuf> {
@@ -178,6 +206,19 @@ impl Package {
     }
 }
 
+/// Directories that can hold the `package.json` for `exe`, innermost first.
+fn package_roots(exe: &Path) -> impl Iterator<Item = &Path> {
+    let dir = exe.parent();
+    let bundle_root = dir
+        .filter(|d| d.file_name().is_some_and(|n| n == "MacOS"))
+        .and_then(Path::parent)
+        .filter(|d| d.file_name().is_some_and(|n| n == "Contents"))
+        .and_then(Path::parent)
+        .filter(|d| d.extension().is_some_and(|e| e == "app"))
+        .and_then(Path::parent);
+    dir.into_iter().chain(bundle_root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +245,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), r#"{"schema":1,"version":"0.3.4","tag":"v0.3.4","build_id":"abc","source_commit":"abc","channel":"stable","platform":"macos-arm64","executable":"plexi","resources":"resources","files":{}}"#).unwrap();
         assert!(Package::load(dir.path()).unwrap().validate().is_err());
+    }
+
+    #[test]
+    fn only_package_layout_roots_are_probed() {
+        let roots = |exe: &str| {
+            package_roots(Path::new(exe))
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(roots("/g/abc/plexi"), [PathBuf::from("/g/abc")]);
+        assert_eq!(
+            roots("/home/Applications/Plexi Beta.app/Contents/MacOS/plexi-beta"),
+            [
+                PathBuf::from("/home/Applications/Plexi Beta.app/Contents/MacOS"),
+                PathBuf::from("/home/Applications"),
+            ]
+        );
+        // Nothing above the bundle's parent (e.g. $HOME) is ever consulted.
+        assert_eq!(
+            roots("/home/x/Contents/MacOS/plexi"),
+            [PathBuf::from("/home/x/Contents/MacOS")]
+        );
+    }
+
+    #[test]
+    fn foreign_package_json_beside_an_executable_is_not_a_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("Plexi Beta.app/Contents/MacOS/plexi-beta");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"host").unwrap();
+        for foreign in [
+            r#"{"name":"npm-thing","version":"1.0.0"}"#,
+            "not json",
+            "[]",
+        ] {
+            std::fs::write(dir.path().join(MANIFEST), foreign).unwrap();
+            assert!(Package::at_executable(&exe).unwrap().is_none(), "{foreign}");
+        }
+        // A manifest that claims to be Plexi's but is incomplete is corrupt.
+        std::fs::write(dir.path().join(MANIFEST), r#"{"schema":1}"#).unwrap();
+        assert!(Package::at_executable(&exe).is_err());
     }
 }

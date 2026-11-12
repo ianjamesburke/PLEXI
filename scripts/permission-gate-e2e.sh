@@ -157,13 +157,13 @@ if [[ "$HOST_RC" -ne 0 ]] || ! grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$
 fi
 "$BIN" context set-root "$WS" >"$EVID/logs/set-root.out" 2>"$EVID/logs/set-root.err" || true
 
-"$BIN" app install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
+"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
   record FAIL chess-install "$(tail -20 "$EVID/logs/app-install.err")"
   exit 1
 }
 # A sibling split, not an overlay, so the seed terminal can be closed
 # and the board can fill the window for the human's clicks.
-"$BIN" app open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
+"$BIN" view open chess --right >"$EVID/logs/open-chess.out" 2>"$EVID/logs/open-chess.err" || true
 
 "$BIN" pane list >"$EVID/logs/panes.json"
 TERM="$(python3 - "$EVID/logs/panes.json" <<'PY'
@@ -195,7 +195,7 @@ in_pane() {
 
 READY=0
 for attempt in $(seq 1 12); do
-  in_pane "ready-$attempt" "\"$BIN\" app call chess chess.state --json > '$EVID/logs/chess-state.json' 2> '$EVID/logs/chess-state.err'" || true
+  in_pane "ready-$attempt" "\"$BIN\" plugin call chess chess.state --json > '$EVID/logs/chess-state.json' 2> '$EVID/logs/chess-state.err'" || true
   if grep -Eq 'revision|permission_required' "$EVID/logs/chess-state.json" "$EVID/logs/chess-state.err" 2>/dev/null \
      && ! grep -q 'tool_not_found' "$EVID/logs/chess-state.json" "$EVID/logs/chess-state.err" 2>/dev/null; then
     READY=1
@@ -267,14 +267,14 @@ done
 [[ -n "$TERM" ]] || { record FAIL panes "no terminal after the human move"; exit 1; }
 sleep 1
 
-# ── 2. Ungranted app call does not move ──────────────────────────────────────
+# ── 2. Ungranted plugin call does not move ──────────────────────────────────────
 PLAY_G1=$(python3 - <<'PY'
 import json
 print(json.dumps({"game_id":"game-1","expected_revision":1,"operation_id":"neg-cli","move":"g1f3"}))
 PY
 )
 LOG_AT=$(wc -c < "$LOG" 2>/dev/null || echo 0)
-in_pane "step2" "\"$BIN\" app call chess chess.play --json --input '$PLAY_G1' > '$EVID/logs/step2.json' 2> '$EVID/logs/step2.err'" || true
+in_pane "step2" "\"$BIN\" plugin call chess chess.play --json --input '$PLAY_G1' > '$EVID/logs/step2.json' 2> '$EVID/logs/step2.err'" || true
 STEP2="$(cat "$EVID/logs/step2.json" "$EVID/logs/step2.err" 2>/dev/null || true)"
 if printf '%s' "$STEP2" | grep -Eq 'permission_required|permission_denied' \
    && ! tail -c +"$((LOG_AT + 1))" "$LOG" | grep -q 'board move g1f3'; then
@@ -362,7 +362,7 @@ PY
 arm 1 assistant-e7e5 e7e5
 # Split beside the board so the sheet and the squares are both on screen.
 "$BIN" pane focus "$CHESS" >/dev/null 2>&1 || true
-"$BIN" app open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
+"$BIN" view open assistant --right >"$EVID/logs/open-assistant.out" 2>"$EVID/logs/open-assistant.err" || true
 ASSIST=""
 for _ in $(seq 1 20); do
   "$BIN" pane list >"$EVID/logs/panes.json"

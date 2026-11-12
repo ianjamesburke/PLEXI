@@ -21,6 +21,7 @@ use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
 use crate::bindings::{BindingAction, BindingsLayout, InputKind};
+use crate::contrast;
 use crate::font::TerminalFont;
 use crate::graphics;
 use crate::theme::TerminalTheme;
@@ -94,6 +95,7 @@ pub struct TerminalViewState {
     current_mouse_position_on_grid: TerminalGridPoint,
     last_cursor_toggle: Instant,
     cursor_visible: bool,
+    cursor_blink_enabled: bool,
     copy_mode: Option<CopyModeState>,
     search_mode: Option<SearchModeState>,
     keyboard: crate::keyboard::KeyboardEncoder,
@@ -111,11 +113,21 @@ impl Default for TerminalViewState {
             current_mouse_position_on_grid: TerminalGridPoint::default(),
             last_cursor_toggle: Instant::now(),
             cursor_visible: true,
+            cursor_blink_enabled: true,
             copy_mode: None,
             search_mode: None,
             keyboard: crate::keyboard::KeyboardEncoder::default(),
             frozen_selection_range: None,
         }
+    }
+}
+
+impl TerminalViewState {
+    /// Control cursor blinking for deterministic rendering; disabling it shows the cursor.
+    pub fn set_cursor_blink_enabled(&mut self, enabled: bool) {
+        self.cursor_blink_enabled = enabled;
+        self.cursor_visible = true;
+        self.last_cursor_toggle = Instant::now();
     }
 }
 
@@ -146,6 +158,8 @@ pub struct TerminalView<'a> {
     /// keyboard events (it never falls back to reading `ctx` for keys — that
     /// silent fallback is exactly the Cmd+A-steal bug this design removes).
     supplied_input: Option<SuppliedInput>,
+    /// Commit a geometry change this frame instead of debouncing it.
+    resize_immediately: bool,
 }
 
 impl Widget for TerminalView<'_> {
@@ -190,6 +204,7 @@ impl<'a> TerminalView<'a> {
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
             supplied_input: None,
+            resize_immediately: false,
         }
     }
 
@@ -234,6 +249,14 @@ impl<'a> TerminalView<'a> {
         self
     }
 
+    /// Skip the resize debounce for this frame (a discrete layout jump, not a
+    /// drag): the backend commits the new grid before `show` paints.
+    #[inline]
+    pub fn resize_immediately(mut self, immediately: bool) -> Self {
+        self.resize_immediately = immediately;
+        self
+    }
+
     #[inline]
     pub fn set_padding(mut self, padding: Vec2) -> Self {
         self.padding = Vec2::new(padding.x.max(0.0), padding.y.max(0.0));
@@ -259,6 +282,7 @@ impl<'a> TerminalView<'a> {
         let outcome = self.backend.request_resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
+            self.resize_immediately,
         );
         if let Some(start) = start {
             crate::diag::span_note(
@@ -339,7 +363,6 @@ impl<'a> TerminalView<'a> {
                             &event,
                             state,
                             self.backend,
-                            layout,
                         ));
                     } else if let egui::Event::Key {
                         key: Key::F,
@@ -444,7 +467,6 @@ impl<'a> TerminalView<'a> {
                                     content.terminal_size.cell_height as f32,
                                 )
                             };
-                            let ppp = layout.ctx.pixels_per_point();
                             if !is_alt_screen {
                                 // Scroll to bottom first so the cursor is in the viewport at its
                                 // natural position (display_offset=0 → cursor_y = cursor_line * cell_h).
@@ -458,7 +480,6 @@ impl<'a> TerminalView<'a> {
                                         SelectionType::Lines,
                                         0.0,
                                         cursor_y,
-                                        ppp,
                                     ),
                                 );
                                 // Scroll to top so SelectUpdate(0,0) resolves to the first historical line.
@@ -466,7 +487,7 @@ impl<'a> TerminalView<'a> {
                                     BackendCommand::ScrollToTop,
                                 );
                                 self.backend.process_command(
-                                    BackendCommand::SelectUpdate(0.0, 0.0, ppp),
+                                    BackendCommand::SelectUpdate(0.0, 0.0),
                                 );
                                 // Sync to make last_content reflect the freshly set selection.
                                 let _ = self.backend.sync();
@@ -640,7 +661,6 @@ impl<'a> TerminalView<'a> {
                 self.backend.process_command(BackendCommand::SelectUpdate(
                     clamped_x - grid_origin.x,
                     clamped_y - grid_origin.y,
-                    layout.ctx.pixels_per_point(),
                 ));
             }
         }
@@ -709,6 +729,9 @@ impl<'a> TerminalView<'a> {
             global_bg,
         ))];
 
+        // Paint all backgrounds first so they cannot erase a neighboring glyph.
+        let mut foreground = Vec::new();
+        let mut cursor_glyph_clip = None;
         for indexed in content.grid.display_iter() {
             let flags = indexed.cell.flags;
             let is_wide_char_spacer =
@@ -753,6 +776,18 @@ impl<'a> TerminalView<'a> {
                 bg = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
             }
 
+            // Final glyph color: hidden text is never drawn, and everything
+            // else is lifted to the minimum contrast against what is actually
+            // painted behind it (selection blended over the global background).
+            let glyph = glyph_color(
+                &self.theme,
+                flags,
+                indexed.c,
+                fg,
+                over(bg, global_bg),
+            );
+            let fg = glyph.unwrap_or(fg);
+
             if global_bg != bg {
                 shapes.push(Shape::Rect(RectShape::filled(
                     cell_rect,
@@ -764,7 +799,7 @@ impl<'a> TerminalView<'a> {
             // Handle hovered hyperlink underline
             if is_hovered_hyperling {
                 let underline_height = y + cell_height;
-                shapes.push(Shape::LineSegment {
+                foreground.push(Shape::LineSegment {
                     points: [
                         Pos2::new(x, underline_height),
                         Pos2::new(x + cell_width, underline_height),
@@ -784,7 +819,7 @@ impl<'a> TerminalView<'a> {
                     // Focused: blink the cursor
                     let blink_interval = Duration::from_millis(530);
                     let elapsed = state.last_cursor_toggle.elapsed();
-                    if elapsed >= blink_interval {
+                    if state.cursor_blink_enabled && elapsed >= blink_interval {
                         state.cursor_visible = !state.cursor_visible;
                         state.last_cursor_toggle = Instant::now();
                         // Note only when the toggle actually fires — noting
@@ -795,41 +830,49 @@ impl<'a> TerminalView<'a> {
                     if state.cursor_visible {
                         match content.cursor_shape {
                             CursorShape::Block | CursorShape::HollowBlock => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    cell_rect,
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        cell_rect,
+                                        CornerRadius::default(),
+                                        cursor_color,
+                                    ),
+                                ));
                             },
                             CursorShape::Beam => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    Rect::from_min_size(
-                                        Pos2::new(x, y),
-                                        Vec2::new(2.0, cell_height),
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(x, y),
+                                            Vec2::new(2.0, cell_height),
+                                        ),
+                                        CornerRadius::default(),
+                                        cursor_color,
                                     ),
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                ));
                             },
                             CursorShape::Underline => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    Rect::from_min_size(
-                                        Pos2::new(x, y + cell_height - 2.0),
-                                        Vec2::new(cell_width, 2.0),
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(x, y + cell_height - 2.0),
+                                            Vec2::new(cell_width, 2.0),
+                                        ),
+                                        CornerRadius::default(),
+                                        cursor_color,
                                     ),
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                ));
                             },
                             CursorShape::Hidden => {},
                         }
                     }
-                    let remaining = blink_interval
-                        .saturating_sub(state.last_cursor_toggle.elapsed());
-                    painter.ctx().request_repaint_after(remaining);
+                    if state.cursor_blink_enabled {
+                        let remaining = blink_interval
+                            .saturating_sub(state.last_cursor_toggle.elapsed());
+                        painter.ctx().request_repaint_after(remaining);
+                    }
                 } else {
                     // Unfocused: hollow outline, no blink
-                    shapes.push(Shape::Rect(RectShape::stroke(
+                    foreground.push(Shape::Rect(RectShape::stroke(
                         cell_rect,
                         CornerRadius::default(),
                         Stroke::new(1.0_f32, cursor_color),
@@ -839,7 +882,7 @@ impl<'a> TerminalView<'a> {
             }
 
             // Draw text content
-            if indexed.c != ' ' && indexed.c != '\t' {
+            if indexed.c != ' ' && indexed.c != '\t' && glyph.is_some() {
                 let glyph_fg = if content.grid.cursor.point == indexed.point
                     && self.has_focus
                     && content.cursor_visible
@@ -849,13 +892,21 @@ impl<'a> TerminalView<'a> {
                     )
                     && state.cursor_visible
                 {
-                    bg
+                    cursor_glyph_color(
+                        &self.theme,
+                        flags,
+                        indexed.c,
+                        bg,
+                        global_bg,
+                        self.theme.get_color(content.cursor.fg),
+                    )
+                    .unwrap_or(bg)
                 } else {
                     fg
                 };
 
                 if graphics::maybe_push_graphics_element(
-                    &mut shapes,
+                    &mut foreground,
                     indexed.c,
                     cell_rect,
                     glyph_fg,
@@ -864,7 +915,20 @@ impl<'a> TerminalView<'a> {
                     continue;
                 }
 
-                shapes.push(painter.fonts_mut(|fonts| {
+                if content.grid.cursor.point == indexed.point
+                    && self.has_focus
+                    && content.cursor_visible
+                    && matches!(
+                        content.cursor_shape,
+                        CursorShape::Block | CursorShape::HollowBlock
+                    )
+                    && state.cursor_visible
+                {
+                    // The inverted cursor glyph uses this cell's background color;
+                    // do not spill that color into the neighboring cell.
+                    cursor_glyph_clip = Some((foreground.len(), cell_rect));
+                }
+                foreground.push(painter.fonts_mut(|fonts| {
                     Shape::text(
                         fonts,
                         Pos2 {
@@ -883,6 +947,15 @@ impl<'a> TerminalView<'a> {
         }
 
         painter.extend(shapes);
+        if let Some((index, clip)) = cursor_glyph_clip {
+            let mut after_cursor = foreground.split_off(index);
+            let cursor_glyph = after_cursor.remove(0);
+            painter.extend(foreground);
+            painter.with_clip_rect(clip).add(cursor_glyph);
+            painter.extend(after_cursor);
+        } else {
+            painter.extend(foreground);
+        }
 
         // Copy-mode: block cursor highlight
         if let Some(ref cm) = state.copy_mode {
@@ -1148,23 +1221,24 @@ fn process_keyboard_event(
         egui::Event::Text(text) => {
             process_text_event(&text, modifiers, backend, bindings_layout)
         },
+        // The backend encodes against the live bracketed-paste mode.
         egui::Event::Paste(text) => InputAction::BackendCall(
             // Windows Terminal convention: Ctrl+V always pastes (not a literal ^V).
             #[cfg(target_os = "windows")]
-            BackendCommand::Write(text.as_bytes().to_vec()),
+            BackendCommand::Paste(text),
             #[cfg(all(
                 not(target_os = "windows"),
                 not(any(target_os = "ios", target_os = "macos"))
             ))]
             if modifiers.contains(Modifiers::COMMAND | Modifiers::SHIFT) {
-                BackendCommand::Write(text.as_bytes().to_vec())
+                BackendCommand::Paste(text)
             } else {
                 // Hotfix - Send ^V when there's not selection on view.
                 BackendCommand::Write([0x16].to_vec())
             },
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             {
-                BackendCommand::Write(text.as_bytes().to_vec())
+                BackendCommand::Paste(text)
             },
         ),
         egui::Event::Copy => {
@@ -1300,14 +1374,12 @@ fn process_copy_mode_event(
     event: &egui::Event,
     state: &mut TerminalViewState,
     backend: &TerminalBackend,
-    layout: &Response,
 ) -> Vec<InputAction> {
     let content = backend.last_content();
     let screen_lines = content.terminal_size.screen_lines();
     let num_cols = content.terminal_size.columns();
     let cell_width = content.terminal_size.cell_width as f32;
     let cell_height = content.terminal_size.cell_height as f32;
-    let ppp = layout.ctx.pixels_per_point();
     let page = (screen_lines as i32 - 1).max(1);
 
     let cursor_px = |cm: &CopyModeState| -> (f32, f32) {
@@ -1321,7 +1393,6 @@ fn process_copy_mode_event(
 
     let advance_selection = |cm: &CopyModeState,
                              actions: &mut Vec<InputAction>,
-                             ppp: f32,
                              cell_width: f32,
                              cell_height: f32| {
         if cm.selection_start.is_some() {
@@ -1330,7 +1401,7 @@ fn process_copy_mode_event(
                 cm.line_in_viewport as f32 * cell_height,
             );
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectUpdate(x, y, ppp),
+                BackendCommand::SelectUpdate(x, y),
             ));
         }
     };
@@ -1381,7 +1452,7 @@ fn process_copy_mode_event(
             if cm.col > 0 {
                 cm.col -= 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowLeft,
@@ -1392,7 +1463,7 @@ fn process_copy_mode_event(
             if cm.col > 0 {
                 cm.col -= 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: right ----
         egui::Event::Text(t) if t == "l" => {
@@ -1400,7 +1471,7 @@ fn process_copy_mode_event(
             if cm.col + 1 < num_cols {
                 cm.col += 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowRight,
@@ -1411,7 +1482,7 @@ fn process_copy_mode_event(
             if cm.col + 1 < num_cols {
                 cm.col += 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: up ----
         egui::Event::Text(t) if t == "k" => {
@@ -1422,7 +1493,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowUp,
@@ -1442,7 +1513,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: down ----
         egui::Event::Text(t) if t == "j" => {
@@ -1453,7 +1524,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowDown,
@@ -1473,7 +1544,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Page up ----
         egui::Event::Key {
@@ -1486,7 +1557,7 @@ fn process_copy_mode_event(
                 .push(InputAction::BackendCall(BackendCommand::Scroll(page)));
             cm.line_in_viewport =
                 cm.line_in_viewport.saturating_sub(page as usize);
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Page down ----
         egui::Event::Key {
@@ -1499,7 +1570,7 @@ fn process_copy_mode_event(
                 .push(InputAction::BackendCall(BackendCommand::Scroll(-page)));
             cm.line_in_viewport = (cm.line_in_viewport + page as usize)
                 .min(screen_lines.saturating_sub(1));
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Jump to top (g) ----
         egui::Event::Text(t) if t == "g" => {
@@ -1507,7 +1578,7 @@ fn process_copy_mode_event(
             actions.push(InputAction::BackendCall(BackendCommand::ScrollToTop));
             cm.line_in_viewport = 0;
             cm.col = 0;
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
             log::info!("[copy-mode] jumped to top");
         },
         // ---- Jump to bottom (G) ----
@@ -1516,7 +1587,7 @@ fn process_copy_mode_event(
             actions
                 .push(InputAction::BackendCall(BackendCommand::ScrollToBottom));
             cm.line_in_viewport = screen_lines.saturating_sub(1);
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
             log::info!("[copy-mode] jumped to bottom");
         },
         // ---- Start visual selection (v) ----
@@ -1526,7 +1597,7 @@ fn process_copy_mode_event(
             cm.line_select = false;
             let (x, y) = cursor_px(cm);
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectStart(SelectionType::Simple, x, y, ppp),
+                BackendCommand::SelectStart(SelectionType::Simple, x, y),
             ));
             log::info!(
                 "[copy-mode] visual selection started at ({}, {})",
@@ -1541,7 +1612,7 @@ fn process_copy_mode_event(
             cm.line_select = true;
             let (x, y) = cursor_px(cm);
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectStart(SelectionType::Lines, x, y, ppp),
+                BackendCommand::SelectStart(SelectionType::Lines, x, y),
             ));
             log::info!(
                 "[copy-mode] line selection started at row {}",
@@ -1871,7 +1942,6 @@ fn build_start_select_command(
         selection_type,
         cursor_position.x - grid_origin.x,
         cursor_position.y - grid_origin.y,
-        layout.ctx.pixels_per_point(),
     )
 }
 
@@ -1892,7 +1962,6 @@ fn process_mouse_move(
         cursor_y,
         &terminal_content.terminal_size,
         terminal_content.grid.display_offset(),
-        layout.ctx.pixels_per_point(),
     );
 
     let mut actions = vec![];
@@ -1910,9 +1979,7 @@ fn process_mouse_move(
             ))
         } else {
             InputAction::BackendCall(BackendCommand::SelectUpdate(
-                cursor_x,
-                cursor_y,
-                layout.ctx.pixels_per_point(),
+                cursor_x, cursor_y,
             ))
         };
 
@@ -1938,13 +2005,69 @@ fn grid_size(size: Vec2, padding: Vec2) -> Vec2 {
     )
 }
 
+/// Final color for a cell's glyph, or `None` when it must not be drawn.
+/// Hidden (SGR 8) text is skipped outright, so no color adjustment can make it
+/// visible. Faint (SGR 2) text is dimmed in `cell_colors` and then held to the
+/// same floor as everything else: faint is a weight cue, not permission to be
+/// unreadable. Emoji and image glyphs are exempt.
+fn glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    fg: Color32,
+    bg: Color32,
+) -> Option<Color32> {
+    if flags.contains(cell::Flags::HIDDEN) {
+        return None;
+    }
+    if contrast::is_exempt_glyph(c) {
+        return Some(fg);
+    }
+    Some(contrast::ensure_min_contrast(
+        fg,
+        bg,
+        theme.minimum_contrast(),
+    ))
+}
+
+/// Glyph color under an inverted block cursor: the cell background drawn over
+/// the cursor block. A selected cell's background is a translucent tint, so it
+/// is composited over the global background first; the floor then measures the
+/// opaque color that is painted, against the cursor block behind it.
+fn cursor_glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    cell_bg: Color32,
+    global_bg: Color32,
+    cursor: Color32,
+) -> Option<Color32> {
+    glyph_color(theme, flags, c, over(cell_bg, global_bg), cursor)
+}
+
+/// Composite `top` over an opaque `base`.
+fn over(top: Color32, base: Color32) -> Color32 {
+    let inv = 255 - u16::from(top.a());
+    let mix = |t: u8, b: u8| {
+        (u16::from(t) + (u16::from(b) * inv + 127) / 255).min(255) as u8
+    };
+    Color32::from_rgb(
+        mix(top.r(), base.r()),
+        mix(top.g(), base.g()),
+        mix(top.b(), base.b()),
+    )
+}
+
 fn cell_colors(theme: &TerminalTheme, cell: &cell::Cell) -> (Color32, Color32) {
     let mut fg = theme.get_color(cell.fg);
     let mut bg = theme.get_color(cell.bg);
+    // Faint is baked into an opaque color (70% fg over the cell background) so
+    // the color that is measured for contrast is exactly the color painted;
+    // an alpha-dimmed glyph would be composited after the floor was applied.
     // DIM_BOLD is the union of DIM and BOLD, not an independent flag.
     // Intersecting it treats ordinary bold text as faint.
     if cell.flags.contains(cell::Flags::DIM) {
-        fg = fg.linear_multiply(0.7);
+        fg = over(fg.linear_multiply(0.7), bg);
     }
     if cell.flags.contains(cell::Flags::INVERSE) {
         std::mem::swap(&mut fg, &mut bg);
@@ -1985,11 +2108,137 @@ mod tests {
                 flags,
                 ..Default::default()
             };
-            let expected = theme.get_color(cell.fg).linear_multiply(0.7);
+            let expected = over(
+                theme.get_color(cell.fg).linear_multiply(0.7),
+                theme.get_color(cell.bg),
+            );
+            assert_eq!(expected.a(), 255);
             assert_eq!(cell_colors(&theme, &cell).0, expected);
             cell.flags.insert(cell::Flags::INVERSE);
             assert_eq!(cell_colors(&theme, &cell).1, expected);
         }
+    }
+
+    fn themed(minimum: f32) -> TerminalTheme {
+        TerminalTheme::default().with_minimum_contrast(minimum)
+    }
+
+    #[test]
+    fn glyph_color_lifts_low_contrast_text_and_one_turns_it_off() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let lifted =
+            glyph_color(&themed(3.0), cell::Flags::empty(), 'a', fg, bg)
+                .unwrap();
+        assert!(contrast::contrast_ratio(lifted, bg) >= 3.0);
+        assert_eq!(
+            glyph_color(&themed(1.0), cell::Flags::empty(), 'a', fg, bg),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn hidden_text_is_never_drawn_at_any_minimum() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        for minimum in [1.0, 3.0, 21.0] {
+            assert_eq!(
+                glyph_color(&themed(minimum), cell::Flags::HIDDEN, 'a', fg, bg),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_keep_their_color() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        assert_eq!(
+            glyph_color(
+                &themed(3.0),
+                cell::Flags::empty(),
+                '\u{1F600}',
+                fg,
+                bg
+            ),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn painted_faint_text_meets_the_floor_on_light_and_dark_backgrounds() {
+        use crate::theme::ColorPalette;
+        for background in ["#f4ecdf", "#ffffff", "#d7d6e4", "#1a1b26"] {
+            let theme = TerminalTheme::new(Box::new(ColorPalette {
+                background: background.into(),
+                ..ColorPalette::default()
+            }))
+            .with_minimum_contrast(3.0);
+            for (r, g, b) in [(153, 153, 153), (177, 185, 249), (200, 200, 200)]
+            {
+                for flags in [cell::Flags::DIM, cell::Flags::DIM_BOLD] {
+                    let cell =
+                        cell::Cell {
+                            flags,
+                            fg: Color::Spec(
+                                alacritty_terminal::vte::ansi::Rgb { r, g, b },
+                            ),
+                            ..Default::default()
+                        };
+                    let (fg, cell_bg) = cell_colors(&theme, &cell);
+                    let out = glyph_color(&theme, cell.flags, 'a', fg, cell_bg)
+                        .unwrap();
+                    // What the GPU paints: the glyph color composited over the cell.
+                    let painted = over(out, cell_bg);
+                    assert_eq!(
+                        out.a(),
+                        255,
+                        "faint glyph must be an opaque color"
+                    );
+                    assert!(
+                        contrast::contrast_ratio(painted, cell_bg) >= 3.0,
+                        "({r},{g},{b}) faint on {background}: painted {painted:?} ratio {}",
+                        contrast::contrast_ratio(painted, cell_bg)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inverted_cursor_glyph_on_a_selected_cell_is_opaque_and_meets_the_floor()
+    {
+        let theme = themed(3.0);
+        let global_bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let selection = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let cursor = Color32::from_rgb(0xc8, 0xc8, 0xd8);
+        let out = cursor_glyph_color(
+            &theme,
+            cell::Flags::empty(),
+            'a',
+            selection,
+            global_bg,
+            cursor,
+        )
+        .unwrap();
+        assert_eq!(out.a(), 255, "glyph must be an opaque color");
+        assert!(
+            contrast::contrast_ratio(out, cursor) >= 3.0,
+            "{out:?} on cursor {cursor:?}: ratio {}",
+            contrast::contrast_ratio(out, cursor)
+        );
+    }
+
+    #[test]
+    fn over_composites_translucent_selection_onto_the_base() {
+        let base = Color32::from_rgb(200, 200, 200);
+        assert_eq!(over(base, Color32::BLACK), base);
+        let sel = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let blended = over(sel, base);
+        assert!(
+            blended.b() > blended.r(),
+            "selection tint must show: {blended:?}"
+        );
     }
 
     #[test]

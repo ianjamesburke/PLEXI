@@ -1,28 +1,14 @@
 use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => {
-            let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID"
-                    );
-                    return 1;
-                }
-            };
-            match pane_id_str.parse::<u64>() {
-                Ok(n) => n,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                    return 1;
-                }
-            }
-        }
+    let resolved_pane_id = match current_pane_id(pane_id, "pane name") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
-    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name={name:?}");
+    log::info!(
+        "pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}",
+        name.chars().count()
+    );
     send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,
@@ -30,26 +16,41 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     }))
 }
 
-fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
-    match pane_id {
-        Some(id) => Ok(id),
-        None => {
-            let raw = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                    );
-                    return Err(1);
-                }
-            };
-            match raw.parse::<u64>() {
-                Ok(id) => Ok(id),
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {raw}");
-                    Err(1)
-                }
+const PANE_ID_FIX_HINT: &str =
+    "Run this inside a Plexi pane or pass a pane id (see 'plexi pane list').";
+
+/// The one current-pane rule: an explicit id wins, else `PLEXI_PANE_ID`, else an
+/// error naming the variable and the fix. Never falls back to the focused pane.
+/// `env` is the raw value of `PLEXI_PANE_ID` (`None` when unset).
+pub(crate) fn pick_current_pane(explicit: Option<u64>, env: Option<&str>) -> Result<u64, String> {
+    if let Some(id) = explicit {
+        return Ok(id);
+    }
+    match env {
+        None => Err(format!(
+            "no pane id given and PLEXI_PANE_ID is not set. {PANE_ID_FIX_HINT}"
+        )),
+        Some(raw) => raw.trim().parse::<u64>().map_err(|_| {
+            format!("PLEXI_PANE_ID is not a valid pane id: {raw:?}. {PANE_ID_FIX_HINT}")
+        }),
+    }
+}
+
+/// Resolve the pane a self-targeting command acts on (see [`pick_current_pane`]).
+/// `command` is only used for the info log when the id came from the environment.
+pub fn current_pane_id(explicit: Option<u64>, command: &str) -> Result<u64, i32> {
+    let env = std::env::var_os("PLEXI_PANE_ID").map(|v| v.to_string_lossy().into_owned());
+    match pick_current_pane(explicit, env.as_deref()) {
+        Ok(id) => {
+            if explicit.is_none() {
+                log::info!("{command}:cli: pane id defaulted from PLEXI_PANE_ID pane_id={id}");
             }
+            Ok(id)
+        }
+        Err(message) => {
+            log::warn!("{command}:cli: {message}");
+            eprintln!("error: {message}");
+            Err(1)
         }
     }
 }
@@ -121,7 +122,7 @@ pub fn pane_slot_write_cli(
         eprintln!("error: slot name empty");
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot write") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -168,7 +169,7 @@ pub fn pane_slot_write_cli(
 
 /// `plexi pane slot read <name> [pane_id]`
 pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot read") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -270,7 +271,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot wait") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -310,7 +311,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
 
 /// `plexi pane slot list [pane_id]`
 pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot list") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -339,7 +340,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
 
 /// `plexi pane slot delete <name> [pane_id]`
 pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot delete") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -402,13 +403,11 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane message recv") {
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_message_recv",
@@ -459,14 +458,8 @@ fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
 #[derive(Debug, PartialEq)]
 pub enum PaneResultReadOutcome {
     Validated(Vec<u8>),
-    NoResultYet {
-        error_code: String,
-        message: String,
-    },
-    InvalidResult {
-        error_code: String,
-        message: String,
-    },
+    NoResultYet { error_code: String, message: String },
+    InvalidResult { error_code: String, message: String },
     Failed(String),
 }
 
@@ -546,13 +539,11 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane result") {
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_result_read",
@@ -591,6 +582,21 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
+pub fn pane_layout_cli() -> i32 {
+    log::info!("pane_layout:cli: requesting workspace snapshot");
+    match super::request(
+        serde_json::json!({"type":"workspace_snapshot"}),
+        "pane-layout-response",
+        "pane layout",
+    ) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
 pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
     let context_id: Option<u64> = if current {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {
@@ -683,7 +689,11 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             .get("name")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .or_else(|| pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                pane.get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or("pane");
         let role = pane
             .get("agent_role")
@@ -734,7 +744,13 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             for (idx, child) in kids.iter().enumerate() {
                 let is_last = idx + 1 == kids.len();
                 let child_branch = if is_last { "└── " } else { "├── " };
-                walk(child, &child_prefix, child_branch, children_by_parent, lines);
+                walk(
+                    child,
+                    &child_prefix,
+                    child_branch,
+                    children_by_parent,
+                    lines,
+                );
             }
         }
     }
@@ -838,26 +854,9 @@ pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
             "steps": steps,
         })
     } else {
-        let pane_id: u64 = match pane_id {
-            Some(id) => id,
-            None => {
-                let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!(
-                            "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane, or pass a pane id"
-                        );
-                        return 1;
-                    }
-                };
-                match pane_id_str.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                        return 1;
-                    }
-                }
-            }
+        let pane_id = match current_pane_id(pane_id, "pane info") {
+            Ok(id) => id,
+            Err(code) => return code,
         };
         log::info!("pane_info:cli: pane_id={pane_id}");
         serde_json::json!({
@@ -973,11 +972,25 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to a terminal pane's PTY stdin, or focuses an app pane and
+/// Writes text to a terminal pane's PTY stdin, or focuses a view pane and
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32 {
+    pane_send_with_operation_cli(pane_id, text, submit, paste, None)
+}
+
+pub fn pane_send_with_operation_cli(
+    pane_id: u64,
+    text: &str,
+    submit: bool,
+    paste: bool,
+    operation_id: Option<&str>,
+) -> i32 {
+    let generated_operation_id = operation_id.is_none();
+    let operation_id = operation_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));
     log::info!(
         "pane_send:cli: pane_id={pane_id} len={} submit={submit} paste={paste}",
         text.len()
@@ -988,6 +1001,8 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         "text": text,
         "submit": submit,
         "paste": paste,
+        "operation_id": operation_id,
+        "generated_operation_id": generated_operation_id,
         "peer_ancestry": [],
     });
     if submit {
@@ -1001,8 +1016,14 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
             SUBMIT_REPLY_WINDOW,
         ) {
             Ok(content) => content,
-            Err(code) => return code,
+            Err(code) => {
+                eprintln!(
+                    "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+                );
+                return code;
+            }
         };
+        report_duplicate_pane_send(&content);
         let outcome = submit_outcome(&content);
         outcome.report();
         return outcome.exit_code();
@@ -1014,12 +1035,28 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         SUBMIT_REPLY_WINDOW,
     ) {
         Ok(content) => content,
-        Err(code) => return code,
+        Err(code) => {
+            eprintln!(
+                "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+            );
+            return code;
+        }
     };
     if let Err(code) = super::check_reply_error(&content) {
         return code;
     }
+    report_duplicate_pane_send(&content);
     0
+}
+
+fn report_duplicate_pane_send(content: &str) {
+    if serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| value.get("duplicate").and_then(serde_json::Value::as_bool))
+        == Some(true)
+    {
+        eprintln!("pane send: this operation was already completed; no text was sent");
+    }
 }
 
 pub fn pane_heartbeat_cli(
@@ -1073,7 +1110,9 @@ fn parse_heartbeat_duration(value: &str) -> Result<std::time::Duration, String> 
 
 /// Client-side poll window for `pane send --submit`. Strictly above the host's
 /// own settle + confirm + retry-confirm ceiling.
-const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(25);
+// The host can spend 20 seconds on approval and then up to 15 seconds on
+// submit confirmation. Leave room for the typed host result to arrive.
+const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// What the host said about a `--submit`, in the two shapes a caller branches on.
 #[derive(Debug, PartialEq, Eq)]
@@ -1182,7 +1221,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            // Native app panes report whether the app's key handler consumed
+            // Native view panes report whether the plugin's key handler consumed
             // the key — surface a miss so driving agents don't assume the
             // key acted.
             if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
@@ -1197,7 +1236,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                          surface (applied next frame)"
                     ),
                     _ => eprintln!(
-                        "note: key delivered but not consumed by the app \
+                        "note: key delivered but not consumed by the plugin \
                          (disposition: {d})"
                     ),
                 }
@@ -1371,23 +1410,9 @@ pub fn pane_capture_cli(
     from_cursor: Option<u64>,
     plain: bool,
 ) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => match std::env::var("PLEXI_PANE_ID") {
-            Ok(v) => match v.parse::<u64>() {
-                Ok(id) => id,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {v}");
-                    return 1;
-                }
-            },
-            Err(_) => {
-                eprintln!(
-                    "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                );
-                return 1;
-            }
-        },
+    let resolved_pane_id = match current_pane_id(pane_id, "pane capture") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
 
     log::info!(
@@ -1493,13 +1518,13 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 
 /// `plexi pane state <id> [--stale-after <secs>]`
 ///
-/// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
+/// Sends a `get_pane_state` command to PLEXI_SOCKET. For view panes, the host
 /// writes a JSON object containing a versioned normalized `semantic` tree.
-/// Process apps also retain the compatible `frame` RenderCommand array.
+/// Process plugins also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Every response also
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
-/// `AppRequest::GetPaneState`. Returns 0 on success, 1 on error.
+/// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
@@ -1541,7 +1566,7 @@ pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&st
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
-/// passing the user's workspace root so app state is scoped correctly.
+/// passing the user's workspace root so plugin state is scoped correctly.
 pub(super) fn open_github_ephemeral(
     source: &str,
     layout: Option<&str>,
@@ -1798,11 +1823,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 
@@ -1912,12 +1935,12 @@ mod submit_tests {
         assert_eq!(outcome.exit_code(), 1);
     }
 
-    /// A refusal (app pane, submit already in flight, pane gone) carries no
+    /// A refusal (view pane, submit already in flight, pane gone) carries no
     /// input line and is still a non-zero exit: nothing was submitted.
     #[test]
     fn refusal_reply_exits_one() {
         let outcome = submit_outcome(
-            r#"{"error":"pane 7 is an app pane; --submit only applies to terminal panes"}"#,
+            r#"{"error":"pane 7 is a view pane; --submit only applies to terminal panes"}"#,
         );
         assert_eq!(outcome.exit_code(), 1);
         assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));
@@ -1936,7 +1959,12 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for (submit, paste) in [(true, false), (false, false), (false, true)] {
+        for (submit, paste, operation_id) in [
+            (true, false, None),
+            (false, false, None),
+            (false, true, None),
+            (false, false, Some("explicit-id")),
+        ] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -1960,7 +1988,7 @@ mod submit_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_send_cli(42, "hello", submit, paste);
+            let code = pane_send_with_operation_cli(42, "hello", submit, paste, operation_id);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the send payload");
@@ -1970,6 +1998,17 @@ mod submit_tests {
             assert_eq!(payload["type"], "send_to_pane");
             assert_eq!(payload["submit"], submit, "payload was {payload}");
             assert_eq!(payload["paste"], paste, "payload was {payload}");
+            assert_eq!(payload["generated_operation_id"], operation_id.is_none());
+            if let Some(id) = operation_id {
+                assert_eq!(payload["operation_id"], id);
+            } else {
+                assert!(
+                    payload["operation_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("pane-send-")),
+                    "payload was {payload}"
+                );
+            }
         }
     }
 }
@@ -2306,10 +2345,45 @@ mod pane_result_tests {
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
-        let focus_pane = PaneTarget::from("tester").resolve().expect("resolve tester");
+        let focus_pane = PaneTarget::from("tester")
+            .resolve()
+            .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);
 
         handle.join().expect("listener thread");
+    }
+}
+
+#[cfg(test)]
+mod current_pane_tests {
+    use super::pick_current_pane;
+
+    #[test]
+    fn explicit_id_wins_over_env() {
+        assert_eq!(pick_current_pane(Some(3), Some("9")), Ok(3));
+        assert_eq!(pick_current_pane(Some(3), None), Ok(3));
+    }
+
+    #[test]
+    fn env_is_the_default() {
+        assert_eq!(pick_current_pane(None, Some("42")), Ok(42));
+    }
+
+    #[test]
+    fn unset_names_variable_and_fix() {
+        let err = pick_current_pane(None, None).unwrap_err();
+        assert!(err.contains("PLEXI_PANE_ID is not set"), "{err}");
+        assert!(err.contains("plexi pane list"), "{err}");
+    }
+
+    #[test]
+    fn empty_or_non_numeric_names_variable_and_value() {
+        for raw in ["", "abc", "-1", "4x"] {
+            let err = pick_current_pane(None, Some(raw)).unwrap_err();
+            assert!(err.contains("PLEXI_PANE_ID"), "{err}");
+            assert!(err.contains(&format!("{raw:?}")), "{err}");
+            assert!(err.contains("plexi pane list"), "{err}");
+        }
     }
 }

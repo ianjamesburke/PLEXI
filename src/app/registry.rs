@@ -1,41 +1,45 @@
-//! App registry — discovers and loads Plexi apps and agents.
+//! App registry — discovers and loads Plexi plugins and agents.
 //!
 //! # Discovery order (later entries shadow earlier ones)
 //!
-//! 1. `~/.plexi-<channel>/apps/<id>/manifest.toml` — global apps (lowest priority)
-//! 2. `<workspace_root>/.plexi/apps/<id>/manifest.toml` — local app (overrides global)
+//! 1. `~/.plexi-<channel>/plugins/<id>/manifest.toml` — global plugins (lowest priority)
+//! 2. `<workspace_root>/.plexi/plugins/<id>/manifest.toml` — local plugin (overrides global)
 //! 3. `<workspace_root>/.plexi/agents/<id>/manifest.toml` — local agent (overrides above)
 //!
 //! `workspace_root` is the nearest ancestor of the current working directory that
-//! contains a `.plexi/` directory; if none is found, only global apps are loaded.
+//! contains a `.plexi/` directory; if none is found, only global plugins are loaded.
 //! When ids collide, the local entry wins and the shadow is logged at info level.
 //!
 //! # App directory layout
 //!
 //! ```
-//! ~/.plexi/apps/
+//! ~/.plexi/plugins/
 //!   my-pdf-viewer/
 //!     manifest.toml
-//!     bin/              # or just an executable named after the app id
-//!       plexi-app       # the app binary (.py entries are launched via python3)
+//!     bin/              # or just an executable named after the plugin id
+//!       plexi-plugin       # the plugin binary (.py entries are launched via python3)
 //!   file-browser/
 //!     manifest.toml
-//!     bin/plexi-app
+//!     bin/plexi-plugin
 //! ```
 //!
 //! # manifest.toml
 //!
 //! ```toml
-//! [app]
+//! [plugin]
 //! id = "my-pdf-viewer"
 //! name = "PDF Viewer"
 //! version = "0.1.0"
 //! description = "View PDF files inline"
 //!
-//! [app.capabilities]
-//! file_types = ["pdf"]       # file extensions this app opens
+//! [plugin.capabilities]
+//! file_types = ["pdf"]       # file extensions this view opens
 //! keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
 //! ```
+
+#[path = "manifest_contract.rs"]
+mod manifest_contract;
+pub use manifest_contract::{ManifestError, ManifestErrorKind};
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -44,43 +48,201 @@ use std::path::{Path, PathBuf};
 /// The current manifest schema version. Bumped whenever a required field is
 /// added/removed/renamed so older or newer manifests fail loud at install
 /// rather than silently behave wrong. (Issue #308 Phase 2.)
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct AppManifest {
+#[serde(try_from = "PluginManifestWire")]
+pub struct PluginManifest {
     /// Required schema version — refuses to load if greater than
     /// `MANIFEST_SCHEMA_VERSION`. No serde-default: a manifest that omits
     /// `schema_version` is rejected so contributors notice the contract.
     pub schema_version: u32,
-    pub app: AppManifestApp,
+    pub plugin: PluginIdentity,
+    pub contributes: Contributions,
     #[serde(default)]
     pub launch: LaunchSection,
     #[serde(default)]
-    pub runtime: AppManifestRuntime,
-    /// Canonical secret names this app reads via `ctx.secret(...)`. The host
+    pub runtime: PluginRuntime,
+    /// Canonical secret names this plugin reads via `ctx.secret(...)`. The host
     /// uses this to validate workspace routes at launch and to surface the
     /// missing-secret modal proactively. Empty when omitted.
     #[serde(default)]
     pub secrets: HashMap<String, SecretDecl>,
     /// Optional `[marketplace]` section — visibility, price, and publisher used
-    /// by `plexi app publish` and the hosted catalog. Absent for a local-only
-    /// app, which is then treated as free + private and cannot be published
+    /// by `plexi plugin publish` and the hosted catalog. Absent for a local-only
+    /// plugin, which is then treated as free + private and cannot be published
     /// until the author adds this section.
     #[serde(default)]
     pub marketplace: Option<crate::app::marketplace::MarketplaceManifest>,
     /// Optional `[requires]` section — host version compatibility. Absent means
-    /// the app declares no version requirement and runs on any build.
+    /// the plugin declares no version requirement and runs on any build.
     #[serde(default)]
     pub requires: Option<RequiresSection>,
-    /// Optional `[state]` section — which state scopes the app uses. Absent
-    /// means the app gets the default scope list (`["global"]`).
+    /// Optional `[state]` section — which state scopes the plugin uses. Absent
+    /// means the plugin gets the default scope list (`["global"]`).
     #[serde(default)]
     pub state: Option<StateSection>,
+    /// `[[cli_operation]]` typed one-shot CLI operations the plugin may request
+    /// through host-brokered consent. Validated at check and install by
+    /// `crate::app::cli_operation::validate_all`; empty when omitted.
+    #[serde(default, rename = "cli_operation")]
+    pub cli_operations: Vec<crate::app::cli_operation::CliOperationDecl>,
+}
+
+/// Only the current public manifest shape is deserializable. Disk migration is
+/// an explicit operation, never an alternate loader or a serde alias.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginManifestWire {
+    schema_version: u32,
+    plugin: PluginIdentity,
+    runtime: PluginRuntime,
+    contributes: Contributions,
+    #[serde(default)]
+    launch: LaunchSection,
+    #[serde(default)]
+    secrets: HashMap<String, SecretDecl>,
+    #[serde(default)]
+    marketplace: Option<crate::app::marketplace::MarketplaceManifest>,
+    #[serde(default)]
+    requires: Option<RequiresSection>,
+    #[serde(default)]
+    state: Option<StateSection>,
+    #[serde(default, rename = "cli_operation")]
+    cli_operations: Vec<crate::app::cli_operation::CliOperationDecl>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct Contributions {
+    #[serde(default)]
+    pub views: Vec<ViewDeclaration>,
+    #[serde(default)]
+    pub commands: Vec<CommandDeclaration>,
+    // Preserve names so later contributions get a contract error before activation.
+    #[serde(flatten)]
+    unsupported: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// Inert host command declaration. `handler` is a symbolic identifier, never
+/// an executable, argv or shell expression. Dispatch belongs to the command registry.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandDeclaration {
+    pub id: String,
+    pub handler: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ViewDeclaration {
+    pub id: String,
+    #[serde(default)]
+    pub default: bool,
+}
+
+impl TryFrom<PluginManifestWire> for PluginManifest {
+    type Error = ManifestError;
+
+    fn try_from(mut wire: PluginManifestWire) -> Result<Self, Self::Error> {
+        let invalid = |field: &str, message: String| {
+            ManifestError::reject(
+                &wire.plugin.id,
+                field,
+                ManifestErrorKind::InvalidField(message),
+            )
+        };
+        if wire.schema_version != MANIFEST_SCHEMA_VERSION {
+            return Err(invalid("schema_version", format!("manifest schema_version must be {MANIFEST_SCHEMA_VERSION}; use [plugin], [runtime] and [[contributes.views]]")));
+        }
+        if wire.runtime.entry.is_empty() {
+            return Err(invalid(
+                "runtime.entry",
+                "must name the plugin entry file".into(),
+            ));
+        }
+        manifest_contract::validate_capabilities(
+            &wire.plugin.id,
+            &wire.plugin.capabilities.capabilities,
+        )?;
+        wire.contributes.validate(&wire.plugin.id)?;
+        let prefix = format!("{}.", wire.plugin.id);
+        let mut seen = std::collections::HashSet::new();
+        let mut defaults = 0;
+        for view in &wire.contributes.views {
+            if !view.id.starts_with(&prefix)
+                || view.id.len() == prefix.len()
+                || !seen.insert(&view.id)
+            {
+                return Err(invalid(
+                    "contributes.views.id",
+                    format!(
+                        "view '{}' must be a unique plugin-namespaced id beginning with '{prefix}'",
+                        view.id
+                    ),
+                ));
+            }
+            defaults += usize::from(view.default);
+        }
+        if defaults > 1 {
+            return Err(invalid(
+                "contributes.views.default",
+                "permits at most one default view".into(),
+            ));
+        }
+        wire.plugin.entry.clone_from(&wire.runtime.entry);
+        wire.plugin.manifest_type = wire.runtime.kind;
+        Ok(Self {
+            schema_version: wire.schema_version,
+            plugin: wire.plugin,
+            runtime: wire.runtime,
+            contributes: wire.contributes,
+            launch: wire.launch,
+            secrets: wire.secrets,
+            marketplace: wire.marketplace,
+            requires: wire.requires,
+            state: wire.state,
+            cli_operations: wire.cli_operations,
+        })
+    }
+}
+
+impl Contributions {
+    pub fn resolve_view(
+        &self,
+        plugin_id: &str,
+        requested: &str,
+    ) -> Result<&ViewDeclaration, String> {
+        if requested != plugin_id {
+            return self
+                .views
+                .iter()
+                .find(|view| view.id == requested)
+                .ok_or_else(|| format!("plugin '{plugin_id}' has no declared view '{requested}'"));
+        }
+        if self.views.len() == 1 {
+            return Ok(&self.views[0]);
+        }
+        if let Some(view) = self.views.iter().find(|view| view.default) {
+            return Ok(view);
+        }
+        Err(if self.views.is_empty() {
+            format!("plugin '{plugin_id}' has no view to open")
+        } else {
+            format!(
+                "plugin '{plugin_id}' has no default view; choose: {}",
+                self.views
+                    .iter()
+                    .map(|view| view.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+    }
 }
 
 /// v3 state section — `[state]`. Declares the ordered list of state scopes
-/// this app addresses; the first entry is the app's default. Validated at
-/// install and launch via [`AppManifest::state_scopes`] — an unknown scope,
+/// this plugin addresses; the first entry is the plugin's default. Validated at
+/// install and launch via [`PluginManifest::state_scopes`] — an unknown scope,
 /// an empty list, or a duplicate fails loudly, never a silent fallback
 /// (`join_group` is the cautionary unvalidated-key precedent).
 #[derive(Deserialize, Debug, Clone)]
@@ -89,13 +251,13 @@ pub struct StateSection {
     /// manifest error, not a default.
     pub scopes: Vec<String>,
     /// Optional `[state] format` — `"json"` (default) or `"markdown"`.
-    /// Validated at install and launch via [`AppManifest::state_format`];
+    /// Validated at install and launch via [`PluginManifest::state_format`];
     /// an unknown value fails loudly.
     #[serde(default)]
     pub format: Option<String>,
 }
 
-impl AppManifest {
+impl PluginManifest {
     /// The validated `[state] scopes` list. An omitted `[state]` section
     /// yields the default scope list; any invalid declaration is an error.
     pub fn state_scopes(&self) -> Result<Vec<crate::host::state_scope::StateScope>, String> {
@@ -117,7 +279,9 @@ impl AppManifest {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-pub struct AppManifestRuntime {
+pub struct PluginRuntime {
+    pub kind: ManifestType,
+    pub entry: String,
     #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
@@ -151,7 +315,7 @@ impl RuntimeExecution {
 /// `[requires]` manifest section — host version compatibility.
 ///
 /// `plexi_min` is a hard floor (host below it refuses to install/run);
-/// `plexi_max` is a soft ceiling (host above it warns the app may be
+/// `plexi_max` is a soft ceiling (host above it warns the plugin may be
 /// superseded, but still runs). See `crate::app::host_version`.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct RequiresSection {
@@ -162,7 +326,7 @@ pub struct RequiresSection {
 }
 
 /// A `[secrets]` table entry from manifest.toml. `required` is **required**
-/// (no serde default) — apps must explicitly state whether the host should
+/// (no serde default) — plugins must explicitly state whether the host should
 /// block on the missing-secret modal at launch.
 #[derive(Deserialize, Debug, Clone)]
 pub struct SecretDecl {
@@ -172,35 +336,37 @@ pub struct SecretDecl {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct AppManifestApp {
+#[serde(deny_unknown_fields)]
+pub struct PluginIdentity {
     pub id: String,
     pub name: String,
+    #[serde(skip)]
     pub entry: String,
     /// Required. Selects host rendering / pane behaviour:
     ///
-    /// - `App` (`type = "app"`): the host renders the app's draw canvas. The
-    ///   default for nearly every Plexi app — UI is freeform, the app emits
+    /// - `App` (`type = "plugin"`): the host renders the plugin's draw canvas. The
+    ///   default for nearly every Plexi plugin — UI is freeform, the plugin emits
     ///   `Rect`/`Text`/etc.
     ///
     /// No `serde(default)` — every manifest must declare its type explicitly.
     /// Discipline matches `schema_version` (issue #308 Phase 2).
-    #[serde(rename = "type")]
+    #[serde(skip)]
     pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
-    /// Optional minimum SDK version this app requires, as a `major.minor.patch`
+    /// Optional minimum SDK version this plugin requires, as a `major.minor.patch`
     /// string (e.g. `"0.1.13"`). When set, the host compares it against the SDK
-    /// version reported in the ready handshake and rejects the app with a
+    /// version reported in the ready handshake and rejects the plugin with a
     /// user-visible fatal error if the running SDK is older. Absent → no gate;
-    /// the app launches on any SDK version (preserves every existing app).
+    /// the plugin launches on any SDK version (preserves every existing plugin).
     #[serde(default)]
     pub min_sdk_version: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub capabilities: AppCapabilities,
-    /// Hot-reload opt-in (#83). When true AND the app was discovered from a
-    /// workspace-local `.plexi/apps/`, the host watches the app dir and
+    pub capabilities: PluginCapabilities,
+    /// Hot-reload opt-in (#83). When true AND the plugin was discovered from a
+    /// workspace-local `.plexi/plugins/`, the host watches the plugin dir and
     /// reloads the subprocess on save. Off by default — global installs
     /// never auto-reload regardless of this field.
     ///
@@ -223,25 +389,27 @@ pub struct AppManifestApp {
     pub repo: Option<String>,
 
     /// Python package dependencies. Installed via `uv pip install` at install time
-    /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
+    /// into a per-plugin venv at `<plugin_dir>/.venv`. Empty when omitted.
     #[serde(default)]
     pub dependencies: Vec<String>,
 }
 
-/// Manifest `[app] type` field — chooses the host rendering surface for
+/// Manifest `[plugin] type` field — chooses the host rendering surface for
 /// the pane. Required; no `serde(default)`.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ManifestType {
-    /// Standard draw-canvas app. Host renders whatever the app draws.
-    App,
-    /// WASM component app. Host loads the manifest entry through wasmtime.
+    /// Standard draw-canvas plugin. Host renders whatever the plugin draws.
+    #[default]
+    #[serde(rename = "python")]
+    Python,
+    /// WASM component plugin. Host loads the manifest entry through wasmtime.
     Wasm,
 }
 
 /// Newtype for `[launch] notification_scope` in manifest.toml. Deserialises
 /// from `"window"` | `"context"` | `"global"`. Default is `window` — the most
-/// restrictive scope and the pre-525 behaviour for apps that don't declare it.
+/// restrictive scope and the pre-525 behaviour for plugins that don't declare it.
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultNotifyScope {
@@ -261,16 +429,15 @@ impl From<DefaultNotifyScope> for crate::protocol::NotifyScope {
     }
 }
 
-/// v3 capability section — `[app.capabilities]`. Holds launch capabilities,
+/// v3 capability section — `[plugin.capabilities]`. Holds launch capabilities,
 /// file type metadata, allowed network hosts, and WASM-specific review
 /// metadata. Launch-time layout + grouping moved to `[launch]`.
 #[derive(Deserialize, Debug, Clone, Default)]
-pub struct AppCapabilities {
+pub struct PluginCapabilities {
     #[serde(default)]
     pub file_types: Vec<String>,
-    /// v3 capability strings. Valid values: fs.read, fs.write, net.http,
-    /// secrets.get, pipe.open, spawn.app, audio.record, audio.playback,
-    /// video.playback. Unknown values cause install to fail (STEP-7).
+    /// Capability IDs from `permissions::capability_ids`. Unknown and
+    /// reserved-unserved IDs fail manifest admission before activation.
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// WASM-specific capability review metadata. This does not drive launch
@@ -278,58 +445,58 @@ pub struct AppCapabilities {
     /// raw WASM decisions.
     #[serde(default)]
     pub wasm: WasmCapabilityReview,
-    /// Hosts this app is allowed to reach via net.http.
+    /// Hosts this plugin is allowed to reach via net.http.
     /// Empty list = unrestricted (allow any host).
     /// Patterns: exact hostname ("api.github.com") or wildcard ("*.wikipedia.org").
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
 }
 
-/// `[app.capabilities.wasm]` review metadata for WASM components.
+/// `[plugin.capabilities.wasm]` review metadata for WASM components.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct WasmCapabilityReview {
-    /// Raw WASM capability ids the app needs for its intended baseline behavior.
+    /// Raw WASM capability ids the plugin needs for its intended baseline behavior.
     #[serde(default)]
     pub required: Vec<String>,
-    /// Raw WASM capability ids the app can request for optional workflows.
+    /// Raw WASM capability ids the plugin can request for optional workflows.
     #[serde(default)]
     pub optional: Vec<String>,
 }
 
 /// v3 launch section — `[launch]`. Controls pane placement, share, grouping,
-/// and keyboard capture when the host spawns this app. All fields optional.
+/// and keyboard capture when the host spawns this plugin. All fields optional.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct LaunchSection {
-    /// Pane group this app joins at spawn. Convention: "cwd" for generic
-    /// directory-synced apps.
+    /// Pane group this plugin joins at spawn. Convention: "cwd" for generic
+    /// directory-synced plugins.
     ///
-    /// **Builtin apps only.** `group_for` is consulted on the builtin branch of
-    /// `launch_app_by_id_with_layout`; Python and WASM panes are constructed
+    /// **Builtin plugins only.** `group_for` is consulted on the builtin branch of
+    /// `open_view_by_id_with_layout`; Python and WASM panes are constructed
     /// with `pane_group: None` and never read this key. Group members are
-    /// synchronized by `sync_app_cwd` reassigning `workspace_root` and calling
-    /// `AppRuntime::sync_cwd`, which is a no-op for every non-builtin arm.
-    /// Declaring it on a Python or WASM app is inert.
+    /// synchronized by `sync_plugin_cwd` reassigning `workspace_root` and calling
+    /// `ViewRuntime::sync_cwd`, which is a no-op for every non-builtin arm.
+    /// Declaring it on a Python or WASM plugin is inert.
     #[serde(default)]
     pub join_group: Option<String>,
-    /// If true, this app captures all keyboard input when focused. Host
+    /// If true, this plugin captures all keyboard input when focused. Host
     /// shortcuts (Cmd+HJKL, Cmd+Enter, etc.) are suppressed; only Cmd+Q and
     /// Cmd+W remain.
     #[serde(default)]
     pub keyboard_capture: bool,
-    /// If true, this app's process survives pane close and can be re-attached.
+    /// If true, this plugin's process survives pane close and can be re-attached.
     /// The host will not kill the subprocess when the pane is closed;
-    /// instead it parks the process in a background registry keyed by app_id.
+    /// instead it parks the process in a background registry keyed by plugin_id.
     #[serde(default)]
     pub background: bool,
-    /// Where this app's notifications surface. `"window"` (default) shows
-    /// notifications only when the app's window is active. `"context"` shows
+    /// Where this plugin's notifications surface. `"window"` (default) shows
+    /// notifications only when the plugin's window is active. `"context"` shows
     /// them whenever the user is in the same sidebar context. `"global"` always
     /// surfaces them regardless of active context — use for stand-up reminders,
     /// timers, and monitoring dashboards.
     #[serde(default)]
     pub notification_scope: DefaultNotifyScope,
     /// Minimum pane width (logical px). Below this the host renders a "too small"
-    /// placeholder instead of the app. None = use host default (120).
+    /// placeholder instead of the plugin. None = use host default (120).
     #[serde(default)]
     pub min_width: Option<f32>,
     /// Minimum pane height (logical px). Rarely set — content scrolls vertically.
@@ -343,32 +510,32 @@ pub struct LaunchSection {
     #[serde(default)]
     pub regular: Option<f32>,
     /// Message written into the companion terminal's PTY on launch. Gives the
-    /// user immediate feedback that the app started. Omit to launch silently.
+    /// user immediate feedback that the plugin started. Omit to launch silently.
     #[serde(default)]
     pub startup_message: Option<String>,
-    /// The app's natural launch placement — the spatial disposition the host
+    /// The plugin's natural launch placement — the spatial disposition the host
     /// uses when a caller does not specify one (#2283). Uses the host's layout-
     /// hint vocabulary verbatim: `overlay` (default), `split_right`/`split_h`,
     /// `split_below`/`split_v`, `split_left`, `split_above`, `tab`,
     /// `new_window`. `None` = host default (`overlay`). Validated at query time
-    /// by [`AppRegistry::placement_for`]; an unrecognized value is ignored with
+    /// by [`PluginRegistry::placement_for`]; an unrecognized value is ignored with
     /// a warning so a typo cannot wedge a launch.
     #[serde(default)]
     pub placement: Option<String>,
-    /// What the host does when this app is launched while an instance already
+    /// What the host does when this plugin is launched while an instance already
     /// exists (#0336). One of [`VALID_ON_LAUNCH`]: `focus_existing` (one
     /// instance globally — relaunch focuses it, jumping context if needed),
     /// `focus_existing_in_context` (one instance per context — relaunch focuses
     /// the instance in the caller's context, else spawns one there), or
     /// `always_new` (default; every launch spawns fresh). Unlike `placement`,
-    /// an unknown value fails install loudly (validated in [`AppRegistry::load_app`])
+    /// an unknown value fails install loudly (validated in [`PluginRegistry::load_plugin`])
     /// per the config-fails-loud philosophy; a dedup typo must never silently
     /// degrade to `always_new`. Resolved at launch via [`OnLaunchPolicy`].
     #[serde(default)]
     pub on_launch: Option<String>,
 }
 
-/// How the host resolves a launch request when an instance of the app is
+/// How the host resolves a launch request when an instance of the plugin is
 /// already open (`[launch] on_launch`, #0336). Duplicate instances (under
 /// `always_new`) each subscribe to the event bus independently, so event
 /// delivery stays sound; instance identity is the host-stamped pane id, never
@@ -404,7 +571,7 @@ impl OnLaunchPolicy {
 /// manifest validator, the launch path, and the author docs agree.
 pub const VALID_ON_LAUNCH: &[&str] = &["focus_existing", "focus_existing_in_context", "always_new"];
 
-/// The host layout-hint vocabulary an app's `[launch] placement` may declare.
+/// The host layout-hint vocabulary a plugin's `[launch] placement` may declare.
 /// Kept in one place so the manifest validator and the launch path agree.
 pub const VALID_PLACEMENTS: &[&str] = &[
     "overlay",
@@ -422,10 +589,10 @@ pub const VALID_PLACEMENTS: &[&str] = &[
 /// `info` level so users can trace which copy of an id won discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrySource {
-    /// `~/.plexi-<channel>/apps/<id>/`
+    /// `~/.plexi-<channel>/plugins/<id>/`
     Global,
-    /// `<workspace_root>/.plexi/apps/<id>/`
-    LocalApp,
+    /// `<workspace_root>/.plexi/plugins/<id>/`
+    LocalPlugin,
     /// `<workspace_root>/.plexi/agents/<id>/`
     LocalAgent,
 }
@@ -434,35 +601,36 @@ impl RegistrySource {
     fn label(self) -> &'static str {
         match self {
             RegistrySource::Global => "global",
-            RegistrySource::LocalApp => "local-app",
+            RegistrySource::LocalPlugin => "local-plugin",
             RegistrySource::LocalAgent => "local-agent",
         }
     }
 }
 
-/// A discovered but not-yet-launched app.
+/// A discovered but not-yet-launched plugin.
 #[derive(Debug, Clone)]
-pub struct InstalledApp {
-    pub manifest: AppManifestApp,
-    pub runtime: AppManifestRuntime,
+pub struct InstalledPlugin {
+    pub manifest: PluginIdentity,
+    pub runtime: PluginRuntime,
+    pub contributes: Contributions,
     pub launch: LaunchSection,
-    /// Canonical secret names this app declares in its `[secrets]` table
+    /// Canonical secret names this plugin declares in its `[secrets]` table
     /// (issue #322). Used by the host to validate workspace routes and
     /// surface the missing-secret prompt at first launch.
     pub secrets: HashMap<String, SecretDecl>,
     pub bin_path: PathBuf,
-    /// Root directory of this app's installation (the directory containing
-    /// `manifest.toml`). Set by `load_app`; used by uninstall and hot-reload.
-    pub app_dir: PathBuf,
+    /// Root directory of this plugin's installation (the directory containing
+    /// `manifest.toml`). Set by `load_plugin`; used by uninstall and hot-reload.
+    pub plugin_dir: PathBuf,
     /// Which discovery layer this entry came from. Set by `scan_dir`; the
-    /// value returned by `load_app` is a placeholder and is overwritten at
+    /// value returned by `load_plugin` is a placeholder and is overwritten at
     /// insert time.
     pub source: RegistrySource,
-    /// For `LocalApp`/`LocalAgent` entries: the workspace root they belong to.
+    /// For `LocalPlugin`/`LocalAgent` entries: the workspace root they belong to.
     /// `None` for global entries.
     pub workspace_root: Option<PathBuf>,
     /// Validated `[state] scopes` from the manifest, ordered; the first entry
-    /// is the app's default scope. The default scope list when `[state]` is
+    /// is the plugin's default scope. The default scope list when `[state]` is
     /// omitted.
     pub state_scopes: Vec<crate::host::state_scope::StateScope>,
     /// Validated `[state] format` from the manifest; JSON when omitted.
@@ -473,55 +641,82 @@ pub struct InstalledApp {
     pub state_declared: bool,
 }
 
-pub struct AppRegistry {
-    /// All discovered apps keyed by their id.
-    apps: HashMap<String, InstalledApp>,
-    /// Extension → app id mapping (first match wins).
+pub struct PluginRegistry {
+    /// All discovered plugins keyed by their id.
+    plugins: HashMap<String, InstalledPlugin>,
+    /// Extension → plugin id mapping (first match wins).
     extension_map: HashMap<String, String>,
     /// The workspace root the local scan was done for. `None` when no local
-    /// apps were scanned (either no workspace or workspace has no apps dir).
+    /// plugins were scanned (either no workspace or workspace has no plugins dir).
     /// Used by the palette to detect when a rescan is needed.
     pub loaded_workspace: Option<PathBuf>,
 }
 
-impl AppRegistry {
-    /// Scan global apps then walk up from `cwd` looking for a `.plexi/` directory;
-    /// if found, also scan its `apps/` and `agents/` subdirs. Local entries shadow
+impl PluginRegistry {
+    pub(crate) fn empty() -> Self {
+        Self {
+            plugins: HashMap::new(),
+            extension_map: HashMap::new(),
+            loaded_workspace: None,
+        }
+    }
+
+    /// Scan global plugins then walk up from `cwd` looking for a `.plexi/` directory;
+    /// if found, also scan its `plugins/` and `agents/` subdirs. Local entries shadow
     /// global ones with the same id (a single info-level log line per shadow).
     pub fn load(cwd: &Path) -> Self {
-        let global_dir = apps_dir();
+        if crate::config::PlexiConfig::load()
+            .core_only
+            .unwrap_or(false)
+        {
+            return Self::empty();
+        }
+        let global_dir = plugins_dir();
         if !global_dir.exists() {
             if let Err(e) = std::fs::create_dir_all(&global_dir) {
-                log::warn!("AppRegistry: could not create global apps dir: {e}");
+                log::warn!("PluginRegistry: could not create global plugins dir: {e}");
             }
         }
         Self::load_with_global(cwd, &global_dir)
     }
 
-    /// Same as [`load`], but with an explicit global apps directory. Used by
-    /// tests so they can stage a fake `~/.plexi-<channel>/apps/` without
+    /// Same as [`load`], but with an explicit global plugins directory. Used by
+    /// tests so they can stage a fake `~/.plexi-<channel>/plugins/` without
     /// touching the real one.
     pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
         let channel_dir = registry_config_dir();
         let mut registry = Self {
-            apps: HashMap::new(),
+            plugins: HashMap::new(),
             extension_map: HashMap::new(),
             loaded_workspace: None,
         };
+
+        if global_dir.file_name().is_some_and(|name| name == "plugins") {
+            if let Some(root) = global_dir.parent() {
+                if let Err(error) = super::plugin_migration::migrate(root) {
+                    eprintln!("{error}");
+                    return registry;
+                }
+            }
+        }
 
         if global_dir.is_dir() {
             registry.scan_dir(global_dir, RegistrySource::Global, None);
         }
 
-        // Local apps + agents — only scanned when a workspace root exists.
-        // `<channel_dir>/apps/` is scanned first, then `<channel_dir>/agents/`;
-        // both shadow global, and a colliding id between local apps and local
+        // Local plugins + agents — only scanned when a workspace root exists.
+        // `<channel_dir>/plugins/` is scanned first, then `<channel_dir>/agents/`;
+        // both shadow global, and a colliding id between local plugins and local
         // agents lets the agent win (scanned later).
         if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
             registry.loaded_workspace = Some(root.clone());
-            let local_apps = root.join(&channel_dir).join("apps");
+            if let Err(error) = super::plugin_migration::migrate(&root.join(&channel_dir)) {
+                eprintln!("{error}");
+                return registry;
+            }
+            let local_apps = root.join(&channel_dir).join("plugins");
             if local_apps.is_dir() {
-                registry.scan_dir(&local_apps, RegistrySource::LocalApp, Some(root.clone()));
+                registry.scan_dir(&local_apps, RegistrySource::LocalPlugin, Some(root.clone()));
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
@@ -533,8 +728,8 @@ impl AppRegistry {
     }
 
     /// Look up an installed entry by id (returns `None` if not discovered).
-    pub fn get(&self, id: &str) -> Option<&InstalledApp> {
-        self.apps.get(id)
+    pub fn get(&self, id: &str) -> Option<&InstalledPlugin> {
+        self.plugins.get(id)
     }
 
     /// Return the manifest identity for a registered WASM entry at `wasm_path`.
@@ -544,7 +739,7 @@ impl AppRegistry {
     /// are all keyed by that canonical id rather than by a filesystem filename.
     pub(crate) fn manifest_id_for_wasm_path(&self, wasm_path: &Path) -> Option<&str> {
         let canonical_path = std::fs::canonicalize(wasm_path).ok()?;
-        self.apps.values().find_map(|installed| {
+        self.plugins.values().find_map(|installed| {
             (installed.manifest.manifest_type == ManifestType::Wasm
                 && std::fs::canonicalize(&installed.bin_path)
                     .ok()
@@ -560,13 +755,13 @@ impl AppRegistry {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("AppRegistry: failed to read {:?}: {e}", dir);
+                log::warn!("PluginRegistry: failed to read {:?}: {e}", dir);
                 return;
             }
         };
 
         // Collected rather than logged per-entry (stint 0417): a channel with
-        // several unbundled example/dev apps produced a dozen WARN lines per
+        // several unbundled example/dev plugins produced a dozen WARN lines per
         // rescan, drowning real signal. One summary line names them all.
         let mut skipped: Vec<String> = Vec::new();
 
@@ -576,11 +771,11 @@ impl AppRegistry {
                 continue;
             }
 
-            match self.load_app(&entry_dir) {
+            match self.load_plugin(&entry_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     log::debug!(
-                        "AppRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
+                        "PluginRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
                         id,
                         installed.runtime.target,
                         installed.runtime.world,
@@ -599,10 +794,10 @@ impl AppRegistry {
                         installed.state_format.as_str(),
                         installed.state_declared,
                     );
-                    if let Some(existing) = self.apps.get(&id) {
+                    if let Some(existing) = self.plugins.get(&id) {
                         if source != existing.source {
                             log::warn!(
-                                "AppRegistry: '{}' — {} entry (from {:?}) shadows {} entry (from {:?})",
+                                "PluginRegistry: '{}' — {} entry (from {:?}) shadows {} entry (from {:?})",
                                 id,
                                 source.label(),
                                 entry_dir,
@@ -611,7 +806,7 @@ impl AppRegistry {
                             );
                         } else {
                             log::debug!(
-                                "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
+                                "PluginRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
                                 source.label(),
                                 id,
                                 entry_dir,
@@ -621,19 +816,29 @@ impl AppRegistry {
                         }
                     } else {
                         log::debug!(
-                            "AppRegistry: loaded {} entry '{}' from {:?}",
+                            "PluginRegistry: loaded {} entry '{}' from {:?}",
                             source.label(),
                             id,
                             entry_dir,
                         );
                     }
+                    let collision = self.plugins.values().find_map(|existing| {
+                        installed
+                            .contributes
+                            .check_command_owner(&id, &existing.manifest.id, &existing.contributes)
+                            .err()
+                    });
+                    if let Some(error) = collision {
+                        skipped.push(error.to_string());
+                        continue;
+                    }
                     for ext in &installed.manifest.capabilities.file_types {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
-                    self.apps.insert(
+                    self.plugins.insert(
                         id.clone(),
-                        InstalledApp {
+                        InstalledPlugin {
                             source,
                             workspace_root: workspace_root.clone(),
                             ..installed
@@ -642,19 +847,19 @@ impl AppRegistry {
                     let _ = (
                         self.is_background(&id),
                         self.watch_eligible(&id),
-                        self.app_dir_for(&id),
+                        self.plugin_dir_for(&id),
                         self.startup_message_for(&id),
                     );
                 }
                 Err(e) => {
                     // Runtime agents (AGENT.md + settings.toml, no manifest)
                     // legitimately share `<channel_dir>/agents/` with
-                    // manifest-bearing pane agents — not a broken app.
+                    // manifest-bearing pane agents — not a broken plugin.
                     if !entry_dir.join("manifest.toml").is_file()
                         && entry_dir.join("settings.toml").is_file()
                     {
                         log::debug!(
-                            "AppRegistry: {:?} is a runtime agent dir, not an app — skipping",
+                            "PluginRegistry: {:?} is a runtime agent dir, not a plugin — skipping",
                             entry_dir.file_name()
                         );
                     } else {
@@ -666,7 +871,7 @@ impl AppRegistry {
 
         if !skipped.is_empty() {
             log::warn!(
-                "AppRegistry: skipped {} entr{} in {:?}: {}",
+                "PluginRegistry: skipped {} entr{} in {:?}: {}",
                 skipped.len(),
                 if skipped.len() == 1 { "y" } else { "ies" },
                 dir,
@@ -675,31 +880,19 @@ impl AppRegistry {
         }
     }
 
-    pub(crate) fn load_app(&self, app_dir: &PathBuf) -> Result<InstalledApp, String> {
-        let manifest_path = app_dir.join("manifest.toml");
+    pub(crate) fn load_plugin(&self, plugin_dir: &PathBuf) -> Result<InstalledPlugin, String> {
+        let manifest_path = plugin_dir.join("manifest.toml");
         let manifest_str = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("no manifest.toml: {e}"))?;
 
-        let manifest: AppManifest =
-            toml::from_str(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
+        let manifest =
+            PluginManifest::parse(&manifest_str).map_err(|e| format!("invalid manifest: {e}"))?;
 
         if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
             return Err(format!(
                 "manifest schema_version = {} is newer than this Plexi build supports (max {}); \
-                 update Plexi to install this app",
+                 update Plexi to install this plugin",
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
-            ));
-        }
-
-        // STEP-7: refuse to install an app whose declared capabilities include
-        // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
-        // this replaces it with a loud install-time failure.
-        if let Err(e) = crate::app::permissions::parse_capability_strings(
-            &manifest.app.capabilities.capabilities,
-        ) {
-            return Err(format!(
-                "manifest lists {e}; valid values: {}",
-                crate::app::permissions::Capability::all_str_values().join(", ")
             ));
         }
 
@@ -718,31 +911,36 @@ impl AppRegistry {
 
         // An invalid `[state]` declaration (scopes or format) fails install
         // loudly, same discipline as capabilities and on_launch above: a typo
-        // silently creating an unreachable scope would orphan the app's data.
+        // silently creating an unreachable scope would orphan the plugin's data.
         // The launch path re-reads the manifest and re-validates in
         // `PythonLaunchConfig::from_manifest_file`.
         let state_scopes = manifest.state_scopes()?;
         let state_format = manifest.state_format()?;
         let state_declared = manifest.state.is_some();
 
-        let bin_path = resolve_entry(app_dir, &manifest.app.entry, manifest.app.manifest_type)?;
+        let bin_path = resolve_entry(
+            plugin_dir,
+            &manifest.plugin.entry,
+            manifest.plugin.manifest_type,
+        )?;
 
         for (name, decl) in &manifest.secrets {
             log::debug!(
-                "AppRegistry: {} declares secret '{name}' (required={}, description=\"{}\")",
-                manifest.app.id,
+                "PluginRegistry: {} declares secret '{name}' (required={}, description=\"{}\")",
+                manifest.plugin.id,
                 decl.required,
                 decl.description,
             );
         }
 
-        Ok(InstalledApp {
-            manifest: manifest.app,
+        Ok(InstalledPlugin {
+            manifest: manifest.plugin,
             runtime: manifest.runtime,
+            contributes: manifest.contributes,
             launch: manifest.launch,
             secrets: manifest.secrets,
             bin_path,
-            app_dir: app_dir.clone(),
+            plugin_dir: plugin_dir.clone(),
             // Placeholders — `scan_dir` overwrites both with real values.
             source: RegistrySource::Global,
             workspace_root: None,
@@ -752,60 +950,60 @@ impl AppRegistry {
         })
     }
 
-    /// List all installed apps.
-    pub fn list(&self) -> Vec<&InstalledApp> {
-        let mut apps: Vec<_> = self.apps.values().collect();
-        apps.sort_by_key(|a| &a.manifest.name);
-        apps
+    /// List all installed plugins.
+    pub fn list(&self) -> Vec<&InstalledPlugin> {
+        let mut plugins: Vec<_> = self.plugins.values().collect();
+        plugins.sort_by_key(|a| &a.manifest.name);
+        plugins
     }
 
-    /// Returns true if the app's process should survive pane close (`[launch].background`).
-    pub fn is_background(&self, app_id: &str) -> bool {
-        self.apps
-            .get(app_id)
+    /// Returns true if the plugin's process should survive pane close (`[launch].background`).
+    pub fn is_background(&self, plugin_id: &str) -> bool {
+        self.plugins
+            .get(plugin_id)
             .map(|a| a.launch.background)
             .unwrap_or(false)
     }
 
     /// Get the manifest-declared pane group (`[launch].join_group`).
-    pub fn group_for(&self, app_id: &str) -> Option<String> {
-        self.apps
-            .get(app_id)
+    pub fn group_for(&self, plugin_id: &str) -> Option<String> {
+        self.plugins
+            .get(plugin_id)
             .and_then(|a| a.launch.join_group.clone())
     }
 
-    /// The app's natural launch placement (`[launch].placement`), validated
+    /// The plugin's natural launch placement (`[launch].placement`), validated
     /// against [`VALID_PLACEMENTS`]. Returns `None` when unset, unknown, or the
-    /// app is not installed — callers then fall back to the host default
+    /// plugin is not installed — callers then fall back to the host default
     /// (`overlay`). An unrecognized value is logged so a manifest typo is
     /// visible rather than silently dropped (#2283).
-    pub fn placement_for(&self, app_id: &str) -> Option<String> {
-        let placement = self.apps.get(app_id)?.launch.placement.clone()?;
+    pub fn placement_for(&self, plugin_id: &str) -> Option<String> {
+        let placement = self.plugins.get(plugin_id)?.launch.placement.clone()?;
         if VALID_PLACEMENTS.contains(&placement.as_str()) {
             Some(placement)
         } else {
             log::warn!(
-                "AppRegistry: app '{app_id}' declares unknown [launch] placement \
+                "PluginRegistry: plugin '{plugin_id}' declares unknown [launch] placement \
                  '{placement}' — ignoring; valid: {VALID_PLACEMENTS:?}"
             );
             None
         }
     }
 
-    /// The app's manifest-declared launch dedup policy (`[launch] on_launch`,
-    /// #0336). Defaults to [`OnLaunchPolicy::AlwaysNew`] when unset or the app
+    /// The plugin's manifest-declared launch dedup policy (`[launch] on_launch`,
+    /// #0336). Defaults to [`OnLaunchPolicy::AlwaysNew`] when unset or the plugin
     /// is not installed. The value is validated loudly at install time, so a
-    /// parse miss here can only mean the app predates validation — treat it as
+    /// parse miss here can only mean the plugin predates validation — treat it as
     /// the default rather than panicking.
-    pub fn on_launch_for(&self, app_id: &str) -> OnLaunchPolicy {
-        self.apps
-            .get(app_id)
+    pub fn on_launch_for(&self, plugin_id: &str) -> OnLaunchPolicy {
+        self.plugins
+            .get(plugin_id)
             .and_then(|a| a.launch.on_launch.as_deref())
             .and_then(|mode| OnLaunchPolicy::parse(mode).ok())
             .unwrap_or_default()
     }
 
-    /// The registry id of the app that declares `[capabilities].file_types`
+    /// The registry id of the plugin that declares `[capabilities].file_types`
     /// for this extension, if any. `ext` is matched lowercase, without a
     /// leading dot. Backs resolution tier (b) of the File Explorer open path
     /// (#2283).
@@ -815,39 +1013,39 @@ impl AppRegistry {
             .map(|s| s.as_str())
     }
 
-    /// Returns true when the app's manifest sets `[app] watch = true`.
-    /// The file watcher only needs the resolved app directory — discovery
+    /// Returns true when the plugin's manifest sets `[plugin] watch = true`.
+    /// The file watcher only needs the resolved plugin directory — discovery
     /// location is irrelevant.
-    pub fn watch_eligible(&self, app_id: &str) -> bool {
-        self.apps
-            .get(app_id)
+    pub fn watch_eligible(&self, plugin_id: &str) -> bool {
+        self.plugins
+            .get(plugin_id)
             .map(|a| a.manifest.watch.unwrap_or(false))
             .unwrap_or(false)
     }
 
-    /// Path to the app's installation directory (contains `manifest.toml`).
-    /// Used by the file watcher; returns `None` when the app id is unknown.
-    pub fn app_dir_for(&self, app_id: &str) -> Option<PathBuf> {
-        self.apps.get(app_id).map(|a| a.app_dir.clone())
+    /// Path to the plugin's installation directory (contains `manifest.toml`).
+    /// Used by the file watcher; returns `None` when the plugin id is unknown.
+    pub fn plugin_dir_for(&self, plugin_id: &str) -> Option<PathBuf> {
+        self.plugins.get(plugin_id).map(|a| a.plugin_dir.clone())
     }
 
-    /// Return the manifest-declared notification scope for an app.
+    /// Return the manifest-declared notification scope for a plugin.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
-    pub fn default_notification_scope_for(&self, app_id: &str) -> crate::protocol::NotifyScope {
-        self.apps
-            .get(app_id)
+    pub fn default_notification_scope_for(&self, plugin_id: &str) -> crate::protocol::NotifyScope {
+        self.plugins
+            .get(plugin_id)
             .map(|a| a.launch.notification_scope.clone().into())
             .unwrap_or(crate::protocol::NotifyScope::Window)
     }
 
     /// Return the manifest-declared startup message, if any.
-    pub fn startup_message_for(&self, app_id: &str) -> Option<String> {
-        self.apps
-            .get(app_id)
+    pub fn startup_message_for(&self, plugin_id: &str) -> Option<String> {
+        self.plugins
+            .get(plugin_id)
             .and_then(|a| a.launch.startup_message.clone())
     }
 
-    /// Check whether an app's declared capabilities are satisfiable by the
+    /// Check whether a plugin's declared capabilities are satisfiable by the
     /// current config. Returns human-readable missing-capability descriptions.
     /// Empty = all satisfied. Does not spawn the process.
     pub fn check_config_capabilities(
@@ -855,7 +1053,7 @@ impl AppRegistry {
         id: &str,
         config: &crate::config::PlexiConfig,
     ) -> Vec<String> {
-        let Some(installed) = self.apps.get(id) else {
+        let Some(installed) = self.plugins.get(id) else {
             return vec![];
         };
         let mut missing = Vec::new();
@@ -871,18 +1069,18 @@ impl AppRegistry {
     }
 }
 
-/// Returns the path to the global apps directory: `~/.plexi/apps/`.
-pub fn apps_dir() -> PathBuf {
-    crate::config::config_dir().join("apps")
+/// Returns the path to the global plugins directory: `~/.plexi/plugins/`.
+pub fn plugins_dir() -> PathBuf {
+    crate::config::config_dir().join("plugins")
 }
 
-/// Every app id installed in the global apps directory, sorted. The listing
+/// Every plugin id installed in the global plugins directory, sorted. The listing
 /// surface for shell completion and any other caller that needs the installed
 /// set by name rather than by path.
-pub fn installed_app_ids() -> Vec<String> {
-    let dir = apps_dir();
+pub fn installed_plugin_ids() -> Vec<String> {
+    let dir = plugins_dir();
     let Ok(read) = std::fs::read_dir(&dir) else {
-        log::debug!("registry: no readable apps dir at {dir:?}");
+        log::debug!("registry: no readable plugins dir at {dir:?}");
         return Vec::new();
     };
     let mut ids: Vec<String> = read
@@ -894,10 +1092,10 @@ pub fn installed_app_ids() -> Vec<String> {
     ids
 }
 
-/// Return the apps dir scoped to `workspace_root` for the current channel.
-/// Workspace apps live at `<workspace_root>/<channel_dir>/apps/`.
-pub fn workspace_apps_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(registry_config_dir()).join("apps")
+/// Return the plugins dir scoped to `workspace_root` for the current channel.
+/// Workspace plugins live at `<workspace_root>/<channel_dir>/plugins/`.
+pub fn workspace_plugins_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(registry_config_dir()).join("plugins")
 }
 
 /// Detect the channel config dir name from the running binary name.
@@ -921,23 +1119,26 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Returns the directories that [`load`] would scan for the given `cwd`.
-/// Passed to `app_registry_watcher::start()` so the watcher follows the same
+/// Passed to `plugin_registry_watcher::start()` so the watcher follows the same
 /// workspace detection as the registry. The workspace channel root is included
-/// to catch first-time creation of `apps/` or `agents/`; the host restarts the
+/// to catch first-time creation of `plugins/` or `agents/`; the host restarts the
 /// watcher after each reload so those new child dirs become direct watches.
 pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
-    let mut dirs = vec![apps_dir()];
+    let mut dirs = vec![plugins_dir()];
     let channel_dir = registry_config_dir();
     if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
         let channel_root = root.join(&channel_dir);
         dirs.push(channel_root.clone());
-        dirs.push(channel_root.join("apps"));
+        dirs.push(channel_root.join("plugins"));
         dirs.push(channel_root.join("agents"));
     }
     dirs
 }
 
-fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_workspace_root_with_channel(
+    start: &Path,
+    channel_dir: &str,
+) -> Option<PathBuf> {
     resolve_workspace_root_stopping_at(start, channel_dir, &workspace_walk_stops())
 }
 
@@ -953,12 +1154,48 @@ pub(crate) fn workspace_walk_stops() -> Vec<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         stops.push(home);
     }
-    if let Some(login) = login_home_dir() {
+    if let Some(login) = effective_login_home() {
         if !stops.iter().any(|have| paths_same(have, &login)) {
             stops.push(login);
         }
     }
     stops
+}
+
+fn effective_login_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(login) = TEST_LOGIN_HOME.with(|c| c.borrow().clone()) {
+        return Some(login);
+    }
+    login_home_dir()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Per-thread login home for tests. The passwd database cannot be pointed
+    /// at a temp dir, so a test that needs "`$HOME` is not the login home"
+    /// names the login home here and leaves `$HOME` alone.
+    static TEST_LOGIN_HOME: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that clears the per-thread test login home on drop.
+#[cfg(test)]
+pub(crate) struct TestLoginHomeGuard;
+
+#[cfg(test)]
+impl Drop for TestLoginHomeGuard {
+    fn drop(&mut self) {
+        TEST_LOGIN_HOME.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Name the login home for the current test thread. Hold the guard for the
+/// duration of the test.
+#[cfg(test)]
+pub(crate) fn set_test_login_home(path: &Path) -> TestLoginHomeGuard {
+    TEST_LOGIN_HOME.with(|c| *c.borrow_mut() = Some(path.to_path_buf()));
+    TestLoginHomeGuard
 }
 
 fn is_walk_stop(path: &Path, stops: &[PathBuf]) -> bool {
@@ -1028,8 +1265,8 @@ fn resolve_workspace_root_stopping_at(
         // Home dir is never a workspace root. Check this BEFORE the channel dir so that
         // ~/.plexi/ (the stable global config dir) doesn't trigger a false positive
         // when the focused pane is at ~/. Without this guard ordering, PR/alpha builds
-        // would silently load stable app code from ~/.plexi/apps/ instead of their own
-        // channel's apps whenever the terminal cwd is ~/. (issue #1064)
+        // would silently load stable plugin code from ~/.plexi/plugins/ instead of their own
+        // channel's plugins whenever the terminal cwd is ~/. (issue #1064)
         if is_walk_stop(&current, stops) {
             return None;
         }
@@ -1102,35 +1339,35 @@ pub(crate) fn resolve_agent_create_workspace_root_stopping_at(
 /// Resolve the `entry` field from manifest.toml to a path.
 /// Fails fast — no guessing, no fallbacks.
 pub(crate) fn resolve_entry(
-    app_dir: &PathBuf,
+    plugin_dir: &PathBuf,
     entry: &str,
     manifest_type: ManifestType,
 ) -> Result<PathBuf, String> {
-    let path = app_dir.join(entry);
+    let path = plugin_dir.join(entry);
 
     if !path.exists() {
         if manifest_type == ManifestType::Wasm {
             return Err(format!(
-                "WASM entry '{entry}' not found in {app_dir:?}; build it first: \
+                "WASM entry '{entry}' not found in {plugin_dir:?}; build it first: \
                  cd {} && cargo component build --release --target wasm32-wasip2",
-                app_dir.display()
+                plugin_dir.display()
             ));
         }
-        return Err(format!("entry '{entry}' not found in {:?}", app_dir));
+        return Err(format!("entry '{entry}' not found in {:?}", plugin_dir));
     }
 
     Ok(path)
 }
 
 /// Walk up from `start` looking for an `apps/dev/` directory (the PLEXI repo's
-/// dev-pack POCs, per `apps/AGENTS.md`) and, if found, scan its immediate
-/// subdirectories for a manifest whose `[app].id` matches `id`.
+/// dev-pack POCs, per `plugins/AGENTS.md`) and, if found, scan its immediate
+/// subdirectories for a manifest whose `[plugin].id` matches `id`.
 ///
-/// Dev-pack apps are intentionally excluded from the id-addressable registry
+/// Dev-pack plugins are intentionally excluded from the id-addressable registry
 /// (`install.sh` never syncs `apps/dev/*` into a profile) — this is used only
 /// to turn a bare "no WASM runtime" miss into an actionable message pointing
 /// the developer at the path-open form.
-pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
     let stops = workspace_walk_stops();
     let mut current = start.to_path_buf();
     loop {
@@ -1141,19 +1378,19 @@ pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
         if dev_dir.is_dir() {
             let entries = std::fs::read_dir(&dev_dir).ok()?;
             for entry in entries.flatten() {
-                let app_dir = entry.path();
-                if !app_dir.is_dir() {
+                let plugin_dir = entry.path();
+                if !plugin_dir.is_dir() {
                     continue;
                 }
-                let Ok(manifest_str) = std::fs::read_to_string(app_dir.join("manifest.toml"))
+                let Ok(manifest_str) = std::fs::read_to_string(plugin_dir.join("manifest.toml"))
                 else {
                     continue;
                 };
-                let Ok(manifest) = toml::from_str::<AppManifest>(&manifest_str) else {
+                let Ok(manifest) = toml::from_str::<PluginManifest>(&manifest_str) else {
                     continue;
                 };
-                if manifest.app.id == id {
-                    return Some(app_dir);
+                if manifest.plugin.id == id {
+                    return Some(plugin_dir);
                 }
             }
             return None;
@@ -1166,100 +1403,266 @@ pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    fn schema2_fixture(extra: &str) -> String {
+        format!("schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[contributes]\n{extra}")
+    }
+
+    #[test]
+    fn schema2_rejects_unknown_capability_before_activation() {
+        let raw = schema2_fixture("[plugin.capabilities]\ncapabilities = ['fs.typo']\n");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("sample") && error.contains("fs.typo"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn schema2_accepts_command_declaration() {
+        let raw = schema2_fixture(
+            "[[contributes.commands]]\nid = 'sample.open'\nhandler = 'open_picker'\n",
+        );
+        toml::from_str::<PluginManifest>(&raw).expect("typed command declaration must parse");
+    }
+
+    #[test]
+    fn schema2_reports_unsupported_contribution_by_name() {
+        let raw = schema2_fixture("[[contributes.panels]]\nid = 'sample.panel'\n");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("sample")
+                && error.contains("contributes.panels")
+                && error.contains("not yet supported"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn plugin_rename_resolves_only_unique_or_declared_default_views() {
+        let mut contributions = Contributions::default();
+        assert!(contributions
+            .resolve_view("notes", "notes")
+            .unwrap_err()
+            .contains("no view"));
+        contributions.views.push(ViewDeclaration {
+            id: "notes.editor".into(),
+            default: false,
+        });
+        assert_eq!(
+            contributions.resolve_view("notes", "notes").unwrap().id,
+            "notes.editor"
+        );
+        contributions.views.push(ViewDeclaration {
+            id: "notes.outline".into(),
+            default: false,
+        });
+        let error = contributions.resolve_view("notes", "notes").unwrap_err();
+        assert!(error.contains("notes.editor") && error.contains("notes.outline"));
+        assert_eq!(
+            contributions
+                .resolve_view("notes", "notes.outline")
+                .unwrap()
+                .id,
+            "notes.outline"
+        );
+        contributions.views[1].default = true;
+        assert_eq!(
+            contributions.resolve_view("notes", "notes").unwrap().id,
+            "notes.outline"
+        );
+    }
+
+    #[test]
+    fn plugin_rename_migrates_installed_044_package_and_preserves_source() {
+        let profile = tempfile::tempdir().unwrap();
+        let old = profile.path().join("apps").join("legacy");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n").unwrap();
+        std::fs::write(
+            old.join("main.py"),
+            "from plexi_sdk.ui import AppBar\nmetadata = dict(actor='app')\ndef view():\n    return AppBar('Legacy')\n",
+        )
+        .unwrap();
+        let global = profile.path().join("plugins");
+        let registry = PluginRegistry::load_with_global(profile.path(), &global);
+        let plugin = registry
+            .get("legacy")
+            .expect("0.4.4 install must remain discoverable");
+        assert_eq!(
+            plugin
+                .contributes
+                .resolve_view("legacy", "legacy")
+                .unwrap()
+                .id,
+            "legacy.main"
+        );
+        assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py"))
+            .unwrap()
+            .contains("SurfaceHeader"));
+        assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py"))
+            .unwrap()
+            .contains("actor='plugin'"));
+        assert!(profile
+            .path()
+            .join("migration-plugin-v2/apps/legacy/main.py")
+            .is_file());
+        let again = PluginRegistry::load_with_global(profile.path(), &global);
+        assert!(
+            again.get("legacy").is_some(),
+            "migration must be idempotent"
+        );
+    }
+
+    #[test]
+    fn plugin_rename_reads_044_saved_layout_without_changing_disk_keys() {
+        let raw = r#"{"id":42,"kind":"app","cwd":"/tmp/example","app_id":"legacy","app_state":{"draft":"keep me"},"launch":{"runtime":"python","app_dir":"/tmp/example/apps/legacy","args":[]}}"#;
+        let pane: crate::workspace::SavedPane = serde_json::from_str(raw).unwrap();
+        assert_eq!(pane.plugin_id.as_deref(), Some("legacy"));
+        assert_eq!(pane.plugin_state.as_ref().unwrap()["draft"], "keep me");
+        let encoded = serde_json::to_value(&pane).unwrap();
+        assert_eq!(encoded["app_id"], "legacy");
+        assert_eq!(encoded["launch"]["app_dir"], "/tmp/example/apps/legacy");
+        assert!(encoded.get("plugin_id").is_none());
+    }
+    #[test]
+    fn plugin_rename_rejects_old_manifest_with_new_form() {
+        let result = toml::from_str::<super::PluginManifest>(
+            "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\n",
+        );
+        let error = result
+            .expect_err("old manifest must require explicit migration")
+            .to_string();
+        assert!(error.contains("plugin"), "must name [plugin]: {error}");
+    }
+
+    #[test]
+    fn legacy_app_table_error_says_rename_to_plugin_schema_2() {
+        for raw in [
+            "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+            "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+        ] {
+            let error = super::PluginManifest::parse(raw)
+                .expect_err("legacy must fail")
+                .to_string();
+            assert!(
+                error.contains("schema 1 `[app]` manifests are no longer accepted"),
+                "{error}"
+            );
+            assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
+            assert!(error.contains("schema_version = 2"), "{error}");
+        }
+        let plain = super::PluginManifest::parse("schema_version = 2\n")
+            .expect_err("incomplete")
+            .to_string();
+        assert!(!plain.contains("no longer accepted"), "{plain}");
+    }
+
+    #[test]
+    fn plugin_rename_accepts_explicit_view_manifest() {
+        let result = toml::from_str::<super::PluginManifest>(
+            "schema_version = 2\n[plugin]\nid = 'calc'\nname = 'Calculator'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[[contributes.views]]\nid = 'calc.main'\n",
+        );
+        assert!(result.is_ok(), "new manifest must parse: {result:?}");
+    }
+
     use super::*;
     use std::fs;
     use std::process::Command;
 
     /// Create a manifest and entry script under `dir/<id>/`.
-    /// `name` is what shows up in the manifest's `[app].name` so tests can
+    /// `name` is what shows up in the manifest's `[plugin].name` so tests can
     /// distinguish two entries with the same id but different content.
-    fn write_app(dir: &Path, id: &str, name: &str) {
-        write_app_with_type(dir, id, name, "app");
+    fn write_plugin(dir: &Path, id: &str, name: &str) {
+        write_plugin_with_type(dir, id, name, "python");
     }
 
-    fn write_app_with_type(dir: &Path, id: &str, name: &str, manifest_type: &str) {
-        let app_dir = dir.join(id);
-        fs::create_dir_all(&app_dir).unwrap();
+    fn write_plugin_with_type(dir: &Path, id: &str, name: &str, manifest_type: &str) {
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).unwrap();
         let manifest = format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"{manifest_type}\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"{manifest_type}\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         );
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = app_dir.join("run.sh");
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = plugin_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
     }
 
     #[test]
-    fn local_app_shadows_global_with_same_id() {
+    fn local_plugin_shadows_global_with_same_id() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        let local_apps = workspace.path().join(&channel_dir).join("plugins");
         fs::create_dir_all(&local_apps).unwrap();
 
-        write_app(global.path(), "foo", "Global Foo");
-        write_app(&local_apps, "foo", "Local Foo");
+        write_plugin(global.path(), "foo", "Global Foo");
+        write_plugin(&local_apps, "foo", "Local Foo");
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let foo = registry.get("foo").expect("foo should be discovered");
         assert_eq!(foo.manifest.name, "Local Foo");
-        assert_eq!(foo.source, RegistrySource::LocalApp);
+        assert_eq!(foo.source, RegistrySource::LocalPlugin);
     }
 
     #[test]
     fn py_entry_loads_without_executable_bit() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("myapp");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        let plugin_dir = global.path().join("myapp");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[plugin]\nid = \"myapp\"\nname = \"My App\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"app.py\"\n\n[[contributes.views]]\nid = \"myapp.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
         // Write entry without shebang or executable bit.
-        fs::write(app_dir.join("app.py"), "import plexi\n").unwrap();
+        fs::write(plugin_dir.join("app.py"), "import plexi\n").unwrap();
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let app = registry
             .get("myapp")
-            .expect("app.py entry must load without chmod+x");
+            .expect("plugin.py entry must load without chmod+x");
         assert!(app.bin_path.ends_with("app.py"));
     }
 
     #[test]
-    fn global_only_app_still_discovered_when_workspace_open() {
+    fn global_only_view_still_discovered_when_workspace_open() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        // Workspace exists (channel dir) but has no local apps/agents.
+        // Workspace exists (channel dir) but has no local plugins/agents.
         let channel_dir = crate::config::workspace_channel_dir();
         fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
 
-        write_app(global.path(), "global-only", "Global Only");
+        write_plugin(global.path(), "global-only", "Global Only");
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let entry = registry
             .get("global-only")
-            .expect("global app should appear");
+            .expect("global plugin should appear");
         assert_eq!(entry.source, RegistrySource::Global);
     }
 
-    /// Stint 0417: broken app dirs (missing manifest.toml) must be collected
+    /// Stint 0417: broken plugin dirs (missing manifest.toml) must be collected
     /// into one summary WARN per scan, not one WARN per broken dir — and
-    /// valid apps in the same directory must still be discovered normally.
+    /// valid plugins in the same directory must still be discovered normally.
     #[test]
-    fn broken_app_dirs_are_summarized_not_logged_per_entry() {
+    fn broken_plugin_dirs_are_summarized_not_logged_per_entry() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
         fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
 
-        write_app(global.path(), "valid-app", "Valid App");
-        // No manifest.toml in these — load_app fails for each.
+        write_plugin(global.path(), "valid-app", "Valid App");
+        // No manifest.toml in these — load_plugin fails for each.
         fs::create_dir_all(global.path().join("broken-one")).unwrap();
         fs::create_dir_all(global.path().join("broken-two")).unwrap();
         fs::create_dir_all(global.path().join("broken-three")).unwrap();
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         assert!(
             registry.get("valid-app").is_some(),
-            "valid app must still be discovered alongside broken dirs"
+            "valid plugin must still be discovered alongside broken dirs"
         );
         assert!(registry.get("broken-one").is_none());
         assert!(registry.get("broken-two").is_none());
@@ -1345,9 +1748,9 @@ mod tests {
         let local_agents = workspace.path().join(&channel_dir).join("agents");
         fs::create_dir_all(&local_agents).unwrap();
 
-        write_app(&local_agents, "code-reviewer", "Code Reviewer");
+        write_plugin(&local_agents, "code-reviewer", "Code Reviewer");
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let agent = registry
             .get("code-reviewer")
             .expect("agent should be discovered");
@@ -1358,9 +1761,9 @@ mod tests {
     fn manifest_with_schema_version_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app(global.path(), "ok-app", "Ok App");
+        write_plugin(global.path(), "ok-app", "Ok App");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(registry.get("ok-app").is_some());
     }
 
@@ -1423,50 +1826,50 @@ mod tests {
         );
 
         for (name, raw, expected_entry) in manifests {
-            let manifest: AppManifest = toml::from_str(raw)
+            let manifest: PluginManifest = toml::from_str(raw)
                 .unwrap_or_else(|error| panic!("{name} manifest must parse: {error}"));
             assert_eq!(manifest.schema_version, MANIFEST_SCHEMA_VERSION, "{name}");
-            assert_eq!(manifest.app.manifest_type, ManifestType::Wasm, "{name}");
-            assert_eq!(manifest.app.entry, expected_entry, "{name}");
+            assert_eq!(manifest.plugin.manifest_type, ManifestType::Wasm, "{name}");
+            assert_eq!(manifest.plugin.entry, expected_entry, "{name}");
         }
     }
 
-    /// Read every top-level app manifest (the exemplar set — `apps/dev/` and
-    /// `apps/examples/` hold no manifest at that level and are skipped).
-    fn shipped_app_manifests() -> Vec<(PathBuf, AppManifest)> {
-        let apps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
+    /// Read every top-level plugin manifest (the exemplar set — `apps/dev/` and
+    /// `plugins/examples/` hold no manifest at that level and are skipped).
+    fn shipped_plugin_manifests() -> Vec<(PathBuf, PluginManifest)> {
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
         let mut found = Vec::new();
-        for entry in fs::read_dir(&apps_dir).expect("apps/ must be readable") {
+        for entry in fs::read_dir(&plugins_dir).expect("plugins/ must be readable") {
             let path = entry
-                .expect("apps/ entry must be readable")
+                .expect("plugins/ entry must be readable")
                 .path()
                 .join("manifest.toml");
             if !path.is_file() {
                 continue;
             }
             let raw = fs::read_to_string(&path).expect("manifest must be readable");
-            let manifest: AppManifest = toml::from_str(&raw)
+            let manifest: PluginManifest = toml::from_str(&raw)
                 .unwrap_or_else(|error| panic!("{} must parse: {error}", path.display()));
             found.push((path, manifest));
         }
         assert!(
             !found.is_empty(),
-            "no top-level app manifests found under {}",
-            apps_dir.display()
+            "no top-level plugin manifests found under {}",
+            plugins_dir.display()
         );
         found
     }
 
-    /// Shipped apps are the de facto documentation — an author copies whatever
+    /// Shipped plugins are the de facto documentation — an author copies whatever
     /// the exemplars declare. A description that names a state path is a claim
-    /// the app cannot keep: the host owns path construction, so an app has no
+    /// the plugin cannot keep: the host owns path construction, so a plugin has no
     /// way to guarantee the file it advertises is the one that gets written.
     /// Todo shipped `<workspace_root>/.plexi/todos.json` while persisting
     /// through `PersistState` to `app_states/todo.json` (stint 0646).
     #[test]
-    fn shipped_app_descriptions_do_not_claim_a_host_owned_state_path() {
-        for (path, manifest) in shipped_app_manifests() {
-            let description = &manifest.app.description;
+    fn shipped_plugin_descriptions_do_not_claim_a_host_owned_state_path() {
+        for (path, manifest) in shipped_plugin_manifests() {
+            let description = &manifest.plugin.description;
             assert!(
                 !description.contains("workspace_root"),
                 "{}: description names a host-owned state path ({description:?}) — \
@@ -1488,9 +1891,9 @@ mod tests {
             .expect("published registry index must be readable");
         let index: serde_json::Value =
             serde_json::from_str(&raw).expect("published registry index must parse");
-        let entries = index["apps"]
+        let entries = index["plugins"]
             .as_array()
-            .expect("published registry index must list apps");
+            .expect("published registry index must list plugins");
 
         let mut matched = 0usize;
         for entry in entries {
@@ -1501,30 +1904,30 @@ mod tests {
             if !manifest_path.is_file() {
                 continue;
             }
-            let manifest: AppManifest =
+            let manifest: PluginManifest =
                 toml::from_str(&fs::read_to_string(&manifest_path).expect("manifest readable"))
                     .unwrap_or_else(|error| panic!("{id} manifest must parse: {error}"));
             let drifted = |field: &str| {
                 format!(
                     "{id}: published registry `{field}` has drifted from \
-                     apps/{id}/manifest.toml — rerun `just website-registry`"
+                     plugins/{id}/manifest.toml — rerun `just website-registry`"
                 )
             };
             assert_eq!(
                 entry["name"].as_str().unwrap_or_default(),
-                manifest.app.name,
+                manifest.plugin.name,
                 "{}",
                 drifted("name")
             );
             assert_eq!(
                 entry["version"].as_str().unwrap_or_default(),
-                manifest.app.version,
+                manifest.plugin.version,
                 "{}",
                 drifted("version")
             );
             assert_eq!(
                 entry["description"].as_str().unwrap_or_default(),
-                manifest.app.description,
+                manifest.plugin.description,
                 "{}",
                 drifted("description")
             );
@@ -1534,7 +1937,7 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(
                 published_caps,
-                manifest.app.capabilities.capabilities,
+                manifest.plugin.capabilities.capabilities,
                 "{}",
                 drifted("capabilities")
             );
@@ -1542,43 +1945,43 @@ mod tests {
         }
         assert!(
             matched > 0,
-            "no published registry entry resolved to a shipped app manifest"
+            "no published registry entry resolved to a shipped plugin manifest"
         );
     }
 
     /// `[launch] join_group` is read only on the builtin branch of
-    /// `launch_app_by_id_with_layout`, and `AppRuntime::sync_cwd` is a no-op
-    /// for the Python arm. Todo is a Python app, so the key it shipped was
+    /// `open_view_by_id_with_layout`, and `ViewRuntime::sync_cwd` is a no-op
+    /// for the Python arm. Todo is a Python plugin, so the key it shipped was
     /// inert — a declaration of behaviour it never had (stint 0646).
     #[test]
     fn todo_manifest_declares_no_pane_group() {
-        let manifest: AppManifest = toml::from_str(include_str!(concat!(
+        let manifest: PluginManifest = toml::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/apps/todo/manifest.toml"
         )))
         .expect("todo manifest must parse");
         assert!(
             manifest.launch.join_group.is_none(),
-            "todo is a Python app; `[launch] join_group` is never read for one, \
-             so declaring it documents behaviour the app does not have"
+            "todo is a Python plugin; `[launch] join_group` is never read for one, \
+             so declaring it documents behaviour the plugin does not have"
         );
     }
 
     #[test]
     fn manifest_with_future_schema_version_refuses() {
         let global = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("future-app");
-        fs::create_dir_all(&app_dir).unwrap();
+        let plugin_dir = global.path().join("future-app");
+        fs::create_dir_all(&plugin_dir).unwrap();
         let manifest = format!(
-            "schema_version = {}\n\n[app]\nid = \"future-app\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n",
+            "schema_version = {}\n\n[plugin]\nid = \"future-app\"\nname = \"Future\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"future-app.main\"\ndefault = true\n",
             MANIFEST_SCHEMA_VERSION + 1
         );
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = app_dir.join("run.sh");
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = plugin_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
 
         let bare = tempfile::tempdir().unwrap();
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("future-app").is_none(),
             "future schema_version manifest must be skipped"
@@ -1590,41 +1993,47 @@ mod tests {
         // Direct unit test of the manifest deserialiser: a manifest without
         // `schema_version` must fail to parse — no serde-default fallback.
         let raw = r#"
-[app]
+[plugin]
 id = "no-version"
 name = "No Version"
 version = "0.0.1"
+
+[runtime]
 entry = "run.sh"
+
+[[contributes.views]]
+id = "no-version.main"
+default = true
 "#;
-        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        let parsed: Result<PluginManifest, _> = toml::from_str(raw);
         assert!(
             parsed.is_err(),
             "manifest missing schema_version must be rejected, got: {parsed:?}"
         );
     }
 
-    // ── v3.3 agent-as-app manifest type field (#285) ─────────────────────
+    // ── v3.3 agent-as-plugin manifest type field (#285) ─────────────────────
 
     #[test]
-    fn manifest_with_type_app_loads() {
+    fn manifest_with_type_plugin_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_type(global.path(), "regular-app", "Regular", "app");
+        write_plugin_with_type(global.path(), "regular-app", "Regular", "python");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let entry = registry
             .get("regular-app")
-            .expect("type=app manifest should load");
-        assert_eq!(entry.manifest.manifest_type, ManifestType::App);
+            .expect("type=plugin manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::Python);
     }
 
     #[test]
     fn manifest_with_type_wasm_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_type(global.path(), "wasm-app", "Wasm", "wasm");
+        write_plugin_with_type(global.path(), "wasm-app", "Wasm", "wasm");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let entry = registry
             .get("wasm-app")
             .expect("type=wasm manifest should load");
@@ -1633,9 +2042,9 @@ entry = "run.sh"
 
     #[test]
     fn missing_wasm_entry_tells_the_author_how_to_build_it() {
-        let app_dir = tempfile::tempdir().unwrap().keep();
+        let plugin_dir = tempfile::tempdir().unwrap().keep();
         let error = resolve_entry(
-            &app_dir,
+            &plugin_dir,
             "target/wasm32-wasip1/release/example.wasm",
             ManifestType::Wasm,
         )
@@ -1648,34 +2057,40 @@ entry = "run.sh"
     #[test]
     fn manifest_with_wasm_capability_review_metadata_loads() {
         let raw = r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "wasm-review"
-type = "wasm"
 name = "WASM Review"
 version = "0.0.1"
-entry = "app.wasm"
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["gpu.render"]
 allowed_hosts = ["api.github.com"]
 
-[app.capabilities.wasm]
+[plugin.capabilities.wasm]
 required = ["state:read-write", "net:fetch:api.github.com"]
 optional = ["ai.query"]
+
+[runtime]
+kind = "wasm"
+entry = "app.wasm"
+
+[[contributes.views]]
+id = "wasm-review.main"
+default = true
 "#;
-        let parsed: AppManifest = toml::from_str(raw).expect("manifest should parse");
-        assert_eq!(parsed.app.capabilities.capabilities, vec!["gpu.render"]);
+        let parsed: PluginManifest = toml::from_str(raw).expect("manifest should parse");
+        assert_eq!(parsed.plugin.capabilities.capabilities, vec!["gpu.render"]);
         assert_eq!(
-            parsed.app.capabilities.allowed_hosts,
+            parsed.plugin.capabilities.allowed_hosts,
             vec!["api.github.com"]
         );
         assert_eq!(
-            parsed.app.capabilities.wasm.required,
+            parsed.plugin.capabilities.wasm.required,
             vec!["state:read-write", "net:fetch:api.github.com"]
         );
-        assert_eq!(parsed.app.capabilities.wasm.optional, vec!["ai.query"]);
+        assert_eq!(parsed.plugin.capabilities.wasm.optional, vec!["ai.query"]);
     }
 
     #[test]
@@ -1683,15 +2098,21 @@ optional = ["ai.query"]
         // No `type` field — must fail to parse. Required field, no
         // `serde(default)`. Discipline matches `schema_version`.
         let raw = r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "no-type"
 name = "No Type"
 version = "0.0.1"
+
+[runtime]
 entry = "run.sh"
+
+[[contributes.views]]
+id = "no-type.main"
+default = true
 "#;
-        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        let parsed: Result<PluginManifest, _> = toml::from_str(raw);
         assert!(
             parsed.is_err(),
             "manifest missing `type` must be rejected, got: {parsed:?}"
@@ -1703,16 +2124,22 @@ entry = "run.sh"
         // `type = "wizard"` — must fail to parse. Only registered runtime
         // types should be accepted; other values must not silently fall back.
         let raw = r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "unknown-type"
-type = "wizard"
 name = "Wizard"
 version = "0.0.1"
+
+[runtime]
+kind = "wizard"
 entry = "run.sh"
+
+[[contributes.views]]
+id = "unknown-type.main"
+default = true
 "#;
-        let parsed: Result<AppManifest, _> = toml::from_str(raw);
+        let parsed: Result<PluginManifest, _> = toml::from_str(raw);
         assert!(
             parsed.is_err(),
             "manifest with unknown type variant must be rejected, got: {parsed:?}"
@@ -1721,26 +2148,26 @@ entry = "run.sh"
 
     // ── stint 0652 `[state] scopes` declaration ──────────────────────────
 
-    fn write_app_with_state_section(dir: &Path, id: &str, state_section: &str) {
-        let app_dir = dir.join(id);
-        fs::create_dir_all(&app_dir).unwrap();
+    fn write_plugin_with_state_section(dir: &Path, id: &str, state_section: &str) {
+        let plugin_dir = dir.join(id);
+        fs::create_dir_all(&plugin_dir).unwrap();
         let manifest = format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n{state_section}"
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n{state_section}\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         );
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     }
 
     #[test]
     fn manifest_with_valid_state_scopes_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_state_section(
+        write_plugin_with_state_section(
             global.path(),
             "scoped-app",
             "\n[state]\nscopes = [\"global\", \"context\"]\n",
         );
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("scoped-app").is_some(),
             "a valid [state] scopes list must load"
@@ -1751,12 +2178,12 @@ entry = "run.sh"
     fn manifest_with_unknown_state_scope_fails_install_loudly() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_state_section(
+        write_plugin_with_state_section(
             global.path(),
             "typo-scope-app",
             "\n[state]\nscopes = [\"workspace\"]\n",
         );
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("typo-scope-app").is_none(),
             "an unknown state scope must refuse to install, never silently fall back"
@@ -1767,8 +2194,12 @@ entry = "run.sh"
     fn manifest_with_empty_state_scopes_fails_install_loudly() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_state_section(global.path(), "empty-scope-app", "\n[state]\nscopes = []\n");
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        write_plugin_with_state_section(
+            global.path(),
+            "empty-scope-app",
+            "\n[state]\nscopes = []\n",
+        );
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("empty-scope-app").is_none(),
             "a present-but-empty [state] scopes must refuse to install"
@@ -1776,18 +2207,18 @@ entry = "run.sh"
     }
 
     #[test]
-    fn installed_app_carries_declared_scopes_format_and_declared_flag() {
+    fn installed_plugin_carries_declared_scopes_format_and_declared_flag() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_state_section(
+        write_plugin_with_state_section(
             global.path(),
             "md-app",
             "\n[state]\nscopes = [\"context\"]\nformat = \"markdown\"\n",
         );
-        write_app_with_state_section(global.path(), "plain-app", "");
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        write_plugin_with_state_section(global.path(), "plain-app", "");
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
 
-        let md = registry.get("md-app").expect("markdown app installs");
+        let md = registry.get("md-app").expect("markdown plugin installs");
         assert_eq!(
             md.state_scopes,
             vec![crate::host::state_scope::StateScope::Context]
@@ -1798,7 +2229,7 @@ entry = "run.sh"
         );
         assert!(md.state_declared, "explicit [state] must set the flag");
 
-        let plain = registry.get("plain-app").expect("plain app installs");
+        let plain = registry.get("plain-app").expect("plain plugin installs");
         assert_eq!(
             plain.state_scopes,
             crate::host::state_scope::default_scopes()
@@ -1814,12 +2245,12 @@ entry = "run.sh"
     fn manifest_with_unknown_state_format_fails_install_loudly() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app_with_state_section(
+        write_plugin_with_state_section(
             global.path(),
             "typo-format-app",
             "\n[state]\nscopes = [\"global\"]\nformat = \"yaml\"\n",
         );
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("typo-format-app").is_none(),
             "an unknown state format must refuse to install, never silently fall back to json"
@@ -1828,8 +2259,8 @@ entry = "run.sh"
 
     #[test]
     fn manifest_without_state_section_defaults_to_global() {
-        let manifest: AppManifest = toml::from_str(
-            "schema_version = 1\n\n[app]\nid = \"plain\"\ntype = \"app\"\nname = \"Plain\"\nentry = \"run.sh\"\n",
+        let manifest: PluginManifest = toml::from_str(
+            "schema_version = 2\n\n[plugin]\nid = \"plain\"\nname = \"Plain\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"plain.main\"\ndefault = true\n",
         )
         .unwrap();
         assert_eq!(
@@ -1844,25 +2275,13 @@ entry = "run.sh"
     fn manifest_with_valid_on_launch_loads_and_resolves_policy() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("singleton-app");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
+        let plugin_dir = global.path().join("singleton-app");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[launch]\non_launch = \"focus_existing\"\n\n[plugin]\nid = \"singleton-app\"\nname = \"Singleton\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"singleton-app.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
-[app]
-id = \"singleton-app\"
-type = \"app\"
-name = \"Singleton\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-on_launch = \"focus_existing\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("singleton-app").is_some(),
             "a valid on_launch policy must load"
@@ -1871,7 +2290,7 @@ on_launch = \"focus_existing\"
             registry.on_launch_for("singleton-app"),
             OnLaunchPolicy::FocusExisting
         );
-        // An app that declares no policy defaults to always_new.
+        // An plugin that declares no policy defaults to always_new.
         assert_eq!(
             registry.on_launch_for("does-not-exist"),
             OnLaunchPolicy::AlwaysNew
@@ -1882,67 +2301,45 @@ on_launch = \"focus_existing\"
     fn manifest_with_invalid_on_launch_fails_install_loudly() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("bad-policy-app");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"bad-policy-app\"
-type = \"app\"
-name = \"Bad Policy\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-on_launch = \"focus_maybe\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        let plugin_dir = global.path().join("bad-policy-app");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[launch]\non_launch = \"focus_maybe\"\n\n[plugin]\nid = \"bad-policy-app\"\nname = \"Bad Policy\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"bad-policy-app.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
         // Directly assert the loud failure — scan_dir would otherwise just warn
         // and skip, so we call the loader to inspect the error message.
-        let registry = AppRegistry::load_with_global(bare.path(), bare.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), bare.path());
         let err = registry
-            .load_app(&app_dir)
+            .load_plugin(&plugin_dir)
             .expect_err("an unknown on_launch value must fail to load");
         assert!(
             err.contains("on_launch") && err.contains("focus_maybe"),
             "error must name the offending field and value, got: {err}"
         );
 
-        // And the app must never reach the registry via the normal scan path.
-        let scanned = AppRegistry::load_with_global(bare.path(), global.path());
+        // And the plugin must never reach the registry via the normal scan path.
+        let scanned = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             scanned.get("bad-policy-app").is_none(),
-            "an app with an invalid on_launch policy must not install"
+            "a plugin with an invalid on_launch policy must not install"
         );
     }
 
-    // ── #83 hot reload — manifest `[app] watch` field ────────────────────
+    // ── #83 hot reload — manifest `[plugin] watch` field ────────────────────
 
     #[test]
     fn manifest_with_watch_true_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("watching-app");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"watching-app\"
-type = \"app\"
-name = \"Watching\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-watch = true
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = app_dir.join("run.sh");
+        let plugin_dir = global.path().join("watching-app");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[plugin]\nid = \"watching-app\"\nname = \"Watching\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"watching-app.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = plugin_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let app = registry
             .get("watching-app")
             .expect("manifest with watch=true should load");
@@ -1951,12 +2348,12 @@ watch = true
 
     #[test]
     fn manifest_with_watch_field_absent_treats_as_false() {
-        // The default `write_app` helper omits `watch` — exercise that path.
+        // The default `write_plugin` helper omits `watch` — exercise that path.
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app(global.path(), "no-watch", "No Watch");
+        write_plugin(global.path(), "no-watch", "No Watch");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let app = registry
             .get("no-watch")
             .expect("default manifest should load");
@@ -1968,28 +2365,18 @@ watch = true
 
     #[test]
     fn watch_field_engages_for_any_source_when_opted_in() {
-        // Any app with `watch = true` in the manifest is eligible for hot reload
+        // Any plugin with `watch = true` in the manifest is eligible for hot reload
         // regardless of whether it was discovered globally or workspace-locally.
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        let local_apps = workspace.path().join(&channel_dir).join("plugins");
         fs::create_dir_all(&local_apps).unwrap();
 
         // Global copy with watch=true.
         let g_dir = global.path().join("dual-install");
         fs::create_dir_all(&g_dir).unwrap();
-        let manifest_g = "\
-schema_version = 1
-
-[app]
-id = \"global-watcher\"
-type = \"app\"
-name = \"Global Watcher\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-watch = true
-";
+        let manifest_g = "schema_version = 2\n\n[plugin]\nid = \"global-watcher\"\nname = \"Global Watcher\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"global-watcher.main\"\ndefault = true\n";
         fs::write(g_dir.join("manifest.toml"), manifest_g).unwrap();
         let entry_g = g_dir.join("run.sh");
         fs::write(&entry_g, "#!/bin/sh\nexit 0\n").unwrap();
@@ -1997,22 +2384,12 @@ watch = true
         // Local copy with watch=true (different id so they don't shadow).
         let l_dir = local_apps.join("local-watcher");
         fs::create_dir_all(&l_dir).unwrap();
-        let manifest_l = "\
-schema_version = 1
-
-[app]
-id = \"local-watcher\"
-type = \"app\"
-name = \"Local Watcher\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-watch = true
-";
+        let manifest_l = "schema_version = 2\n\n[plugin]\nid = \"local-watcher\"\nname = \"Local Watcher\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"local-watcher.main\"\ndefault = true\n";
         fs::write(l_dir.join("manifest.toml"), manifest_l).unwrap();
         let entry_l = l_dir.join("run.sh");
         fs::write(&entry_l, "#!/bin/sh\nexit 0\n").unwrap();
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         assert!(
             registry.watch_eligible("global-watcher"),
             "global install with watch=true must be eligible"
@@ -2028,9 +2405,9 @@ watch = true
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
 
-        write_app(global.path(), "g", "Global");
+        write_plugin(global.path(), "g", "Global");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(registry.get("g").is_some());
         assert_eq!(registry.list().len(), 1);
     }
@@ -2039,13 +2416,13 @@ watch = true
 
     #[test]
     fn manifest_without_notification_scope_defaults_to_window() {
-        // Apps that omit `notification_scope` must default to `Window` —
-        // the pre-525 behaviour (no change for existing apps).
+        // Plugins that omit `notification_scope` must default to `Window` —
+        // the pre-525 behaviour (no change for existing plugins).
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app(global.path(), "no-scope", "No Scope");
+        write_plugin(global.path(), "no-scope", "No Scope");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("no-scope");
         assert_eq!(scope, crate::protocol::NotifyScope::Window);
     }
@@ -2054,49 +2431,37 @@ watch = true
     fn manifest_with_notification_scope_global_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("stand-up");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"stand-up\"
-type = \"app\"
-name = \"Stand Up\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-notification_scope = \"global\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = app_dir.join("run.sh");
+        let plugin_dir = global.path().join("stand-up");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[launch]\nnotification_scope = \"global\"\n\n[plugin]\nid = \"stand-up\"\nname = \"Stand Up\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"stand-up.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = plugin_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("stand-up");
         assert_eq!(scope, crate::protocol::NotifyScope::Global);
     }
 
     #[test]
-    fn local_agent_shadows_local_app_with_same_id() {
+    fn local_agent_shadows_local_plugin_with_same_id() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        let local_apps = workspace.path().join(&channel_dir).join("plugins");
         let local_agents = workspace.path().join(&channel_dir).join("agents");
         fs::create_dir_all(&local_apps).unwrap();
         fs::create_dir_all(&local_agents).unwrap();
 
-        write_app(&local_apps, "tool", "Tool (app)");
-        write_app(&local_agents, "tool", "Tool (agent)");
+        write_plugin(&local_apps, "tool", "Tool (plugin)");
+        write_plugin(&local_agents, "tool", "Tool (agent)");
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let entry = registry.get("tool").expect("tool must be discovered");
         assert_eq!(
             entry.source,
             RegistrySource::LocalAgent,
-            "agent must shadow local app"
+            "agent must shadow local plugin"
         );
         assert_eq!(entry.manifest.name, "Tool (agent)");
     }
@@ -2105,26 +2470,14 @@ notification_scope = \"global\"
     fn manifest_with_notification_scope_context_loads() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("ctx-scoped");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"ctx-scoped\"
-type = \"app\"
-name = \"Context Scoped\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-notification_scope = \"context\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = app_dir.join("run.sh");
+        let plugin_dir = global.path().join("ctx-scoped");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[launch]\nnotification_scope = \"context\"\n\n[plugin]\nid = \"ctx-scoped\"\nname = \"Context Scoped\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"ctx-scoped.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        let entry = plugin_dir.join("run.sh");
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
         assert_eq!(scope, crate::protocol::NotifyScope::Context);
     }
@@ -2133,25 +2486,13 @@ notification_scope = \"context\"
     fn startup_message_round_trips_from_manifest() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("greeter");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
+        let plugin_dir = global.path().join("greeter");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = "schema_version = 2\n\n[launch]\nstartup_message = \"Starting Greeter…\"\n\n[plugin]\nid = \"greeter\"\nname = \"Greeter\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"greeter.main\"\ndefault = true\n";
+        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
-[app]
-id = \"greeter\"
-type = \"app\"
-name = \"Greeter\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-startup_message = \"Starting Greeter…\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert_eq!(
             registry.startup_message_for("greeter"),
             Some("Starting Greeter…".to_string())
@@ -2163,30 +2504,30 @@ startup_message = \"Starting Greeter…\"
     fn startup_message_absent_returns_none() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app(global.path(), "silent-app", "Silent App");
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        write_plugin(global.path(), "silent-app", "Silent App");
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert_eq!(registry.startup_message_for("silent-app"), None);
     }
 
     #[test]
-    fn local_app_has_workspace_root_populated() {
+    fn local_plugin_has_workspace_root_populated() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         // channel_dir in tests == ".plexi" (binary name is "plexi")
         let channel_dir = registry_config_dir();
-        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        let local_apps = workspace.path().join(&channel_dir).join("plugins");
         fs::create_dir_all(&local_apps).unwrap();
-        write_app(&local_apps, "ws-app", "Workspace App");
+        write_plugin(&local_apps, "ws-app", "Workspace App");
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let app = registry
             .get("ws-app")
-            .expect("workspace app should be discovered");
-        assert_eq!(app.source, RegistrySource::LocalApp);
+            .expect("workspace plugin should be discovered");
+        assert_eq!(app.source, RegistrySource::LocalPlugin);
         let ws_root = app
             .workspace_root
             .as_ref()
-            .expect("workspace_root should be Some for local app");
+            .expect("workspace_root should be Some for local plugin");
         assert_eq!(
             ws_root.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap(),
@@ -2194,19 +2535,19 @@ startup_message = \"Starting Greeter…\"
     }
 
     #[test]
-    fn global_app_has_no_workspace_root() {
+    fn global_plugin_has_no_workspace_root() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_app(global.path(), "global-app", "Global App");
+        write_plugin(global.path(), "global-app", "Global App");
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let app = registry
             .get("global-app")
-            .expect("global app should be discovered");
+            .expect("global plugin should be discovered");
         assert_eq!(app.source, RegistrySource::Global);
         assert!(
             app.workspace_root.is_none(),
-            "global app must have no workspace_root"
+            "global plugin must have no workspace_root"
         );
     }
 
@@ -2218,7 +2559,7 @@ startup_message = \"Starting Greeter…\"
         // Create the channel dir so resolve_workspace_root_with_channel finds it.
         fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
 
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
         let loaded = registry
             .loaded_workspace
             .as_ref()
@@ -2240,11 +2581,11 @@ startup_message = \"Starting Greeter…\"
 
         assert!(
             dirs.contains(&channel_root),
-            "watcher must observe channel root so first-time apps/ creation triggers registry reload"
+            "watcher must observe channel root so first-time plugins/ creation triggers registry reload"
         );
         assert!(
-            dirs.contains(&channel_root.join("apps")),
-            "watcher should directly observe apps/ after it exists"
+            dirs.contains(&channel_root.join("plugins")),
+            "watcher should directly observe plugins/ after it exists"
         );
     }
 
@@ -2253,7 +2594,7 @@ startup_message = \"Starting Greeter…\"
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap(); // no channel dir → not a workspace
 
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.loaded_workspace.is_none(),
             "loaded_workspace should be None outside workspace"
@@ -2265,24 +2606,30 @@ startup_message = \"Starting Greeter…\"
     #[test]
     fn manifest_with_author_tags_repo_deserializes() {
         let raw = r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "fancy-app"
-type = "app"
 name = "Fancy App"
 version = "1.2.3"
-entry = "main.py"
 description = "A fancy app"
 author = "Jane Doe"
 tags = ["productivity", "ai"]
 repo = "https://github.com/example/fancy-app"
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "fancy-app.main"
+default = true
 "#;
-        let manifest: AppManifest = toml::from_str(raw).expect("should parse");
-        assert_eq!(manifest.app.author.as_deref(), Some("Jane Doe"));
-        assert_eq!(manifest.app.tags, vec!["productivity", "ai"]);
+        let manifest: PluginManifest = toml::from_str(raw).expect("should parse");
+        assert_eq!(manifest.plugin.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(manifest.plugin.tags, vec!["productivity", "ai"]);
         assert_eq!(
-            manifest.app.repo.as_deref(),
+            manifest.plugin.repo.as_deref(),
             Some("https://github.com/example/fancy-app")
         );
     }
@@ -2291,59 +2638,65 @@ repo = "https://github.com/example/fancy-app"
     fn manifest_without_distribution_fields_deserializes() {
         // Existing manifests without author/tags/repo must still load cleanly.
         let raw = r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "minimal-app"
-type = "app"
 name = "Minimal App"
 version = "0.1.0"
+
+[runtime]
+kind = "python"
 entry = "main.py"
+
+[[contributes.views]]
+id = "minimal-app.main"
+default = true
 "#;
-        let manifest: AppManifest = toml::from_str(raw).expect("should parse");
-        assert!(manifest.app.author.is_none());
-        assert!(manifest.app.tags.is_empty());
-        assert!(manifest.app.repo.is_none());
+        let manifest: PluginManifest = toml::from_str(raw).expect("should parse");
+        assert!(manifest.plugin.author.is_none());
+        assert!(manifest.plugin.tags.is_empty());
+        assert!(manifest.plugin.repo.is_none());
     }
 
     #[test]
-    fn find_dev_pack_app_matches_id_from_nested_start_dir() {
+    fn find_dev_pack_plugin_matches_id_from_nested_start_dir() {
         let repo = tempfile::tempdir().unwrap();
         let dev_dir = repo.path().join("apps").join("dev");
         fs::create_dir_all(&dev_dir).unwrap();
-        write_app(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
+        write_plugin(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
 
         // Search starts several directories below the repo root, mirroring a
         // pane cwd inside a subdirectory of the checkout.
         let start = repo.path().join("src").join("pane_ops");
         fs::create_dir_all(&start).unwrap();
 
-        let found = find_dev_pack_app("com.plexi.canvas-grid", &start)
-            .expect("dev-pack app should be found by walking up to apps/dev");
+        let found = find_dev_pack_plugin("com.plexi.canvas-grid", &start)
+            .expect("dev-pack plugin should be found by walking up to apps/dev");
         assert_eq!(found, dev_dir.join("com.plexi.canvas-grid"));
     }
 
     #[test]
-    fn find_dev_pack_app_returns_none_for_unknown_id() {
+    fn find_dev_pack_plugin_returns_none_for_unknown_id() {
         let repo = tempfile::tempdir().unwrap();
         let dev_dir = repo.path().join("apps").join("dev");
         fs::create_dir_all(&dev_dir).unwrap();
-        write_app(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
+        write_plugin(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
 
-        assert!(find_dev_pack_app("com.plexi.does-not-exist", repo.path()).is_none());
+        assert!(find_dev_pack_plugin("com.plexi.does-not-exist", repo.path()).is_none());
     }
 
     #[test]
-    fn find_dev_pack_app_returns_none_without_apps_dev_dir() {
+    fn find_dev_pack_plugin_returns_none_without_apps_dev_dir() {
         let plain = tempfile::tempdir().unwrap();
-        assert!(find_dev_pack_app("anything", plain.path()).is_none());
+        assert!(find_dev_pack_plugin("anything", plain.path()).is_none());
     }
 
     #[test]
     fn every_python_manifest_entry_imports_against_in_tree_sdk() {
         fn manifests_under(dir: &Path, manifests: &mut Vec<PathBuf>) {
-            for entry in fs::read_dir(dir).expect("read app directory") {
-                let entry = entry.expect("read app directory entry");
+            for entry in fs::read_dir(dir).expect("read plugin directory") {
+                let entry = entry.expect("read plugin directory entry");
                 let path = entry.path();
                 if path.is_dir() {
                     manifests_under(&path, manifests);
@@ -2353,7 +2706,7 @@ entry = "main.py"
             }
         }
 
-        let repo_root = std::env::var_os("PLEXI_APP_IMPORT_ROOT")
+        let repo_root = std::env::var_os("PLEXI_PLUGIN_IMPORT_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let apps_root = repo_root.join("apps");
@@ -2366,10 +2719,10 @@ entry = "main.py"
         for manifest_path in manifests {
             let manifest_text = fs::read_to_string(&manifest_path)
                 .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
-            let manifest: AppManifest = toml::from_str(&manifest_text)
+            let manifest: PluginManifest = toml::from_str(&manifest_text)
                 .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
-            if manifest.app.manifest_type != ManifestType::App
-                || !manifest.app.entry.ends_with(".py")
+            if manifest.plugin.manifest_type != ManifestType::Python
+                || !manifest.plugin.entry.ends_with(".py")
             {
                 continue;
             }
@@ -2377,8 +2730,8 @@ entry = "main.py"
             let entry = manifest_path
                 .parent()
                 .expect("manifest has parent")
-                .join(&manifest.app.entry);
-            import_targets.push((manifest.app.id, entry));
+                .join(&manifest.plugin.entry);
+            import_targets.push((manifest.plugin.id, entry));
         }
 
         let mut command = Command::new("python3");
@@ -2387,7 +2740,7 @@ entry = "main.py"
             .arg(
                 r#"import importlib.util, os, pathlib, sys
 for index, target in enumerate(sys.argv[1:]):
-    app_id, entry = target.split('=', 1)
+    plugin_id, entry = target.split('=', 1)
     path = pathlib.Path(entry)
     os.chdir(path.parent)
     spec = importlib.util.spec_from_file_location(f'_plexi_app_import_gate_{index}', path)
@@ -2396,7 +2749,7 @@ for index, target in enumerate(sys.argv[1:]):
     try:
         spec.loader.exec_module(module)
     except Exception:
-        print(f'app {app_id} ({path}) failed to import against the in-tree SDK', file=sys.stderr)
+        print(f'plugin {plugin_id} ({path}) failed to import against the in-tree SDK', file=sys.stderr)
         raise"#,
             )
             .env("PYTHONPATH", &sdk_path)
@@ -2407,8 +2760,8 @@ for index, target in enumerate(sys.argv[1:]):
             .env_remove("PLEXI_SOCKET")
             .env_remove("PLEXI_RUNNING")
             .env_remove("PLEXI_PANE_ID");
-        for (app_id, entry) in &import_targets {
-            command.arg(format!("{app_id}={}", entry.display()));
+        for (plugin_id, entry) in &import_targets {
+            command.arg(format!("{plugin_id}={}", entry.display()));
         }
         let output = command
             .output()

@@ -11,7 +11,7 @@ from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
 from plexi_sdk.events import HttpResponse, KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Badge,
     Banner,
     Card,
@@ -250,8 +250,7 @@ def update(event) -> list:
 def view():
     data = _state()
     if not data["repo"]:
-        children: list[Component] = [
-            AppBar("GitHub Issues", "select repository"),
+        body: list[Component] = [
             Card(
                 [
                     Text("Open a GitHub repository", size=15.0, bold=True),
@@ -274,19 +273,25 @@ def view():
             ),
         ]
         if data["error"]:
-            children.append(Banner(data["error"], tone="danger", title="Error"))
-        children.extend(
+            body.append(Banner(data["error"], tone="danger", title="Error"))
+        body.append(
+            EmptyState(
+                "No repository loaded",
+                "Type owner/repo above and press Enter to browse issues.",
+                icon="#",
+            )
+        )
+        # The body scrolls so the repository field stays reachable in a pane
+        # too short to show both cards.
+        return Column(
             [
-                EmptyState(
-                    "No repository loaded",
-                    "Type owner/repo above and press Enter to browse issues.",
-                    icon="#",
-                ),
+                SurfaceHeader("GitHub Issues", "select repository"),
+                Scrollable(Column(body)),
                 Spacer(grow=True),
                 FooterKeys([("enter", "load repo")]),
-            ]
+            ],
+            grow=True,
         )
-        return Column(children, grow=True)
     if data["view"] == "detail":
         return _detail_view(data)
     return _list_view(data)
@@ -407,7 +412,7 @@ def _list_view(data: dict):
     )
     return Column(
         [
-            AppBar("GitHub Issues", _list_subtitle(data)),
+            SurfaceHeader("GitHub Issues", _list_subtitle(data)),
             TextInput(
                 "issues-filter",
                 value=data["filter"],
@@ -472,7 +477,7 @@ def _detail_view(data: dict):
         )
     return Column(
         [
-            AppBar(title, subtitle),
+            SurfaceHeader(title, subtitle),
             body,
             Spacer(grow=True),
             FooterKeys([("esc", "back")]),

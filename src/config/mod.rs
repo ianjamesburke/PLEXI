@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum ConfigDiagnostic {
+    WorkspaceGlobalOnly {
+        path: String,
+        key: String,
+    },
     ReadError {
         path: String,
         error: String,
@@ -32,7 +36,11 @@ pub enum ConfigDiagnostic {
         path: String,
         error: String,
     },
-    InvalidValue { path: String, key: String, error: String },
+    InvalidValue {
+        path: String,
+        key: String,
+        error: String,
+    },
     MisplacedTable {
         path: String,
         table: String,
@@ -49,14 +57,30 @@ impl ConfigDiagnostic {
             | Self::InvalidKeyBinding { .. }
             | Self::InvalidValue { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
-            Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
+            Self::UnknownKey { .. }
+            | Self::MisplacedTable { .. }
+            | Self::WorkspaceGlobalOnly { .. } => false,
         }
+    }
+
+    /// True when a hot reload should keep the current config: the file cannot
+    /// be parsed, or a key binding conflicts. Other errors name a key the
+    /// loader skips while applying the rest of the file.
+    pub fn blocks_reload(&self) -> bool {
+        matches!(
+            self,
+            Self::ReadError { .. } | Self::ParseError { .. } | Self::InvalidKeyBinding { .. }
+        )
     }
 }
 
 impl std::fmt::Display for ConfigDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::WorkspaceGlobalOnly { path, key } => write!(
+                f,
+                "{path}: `{key}` is global-only and ignored in workspace config"
+            ),
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
@@ -72,10 +96,14 @@ impl std::fmt::Display for ConfigDiagnostic {
             ),
             Self::UnknownKey { path, table, key } => {
                 if table.is_empty() {
-                    write!(f, "{path}: unknown key `{key}`")
+                    write!(f, "{path}: unknown key `{key}`")?;
                 } else {
-                    write!(f, "{path}: unknown key `{key}` in [{table}]")
+                    write!(f, "{path}: unknown key `{key}` in [{table}]")?;
                 }
+                if let Some(new_key) = renamed_key(table, key) {
+                    write!(f, "; renamed, use `{new_key}` instead")?;
+                }
+                Ok(())
             }
             Self::DeprecatedSection {
                 path,
@@ -91,12 +119,15 @@ impl std::fmt::Display for ConfigDiagnostic {
 }
 
 const KNOWN_TOP_LEVEL: &[&str] = &[
+    "core_only",
     "config_version",
     "font_size",
+    "ui_scale",
     "theme_preset",
     "theme",
     "attention",
     "effects",
+    "terminal",
     "log",
     "notifications",
     "ai",
@@ -115,20 +146,28 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "file_handlers",
     "experiments",
     "pane_gap",
+    "pane_corner_radius",
     "pane_title_font_size",
     "osc_pane_title",
 ];
-const KNOWN_AGENTS: &[&str] = &["low", "medium", "high", "restore_mode", "standby_scrollback_lines", "stalled_after_secs", "stale_failure_hours", "palette_agent_results", "os_notifications"];
-const KNOWN_CLI: &[&str] = &["tips"];
-const KNOWN_PERMISSIONS: &[&str] = &[
-    "soft_grant_days",
-    "default_posture",
-    "allow",
-    "ask",
-    "deny",
+const KNOWN_AGENTS: &[&str] = &[
+    "low",
+    "medium",
+    "high",
+    "restore_mode",
+    "standby_scrollback_lines",
+    "stalled_after_secs",
+    "stale_failure_hours",
+    "palette_agent_results",
+    "os_notifications",
 ];
+const KNOWN_CLI: &[&str] = &["tips"];
+const KNOWN_PERMISSIONS: &[&str] = &["soft_grant_days", "default_posture", "allow", "ask", "deny"];
 const KNOWN_THEME: &[&str] = &[
-    "pip_working", "pip_idle", "pip_blocked", "pip_dim",
+    "pip_working",
+    "pip_idle",
+    "pip_blocked",
+    "pip_dim",
     "state_preset",
     "state_working",
     "state_waiting",
@@ -136,7 +175,6 @@ const KNOWN_THEME: &[&str] = &[
     "state_needs_you",
     "state_interrupted",
     "state_error",
-
     "preset",
     "bg_darkest",
     "bg_sidebar",
@@ -170,6 +208,7 @@ const KNOWN_THEME: &[&str] = &[
     "bright_white",
     "bright_foreground",
 ];
+const KNOWN_TERMINAL: &[&str] = &["minimum_contrast"];
 const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_CLOUD: &[&str] = &["retain_local_history"];
@@ -205,6 +244,10 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "navigate_down",
     "navigate_up",
     "navigate_right",
+    "select_pane_left",
+    "select_pane_down",
+    "select_pane_up",
+    "select_pane_right",
     "new_tab",
     "next_tab",
     "prev_tab",
@@ -226,6 +269,10 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_down",
     "increase_font_size",
     "decrease_font_size",
+    "reset_font_size",
+    "ui_scale_up",
+    "ui_scale_down",
+    "ui_scale_reset",
     "open_agents",
     "next_blocked_agent",
     "focus_approval",
@@ -235,8 +282,9 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "reload_config",
     "open_secrets_manager",
     "open_assistant",
-    "force_reload_app",
-    "toggle_notification_modal",
+    "force_reload_plugin",
+    "toggle_attention_queue",
+    "zoom_in",
     "open_scratchpad",
     "set_context_root_from_cwd",
     "push_to_subcontext",
@@ -247,32 +295,27 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "close_context",
 ];
 
+/// Diagnostics for config text about to be written to `path`. Lets `config set`
+/// refuse a value the loader would reject.
+pub(crate) fn validate_text(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
+    parse_config_lenient(data, path).1
+}
+
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
-    let mut diags = Vec::new();
     let path_str = path.display().to_string();
 
     let data = match std::fs::read_to_string(path) {
         Ok(d) => d,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return diags,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
-            diags.push(ConfigDiagnostic::ReadError {
+            return vec![ConfigDiagnostic::ReadError {
                 path: path_str,
                 error: e.to_string(),
-            });
-            return diags;
+            }];
         }
     };
 
-    let parsed_cfg = match toml::from_str::<PlexiConfig>(&data) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            diags.push(ConfigDiagnostic::ParseError {
-                path: path_str,
-                error: e.to_string(),
-            });
-            return diags;
-        }
-    };
+    let (parsed_cfg, mut diags) = parse_config_lenient(&data, path);
 
     if let Some(ref user_keys) = parsed_cfg.keys {
         let bindings = crate::host::keys::build_key_bindings(parsed_cfg.keybindings.as_ref());
@@ -284,128 +327,306 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
         }
     }
 
-    if let Ok(value) = toml::from_str::<toml::Value>(&data) {
-        if let Some(table) = value.as_table() {
-            let target_commands_path = matching_commands_display_path(path);
-            for key in table.keys() {
-                if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
-                    diags.push(ConfigDiagnostic::MisplacedTable {
-                        path: path_str.clone(),
-                        table: key.clone(),
-                        source_file: "config.toml",
-                        target_config_path: target_commands_path.clone(),
-                    });
-                } else if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
-                    diags.push(ConfigDiagnostic::UnknownKey {
-                        path: path_str.clone(),
-                        table: String::new(),
-                        key: key.clone(),
-                    });
-                }
-            }
-
-            if table.contains_key("experiments") {
-                if let Err(error) = experiments_from_path(path) {
-                    diags.push(ConfigDiagnostic::ParseError {
-                        path: path_str.clone(),
-                        error,
-                    });
-                }
-            }
-
-            if let Some(toml::Value::Table(t)) = table.get("attention") {
-                check_unknown_keys(t, "attention", &["style", "intensity", "dock"], &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("theme") {
-                check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("effects") {
-                check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("log") {
-                check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("notifications") {
-                check_unknown_keys(
-                    t,
-                    "notifications",
-                    KNOWN_NOTIFICATIONS,
-                    &path_str,
-                    &mut diags,
-                );
-            }
-            if let Some(toml::Value::Table(t)) = table.get("ai") {
-                check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
-                for key in legacy_ai_keys(t) {
-                    diags.push(ConfigDiagnostic::InvalidValue {
-                        path: path_str.clone(),
-                        key,
-                        error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
-                    });
-                }
-            }
-            if let Some(toml::Value::Table(t)) = table.get("models") {
-                check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
-                for mode in KNOWN_MODE_NAMES {
-                    if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
-                        check_unknown_keys(mode_table, &format!("models.{mode}"), KNOWN_MODEL_MODE, &path_str, &mut diags);
-                    }
-                }
-            }
-            if let Some(toml::Value::Table(t)) = table.get("keybindings") {
-                check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("agents") {
-                check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("cli") {
-                check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("marketplace") {
-                check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("cloud") {
-                check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("permissions") {
-                check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
-            }
-            if table.contains_key("quick_note") {
-                diags.push(ConfigDiagnostic::DeprecatedSection {
-                    path: path_str.clone(),
-                    section: "quick_note".to_string(),
-                    hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
-                    error: true,
-                });
-            }
-            if table.contains_key("theme_preset") {
-                diags.push(ConfigDiagnostic::DeprecatedSection {
-                    path: path_str.clone(),
-                    section: "theme_preset".to_string(),
-                    hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
-                    error: false, // still works via fallback; migrate at your convenience
-                });
-            }
-        }
-    }
-
     if let Some(models) = parsed_cfg.models.as_ref() {
-        for (name, mode) in [("fast", models.fast.as_ref()), ("slow", models.slow.as_ref())] {
+        for (name, mode) in [
+            ("fast", models.fast.as_ref()),
+            ("slow", models.slow.as_ref()),
+        ] {
             if let Some(mode) = mode {
-                for (field, value) in [("provider", mode.provider.as_deref()), ("model", mode.model.as_deref())] {
+                for (field, value) in [
+                    ("provider", mode.provider.as_deref()),
+                    ("model", mode.model.as_deref()),
+                ] {
                     if value.is_some_and(|v| v.is_empty() || v.chars().any(char::is_whitespace)) {
-                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.{field}"), error: "must be a non-empty string without whitespace".into() });
+                        diags.push(ConfigDiagnostic::InvalidValue {
+                            path: path_str.clone(),
+                            key: format!("models.{name}.{field}"),
+                            error: "must be a non-empty string without whitespace".into(),
+                        });
                     }
                 }
                 if let Some(thinking) = mode.thinking.as_deref() {
                     if !THINKING_LEVELS.contains(&thinking) {
-                        diags.push(ConfigDiagnostic::InvalidValue { path: path_str.clone(), key: format!("models.{name}.thinking"), error: format!("{thinking:?} is not one of {}", THINKING_LEVELS.join("|")) });
+                        diags.push(ConfigDiagnostic::InvalidValue {
+                            path: path_str.clone(),
+                            key: format!("models.{name}.thinking"),
+                            error: format!(
+                                "{thinking:?} is not one of {}",
+                                THINKING_LEVELS.join("|")
+                            ),
+                        });
                     }
                 }
             }
         }
     }
 
+    diags
+}
+
+/// Parse config text the way the host loads it: every valid setting is kept,
+/// and each retired, unknown, or invalid key is reported. Retired `[ai]` keys
+/// and keys whose value does not deserialize are dropped, so one bad key falls
+/// back to its default instead of discarding the file. Only a TOML syntax
+/// error, which leaves no key structure to recover, yields the default config.
+fn parse_config_lenient(data: &str, path: &Path) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
+    let path_str = path.display().to_string();
+    let mut table: toml::Table = match toml::from_str(data) {
+        Ok(table) => table,
+        Err(e) => {
+            return (
+                PlexiConfig::default(),
+                vec![ConfigDiagnostic::ParseError {
+                    path: path_str,
+                    error: e.to_string(),
+                }],
+            );
+        }
+    };
+    let mut diags = key_diagnostics(&table, path, &path_str);
+
+    // Unknown and retired keys never fail deserialization, so a clean parse of
+    // the original text is the config exactly as written.
+    if let Ok(cfg) = toml::from_str::<PlexiConfig>(data) {
+        return (cfg, diags);
+    }
+
+    let legacy = match table.get("ai") {
+        Some(toml::Value::Table(ai)) => legacy_ai_keys(ai),
+        _ => Vec::new(),
+    };
+    for key in legacy {
+        let segments: Vec<String> = key.split('.').map(str::to_string).collect();
+        remove_key_path(&mut table, &segments);
+    }
+
+    // Each pass drops at least one key, so the key count bounds the loop.
+    for _ in 0..=count_keys(&table) {
+        let error = match toml::Value::Table(table.clone()).try_into::<PlexiConfig>() {
+            Ok(cfg) => return (cfg, diags),
+            Err(e) => e,
+        };
+        let Some((segments, message)) = find_invalid_key(&table, &[]) else {
+            diags.push(ConfigDiagnostic::ParseError {
+                path: path_str,
+                error: error.to_string(),
+            });
+            return (PlexiConfig::default(), diags);
+        };
+        remove_key_path(&mut table, &segments);
+        diags.push(ConfigDiagnostic::InvalidValue {
+            path: path_str.clone(),
+            key: segments.join("."),
+            error: format!("is invalid and was ignored ({message})"),
+        });
+    }
+    diags.push(ConfigDiagnostic::ParseError {
+        path: path_str,
+        error: "could not isolate the invalid keys; using defaults".into(),
+    });
+    (PlexiConfig::default(), diags)
+}
+
+/// Deserialize a config containing only `tree`, returning serde's message on failure.
+fn probe_config(tree: toml::Table) -> Result<(), String> {
+    toml::Value::Table(tree)
+        .try_into::<PlexiConfig>()
+        .map(drop)
+        .map_err(|e| e.message().trim().to_string())
+}
+
+/// A table holding `value` at `segments` and nothing else.
+fn isolate_key(segments: &[String], value: toml::Value) -> toml::Table {
+    let mut value = value;
+    for segment in segments[1..].iter().rev() {
+        let mut parent = toml::Table::new();
+        parent.insert(segment.clone(), value);
+        value = toml::Value::Table(parent);
+    }
+    let mut root = toml::Table::new();
+    root.insert(segments[0].clone(), value);
+    root
+}
+
+/// The first key under `prefix` whose value fails to deserialize on its own,
+/// narrowed to the deepest such key. A table is only narrowed when it is valid
+/// empty; otherwise it has required fields and is reported as a whole.
+fn find_invalid_key(table: &toml::Table, prefix: &[String]) -> Option<(Vec<String>, String)> {
+    for (key, value) in table {
+        let mut segments = prefix.to_vec();
+        segments.push(key.clone());
+        let Err(message) = probe_config(isolate_key(&segments, value.clone())) else {
+            continue;
+        };
+        if let toml::Value::Table(inner) = value {
+            let empty = toml::Value::Table(toml::Table::new());
+            if probe_config(isolate_key(&segments, empty)).is_ok() {
+                if let Some(found) = find_invalid_key(inner, &segments) {
+                    return Some(found);
+                }
+            }
+        }
+        return Some((segments, message));
+    }
+    None
+}
+
+fn remove_key_path(table: &mut toml::Table, segments: &[String]) {
+    match segments {
+        [] => {}
+        [leaf] => {
+            table.remove(leaf);
+        }
+        [head, rest @ ..] => {
+            if let Some(toml::Value::Table(inner)) = table.get_mut(head) {
+                remove_key_path(inner, rest);
+            }
+        }
+    }
+}
+
+fn count_keys(table: &toml::Table) -> usize {
+    table
+        .values()
+        .map(|value| match value {
+            toml::Value::Table(inner) => 1 + count_keys(inner),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Structural diagnostics for a parsed config table: unknown, misplaced,
+/// deprecated, and retired keys, plus `[experiments]` validation.
+fn key_diagnostics(table: &toml::Table, path: &Path, path_str: &str) -> Vec<ConfigDiagnostic> {
+    let mut diags = Vec::new();
+    let path_str = path_str.to_string();
+    let target_commands_path = matching_commands_display_path(path);
+    for key in table.keys() {
+        if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
+            diags.push(ConfigDiagnostic::MisplacedTable {
+                path: path_str.clone(),
+                table: key.clone(),
+                source_file: "config.toml",
+                target_config_path: target_commands_path.clone(),
+            });
+        } else if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
+            diags.push(ConfigDiagnostic::UnknownKey {
+                path: path_str.clone(),
+                table: String::new(),
+                key: key.clone(),
+            });
+        }
+    }
+
+    if table
+        .get("experiments")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|t| t.contains_key("relay"))
+    {
+        diags.push(ConfigDiagnostic::InvalidValue {
+            path: path_str.clone(),
+            key: "experiments.relay".into(),
+            error: "was removed; delete this key".into(),
+        });
+    }
+    if table.contains_key("experiments") {
+        if let Err(error) = experiments_from_path(path) {
+            diags.push(ConfigDiagnostic::ParseError {
+                path: path_str.clone(),
+                error,
+            });
+        }
+    }
+
+    if let Some(toml::Value::Table(t)) = table.get("attention") {
+        check_unknown_keys(
+            t,
+            "attention",
+            &["style", "intensity", "dock"],
+            &path_str,
+            &mut diags,
+        );
+    }
+    if let Some(toml::Value::Table(t)) = table.get("theme") {
+        check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("effects") {
+        check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("terminal") {
+        check_unknown_keys(t, "terminal", KNOWN_TERMINAL, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("log") {
+        check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("notifications") {
+        check_unknown_keys(
+            t,
+            "notifications",
+            KNOWN_NOTIFICATIONS,
+            &path_str,
+            &mut diags,
+        );
+    }
+    if let Some(toml::Value::Table(t)) = table.get("ai") {
+        check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
+        for key in legacy_ai_keys(t) {
+            diags.push(ConfigDiagnostic::InvalidValue {
+                path: path_str.clone(),
+                key,
+                error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
+            });
+        }
+    }
+    if let Some(toml::Value::Table(t)) = table.get("models") {
+        check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
+        for mode in KNOWN_MODE_NAMES {
+            if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
+                check_unknown_keys(
+                    mode_table,
+                    &format!("models.{mode}"),
+                    KNOWN_MODEL_MODE,
+                    &path_str,
+                    &mut diags,
+                );
+            }
+        }
+    }
+    if let Some(toml::Value::Table(t)) = table.get("keybindings") {
+        check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("agents") {
+        check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("cli") {
+        check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("marketplace") {
+        check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("cloud") {
+        check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("permissions") {
+        check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
+    }
+    if table.contains_key("quick_note") {
+        diags.push(ConfigDiagnostic::DeprecatedSection {
+            path: path_str.clone(),
+            section: "quick_note".to_string(),
+            hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
+            error: true,
+        });
+    }
+    if table.contains_key("theme_preset") {
+        diags.push(ConfigDiagnostic::DeprecatedSection {
+            path: path_str.clone(),
+            section: "theme_preset".to_string(),
+            hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config"
+                .to_string(),
+            error: false, // still works via fallback; migrate at your convenience
+        });
+    }
     diags
 }
 
@@ -530,6 +751,14 @@ pub fn validate_commands_from_str(data: &str, path: &Path) -> Vec<ConfigDiagnost
     diags
 }
 
+/// Keys removed by the plugin rename. Never accepted; only named in diagnostics.
+fn renamed_key(table: &str, key: &str) -> Option<&'static str> {
+    match (table, key) {
+        ("keybindings", "force_reload_app") => Some("force_reload_plugin"),
+        _ => None,
+    }
+}
+
 fn check_unknown_keys(
     table: &toml::map::Map<String, toml::Value>,
     section: &str,
@@ -556,6 +785,7 @@ fn check_unknown_keys(
 /// Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down,
 ///   left, right, open_bracket, close_bracket, backslash, slash, comma,
 ///   period, equals, minus (and symbol aliases like "[", "]", "\\", etc.).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct KeybindingsConfig {
     pub quit: Option<String>,
@@ -577,14 +807,28 @@ pub struct KeybindingsConfig {
     pub navigate_down: Option<String>,
     pub navigate_up: Option<String>,
     pub navigate_right: Option<String>,
+    /// Extend pane selection left (default Cmd+Shift+H).
+    pub select_pane_left: Option<String>,
+    /// Extend pane selection down (default Cmd+Shift+J).
+    pub select_pane_down: Option<String>,
+    /// Extend pane selection up (default Cmd+Shift+K).
+    pub select_pane_up: Option<String>,
+    /// Extend pane selection right (default Cmd+Shift+L).
+    pub select_pane_right: Option<String>,
     pub new_tab: Option<String>,
+    /// Next tab (default Cmd+]).
     pub next_tab: Option<String>,
+    /// Previous tab (default Cmd+[).
     pub prev_tab: Option<String>,
+    /// Next context (unbound by default).
     pub next_context: Option<String>,
+    /// Previous context (unbound by default).
     pub prev_context: Option<String>,
     pub move_context_up: Option<String>,
     pub move_context_down: Option<String>,
+    /// Pane navigation or focus history back (unbound by default).
     pub nav_back: Option<String>,
+    /// Focus history forward (unbound by default).
     pub focus_history_forward: Option<String>,
     pub toggle_sidebar: Option<String>,
     pub toggle_zoom: Option<String>,
@@ -596,8 +840,18 @@ pub struct KeybindingsConfig {
     pub toggle_minimap: Option<String>,
     pub scroll_up: Option<String>,
     pub scroll_down: Option<String>,
+    /// Increase the focused pane's text size (default Cmd+=).
     pub increase_font_size: Option<String>,
+    /// Decrease the focused pane's text size (default Cmd+-).
     pub decrease_font_size: Option<String>,
+    /// Reset the focused pane's text size (default Cmd+Alt+0).
+    pub reset_font_size: Option<String>,
+    /// Scale the whole UI up, terminal text included (default Cmd+Shift+=).
+    pub ui_scale_up: Option<String>,
+    /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
+    pub ui_scale_down: Option<String>,
+    /// Reset host-wide UI scale (default Cmd+Shift+0).
+    pub ui_scale_reset: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
     /// Next agent needing attention (default cmd+alt+b).
@@ -610,8 +864,9 @@ pub struct KeybindingsConfig {
     pub reload_config: Option<String>,
     pub open_secrets_manager: Option<String>,
     pub open_assistant: Option<String>,
-    pub force_reload_app: Option<String>,
-    pub toggle_notification_modal: Option<String>,
+    pub force_reload_view: Option<String>,
+    pub toggle_attention_queue: Option<String>,
+    pub zoom_in: Option<String>,
     pub open_scratchpad: Option<String>,
     pub push_to_subcontext: Option<String>,
     pub new_child_context: Option<String>,
@@ -650,6 +905,10 @@ impl KeybindingsConfig {
         overlay_field!(navigate_down);
         overlay_field!(navigate_up);
         overlay_field!(navigate_right);
+        overlay_field!(select_pane_left);
+        overlay_field!(select_pane_down);
+        overlay_field!(select_pane_up);
+        overlay_field!(select_pane_right);
         overlay_field!(new_tab);
         overlay_field!(next_tab);
         overlay_field!(prev_tab);
@@ -671,6 +930,10 @@ impl KeybindingsConfig {
         overlay_field!(scroll_down);
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
+        overlay_field!(reset_font_size);
+        overlay_field!(ui_scale_up);
+        overlay_field!(ui_scale_down);
+        overlay_field!(ui_scale_reset);
         overlay_field!(open_agents);
         overlay_field!(next_blocked_agent);
         overlay_field!(focus_approval);
@@ -680,8 +943,9 @@ impl KeybindingsConfig {
         overlay_field!(reload_config);
         overlay_field!(open_secrets_manager);
         overlay_field!(open_assistant);
-        overlay_field!(force_reload_app);
-        overlay_field!(toggle_notification_modal);
+        overlay_field!(force_reload_view);
+        overlay_field!(toggle_attention_queue);
+        overlay_field!(zoom_in);
         overlay_field!(open_scratchpad);
         overlay_field!(push_to_subcontext);
         overlay_field!(new_child_context);
@@ -693,12 +957,19 @@ impl KeybindingsConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
+    /// Disable all plugins for this host session. Profile-only; restart required.
+    pub core_only: Option<bool>,
     pub config_version: Option<u32>,
     pub font_size: Option<f32>,
+    /// App-wide UI scale (browser-style zoom). Default 1.0; clamped on use.
+    pub ui_scale: Option<f32>,
     /// Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0].
     pub pane_gap: Option<f32>,
+    /// Pane corner radius in points. Default: 6 (the shared pane style token).
+    pub pane_corner_radius: Option<u8>,
     /// Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0].
     pub pane_title_font_size: Option<f32>,
     /// Apply OSC 0/1/2 title sequences from terminal processes as pane names.
@@ -708,6 +979,7 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub attention: Option<AttentionConfig>,
     pub effects: Option<EffectsConfig>,
+    pub terminal: Option<TerminalConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
@@ -735,7 +1007,7 @@ pub struct PlexiConfig {
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
-    ///   `app:<id>` — open in a Plexi app by registry id
+    ///   `plugin:<id>` — open in a Plexi plugin by registry id
     ///   `os`       — hand to the OS default opener (`open` / `xdg-open`)
     ///   `cmd:<command>` — reserved; falls back to OS open until wired
     /// A user entry overrides any manifest-declared `file_types` association.
@@ -747,6 +1019,7 @@ pub struct PlexiConfig {
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
 
 /// FAST/SLOW target overrides for pi-plexi.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct ModelModesConfig {
     /// FAST target override. Unset fields use the FAST defaults.
@@ -756,6 +1029,7 @@ pub struct ModelModesConfig {
 }
 
 /// One pi-plexi target. Provider, model, and thinking can each be overridden independently.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct ModelModeConfig {
     /// Model registry provider. Must be non-empty and contain no whitespace.
@@ -768,10 +1042,17 @@ pub struct ModelModeConfig {
 
 /// Fully resolved pi-plexi target returned by `plexi config get --json models`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModelMode { pub provider: String, pub model: String, pub thinking: String }
+pub struct ResolvedModelMode {
+    pub provider: String,
+    pub model: String,
+    pub thinking: String,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModelModes { pub fast: ResolvedModelMode, pub slow: ResolvedModelMode }
+pub struct ResolvedModelModes {
+    pub fast: ResolvedModelMode,
+    pub slow: ResolvedModelMode,
+}
 
 impl ModelModeConfig {
     fn overlay(&mut self, other: Self) {
@@ -795,14 +1076,44 @@ impl ModelModeConfig {
     }
 }
 impl ModelModesConfig {
-    fn overlay(&mut self, other: Self) { match (self.fast.as_mut(), other.fast) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.fast = Some(b), _ => {} } match (self.slow.as_mut(), other.slow) { (Some(a), Some(b)) => a.overlay(b), (None, Some(b)) => self.slow = Some(b), _ => {} } }
-    fn resolved(&self) -> ResolvedModelModes { ResolvedModelModes {
-        fast: self.fast.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "deepseek/deepseek-v4.1-flash".into(), thinking: "low".into() }),
-        slow: self.slow.as_ref().unwrap_or(&ModelModeConfig::default()).resolve(ResolvedModelMode { provider: "openrouter".into(), model: "openai/gpt-6-astra".into(), thinking: "high".into() }),
-    } }
+    fn overlay(&mut self, other: Self) {
+        match (self.fast.as_mut(), other.fast) {
+            (Some(a), Some(b)) => a.overlay(b),
+            (None, Some(b)) => self.fast = Some(b),
+            _ => {}
+        }
+        match (self.slow.as_mut(), other.slow) {
+            (Some(a), Some(b)) => a.overlay(b),
+            (None, Some(b)) => self.slow = Some(b),
+            _ => {}
+        }
+    }
+    fn resolved(&self) -> ResolvedModelModes {
+        ResolvedModelModes {
+            fast: self
+                .fast
+                .as_ref()
+                .unwrap_or(&ModelModeConfig::default())
+                .resolve(ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "deepseek/deepseek-v4.1-flash".into(),
+                    thinking: "low".into(),
+                }),
+            slow: self
+                .slow
+                .as_ref()
+                .unwrap_or(&ModelModeConfig::default())
+                .resolve(ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "openai/gpt-6-astra".into(),
+                    thinking: "high".into(),
+                }),
+        }
+    }
 }
 
 /// CLI behavior configuration.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct CliConfig {
     /// Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress.
@@ -815,6 +1126,7 @@ pub struct CliConfig {
 /// the official registry. `submit_url` and `account_backend` are intentionally
 /// unset by default: publishing and accounts fail closed until they are wired
 /// up.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct MarketplaceConfig {
     /// Override the catalog index URL. Default: official `plexiapp.com` index.
@@ -838,15 +1150,15 @@ pub struct MarketplaceConfig {
 /// Cloud link settings (`[cloud]`).
 ///
 /// An account is optional. Local use never requires one; a session only links
-/// this desktop to relay and cloud features. This section does not change that.
+/// this desktop to cloud features. This section does not change that.
 /// The one flag here decides whether the retention job may also delete local
 /// ledger rows and assistant conversations.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct CloudConfig {
     /// When `true`, delete local `ai-ledger.jsonl` rows and assistant
     /// conversation files older than 30 days. Unset or `false` keeps them.
-    /// Relay registry rows, queued-envelope metadata, and logs Plexi controls
-    /// are pruned either way.
+    /// Logs Plexi controls are pruned either way.
     pub retain_local_history: Option<bool>,
 }
 
@@ -854,6 +1166,7 @@ pub struct CloudConfig {
 pub const DEFAULT_SOFT_GRANT_DAYS: u32 = 30;
 
 /// Permissions broker configuration (`[permissions]`).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct PermissionsConfig {
     /// Expiry window in days for soft grants (`--grant tool=allow:soft`). After this window, a soft grant reverts to `ask`. Default: 30.
@@ -873,11 +1186,14 @@ impl PermissionsConfig {
 }
 
 /// Non-model AI settings (`ai.query` capability).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Per-app daily spend cap in USD. Default $1.00.
-    pub per_app_daily_usd: Option<f64>,
-    /// Global daily spend cap across all apps in USD. Default $10.00.
+    /// Per-plugin daily spend cap in USD. Default $1.00.
+    // Keep the existing on-disk setting so a vocabulary change cannot reset a spend limit.
+    #[serde(rename = "per_app_daily_usd")]
+    pub per_plugin_daily_usd: Option<f64>,
+    /// Global daily spend cap across all plugins in USD. Default $10.00.
     pub global_daily_usd: Option<f64>,
     /// Default ledger client tag for Assistant and agent runs that do not set
     /// one. Free-form (`narrative`, `du`, `personal`). A blank or missing
@@ -886,9 +1202,9 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    /// Resolved per-app daily spend cap. Falls back to $1.00 if unset.
-    pub fn effective_per_app_daily_usd(&self) -> f64 {
-        self.per_app_daily_usd.unwrap_or(1.0)
+    /// Resolved per-plugin daily spend cap. Falls back to $1.00 if unset.
+    pub fn effective_per_plugin_daily_usd(&self) -> f64 {
+        self.per_plugin_daily_usd.unwrap_or(1.0)
     }
 
     /// Resolved global daily spend cap. Falls back to $10.00 if unset.
@@ -900,19 +1216,24 @@ impl AiConfig {
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
-        if other.per_app_daily_usd.is_some() {
-            self.per_app_daily_usd = other.per_app_daily_usd;
+        if other.per_plugin_daily_usd.is_some() {
+            self.per_plugin_daily_usd = other.per_plugin_daily_usd;
         }
         if other.global_daily_usd.is_some() {
             self.global_daily_usd = other.global_daily_usd;
         }
-        if other.client.as_ref().is_some_and(|client| !client.trim().is_empty()) {
+        if other
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.trim().is_empty())
+        {
             self.client = other.client;
         }
     }
 }
 
 /// Startup restoration policy for saved agent sessions (`[agents] restore_mode`).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentRestoreMode {
@@ -929,6 +1250,7 @@ pub enum AgentRestoreMode {
 
 /// Coding agent command templates for dispatch. Each field is a shell command template
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct AgentsConfig {
     /// Raise silent macOS attention notifications while Plexi is unfocused (default true).
@@ -955,10 +1277,18 @@ pub struct AgentsConfig {
 
 impl AgentsConfig {
     fn overlay(&mut self, other: Self) {
-        if other.os_notifications.is_some() { self.os_notifications = other.os_notifications; }
-        if other.stalled_after_secs.is_some() { self.stalled_after_secs = other.stalled_after_secs; }
-        if other.stale_failure_hours.is_some() { self.stale_failure_hours = other.stale_failure_hours; }
-        if other.palette_agent_results.is_some() { self.palette_agent_results = other.palette_agent_results; }
+        if other.os_notifications.is_some() {
+            self.os_notifications = other.os_notifications;
+        }
+        if other.stalled_after_secs.is_some() {
+            self.stalled_after_secs = other.stalled_after_secs;
+        }
+        if other.stale_failure_hours.is_some() {
+            self.stale_failure_hours = other.stale_failure_hours;
+        }
+        if other.palette_agent_results.is_some() {
+            self.palette_agent_results = other.palette_agent_results;
+        }
         if other.low.is_some() {
             self.low = other.low;
         }
@@ -977,10 +1307,11 @@ impl AgentsConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct NotificationsConfig {
     /// Master switch. If false, incoming notifications are silently dropped —
-    /// apps still send them, but the modal never appears and the queue stays
+    /// plugins still send them, but the modal never appears and the queue stays
     /// empty. Defaults to true.
     pub enabled: Option<bool>,
     /// Focus mode. When true, no notification auto-surfaces. Everything queues
@@ -998,6 +1329,7 @@ pub struct NotificationsConfig {
     pub sound: Option<String>,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct LogConfig {
     pub level: Option<String>,
@@ -1018,6 +1350,7 @@ impl LogConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct EffectsConfig {
     pub crt: Option<bool>,
@@ -1027,14 +1360,76 @@ pub struct EffectsConfig {
     pub ghost_opacity: Option<f32>,
 }
 
+/// Default minimum glyph/background contrast ratio. 3.0 is the WCAG floor for
+/// large text, which Ghostty's `minimum-contrast` documents as the floor for
+/// readable terminal text.
+pub const DEFAULT_TERMINAL_MINIMUM_CONTRAST: f32 = 3.0;
+
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Deserialize, Default, Clone)]
+pub struct TerminalConfig {
+    /// Minimum WCAG contrast ratio between each text cell's foreground and its
+    /// background, 1.0 to 21.0. Colors programs choose for themselves are moved
+    /// toward black or white until they reach it. 1.0 turns the adjustment off.
+    /// Default 3.0. Applies live on config reload.
+    #[serde(default, deserialize_with = "terminal_minimum_contrast")]
+    pub minimum_contrast: Option<f32>,
+}
+
+fn terminal_minimum_contrast<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<f32>, D::Error> {
+    let value = Option::<f32>::deserialize(d)?;
+    let (lo, hi) = (egui_term::MIN_CONTRAST_OFF, egui_term::MIN_CONTRAST_MAX);
+    if value.is_some_and(|v| !v.is_finite() || !(lo..=hi).contains(&v)) {
+        return Err(serde::de::Error::custom(format!(
+            "terminal.minimum_contrast must be between {lo} and {hi}"
+        )));
+    }
+    Ok(value)
+}
+
+impl TerminalConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.minimum_contrast.is_some() {
+            self.minimum_contrast = other.minimum_contrast;
+        }
+    }
+}
+
+impl PlexiConfig {
+    /// Resolved terminal minimum contrast ratio (1.0 means off).
+    pub fn terminal_minimum_contrast(&self) -> f32 {
+        self.terminal
+            .as_ref()
+            .and_then(|t| t.minimum_contrast)
+            .unwrap_or(DEFAULT_TERMINAL_MINIMUM_CONTRAST)
+    }
+}
+
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum AttentionStyle { Off, Subtle, #[default] Normal, Loud }
+pub enum AttentionStyle {
+    Off,
+    Subtle,
+    #[default]
+    Normal,
+    Loud,
+}
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum AttentionDock { None, #[default] Badge, BounceOnce, BounceUntilFocused }
+pub enum AttentionDock {
+    None,
+    #[default]
+    Badge,
+    BounceOnce,
+    BounceUntilFocused,
+}
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq)]
 pub struct AttentionConfig {
     /// Attention style: off, subtle, normal (default), or loud.
@@ -1049,30 +1444,58 @@ pub struct AttentionConfig {
 fn attention_intensity<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
     let value = Option::<f32>::deserialize(d)?;
     if value.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
-        return Err(serde::de::Error::custom("attention.intensity must be between 0 and 1"));
+        return Err(serde::de::Error::custom(
+            "attention.intensity must be between 0 and 1",
+        ));
     }
     Ok(value)
 }
 
 impl AttentionConfig {
     fn overlay(&mut self, other: Self) {
-        if other.style.is_some() { self.style = other.style; }
-        if other.intensity.is_some() { self.intensity = other.intensity; }
-        if other.dock.is_some() { self.dock = other.dock; }
+        if other.style.is_some() {
+            self.style = other.style;
+        }
+        if other.intensity.is_some() {
+            self.intensity = other.intensity;
+        }
+        if other.dock.is_some() {
+            self.dock = other.dock;
+        }
     }
 }
 
 fn state_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     let value = Option::<String>::deserialize(d)?;
-    if value.as_deref().is_some_and(|v| !crate::ui::theme::STATE_PRESETS.contains(&v)) {
-        return Err(serde::de::Error::custom("theme.state_preset must be default, okabe-ito, high-contrast, or mono"));
+    if value
+        .as_deref()
+        .is_some_and(|v| !crate::ui::theme::STATE_PRESETS.contains(&v))
+    {
+        return Err(serde::de::Error::custom(
+            "theme.state_preset must be default, okabe-ito, high-contrast, or mono",
+        ));
     }
     Ok(value)
 }
 
-#[derive(Deserialize, Default, Clone)]
+fn theme_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(d)?;
+    if value
+        .as_deref()
+        .is_some_and(|v| crate::ui::theme::preset_colors(v).is_none())
+    {
+        return Err(serde::de::Error::custom(format!(
+            "unknown theme preset; valid presets: {}",
+            crate::ui::theme::preset_names().join(", ")
+        )));
+    }
+    Ok(value)
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
+    #[serde(default, deserialize_with = "theme_preset")]
     pub preset: Option<String>,
     /// Agent states: default, okabe-ito, high-contrast, mono. Default: okabe-ito.
     #[serde(default, deserialize_with = "state_preset")]
@@ -1144,41 +1567,73 @@ pub fn set_profile(name: Option<String>) {
 fn profile_initialization_needed() -> Result<bool, String> {
     let dir = config_dir();
     let sdk = dir.join("sdk");
-    Ok(!dir.join("apps").is_dir()
+    Ok(!dir.join("plugins").is_dir()
         || !sdk.join("plexi_sdk").is_dir()
         || !sdk.join("pyproject.toml").is_file()
         || !std::fs::read_to_string(sdk.join(".sdk_version"))
             .is_ok_and(|version| version.trim() == env!("PLEXI_BUILD_ID"))
-        || crate::cli::install_host::core_pack_needs_seeding(&dir.join("apps"))
-        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("apps")).is_empty()
+        || crate::cli::install_host::core_pack_needs_seeding(&dir.join("plugins"))
+        || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("plugins"))
+            .is_empty()
         || crate::distribution::profile_needs_seeding()?)
+}
+
+/// Why profile initialization stopped before the host could start. A failed
+/// plugin migration keeps its structure so startup can name the file, the
+/// package and the fix instead of a flattened string.
+#[derive(Debug)]
+pub enum ProfileInitError {
+    Migration(Box<crate::app::plugin_migration::MigrationFailure>),
+    Other(String),
+}
+
+impl std::fmt::Display for ProfileInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Migration(failure) => failure.fmt(f),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for ProfileInitError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
 }
 
 /// Fresh profiles need no writable files. Re-check after acquiring the lock:
 /// another process may have completed initialization while we waited.
-pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
+pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, ProfileInitError> {
     if !profile_initialization_needed()? {
         return Ok(None);
     }
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .open(dir.join("initialization.lock")).map_err(|e| format!("open profile initialization lock: {e}"))?;
-    lock.lock().map_err(|e| format!("lock profile initialization: {e}"))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("initialization.lock"))
+        .map_err(|e| format!("open profile initialization lock: {e}"))?;
+    lock.lock()
+        .map_err(|e| format!("lock profile initialization: {e}"))?;
     if !profile_initialization_needed()? {
         return Ok(None);
     }
+    crate::app::plugin_migration::migrate(&dir).map_err(ProfileInitError::Migration)?;
     Ok(Some(lock))
 }
 
-/// Ensure the apps directory and embedded SDK exist. Caller holds the initialization lock.
-/// Returns whether this is the first launch (no apps directory yet).
+/// Ensure the plugins directory and embedded SDK exist. Caller holds the initialization lock.
+/// Returns whether this is the first launch (no plugins directory yet).
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
-    // Install metadata may have created the profile before the first app launch.
-    let is_new = !dir.join("apps").is_dir();
-    if let Err(e) = std::fs::create_dir_all(dir.join("apps")) {
-        eprintln!("profile init: failed to create apps directory: {e}");
+    // Install metadata may have created the profile before the first plugin launch.
+    let is_new = !dir.join("plugins").is_dir();
+    if let Err(e) = std::fs::create_dir_all(dir.join("plugins")) {
+        eprintln!("profile init: failed to create plugins directory: {e}");
         return false;
     }
 
@@ -1397,6 +1852,11 @@ static NEXT_TEST_DIR_GUARD_TOKEN: std::sync::atomic::AtomicU64 =
 thread_local! {
     static TEST_PROFILE_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Test-only parent for the legacy process-shared fallback profile. This
+    /// lets a regression test reproduce fallback interference without writing
+    /// to the suite's real `/tmp/plexi-t-<pid>` directory.
+    static TEST_PROFILE_FALLBACK_BASE_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// RAII guard that removes its per-thread test profile dir override on drop.
@@ -1426,6 +1886,39 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
     TestProfileDirGuard { token }
 }
 
+/// RAII guard that removes a test-only legacy fallback base override on drop.
+///
+/// This is exclusively for tests that need to demonstrate why direct config
+/// tests must install [`set_test_profile_dir`]. Production resolution continues
+/// to use the platform's normal temporary directory.
+#[cfg(test)]
+pub(crate) struct TestProfileFallbackBaseGuard {
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestProfileFallbackBaseGuard {
+    fn drop(&mut self) {
+        let token = self.token;
+        TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+    }
+}
+
+/// Override the parent directory for the legacy process-shared fallback profile
+/// on the current test thread.
+///
+/// This must not substitute for [`set_test_profile_dir`]: it deliberately
+/// preserves the fallback's shared `<base>/plexi-t-<pid>` shape so tests can
+/// prove an isolated profile guard is required.
+#[cfg(test)]
+pub(crate) fn set_test_profile_fallback_base(
+    path: std::path::PathBuf,
+) -> TestProfileFallbackBaseGuard {
+    let token = NEXT_TEST_DIR_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestProfileFallbackBaseGuard { token }
+}
+
 /// The isolated profile directory installed by [`set_test_profile_dir`], if any.
 ///
 /// Notes-index persistence consults this instead of `config_dir()` so a test
@@ -1434,6 +1927,11 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
 #[cfg(test)]
 pub(crate) fn test_profile_dir_override() -> Option<std::path::PathBuf> {
     TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()))
+}
+
+#[cfg(test)]
+fn test_profile_fallback_base_override() -> Option<std::path::PathBuf> {
+    TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()))
 }
 
 /// Returns the workspace channel directory name for the current binary.
@@ -1508,12 +2006,17 @@ pub fn experiments_from_path(
     let Some(table) = value.get("experiments") else {
         return Ok(Default::default());
     };
-    let table: std::collections::BTreeMap<String, bool> = table
-        .clone()
-        .try_into()
-        .map_err(|e| format!("[experiments] in {} must map names to true/false: {e}", path.display()))?;
-    crate::release::parse_experiments(&table)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let mut table = table.clone();
+    if let Some(entries) = table.as_table_mut() {
+        entries.remove("relay");
+    }
+    let table: std::collections::BTreeMap<String, bool> = table.try_into().map_err(|e| {
+        format!(
+            "[experiments] in {} must map names to true/false: {e}",
+            path.display()
+        )
+    })?;
+    crate::release::parse_experiments(&table).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn config_path() -> PathBuf {
@@ -1527,9 +2030,9 @@ pub fn config_dir() -> PathBuf {
             return dir;
         }
         #[cfg(unix)]
-        let base = PathBuf::from("/tmp");
+        let base = test_profile_fallback_base_override().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(not(unix))]
-        let base = std::env::temp_dir();
+        let base = test_profile_fallback_base_override().unwrap_or_else(std::env::temp_dir);
         let fallback = base.join(format!("plexi-t-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&fallback);
         return fallback;
@@ -1555,10 +2058,21 @@ pub fn shared_dir() -> PathBuf {
         if let Some(dir) = override_dir {
             return dir;
         }
+        // Same per-process fallback as `config_dir()`: a test that forgot
+        // `set_test_shared_dir` must not resolve the real `~/.plexi`, which is
+        // also the stable channel profile holding its `config.toml`.
+        let fallback = std::env::temp_dir()
+            .join(format!("plexi-shared-t-{}", std::process::id()))
+            .join(SHARED_DIR_NAME);
+        let _ = std::fs::create_dir_all(&fallback);
+        fallback
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(SHARED_DIR_NAME)
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(SHARED_DIR_NAME)
+    }
 }
 
 const SHARED_DIR_NAME: &str = ".plexi";
@@ -1600,7 +2114,7 @@ fn workspace_config_path_for_channel(workspace_root: &Path, channel_dir: &str) -
     workspace_root.join(channel_dir).join("config.toml")
 }
 
-/// Dev override: when `PLEXI_SDK_PATH` is set, Python apps import the SDK from
+/// Dev override: when `PLEXI_SDK_PATH` is set, Python plugins import the SDK from
 /// that directory (which must contain the `plexi_sdk` package) instead of the
 /// binary-embedded copy. This enables live SDK iteration — edit
 /// `sdk/python/plexi_sdk/*.py`, re-render, no rebuild. Returns the path only if
@@ -1621,7 +2135,7 @@ pub fn sdk_path_override() -> Option<PathBuf> {
     }
 }
 
-/// Builds the `PYTHONPATH` value for Python app subprocesses.
+/// Builds the `PYTHONPATH` value for Python plugin subprocesses.
 ///
 /// This is the single source for how PYTHONPATH is constructed. Both
 /// WASM launch and static render paths call this so the
@@ -1676,9 +2190,23 @@ pub fn migrate_config(path: &Path) {
         }
     };
 
-    let current_version = toml::from_str::<PlexiConfig>(&data)
-        .ok()
-        .and_then(|c| c.config_version)
+    // Read the version from the raw table, not a strict `PlexiConfig` parse:
+    // one invalid key elsewhere must not make the version read as 0 and
+    // rewrite the file on every load (the config watcher reloads on write).
+    let table = match data.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!(
+                "config migrate: {} is not valid TOML, skipping: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let current_version = table
+        .get("config_version")
+        .and_then(toml::Value::as_integer)
+        .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(0);
 
     if current_version >= CURRENT_CONFIG_VERSION {
@@ -1719,6 +2247,14 @@ pub fn migrate_config(path: &Path) {
         updated.push('\n');
     }
 
+    if updated == data {
+        log::info!(
+            "config migrate: {} unchanged, skipping write",
+            path.display()
+        );
+        return;
+    }
+
     match std::fs::write(path, &updated) {
         Ok(()) => log::info!("config migrate: {} migrated to v{version}", path.display()),
         Err(e) => log::error!("config migrate: failed to write {}: {e}", path.display()),
@@ -1735,10 +2271,17 @@ pub fn ensure_config_file() -> PathBuf {
 /// commented template written on first use. Global and workspace entries share
 /// the same editor handoff.
 pub fn ensure_workspace_config_file(workspace_root: &Path) -> PathBuf {
-    ensure_config_file_at(workspace_config_path(workspace_root))
+    ensure_config_file_at_with_template(
+        workspace_config_path(workspace_root),
+        "# Settings here override your global config for this repo.\n# Uncomment only the settings you want to override.\n#\n# font_size = 14.0\n#\n# [theme]\n# preset = \"plexi-dusk\"\n#\n# [terminal]\n# minimum_contrast = 3.0\n",
+    )
 }
 
 fn ensure_config_file_at(path: PathBuf) -> PathBuf {
+    ensure_config_file_at_with_template(path, CONFIG_TEMPLATE)
+}
+
+fn ensure_config_file_at_with_template(path: PathBuf, template: &str) -> PathBuf {
     if !path.exists() {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -1748,14 +2291,252 @@ fn ensure_config_file_at(path: PathBuf) -> PathBuf {
                 );
             }
         }
-        if let Err(e) = std::fs::write(&path, CONFIG_TEMPLATE) {
-            log::error!(
-                "ensure_config_file: could not write template to {}: {e}",
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                match file.write_all(template.as_bytes()) {
+                    Ok(()) => log::info!("config: created template at {}", path.display()),
+                    Err(e) => log::error!(
+                        "config: could not write template to {}: {e}",
                 path.display()
-            );
+                    ),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => log::error!("config: could not create {}: {e}", path.display()),
         }
     }
     path
+}
+
+/// Workspace entries that override global configuration, including unset global entries.
+pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> Vec<(String, String)> {
+    fn read(path: &Path) -> Option<toml::Table> {
+        match std::fs::read_to_string(path) {
+            Ok(data) => match toml::from_str(&data) {
+                Ok(table) => Some(table),
+                Err(e) => { log::error!("config: cannot parse {}: {e}", path.display()); None }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                log::error!("config: cannot read {}: {e}", path.display());
+                None
+            }
+        }
+    }
+    fn same_binding(name: &str, global: &crate::host::keys::KeyBindings, effective: &crate::host::keys::KeyBindings) -> bool {
+        match name {
+            "quit" => global.quit == effective.quit,
+            "close_pane" => global.close_pane == effective.close_pane,
+            "toggle_command_palette" => global.toggle_command_palette == effective.toggle_command_palette,
+            "split_horizontal" => global.split_horizontal == effective.split_horizontal,
+            "split_vertical" => global.split_vertical == effective.split_vertical,
+            "split_right" => global.split_right == effective.split_right,
+            "split_down" => global.split_down == effective.split_down,
+            "swap_pane_left" => global.swap_pane_left == effective.swap_pane_left,
+            "swap_pane_down" => global.swap_pane_down == effective.swap_pane_down,
+            "swap_pane_up" => global.swap_pane_up == effective.swap_pane_up,
+            "swap_pane_right" => global.swap_pane_right == effective.swap_pane_right,
+            "send_pane_left" => global.send_pane_left == effective.send_pane_left,
+            "send_pane_down" => global.send_pane_down == effective.send_pane_down,
+            "send_pane_up" => global.send_pane_up == effective.send_pane_up,
+            "send_pane_right" => global.send_pane_right == effective.send_pane_right,
+            "navigate_left" => global.navigate_left == effective.navigate_left,
+            "navigate_down" => global.navigate_down == effective.navigate_down,
+            "navigate_up" => global.navigate_up == effective.navigate_up,
+            "navigate_right" => global.navigate_right == effective.navigate_right,
+            "select_pane_left" => global.select_pane_left == effective.select_pane_left,
+            "select_pane_down" => global.select_pane_down == effective.select_pane_down,
+            "select_pane_up" => global.select_pane_up == effective.select_pane_up,
+            "select_pane_right" => global.select_pane_right == effective.select_pane_right,
+            "new_tab" => global.new_tab == effective.new_tab,
+            "next_tab" => global.next_tab == effective.next_tab,
+            "prev_tab" => global.prev_tab == effective.prev_tab,
+            "next_context" => global.next_context == effective.next_context,
+            "prev_context" => global.prev_context == effective.prev_context,
+            "move_context_up" => global.move_context_up == effective.move_context_up,
+            "move_context_down" => global.move_context_down == effective.move_context_down,
+            "nav_back" => global.nav_back == effective.nav_back,
+            "focus_history_forward" => global.focus_history_forward == effective.focus_history_forward,
+            "toggle_sidebar" => global.toggle_sidebar == effective.toggle_sidebar,
+            "toggle_zoom" => global.toggle_zoom == effective.toggle_zoom,
+            "toggle_shortcuts" => global.toggle_shortcuts == effective.toggle_shortcuts,
+            "rename_context" => global.rename_context == effective.rename_context,
+            "rename_pane" => global.rename_pane == effective.rename_pane,
+            "new_context" => global.new_context == effective.new_context,
+            "new_page_right" => global.new_page_right == effective.new_page_right,
+            "toggle_minimap" => global.toggle_minimap == effective.toggle_minimap,
+            "scroll_up" => global.scroll_up == effective.scroll_up,
+            "scroll_down" => global.scroll_down == effective.scroll_down,
+            "increase_font_size" => global.increase_font_size == effective.increase_font_size,
+            "decrease_font_size" => global.decrease_font_size == effective.decrease_font_size,
+            "reset_font_size" => global.reset_font_size == effective.reset_font_size,
+            "ui_scale_up" => global.ui_scale_up == effective.ui_scale_up,
+            "ui_scale_down" => global.ui_scale_down == effective.ui_scale_down,
+            "ui_scale_reset" => global.ui_scale_reset == effective.ui_scale_reset,
+            "open_agents" => global.open_agents == effective.open_agents,
+            "next_blocked_agent" => global.next_blocked_agent == effective.next_blocked_agent,
+            "focus_approval" => global.focus_approval == effective.focus_approval,
+            "open_file_browser" => global.open_file_browser == effective.open_file_browser,
+            "open_quick_note" => global.open_quick_note == effective.open_quick_note,
+            "open_config" => global.open_config == effective.open_config,
+            "reload_config" => global.reload_config == effective.reload_config,
+            "open_secrets_manager" => global.open_secrets_manager == effective.open_secrets_manager,
+            "open_assistant" => global.open_assistant == effective.open_assistant,
+            "force_reload_plugin" => global.force_reload_view == effective.force_reload_view,
+            "toggle_attention_queue" => global.toggle_attention_queue == effective.toggle_attention_queue,
+            "zoom_in" => global.zoom_in == effective.zoom_in,
+            "open_scratchpad" => global.open_scratchpad == effective.open_scratchpad,
+            "push_to_subcontext" => global.push_to_subcontext == effective.push_to_subcontext,
+            "new_child_context" => global.new_child_context == effective.new_child_context,
+            "set_context_root_from_cwd" => global.set_context_root_from_cwd == effective.set_context_root_from_cwd,
+            "hide_pane" => global.hide_pane == effective.hide_pane,
+            "park_context" => global.park_context == effective.park_context,
+            "open_notes_picker" => global.open_notes_picker == effective.open_notes_picker,
+            "close_context" => global.close_context == effective.close_context,
+            _ => false,
+        }
+    }
+    fn visit(
+        prefix: &str,
+        workspace: &toml::Table,
+        global: Option<&toml::Table>,
+        saved_key: Option<&str>,
+        ignored: &[String],
+        out: &mut Vec<(String, String)>,
+    ) {
+        for (key, value) in workspace {
+            let name = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if (name == "ai.client" && value.as_str().is_some_and(|v| v.trim().is_empty()))
+                || (name == "notifications.sound" && value.as_str() == Some("") && global.and_then(|table| table.get(key)).is_none())
+                || ignored.iter().any(|ignored| name == *ignored || name.starts_with(&format!("{ignored}."))) {
+                continue;
+            }
+            let old = global.and_then(|table| table.get(key));
+            if let Some(table) = value.as_table() {
+                visit(&name, table, old.and_then(toml::Value::as_table), saved_key, ignored, out);
+            } else if saved_key == Some(name.as_str()) || old.is_none_or(|previous| previous != value) {
+                let shown = value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string());
+                out.push((name, shown));
+            }
+        }
+    }
+    let workspace_path = workspace_config_path(root);
+    let Some(mut workspace) = read(&workspace_path) else {
+        return Vec::new();
+    };
+    let mut ignored: Vec<String> = validate_from_path(&workspace_path).into_iter().filter_map(|diag| match diag {
+        ConfigDiagnostic::InvalidValue { key, .. } => Some(key),
+        ConfigDiagnostic::UnknownKey { table, key, .. } => Some(if table.is_empty() { key } else { format!("{table}.{key}") }),
+        ConfigDiagnostic::MisplacedTable { table, .. } => Some(table),
+        ConfigDiagnostic::DeprecatedSection { section, .. } => Some(section),
+        _ => None,
+    }).chain(["effects.crt".to_owned()]).collect();
+    for key in [
+        "focus_history_depth",
+        "cli",
+        "file_handlers",
+        "config_version",
+        "experiments",
+        "marketplace",
+    ] {
+        workspace.remove(key);
+    }
+    let global_config = PlexiConfig::load_from_path(&config_path()).unwrap_or_default();
+    let workspace_config = PlexiConfig::load_from_path(&workspace_path).unwrap_or_default();
+    let global_bindings = crate::host::keys::build_key_bindings(global_config.keybindings.as_ref());
+    if global_config.theme.as_ref().and_then(|theme| theme.preset.as_ref()).is_some() {
+        ignored.push("theme_preset".to_owned());
+    }
+    let resolved_global_theme = crate::ui::theme::resolve_theme_config(&global_config);
+    let mut merged_config = global_config;
+    merged_config.overlay(workspace_config);
+    let effective_bindings = crate::host::keys::build_key_bindings(merged_config.keybindings.as_ref());
+    if let Some(bindings) = workspace.get("keybindings").and_then(toml::Value::as_table) {
+        for key in bindings.keys() {
+            if same_binding(key, &global_bindings, &effective_bindings) {
+                ignored.push(format!("keybindings.{key}"));
+            }
+        }
+    }
+    let mut global = read(&config_path()).unwrap_or_default();
+    global.entry("font_size").or_insert(toml::Value::Float(crate::ui::theme::FONT_SIZE as f64));
+    global.entry("ui_scale").or_insert(toml::Value::Float(crate::app::ui_scale::UI_SCALE_DEFAULT as f64));
+    for (key, default) in [
+        ("confirm_quit", true), ("confirm_close", false),
+        ("confirm_context_close", true), ("osc_pane_title", PlexiConfig::default().osc_pane_title_enabled()),
+    ] { global.entry(key).or_insert(toml::Value::Boolean(default)); }
+    let ai_defaults = AiConfig::default();
+    for (section, key, default) in [
+        ("attention", "style", toml::Value::String("normal".to_owned())),
+        ("attention", "intensity", toml::Value::Float(1.0)),
+        ("attention", "dock", toml::Value::String("badge".to_owned())),
+        ("theme", "state_preset", toml::Value::String("okabe-ito".to_owned())),
+        ("theme", "pip_dim", toml::Value::Float(0.72)),
+        ("log", "level", toml::Value::String("info".to_owned())),
+        ("log", "retention_days", toml::Value::Integer(30)),
+        ("agents", "os_notifications", toml::Value::Boolean(true)),
+        ("agents", "stalled_after_secs", toml::Value::Integer(120)),
+        ("agents", "stale_failure_hours", toml::Value::Integer(crate::agent::fleet::DEFAULT_STALE_FAILURE_HOURS as i64)),
+        ("agents", "palette_agent_results", toml::Value::Boolean(false)),
+        ("agents", "restore_mode", toml::Value::String("lazy".to_owned())),
+        ("agents", "standby_scrollback_lines", toml::Value::Integer(PlexiConfig::default().standby_scrollback_lines() as i64)),
+        ("effects", "ghost", toml::Value::Boolean(true)),
+        ("effects", "ghost_opacity", toml::Value::Float(EffectsConfig::default().unfocused_opacity().unwrap_or(0.75) as f64)),
+        ("notifications", "enabled", toml::Value::Boolean(true)),
+        ("notifications", "focus_mode", toml::Value::Boolean(false)),
+        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_plugin_daily_usd())),
+        ("ai", "global_daily_usd", toml::Value::Float(ai_defaults.effective_global_daily_usd())),
+        ("terminal", "minimum_contrast", toml::Value::Float(DEFAULT_TERMINAL_MINIMUM_CONTRAST as f64)),
+        ("permissions", "soft_grant_days", toml::Value::Integer(DEFAULT_SOFT_GRANT_DAYS as i64)),
+        ("cloud", "retain_local_history", toml::Value::Boolean(CloudConfig::default().retain_local_history())),
+    ] {
+        let section = global.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(table) = section.as_table_mut() { table.entry(key).or_insert(default); }
+    }
+    global.entry("pane_gap").or_insert(toml::Value::Float(4.0));
+    global.entry("pane_corner_radius").or_insert(toml::Value::Integer(crate::ui::style::RADIUS_PANE.nw as i64));
+    global.entry("pane_title_font_size").or_insert(toml::Value::Float(12.0));
+    let modes = PlexiConfig::default().resolved_model_modes();
+    for (mode, resolved) in [("fast", modes.fast), ("slow", modes.slow)] {
+        let models = global.entry("models").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(models) = models.as_table_mut() {
+            let mode = models.entry(mode).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let Some(mode) = mode.as_table_mut() {
+                mode.entry("provider").or_insert(toml::Value::String(resolved.provider));
+                mode.entry("model").or_insert(toml::Value::String(resolved.model));
+                mode.entry("thinking").or_insert(toml::Value::String(resolved.thinking));
+            }
+        }
+    }
+    let legacy_preset = global.get("theme_preset").and_then(toml::Value::as_str)
+        .unwrap_or(crate::ui::theme::DEFAULT_PRESET).to_owned();
+    global.entry("theme_preset").or_insert(toml::Value::String(legacy_preset.clone()));
+    let theme = global.entry("theme").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let Some(theme) = theme.as_table_mut() {
+        theme.entry("preset").or_insert(toml::Value::String(legacy_preset));
+        match toml::Value::try_from(resolved_global_theme) {
+            Ok(toml::Value::Table(resolved)) => {
+                for (key, value) in resolved { theme.entry(key).or_insert(value); }
+            }
+            Ok(_) => log::error!("config: resolved theme did not serialize as a table"),
+            Err(error) => log::error!("config: could not serialize resolved theme: {error}"),
+        }
+    }
+    let mut result = Vec::new();
+    visit("", &workspace, Some(&global), saved_key, &ignored, &mut result);
+    result
 }
 
 /// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
@@ -1843,7 +2624,10 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 impl PlexiConfig {
     /// Resolve pi-plexi FAST/SLOW targets with defaults applied field-by-field.
     pub fn resolved_model_modes(&self) -> ResolvedModelModes {
-        self.models.as_ref().map(ModelModesConfig::resolved).unwrap_or_else(|| ModelModesConfig::default().resolved())
+        self.models
+            .as_ref()
+            .map(ModelModesConfig::resolved)
+            .unwrap_or_else(|| ModelModesConfig::default().resolved())
     }
     pub fn osc_pane_title_enabled(&self) -> bool {
         self.osc_pane_title.unwrap_or(true)
@@ -1889,37 +2673,45 @@ impl PlexiConfig {
         Self::load_from_path(&path).unwrap_or_default()
     }
 
-    /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent;
-    /// returns `Some(default)` after logging if the file exists but fails to
-    /// parse — matches the historical behavior of `load()`.
+    /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent or
+    /// unreadable. A retired, unknown, or invalid key is logged as an error
+    /// and skipped; every other setting still loads.
     fn load_from_path(path: &Path) -> Option<Self> {
+        Self::load_from_path_with_diagnostics(path).map(|(cfg, _)| cfg)
+    }
+
+    /// [`Self::load_from_path`] plus the diagnostics for every key it skipped.
+    fn load_from_path_with_diagnostics(path: &Path) -> Option<(Self, Vec<ConfigDiagnostic>)> {
         let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
-                log::warn!("Failed to read config file {}: {e}", path.display());
+                log::error!("config: failed to read {}: {e}", path.display());
                 return None;
             }
         };
-        if let Some(error) = legacy_ai_error(&data) {
-            log::warn!("Failed to validate config file {}: {error}", path.display());
-            return None;
-        }
-        match toml::from_str::<Self>(&data) {
-            Ok(cfg) => {
-                if cfg.effects.as_ref().is_some_and(|e| e.crt.is_some()) {
-                    log::debug!(
-                        "config: ignoring retired `[effects] crt` toggle in {}",
-                        path.display()
-                    );
+        let (cfg, diags) = parse_config_lenient(&data, path);
+        log::info!(
+            "config: loaded {} config_version={} skipped={}",
+            path.display(),
+            cfg.config_version.unwrap_or(0),
+            diags.len()
+        );
+        for diag in &diags {
+            match diag {
+                ConfigDiagnostic::DeprecatedSection { error: false, .. } => {
+                    log::warn!("config: {diag}")
                 }
-                Some(cfg)
-            }
-            Err(e) => {
-                log::warn!("Failed to parse config file {}: {e}", path.display());
-                Some(Self::default())
+                _ => log::error!("config: setting not applied: {diag}"),
             }
         }
+        if cfg.effects.as_ref().is_some_and(|e| e.crt.is_some()) {
+            log::debug!(
+                "config: ignoring retired `[effects] crt` toggle in {}",
+                path.display()
+            );
+        }
+        Some((cfg, diags))
     }
 
     /// CLI-only strict parser used by machine-readable config access.
@@ -1956,11 +2748,17 @@ impl PlexiConfig {
     /// `other` replaces the corresponding field in `self`. Nested structs
     /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
+        // core_only is host-wide startup policy from the profile, never a workspace override.
         if let Some(attention) = other.attention {
-            self.attention.get_or_insert_with(Default::default).overlay(attention);
+            self.attention
+                .get_or_insert_with(Default::default)
+                .overlay(attention);
         }
         if other.font_size.is_some() {
             self.font_size = other.font_size;
+        }
+        if other.ui_scale.is_some() {
+            self.ui_scale = other.ui_scale;
         }
         if other.theme_preset.is_some() {
             self.theme_preset = other.theme_preset;
@@ -1977,6 +2775,9 @@ impl PlexiConfig {
         if other.pane_gap.is_some() {
             self.pane_gap = other.pane_gap;
         }
+        if other.pane_corner_radius.is_some() {
+            self.pane_corner_radius = other.pane_corner_radius;
+        }
         if other.pane_title_font_size.is_some() {
             self.pane_title_font_size = other.pane_title_font_size;
         }
@@ -1991,6 +2792,11 @@ impl PlexiConfig {
         match (self.effects.as_mut(), other.effects) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.effects = Some(incoming),
+            _ => {}
+        }
+        match (self.terminal.as_mut(), other.terminal) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.terminal = Some(incoming),
             _ => {}
         }
         match (self.log.as_mut(), other.log) {
@@ -2045,7 +2851,9 @@ impl PlexiConfig {
         }
     }
 
-    pub(crate) fn overlay_for_cli(&mut self, other: Self) { self.overlay(other); }
+    pub(crate) fn overlay_for_cli(&mut self, other: Self) {
+        self.overlay(other);
+    }
 }
 
 impl CloudConfig {
@@ -2341,7 +3149,10 @@ mod tests {
 
     #[test]
     fn windows_executable_suffix_does_not_become_part_of_the_channel() {
-        assert_eq!(channel_suffix_from_basename("plexi-alpha.exe"), ".plexi-alpha");
+        assert_eq!(
+            channel_suffix_from_basename("plexi-alpha.exe"),
+            ".plexi-alpha"
+        );
         assert_eq!(channel_from_basename("plexi-alpha.exe"), Some("alpha"));
         assert_eq!(
             resolve_channel_dir("plexi-alpha.exe", Some("beta")),
@@ -2352,10 +3163,7 @@ mod tests {
     #[test]
     fn only_numbered_pr_channels_are_test_channels() {
         assert!(is_matching_test_channel(Some("pr-1"), Some("pr-1")));
-        assert!(is_matching_test_channel(
-            Some("pr-2493"),
-            Some("pr-2493")
-        ));
+        assert!(is_matching_test_channel(Some("pr-2493"), Some("pr-2493")));
 
         for (compiled, runtime) in [
             (None, Some("pr-1")),
@@ -2479,6 +3287,50 @@ mod tests {
     }
 
     #[test]
+    fn ui_scale_round_trips_and_is_a_known_key() {
+        let cfg: PlexiConfig = toml::from_str("ui_scale = 1.3\n").unwrap();
+        assert_eq!(cfg.ui_scale, Some(1.3));
+        let none: PlexiConfig = toml::from_str("font_size = 14.0\n").unwrap();
+        assert_eq!(none.ui_scale, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "ui_scale = 1.3\n").unwrap();
+        assert!(validate_from_path(&path).is_empty());
+    }
+
+    #[test]
+    fn pane_corner_radius_parses_validates_and_overlays() {
+        let mut config: PlexiConfig = toml::from_str("pane_corner_radius = 12\n").unwrap();
+        assert_eq!(config.pane_corner_radius, Some(12));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "pane_corner_radius = 12\n").unwrap();
+        assert!(validate_from_path(&path).is_empty());
+        config.overlay(toml::from_str("pane_corner_radius = 0\n").unwrap());
+        assert_eq!(config.pane_corner_radius, Some(0));
+        assert!(toml::from_str::<PlexiConfig>("pane_corner_radius = -1\n").is_err());
+        assert!(toml::from_str::<PlexiConfig>("pane_corner_radius = 256\n").is_err());
+    }
+
+    #[test]
+    fn ui_scale_out_of_range_clamps_on_use() {
+        use crate::app::ui_scale::clamp_scale;
+        for (raw, want) in [(9.0_f32, 2.0_f32), (0.01, 0.6), (-3.0, 0.6), (1.25, 1.25)] {
+            let cfg: PlexiConfig = toml::from_str(&format!("ui_scale = {raw}\n")).unwrap();
+            assert_eq!(cfg.ui_scale.map(clamp_scale), Some(want));
+        }
+    }
+
+    #[test]
+    fn ui_scale_overlay_prefers_project_value() {
+        let mut global: PlexiConfig = toml::from_str("ui_scale = 1.1\n").unwrap();
+        let project: PlexiConfig = toml::from_str("ui_scale = 1.5\n").unwrap();
+        global.overlay(project);
+        assert_eq!(global.ui_scale, Some(1.5));
+    }
+
+    #[test]
     fn validate_valid_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -2505,10 +3357,19 @@ mod tests {
 
     #[test]
     fn model_modes_workspace_overlay_merges_fields() {
-        let mut global: PlexiConfig = toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n").unwrap();
+        let mut global: PlexiConfig =
+            toml::from_str("[models.fast]\nprovider = \"global\"\nmodel = \"global/model\"\n")
+                .unwrap();
         global.overlay(toml::from_str("[models.fast]\nthinking = \"high\"\n").unwrap());
         let fast = global.resolved_model_modes().fast;
-        assert_eq!((fast.provider.as_str(), fast.model.as_str(), fast.thinking.as_str()), ("global", "global/model", "high"));
+        assert_eq!(
+            (
+                fast.provider.as_str(),
+                fast.model.as_str(),
+                fast.thinking.as_str()
+            ),
+            ("global", "global/model", "high")
+        );
     }
 
     #[test]
@@ -2521,12 +3382,25 @@ mod tests {
 
     #[test]
     fn model_modes_validation_names_bad_paths() {
-        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
         fs::write(&path, "[models.fast]\nthinking = \"turbo\"\nprovider = \"bad provider\"\n[models.turbo]\nmodel = \"x\"\n").unwrap();
-        let rendered = validate_from_path(&path).into_iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(rendered.contains("models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"), "{rendered}");
+        let rendered = validate_from_path(&path)
+            .into_iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains(
+                "models.fast.thinking \"turbo\" is not one of off|minimal|low|medium|high|xhigh"
+            ),
+            "{rendered}"
+        );
         assert!(rendered.contains("models.fast.provider"), "{rendered}");
-        assert!(rendered.contains("unknown key `turbo` in [models]"), "{rendered}");
+        assert!(
+            rendered.contains("unknown key `turbo` in [models]"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -2613,6 +3487,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_old_force_reload_app_names_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[keybindings]\nforce_reload_app = \"cmd+r\"\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        let message = diags[0].to_string();
+        assert!(message.contains("unknown key `force_reload_app` in [keybindings]"), "{message}");
+        assert!(message.contains("use `force_reload_plugin`"), "{message}");
+    }
+
+    #[test]
     fn validate_beta_section_is_unknown_after_effects_rename() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -2620,6 +3506,43 @@ mod tests {
         let diags = validate_from_path(&path);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].to_string().contains("unknown key `beta`"));
+    }
+
+    #[test]
+    fn terminal_minimum_contrast_defaults_to_three_and_overlays() {
+        let mut cfg = PlexiConfig::default();
+        assert_eq!(cfg.terminal_minimum_contrast(), 3.0);
+        cfg.overlay(toml::from_str("[terminal]\nminimum_contrast = 4.5\n").unwrap());
+        assert_eq!(cfg.terminal_minimum_contrast(), 4.5);
+        cfg.overlay(toml::from_str("[terminal]\nminimum_contrast = 1.0\n").unwrap());
+        assert_eq!(cfg.terminal_minimum_contrast(), 1.0);
+    }
+
+    #[test]
+    fn terminal_minimum_contrast_out_of_range_is_reported_and_ignored() {
+        for bad in ["0.5", "21.5", "-1.0", "nan", "\"high\""] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, format!("[terminal]\nminimum_contrast = {bad}\n")).unwrap();
+            let diags = validate_from_path(&path);
+            assert!(
+                diags.iter().any(|d| matches!(d, ConfigDiagnostic::InvalidValue { key, .. } if key == "terminal.minimum_contrast")),
+                "{bad}: expected InvalidValue, got {diags:?}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for ok in ["1.0", "3.0", "21.0"] {
+            fs::write(&path, format!("[terminal]\nminimum_contrast = {ok}\n")).unwrap();
+            assert!(validate_from_path(&path).is_empty(), "{ok} must validate");
+        }
+        fs::write(&path, "[terminal]\nminimum_contrast = 0.5\n").unwrap();
+        let (cfg, _) = parse_config_lenient(&fs::read_to_string(&path).unwrap(), &path);
+        assert_eq!(
+            cfg.terminal_minimum_contrast(),
+            3.0,
+            "bad value falls back to the default"
+        );
     }
 
     #[test]
@@ -2645,7 +3568,10 @@ mod tests {
         .unwrap();
 
         let diags = validate_from_path(&path);
-        assert!(diags.is_empty(), "legacy [effects] table must validate cleanly: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "legacy [effects] table must validate cleanly: {diags:?}"
+        );
 
         let loaded = PlexiConfig::load_from_path(&path).expect("legacy [effects] must load");
         let effects = loaded.effects.expect("effects table should be parsed");
@@ -2659,6 +3585,190 @@ mod tests {
         let path = dir.path().join("nonexistent.toml");
         let diags = validate_from_path(&path);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_common_implicit_defaults() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "ui_scale = 1.0\nconfirm_quit = true\nconfirm_close = false\nconfirm_context_close = true\nosc_pane_title = true\n[effects]\nghost = true\nghost_opacity = 0.75\n[notifications]\nenabled = true\nfocus_mode = false\n[ai]\nper_app_daily_usd = 1.0\nglobal_daily_usd = 10.0\n[terminal]\nminimum_contrast = 3.0\n[permissions]\nsoft_grant_days = 30\n[cloud]\nretain_local_history = false\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "ui_scale = 1.5\n[terminal]\nminimum_contrast = 4.0\n[permissions]\nsoft_grant_days = 10\n[cloud]\nretain_local_history = true\n").unwrap();
+        let keys: Vec<_> = workspace_config_shadows(workspace.path(), None).into_iter().map(|(key, _)| key).collect();
+        for key in ["ui_scale", "terminal.minimum_contrast", "permissions.soft_grant_days", "cloud.retain_local_history"] { assert!(keys.contains(&key.to_owned()), "missing {key}: {keys:?}"); }
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_model_defaults() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let defaults = PlexiConfig::default().resolved_model_modes();
+        let text = format!("[models.fast]\nprovider = \"{}\"\nmodel = \"{}\"\nthinking = \"{}\"\n", defaults.fast.provider, defaults.fast.model, defaults.fast.thinking);
+        std::fs::write(&path, text).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[models.fast]\nmodel = \"another-model\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "models.fast.model"));
+    }
+
+    #[test]
+    fn workspace_legacy_theme_preset_does_not_override_global_theme_table() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "theme_preset = \"plexi-night\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_preset_theme_colors() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let accent = crate::ui::theme::preset_colors("plexi-dusk").unwrap().accent.unwrap();
+        std::fs::write(&path, format!("[theme]\naccent = \"{accent}\"\n")).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[theme]\naccent = \"#010203\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "theme.accent"));
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_resolved_default_keybindings() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+alt+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "keybindings.quit"));
+    }
+
+    #[test]
+    fn workspace_shadow_detector_ignores_unapplied_keys() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "unknown_key = 42\n[theme]\npreset = \"not-a-preset\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+    }
+
+    #[test]
+    fn workspace_overlay_preserves_other_global_fields_in_each_section() {
+        let mut global = String::from(r#"
+font_size = 15.0
+ui_scale = 1.2
+[attention]
+style = "loud"
+intensity = 0.7
+dock = "badge"
+[effects]
+ghost = true
+ghost_opacity = 0.6
+[terminal]
+minimum_contrast = 4.0
+[log]
+level = "debug"
+retention_days = 7
+[notifications]
+enabled = true
+focus_mode = true
+sound = "ding.wav"
+[ai]
+per_app_daily_usd = 2.0
+global_daily_usd = 5.0
+client = "team"
+[models.fast]
+provider = "vendor"
+model = "model"
+thinking = "high"
+[models.slow]
+provider = "vendor"
+model = "other"
+thinking = "low"
+[agents]
+os_notifications = true
+stalled_after_secs = 60
+stale_failure_hours = 5
+palette_agent_results = true
+low = "one"
+medium = "two"
+high = "three"
+restore_mode = "eager"
+standby_scrollback_lines = 42
+[marketplace]
+registry_url = "https://example.com"
+cdn_url = "https://example.com/cdn"
+submit_url = "https://example.com/submit"
+account_backend = "none"
+account_url = "https://example.com/account"
+account_email = "test@example.com"
+[cloud]
+retain_local_history = true
+[permissions]
+soft_grant_days = 9
+[keys]
+"cmd+1" = "run:first"
+"cmd+2" = "run:second"
+[theme]
+"#);
+        for key in KNOWN_THEME {
+            if *key == "pip_dim" {
+                global.push_str("pip_dim = 0.5\n");
+            } else {
+                let value = match *key { "preset" => "plexi-night", "state_preset" => "mono", _ => "#123456" };
+                global.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+        }
+        global.push_str("[keybindings]\n");
+        for key in KNOWN_KEYBINDINGS { global.push_str(&format!("{key} = \"cmd+f\"\n")); }
+        let original: PlexiConfig = toml::from_str(&global).unwrap();
+        let cases = [
+            ("[attention]\nstyle = \"off\"", vec!["attention", "style"]),
+            ("[theme]\npreset = \"plexi-dawn\"", vec!["theme", "preset"]),
+            ("[effects]\nghost = false", vec!["effects", "ghost"]),
+            ("[terminal]\nminimum_contrast = 2.0", vec!["terminal", "minimum_contrast"]),
+            ("[log]\nlevel = \"info\"", vec!["log", "level"]),
+            ("[notifications]\nenabled = false", vec!["notifications", "enabled"]),
+            ("[ai]\nclient = \"personal\"", vec!["ai", "client"]),
+            ("[models.fast]\nprovider = \"other\"", vec!["models", "fast", "provider"]),
+            ("[keybindings]\nquit = \"cmd+q\"", vec!["keybindings", "quit"]),
+            ("[keys]\n\"cmd+1\" = \"run:other\"", vec!["keys", "cmd+1"]),
+            ("[agents]\nlow = \"other\"", vec!["agents", "low"]),
+            ("[marketplace]\ncdn_url = \"https://other.example\"", vec!["marketplace", "cdn_url"]),
+            ("[cloud]\nretain_local_history = false", vec!["cloud", "retain_local_history"]),
+            ("[permissions]\nsoft_grant_days = 10", vec!["permissions", "soft_grant_days"]),
+        ];
+        for (text, path) in cases {
+            let incoming: PlexiConfig = toml::from_str(text).unwrap();
+            let incoming_json = serde_json::to_value(&incoming).unwrap();
+            let mut expected = serde_json::to_value(&original).unwrap();
+            let mut input_value = &incoming_json;
+            let mut expected_value = &mut expected;
+            for key in &path { input_value = &input_value[*key]; expected_value = &mut expected_value[*key]; }
+            *expected_value = input_value.clone();
+            let mut actual = original.clone();
+            actual.overlay(incoming);
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected, "overlay {text}");
+        }
     }
 
     #[test]
@@ -2828,16 +3938,44 @@ mod tests {
     }
 
     #[test]
+    fn migrate_config_with_invalid_key_writes_version_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "# header\nfont_size = \"huge\"\n\n[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\nhost = \"http://localhost:11434\"\n";
+        fs::write(&path, content).unwrap();
+        assert!(toml::from_str::<PlexiConfig>(content).is_err());
+
+        migrate_config(&path);
+        let migrated = fs::read_to_string(&path).unwrap();
+        assert_eq!(migrated.matches("config_version").count(), 1, "{migrated}");
+        assert!(migrated.contains("config_version = 1"), "{migrated}");
+        assert!(migrated.contains("font_size = \"huge\""), "{migrated}");
+        assert!(migrated.contains("backend = \"ollama\""), "{migrated}");
+
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        migrate_config(&path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), migrated);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+    }
+
+    #[test]
+    fn migrate_config_leaves_invalid_toml_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "font_size = = 14\n";
+        fs::write(&path, content).unwrap();
+        migrate_config(&path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
     fn config_docs_explain_channel_discipline() {
-        for doc in [
-            include_str!("../../docs/CONFIG.md"),
-            include_str!("../../website/src/content/docs/config.md"),
-        ] {
-            assert!(doc.contains("Alpha config stays default"));
-            assert!(doc.contains("Beta config is the staging ground"));
-            assert!(doc.contains("PR builds are isolated"));
-            assert!(doc.contains("~/.plexi-pr-<N>/config.toml"));
-        }
+        let reference = include_str!("../../website/src/content/docs/config.md");
+        assert!(reference.contains("Existing configuration is preserved on every channel"));
+        assert!(reference.contains("Beta is the staging channel"));
+        assert!(reference.contains("PR builds are isolated"));
+        assert!(include_str!("../../docs/CONFIG.md").contains("config.md#channel-discipline"));
     }
 
     /// Stint 0285 shipped the CPython-in-WASM sandbox and 0512 corrected the
@@ -2845,14 +3983,14 @@ mod tests {
     /// test used to assert the opposite — that public docs deny Python
     /// sandboxing — which kept a false security claim pinned in place. The
     /// invariant it guards now is the true one: no public doc may tell a
-    /// reader that Python apps run unsandboxed as native processes.
+    /// reader that Python plugins run unsandboxed as native processes.
     #[test]
     fn public_security_docs_do_not_deny_python_sandboxing() {
         for (name, doc) in [
             ("README.md", include_str!("../../README.md")),
             (
                 "apps.md",
-                include_str!("../../website/src/content/docs/apps.md"),
+                include_str!("../../website/src/content/docs/plugins.md"),
             ),
             (
                 "sdk.md",
@@ -2864,15 +4002,15 @@ mod tests {
             ),
         ] {
             for claim in [
-                "Python apps are native processes",
-                "Python apps are native subprocesses",
+                "Python plugins are native processes",
+                "Python plugins are native subprocesses",
                 "not sandboxed",
                 "not a Python process sandbox",
                 "do not sandbox",
             ] {
                 assert!(
                     !doc.contains(claim),
-                    "{name} claims {claim:?}; Python apps run sandboxed through the \
+                    "{name} claims {claim:?}; Python plugins run sandboxed through the \
                      CPython-in-WASM adapter (docs/wasm-runtime.md § Security Model)"
                 );
             }
@@ -2885,9 +4023,20 @@ mod legacy_ai_rejection_tests {
     use super::*;
 
     #[test]
-    fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
-        for key in ["backend", "openrouter.model_low", "openrouter.api_key_env", "ollama.host", "local.base_url", "anthropic.api_key_env"] {
-            let (section, field) = key.split_once('.').map_or(("ai".to_string(), key.to_string()), |(section, field)| (format!("ai.{section}"), field.to_string()));
+    fn removed_ai_keys_fail_check_and_cli_load_and_are_reported_by_host_load() {
+        for key in [
+            "backend",
+            "openrouter.model_low",
+            "openrouter.api_key_env",
+            "ollama.host",
+            "local.base_url",
+            "anthropic.api_key_env",
+        ] {
+            let (section, field) = key
+                .split_once('.')
+                .map_or(("ai".to_string(), key.to_string()), |(section, field)| {
+                    (format!("ai.{section}"), field.to_string())
+                });
             let text = format!("[{section}]\n{field} = \"value\"\n");
             let temp = tempfile::tempdir().unwrap();
             let global = temp.path().join("config.toml");
@@ -2896,18 +4045,214 @@ mod legacy_ai_rejection_tests {
             for path in [&global, &workspace] {
                 std::fs::write(path, &text).unwrap();
                 let diagnostics = validate_from_path(path);
-                let expected = format!("ai.{key} is no longer supported; use [models.fast] / [models.slow] instead");
-                assert!(diagnostics.iter().any(|diagnostic| diagnostic.to_string().contains(&expected)), "check must reject {}: {diagnostics:?}", path.display());
+                let expected = format!(
+                    "ai.{key} is no longer supported; use [models.fast] / [models.slow] instead"
+                );
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.to_string().contains(&expected)),
+                    "check must reject {}: {diagnostics:?}",
+                    path.display()
+                );
                 match PlexiConfig::load_from_path_for_cli(path) {
-                    Err(error) => assert_eq!(error, expected, "load must reject {}", path.display()),
+                    Err(error) => {
+                        assert_eq!(error, expected, "load must reject {}", path.display())
+                    }
                     Ok(_) => panic!("load must reject {}", path.display()),
                 }
+                let (_, load_diagnostics) = PlexiConfig::load_from_path_with_diagnostics(path)
+                    .expect("host load keeps the file");
                 assert!(
-                    PlexiConfig::load_from_path(path).is_none(),
-                    "host load must reject {}",
+                    load_diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.to_string().contains(&expected)),
+                    "host load must report {}: {load_diagnostics:?}",
                     path.display()
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod per_key_load_tests {
+    use super::*;
+
+    fn load(text: &str) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        PlexiConfig::load_from_path_with_diagnostics(&path).expect("config file exists")
+    }
+
+    fn keys(diagnostics: &[ConfigDiagnostic]) -> Vec<String> {
+        diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                ConfigDiagnostic::InvalidValue { key, .. } => Some(key.clone()),
+                ConfigDiagnostic::UnknownKey { table, key, .. } if table.is_empty() => {
+                    Some(key.clone())
+                }
+                ConfigDiagnostic::UnknownKey { table, key, .. } => Some(format!("{table}.{key}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn config_template_preset_is_the_default_preset() {
+        let (cfg, diagnostics) = load(CONFIG_TEMPLATE);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some(crate::ui::theme::DEFAULT_PRESET),
+            "scripts/default-config.toml [theme] preset must equal theme::DEFAULT_PRESET"
+        );
+    }
+
+    #[test]
+    fn clean_config_loads_every_value_without_diagnostics() {
+        let (cfg, diagnostics) = load(
+            "config_version = 1\nfont_size = 15.0\nconfirm_quit = false\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n\
+             [notifications]\nenabled = false\nfocus_mode = true\n",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(cfg.font_size, Some(15.0));
+        assert_eq!(cfg.confirm_quit, Some(false));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+        let notifications = cfg.notifications.unwrap();
+        assert_eq!(notifications.enabled, Some(false));
+        assert_eq!(notifications.focus_mode, Some(true));
+    }
+
+    #[test]
+    fn legacy_ai_keys_are_reported_and_other_settings_still_load() {
+        let (cfg, diagnostics) = load(
+            "font_size = 16.0\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n\
+             [ai]\nbackend = \"openrouter\"\n\
+             [ai.openrouter]\napi_key_env = \"OPENROUTER_API_KEY\"\n\
+             model_low = \"a/low\"\nmodel_medium = \"a/medium\"\nmodel_high = \"a/high\"\n",
+        );
+        let reported = keys(&diagnostics);
+        for key in [
+            "ai.backend",
+            "ai.openrouter.api_key_env",
+            "ai.openrouter.model_low",
+            "ai.openrouter.model_medium",
+            "ai.openrouter.model_high",
+        ] {
+            assert!(
+                reported.iter().any(|k| k == key),
+                "{key} not reported: {diagnostics:?}"
+            );
+        }
+        assert!(diagnostics.iter().any(ConfigDiagnostic::is_error));
+        assert_eq!(cfg.font_size, Some(16.0));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+    }
+
+    #[test]
+    fn one_wrong_type_is_reported_and_other_settings_still_load() {
+        let (cfg, diagnostics) = load(
+            "font_size = \"huge\"\nconfirm_quit = false\npane_gap = 6.0\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n",
+        );
+        assert_eq!(keys(&diagnostics), ["font_size"], "{diagnostics:?}");
+        assert!(diagnostics[0].is_error());
+        assert!(diagnostics[0].to_string().contains("config.toml"));
+        assert_eq!(cfg.font_size, None);
+        assert_eq!(cfg.confirm_quit, Some(false));
+        assert_eq!(cfg.pane_gap, Some(6.0));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+    }
+
+    #[test]
+    fn nested_wrong_types_drop_only_their_own_keys() {
+        let (cfg, diagnostics) = load(
+            "confirm_quit = true\nfocus_history_depth = \"lots\"\n\
+             [notifications]\nenabled = \"yes\"\nfocus_mode = true\n\
+             [theme]\npreset = 7\nstate_working = \"#00ff00\"\n",
+        );
+        let mut reported = keys(&diagnostics);
+        reported.sort();
+        assert_eq!(
+            reported,
+            [
+                "focus_history_depth",
+                "notifications.enabled",
+                "theme.preset"
+            ],
+            "{diagnostics:?}"
+        );
+        assert_eq!(cfg.confirm_quit, Some(true));
+        let notifications = cfg.notifications.unwrap();
+        assert_eq!(notifications.enabled, None);
+        assert_eq!(notifications.focus_mode, Some(true));
+        let theme = cfg.theme.unwrap();
+        assert_eq!(theme.preset, None);
+        assert_eq!(theme.state_working.as_deref(), Some("#00ff00"));
+    }
+
+    #[test]
+    fn unknown_keys_are_reported_at_load_and_ignored() {
+        let (cfg, diagnostics) = load("font_size = 13.0\nfont_szie = 20.0\n");
+        assert_eq!(keys(&diagnostics), ["font_szie"], "{diagnostics:?}");
+        assert_eq!(cfg.font_size, Some(13.0));
+    }
+
+    #[test]
+    fn config_check_reports_each_invalid_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "font_size = \"huge\"\nconfirm_quit = \"no\"\n[theme]\npreset = \"dracula\"\n",
+        )
+        .unwrap();
+        let diagnostics = validate_from_path(&path);
+        let mut reported = keys(&diagnostics);
+        reported.sort();
+        assert_eq!(reported, ["confirm_quit", "font_size"], "{diagnostics:?}");
+        assert!(diagnostics.iter().all(ConfigDiagnostic::is_error));
+        assert!(!diagnostics.iter().any(ConfigDiagnostic::blocks_reload));
+    }
+
+    #[test]
+    fn syntax_error_still_falls_back_to_defaults_and_blocks_reload() {
+        let (cfg, diagnostics) = load("font_size = 14.0\nconfirm_quit = \n");
+        assert_eq!(cfg.font_size, None);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].blocks_reload());
+    }
+}
+
+#[cfg(test)]
+mod test_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_and_shared_dirs_never_resolve_into_real_home() {
+        let home = dirs::home_dir().expect("home dir");
+        for dir in [config_dir(), shared_dir()] {
+            assert!(
+                !dir.starts_with(&home) || dir.starts_with(std::env::temp_dir()),
+                "test resolved {} inside the real home",
+                dir.display()
+            );
+            assert_ne!(dir, home.join(".plexi"));
+            assert_ne!(dir, home.join(".plexi-alpha"));
         }
     }
 }
@@ -2919,7 +4264,10 @@ mod distribution_profile_tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
         super::ensure_profile_initialized();
-        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        crate::cli::install_host::apply_core_pack_always(
+            &crate::cli::install_host::GitCloner,
+            &dir.path().join("plugins"),
+        );
         // A directory at the lock path makes any read-write open fail, even as root.
         std::fs::create_dir(dir.path().join("initialization.lock")).unwrap();
         #[cfg(unix)]
@@ -2932,7 +4280,10 @@ mod distribution_profile_tests {
         let result = super::lock_profile_initialization();
         #[cfg(unix)]
         std::fs::set_permissions(dir.path(), original_permissions).unwrap();
-        assert!(matches!(result, Ok(None)), "fresh profile attempted a write lock: {result:?}");
+        assert!(
+            matches!(result, Ok(None)),
+            "fresh profile attempted a write lock: {result:?}"
+        );
     }
 
     #[test]
@@ -2941,7 +4292,10 @@ mod distribution_profile_tests {
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
         assert!(super::lock_profile_initialization().unwrap().is_some());
         super::ensure_profile_initialized();
-        crate::cli::install_host::apply_core_pack_always(&crate::cli::install_host::GitCloner, &dir.path().join("apps"));
+        crate::cli::install_host::apply_core_pack_always(
+            &crate::cli::install_host::GitCloner,
+            &dir.path().join("plugins"),
+        );
         assert!(super::lock_profile_initialization().unwrap().is_none());
         std::fs::write(dir.path().join("sdk/.sdk_version"), "old-build").unwrap();
         assert!(super::lock_profile_initialization().unwrap().is_some());
@@ -2954,6 +4308,9 @@ mod distribution_profile_tests {
         std::fs::write(dir.path().join("installed_tag"), "v0.3.4").unwrap();
         assert!(super::ensure_profile_initialized());
         assert!(!super::ensure_profile_initialized());
-        assert_eq!(std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(), env!("PLEXI_BUILD_ID"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sdk/.sdk_version")).unwrap(),
+            env!("PLEXI_BUILD_ID")
+        );
     }
 }
