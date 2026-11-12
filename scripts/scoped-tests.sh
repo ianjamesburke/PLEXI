@@ -12,10 +12,8 @@
 # actual PR base for aggregate lanes. Detection failure conservatively selects ::.
 # The path table lives in scoped-tests.table (tested for drift by test_filter_check.py).
 # Selection always exits 0. --selftest is a diagnostic and exits 1 on failure.
-# --gate delegates to the sibling docs-gate-scope.py: a markdown-only diff may
-# skip the gate only when every path is provably not embedded via include_str!
-# and not under a #[cfg(test)] doc-sync assertion's directory. The embedded set
-# is computed from src/ on every call, never listed. Exits 0 for skip, 1 for
+# --gate delegates to the sibling docs_gate_scope.py, which owns the rule for
+# when a markdown-only diff may skip the gate. Exits 0 for skip, 1 for
 # required, and prints the reason.
 
 table_file="$(dirname "$0")/scoped-tests.table"
@@ -58,11 +56,13 @@ select_filters() {
 
 selftest() {
     local got first second
-    got=$(select_filters notes/guide.md AGENTS.md .agents/skills/testing/SKILL.md)
+    got=$(select_filters notes/guide.md AGENTS.md)
     [[ -z "$got" ]] || { printf 'FAIL docs-only selected: %s\n' "$got"; return 1; }
     printf 'PASS non-embedded docs-only: <empty>\n'
     got=$(select_filters docs/CONFIG.md)
     [[ "$got" == :: ]] || { printf 'FAIL embedded markdown: %s\n' "$got"; return 1; }
+    got=$(select_filters apps/AGENTS.md)
+    [[ "$got" == :: ]] || { printf 'FAIL include_dir markdown: %s\n' "$got"; return 1; }
     printf 'PASS embedded markdown -> :: (code)\n'
     got=$(select_filters src/host/model.rs)
     [[ "$got" == *host::* && "$got" == *testing::* ]] || { printf 'FAIL host: %s\n' "$got"; return 1; }

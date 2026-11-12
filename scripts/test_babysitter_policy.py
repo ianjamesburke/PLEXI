@@ -333,10 +333,10 @@ class PolicyTests(unittest.TestCase):
     def test_scoped_paths_are_bound_to_actual_diff(self):
         record = self.scoped_record()
         with patch.object(policy, "command", return_value="src/cli/mod.rs\0"):
-            policy.verify_scoped_paths(record, "/tmp/aggregate")
+            policy.verify_changed_paths(record, "/tmp/aggregate")
         for paths in ("src/cli/mod.rs\0src/host/model.rs\0", "src/unrelated.rs\0", ""):
             with patch.object(policy, "command", return_value=paths), self.assertRaises(policy.PolicyError):
-                policy.verify_scoped_paths(record, "/tmp/aggregate")
+                policy.verify_changed_paths(record, "/tmp/aggregate")
 
     def test_live_batch_gate_checks_scoped_diff_before_accepting(self):
         record = self.scoped_record()
@@ -356,6 +356,136 @@ class PolicyTests(unittest.TestCase):
             changed[0] += "src/host/model.rs\0"
             with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
                 policy.live_gate(self.settings, record, 100, "batch")
+
+    def docs_only_record(self, paths=("notes/guide.md",), proof=None):
+        record = copy.deepcopy(self.record)
+        record["local"] = {"head": self.head, "test_scope": "docs-only", "test_base": self.base,
+                           "test_paths": list(paths),
+                           "docs_proof": proof or {"rev": self.head, "paths": sorted(paths), "skip": True,
+                                                   "reasons": [], "binding_digest": "0" * 64}}
+        record["validation"]["affected_behavior"] = "Installed build renders the edited guide"
+        return record
+
+    def test_docs_only_batch_needs_no_local_booleans_but_keeps_every_other_gate(self):
+        record = self.docs_only_record()
+        self.assertEqual(policy.check_gate(self.settings, record, self.pr, self.checks,
+                                           self.base, "batch"), self.head)
+        final = {**record, "aggregate_head": self.head, "integrated_batches": [100]}
+        with self.assertRaisesRegex(policy.PolicyError, "final.*full"):
+            policy.check_gate(self.settings, final, {**self.pr, "baseRefName": "alpha"},
+                              self.checks, self.base, "final")
+        for change in (
+            lambda r, pr, c: pr.update(headRefOid="c" * 40),
+            lambda r, pr, c: r.update(base_head="c" * 40),
+            lambda r, pr, c: r["local"].update(head="stale"),
+            lambda r, pr, c: r["local"].update(test_base="stale"),
+            lambda r, pr, c: r.update(checks_head="c" * 40),
+            lambda r, pr, c: r["validation"].update(install_head="c" * 40),
+            lambda r, pr, c: r["validation"].pop("install_head"),
+            lambda r, pr, c: r["validation"].update(tester_vendor="gemini"),
+            lambda r, pr, c: r["validation"].update(verdict="FAIL"),
+            lambda r, pr, c: r["validation"].pop("affected_behavior"),
+            lambda r, pr, c: r.update(waivers=["docs only"]),
+            lambda r, pr, c: c.append({"name": "required", "bucket": "pending"}),
+        ):
+            record, pr, checks = self.docs_only_record(), dict(self.pr), list(self.checks)
+            change(record, pr, checks)
+            with self.subTest(record=record, pr=pr, checks=checks), self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, record, pr, checks, self.base, "batch")
+
+    def test_docs_only_rejects_a_non_markdown_path_by_name(self):
+        record = self.docs_only_record(paths=("notes/guide.md", "src/cli/mod.rs"))
+        with self.assertRaisesRegex(policy.PolicyError, "non-markdown path: src/cli/mod.rs"):
+            policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+
+    def test_docs_only_rejects_a_missing_or_foreign_proof_by_name(self):
+        for change in (
+            lambda r: r["local"].pop("docs_proof"),
+            lambda r: r["local"].update(docs_proof="docs-only"),
+            lambda r: r["local"]["docs_proof"].update(rev="c" * 40),
+            lambda r: r["local"]["docs_proof"].update(skip=False),
+            lambda r: r["local"]["docs_proof"].update(paths=["other.md"]),
+            lambda r: r["local"]["docs_proof"].update(reasons=["x"]),
+            lambda r: r["local"]["docs_proof"].pop("binding_digest"),
+        ):
+            record = self.docs_only_record()
+            change(record)
+            with self.subTest(record=record), self.assertRaisesRegex(
+                policy.PolicyError, "requires the computed docs_gate_scope proof"
+            ):
+                policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+
+    def test_scoped_and_full_records_still_require_all_local_booleans(self):
+        for record in (self.scoped_record(), copy.deepcopy(self.record)):
+            for key in ("build", "test", "clippy"):
+                bad = copy.deepcopy(record)
+                bad["local"].pop(key)
+                with self.subTest(scope=bad["local"]["test_scope"], key=key), self.assertRaisesRegex(
+                    policy.PolicyError, "local build, test, and clippy"
+                ):
+                    policy.check_gate(self.settings, bad, self.pr, self.checks, self.base, "batch")
+
+    def git_fixture(self, base_files, head_files):
+        """A real repository with a base commit and a head commit; returns (root, base, head)."""
+        root = Path(tempfile.mkdtemp(prefix="docs-only-policy-"))
+        self.addCleanup(subprocess.run, ("rm", "-rf", str(root)))
+        def git(*args):
+            return subprocess.run(("git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                                   *args), check=True, capture_output=True, text=True).stdout.strip()
+        git("init", "-q")
+        heads = []
+        for files in (base_files, head_files):
+            for rel, text in files.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            git("add", "-A")
+            git("commit", "-q", "-m", "x")
+            heads.append(git("rev-parse", "HEAD"))
+        return root, heads[0], heads[1]
+
+    def proven_record(self, root, base, head, paths):
+        proof = policy.docs_gate_scope.proof(paths, root, head)
+        record = self.docs_only_record(paths=paths, proof=proof)
+        record.update(head=head, base_head=base)
+        record["local"].update(head=head, test_base=base)
+        return record
+
+    BASE_TREE = {
+        "Cargo.toml": "[package]\n",
+        "src/lib.rs": ('pub const G: &str = include_str!("../docs/EMBEDDED.md");\n'
+                       'static APPS: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");\n'),
+        "docs/EMBEDDED.md": "old", "apps/notes/README.md": "old", "notes/guide.md": "old",
+    }
+
+    def test_docs_only_proof_passes_for_provably_non_embedded_markdown(self):
+        root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new"})
+        record = self.proven_record(root, base, head, ["notes/guide.md"])
+        self.assertTrue(record["local"]["docs_proof"]["skip"])
+        policy.verify_changed_paths(record, root)
+
+    def test_docs_only_proof_rejects_embedded_markdown(self):
+        for path in ("docs/EMBEDDED.md", "apps/notes/README.md"):
+            with self.subTest(path=path):
+                root, base, head = self.git_fixture(self.BASE_TREE, {path: "new"})
+                record = self.proven_record(root, base, head, [path])
+                # A worker cannot launder an embedded path by writing a passing proof.
+                record["local"]["docs_proof"].update(skip=True, reasons=[])
+                policy.check_test_scope(record, "batch")
+                with self.assertRaisesRegex(policy.PolicyError, "path Rust source can observe"):
+                    policy.verify_changed_paths(record, root)
+
+    def test_docs_only_proof_must_match_the_recomputed_proof(self):
+        root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new"})
+        record = self.proven_record(root, base, head, ["notes/guide.md"])
+        record["local"]["docs_proof"]["binding_digest"] = "0" * 64
+        with self.assertRaisesRegex(policy.PolicyError, "differs from the proof recomputed"):
+            policy.verify_changed_paths(record, root)
+
+    def test_docs_only_paths_are_bound_to_the_actual_diff(self):
+        root, base, head = self.git_fixture(self.BASE_TREE, {"notes/guide.md": "new", "src/new.rs": ""})
+        record = self.proven_record(root, base, head, ["notes/guide.md"])
+        with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+            policy.verify_changed_paths(record, root)
 
     def test_missing_or_unknown_ci_policy_does_not_waive_checks(self):
         for mode in (None, "typo"):
@@ -635,8 +765,17 @@ class PolicyTests(unittest.TestCase):
                 scoped = self.scoped_record()
                 (root / "record-0986-r1.json").write_text(json.dumps(scoped))
                 self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
-                with patch.object(policy, "verify_scoped_paths", side_effect=policy.PolicyError("stale actual PR diff")):
+                with patch.object(policy, "verify_changed_paths", side_effect=policy.PolicyError("stale actual PR diff")):
                     with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+                        policy.integrated_prerequisites(self.settings, path)
+                docs = self.docs_only_record()
+                (root / "record-0986-r1.json").write_text(json.dumps(docs))
+                with patch.object(policy, "verify_changed_paths") as verified:
+                    self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
+                    self.assertEqual(verified.call_args.args[0]["local"]["test_scope"], "docs-only")
+                    docs["local"].pop("docs_proof")
+                    (root / "record-0986-r1.json").write_text(json.dumps(docs))
+                    with self.assertRaisesRegex(policy.PolicyError, "docs_gate_scope proof"):
                         policy.integrated_prerequisites(self.settings, path)
                 (root / "record-0986-r1.json").write_text(json.dumps(record))
                 blocker = tasks / "0986-one.md"
@@ -684,6 +823,23 @@ class PolicyTests(unittest.TestCase):
                         saved = json.loads(path.read_text())
                         self.assertEqual(saved["requested_stints"], ["0986", "0987"])
                         self.assertFalse(saved["batches"][-1]["base_race"])
+                # integrate accepts a docs-only batch that carries no build/test/clippy booleans.
+                docs_recovery = copy.deepcopy(recovery_record)
+                docs_recovery["local"] = {"head": "f" * 40, "test_scope": "docs-only", "test_base": "d" * 40,
+                                          "test_paths": ["notes/guide.md"],
+                                          "docs_proof": {"rev": "f" * 40, "paths": ["notes/guide.md"],
+                                                         "skip": True, "reasons": [],
+                                                         "binding_digest": "0" * 64}}
+                current_tip[0] = "d" * 40
+                path.write_text(json.dumps(grown))
+                with patch.object(policy, "command", side_effect=recovery_command), patch.object(
+                    policy, "read_checks", return_value=self.checks
+                ), patch.object(policy, "reap_after_merge"), patch.object(
+                    policy, "verify_changed_paths"
+                ) as verified:
+                    self.assertEqual(policy.integrate_locked(
+                        self.settings, docs_recovery, 101, path), "e" * 40)
+                    verified.assert_any_call(docs_recovery, "/tmp/aggregate")
                 variants = []
                 for field, value in (("base_race", True), ("base_race", None), ("actual_parent", "e" * 40),
                                      ("aggregate_head", "e" * 40), ("stints", ["0987"])):
