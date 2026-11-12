@@ -383,6 +383,8 @@ pub enum UnusableCause {
     WorkspaceFile,
     /// The file is intact; the plugin migration it depends on failed.
     PluginMigration,
+    /// The file is a layout version whose converter was deleted (stint 1312).
+    RetiredVersion,
 }
 
 impl WorkspaceLoadError {
@@ -418,10 +420,18 @@ impl std::fmt::Display for WorkspaceLoadError {
                 cause,
             } => {
                 let remedy = match cause {
-                    UnusableCause::WorkspaceFile => "repair or move the file, then restart Plexi",
+                    UnusableCause::WorkspaceFile => {
+                        "repair or move the file, then restart Plexi".to_owned()
+                    }
                     UnusableCause::PluginMigration => {
                         "the file itself is intact; fix the plugin migration problem, then restart Plexi"
+                            .to_owned()
                     }
+                    UnusableCause::RetiredVersion => format!(
+                        "open this profile once with any Plexi 0.4 release, which converts it to \
+                         version {CURRENT_VERSION}, then update again; or move the file aside to \
+                         start with an empty layout"
+                    ),
                 };
                 write!(
                     f,
@@ -454,8 +464,18 @@ impl WorkspaceFile {
         profile_dir: &Path,
         migration_source: Option<&[u8]>,
     ) -> io::Result<()> {
-        self.validate()?;
         let path = workspace_path_in(profile_dir);
+        if self.version != CURRENT_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "refusing to write workspace {} at version {}; only version {CURRENT_VERSION} is written",
+                    path.display(),
+                    self.version
+                ),
+            ));
+        }
+        self.validate()?;
         let temp_path = unique_temp_path(&path);
         let started = Instant::now();
         let result = (|| {
@@ -476,6 +496,9 @@ impl WorkspaceFile {
                             "workspace changed while migrating; preserving original",
                         ));
                     }
+                    if saved_version(&data) == Some(RETIRED_VERSION) {
+                        return Err(retired_version_error(&path));
+                    }
                     let mut existing: Self = serde_json::from_slice(&data).map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -485,7 +508,7 @@ impl WorkspaceFile {
                             ),
                         )
                     })?;
-                    if !matches!(existing.version, 2 | 3) {
+                    if existing.version != CURRENT_VERSION {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!(
@@ -495,20 +518,8 @@ impl WorkspaceFile {
                             ),
                         ));
                     }
-                    if migration_source.is_some() && existing.version == 2 && self.version == 3 {
-                        existing.remove_legacy_deleted_context_focus();
-                    }
                     existing.heal_stale_focus();
                     existing.validate()?;
-                    if existing.version == 2 && self.version == 3 {
-                        preserve_v2_rollback(&path, &data)?;
-                    }
-                    if existing.version == 3 && self.version == 2 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "refusing to downgrade a version 3 workspace",
-                        ));
-                    }
                 }
                 Err(error)
                     if error.kind() == io::ErrorKind::NotFound && migration_source.is_none() => {}
@@ -560,43 +571,35 @@ impl WorkspaceFile {
         let migration_failed = |reason: String| {
             WorkspaceLoadError::unusable(&path, reason, UnusableCause::PluginMigration)
         };
-        let mut data = match std::fs::read_to_string(&path) {
+        let data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(WorkspaceLoadError::NotSaved)
             }
             Err(error) => return Err(unusable(format!("cannot read the file: {error}"))),
         };
+        // Checked before the full shape so a retired file is named as
+        // retired even if it no longer parses as a current one.
+        if saved_version(data.as_bytes()) == Some(RETIRED_VERSION) {
+            return Err(WorkspaceLoadError::unusable(
+                &path,
+                format!(
+                    "it is a version {RETIRED_VERSION} layout, which this Plexi no longer converts"
+                ),
+                UnusableCause::RetiredVersion,
+            ));
+        }
         let mut ws: Self = serde_json::from_str(&data)
             .map_err(|error| unusable(format!("not valid workspace JSON: {error}")))?;
-        if !matches!(ws.version, 2 | 3) {
+        if ws.version != CURRENT_VERSION {
             return Err(unusable(format!(
-                "unsupported workspace version {} (this build reads versions 2 and 3)",
+                "unsupported workspace version {} (this build reads version {CURRENT_VERSION})",
                 ws.version
             )));
-        }
-        if ws.version == 2 {
-            ws.remove_legacy_deleted_context_focus();
         }
         ws.heal_stale_focus();
         ws.validate()
             .map_err(|error| unusable(format!("invalid workspace: {error}")))?;
-        if ws.version == 2 {
-            ws.assign_legacy_window_ids()
-                .and_then(|()| ws.convert_legacy_strips())
-                .and_then(|strips| {
-                    ws.strips = strips;
-                    ws.version = 3;
-                    ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
-                })
-                .map_err(|error| unusable(format!("version 2 to 3 migration failed: {error}")))?;
-            log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2");
-            // A following plugin-path migration must compare against the bytes
-            // this v2 migration just saved, not the pre-migration input. Keep
-            // the compare-and-save guard so an intervening writer still wins.
-            data = serde_json::to_string_pretty(&ws)
-                .map_err(|error| unusable(format!("cannot encode the migrated layout: {error}")))?;
-        }
         let mut migrated = false;
         crate::app::plugin_migration::migrate(profile_dir)
             .map_err(|error| migration_failed(format!("plugin migration failed: {error}")))?;
@@ -658,119 +661,6 @@ impl WorkspaceFile {
             }
             window.focused_pane = new;
         }
-    }
-
-    /// Version 2 could persist focus entries after a context was deleted.
-    /// Remove only entries whose context and window are both absent; retain
-    /// all other invalid references for validation to reject.
-    fn remove_legacy_deleted_context_focus(&mut self) {
-        let contexts: std::collections::HashSet<_> = self
-            .contexts
-            .iter()
-            .map(|context| context.context_id)
-            .collect();
-        let windows: std::collections::HashSet<_> =
-            self.windows.iter().map(|window| window.window_id).collect();
-        self.context_active_window.retain(|context, window| {
-            let orphaned = !contexts.contains(context) && !windows.contains(window);
-            if orphaned {
-                log::info!(
-                    "workspace migration: removed stale focus entry context={context} window={window}"
-                );
-            }
-            !orphaned
-        });
-    }
-
-    fn assign_legacy_window_ids(&mut self) -> io::Result<()> {
-        let mut used = std::collections::HashSet::new();
-        for window in &self.windows {
-            if window.window_id != 0 && !used.insert(window.window_id) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("duplicate window identity {}", window.window_id),
-                ));
-            }
-        }
-        let mut next = 1_u64;
-        let mut assigned: HashMap<u64, Vec<u64>> = HashMap::new();
-        for window in &mut self.windows {
-            if window.window_id != 0 {
-                continue;
-            }
-            while used.contains(&next) {
-                next = next
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("window identity space exhausted"))?;
-            }
-            window.window_id = next;
-            used.insert(next);
-            assigned.entry(window.context_id).or_default().push(next);
-        }
-        for (context, window_id) in &mut self.context_active_window {
-            if *window_id != 0 {
-                continue;
-            }
-            match assigned.get(context).map(Vec::as_slice) {
-                Some([id]) => *window_id = *id,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("context {context} has an ambiguous legacy active window"),
-                    ))
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn convert_legacy_strips(&self) -> io::Result<HashMap<u64, crate::strip::Strip>> {
-        use crate::app::zoom::ColumnWidthPreset;
-        use crate::strip::{Column, ColumnWidth, Strip};
-        let mut strips = HashMap::new();
-        for context in &self.contexts {
-            let columns = saved_legacy_columns(&self.windows, context.context_id)?;
-            let count = columns.len();
-            let mut strip = Strip::new(context.context_id);
-            for (index, (panes, saved_width, heights)) in columns.into_iter().enumerate() {
-                let width =
-                    saved_width.unwrap_or(ColumnWidth::Preset(if count > 1 && index == 0 {
-                        ColumnWidthPreset::Parent35
-                    } else {
-                        ColumnWidthPreset::Child65
-                    }));
-                let id = strip.alloc_column_id();
-                let mut column = Column::new_stacked(id, panes, width);
-                column.heights = heights;
-                strip.push_column(column);
-            }
-            let focused = self
-                .context_active_window
-                .get(&context.context_id)
-                .and_then(|id| {
-                    self.windows.iter().find(|window| {
-                        window.window_id == *id && window.context_id == context.context_id
-                    })
-                })
-                .or_else(|| {
-                    self.windows
-                        .iter()
-                        .find(|window| window.context_id == context.context_id)
-                })
-                .and_then(|window| {
-                    window
-                        .focused_pane
-                        .and_then(|tile| match window.tree.tiles.get(tile) {
-                            Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
-                            _ => None,
-                        })
-                });
-            if let Some(focused) = focused {
-                strip.focus_pane(focused);
-            }
-            strips.insert(context.context_id, strip);
-        }
-        Ok(strips)
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -1012,108 +902,6 @@ fn validate_saved_tree(
     Ok(())
 }
 
-type LegacyColumn = (Vec<PaneId>, Option<crate::strip::ColumnWidth>, Vec<f32>);
-
-fn saved_legacy_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<Vec<LegacyColumn>> {
-    use egui_tiles::{Container, LinearDir, Tile};
-    let mut windows: Vec<_> = windows
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| w.context_id == context_id)
-        .collect();
-    windows.sort_by_key(|(index, w)| (w.grid_x, w.grid_y, *index));
-    let mut columns = Vec::new();
-    for (_, window) in windows {
-        let Some(root) = window.tree.root() else {
-            continue;
-        };
-        let children: Vec<_> = match window.tree.tiles.get(root) {
-            Some(Tile::Container(Container::Linear(linear)))
-                if linear.dir == LinearDir::Horizontal =>
-            {
-                let shares: Vec<_> = linear
-                    .children
-                    .iter()
-                    .map(|id| linear.shares[*id])
-                    .collect();
-                if shares
-                    .iter()
-                    .any(|share| !share.is_finite() || *share <= 0.0)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("window {} has invalid column shares", window.window_id),
-                    ));
-                }
-                let total: f32 = shares.iter().sum();
-                if !total.is_finite() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("window {} has invalid column share total", window.window_id),
-                    ));
-                }
-                // Egui's default shares sum to the number of children; divider
-                // drags preserve that total. Strip projection stores pixel widths.
-                let relative = total <= shares.len() as f32 + 0.0001;
-                linear
-                    .children
-                    .iter()
-                    .zip(shares.iter())
-                    .map(|(&id, &share)| {
-                        let width = if relative {
-                            Some(crate::strip::ColumnWidth::CustomRatio(share / total))
-                        } else {
-                            Some(crate::strip::ColumnWidth::CustomPixels(share))
-                        };
-                        (id, width)
-                    })
-                    .collect()
-            }
-            Some(Tile::Container(Container::Grid(_))) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "window {} uses an unsupported legacy grid layout",
-                        window.window_id
-                    ),
-                ));
-            }
-            _ => vec![(root, None)],
-        };
-        let mut visited = std::collections::HashSet::new();
-        for (child, width) in children {
-            let mut panes = Vec::new();
-            collect_saved_strip_panes(window, child, &mut visited, &mut panes)?;
-            if panes.is_empty() {
-                continue;
-            }
-            let mut heights = vec![1.0; panes.len()];
-            if let Some(Tile::Container(Container::Linear(linear))) = window.tree.tiles.get(child) {
-                if linear.dir == LinearDir::Vertical && linear.children.len() == panes.len() {
-                    let mut rows = Vec::new();
-                    for &row in &linear.children {
-                        let mut row_panes = Vec::new();
-                        collect_saved_strip_panes(
-                            window,
-                            row,
-                            &mut std::collections::HashSet::new(),
-                            &mut row_panes,
-                        )?;
-                        rows.push((row_panes, linear.shares[row]));
-                    }
-                    if rows.iter().zip(&panes).all(|((row, share), pane)| {
-                        row.as_slice() == [*pane] && share.is_finite() && *share > 0.0
-                    }) {
-                        heights = rows.into_iter().map(|(_, share)| share).collect();
-                    }
-                }
-            }
-            columns.push((panes, width, heights));
-        }
-    }
-    Ok(columns)
-}
-
 fn saved_strip_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<Vec<Vec<PaneId>>> {
     use egui_tiles::{Container, LinearDir, Tile};
     let mut windows: Vec<_> = windows
@@ -1187,128 +975,6 @@ fn collect_saved_strip_panes(
         }
     }
     Ok(())
-}
-
-/// Export the pre-migration workspace into a new, isolated profile.
-pub fn export_v2_rollback(source_profile: &Path, destination_profile: &Path) -> io::Result<()> {
-    let source = workspace_path_in(source_profile);
-    let current: WorkspaceFile =
-        serde_json::from_slice(&std::fs::read(&source)?).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid current workspace: {error}"),
-            )
-        })?;
-    if current.version != 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "current workspace is not version 3",
-        ));
-    }
-    current.validate()?;
-    let backup = source.with_extension("v2.rollback.json");
-    let bytes = std::fs::read(&backup)?;
-    let mut legacy: WorkspaceFile = serde_json::from_slice(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid rollback workspace: {error}"),
-        )
-    })?;
-    if legacy.version != 2 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "rollback workspace is not version 2",
-        ));
-    }
-    legacy.remove_legacy_deleted_context_focus();
-    legacy.validate()?;
-    std::fs::create_dir(destination_profile)?;
-    let result = (|| {
-        let destination = workspace_path_in(destination_profile);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| io::Error::other("rollback destination has no parent"))?;
-        std::fs::create_dir(parent)?;
-        let temp = unique_temp_path(&destination);
-        let write = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            std::fs::hard_link(&temp, &destination)?;
-            File::open(parent)?.sync_all()?;
-            File::open(destination_profile)?.sync_all()
-        })();
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != io::ErrorKind::NotFound {
-                log::warn!(
-                    "workspace rollback: could not remove temporary file {}: {error}",
-                    temp.display()
-                );
-            }
-        }
-        write
-    })();
-    if result.is_err() {
-        log::error!(
-            "workspace rollback export failed for {}: {:?}",
-            destination_profile.display(),
-            result.as_ref().err()
-        );
-    } else {
-        log::info!(
-            "workspace rollback exported to {}",
-            destination_profile.display()
-        );
-    }
-    result
-}
-
-fn preserve_v2_rollback(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let backup = path.with_extension("v2.rollback.json");
-    let temp = unique_temp_path(&backup);
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        match std::fs::hard_link(&temp, &backup) {
-            Ok(()) => {
-                File::open(
-                    path.parent()
-                        .ok_or_else(|| io::Error::other("workspace has no parent"))?,
-                )?
-                .sync_all()?;
-                log::info!(
-                    "workspace migration: preserved version 2 rollback copy at {}",
-                    backup.display()
-                );
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if std::fs::read(&backup)? != bytes {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "existing version 2 rollback copy differs; refusing migration",
-                    ));
-                }
-            }
-            Err(error) => return Err(error),
-        }
-        Ok(())
-    })();
-    if let Err(error) = std::fs::remove_file(&temp) {
-        if error.kind() != io::ErrorKind::NotFound {
-            log::warn!(
-                "workspace migration: could not remove temporary file {}: {error}",
-                temp.display()
-            );
-        }
-    }
-    result
 }
 
 fn atomic_save<F>(path: &Path, temp_path: &Path, bytes: &[u8], write_temp: F) -> io::Result<()>
@@ -1387,6 +1053,86 @@ fn save_error(operation: &str, temp_path: &Path, error: io::Error) -> io::Error 
             temp_path.display()
         ),
     )
+}
+
+/// The only workspace version this build reads or writes.
+const CURRENT_VERSION: u32 = 3;
+
+/// The pre-strip layout. Its converter shipped in the 0.4 releases and was
+/// deleted in stint 1312; a file at this version is reported, never rewritten.
+const RETIRED_VERSION: u32 = 2;
+
+/// Just the `version` of a saved workspace, read before the full shape so a
+/// retired file is named as retired even if it no longer parses as one.
+#[derive(Deserialize)]
+struct SavedVersion {
+    version: u32,
+}
+
+fn saved_version(bytes: &[u8]) -> Option<u32> {
+    serde_json::from_slice::<SavedVersion>(bytes)
+        .ok()
+        .map(|saved| saved.version)
+}
+
+fn retired_version_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "workspace {} is a version {RETIRED_VERSION} layout, which this Plexi no longer \
+             converts. It was left unchanged and nothing from it was restored. Fix: open this \
+             profile once with any Plexi 0.4 release, which converts it to version \
+             {CURRENT_VERSION}, then update again; or move {} aside to start with an empty \
+             layout.",
+            path.display(),
+            path.display()
+        ),
+    )
+}
+
+#[cfg(test)]
+impl WorkspaceFile {
+    /// Fixture builder: a hand-built layout made current, with one strip per
+    /// context whose columns follow the saved window trees exactly as
+    /// `validate` expects. Focus follows the context's active window.
+    pub(crate) fn with_strips_from_windows(mut self) -> Self {
+        use crate::app::zoom::ColumnWidthPreset;
+        use crate::strip::{Column, ColumnWidth, Strip};
+        self.version = CURRENT_VERSION;
+        self.strips.clear();
+        for context in &self.contexts {
+            let columns = saved_strip_columns(&self.windows, context.context_id)
+                .expect("fixture window trees must be valid");
+            let count = columns.len();
+            let mut strip = Strip::new(context.context_id);
+            for (index, panes) in columns.into_iter().enumerate() {
+                let preset = if count > 1 && index == 0 {
+                    ColumnWidthPreset::Parent35
+                } else {
+                    ColumnWidthPreset::Child65
+                };
+                let id = strip.alloc_column_id();
+                strip.push_column(Column::new_stacked(id, panes, ColumnWidth::Preset(preset)));
+            }
+            let focused = self
+                .context_active_window
+                .get(&context.context_id)
+                .and_then(|id| self.windows.iter().find(|w| w.window_id == *id))
+                .and_then(|window| {
+                    window
+                        .focused_pane
+                        .and_then(|tile| match window.tree.tiles.get(tile) {
+                            Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
+                            _ => None,
+                        })
+                });
+            if let Some(pane) = focused {
+                strip.focus_pane(pane);
+            }
+            self.strips.insert(context.context_id, strip);
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -1545,38 +1291,13 @@ mod tests {
         let original = b"{invalid workspace";
         std::fs::write(&path, original).unwrap();
         let workspace: WorkspaceFile = serde_json::from_str(
-            r#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
+            r#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
         )
         .unwrap();
         assert!(workspace.save_to(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
-    #[test]
-    fn migration_preserves_original_v2_and_refuses_stale_downgrade() {
-        let profile = tempfile::tempdir().unwrap();
-        let path = workspace_path_in(profile.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
-        std::fs::write(&path, original).unwrap();
-        let mut workspace: WorkspaceFile = serde_json::from_slice(original).unwrap();
-        workspace.version = 3;
-        workspace.save_to(profile.path()).unwrap();
-        let backup = path.with_extension("v2.rollback.json");
-        assert_eq!(std::fs::read(&backup).unwrap(), original);
-        workspace.next_pane_id = 42;
-        workspace.save_to(profile.path()).unwrap();
-        let current = std::fs::read(&path).unwrap();
-        assert_eq!(std::fs::read(&backup).unwrap(), original);
-        workspace.version = 2;
-        assert!(workspace.save_to(profile.path()).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), current);
-    }
-
-    /// Stint 1312: the version 2 converter is deleted. A version 2 file is a
-    /// load error, and a save refuses to replace it with an error that names
-    /// the file and the fix. Nothing is written beside it: no rollback copy,
-    /// no previous generation, no temp file.
     #[test]
     fn retired_v2_workspace_fails_loudly_and_is_never_rewritten() {
         let profile = tempfile::tempdir().unwrap();
@@ -1585,7 +1306,25 @@ mod tests {
         let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
         std::fs::write(&path, original).unwrap();
 
-        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        let error = WorkspaceFile::load_from(profile.path())
+            .err()
+            .expect("a version 2 file must not load");
+        assert!(
+            matches!(
+                &error,
+                WorkspaceLoadError::Unusable {
+                    path: named,
+                    cause: UnusableCause::RetiredVersion,
+                    ..
+                } if named == &path
+            ),
+            "{error:?}"
+        );
+        let block = error.save_block().expect("a retired file blocks saves");
+        assert!(block.contains("version 2"), "{block}");
+        assert!(block.contains("Plexi 0.4"), "{block}");
+        assert!(block.contains("move the file aside"), "{block}");
+        assert!(!block.contains("repair"), "{block}");
         assert_eq!(std::fs::read(&path).unwrap(), original);
 
         let mut current: WorkspaceFile = serde_json::from_slice(original).unwrap();
@@ -1615,49 +1354,6 @@ mod tests {
     }
 
     #[test]
-    fn rollback_export_preserves_current_workspace_and_refuses_existing_profile() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        let path = workspace_path_in(&source);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
-        std::fs::write(&path, original).unwrap();
-        let mut current: WorkspaceFile = serde_json::from_slice(original).unwrap();
-        current.version = 3;
-        current.save_to(&source).unwrap();
-        current.next_pane_id = 7;
-        current.save_to(&source).unwrap();
-        let newer = std::fs::read(&path).unwrap();
-        let destination = root.path().join("isolated");
-        export_v2_rollback(&source, &destination).unwrap();
-        assert_eq!(
-            std::fs::read(workspace_path_in(&destination)).unwrap(),
-            original
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), newer);
-        assert!(export_v2_rollback(&source, &destination).is_err());
-        assert_eq!(
-            std::fs::read(workspace_path_in(&destination)).unwrap(),
-            original
-        );
-    }
-
-    #[test]
-    fn migration_rejects_a_stale_rollback_copy() {
-        let profile = tempfile::tempdir().unwrap();
-        let path = workspace_path_in(profile.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
-        std::fs::write(&path, original).unwrap();
-        std::fs::write(path.with_extension("v2.rollback.json"), b"stale").unwrap();
-        let mut workspace: WorkspaceFile = serde_json::from_slice(original).unwrap();
-        workspace.version = 3;
-        assert!(workspace.save_to(profile.path()).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), original);
-    }
-
-    #[test]
     fn invalid_v3_strip_does_not_load_or_get_overwritten() {
         let profile = tempfile::tempdir().unwrap();
         let path = workspace_path_in(profile.path());
@@ -1675,34 +1371,34 @@ mod tests {
     }
 
     #[test]
-    fn invalid_context_cycle_is_not_migrated() {
+    fn invalid_context_cycle_is_not_loaded() {
         let profile = tempfile::tempdir().unwrap();
         let path = workspace_path_in(profile.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1,"parent_id":2},{"name":"b","root":"/tmp","context_id":2,"parent_id":1}],"windows":[]}"#;
+        let original = br#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1,"parent_id":2},{"name":"b","root":"/tmp","context_id":2,"parent_id":1}],"windows":[]}"#;
         std::fs::write(&path, original).unwrap();
         assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
     #[test]
-    fn invalid_active_window_reference_is_not_migrated() {
+    fn invalid_active_window_reference_is_not_loaded() {
         let profile = tempfile::tempdir().unwrap();
         let path = workspace_path_in(profile.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1}],"windows":[],"context_active_window":{"1":88}}"#;
+        let original = br#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1}],"windows":[],"context_active_window":{"1":88}}"#;
         std::fs::write(&path, original).unwrap();
         assert!(WorkspaceFile::load_from(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
     #[test]
-    fn invalid_next_pane_id_is_not_migrated() {
+    fn invalid_next_pane_id_is_not_loaded() {
         let profile = tempfile::tempdir().unwrap();
         let path = workspace_path_in(profile.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let tree: Tree<PaneId> = Tree::empty("counter-fixture");
-        let original = serde_json::json!({"version":2, "active_context":0, "sidebar_visible":true, "next_pane_id":1,
+        let original = serde_json::json!({"version":3, "active_context":0, "sidebar_visible":true, "next_pane_id":1,
             "contexts":[{"name":"a", "root":"/tmp", "context_id":1}],
             "windows":[{"name":"a", "path":"/tmp", "tree":tree, "panes":[{"id":1, "cwd":"/tmp"}], "focused_pane":null, "window_id":1, "context_id":1}]}).to_string();
         std::fs::write(&path, &original).unwrap();
@@ -1760,7 +1456,7 @@ mod tests {
     fn failed_partial_temp_write_preserves_loadable_workspace() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("default.json");
-        let prior = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[],"context_active_window":{}}"#;
+        let prior = br#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[],"context_active_window":{}}"#;
         std::fs::write(&path, prior).expect("seed prior workspace");
 
         let error = test_atomic_save(&path, b"replacement", |file, bytes| {
@@ -1778,7 +1474,7 @@ mod tests {
         let loaded: WorkspaceFile =
             serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
                 .expect("prior workspace remains loadable");
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert!(std::fs::read_dir(directory.path())
             .expect("read workspace directory")
             .all(|entry| !entry

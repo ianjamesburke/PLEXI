@@ -2190,7 +2190,7 @@ Example: plexi ai setup
 
 Summarize recorded AI usage from this channel's ledger.
 
-With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed are migrated in place to explicit null `client` and `kind`.
+With no subcommand, prints per-client totals for tokens, cost, runs, and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does not require a running host. A token count is a positive number or the word `unknown`. Rows written before run tags existed count as null `client` and `kind`.
 
 | Subcommand | Description |
 |---|---|
@@ -2538,7 +2538,6 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 | Subcommand | Description |
 |---|---|
-| `workspace-rollback` | Export the preserved v2 workspace to a new isolated channel |
 | `restart` | Restart this channel, restoring the saved workspace |
 | `start` | Launch this channel's plugin bundle detached and wait for readiness |
 | `stop` | Stop the running host and every pane agent for this channel |
@@ -2546,14 +2545,6 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 | `key` | Inject a key or chord into the host-level keyboard path |
-
-### `plexi host workspace-rollback`
-
-Export the preserved v2 workspace to a new isolated channel
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--to-channel` | string | yes | Name of a channel whose profile does not already exist |
 
 ### `plexi host restart`
 

@@ -574,8 +574,8 @@ pub enum Commands {
     /// With no subcommand, prints per-client totals for tokens, cost, runs,
     /// and wall time. Reads `ai-ledger.jsonl` in the channel profile. Does
     /// not require a running host. A token count is a positive number or the
-    /// word `unknown`. Rows written before run tags existed are migrated in
-    /// place to explicit null `client` and `kind`.
+    /// word `unknown`. Rows written before run tags existed count as null
+    /// `client` and `kind`.
     Ledger {
         #[command(subcommand)]
         cmd: Option<LedgerCmd>,
@@ -1779,12 +1779,6 @@ pub enum ViewCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
-    /// Export the preserved v2 workspace to a new isolated channel.
-    WorkspaceRollback {
-        /// Name of a channel whose profile does not already exist.
-        #[arg(long)]
-        to_channel: String,
-    },
     /// Restart this channel, restoring the saved workspace.
     Restart {
         /// Confirm restarting the host containing this pane; this pane will close.
@@ -3479,18 +3473,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_rollback_and_pane_layout_parse() {
-        let parsed = Cli::try_parse_from([
+    fn workspace_rollback_is_retired_and_pane_layout_parses() {
+        assert!(Cli::try_parse_from([
             "plexi",
             "host",
             "workspace-rollback",
             "--to-channel",
             "recovery",
         ])
-        .unwrap();
-        assert!(
-            matches!(parsed.command, Some(Commands::Host { cmd: super::HostCmd::WorkspaceRollback { ref to_channel } }) if to_channel == "recovery")
-        );
+        .is_err());
         let parsed = Cli::try_parse_from(["plexi", "pane", "layout"]).unwrap();
         assert!(matches!(
             parsed.command,

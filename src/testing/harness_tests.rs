@@ -1173,15 +1173,6 @@ fn write_restore_fixture_plugin(parent: &std::path::Path, plugin_id: &str) -> st
 /// same state paths.
 #[test]
 fn plugin_rename_044_installed_layout_restores_live_python_view() {
-    assert_legacy_plugin_layout_restores(3);
-}
-
-#[test]
-fn plugin_rename_044_v2_layout_and_package_migrate_together() {
-    assert_legacy_plugin_layout_restores(2);
-}
-
-fn assert_legacy_plugin_layout_restores(layout_version: u32) {
     let mut harness = HostHarness::new();
     let profile = harness.profile_dir().to_path_buf();
     let old = profile.join("apps");
@@ -1203,12 +1194,6 @@ fn assert_legacy_plugin_layout_restores(layout_version: u32) {
         .runtime
         .state_paths();
     harness.app.save_workspace_now();
-    let layout_path = crate::workspace::workspace_path_in(&profile);
-    let mut layout: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&layout_path).unwrap()).unwrap();
-    layout["version"] = serde_json::json!(layout_version);
-    let legacy_layout = serde_json::to_vec_pretty(&layout).unwrap();
-    std::fs::write(&layout_path, &legacy_layout).unwrap();
     // Produce the exact old package and serialized launch shape. The disk
     // layout keys intentionally retain their 0.4.4 spelling.
     std::fs::write(plugin_dir.join("manifest.toml"),
@@ -1224,12 +1209,6 @@ fn assert_legacy_plugin_layout_restores(layout_version: u32) {
     assert!(profile
         .join("migration-plugin-v2/apps/legacy/manifest.toml")
         .is_file());
-    if layout_version == 2 {
-        assert_eq!(
-            std::fs::read(layout_path.with_extension("v2.rollback.json")).unwrap(),
-            legacy_layout
-        );
-    }
 }
 
 #[test]
@@ -1352,7 +1331,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
     context_active_window.insert(20, 200);
 
     let ws = crate::workspace::WorkspaceFile {
-        version: 2,
+        version: 3,
         strips: Default::default(),
         conjoined_contexts: Default::default(),
         active_context: 1,
@@ -1483,10 +1462,10 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
     assert!(hb.while_idle_only);
 }
 
-/// stint 0680 migration path: a pre-fix workspace file (`version = 2`, an App
-/// pane whose `plugin_id` is the runtime kind because `runtime_kind`/`launch`
-/// didn't exist yet) must still load — never get treated as corrupt and
-/// backed up/wiped like a version mismatch does.
+/// stint 0680: a pane record saved before `runtime_kind`/`launch` existed (an
+/// App pane whose `plugin_id` is the runtime kind) can still sit in a current
+/// version 3 file, carried forward by the 0.4 layout converter. It must still
+/// load, never be treated as corrupt, and the file must not be rewritten.
 #[test]
 fn legacy_view_pane_without_launch_context_still_loads() {
     let _channel = crate::config::set_test_channel("harness-0680-migration");
@@ -1506,10 +1485,18 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     let tile = tree.tiles.insert_pane(1);
     tree.root = Some(tile);
     let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
+    let mut strip = crate::strip::Strip::new(1);
+    let column = strip.alloc_column_id();
+    strip.push_column(crate::strip::Column::new(
+        column,
+        1,
+        crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+    ));
+    let strip_json = serde_json::to_string(&strip).expect("strip must serialize");
 
     let workspace_json = format!(
         r#"{{
-            "version": 2,
+            "version": 3,
             "active_context": 0,
             "sidebar_visible": true,
             "next_pane_id": 2,
@@ -1533,7 +1520,8 @@ fn legacy_view_pane_without_launch_context_still_loads() {
                     "window_id": 1,
                     "context_id": 1
                 }}
-            ]
+            ],
+            "strips": {{"1": {strip_json}}}
         }}"#
     );
     std::fs::write(&workspace_path, &workspace_json).expect("write legacy workspace file");
@@ -1552,13 +1540,9 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     assert!(record.launch.is_none());
 
     assert_eq!(
-        std::fs::read(workspace_path.with_extension("v2.rollback.json")).unwrap(),
-        workspace_json.as_bytes(),
-        "migration must preserve the original legacy record",
-    );
-    assert!(
-        workspace_path.exists(),
-        "migration keeps the active workspace path"
+        std::fs::read_to_string(&workspace_path).unwrap(),
+        workspace_json,
+        "loading must not rewrite the file"
     );
 }
 
@@ -13369,7 +13353,7 @@ mod agent_state_restoration_tests {
         let (ephemeral_tree, ephemeral_root) = single_pane_tree(30);
 
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
             strips: Default::default(),
             conjoined_contexts: Default::default(),
             active_context: 0,
@@ -13578,7 +13562,8 @@ mod agent_state_restoration_tests {
                 },
             ],
             context_active_window: HashMap::from([(1, 1), (2, 2), (3, 3)]),
-        };
+        }
+        .with_strips_from_windows();
 
         ws.save_to(profile_dir.path()).expect("save workspace");
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
@@ -13976,7 +13961,7 @@ mod agent_state_restoration_tests {
         let bg_tree = egui_tiles::Tree::new("bg_pi_tree", bg_root, bg_tiles);
 
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
             strips: Default::default(),
             conjoined_contexts: Default::default(),
             active_context: 0,
@@ -14199,7 +14184,8 @@ mod agent_state_restoration_tests {
                 },
             ],
             context_active_window: HashMap::from([(1, 1), (2, 2)]),
-        };
+        }
+        .with_strips_from_windows();
 
         ws.save_to(profile_dir.path()).expect("save workspace");
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
@@ -16151,7 +16137,7 @@ ask = ["pane.send"]
     let tree = egui_tiles::Tree::new("restore_gate_tree", root_tile, tiles);
 
     let ws = crate::workspace::WorkspaceFile {
-        version: 2,
+        version: 3,
         strips: Default::default(),
         conjoined_contexts: Default::default(),
         active_context: 0,
@@ -16226,7 +16212,8 @@ ask = ["pane.send"]
             context_id: 1,
         }],
         context_active_window: std::collections::HashMap::from([(1, 1)]),
-    };
+    }
+    .with_strips_from_windows();
     ws.save_to(profile_dir.path()).expect("save workspace");
 
     let mut h = HostHarness::from_profile_dir(profile_dir.path());
@@ -16941,7 +16928,7 @@ mod restore_followups_0983b {
         let t30 = tiles.insert_pane(30);
         let tree = egui_tiles::Tree::new("script_tree", t30, tiles);
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
             strips: Default::default(),
             conjoined_contexts: Default::default(),
             active_context: 0,
@@ -17000,7 +16987,8 @@ mod restore_followups_0983b {
                 context_id: 1,
             }],
             context_active_window: HashMap::from([(1, 1)]),
-        };
+        }
+        .with_strips_from_windows();
         ws.save_to(profile_dir.path()).expect("save workspace");
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
 
