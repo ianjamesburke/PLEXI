@@ -351,6 +351,9 @@ interface types {
     type node-id = u32;
 
     enum alignment { start, center, end, stretch }
+    // Main-axis placement of a row's or column's children: along a row,
+    // down a column. `align` is the cross axis on both.
+    enum justify { start, center, end, space-between }
     enum button-style { primary, secondary, danger, ghost }
     enum badge-color { accent, success, warning, danger, neutral }
 
@@ -383,8 +386,8 @@ interface types {
         autofocus: bool,
     }
 
-    record row-node     { children: list<node-id>, gap: f32, align: alignment, grow: bool }
-    record column-node  { children: list<node-id>, gap: f32, align: alignment, grow: bool }
+    record row-node     { children: list<node-id>, gap: f32, align: alignment, justify: justify, grow: bool }
+    record column-node  { children: list<node-id>, gap: f32, align: alignment, justify: justify, grow: bool }
     record scroll-node  { child: node-id, horizontal: bool }
     record padding-node { child: node-id, top: f32, right: f32, bottom: f32, left: f32 }
     record list-node    { items: list<node-id>, selected: option<u32>, on-select: option<string> }

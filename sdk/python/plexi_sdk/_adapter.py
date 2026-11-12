@@ -231,6 +231,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "type": "Column",
             "children": child_ids,
             "align": data.get("align", "start"),
+            "justify": data.get("justify", "start"),
             "grow": data.get("grow", False),
         }
         # Carry gap only when the app set one: absence lets the host apply its
@@ -291,6 +292,7 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "type": "Row",
             "children": child_ids,
             "align": data.get("align", "center"),
+            "justify": data.get("justify", "start"),
             "grow": data.get("grow", False),
         }
         if data.get("gap") is not None:

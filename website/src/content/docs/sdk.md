@@ -835,7 +835,7 @@ Give a component a stable explicit key for lists and local state.
 ### `Column`
 
 ```python
-Column(children: Sequence[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', grow: bool = False)
+Column(children: Sequence[Component] | None = None, gap: float | None = None, padding: float | tuple[float, float] | tuple[float, float, float, float] = 0.0, align: str = 'start', justify: str = 'start', grow: bool = False)
 ```
 
 Vertical stack of child components.
@@ -844,20 +844,27 @@ Vertical stack of child components.
 default), ``"center"`` or ``"end"``. Leftover height is shared equally by every ``Spacer(grow=True)``
 child, so ``[Spacer(grow=True), child, Spacer(grow=True)]`` centers
 ``child`` vertically and a single grow spacer pins what follows it to the
-bottom.
+bottom. ``justify`` places children down a column without grow spacers:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``;
+the column then fills the height it is given.
 
 ### `HStack`
 
 ```python
-HStack(children: Sequence[Component] | None = None, gap: float | None = None, align: str = 'center', grow: bool = False)
+HStack(children: Sequence[Component] | None = None, gap: float | None = None, align: str = 'center', justify: str = 'start', grow: bool = False)
 ```
 
 Horizontal stack of child components (`Row` alias).
 
 ``align`` is the cross axis, as on ``Column``: it places children at the
 top (``"start"``), the middle (``"center"``, the default) or the bottom
-(``"end"``) of the row. A ``Text`` child too long for the row wraps in the
-width its later siblings leave.
+(``"end"``) of the row. ``justify`` places them along the row:
+``"start"`` (the default), ``"center"``, ``"end"`` or ``"space-between"``.
+Leftover width is shared equally by every ``Spacer(grow=True)``,
+``Column(grow=True)`` and ``Row(grow=True)`` child, which then takes
+precedence over ``justify``; a ``Column`` that does not grow is as wide as
+its content. A ``Text`` child too long for the row wraps in the width its
+later siblings leave.
 
 ### `Card`
 

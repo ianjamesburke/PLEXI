@@ -36,7 +36,7 @@ use bindings::exports::plexi::platform::lifecycle::{
 use bindings::plexi::platform::{audio_rt_control, gpu, host_log, host_state, pipes, types};
 
 pub use types::{
-    Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, KeyEvent,
+    Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, Justify, KeyEvent,
     Modifiers, MouseButton, MouseEvent, Point, StateSnapshot, SurfaceEvent, SystemStats,
     UiNodeData, UiTree,
 };

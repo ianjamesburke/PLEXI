@@ -409,6 +409,8 @@ wherever your tree declares none, and any explicit value you set wins:
   and `end`. A `Row` defaults to `center`, a `Column` to `start`.
 - **Narrow panes.** `Actions`, `Select` and `Tabs` wrap whole buttons onto
   further lines when the pane is narrow.
+- **Main-axis placement.** `Column` and `HStack` take `justify="start"` (the
+  default), `"center"`, `"end"` or `"space-between"`.
 - **Button targets.** Buttons get a comfortable minimum click/touch size, so
   single-glyph buttons (calculator keys, toolbar chips) are never cramped.
 

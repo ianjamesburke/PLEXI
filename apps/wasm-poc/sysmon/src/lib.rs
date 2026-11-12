@@ -15,8 +15,8 @@ wit_bindgen::generate!({
 
 use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, ProgressBarNode, RowNode,
-    StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
+    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, Justify, ProgressBarNode,
+    RowNode, StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 use plexi::platform::{host_log, host_state};
 
@@ -113,6 +113,7 @@ impl Sysmon {
                         children: vec![header_id, loading_id],
                         gap: 12.0,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 );
@@ -159,6 +160,7 @@ impl Sysmon {
                         children: vec![cpu_bar.id, cpu_label.id],
                         gap: 8.0,
                         align: Alignment::Center,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 );
@@ -204,6 +206,7 @@ impl Sysmon {
                         children: vec![mem_bar.id, mem_label.id],
                         gap: 8.0,
                         align: Alignment::Center,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 );
@@ -290,6 +293,7 @@ impl Sysmon {
                         ],
                         gap: 10.0,
                         align: Alignment::Start,
+                        justify: Justify::Start,
                         grow: true,
                     }),
                 );
