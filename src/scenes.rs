@@ -4653,11 +4653,39 @@ run_steps = 100
     }
 
     #[test]
+    fn builtin_cwd_at_repository_root_fails_before_any_view_opens() {
+        let temp = tempfile::tempdir().unwrap();
+        let scene = temp.path().join("repo-root-cwd.toml");
+        // `./tests/..` spells the repository root without being literally ".",
+        // so the check must compare resolved paths, not the raw string.
+        std::fs::write(
+            &scene,
+            "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"./tests/..\", as = \"files\" }\n",
+        )
+        .unwrap();
+        let report = run_scene(&scene, temp.path(), true);
+        assert!(!report.passed, "a repository-root cwd must fail the scene");
+        assert_eq!(report.steps.len(), 1, "no step may run: {report:?}");
+        let error = report.steps[0]
+            .error
+            .as_ref()
+            .expect("load step carries the rejection");
+        assert_eq!(error.code, "scene_parse");
+        assert!(
+            error.message.contains("repository root")
+                && error.message.contains("tests/fixtures/"),
+            "the message names the problem and the fix: {}",
+            error.message
+        );
+        assert!(report.handles.is_empty(), "no pane may open: {report:?}");
+    }
+
+    #[test]
     fn reveal_scene_fails_if_an_extra_parent_pane_prevents_transition() {
         let temp = tempfile::tempdir().unwrap();
         let scene = temp.path().join("extra-parent.toml");
         let source = include_str!("../tests/scenes/reveal-sole-subcontext.toml");
-        let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \".\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
+        let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"tests/fixtures/file-browser-tree\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
         let modified = source.replacen("[[steps]]\nfocus = \"child_files\"", extra, 1);
         assert_ne!(modified, source);
         std::fs::write(&scene, modified).unwrap();
