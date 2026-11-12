@@ -480,3 +480,109 @@ fn render_frame_leaves_focus_on_a_pane_after_egui_simplify() {
     );
     assert_eq!(h.app.active_focused_pane_id(), Some(second));
 }
+
+// ── Stint 1340: a pane click clears the multi-pane selection ──────────────
+
+/// Window 0 holds three side-by-side panes `[a | b | c]`, laid out, with `a`
+/// and `b` selected (Cmd+Shift+L from `a`) and `b` focused.
+fn selection_fixture(h: &mut HostHarness) -> [PaneId; 3] {
+    let panes = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, panes.iter().map(|pane| vec![*pane]).collect());
+    h.focus_pane(panes[0]);
+    h.run_frames(3);
+    h.app
+        .extend_pane_selection(crate::host::keys::Direction::Right);
+    let window_id = h.app.windows[0].window_id;
+    let selected = &h
+        .app
+        .host
+        .pane_selection(window_id)
+        .expect("selection")
+        .panes;
+    assert_eq!(
+        selected,
+        &vec![panes[0], panes[1]],
+        "fixture selects a and b"
+    );
+    h.run_frames(1);
+    panes
+}
+
+fn pane_center(h: &HostHarness, pane: PaneId) -> egui::Pos2 {
+    let tree = &h.app.windows[0].tree;
+    let tile = tree.tiles.find_pane(&pane).expect("pane tile");
+    tree.tiles.rect(tile).expect("pane laid out").center()
+}
+
+fn pointer_frame(h: &mut HostHarness, pos: egui::Pos2, pressed: Option<bool>, hovering: bool) {
+    let mut events = vec![egui::Event::PointerMoved(pos)];
+    if let Some(pressed) = pressed {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        hovered_files: if hovering {
+            vec![egui::HoveredFile::default()]
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    });
+}
+
+fn click_pane(h: &mut HostHarness, pane: PaneId) {
+    let pos = pane_center(h, pane);
+    pointer_frame(h, pos, Some(true), false);
+    pointer_frame(h, pos, Some(false), false);
+}
+
+#[test]
+fn clicking_a_selected_pane_clears_selection_and_focuses_it() {
+    let mut h = HostHarness::new();
+    let [a, _b, _c] = selection_fixture(&mut h);
+    click_pane(&mut h, a);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_none(),
+        "a click on a selected pane clears the multi-selection"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(a));
+}
+
+#[test]
+fn clicking_an_unselected_pane_clears_selection_and_focuses_it() {
+    let mut h = HostHarness::new();
+    let [_a, _b, c] = selection_fixture(&mut h);
+    click_pane(&mut h, c);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_none(),
+        "a click on an unselected pane clears the multi-selection"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+}
+
+#[test]
+fn file_drag_hover_over_a_pane_keeps_selection() {
+    let mut h = HostHarness::new();
+    let [_a, _b, c] = selection_fixture(&mut h);
+    let pos = pane_center(&h, c);
+    pointer_frame(&mut h, pos, None, true);
+    pointer_frame(&mut h, pos, None, true);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_some(),
+        "hovering a file drag over a pane must not clear the selection"
+    );
+}
