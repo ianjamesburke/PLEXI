@@ -55,6 +55,7 @@ mod team;
 pub mod text_editor_view;
 pub(crate) mod ui_mailbox;
 pub(crate) mod ui_scale;
+pub(crate) mod update_check;
 pub mod video_player_view;
 pub mod view_trait;
 pub mod zoom;
@@ -578,16 +579,17 @@ pub struct PlexiApp {
     /// sends through a `UiMailbox` built on this wake; watcher restarts and
     /// periodic updater re-checks clone it to build fresh mailboxes.
     pub(crate) ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake>,
-    /// Channel receiver fed by the background update-check thread. Sends the
-    /// latest version string exactly once if a newer release is available.
-    update_rx: Option<ui_mailbox::MailboxReceiver<String>>,
+    /// Receiver for the running update check's status events
+    /// (`update_check::launch_update_check`). `None` when no check runs.
+    pub(crate) update_rx: Option<ui_mailbox::MailboxReceiver<crate::host::update_status::UpdateEvent>>,
+    /// Starts update check threads; headless hosts never touch the network.
+    pub(crate) update_check_launcher: update_check::UpdateCheckLauncher,
     /// Last time the host scheduled an update-check thread. Used to re-check
     /// long-running sessions at the same interval as the updater cache.
     last_update_check: std::time::Instant,
-    /// Latest available version string, set after the background check resolves.
-    /// `None` means either the check hasn't completed or we're already current.
     pub(crate) display_version: String,
-    pub(crate) update_available: Option<String>,
+    /// What the update check is doing and whether a downloaded build is ready.
+    pub(crate) update_status: crate::host::update_status::UpdateStatus,
     pub(crate) update_quit_pending: bool,
     pub(crate) update_confirm_prompt: bool,
     /// Set by `HostRequest::Shutdown` (`plexi host stop`'s clean-shutdown
@@ -1667,10 +1669,15 @@ impl PlexiApp {
             crate::app::focus_journal::recover_from_focus_journal(&journal_path);
         }
 
-        // Spawn background update check. Sends the latest version once if newer.
-        let (update_mailbox, update_rx) =
-            ui_mailbox::UiMailbox::channel(std::sync::Arc::clone(&ui_wake), "update_check");
-        crate::cli::updater::spawn_update_check(profile_dir.clone(), update_mailbox);
+        // Background update check on launch; status events drain in `update_preamble`.
+        let mut update_status = crate::host::update_status::UpdateStatus::default();
+        let update_rx = update_check::launch_update_check(
+            &ui_wake,
+            crate::cli::updater::spawn_update_check,
+            profile_dir.clone(),
+            crate::host::update_status::CheckMode::Scheduled,
+            &mut update_status,
+        );
         let last_update_check = std::time::Instant::now();
 
         let (pane_ipc_mailbox, pane_ipc_rx) =
@@ -1896,10 +1903,11 @@ impl PlexiApp {
                     edge_pulse: None,
                     click_flash: None,
                     ui_wake: std::sync::Arc::clone(&ui_wake),
-                    update_rx: Some(update_rx),
+                    update_rx,
+                    update_check_launcher: crate::cli::updater::spawn_update_check,
                     last_update_check,
                     display_version: read_display_version(),
-                    update_available: None,
+                    update_status: update_status.clone(),
                     update_quit_pending: false,
                     update_confirm_prompt: false,
                     shutdown_requested: false,
@@ -2179,10 +2187,11 @@ impl PlexiApp {
             edge_pulse: None,
             click_flash: None,
             ui_wake: std::sync::Arc::clone(&ui_wake),
-            update_rx: Some(update_rx),
+            update_rx,
+            update_check_launcher: crate::cli::updater::spawn_update_check,
             last_update_check,
             display_version: read_display_version(),
-            update_available: None,
+            update_status,
             update_quit_pending: false,
             update_confirm_prompt: false,
             shutdown_requested: false,
@@ -3161,9 +3170,10 @@ impl PlexiApp {
             click_flash: None,
             ui_wake,
             update_rx: None,
+            update_check_launcher: update_check::test_launcher::record,
             last_update_check: std::time::Instant::now(),
             display_version: read_display_version(),
-            update_available: None,
+            update_status: crate::host::update_status::UpdateStatus::default(),
             update_quit_pending: false,
             update_confirm_prompt: false,
             shutdown_requested: false,

@@ -64,6 +64,12 @@ enum PaletteEntry {
         focused: bool,
         search_text: String,
     },
+    /// A downloaded build waiting for a restart. Pinned as the first row;
+    /// Enter restarts into it (`PaletteCommand::RestartToUpdate`).
+    UpdateReady {
+        version: String,
+        search_text: String,
+    },
     /// A user-authored command from `commands.toml` or a global script,
     /// executed via `plexi run <name>` in a new terminal pane.
     UserCommand {
@@ -96,12 +102,15 @@ impl PaletteEntry {
             PaletteEntry::Builtin { id, .. } => format!("builtin:{id}"),
             PaletteEntry::Note { path, .. } => format!("note:{}", path.display()),
             PaletteEntry::UserCommand { name, scope, .. } => format!("run:{scope:?}:{name}"),
+            PaletteEntry::UpdateReady { version, .. } => format!("update-ready:{version}"),
         }
     }
 
     fn group_rank(&self) -> usize {
         match self {
-            PaletteEntry::Context { .. } | PaletteEntry::UnavailableContext { .. } => 0,
+            PaletteEntry::UpdateReady { .. }
+            | PaletteEntry::Context { .. }
+            | PaletteEntry::UnavailableContext { .. } => 0,
             PaletteEntry::Agent { .. } => 1,
             PaletteEntry::Note { .. } => 2,
             PaletteEntry::View { .. } | PaletteEntry::Builtin { .. } => 3,
@@ -131,6 +140,7 @@ impl PaletteEntry {
             | PaletteEntry::UserCommand { name, .. } => name.as_str(),
             PaletteEntry::Agent { agent_name, .. } => agent_name.as_str(),
             PaletteEntry::Note { title, .. } => title.as_str(),
+            PaletteEntry::UpdateReady { .. } => "Restart to update",
         }
     }
 
@@ -143,6 +153,7 @@ impl PaletteEntry {
             | PaletteEntry::View { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
+            | PaletteEntry::UpdateReady { search_text, .. }
             | PaletteEntry::UserCommand { search_text, .. } => search_text.as_str(),
         }
     }
@@ -204,6 +215,10 @@ enum PaletteCommand {
     /// Install the CLI launcher, completions, and PATH registration for external terminals.
     SetupCli,
     UiUpcycle(&'static str),
+    /// Check for a newer build now, skipping the update cache.
+    CheckForUpdates,
+    /// Restart into the downloaded build. Listed only while one is ready.
+    RestartToUpdate,
 }
 
 struct PaletteCommandEntry {
@@ -297,6 +312,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         name: "Changelog",
         description: "Show what changed in this version",
         search_text: "changelog release notes what's new version",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::CheckForUpdates,
+        name: "Check for updates",
+        description: "Look for a newer Plexi build on this channel now",
+        search_text: "check for updates update upgrade new version release download",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ToggleShortcuts),
@@ -422,6 +443,19 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::PrevTab), name: "Previous tab", description: "Focus the previous tab", search_text: "previous tab back" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackView), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
 ];
+
+/// The pinned "Update ready" row, when a build is ready and the query matches.
+fn update_ready_entry(ready: Option<&str>, query: &str) -> Option<PaletteEntry> {
+    let version = ready?;
+    let entry = PaletteEntry::UpdateReady {
+        version: version.to_string(),
+        search_text: searchable_text(&[
+            "update ready restart to update upgrade new version",
+            version,
+        ]),
+    };
+    entry.matches_query(query).then_some(entry)
+}
 
 fn searchable_text(parts: &[&str]) -> String {
     parts.join(" ").to_lowercase()
@@ -556,6 +590,9 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             name: name.clone(),
             scope: *scope,
         }),
+        PaletteEntry::UpdateReady { .. } => {
+            Some(PaletteAction::RunCommand(PaletteCommand::RestartToUpdate))
+        }
     }
 }
 
@@ -1009,7 +1046,9 @@ fn palette_host_binding(
         | PaletteCommand::OpenAttention
         | PaletteCommand::SetupCli
         | PaletteCommand::StatePreset(_)
-        | PaletteCommand::UiUpcycle(_) => return None,
+        | PaletteCommand::UiUpcycle(_)
+        | PaletteCommand::CheckForUpdates
+        | PaletteCommand::RestartToUpdate => return None,
         PaletteCommand::Host(other) => {
             log_missing_palette_shortcut_once(other);
             return None;
@@ -1460,6 +1499,9 @@ impl PlexiApp {
         }
 
         sort_palette_entries(&mut entries, &query);
+        if let Some(entry) = update_ready_entry(self.update_status.ready(), &query) {
+            entries.insert(0, entry);
+        }
 
         let total = entries.len();
         reconcile_palette_selection(
@@ -1822,6 +1864,23 @@ impl PlexiApp {
                                     hover_select = Some(i);
                                 }
                             }
+                            PaletteEntry::UpdateReady { version, .. } => {
+                                let title = format!("Update ready: v{version}");
+                                let row_response = ListRow::new(&title)
+                                    .metadata_chips(&["update"])
+                                    .secondary("Restart to update · your workspace is saved")
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+                                if row_response.row_clicked() {
+                                    click_action = action_for_palette_entry(entry);
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
                             PaletteEntry::UserCommand {
                                 name,
                                 secondary,
@@ -2026,6 +2085,14 @@ impl PlexiApp {
             PaletteCommand::SwitchCommandsScope => {
                 self.switch_focused_commands_editor_scope();
             }
+            PaletteCommand::CheckForUpdates => {
+                log::info!("palette: check for updates");
+                self.start_update_check(crate::host::update_status::CheckMode::Manual);
+                if !self.show_changelog {
+                    self.toggle_changelog();
+                }
+            }
+            PaletteCommand::RestartToUpdate => self.restart_to_update("palette"),
             PaletteCommand::SetupCli => match crate::cli::setup::setup_external_shell(true) {
                 Ok(report) => {
                     log::info!(
@@ -2977,6 +3044,72 @@ mod tests {
     }
 
     #[test]
+    fn palette_check_for_updates_is_always_listed_and_starts_a_check() {
+        for query in ["check for updates", "update", "upgrade"] {
+            assert!(
+                palette_command_matches(query).contains(&PaletteCommand::CheckForUpdates),
+                "missing {query}"
+            );
+        }
+        assert!(
+            !palette_command_matches("").contains(&PaletteCommand::RestartToUpdate),
+            "Restart to update is listed only through the ready row"
+        );
+        let mut h = crate::testing::HostHarness::new();
+        crate::app::update_check::test_launcher::take();
+        h.app.run_palette_command(PaletteCommand::CheckForUpdates);
+        let launched = crate::app::update_check::test_launcher::take();
+        assert_eq!(launched.len(), 1);
+        assert_eq!(launched[0].0, crate::host::update_status::CheckMode::Manual);
+        assert_eq!(
+            h.app.update_status.line(),
+            crate::host::update_status::UpdateLine::Checking
+        );
+        assert!(
+            h.app.show_changelog,
+            "the result shows in the changelog view"
+        );
+        // Running it again while the check is in flight launches nothing
+        // and keeps the changelog open.
+        h.app.run_palette_command(PaletteCommand::CheckForUpdates);
+        assert!(crate::app::update_check::test_launcher::take().is_empty());
+        assert!(h.app.show_changelog);
+    }
+
+    #[test]
+    fn palette_update_ready_row_only_when_ready_and_restarts() {
+        assert!(update_ready_entry(None, "").is_none());
+        let entry = update_ready_entry(Some("0.5.1"), "").expect("ready row on empty query");
+        assert_eq!(entry.selection_key(), "update-ready:0.5.1");
+        for query in ["restart", "update", "0.5.1"] {
+            assert!(
+                update_ready_entry(Some("0.5.1"), query).is_some(),
+                "missing {query}"
+            );
+        }
+        assert!(update_ready_entry(Some("0.5.1"), "zzqx").is_none());
+        assert_eq!(
+            action_for_palette_entry(&entry),
+            Some(PaletteAction::RunCommand(PaletteCommand::RestartToUpdate))
+        );
+
+        let mut h = crate::testing::HostHarness::new();
+        h.app.run_palette_command(PaletteCommand::RestartToUpdate);
+        assert!(
+            !h.app.update_quit_pending,
+            "nothing ready, nothing restarts"
+        );
+        h.app.update_status.begin_check();
+        h.app
+            .update_status
+            .apply(crate::host::update_status::UpdateEvent::Ready {
+                version: "0.5.1".into(),
+            });
+        h.app.run_palette_command(PaletteCommand::RestartToUpdate);
+        assert!(h.app.update_quit_pending);
+    }
+
+    #[test]
     fn palette_changelog_search_and_open_are_idempotent() {
         use crate::host::keys::Action;
         let command = PaletteCommand::Host(Action::OpenChangelog);
@@ -3054,7 +3187,9 @@ mod tests {
                 | PaletteCommand::SwitchCommandsScope
                 | PaletteCommand::SetupCli
                 | PaletteCommand::StatePreset(_)
-                | PaletteCommand::UiUpcycle(_) => {
+                | PaletteCommand::UiUpcycle(_)
+                | PaletteCommand::CheckForUpdates
+                | PaletteCommand::RestartToUpdate => {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "workspace config / edit commands are palette-only handoffs with no host chord"

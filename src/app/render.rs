@@ -105,12 +105,7 @@ impl PlexiApp {
                 let config_dir = crate::config::config_dir();
                 if !crate::cli::updater::update_cache_fresh(&config_dir) {
                     log::info!("update check: scheduling periodic re-check");
-                    let (update_mailbox, update_rx) = crate::app::ui_mailbox::UiMailbox::channel(
-                        std::sync::Arc::clone(&self.ui_wake),
-                        "update_check",
-                    );
-                    crate::cli::updater::spawn_update_check(config_dir, update_mailbox);
-                    self.update_rx = Some(update_rx);
+                    self.start_update_check(crate::host::update_status::CheckMode::Scheduled);
                     self.last_update_check = now;
                 }
             }
@@ -135,12 +130,7 @@ impl PlexiApp {
             self.request_quit(crate::app::quit::ExitReason::HostStop);
             return;
         }
-        if let Some(rx) = &self.update_rx {
-            if let Ok(version) = rx.try_recv() {
-                log::info!("update check: badge set to v{version}");
-                self.update_available = Some(version);
-            }
-        }
+        self.drain_update_events();
         if self.update_quit_pending {
             crate::app::quit::trace("update_restart_received");
             self.update_quit_pending = false;

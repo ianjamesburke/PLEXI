@@ -7082,6 +7082,97 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+    fn set_update_ready(app: &mut crate::app::PlexiApp, version: &str) {
+        app.update_status.begin_check();
+        app.update_status
+            .apply(crate::host::update_status::UpdateEvent::Ready {
+                version: version.into(),
+            });
+    }
+
+    #[test]
+    fn screenshot_command_palette_update_ready_row() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            set_update_ready(app, "0.5.1");
+            app.show_command_palette = true;
+            app.palette_selected = 0;
+            app.palette_selected_key = None;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        let row = h.harness().get_by_label("Update ready: v0.5.1").rect();
+        let first_context = h.harness().get_by_label("CONTEXTS").rect();
+        assert!(
+            row.top() < first_context.top(),
+            "the update row sits above every other result"
+        );
+        assert_eq!(
+            h.with_app(|app| app.palette_selected_key.clone()),
+            Some("update-ready:0.5.1".to_string()),
+            "Enter on a fresh palette lands on the update row"
+        );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!());
+
+        h.with_app_mut(|app| {
+            app.update_status = crate::host::update_status::UpdateStatus::default();
+            app.show_command_palette = true;
+            app.palette_selected_key = None;
+        });
+        h.run_steps(2);
+        assert!(
+            h.harness().query_by_label("Update ready: v0.5.1").is_none(),
+            "no ready build, no update row"
+        );
+    }
+
+    #[test]
+    fn screenshot_changelog_update_status_line() {
+        let mut h = PlexiUiHarness::new_sized(1024.0, 640.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            set_update_ready(app, "0.5.1");
+            app.toggle_changelog();
+        });
+        h.run_steps(2);
+        h.harness().get_by_label("v0.5.1 is ready");
+        h.harness().get_by_label("Restart to update");
+        h.save_screenshot(&evidence_png!("_ready")).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!("_ready"));
+
+        h.with_app_mut(|app| {
+            let mut status = crate::host::update_status::UpdateStatus::default();
+            status.begin_check();
+            status.apply(crate::host::update_status::UpdateEvent::Failed {
+                reason: "could not fetch releases: HTTP 503".into(),
+            });
+            app.update_status = status;
+        });
+        h.run_steps(2);
+        h.harness()
+            .get_by_label("Update check failed: could not fetch releases: HTTP 503");
+        assert!(h.harness().query_by_label("Restart to update").is_none());
+        h.save_screenshot(&evidence_png!("_failed")).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!("_failed"));
+
+        h.with_app_mut(|app| {
+            let mut status = crate::host::update_status::UpdateStatus::default();
+            status.begin_check();
+            status.apply(crate::host::update_status::UpdateEvent::UpToDate {
+                checked_at: crate::platform::clock::now_secs(),
+            });
+            app.update_status = status;
+        });
+        h.run_steps(2);
+        h.harness().get_by_label("Up to date · checked just now");
+        h.save_screenshot(&evidence_png!("_up_to_date")).expect("render failed");
+        println!("Screenshot saved to {}", evidence_png!("_up_to_date"));
+    }
+
     /// Host Assistant pane smoke: open → step → assert visible (epic Phase D).
     #[test]
     fn assistant_pane_opens_and_renders() {
