@@ -1424,13 +1424,14 @@ struct RowMeasure {
 
 impl RowMeasure {
     /// A row measurement from each child's natural size, the children laid
-    /// side by side `gap` apart; a grow child (`None`) takes no width.
-    fn from_sizes(sizes: &[Option<egui::Vec2>], gap: f32, height: f32) -> Self {
+    /// side by side `gap` apart; a grow child (`None` width) takes no width.
+    fn from_sizes(widths: &[Option<f32>], sizes: &[egui::Vec2], gap: f32, height: f32) -> Self {
         let mut x = 0.0;
-        let child_rects = sizes
+        let child_rects = widths
             .iter()
-            .map(|size| {
-                let size = size.unwrap_or(egui::vec2(0.0, height));
+            .zip(sizes)
+            .map(|(width, size)| {
+                let size = egui::vec2(width.unwrap_or(0.0), size.y);
                 let rect = egui::Rect::from_min_size(egui::pos2(x, 0.0), size);
                 x += size.x + gap;
                 rect
@@ -1526,17 +1527,17 @@ fn measure_row(
 /// (stint 1363). Each child is laid out alone, without painting, in a
 /// measuring pass as wide as the row, so its width is its content's whatever
 /// its siblings take: a centered `Column` measures as wide as its widest
-/// child, not as the row. Grow children are `None` and not laid out: their
-/// width is a share of the leftover. Like `measure_row`, rows inside this
-/// pass do not measure and flex columns are not laid out, so it visits each
-/// node of the row's subtree at most once.
+/// child, not as the row. A grow child's width is a share of the leftover
+/// instead, but its height is still measured. Like `measure_row`, rows
+/// inside this pass do not measure and flex columns are not laid out, so it
+/// visits each node of the row's subtree at most once.
 fn measure_row_children(
     ui: &mut egui::Ui,
     env: TreeRenderEnv<'_>,
     r: &RowNode,
     grid_cols: Option<usize>,
     depth: u32,
-) -> Vec<Option<egui::Vec2>> {
+) -> Vec<egui::Vec2> {
     let env = TreeRenderEnv {
         in_row_measure: true,
         ..env
@@ -1546,10 +1547,7 @@ fn measure_row_children(
     r.children
         .iter()
         .enumerate()
-        .map(|(idx, child)| {
-            if find_node(env.nodes, *child).is_some_and(grows_along_row) {
-                return None;
-            }
+        .map(|(idx, _)| {
             let mut sizing = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
@@ -1558,7 +1556,7 @@ fn measure_row_children(
                     .layout(egui::Layout::left_to_right(egui::Align::Min)),
             );
             render_row_child(&mut sizing, env, r, idx, grid_cols, &mut sizing_out, depth);
-            Some(sizing.min_rect().size())
+            sizing.min_rect().size()
         })
         .collect()
 }
@@ -1670,8 +1668,16 @@ fn render_row_node(
             }));
     if along {
         let natural = measure_row_children(ui, env, r, grid_cols, depth);
-        let widths: Vec<Option<f32>> = natural.iter().map(|size| size.map(|s| s.x)).collect();
-        let row_h = natural.iter().flatten().map(|s| s.y).fold(0.0, f32::max);
+        let widths: Vec<Option<f32>> = r
+            .children
+            .iter()
+            .zip(&natural)
+            .map(|(child, size)| {
+                let grows = find_node(nodes, *child).is_some_and(grows_along_row);
+                (!grows).then_some(size.x)
+            })
+            .collect();
+        let row_h = natural.iter().map(|s| s.y).fold(0.0, f32::max);
         if let Some(placement) =
             place_along_row(&widths, sanitized_gap(r.gap), available, r.justify)
         {
@@ -1692,9 +1698,8 @@ fn render_row_node(
                     );
                     // Each child gets a slot exactly its share wide; it lays
                     // itself out centered inside, as in a measured slot.
-                    let height = natural[idx].map_or(row_h, |s| s.y);
                     ui.allocate_ui_with_layout(
-                        egui::vec2(width, height),
+                        egui::vec2(width, natural[idx].y),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_min_width(width);
@@ -1709,7 +1714,7 @@ fn render_row_node(
         }
         // The children do not fit: lay the row out as rows always have, from
         // this measurement, so it is still measured once.
-        measure = Some(RowMeasure::from_sizes(&natural, r.gap, row_h));
+        measure = Some(RowMeasure::from_sizes(&widths, &natural, r.gap, row_h));
     }
     if placed && measure.is_none() {
         let measured = measure_row(ui, env, r, grid_cols, depth);
@@ -3892,45 +3897,51 @@ mod tests {
     #[test]
     fn row_grow_columns_share_the_width() {
         let gap = style::SPACE_SM;
-        let tree = wire_tree(&[
-            (
-                0,
-                serde_json::json!({"type": "row", "children": [1, 2], "gap": gap, "align": "start"}),
-            ),
-            (
-                1,
-                serde_json::json!({"type": "column", "children": [3, 4], "grow": true}),
-            ),
-            (
-                2,
-                serde_json::json!({"type": "column", "children": [5], "grow": true}),
-            ),
-            (3, wire_button("Convert")),
-            (
-                4,
-                serde_json::json!({"type": "text", "text": "Amount and unit"}),
-            ),
-            (5, wire_button("Result")),
-        ]);
-        for pane in ROW_PANES {
-            let rects = laid_out(&tree, pane);
-            let (left, right) = content_x(pane);
-            let half = (right - left - gap) / 2.0;
-            let convert = rect_of(&rects, 3);
-            let result = rect_of(&rects, 5);
-            assert!(
-                (convert.min.x - left).abs() <= 1.5,
-                "{pane:?}: the first column starts the row: {convert:?}"
-            );
-            assert!(
-                (result.min.x - (left + half + gap)).abs() <= 1.5,
-                "{pane:?}: the second column starts halfway, at {}, got {result:?}",
-                left + half + gap
-            );
-            assert!(
-                result.max.x <= right + 0.5,
-                "{pane:?}: {result:?} is past the row"
-            );
+        // Card 07's row says nothing about `align` (center); the taller
+        // column sets the row's height, so both start at its top either way.
+        for align in [None, Some("start")] {
+            let mut row = serde_json::json!({"type": "row", "children": [1, 2], "gap": gap});
+            if let Some(align) = align {
+                row["align"] = serde_json::json!(align);
+            }
+            let tree = wire_tree(&[
+                (0, row),
+                (
+                    1,
+                    serde_json::json!({"type": "column", "children": [3, 4], "grow": true}),
+                ),
+                (
+                    2,
+                    serde_json::json!({"type": "column", "children": [5], "grow": true}),
+                ),
+                (3, wire_button("Convert")),
+                (
+                    4,
+                    serde_json::json!({"type": "text", "text": "Amount and unit"}),
+                ),
+                (5, wire_button("Result")),
+            ]);
+            for pane in ROW_PANES {
+                let rects = laid_out(&tree, pane);
+                let (left, right) = content_x(pane);
+                let (top, _) = content_y(pane);
+                let half = (right - left - gap) / 2.0;
+                let convert = rect_of(&rects, 3);
+                let result = rect_of(&rects, 5);
+                assert!(
+                    (convert.min.x - left).abs() <= 1.5 && (convert.min.y - top).abs() <= 1.5,
+                    "{align:?} {pane:?}: the first column starts the row at its top: {convert:?}"
+                );
+                assert!(
+                    (result.min.x - (left + half + gap)).abs() <= 1.5,
+                    "{align:?} {pane:?}: the second column starts halfway, at {}, got {result:?}",
+                    left + half + gap
+                );
+                assert!(
+                    result.max.x <= right + 0.5,
+                    "{align:?} {pane:?}: {result:?} is past the row"
+                );
+            }
         }
     }
 
