@@ -1294,8 +1294,9 @@ mod install_tests {
                 std::fs::write(d.join("typing.pyc"), b"\x00").unwrap()
             }),
             ("pycache beside the entry", |d| {
-                std::fs::create_dir(d.join("__pycache__")).unwrap();
-                std::fs::write(d.join("__pycache__/main.cpython-312.pyc"), b"\x00").unwrap();
+                // A dev build may embed a cache dir; a planted file is still extra.
+                std::fs::create_dir_all(d.join("__pycache__")).unwrap();
+                std::fs::write(d.join("__pycache__/planted.cpython-312.pyc"), b"\x00").unwrap();
             }),
             ("missing file", |d| {
                 std::fs::remove_file(d.join("main.py")).unwrap()
