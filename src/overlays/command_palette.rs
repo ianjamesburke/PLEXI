@@ -512,10 +512,30 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Order palette rows for display. Every group stays one contiguous run, so
+/// the render loop's once-per-group section headers stay attached to their
+/// own rows. An empty query keeps the fixed group order. A typed query orders
+/// groups by their best member's relevance (fixed order breaks ties), so a
+/// direct title match in a later group is never buried under an incidental
+/// description match in an earlier one, and the first row is the best match.
 fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
-    entries.sort_by_key(|entry| {
+    if query.is_empty() {
+        entries.sort_by_key(|entry| (entry.group_rank(), entry.state_rank()));
+        return;
+    }
+    let mut best_in_group: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
+    for entry in entries.iter() {
+        let rank = entry.query_rank(query);
+        best_in_group
+            .entry(entry.group_rank())
+            .and_modify(|best| *best = (*best).min(rank))
+            .or_insert(rank);
+    }
+    entries.sort_by_cached_key(|entry| {
+        let group = entry.group_rank();
         (
-            entry.group_rank(),
+            best_in_group[&group],
+            group,
             entry.query_rank(query),
             entry.state_rank(),
         )
@@ -1955,6 +1975,19 @@ impl PlexiApp {
     /// Execute a palette interaction after keyboard and mouse have resolved
     /// the same stable entry action.
     fn run_palette_selection(&mut self, action: PaletteAction) {
+        // Bounded: the result kind and query length only, never the query text.
+        let kind = match &action {
+            PaletteAction::RunCommand(_) => "command",
+            PaletteAction::Focus(_) => "focus",
+            PaletteAction::OpenView(_) => "view",
+            PaletteAction::LaunchBuiltin(_) => "builtin",
+            PaletteAction::OpenNote(_) => "note",
+            PaletteAction::RunUserCommand { .. } => "user-command",
+        };
+        log::info!(
+            "palette: running {kind} result for a {}-char query",
+            self.palette_query.chars().count()
+        );
         self.show_command_palette = false;
         self.palette_query.clear();
         self.palette_selected_key = None;
