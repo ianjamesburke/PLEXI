@@ -1294,6 +1294,9 @@ fn retire_legacy_permissions(config_dir: &Path) {
 }
 
 #[cfg(test)]
+pub(crate) mod admission_matrix;
+
+#[cfg(test)]
 mod cli_operation_tests;
 
 #[cfg(test)]

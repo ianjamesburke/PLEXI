@@ -10392,6 +10392,145 @@ default = true
         assert_eq!(permission_bridge_kind(bridge_message_type(&typo)), None);
     }
 
+    /// Stint 1238 characterisation matrix, Python rows (see
+    /// `crate::broker::admission_matrix`). Builds the launch set exactly as
+    /// `gate_plugin_permissions_in_profile` and `build_python_runtime` do
+    /// (`materialize_plugin_permissions`, then capability strings), then asks
+    /// `manifest_declares`, the check behind `LivePythonPane::has_capability`.
+    /// Typed CLI operations add the monitor's per-invocation admission.
+    #[test]
+    fn python_runtime_admission_matrix() {
+        use crate::app::permissions::Capability;
+        use crate::broker::admission_matrix::{self as matrix, Family, Mech, Outcome, Runtime};
+        use crate::broker::gate::{AdmitRequest, PermissionMonitor};
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        const PLUGIN: &str = "matrix.python";
+        let profile = tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ws = tempdir().unwrap();
+        let ws = ws.path();
+        let families = [
+            Family::FsRead,
+            Family::FsWrite,
+            Family::Network,
+            Family::CliExec,
+            Family::Panes,
+            Family::Notify,
+            Family::HostRead,
+        ];
+        let checked = matrix::verify(Runtime::Python, &families, ws, |family, id, state| {
+            let monitor = PermissionMonitor::ephemeral();
+            let declared: std::collections::HashSet<Capability> = if matrix::plugin_declares(state)
+            {
+                Capability::try_from(id).into_iter().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            if family != Family::CliExec {
+                matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
+            }
+            let permissions =
+                monitor.materialize_plugin_permissions(PLUGIN, ws, &declared, Vec::new());
+            let launch_set: Vec<String> = permissions
+                .capabilities
+                .iter()
+                .map(|capability| capability.as_str().to_string())
+                .collect();
+            let in_launch_set = manifest_declares(&launch_set, id);
+            if family == Family::CliExec {
+                if !in_launch_set {
+                    return (Outcome::Deny, Mech::PythonLaunchSet);
+                }
+                let input = r#"{"cli_operation_id":"task.set","binding":"task.set#bind-1","values":{"priority":"p1"}}"#;
+                let outcome = matrix::drive_exact(&monitor, state, "cli.op.mutate", &|_posture| {
+                    monitor.admit_cli_operation(
+                        AdmitRequest {
+                            call_id: "call-1",
+                            tool: "cli.op.mutate",
+                            input_json: input,
+                            actor_type: ActorType::Plugin,
+                            actor_id: PLUGIN,
+                            actor_scope: ActorScope::User,
+                            trust_origin: "host",
+                            workspace_root: ws,
+                            context_id: 9,
+                            package_id: "pkg-a",
+                            instance_id: 4,
+                            target_type: TargetType::CliOperation,
+                        },
+                        "matrix.python wants to run task.set",
+                    )
+                });
+                return (outcome, Mech::MonitorAdmit);
+            }
+            if in_launch_set {
+                let mech = if matrix::manifest_minted(&monitor, PLUGIN, id) {
+                    Mech::ManifestAsGrant
+                } else {
+                    Mech::LaunchRow
+                };
+                (Outcome::Admit, mech)
+            } else if permissions
+                .blocked
+                .iter()
+                .any(|capability| capability.as_str() == id)
+            {
+                (Outcome::Deny, Mech::LaunchRow)
+            } else {
+                (Outcome::Deny, Mech::PythonLaunchSet)
+            }
+        });
+        assert_eq!(checked, 14 * matrix::STATES.len());
+    }
+
+    /// CUTOVER: expected to change to deny (no human approval). Every Python
+    /// guest can send `permission_decision`; `handle_permission_decision`
+    /// forwards it to `PermissionMonitor::mutate_entry` with this exact caller,
+    /// `human: true`, and checks neither `permissions.manage` nor the plugin id.
+    /// `allow` on a pending id approves it as Always. Pinned at the monitor seam
+    /// because launching a CPython guest is not needed to show the decision.
+    #[test]
+    fn python_permission_bridge_caller_approves_a_pending_ask_as_human() {
+        use crate::broker::gate::{
+            Admission, AdmitRequest, PermissionCaller, PermissionMonitor, PermissionMutation,
+        };
+        use crate::broker::{ActorScope, ActorType, TargetType};
+
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempdir().unwrap();
+        let admit = || {
+            monitor.admit(AdmitRequest {
+                call_id: "call-1",
+                tool: "probe.add",
+                input_json: "{}",
+                actor_type: ActorType::Agent,
+                actor_id: "agent:caller",
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: ws.path(),
+                context_id: 1,
+                package_id: "probe",
+                instance_id: 0,
+                target_type: TargetType::PluginConnector,
+            })
+        };
+        let Admission::Required { pending_request_id } = admit() else {
+            panic!("an unapproved connector call must ask");
+        };
+        let bridge_caller = PermissionCaller {
+            human: true,
+            actor_id: format!("app:{}", "any.python.plugin"),
+        };
+        let outcome = monitor.mutate_entry(&pending_request_id, "allow", &bridge_caller);
+        // CUTOVER: expected to change to deny.
+        assert!(
+            matches!(outcome, PermissionMutation::Applied { .. }),
+            "today a guest-built human caller approves the pending ask"
+        );
+        assert!(matches!(admit(), Admission::Proceed { .. }));
+    }
+
     #[test]
     fn guest_log_level_honors_sdk_levels() {
         assert_eq!(guest_log_level(Some("debug")), log::Level::Debug);
