@@ -835,16 +835,6 @@ mod tests {
         }
     }
 
-    /// Scale for the `screenshot_ui_scale_*` tests (run at 0.6 / 1.0 / 2.0).
-    fn ui_scale_shot() -> f32 {
-        crate::app::ui_scale::clamp_scale(
-            std::env::var("PLEXI_UI_SCALE_SHOT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1.0),
-        )
-    }
-
     fn assert_inside(what: &str, scale: f32, rect: egui::Rect, screen: egui::Rect) {
         let tol = 0.75;
         assert!(
@@ -2134,49 +2124,6 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_ui_scale_cards() {
-        let scale = ui_scale_shot();
-        crate::app::card_gallery::FORCE.with(|f| f.set(true));
-        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 1400.0, scale);
-        h.run_steps(4);
-        let path = evidence_png!();
-        h.save_screenshot(&path).unwrap();
-        assert!(std::path::Path::new(&path).exists());
-    }
-
-    #[test]
-    fn screenshot_ui_scale_atlas() {
-        let _experiments =
-            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
-        let scale = ui_scale_shot();
-        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-        add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
-            let root = app.create_context_without_pty("alpha", None);
-            app.create_context_without_pty("beta", Some(root));
-            app.create_context_without_pty("gamma", Some(root));
-            app.create_context_without_pty("delta", None);
-            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
-        });
-        h.run_steps(6);
-        let path = evidence_png!();
-        h.save_screenshot(&path).unwrap();
-        assert!(std::path::Path::new(&path).exists());
-    }
-
-    #[test]
-    fn screenshot_ui_scale_note_picker() {
-        let scale = ui_scale_shot();
-        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-        add_focused_pane(&mut h);
-        seed_note_picker(&mut h);
-        h.run_steps(3);
-        let path = evidence_png!();
-        h.save_screenshot(&path).unwrap();
-        assert!(std::path::Path::new(&path).exists());
-    }
-
-    #[test]
     fn screenshot_notes_picker_wide_and_narrow_layout() {
         // 1. Wide viewport (1440x900): balanced 50/50 layout with framed monospace preview
         let mut h_wide = PlexiUiHarness::new_sized(1440.0, 900.0);
@@ -2210,38 +2157,6 @@ mod tests {
             let _ = std::fs::remove_file(narrow_path);
             let _ = std::fs::remove_file(scaled_path);
         }
-    }
-
-    #[test]
-    fn screenshot_ui_scale_terminal() {
-        let scale = ui_scale_shot();
-        let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-        h.with_app_mut(|app| {
-            app.sidebar_visible = false;
-            let workspace_root = app.router.active().root.clone();
-            let id = app.host.alloc_pane_id();
-            let terminal = crate::host::pane::TerminalPane::new(
-                id,
-                app.ctx.clone(),
-                app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(),
-                    working_directory: Some(workspace_root),
-                    ..Default::default()
-                },
-                14.0,
-            )
-            .expect("spawn terminal pane");
-            let win = &mut app.windows[app.active_window];
-            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
-            let tile = win.tree.tiles.insert_pane(id);
-            win.tree.root = Some(tile);
-            win.focused_pane = Some(tile);
-        });
-        h.run_steps(6);
-        let path = evidence_png!();
-        h.save_screenshot(&path).unwrap();
-        assert!(std::path::Path::new(&path).exists());
     }
 
     /// The scene DSL cannot seed PTY output or drag inside a terminal widget.
@@ -4510,31 +4425,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         );
     }
 
-    /// Stint 0750 evidence: the file-browser rename modal's action pair now
-    /// renders through `KitButton` (`Primary` / `Secondary`) at
-    /// `BUTTON_H_MD`, instead of the bare `ui.button` it used to emit inside
-    /// an otherwise correct `ModalShell`. Review artifact:
-    /// /tmp/plexi-0750-file-browser-rename-modal.png.
-    #[test]
-    fn screenshot_file_browser_rename_modal_uses_kit_buttons() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("original.txt"), b"contents").expect("write fixture");
-
-        let mut h = PlexiUiHarness::new_sized(720.0, 520.0);
-        h.open_file_browser(dir.path().to_path_buf());
-        h.run_steps(2);
-        h.harness()
-            .key_down_modifiers(egui::Modifiers::NONE, egui::Key::F2);
-        h.step();
-        h.harness()
-            .key_up_modifiers(egui::Modifiers::NONE, egui::Key::F2);
-        h.step();
-        h.run_steps(3);
-
-        h.save_screenshot("/tmp/plexi-0750-file-browser-rename-modal.png")
-            .expect("render rename modal");
-    }
-
     /// Stint 0788: a pane's `plexi secret get` shows on the desktop banner
     /// with the secret and its workspace, so the person knows what Allow once
     /// releases.
@@ -4635,16 +4525,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.harness().get_by_label("Not now");
         h.save_screenshot(&evidence_png!())
             .expect("render keychain recovery");
-    }
-
-    /// Render the initial empty state and save a screenshot for visual inspection.
-    /// File written to /tmp/plexi_init.png.
-    #[test]
-    fn screenshot_init() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Raw `.wasm` paths queue a host pre-launch review before spawning. The
@@ -5531,62 +5411,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Find/replace bar: opening it (Cmd+F) renders the Replace/All buttons
-    /// through the embedded-bar primitive, whose safe insets keep the button
-    /// bottoms off the pane's clip edge (stint 0506 — the bar used to clip).
-    #[test]
-    fn text_editor_find_bar_buttons_render_unclipped() {
-        let mut h = PlexiUiHarness::new_sized(900.0, 400.0);
-        h.step();
-
-        let path = std::env::temp_dir().join(format!("plexi-ui-findbar-{}.md", std::process::id()));
-        std::fs::write(&path, "the quick brown fox\nthe lazy dog\n").expect("seed note");
-
-        h.with_app_mut(|app| {
-            let pane_id = app.host.alloc_pane_id();
-            let view_pane = ViewPane {
-                pip_status: None,
-                id: pane_id,
-                runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
-                )),
-                workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: PluginPermissions::builtin(),
-                manifest_id: "text-editor".to_string(),
-                name: "Text Editor".to_string(),
-                pane_group: None,
-                linked_pane_id: None,
-                overlay_replaced: None,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            };
-            let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
-            let tile_id = win.tree.tiles.insert_pane(pane_id);
-            if win.tree.root.is_none() {
-                win.tree.root = Some(tile_id);
-            }
-            win.focused_pane = Some(tile_id);
-        });
-        // Settle focus so the editor owns input, then open the find bar and
-        // type a query so the Replace/All buttons are enabled.
-        h.run_steps(3);
-        h.harness()
-            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
-        h.run_steps(2);
-        h.harness().key_press(egui::Key::T);
-        h.run_steps(2);
-
-        // The Replace/All buttons are real Button widgets — their presence in
-        // the accessibility tree proves the bar laid them out.
-        h.harness().get_by_label("Replace");
-        h.harness().get_by_label("All");
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
     /// Visual review surface for tiered notes (stint 0746): the picker as a root
     /// context's "master view" — the active context's own tier unchipped, notes
     /// rolled up from nested tiers chipped with their relative path, and the
@@ -6465,17 +6289,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         });
     }
 
-    /// Render after adding a test pane.
-    #[test]
-    fn screenshot_with_pane() {
-        let mut h = PlexiUiHarness::new();
-        h.step();
-        add_focused_pane(&mut h);
-        h.step();
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!("Screenshot saved to {}", evidence_png!());
-    }
-
     /// Scenes cannot seed terminal PTY output. Exercise the real terminal
     /// widget with the same ANSI fixture used by installed-host validation.
     #[test]
@@ -7078,28 +6891,6 @@ open(out + ".done", "w").close()
             })
             .max()
             .expect("terminals must still be open")
-    }
-
-    /// Visual review for the diffed WASM tree path (stint 0438): a real
-    /// CPython-in-WASM plugin (breakout) opened and stepped past its first frame,
-    /// so frame 2+ arrive as `tree_delta`s the decoder thread reconstructs and
-    /// the paint path renders. Proves the delta pipeline paints a coherent
-    /// frame, not just that the assertions pass.
-    #[test]
-    fn screenshot_python_plugin_delta_frames_paint() {
-        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
-        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/breakout");
-        let pane_id = h.open_view_at(&plugin_dir, &[]).expect("open breakout");
-        h.wait_for_view_frame(pane_id, Duration::from_secs(30))
-            .expect("breakout first frame");
-        // Advance host frames so the guest emits delta frames that the decoder
-        // reconstructs and commits, then screenshot the painted result.
-        for _ in 0..30 {
-            h.step();
-            std::thread::sleep(Duration::from_millis(8));
-        }
-        h.save_screenshot(&evidence_png!())
-            .expect("render delta frame");
     }
 
     /// Regression: zoomed view panes must render through the shared
@@ -8175,15 +7966,6 @@ open(out + ".done", "w").close()
         assert_eq!(assistant_panes, 1, "assistant pane should be open");
         h.save_screenshot(&evidence_png!()).expect("render failed");
         println!("Screenshot saved to {}", evidence_png!());
-    }
-
-    #[test]
-    fn assistant_pane_renders_without_crash() {
-        let ws = tempfile::tempdir().unwrap();
-        let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
-        h.open_assistant(ws.path().to_path_buf());
-        h.run_steps(5);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Seeded transcript (user bubble right, assistant plain left) with the
@@ -9654,108 +9436,6 @@ open(out + ".done", "w").close()
     }
 
     #[test]
-    fn screenshot_state_presets_and_attention_styles() {
-        use crate::config::{AttentionConfig, AttentionStyle};
-        use crate::protocol::AgentState;
-        let mut h = PlexiUiHarness::new_sized_ppp(1200.0, 800.0, 1.0);
-        let root = h.workspace_root().to_path_buf();
-        let mut ids = Vec::new();
-        for (name, state) in [
-            ("Working: compiling", AgentState::Working),
-            ("Waiting: ready", AgentState::Idle),
-            ("Blocked: dependency", AgentState::Blocked),
-            ("Needs you: review", AgentState::NeedsYou),
-            ("Interrupted", AgentState::Interrupted),
-            ("Error: failed test", AgentState::Failed),
-        ] {
-            let id = add_focused_pane(&mut h);
-            ids.push(id);
-            h.with_app_mut(|app| {
-                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
-                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent workspace\\nReviewing changes and running tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
-                term.name = Some(name.into());
-                term.agent_role = Some(name.into());
-                term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"codex".into(), detail:None, session_id:None });
-                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
-                app.sidebar_visible = true;
-            });
-        }
-        h.with_app_mut(|app| {
-            let win = &mut app.windows[app.active_window];
-            let tiles = ids
-                .iter()
-                .map(|id| win.tree.tiles.find_pane(id).unwrap())
-                .collect();
-            win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
-        });
-        for theme in ["plexi-night", "plexi-day", "tokyo-day", "solarized-light"] {
-            for preset in crate::ui::theme::STATE_PRESETS {
-                if matches!(theme, "tokyo-day" | "solarized-light") && *preset != "default" {
-                    continue;
-                }
-                h.with_app_mut(|app| {
-                    let mut cfg = crate::ui::theme::preset_colors(theme).unwrap();
-                    cfg.state_preset = Some((*preset).into());
-                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                    app.theme = crate::ui::theme::terminal_theme(
-                        &cfg,
-                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                    );
-                    app.config.attention = Some(AttentionConfig {
-                        style: Some(AttentionStyle::Subtle),
-                        ..Default::default()
-                    });
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                });
-                h.run_steps(3);
-                h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}")))
-                    .unwrap();
-                let mut simulated = h.render().unwrap();
-                for pixel in simulated.pixels_mut() {
-                    let c = crate::ui::theme::simulate_cvd(
-                        egui::Color32::from_rgb(pixel[0], pixel[1], pixel[2]),
-                        1,
-                    );
-                    pixel[0] = c.r();
-                    pixel[1] = c.g();
-                    pixel[2] = c.b();
-                }
-                simulated
-                    .save(evidence_png!(&format!("_{theme}_{preset}_deuteranopia")))
-                    .unwrap();
-            }
-        }
-        for (name, style, intensity) in [
-            ("off", AttentionStyle::Off, 1.0),
-            ("subtle", AttentionStyle::Subtle, 1.0),
-            ("normal", AttentionStyle::Normal, 1.0),
-            ("loud", AttentionStyle::Loud, 1.0),
-            ("normal_half", AttentionStyle::Normal, 0.5),
-        ] {
-            h.with_app_mut(|app| {
-                let cfg = crate::ui::theme::preset_colors("plexi-night").unwrap();
-                app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(
-                    &cfg,
-                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                );
-                app.config.attention = Some(AttentionConfig {
-                    style: Some(style),
-                    intensity: Some(intensity),
-                    ..Default::default()
-                });
-                crate::ui::theme::setup_style(&app.ctx, &app.colors);
-            });
-            h.run_steps(3);
-            h.save_screenshot(&evidence_png!(&format!("_{name}")))
-                .unwrap();
-        }
-    }
-
-    /// The same populated scene rendered in each Plexi theme: sidebar, file
-    /// browser, a terminal printing every ANSI color plus dim text, and agent
-    /// panes in several states. Review evidence for the theme family (stint 1186).
-    #[test]
     fn quit_toast_hugs_content_within_bound() {
         let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
         h.with_app_mut(|app| {
@@ -10048,66 +9728,6 @@ open(out + ".done", "w").close()
         }
     }
 
-    struct ViewContrastFixture;
-
-    impl crate::app::view_trait::View for ViewContrastFixture {
-        fn type_id(&self) -> &'static str {
-            "app_contrast_fixture"
-        }
-        fn display_name(&self) -> String {
-            "Stint Board".into()
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-        fn ui(
-            &mut self,
-            ui: &mut egui::Ui,
-            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
-        ) {
-            // Serialized from the unchanged Stint board build_view at f46a711,
-            // using synthetic walkthrough tasks; no CLI operations or user data.
-            let tree = crate::host::wasm_python::decode_ui_tree(include_str!(
-                "../tests/fixtures/stint-board-ui.json"
-            ))
-            .unwrap();
-            crate::host::wasm_render::render_ui_tree_with_surface(
-                ui, &tree, ctx.colors, None, None, 0,
-            );
-        }
-    }
-
-    #[test]
-    fn screenshot_plugin_contrast_stint_board() {
-        for theme in ["plexi-dawn", "plexi-night", "light-overrides"] {
-            let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.0);
-            let pane_id = add_focused_pane(&mut h);
-            h.with_app_mut(|app| {
-                let mut cfg = crate::ui::theme::preset_colors(if theme == "light-overrides" {
-                    "plexi-night"
-                } else {
-                    theme
-                })
-                .unwrap();
-                if theme == "light-overrides" {
-                    cfg.terminal_bg = Some("#e3e3f0".into());
-                    cfg.bg_active = Some("#b0b0d0".into());
-                }
-                app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                if let Some(Pane::View(pane)) =
-                    app.windows[app.active_window].panes.get_mut(&pane_id)
-                {
-                    pane.runtime = ViewRuntime::Builtin(Box::new(ViewContrastFixture));
-                }
-            });
-            h.run_steps(3);
-            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
-                .unwrap();
-        }
-    }
-
     /// A plugin view of rows that hand out their width (stints 1358, 1363),
     /// decoded from the wire as a Python plugin's view arrives.
     struct RowLayoutFixture;
@@ -10289,125 +9909,6 @@ open(out + ".done", "w").close()
             assert!(moods[2].max.x <= right + 0.5, "{size}: {moods:?}");
             h.save_screenshot(&evidence_png!(&format!("_{size}")))
                 .expect("row layout screenshot");
-        }
-    }
-
-    #[test]
-    fn screenshot_plexi_theme_family() {
-        use crate::protocol::AgentState;
-        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
-        let root = h.workspace_root().to_path_buf();
-        let swatches = "printf '\\033[1mPlexi theme family\\033[0m\\n\\033[31mred\\033[0m \\033[32mgreen\\033[0m \\033[33myellow\\033[0m \\033[34mblue\\033[0m \\033[35mmagenta\\033[0m \\033[36mcyan\\033[0m \\033[37mwhite\\033[0m \\033[90mbright black\\033[0m\\nplain text on the terminal surface\\n'; sleep 300";
-        let mut ids = vec![add_focused_pane(&mut h)];
-        for (name, state, script) in [
-            ("Shell: colors", AgentState::Idle, swatches),
-            (
-                "Working: compiling",
-                AgentState::Working,
-                "printf 'Agent workspace\\nReviewing changes and running tests.\\n'; sleep 300",
-            ),
-            (
-                "Needs you: review",
-                AgentState::NeedsYou,
-                "printf 'Waiting for approval\\n'; sleep 300",
-            ),
-        ] {
-            let id = add_focused_pane(&mut h);
-            ids.push(id);
-            h.with_app_mut(|app| {
-                let mut term = crate::host::pane::TerminalPane::new(
-                    id,
-                    app.ctx.clone(),
-                    app.pty_event_tx.clone(),
-                    egui_term::BackendSettings {
-                        shell: "/bin/sh".into(),
-                        args: vec!["-c".into(), script.into()],
-                        working_directory: Some(root.clone()),
-                        ..Default::default()
-                    },
-                    14.0,
-                )
-                .unwrap();
-                term.name = Some(name.into());
-                term.agent_role = Some(name.into());
-                if name != "Shell: colors" {
-                    term.agent = Some(crate::protocol::PaneAgentState {
-                        pane_id: id,
-                        state,
-                        agent: "codex".into(),
-                        detail: None,
-                        session_id: None,
-                    });
-                }
-                app.windows[app.active_window]
-                    .panes
-                    .insert(id, Pane::Terminal(Box::new(term)));
-                app.sidebar_visible = true;
-            });
-        }
-        h.with_app_mut(|app| {
-            let win = &mut app.windows[app.active_window];
-            let tiles = ids
-                .iter()
-                .map(|id| win.tree.tiles.find_pane(id).unwrap())
-                .collect();
-            win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
-        });
-        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
-            h.with_app_mut(|app| {
-                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
-                app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(
-                    &cfg,
-                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                );
-                crate::ui::theme::setup_style(&app.ctx, &app.colors);
-            });
-            h.run_steps(5);
-            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
-                .unwrap();
-        }
-    }
-
-    #[test]
-    fn screenshot_minimap_core_themes() {
-        let _experiments = crate::release::set_test_experiments(&[]);
-        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
-        for name in ["README.md", "notes.md", "project.toml"] {
-            std::fs::write(h.workspace_root().join(name), "Minimap test content\n").unwrap();
-        }
-        add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
-            let ws_id = app.router.active().context_id;
-            let win_id = app.next_window_id;
-            app.next_window_id += 1;
-            app.windows.push(crate::host::context::Window {
-                name: String::new(),
-                path: crate::testing::scratch_context_root("ui"),
-                tree: egui_tiles::Tree::empty("minimap-evidence"),
-                panes: std::collections::HashMap::new(),
-                focused_pane: None,
-                zoomed_pane: None,
-                grid_x: 1,
-                grid_y: 0,
-                window_id: win_id,
-                context_id: ws_id,
-            });
-            app.minimap.visible = true;
-        });
-        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
-            h.with_app_mut(|app| {
-                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
-                app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(
-                    &cfg,
-                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                );
-                crate::ui::theme::setup_style(&app.ctx, &app.colors);
-            });
-            h.run_steps(5);
-            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
-                .unwrap();
         }
     }
 
@@ -11450,174 +10951,6 @@ open(out + ".done", "w").close()
 
     // ── s8 pixel-grid + typography evidence (stints 0527–0530) ──────────────
 
-    /// Seeds a Notes pane with a multi-line document and screenshots it at the
-    /// given display scale. The ppp-2.0 capture is the one that shows editor
-    /// pixel-grid regressions (uneven leading, off-grid rows).
-    fn editor_rows_evidence(ppp: f32, out: &str) {
-        let mut h = PlexiUiHarness::new_sized_ppp(760.0, 520.0, ppp);
-        h.step();
-
-        let path = std::env::temp_dir().join(format!(
-            "plexi-ui-evidence-rows-{}-{}.md",
-            (ppp * 10.0) as u32,
-            std::process::id()
-        ));
-        let mut body = String::from("---\ntitle: \"Pixel Grid\"\n---\n");
-        for i in 1..=26 {
-            body.push_str(&format!(
-                "Line {i:02}: the quick brown fox jumps over the lazy dog 0123456789\n"
-            ));
-        }
-        std::fs::write(&path, &body).expect("seed note");
-
-        h.with_app_mut(|app| {
-            let pane_id = app.host.alloc_pane_id();
-            let view_pane = ViewPane {
-                pip_status: None,
-                id: pane_id,
-                runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
-                )),
-                workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: PluginPermissions::builtin(),
-                manifest_id: "text-editor".to_string(),
-                name: "Text Editor".to_string(),
-                pane_group: None,
-                linked_pane_id: None,
-                overlay_replaced: None,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            };
-            let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
-            let tile_id = win.tree.tiles.insert_pane(pane_id);
-            if win.tree.root.is_none() {
-                win.tree.root = Some(tile_id);
-            }
-            win.focused_pane = Some(tile_id);
-        });
-        h.run_steps(3);
-        h.save_screenshot(out).expect("render failed");
-        println!("Screenshot saved to {out}");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// Stint 0529 evidence: editor rows at ppp 1.0 — every painted row top on
-    /// the pixel grid with uniform leading.
-    #[test]
-    fn screenshot_editor_rows_pixel_grid_ppp1() {
-        editor_rows_evidence(1.0, &evidence_png!("_ppp1"));
-    }
-
-    /// Stint 0529 evidence: same document at ppp 2.0 (the HiDPI case that
-    /// used to shimmer during scroll and show 17/17/16/17 leading).
-    #[test]
-    fn screenshot_editor_rows_pixel_grid_ppp2() {
-        editor_rows_evidence(2.0, &evidence_png!("_ppp2"));
-    }
-
-    /// Stints 0528/0530 evidence: sidebar with seeded contexts (active +
-    /// inactive names, path subtitles) and the spatial minimap overlay with a
-    /// workspace name, at 1x and 2x. Review: inactive context names must meet
-    /// the contrast floor, minimap name galley and status-dot capsules must
-    /// sit on the pixel grid.
-    fn render_sidebar_pane_dots_pixel_grid(ppp: f32, out: &str) {
-        let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, ppp);
-        h.step();
-        add_focused_pane(&mut h);
-        let inactive_ctx_id = h.with_app_mut(|app| {
-            app.sidebar_visible = true;
-            // Seed a second window to show the grid.
-            let ws_id = app.router.active().context_id;
-            let win_id = app.next_window_id;
-            app.next_window_id += 1;
-            app.windows.push(crate::host::context::Window {
-                name: String::new(),
-                path: crate::testing::scratch_context_root("ui"),
-                tree: egui_tiles::Tree::empty("plexi"),
-                panes: std::collections::HashMap::new(),
-                focused_pane: None,
-                zoomed_pane: None,
-                grid_x: 1,
-                grid_y: 0,
-                window_id: win_id,
-                context_id: ws_id,
-            });
-            app.minimap = crate::render::minimap::MinimapState::with_visible(true);
-            // Two extra inactive contexts with realistic names + root paths.
-            // The first has a persisted return window so the sidebar screenshot
-            // covers its inactive focus capsule + pane pin.
-            let plexi_ctx_id = app.next_window_id;
-            app.next_window_id += 1;
-            let plexi_root = std::env::temp_dir().join("GitHub/PLEXI");
-            app.router.push(crate::host::context::Context {
-                name: "PLEXI".to_string().into(),
-                root: plexi_root.clone(),
-                description: None,
-                context_id: plexi_ctx_id,
-                parent_id: None,
-                depth: 0,
-                parked: false,
-            });
-            let plexi_window_id = app.next_window_id;
-            app.next_window_id += 1;
-            app.windows.push(crate::host::context::Window {
-                name: String::new(),
-                path: plexi_root,
-                tree: egui_tiles::Tree::empty("plexi-sidebar-focus-preview"),
-                panes: std::collections::HashMap::new(),
-                focused_pane: None,
-                zoomed_pane: None,
-                grid_x: 0,
-                grid_y: 0,
-                window_id: plexi_window_id,
-                context_id: plexi_ctx_id,
-            });
-            app.context_active_window
-                .insert(plexi_ctx_id, plexi_window_id);
-            for (name, dir) in [("videos", "Documents/videos")] {
-                let ctx_id = app.next_window_id;
-                app.next_window_id += 1;
-                let root = std::env::temp_dir().join(dir);
-                app.router.push(crate::host::context::Context {
-                    name: name.to_string().into(),
-                    root: root,
-                    description: None,
-                    context_id: ctx_id,
-                    parent_id: None,
-                    depth: 0,
-                    parked: false,
-                });
-            }
-            plexi_ctx_id
-        });
-        // Index 2 is the inactive PLEXI context's only window: indexes 0 and
-        // 1 are the active context's two spatial windows seeded above.
-        // The active context's first two windows each need a pane so its
-        // sidebar capsule draws the multi-window dot grouping this test
-        // exists to review.
-        add_focused_pane_to_window(&mut h, 1);
-        add_focused_pane_to_window(&mut h, 2);
-        h.with_app_mut(|app| {
-            assert_eq!(app.windows[2].context_id, inactive_ctx_id);
-        });
-        h.run_steps(3);
-        h.save_screenshot(out).expect("render failed");
-        println!("Screenshot saved to {out}");
-    }
-
-    #[test]
-    fn screenshot_sidebar_pane_dots_pixel_grid_ppp1() {
-        render_sidebar_pane_dots_pixel_grid(1.0, &evidence_png!("_ppp1"));
-    }
-
-    #[test]
-    fn screenshot_sidebar_pane_dots_pixel_grid_ppp2() {
-        render_sidebar_pane_dots_pixel_grid(2.0, &evidence_png!("_ppp2"));
-    }
-
     /// Stint 0700: the 220-point sidebar shows an ordinary context name in full
     /// while a genuinely long name ellipsizes. The hover makes the sole trailing
     /// close affordance visible in the evidence image.
@@ -11772,28 +11105,6 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!());
     }
 
-    // ── Text-crispness gate (stint 0531) ────────────────────────────────────
-    //
-    // Freezes the s8 pixel-grid + typography wins (stints 0527–0530) behind one
-    // runnable gate. Two halves, per `src/testing/TESTING.md`:
-    //
-    //   1. Seeded renders of the key text surfaces at BOTH display scales
-    //      (ppp 1.0 and 2.0) — a human/agent Reads the PNGs to confirm the
-    //      pixels look crisp, then deletes them. Non-scope: no golden-image
-    //      diffing (brittle across font-raster changes).
-    //   2. Mechanical assertions on the composited host state that stay green
-    //      without a human: plugin-surface texture dims scale with ppp (0527),
-    //      the editor's row metric is integer-physical after a real render
-    //      (0529), chrome labels clear the WCAG AA contrast floor (0528), and
-    //      hand-painted chrome galley origins land on the physical pixel grid
-    //      (0530). Each calls the production code path — it never re-implements
-    //      the invariant.
-    //
-    // The `paint_surface_header` title+subtitle band is painted only from
-    // `wasm_render`; rather than depend on a fixture plugin declaring plugin-chrome,
-    // its two crispness invariants are frozen mechanically below — the subtitle
-    // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
-    // galleys snap to the grid.
     /// Evidence seam for stint 1216: the button gallery at rest, with the Md
     /// Primary hovered, pressed, and with keyboard focus on the first control.
     /// Writes /tmp/plexi_screenshot_button_states_<theme>_<state>.png.
@@ -11862,9 +11173,22 @@ open(out + ".done", "w").close()
         }
     }
 
+    // ── Text-crispness gate (stint 0531) ────────────────────────────────────
+    //
+    // Freezes the pixel-grid and typography work (stints 0527–0530) as
+    // mechanical assertions on the composited host state: plugin-surface
+    // texture dims scale with ppp (0527), the editor's row metric is
+    // integer-physical after a real render (0529), chrome labels clear the
+    // WCAG AA contrast floor (0528), and hand-painted chrome galley origins
+    // land on the physical pixel grid (0530). Each calls the production code
+    // path; none re-implements the invariant.
+    //
+    // The `paint_surface_header` title+subtitle band is painted only from
+    // `wasm_render`; its two crispness invariants are frozen below: the
+    // subtitle color clears the contrast floor on `bg_toolbar`, and its
+    // `font_medium` galleys snap to the grid.
     mod crispness_gate {
         use super::*;
-        use crate::app::permissions::{PermissionState, PermissionStore};
         use crate::app::text_editor_view::TextEditorView;
         use crate::host::wasm_pane::{SysinfoStats, WasmPane};
         use crate::host::wasm_view::{StateSnapshot, StateStore, WasmView};
@@ -11904,34 +11228,6 @@ open(out + ".done", "w").close()
         }
 
         // ── Seeding ─────────────────────────────────────────────────────────
-
-        /// Sidebar shown with several long context names + path subtitles —
-        /// the surface where `text_secondary` context labels and their galley
-        /// snapping are most visible.
-        fn seed_sidebar(h: &mut PlexiUiHarness) {
-            add_focused_pane(h);
-            h.with_app_mut(|app| {
-                app.sidebar_visible = true;
-                for (name, dir) in [
-                    ("Very Long Project Context Name", "GitHub/PLEXI/src/render"),
-                    ("videos", "Documents/videos/2026/exports"),
-                    ("scratch", "tmp/scratch/wip"),
-                ] {
-                    let ctx_id = app.next_window_id;
-                    app.next_window_id += 1;
-                    let root = std::env::temp_dir().join(dir);
-                    app.router.push(crate::host::context::Context {
-                        name: name.to_string().into(),
-                        root: root,
-                        description: None,
-                        context_id: ctx_id,
-                        parent_id: None,
-                        depth: 0,
-                        parked: false,
-                    });
-                }
-            });
-        }
 
         /// A Notes pane holding a multi-line document, parked at a fractional
         /// mid-scroll offset so unsnapped rows would show off-grid.
@@ -11978,136 +11274,6 @@ open(out + ".done", "w").close()
                 let line_height = ed.test_view_line_height().max(1.0);
                 ed.test_set_scroll_y(line_height * 18.0 + 0.5);
             });
-        }
-
-        /// A file browser rooted at a small seeded dir (never `temp_dir()`,
-        /// whose dev-machine entry count balloons rendering).
-        fn seed_file_browser(h: &mut PlexiUiHarness) {
-            let root = h.workspace.path().join("files");
-            std::fs::create_dir_all(&root).expect("seed dir");
-            for name in ["notes.md", "render.rs", "todo.txt", "README.md"] {
-                std::fs::write(root.join(name), "alpha\nbravo\ncharlie\ndelta\necho\n")
-                    .expect("seed file");
-            }
-            std::fs::create_dir_all(root.join("assets")).expect("seed subdir");
-            h.with_app_mut(|app| {
-                let pane_id = app.host.alloc_pane_id();
-                let view_pane = ViewPane {
-                    pip_status: None,
-                    id: pane_id,
-                    runtime: ViewRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserView::new(root.clone()),
-                    )),
-                    workspace_root: root.clone(),
-                    permissions: PluginPermissions::builtin(),
-                    manifest_id: "file-browser".to_string(),
-                    name: "Files".to_string(),
-                    pane_group: None,
-                    linked_pane_id: None,
-                    overlay_replaced: None,
-                    agent: None,
-                    slots: std::collections::HashMap::new(),
-                    semantic_state: Default::default(),
-                };
-                let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
-                let tile_id = win.tree.tiles.insert_pane(pane_id);
-                if win.tree.root.is_none() {
-                    win.tree.root = Some(tile_id);
-                }
-                win.focused_pane = Some(tile_id);
-            });
-        }
-
-        /// Launch the sysmon WASM fixture through the reviewed-path production
-        /// launcher: text-heavy L1 body plus its `paint_surface_header` title band.
-        /// Grants are pre-persisted into the harness profile so the review
-        /// auto-approves. The returned guard must outlive the harness.
-        fn seed_wasm_text(h: &mut PlexiUiHarness, profile: &std::path::Path) {
-            let fixture = wasm_fixture("sysmon.wasm");
-            let plugin_id = fixture
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("wasm");
-            let workspace_root = fixture.parent().expect("fixture parent");
-            let grants = WasmView::inspect_required_grants(&fixture).expect("inspect grants");
-            let mut store = PermissionStore::load_or_default(profile).unwrap();
-            for capability_id in grants.capability_ids() {
-                store.set_wasm(
-                    plugin_id,
-                    workspace_root,
-                    &capability_id,
-                    PermissionState::Green,
-                );
-            }
-            store.save();
-            h.with_app_mut(|app| {
-                app.launch_view_by_path_with_layout(
-                    &fixture.to_string_lossy(),
-                    Some("split_v".to_string()),
-                    None,
-                    &[],
-                )
-            })
-            .expect("reviewed wasm launch should succeed");
-        }
-
-        // ── Rendered fixtures at ppp 1.0 and 2.0 (visual review) ────────────
-
-        #[test]
-        fn gate_render_sidebar_ppp_1_and_2() {
-            for ppp in GATE_PPP {
-                let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 700.0, ppp);
-                h.step();
-                seed_sidebar(&mut h);
-                h.run_steps(3);
-                let out = evidence_png!(format!("_sidebar_ppp{}", (ppp * 10.0) as u32));
-                h.save_screenshot(&out).expect("sidebar render");
-                println!("Screenshot saved to {out}");
-            }
-        }
-
-        #[test]
-        fn gate_render_editor_mid_scroll_ppp_1_and_2() {
-            for ppp in GATE_PPP {
-                let mut h = PlexiUiHarness::new_sized_ppp(820.0, 560.0, ppp);
-                h.step();
-                seed_editor_mid_scroll(&mut h);
-                h.run_steps(3);
-                let out = evidence_png!(format!("_editor_ppp{}", (ppp * 10.0) as u32));
-                h.save_screenshot(&out).expect("editor render");
-                println!("Screenshot saved to {out}");
-            }
-        }
-
-        #[test]
-        fn gate_render_file_browser_ppp_1_and_2() {
-            for ppp in GATE_PPP {
-                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 560.0, ppp);
-                h.step();
-                seed_file_browser(&mut h);
-                h.run_steps(3);
-                let out = evidence_png!(format!("_filebrowser_ppp{}", (ppp * 10.0) as u32));
-                h.save_screenshot(&out).expect("file browser render");
-                println!("Screenshot saved to {out}");
-            }
-        }
-
-        #[test]
-        fn gate_render_wasm_text_ppp_1_and_2() {
-            let _experiments =
-                crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
-            for ppp in GATE_PPP {
-                let profile = tempfile::tempdir().expect("profile dir");
-                let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 620.0, ppp);
-                h.step();
-                seed_wasm_text(&mut h, profile.path());
-                h.run_steps(6);
-                let out = evidence_png!(format!("_wasm_text_ppp{}", (ppp * 10.0) as u32));
-                h.save_screenshot(&out).expect("wasm text render");
-                println!("Screenshot saved to {out}");
-            }
         }
 
         // ── Mechanical assertions on composited state ───────────────────────
@@ -13923,55 +13089,6 @@ open(out + ".done", "w").close()
                 "child result remains reachable"
             );
         });
-    }
-
-    #[test]
-    fn screenshot_attention_mailbox_theme_states() {
-        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
-            for state in ["asks", "failed", "notice"] {
-                let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-                h.with_app_mut(|app| {
-                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
-                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                    app.theme = crate::ui::theme::terminal_theme(
-                        &cfg,
-                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                    );
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                    if state == "asks" {
-                        let pid = app.host.alloc_pane_id();
-                        app.enqueue_ask(
-                            "ask-shot",
-                            pid,
-                            "permission: Allow cargo test",
-                            1_000,
-                            Vec::new(),
-                        );
-                    } else {
-                        app.record_child_agent_result(
-                            None,
-                            crate::workspace::QueuedChildResult {
-                                child_pane_id: 1041,
-                                child_agent: "builder".to_string(),
-                                status: if state == "failed" {
-                                    "failed"
-                                } else {
-                                    "completed"
-                                }
-                                .to_string(),
-                                summary: Some("Review build results".to_string()),
-                                result_json: "{}".to_string(),
-                                finished_at_epoch_secs: 1000,
-                            },
-                        );
-                        app.sync_attention_queue();
-                    }
-                });
-                h.run_steps(4);
-                h.save_screenshot(&evidence_png!(&format!("_{theme}_{state}")))
-                    .unwrap();
-            }
-        }
     }
 
     #[test]
