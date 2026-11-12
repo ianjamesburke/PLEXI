@@ -196,6 +196,12 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
         "✓ manifest — {} ({})",
         manifest.plugin.id, manifest.plugin.name
     );
+    for command in &manifest.contributes.commands {
+        println!(
+            "✓ command — {} → {} (reserved declaration; dispatch not yet available)",
+            command.id, command.handler
+        );
+    }
     // #0336: reject an invalid `[launch] on_launch` here, the same way
     // `PluginRegistry::load_plugin` does at install time. Without this, an author gets
     // a green `plugin check` and then a silent runtime skip (the launch resolver

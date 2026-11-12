@@ -207,12 +207,9 @@ fn install_one_git(
 
     // Stage into a sibling `.tmp-<unique>/clone` dir inside `target_root` so
     // we can read the manifest BEFORE committing to the final dest. Same-FS
-    // ensures the eventual `rename` is atomic. We hand-roll the temp dir name
-    // (no `tempfile` dependency in non-test code) — uniqueness comes from
-    // nanos + pid.
-    let nanos = crate::platform::clock::now_nanos();
-    let pid = std::process::id();
-    let stage_root = target_root.join(format!(".tmp-install-{pid}-{nanos}"));
+    // ensures the eventual `rename` is atomic. A UUID keeps concurrent installs
+    // in this process separate even when the wall clock returns the same tick.
+    let stage_root = target_root.join(format!(".tmp-install-{}", uuid::Uuid::new_v4()));
     let stage_path = stage_root.join("clone");
     // Best-effort cleanup wrapper: any early return below leaks the dir, so
     // we explicitly clean on every error branch via a local closure.
@@ -248,6 +245,13 @@ fn install_one_git(
         Err(e) => {
             cleanup(&stage_root);
             return Err(e);
+        }
+    };
+    let _command_install = match manifest.lock_command_install(target_root) {
+        Ok(guard) => guard,
+        Err(error) => {
+            cleanup(&stage_root);
+            return Err(error.to_string());
         }
     };
     let id = manifest.plugin.id.clone();
@@ -292,7 +296,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .get_file(format!("{name}/manifest.toml"))
         .and_then(|f| f.contents_utf8())
         .ok_or_else(|| format!("local source '{name}' has no manifest.toml"))?;
-    let manifest: PluginManifest = toml::from_str(manifest_text)
+    let manifest = PluginManifest::parse(manifest_text)
         .map_err(|e| format!("local source '{name}' manifest invalid: {e}"))?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
@@ -300,6 +304,9 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
             manifest.schema_version, MANIFEST_SCHEMA_VERSION
         ));
     }
+    let _command_install = manifest
+        .lock_command_install(target_root)
+        .map_err(|e| e.to_string())?;
     let id = manifest.plugin.id.clone();
     let dest = target_root.join(&id);
     if dest.exists() {
@@ -354,8 +361,7 @@ fn read_manifest(repo_dir: &Path) -> Result<PluginManifest, String> {
             manifest_path.display()
         )
     })?;
-    let manifest: PluginManifest =
-        toml::from_str(&text).map_err(|e| format!("manifest.toml invalid: {e}"))?;
+    let manifest = PluginManifest::parse(&text).map_err(|e| e.to_string())?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
             "manifest schema_version = {} is newer than this Plexi build supports (max {}); \

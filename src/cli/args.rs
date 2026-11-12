@@ -1456,7 +1456,8 @@ pub enum PluginCmd {
     /// Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks.
     ///
     /// This is the compiler-like gate for generated Plexi plugins. It checks the
-    /// manifest, warns on missing or stale `plexi.scaffold.toml`, inspects
+    /// manifest capability IDs and command declarations, rejects unavailable
+    /// contributions, warns on missing or stale `plexi.scaffold.toml`, inspects
     /// Python SDK usage without importing plugin code, and renders the plugin at
     /// small and normal pane sizes. Run it with an explicit alpha or PR
     /// channel so the SDK/profile under test is not ambient.

@@ -37,6 +37,10 @@
 //! keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
 //! ```
 
+#[path = "manifest_contract.rs"]
+mod manifest_contract;
+pub use manifest_contract::{ManifestError, ManifestErrorKind};
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -109,10 +113,23 @@ struct PluginManifestWire {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Contributions {
     #[serde(default)]
     pub views: Vec<ViewDeclaration>,
+    #[serde(default)]
+    pub commands: Vec<CommandDeclaration>,
+    // Preserve names so later contributions get a contract error before activation.
+    #[serde(flatten)]
+    unsupported: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// Inert host command declaration. `handler` is a symbolic identifier, never
+/// an executable, argv or shell expression. Dispatch belongs to the command registry.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandDeclaration {
+    pub id: String,
+    pub handler: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -124,15 +141,30 @@ pub struct ViewDeclaration {
 }
 
 impl TryFrom<PluginManifestWire> for PluginManifest {
-    type Error = String;
+    type Error = ManifestError;
 
     fn try_from(mut wire: PluginManifestWire) -> Result<Self, Self::Error> {
+        let invalid = |field: &str, message: String| {
+            ManifestError::reject(
+                &wire.plugin.id,
+                field,
+                ManifestErrorKind::InvalidField(message),
+            )
+        };
         if wire.schema_version != MANIFEST_SCHEMA_VERSION {
-            return Err(format!("manifest schema_version must be {MANIFEST_SCHEMA_VERSION}; use [plugin], [runtime] and [[contributes.views]]"));
+            return Err(invalid("schema_version", format!("manifest schema_version must be {MANIFEST_SCHEMA_VERSION}; use [plugin], [runtime] and [[contributes.views]]")));
         }
         if wire.runtime.entry.is_empty() {
-            return Err("[runtime].entry must name the plugin entry file".into());
+            return Err(invalid(
+                "runtime.entry",
+                "must name the plugin entry file".into(),
+            ));
         }
+        manifest_contract::validate_capabilities(
+            &wire.plugin.id,
+            &wire.plugin.capabilities.capabilities,
+        )?;
+        wire.contributes.validate(&wire.plugin.id)?;
         let prefix = format!("{}.", wire.plugin.id);
         let mut seen = std::collections::HashSet::new();
         let mut defaults = 0;
@@ -141,15 +173,21 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
                 || view.id.len() == prefix.len()
                 || !seen.insert(&view.id)
             {
-                return Err(format!(
-                    "view '{}' must be a unique plugin-namespaced id beginning with '{prefix}'",
-                    view.id
+                return Err(invalid(
+                    "contributes.views.id",
+                    format!(
+                        "view '{}' must be a unique plugin-namespaced id beginning with '{prefix}'",
+                        view.id
+                    ),
                 ));
             }
             defaults += usize::from(view.default);
         }
         if defaults > 1 {
-            return Err("[[contributes.views]] permits at most one default view".into());
+            return Err(invalid(
+                "contributes.views.default",
+                "permits at most one default view".into(),
+            ));
         }
         wire.plugin.entry.clone_from(&wire.runtime.entry);
         wire.plugin.manifest_type = wire.runtime.kind;
@@ -220,23 +258,6 @@ pub struct StateSection {
 }
 
 impl PluginManifest {
-    /// Parse a manifest. A legacy `[app]` table is never accepted; the error
-    /// only says what to rename. The probe below is diagnostic, not a loader.
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        toml::from_str::<Self>(raw).map_err(|error| {
-            let legacy = toml::from_str::<toml::Value>(raw)
-                .ok()
-                .is_some_and(|value| value.get("app").is_some());
-            if legacy {
-                format!(
-                    "schema 1 `[app]` manifests are no longer accepted; rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {error})"
-                )
-            } else {
-                error.to_string()
-            }
-        })
-    }
-
     /// The validated `[state] scopes` list. An omitted `[state]` section
     /// yields the default scope list; any invalid declaration is an error.
     pub fn state_scopes(&self) -> Result<Vec<crate::host::state_scope::StateScope>, String> {
@@ -415,9 +436,8 @@ impl From<DefaultNotifyScope> for crate::protocol::NotifyScope {
 pub struct PluginCapabilities {
     #[serde(default)]
     pub file_types: Vec<String>,
-    /// v3 capability strings. Valid values: fs.read, fs.write, net.http,
-    /// secrets.get, pipe.open, spawn.plugin, audio.record, audio.playback,
-    /// video.playback. Unknown values cause install to fail (STEP-7).
+    /// Capability IDs from `permissions::capability_ids`. Unknown and
+    /// reserved-unserved IDs fail manifest admission before activation.
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// WASM-specific capability review metadata. This does not drive launch
@@ -802,6 +822,16 @@ impl PluginRegistry {
                             entry_dir,
                         );
                     }
+                    let collision = self.plugins.values().find_map(|existing| {
+                        installed
+                            .contributes
+                            .check_command_owner(&id, &existing.manifest.id, &existing.contributes)
+                            .err()
+                    });
+                    if let Some(error) = collision {
+                        skipped.push(error.to_string());
+                        continue;
+                    }
                     for ext in &installed.manifest.capabilities.file_types {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
@@ -863,18 +893,6 @@ impl PluginRegistry {
                 "manifest schema_version = {} is newer than this Plexi build supports (max {}); \
                  update Plexi to install this plugin",
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
-            ));
-        }
-
-        // STEP-7: refuse to install a plugin whose declared capabilities include
-        // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
-        // this replaces it with a loud install-time failure.
-        if let Err(e) = crate::app::permissions::parse_capability_strings(
-            &manifest.plugin.capabilities.capabilities,
-        ) {
-            return Err(format!(
-                "manifest lists {e}; valid values: {}",
-                crate::app::permissions::Capability::all_str_values().join(", ")
             ));
         }
 
@@ -1346,9 +1364,47 @@ pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    fn schema2_fixture(extra: &str) -> String {
+        format!("schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[contributes]\n{extra}")
+    }
+
+    #[test]
+    fn schema2_rejects_unknown_capability_before_activation() {
+        let raw = schema2_fixture("[plugin.capabilities]\ncapabilities = ['fs.typo']\n");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("sample") && error.contains("fs.typo"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn schema2_accepts_command_declaration() {
+        let raw = schema2_fixture(
+            "[[contributes.commands]]\nid = 'sample.open'\nhandler = 'open_picker'\n",
+        );
+        toml::from_str::<PluginManifest>(&raw).expect("typed command declaration must parse");
+    }
+
+    #[test]
+    fn schema2_reports_unsupported_contribution_by_name() {
+        let raw = schema2_fixture("[[contributes.panels]]\nid = 'sample.panel'\n");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("sample")
+                && error.contains("contributes.panels")
+                && error.contains("not yet supported"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn plugin_rename_resolves_only_unique_or_declared_default_views() {
-        let mut contributions = Contributions { views: vec![] };
+        let mut contributions = Contributions::default();
         assert!(contributions
             .resolve_view("notes", "notes")
             .unwrap_err()
@@ -1450,7 +1506,9 @@ mod tests {
             "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
             "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
         ] {
-            let error = super::PluginManifest::parse(raw).expect_err("legacy must fail");
+            let error = super::PluginManifest::parse(raw)
+                .expect_err("legacy must fail")
+                .to_string();
             assert!(
                 error.contains("schema 1 `[app]` manifests are no longer accepted"),
                 "{error}"
@@ -1458,7 +1516,9 @@ mod tests {
             assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
             assert!(error.contains("schema_version = 2"), "{error}");
         }
-        let plain = super::PluginManifest::parse("schema_version = 2\n").expect_err("incomplete");
+        let plain = super::PluginManifest::parse("schema_version = 2\n")
+            .expect_err("incomplete")
+            .to_string();
         assert!(!plain.contains("no longer accepted"), "{plain}");
     }
 

@@ -241,6 +241,13 @@ check-docs-coverage:
 check-authoring-docs:
     python3 tools/check_authoring_docs.py
 
+# Generate/check the manifest reference from its Rust owners and fixture.
+gen-manifest-docs:
+    uv run --no-project python tools/gen_manifest_docs.py
+
+check-manifest-docs:
+    uv run --no-project python tools/gen_manifest_docs.py --check
+
 # Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
 # Verify sdk/python/uv.lock matches sdk/python/pyproject.toml.
 # Fails when a version bump moved pyproject.toml without re-locking.
@@ -253,7 +260,7 @@ check-sdk-lock:
     fi
     echo "SDK lock is up to date."
 
-check-docs: check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
+check-docs: check-manifest-docs check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release

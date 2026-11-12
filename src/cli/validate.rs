@@ -44,8 +44,8 @@ pub fn validate_cli(path: &str) -> i32 {
         }
     };
 
-    if let Err(error) = toml::from_str::<crate::app::registry::PluginManifest>(&raw) {
-        eprintln!("✗ expected schema_version = 2 with [plugin], [runtime], and [[contributes.views]]: {error}");
+    if let Err(error) = crate::app::registry::PluginManifest::parse(&raw) {
+        eprintln!("✗ {error}");
         return 1;
     }
     let mut errors: Vec<String> = Vec::new();
@@ -120,27 +120,6 @@ pub fn validate_cli(path: &str) -> i32 {
                     Err(e) => {
                         warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
                     }
-                }
-            }
-        }
-    }
-
-    // capabilities validation — checked against the real Capability enum.
-    // Unknown capability strings are hard errors (fail closed): the host would
-    // refuse to install/launch the plugin, so validate must too.
-    if let Some(caps) = plugin_section
-        .and_then(|a| a.get("capabilities"))
-        .and_then(|c| c.get("capabilities"))
-        .and_then(|v| v.as_array())
-    {
-        use std::convert::TryFrom;
-        for cap in caps {
-            if let Some(s) = cap.as_str() {
-                if crate::app::permissions::Capability::try_from(s).is_err() {
-                    errors.push(format!(
-                        "  unknown capability: {s:?} — valid capabilities: {}",
-                        crate::app::permissions::Capability::all_str_values().join(", ")
-                    ));
                 }
             }
         }

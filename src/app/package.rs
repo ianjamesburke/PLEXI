@@ -73,12 +73,8 @@ pub enum PackageError {
     NotADirectory(PathBuf),
     #[error("manifest.toml not found in {0} — every package requires one at the plugin root")]
     ManifestMissing(PathBuf),
-    #[error("manifest.toml at {path} failed to parse: {source}")]
-    ManifestParse {
-        path: PathBuf,
-        #[source]
-        source: Box<toml::de::Error>,
-    },
+    #[error(transparent)]
+    ManifestContract(#[from] crate::app::registry::ManifestError),
     #[error("manifest schema_version {found} is newer than supported (max {max}) in {path}")]
     UnsupportedSchemaVersion { found: u32, max: u32, path: PathBuf },
     #[error("manifest field [plugin].{field} is missing or empty in {path}")]
@@ -423,11 +419,7 @@ fn read_manifest(plugin_dir: &Path) -> Result<PluginManifest, PackageError> {
         return Err(PackageError::ManifestMissing(plugin_dir.to_path_buf()));
     }
     let raw = fs::read_to_string(&manifest_path).map_err(|e| io_err("read", &manifest_path, e))?;
-    let manifest: PluginManifest =
-        toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
-            path: manifest_path.clone(),
-            source: Box::new(e),
-        })?;
+    let manifest = PluginManifest::parse(&raw)?;
 
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(PackageError::UnsupportedSchemaVersion {
@@ -1478,7 +1470,10 @@ values = ["hi"]
 
         let err = validate_dir(&plugin_dir).unwrap_err();
         match err {
-            PackageError::UnknownCapability { ref value, .. } => assert_eq!(value, "net.dns"),
+            PackageError::ManifestContract(crate::app::registry::ManifestError {
+                kind: crate::app::registry::ManifestErrorKind::UnknownCapability(ref value),
+                ..
+            }) => assert_eq!(value, "net.dns"),
             other => panic!("expected UnknownCapability, got: {other}"),
         }
         // Build must refuse too.

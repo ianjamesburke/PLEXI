@@ -1196,45 +1196,28 @@ fn plugin_install_with_pin_inner(
             return 1;
         }
     };
-    let manifest: toml::Value = match toml::from_str(&manifest_str) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: manifest.toml parse failed: {e}");
+    // Even preapproved installs must obey the schema contract.
+    let manifest = match crate::app::registry::PluginManifest::parse(&manifest_str) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            eprintln!("error: {error}");
             return 1;
         }
     };
-
-    let schema_version = manifest
-        .get("schema_version")
-        .and_then(|v| v.as_integer())
-        .unwrap_or(0);
-    if schema_version != crate::app::registry::MANIFEST_SCHEMA_VERSION as i64 {
-        eprintln!(
-            "error: manifest.toml schema_version {schema_version} is unsupported; use schema_version {} with [plugin], [runtime] and [[contributes.views]]",
-            crate::app::registry::MANIFEST_SCHEMA_VERSION
-        );
+    let plugin_id = manifest.plugin.id.clone();
+    if !is_valid_plugin_id(&plugin_id) {
+        eprintln!("error: manifest.toml is missing a valid [plugin].id");
         return 1;
     }
-
-    let plugin_section = match manifest.get("plugin") {
-        Some(a) => a,
-        None => {
-            eprintln!("error: manifest.toml is missing [plugin] section");
+    let plugin_version = &manifest.plugin.version;
+    let _command_install = match manifest.lock_command_install(&crate::app::registry::plugins_dir())
+    {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("error: {error}");
             return 1;
         }
     };
-    let plugin_id = match plugin_section.get("id").and_then(|v| v.as_str()) {
-        Some(id) if is_valid_plugin_id(id) => id.to_string(),
-        _ => {
-            eprintln!("error: manifest.toml is missing a valid [plugin].id");
-            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dots, dashes, or underscores)");
-            return 1;
-        }
-    };
-    let plugin_version = plugin_section
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
 
     let dest = crate::app::registry::plugins_dir().join(&plugin_id);
 

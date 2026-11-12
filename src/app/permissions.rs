@@ -192,8 +192,8 @@ impl Capability {
 
     /// Every capability variant. The single source of truth for "all known
     /// capabilities" — validators iterate this instead of hand-rolling string
-    /// lists. When adding a variant, `as_str`/`try_from` won't compile without
-    /// it, and `capability_all_round_trips` fails if it is missing here.
+    /// lists. `as_str` owns the wire spelling; parsing and manifest validation
+    /// derive their accepted IDs from this list.
     pub const ALL: &'static [Capability] = &[
         Self::FsRead,
         Self::FsWrite,
@@ -334,34 +334,34 @@ impl<'a> TryFrom<&'a str> for Capability {
     type Error = UnknownCapability;
 
     fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        match s {
-            "fs.read" => Ok(Self::FsRead),
-            "fs.write" => Ok(Self::FsWrite),
-            "net.http" => Ok(Self::NetHttp),
-            "secrets.get" => Ok(Self::SecretsGet),
-            "pipe.open" => Ok(Self::PipeOpen),
-            "spawn.plugin" => Ok(Self::SpawnView),
-            "audio.record" => Ok(Self::AudioRecord),
-            "audio.playback" => Ok(Self::AudioPlayback),
-            "gpu.render" => Ok(Self::GpuRender),
-            "video.playback" => Ok(Self::VideoPlayback),
-            "llm" => Ok(Self::Llm),
-            "timer" => Ok(Self::Timer),
-            "ai.query" => Ok(Self::AiQuery),
-            "midi.in" => Ok(Self::MidiIn),
-            "midi.out" => Ok(Self::MidiOut),
-            "terminal.bindings" => Ok(Self::TerminalBindings),
-            "fs.pick" => Ok(Self::FsPick),
-            "panes.spawn" => Ok(Self::PanesSpawn),
-            "panes.read" => Ok(Self::PanesRead),
-            "panes.control" => Ok(Self::PanesControl),
-            "permissions.manage" => Ok(Self::PermissionsManage),
-            "logs.read" => Ok(Self::LogsRead),
-            "mcp.client" => Ok(Self::McpClient),
-            "cli.operations" => Ok(Self::CliOperations),
-            other => Err(UnknownCapability(other.to_string())),
-        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|cap| cap.as_str() == s)
+            .ok_or_else(|| UnknownCapability(s.to_string()))
     }
+}
+
+/// IDs owned by future host projections. Reservation never creates a grant.
+pub const RESERVED_CAPABILITY_IDS: &[&str] = &["usage.read", "usage.refresh"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityId {
+    Available,
+    Reserved,
+}
+
+/// The manifest capability registry: existing runtime IDs plus reserved IDs.
+/// All callers derive strings from the runtime enum rather than duplicate lists.
+pub fn capability_ids() -> impl Iterator<Item = (&'static str, CapabilityId)> {
+    Capability::ALL
+        .iter()
+        .map(|cap| (cap.as_str(), CapabilityId::Available))
+        .chain(
+            RESERVED_CAPABILITY_IDS
+                .iter()
+                .map(|id| (*id, CapabilityId::Reserved)),
+        )
 }
 
 // ── PluginPermissions ────────────────────────────────────────────────────────────
