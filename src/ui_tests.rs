@@ -1941,12 +1941,8 @@ mod tests {
                     selected.1,
                     canvas
                 );
-                let path = format!("/tmp/plexi_crowded_atlas_scale_{scale:.1}.png");
-                h.save_screenshot(&path).unwrap();
-                assert!(std::path::Path::new(&path).exists());
-                if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-                    let _ = std::fs::remove_file(&path);
-                }
+                h.save_screenshot(&evidence_png!(format!("_scale_{scale:.1}")))
+                    .unwrap();
             }
         }
     }
@@ -2114,48 +2110,46 @@ mod tests {
         h.run_steps(2);
         check_selected_visible(&mut h, _r4);
 
-        // Screenshot for visual review
-        let shot_path = "/tmp/plexi_tree_atlas_hierarchy_nav.png";
-        h.save_screenshot(shot_path).expect("save atlas screenshot");
-        assert!(std::path::Path::new(shot_path).exists());
-        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-            let _ = std::fs::remove_file(shot_path);
-        }
+        h.save_screenshot(&evidence_png!())
+            .expect("save atlas screenshot");
     }
 
+    /// The notes picker keeps its preview half only while the modal is at
+    /// least `MODAL_WIDTH_MD` wide; narrower, the list takes the whole modal.
+    /// At every size the modal stays on screen and its rows stay inside
+    /// their allocations.
     #[test]
     fn screenshot_notes_picker_wide_and_narrow_layout() {
-        // 1. Wide viewport (1440x900): balanced 50/50 layout with framed monospace preview
-        let mut h_wide = PlexiUiHarness::new_sized(1440.0, 900.0);
-        add_focused_pane(&mut h_wide);
-        seed_note_picker(&mut h_wide);
-        h_wide.run_steps(3);
-        let wide_path = "/tmp/plexi_notes_picker_wide.png";
-        h_wide.save_screenshot(wide_path).unwrap();
-        assert!(std::path::Path::new(wide_path).exists());
-
-        // 2. Narrow viewport (640x520): preview omitted, list fills width, clean hints without overflow
-        let mut h_narrow = PlexiUiHarness::new_sized(640.0, 520.0);
-        add_focused_pane(&mut h_narrow);
-        seed_note_picker(&mut h_narrow);
-        h_narrow.run_steps(3);
-        let narrow_path = "/tmp/plexi_notes_picker_narrow.png";
-        h_narrow.save_screenshot(narrow_path).unwrap();
-        assert!(std::path::Path::new(narrow_path).exists());
-
-        // 3. High UI scale (1.5): everything scales cleanly without clipping
-        let mut h_scaled = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, 1.5);
-        add_focused_pane(&mut h_scaled);
-        seed_note_picker(&mut h_scaled);
-        h_scaled.run_steps(3);
-        let scaled_path = "/tmp/plexi_notes_picker_scale.png";
-        h_scaled.save_screenshot(scaled_path).unwrap();
-        assert!(std::path::Path::new(scaled_path).exists());
-
-        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-            let _ = std::fs::remove_file(wide_path);
-            let _ = std::fs::remove_file(narrow_path);
-            let _ = std::fs::remove_file(scaled_path);
+        // A body line only the preview half paints: list rows show the
+        // note's first line, never this one.
+        const PREVIEW_ONLY: &str = "Close P1 focus layer input leaks";
+        for (width, height, scale, suffix, preview) in [
+            (1440.0, 900.0, 1.0, "_wide", Some(true)),
+            (640.0, 520.0, 1.0, "_narrow", Some(false)),
+            (1440.0, 900.0, 1.5, "_scale", None),
+        ] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
+            add_focused_pane(&mut h);
+            seed_note_picker(&mut h);
+            h.run_steps(3);
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            assert_inside(
+                "notes picker",
+                scale,
+                ui_scale_area_rect(&h, "notes_picker"),
+                screen,
+            );
+            assert_layout_surface(&h, "list");
+            if let Some(expected) = preview {
+                let shown = painted_texts(&mut h)
+                    .iter()
+                    .any(|(_, text)| text.contains(PREVIEW_ONLY));
+                assert_eq!(
+                    shown, expected,
+                    "preview half at {width}x{height} must be shown={expected}"
+                );
+            }
+            h.save_screenshot(&evidence_png!(suffix)).unwrap();
         }
     }
 
@@ -3578,6 +3572,10 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         );
                     });
                     h.run_steps(4);
+                    // Registered toolbar fixture: the title, attention chip and
+                    // actions fit, contrast and clear the native safe area at
+                    // every width, zoom and theme.
+                    assert_layout_surface(&h, "titlebar");
                     h.save_screenshot(&evidence_png!(format!("_{theme}_{scale}_{width}")))
                         .unwrap();
                 }
@@ -4788,6 +4786,26 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     });
             });
         harness.run();
+        let mut texts = Vec::new();
+        for shape in &harness.output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        assert!(
+            texts.iter().any(|(_, text)| text == ">_"),
+            "the terminal arm paints its prompt glyph: {texts:?}"
+        );
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(540.0, 320.0));
+        let titles: Vec<_> = texts
+            .iter()
+            .filter(|(_, text)| text.contains("Investigate"))
+            .collect();
+        assert!(!titles.is_empty(), "pane titles paint: {texts:?}");
+        for (rect, title) in titles {
+            assert!(
+                area.contains_rect(*rect),
+                "title {title:?} at {rect:?} leaves the minimap area"
+            );
+        }
         harness
             .render()
             .expect("render failed")
@@ -5258,6 +5276,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.harness().get_by_label("Groceries");
         h.harness().get_by_label(&file_name);
         h.harness().get_by_label("Saved");
+        let leaked: Vec<_> = painted_texts(&mut h)
+            .into_iter()
+            .filter(|(_, text)| text.contains("source:"))
+            .collect();
+        assert!(leaked.is_empty(), "frontmatter painted: {leaked:?}");
         h.save_screenshot(&evidence_png!()).expect("render failed");
 
         let _ = std::fs::remove_file(&path);
@@ -5544,9 +5567,15 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         // Modal title and the first section header are real ui.label widgets.
         h.harness().get_by_label("Host UI Gallery");
         h.harness().get_by_label("Chrome primitives");
-        h.harness().get_by_label("palette");
-        h.harness().get_by_label("help");
-        h.harness().get_by_label("dismiss");
+        // With room for every group, the hint bar is one centered row.
+        let rows: Vec<f32> = ["palette", "help", "dismiss"]
+            .iter()
+            .map(|label| h.harness().get_by_label(label).rect().center().y)
+            .collect();
+        assert!(
+            rows.iter().all(|y| (y - rows[0]).abs() < 1.0),
+            "hint groups must share one row at 900pt: {rows:?}"
+        );
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
@@ -5561,9 +5590,12 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.run_steps(2);
 
         h.harness().get_by_label("Host UI Gallery");
-        h.harness().get_by_label("palette");
-        h.harness().get_by_label("help");
-        h.harness().get_by_label("dismiss");
+        // Groups wrap onto further rows instead of running past the window.
+        let screen = h.with_app(|app| app.ctx.content_rect());
+        for label in ["palette", "help", "dismiss"] {
+            let rect = h.harness().get_by_label(label).rect();
+            assert_inside(label, 1.0, rect, screen);
+        }
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
@@ -6224,7 +6256,25 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .push(egui::Event::PointerMoved(scratch_row));
         h.step();
 
+        assert_long_context_name_elides(&mut h, "Narrator Video Production Workspace");
         h.save_screenshot(&evidence_png!()).expect("render failed");
+    }
+
+    /// A sidebar row paints a name too long for its identity tier with a
+    /// trailing ellipsis and never paints it whole.
+    fn assert_long_context_name_elides(h: &mut PlexiUiHarness, full: &str) {
+        let head = full.split(' ').next().expect("non-empty name");
+        let texts = painted_texts(h);
+        assert!(
+            texts.iter().any(
+                |(_, text)| text.starts_with(head) && text.ends_with(crate::ui::text::ELLIPSIS)
+            ),
+            "{full:?} must paint elided: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|(_, text)| text == full),
+            "{full:?} must not paint whole: {texts:?}"
+        );
     }
 
     /// Stint 0605: `NextContext`/`PrevContext` cycle the same enumeration the
@@ -7054,6 +7104,9 @@ open(out + ".done", "w").close()
                 }
             });
             h.run_steps(3);
+            // Worst-case titles, metadata and actions must elide or stack
+            // inside each row at both widths, never paint past it.
+            assert_layout_surface(&h, "list");
             h.save_screenshot(&evidence_png!(&format!("_{width}")))
                 .expect("all worst-case rows");
         }
@@ -7074,6 +7127,51 @@ open(out + ".done", "w").close()
             }
             _ => {}
         }
+    }
+
+    /// A text-input widget whose accessible value is exactly `value`. Selectable
+    /// labels expose text runs with values too, so the role is part of the match.
+    fn has_text_field_holding(h: &mut PlexiUiHarness, value: &str) -> bool {
+        h.harness()
+            .query_all_by(|node| {
+                matches!(
+                    node.role(),
+                    egui::accesskit::Role::TextInput | egui::accesskit::Role::MultilineTextInput
+                ) && node.value().as_deref() == Some(value)
+            })
+            .next()
+            .is_some()
+    }
+
+    /// Whether any pixel inside `rect` (points at ppp 1, so pixels) differs
+    /// between two renders of the same harness size.
+    fn pixels_differ_in(a: &image::RgbaImage, b: &image::RgbaImage, rect: egui::Rect) -> bool {
+        let x1 = (rect.max.x.max(0.0) as u32).min(a.width());
+        let y1 = (rect.max.y.max(0.0) as u32).min(a.height());
+        let x0 = (rect.min.x.max(0.0) as u32).min(x1);
+        let y0 = (rect.min.y.max(0.0) as u32).min(y1);
+        (y0..y1).any(|y| (x0..x1).any(|x| a.get_pixel(x, y) != b.get_pixel(x, y)))
+    }
+
+    /// Every non-empty text galley the last harness frame painted, with its
+    /// rect. Galleys hold the text as painted, so an elided label reads with
+    /// its `…` here even though its accessible label is the full string.
+    fn painted_texts(h: &mut PlexiUiHarness) -> Vec<(egui::Rect, String)> {
+        let mut texts = Vec::new();
+        for shape in &h.harness().output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// The first painted galley containing `needle`, failing with every
+    /// painted string so a miss shows what did render.
+    fn painted_rect(texts: &[(egui::Rect, String)], needle: &str) -> egui::Rect {
+        texts
+            .iter()
+            .find(|(_, text)| text.contains(needle))
+            .map(|(rect, _)| *rect)
+            .unwrap_or_else(|| panic!("no painted text contains {needle:?}: {texts:?}"))
     }
 
     #[test]
@@ -7597,12 +7695,18 @@ open(out + ".done", "w").close()
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!(
-            "Screenshot saved to {} — inspect: \
-             no literal \\n or \\\" anywhere, /context output reads as a normal row.",
-            evidence_png!()
+        let texts = painted_texts(&mut h);
+        painted_rect(&texts, "Wrote both lines");
+        painted_rect(&texts, "Assistant context");
+        let escaped: Vec<_> = texts
+            .iter()
+            .filter(|(_, text)| text.contains("\\n") || text.contains("\\\""))
+            .collect();
+        assert!(
+            escaped.is_empty(),
+            "escape sequences painted literally: {escaped:?}"
         );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Visual regression for stints 0435/0442: a real multi-turn conversation
@@ -7670,13 +7774,16 @@ open(out + ".done", "w").close()
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!(
-            "Screenshot saved to {} — \
-             inspect: user bubbles right-anchored + shrink-to-fit, assistant \
-             bubbles left-anchored, no row renders full-width/identical.",
-            evidence_png!()
+        // User bubbles hug the right edge and shrink to their text; assistant
+        // rows start at the left. Identical rows would put both at one x.
+        let texts = painted_texts(&mut h);
+        let user = painted_rect(&texts, "hi there big boii");
+        let assistant = painted_rect(&texts, "Hey hey!");
+        assert!(
+            user.min.x > assistant.min.x + 100.0 && user.max.x > assistant.max.x,
+            "user bubble {user:?} must sit right of assistant row {assistant:?}"
         );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0467, never-frozen rule: while a turn is in flight the
@@ -7715,7 +7822,11 @@ open(out + ".done", "w").close()
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
+        // The generation row names the tool being written and its size.
+        let texts = painted_texts(&mut h);
+        painted_rect(&texts, "writing host.files.write · 3.4k chars");
+        h.save_screenshot(&evidence_png!("_tool_progress"))
+            .expect("render failed");
 
         // State 2: same turn with no generation info — a fresh pane, since
         // the harness has no post-open mutable assistant accessor. The dots
@@ -7731,14 +7842,17 @@ open(out + ".done", "w").close()
         h2.step();
         h2.open_assistant_built(assistant2, ws.path().to_path_buf());
         h2.run_steps(2);
-        h2.save_screenshot(&evidence_png!()).expect("render failed");
-        println!(
-            "Screenshots saved to /tmp/plexi_assistant_streaming_tool_progress.png \
-             (spinner + 'writing host.files.write · 3.4k chars' under the text \
-             bubble) and /tmp/plexi_assistant_streaming_dots_after_text.png \
-             (thinking dots under the text bubble) — neither state may render \
-             as static text alone."
+        // Without generation info nothing names a tool: the dots carry it.
+        let texts = painted_texts(&mut h2);
+        painted_rect(&texts, "Let me fix all the issues.");
+        assert!(
+            !texts
+                .iter()
+                .any(|(_, text)| text.contains("writing ") && text.contains(" chars")),
+            "no generation row without tool progress: {texts:?}"
         );
+        h2.save_screenshot(&evidence_png!("_dots_after_text"))
+            .expect("render failed");
     }
 
     /// Stint 0455: a plugin-build turn's transcript renders chronologically —
@@ -7802,14 +7916,27 @@ open(out + ".done", "w").close()
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!(
-            "Screenshot saved to {} — inspect: \
-             assistant segment above the tool rows, one caret row per call \
-             (no 'N tool calls' summary), failed row in danger hue, final \
-             reply as its own bubble below the tools.",
-            evidence_png!()
+        // Chronological: first segment, each tool row, then the final reply.
+        let texts = painted_texts(&mut h);
+        let tops: Vec<f32> = [
+            "Starting with scaffolding the plugin.",
+            "host.files.write",
+            "plexi.plugin_check",
+            "host.build.run — exit 1",
+            "The Guessing Game plugin is open!",
+        ]
+        .iter()
+        .map(|needle| painted_rect(&texts, needle).min.y)
+        .collect();
+        assert!(
+            tops.windows(2).all(|pair| pair[0] < pair[1]),
+            "transcript rows out of order: {tops:?}"
         );
+        assert!(
+            !texts.iter().any(|(_, text)| text.contains("tool calls")),
+            "tool rows must never collapse into a summary: {texts:?}"
+        );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Stint 0451: emoji in an assistant reply must rasterize as monochrome
@@ -7855,13 +7982,18 @@ open(out + ".done", "w").close()
         h.step();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!(
-            "Screenshot saved to {} — \
-             inspect: 👋 😄 🛒 ✨ 🎮 render as distinct monochrome glyphs, \
-             not tofu boxes.",
-            evidence_png!()
+        // Tofu means no bound face covers the codepoint; the fallback chain
+        // must cover every one at the transcript's proportional face.
+        let covered = h.with_app(|app| {
+            app.ctx.fonts_mut(|fonts| {
+                fonts.has_glyphs(&egui::FontId::proportional(14.0), "👋😄🛒✨🎮")
+            })
+        });
+        assert!(
+            covered,
+            "an emoji in the reply has no glyph in the font chain"
         );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     #[test]
@@ -8017,6 +8149,12 @@ open(out + ".done", "w").close()
         assistant.model.composer = "/".to_string();
         h.open_assistant_built(assistant, ws.path().to_path_buf());
         h.run_steps(10);
+        // A bare "/" opens the command picker over the seeded transcript,
+        // listing the built-in commands as ListRows.
+        let texts = painted_texts(&mut h);
+        painted_rect(&texts, "/help");
+        assert_layout_surface(&h, "list");
+        painted_rect(&texts, "Summarize the open PRs for this repo, please.");
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
@@ -8828,6 +8966,10 @@ open(out + ".done", "w").close()
                         "fixture must retain requested theme"
                     )
                 });
+                // Registered pane-header fixture: the provenance, agent title
+                // and outside-workspace badge fit beside each other at both
+                // widths and clear contrast in both themes.
+                assert_layout_surface(&h, "pane_header");
                 let path = name(theme, width);
                 h.save_screenshot(&path).unwrap();
                 println!("screenshot: {path}");
@@ -10521,9 +10663,12 @@ open(out + ".done", "w").close()
             app.focus_stack.push(FocusKind::RenamePane);
         });
         h.step();
-        h.save_screenshot("/tmp/plexi-0750-rename-pane-overlay.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi-0750-rename-pane-overlay.png");
+        // The shared single-line rename field is up and holds the buffer.
+        assert!(
+            has_text_field_holding(&mut h, "notes-scratch"),
+            "pane rename overlay must show its text field"
+        );
+        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// The rename commit happens inside `draw_rename_context_overlay`, which reads
@@ -10567,6 +10712,10 @@ open(out + ".done", "w").close()
             app.open_context_rename(0);
         });
         h.run_steps(3);
+        assert!(
+            has_text_field_holding(&mut h, "Project workspace"),
+            "context rename overlay must show its text field beside the sidebar"
+        );
         h.save_screenshot(&evidence_png!())
             .expect("render context rename");
     }
@@ -10724,13 +10873,11 @@ open(out + ".done", "w").close()
         });
 
         h.run_steps(2);
-        h.render()
-            .expect("tab bar with long title must render without panic");
+        // The header's title slot owns the long name: it must stay one line
+        // inside its allocation, eliding rather than wrapping or overflowing.
+        assert_layout_surface(&h, "pane_header");
         h.save_screenshot(&evidence_png!())
             .expect("screenshot failed");
-        println!("Screenshot saved to {}", evidence_png!());
-        // Visual: open /tmp/plexi_tab_truncation.png and confirm the long label
-        // ends with '…' on a single line and does not push the tab bar taller.
     }
 
     /// Stint 0755: when `outside_workspace` is active on a terminal pane,
@@ -11053,6 +11200,12 @@ open(out + ".done", "w").close()
             .events
             .push(egui::Event::PointerMoved(active_title));
         h.step();
+        assert_long_context_name_elides(&mut h, "Narrator Video Production Workspace");
+        let texts = painted_texts(&mut h);
+        assert!(
+            texts.iter().any(|(_, text)| text == "PLEXI Workspace"),
+            "an ordinary context name paints in full: {texts:?}"
+        );
         h.save_screenshot(&evidence_png!())
             .expect("220-point sidebar render");
     }
@@ -11101,8 +11254,40 @@ open(out + ".done", "w").close()
             win.focused_pane = Some(tile_id);
         });
         h.run_steps(3);
+        // Fractional point sizes land glyphs between physical pixels at 2x;
+        // every row name must paint at an integer size.
+        fn font_sizes(shape: &egui::Shape, out: &mut Vec<(String, f32)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    for section in &text.galley.job.sections {
+                        out.push((text.galley.text().to_owned(), section.format.font_id.size));
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        font_sizes(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut sizes = Vec::new();
+        for shape in &h.harness().output().shapes {
+            font_sizes(&shape.shape, &mut sizes);
+        }
+        let rows: Vec<_> = sizes
+            .iter()
+            .filter(|(text, _)| {
+                ["notes.md", "render.rs", "todo.txt"]
+                    .iter()
+                    .any(|name| text.contains(name))
+            })
+            .collect();
+        assert!(!rows.is_empty(), "file rows must paint: {sizes:?}");
+        for (text, size) in rows {
+            assert_eq!(size.fract(), 0.0, "{text:?} paints at {size}pt");
+        }
         h.save_screenshot(&evidence_png!()).expect("render failed");
-        println!("Screenshot saved to {}", evidence_png!());
     }
 
     /// Evidence seam for stint 1216: the button gallery at rest, with the Md
@@ -11130,16 +11315,22 @@ open(out + ".done", "w").close()
                 .collect();
             primaries.sort_by(|a, b| a.top().total_cmp(&b.top()));
             let md_primary = primaries[1];
-            h.save_screenshot(&evidence_png!(format!("_{theme}_rest")))
-                .unwrap();
+            let rest = h.render().unwrap();
+            rest.save(evidence_png!(format!("_{theme}_rest"))).unwrap();
             let pos = md_primary.center();
             h.harness()
                 .input_mut()
                 .events
                 .push(egui::Event::PointerMoved(pos));
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(format!("_{theme}_hover")))
+            let hover = h.render().unwrap();
+            hover
+                .save(evidence_png!(format!("_{theme}_hover")))
                 .unwrap();
+            assert!(
+                pixels_differ_in(&rest, &hover, md_primary),
+                "{theme}: hover must repaint the Md Primary button"
+            );
             h.harness()
                 .input_mut()
                 .events
@@ -11150,8 +11341,14 @@ open(out + ".done", "w").close()
                     modifiers: egui::Modifiers::NONE,
                 });
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(format!("_{theme}_pressed")))
+            let pressed = h.render().unwrap();
+            pressed
+                .save(evidence_png!(format!("_{theme}_pressed")))
                 .unwrap();
+            assert!(
+                pixels_differ_in(&hover, &pressed, md_primary),
+                "{theme}: press must repaint the hovered button"
+            );
             h.harness()
                 .input_mut()
                 .events
@@ -11168,8 +11365,14 @@ open(out + ".done", "w").close()
             h.run_steps(2);
             h.harness().key_press(egui::Key::Tab);
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(format!("_{theme}_focus")))
+            let focus = h.render().unwrap();
+            focus
+                .save(evidence_png!(format!("_{theme}_focus")))
                 .unwrap();
+            assert!(
+                focus.as_raw() != rest.as_raw(),
+                "{theme}: keyboard focus must paint a visible ring"
+            );
         }
     }
 
@@ -12655,14 +12858,13 @@ open(out + ".done", "w").close()
         });
 
         h.run_steps(4);
-        let shot = evidence_png!();
-        h.save_screenshot(&shot)
+        // The open queue lists both the agent's question and the finished
+        // child's result, each with its own summary.
+        let texts = painted_texts(&mut h);
+        painted_rect(&texts, "Should we return to parent");
+        painted_rect(&texts, "Analyzed parent-first");
+        h.save_screenshot(&evidence_png!())
             .expect("render attention queue screenshot");
-        assert!(
-            std::path::Path::new(&shot).exists(),
-            "screenshot must exist at {shot}"
-        );
-        let _ = std::fs::remove_file(&shot);
     }
 
     fn add_attention_result_terminal(
@@ -13594,6 +13796,17 @@ open(out + ".done", "w").close()
                 h.run_steps(3);
             }
             h.run_steps(4);
+            // Three note panes are open; each visible header fits its title
+            // and controls at both sizes.
+            let views = h.with_app(|app| {
+                app.windows
+                    .iter()
+                    .flat_map(|window| window.panes.values())
+                    .filter(|pane| pane.as_view().is_some())
+                    .count()
+            });
+            assert_eq!(views, 3, "three note panes open{suffix}");
+            assert_layout_surface(&h, "pane_header");
             h.save_screenshot(&evidence_png!(suffix))
                 .expect("render strip");
         }
