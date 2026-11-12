@@ -149,6 +149,12 @@ wire node types. Inspect `to_node()` in `plexi_sdk.ui` or the node variants in
 handle interaction in the app. A canvas can also be a child in a tree. See
 `apps/dev/component-gallery` for examples of tree components and their use.
 
+`plexi_sdk.ui` exports the types for annotations: `Component` (any tree
+component), `CanvasCommand` (any canvas command) and `BadgeColor` (the roles
+`Badge` and `Banner` accept). Annotate a list you build up in a variable, for
+example `body: list[Component] = [Text("Hi")]`, so `plexi plugin check`
+accepts appending other components to it.
+
 ## Effects
 
 Effects are dataclasses returned from `init()`/`update()`. The full list with

@@ -10,13 +10,13 @@ API reference: https://plexiapp.com/docs/sdk
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent, Resize, UiAction
-from plexi_sdk.ui import Button, Column, FooterKeys, SurfaceHeader, Text
+from plexi_sdk.ui import Button, Column, Component, FooterKeys, SurfaceHeader, Text
 
 # Below this pane width the view drops its hint line.
 COMPACT_WIDTH = 360
 
 
-def init(size, args):
+def init(size, args) -> list:
     width, height = size
     log.info(f"__DISPLAY_NAME__: init {width:.0f}x{height:.0f}")
     return [
@@ -25,7 +25,7 @@ def init(size, args):
     ]
 
 
-def update(event):
+def update(event) -> list:
     if isinstance(event, Resize):
         return [SetState({"width": event.width, "height": event.height})]
     if isinstance(event, UiAction) and event.handler_id == "increment":
@@ -41,11 +41,12 @@ def _add_one() -> SetState:
     return SetState({"count": count})
 
 
-def view():
+def view() -> Component:
     width = state.get("width", 0)
     # A width of 0 means the host has not reported a size yet.
     compact = 0 < width < COMPACT_WIDTH
-    body = [
+    # Annotate child lists as list[Component] so any component can be added.
+    body: list[Component] = [
         Text(str(state.get("count", 0)), bold=True),
         Button("Add one", on_click="increment"),
     ]
