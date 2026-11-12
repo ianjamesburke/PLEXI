@@ -4967,25 +4967,6 @@ impl PlexiApp {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
                 self.handle_list_permissions(response_file);
             }
-            crate::protocol::HostRequest::SetPermission {
-                plugin_id,
-                workspace,
-                capability,
-                state,
-                response_file,
-            } => {
-                log::info!(
-                    "pane_ipc: kind=set_permission plugin_id={plugin_id} workspace={workspace:?} \
-                     capability={capability} state={state} response_file={response_file:?}"
-                );
-                self.handle_set_permission(
-                    plugin_id,
-                    workspace.as_deref(),
-                    capability,
-                    state,
-                    response_file,
-                );
-            }
             crate::protocol::HostRequest::AgentCall {
                 role,
                 task,
@@ -5888,112 +5869,6 @@ impl PlexiApp {
         })
         .to_string();
         write_response(response_file, body.as_bytes());
-    }
-
-    /// `SetPermission` host handler (stint 0017). Persists the new state to
-    /// `permissions.toml` and live-updates every running plugin instance with a
-    /// matching (plugin_id, workspace) so a revocation takes effect on the plugin's
-    /// next request. Unknown capability/state strings fail closed with an
-    /// error reply; a missing workspace fails unless the plugin is running.
-    fn handle_set_permission(
-        &mut self,
-        plugin_id: &str,
-        workspace: Option<&str>,
-        capability: &str,
-        state: &str,
-        response_file: &str,
-    ) {
-        use crate::app::permissions::{Capability, PermissionState, PermissionStore};
-        use crate::host::pane::Pane;
-
-        let outcome: Result<(), String> = (|| {
-            let cap = Capability::try_from(capability).map_err(|e| e.to_string())?;
-            let new_state = PermissionState::try_from(state)?;
-
-            let ws: std::path::PathBuf = match workspace {
-                Some(w) => std::path::PathBuf::from(w),
-                None => self
-                    .windows
-                    .iter()
-                    .find_map(|win| {
-                        win.panes.values().find_map(|pane| {
-                            let Pane::View(view_pane) = pane else {
-                                return None;
-                            };
-                            (view_pane.manifest_id == plugin_id)
-                                .then(|| view_pane.workspace_root.clone())
-                        })
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "workspace required: plugin '{plugin_id}' is not running; \
-                             pass workspace explicitly"
-                        )
-                    })?,
-            };
-
-            let mut store = PermissionStore::load_or_default(&self.permission_store_dir);
-            store.set(plugin_id, &ws, cap, new_state);
-            store.save();
-
-            crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
-                .grant_plugin_capability(
-                    plugin_id,
-                    &ws,
-                    cap,
-                    crate::broker::Decision::from_permission_state(new_state),
-                );
-
-            // Live-update every running instance of this plugin in this workspace.
-            let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-            for win in &mut self.windows {
-                for pane in win.panes.values_mut() {
-                    let Pane::View(view_pane) = pane else {
-                        continue;
-                    };
-                    if view_pane.manifest_id != plugin_id {
-                        continue;
-                    }
-                    let proc_ws = view_pane
-                        .workspace_root
-                        .canonicalize()
-                        .unwrap_or_else(|_| view_pane.workspace_root.clone());
-                    if proc_ws != ws_canonical {
-                        continue;
-                    }
-                    match new_state {
-                        PermissionState::Green => {
-                            view_pane.permissions.capabilities.insert(cap);
-                            view_pane.permissions.blocked.remove(&cap);
-                        }
-                        PermissionState::Yellow => {
-                            view_pane.permissions.capabilities.remove(&cap);
-                            view_pane.permissions.blocked.remove(&cap);
-                        }
-                        PermissionState::Red => {
-                            view_pane.permissions.blocked.insert(cap);
-                            view_pane.permissions.capabilities.remove(&cap);
-                        }
-                    }
-                    log::info!(
-                        "pane_ipc: set_permission: live-updated '{plugin_id}' pane {} — {} → {}",
-                        view_pane.id,
-                        cap.as_str(),
-                        new_state.as_str()
-                    );
-                }
-            }
-            Ok(())
-        })();
-
-        let body = match &outcome {
-            Ok(()) => "{\"ok\":true}".to_string(),
-            Err(e) => serde_json::json!({ "error": e }).to_string(),
-        };
-        write_response(response_file, body.as_bytes());
-        if let Err(e) = outcome {
-            log::warn!("pane_ipc: set_permission failed: {e}");
-        }
     }
 
     /// Poll host-observed terminal activity for every terminal pane (1 Hz,

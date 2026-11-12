@@ -80,10 +80,9 @@ pub enum Capability {
     /// and `SendPaneAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
     PanesControl,
-    /// Inspect and mutate other plugins' permission state (stint 0017). Gates
-    /// the PGAP path for `ListPermissions` and `SetPermission`, the host-
-    /// mediated surface a permission-manager plugin uses to list, grant, and
-    /// revoke capabilities.
+    /// Inspect and mutate other plugins' permission state (stint 0017). No
+    /// host request checks it today; widening a grant is never a plugin
+    /// capability, it is a host-window click (stint 1272).
     PermissionsManage,
     /// Read the Plexi host channel log via the host-mediated `read_host_log`
     /// effect (stint 0444). The host owns path resolution — it tails its own
@@ -538,6 +537,7 @@ impl PermissionStore {
         }
     }
 
+    #[cfg(test)]
     fn entry_key(plugin_id: &str, workspace_root: &Path, cap: Capability) -> String {
         let canonical = crate::platform::path::canonical_or_self(workspace_root);
         format!(
@@ -728,7 +728,9 @@ impl PermissionStore {
             .copied()
     }
 
-    /// Set the state for a (plugin, workspace, capability) triple.
+    /// Set the state for a (plugin, workspace, capability) triple. Test
+    /// fixture only: no production route writes a capability row (stint 1272).
+    #[cfg(test)]
     pub fn set(
         &mut self,
         plugin_id: &str,

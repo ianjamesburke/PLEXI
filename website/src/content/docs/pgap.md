@@ -465,20 +465,6 @@ List permission state across plugins (stint 0017). Gated on `permissions.manage`
 |-------|------|----------|
 | `response_file` | `string` | yes |
 
-### `set_permission`
-
-Set the stored permission state for an (plugin, workspace, capability) triple (stint 0017). Gated on `permissions.man...
-
-**Capability:** `permissions.manage`
-
-| Field | Type | Required |
-|-------|------|----------|
-| `capability` | `string` | yes |
-| `plugin_id` | `string` | yes |
-| `response_file` | `string` | yes |
-| `state` | `string` | yes |
-| `workspace` | `string?` | no |
-
 ### `slot_write`
 
 Write bytes to a named host-managed pane file slot.

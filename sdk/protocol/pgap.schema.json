@@ -1654,42 +1654,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Set the stored permission state for an (plugin, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running plugin with `plugin_id` is used;\nif no such plugin is running the request fails. Persists to\n`permissions.toml` AND live-updates any running plugin's permission set,\nso a revocation takes effect on the plugin's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
-          "properties": {
-            "capability": {
-              "type": "string"
-            },
-            "plugin_id": {
-              "type": "string"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "state": {
-              "type": "string"
-            },
-            "type": {
-              "const": "set_permission",
-              "type": "string"
-            },
-            "workspace": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "type",
-            "plugin_id",
-            "capability",
-            "state",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Write bytes to a named host-managed pane file slot.",
           "properties": {
             "append": {

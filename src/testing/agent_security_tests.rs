@@ -481,3 +481,60 @@ fn plain_panes_are_stamped_spawned_by_human_with_a_badge() {
     assert_eq!(term.spawned_by.as_deref(), Some("human"));
     assert_eq!(term.spawned_by_badge().as_deref(), Some("spawned by you"));
 }
+
+/// Stint 1272: a raw `set_permission` socket line, from a pane process or from
+/// a process with no pane, writes no grant anywhere and is told what replaced it.
+#[test]
+fn raw_set_permission_socket_line_writes_no_grant() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pane_pid = h.terminal_backend(pane).child_pid();
+    let root = h.workspace_root();
+    let profile = h.app.permission_store_dir.clone();
+    let grants_before = monitor().store().records().to_vec();
+    let callers: [Option<&[u32]>; 3] = [Some(&[pane_pid]), Some(&[]), None];
+    let mut acks = Vec::new();
+    for (i, ancestry) in callers.into_iter().enumerate() {
+        let reply = root.join(format!("set-permission-{i}.json"));
+        let line = serde_json::json!({
+            "type": "set_permission",
+            "plugin_id": "chess",
+            "workspace": root.to_string_lossy(),
+            "capability": "permissions.manage",
+            "state": "green",
+            "response_file": reply.to_string_lossy(),
+        })
+        .to_string();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, ancestry, &mut ack);
+        h.run_frames(2);
+        assert!(
+            !reply.exists(),
+            "caller {i}: the set handler ran and replied"
+        );
+        acks.push(ack);
+    }
+    let stored = crate::app::permissions::PermissionStore::load_or_default(&profile);
+    assert_eq!(
+        stored.iter_entries().count(),
+        0,
+        "permissions.toml was written"
+    );
+    assert_eq!(
+        monitor().store().records(),
+        grants_before.as_slice(),
+        "broker grant store changed"
+    );
+    for (i, ack) in acks.iter().enumerate() {
+        let ack: serde_json::Value = serde_json::from_slice(ack)
+            .unwrap_or_else(|e| panic!("caller {i} got no JSON refusal: {e}"));
+        assert_eq!(ack["error_code"], "request_removed", "{ack}");
+        assert!(
+            ack["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("plexi permissions"),
+            "refusal must name the replacement: {ack}"
+        );
+    }
+}
