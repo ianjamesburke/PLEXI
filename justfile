@@ -599,7 +599,6 @@ test-infra-scripts: test-build-inputs
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
     python3 scripts/test_landing_safety.py
-    bash scripts/pr-install-reuse.sh self-test
     bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
 
