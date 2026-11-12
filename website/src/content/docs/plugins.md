@@ -45,8 +45,8 @@ This scaffolds a new plugin folder with:
 my-plugin/
   manifest.toml    ← capabilities, entry point, metadata
   main.py          ← entry point
-  plugin/          ← tools.py and ui.py, imported by main.py
-  tests/           ← PluginHarness smoke tests and fixtures
+  tests/           ← PluginHarness smoke tests
+  fixtures/        ← seed state for plugin check
   AGENTS.md        ← notes for coding agents working on the plugin
 ```
 
