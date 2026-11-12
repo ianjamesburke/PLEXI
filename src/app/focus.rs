@@ -84,9 +84,6 @@ pub(crate) enum FocusKind {
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     Changelog,
-    /// Core-only "plugin unavailable" notice. Owns the keyboard while it is
-    /// up so Esc/Enter dismiss it instead of reaching the pane under it.
-    PluginNotice,
 }
 
 impl FocusKind {
@@ -108,7 +105,6 @@ impl FocusKind {
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
             Self::Changelog => "Changelog",
-            Self::PluginNotice => "PluginNotice",
         }
     }
 
@@ -132,7 +128,6 @@ impl FocusKind {
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
             Self::Changelog => &ChangelogOwner,
-            Self::PluginNotice => &PluginNoticeOwner,
         }
     }
 }
@@ -206,7 +201,6 @@ macro_rules! focus_owner_tokens {
 focus_owner_tokens! {
     UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
     Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
-    PluginNotice => PluginNoticeOwner { key: plugin_notice_handle_key, draw: draw_plugin_notice },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },

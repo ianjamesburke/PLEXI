@@ -198,7 +198,6 @@ impl PlexiApp {
         self.sync_event_consent_focus();
         self.sync_raw_wasm_review_focus();
         self.sync_unsaved_changes_focus();
-        self.sync_plugin_notice_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
     }
@@ -1299,6 +1298,7 @@ impl PlexiApp {
 
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
+        self.draw_plugin_notice(&ctx);
 
         self.draw_minimap_overlay(&ctx);
 

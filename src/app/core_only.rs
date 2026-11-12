@@ -15,39 +15,12 @@ impl super::PlexiApp {
         let message = unavailable(plugin);
         log::info!("plugins: launch refused plugin={plugin}: core-only mode is on");
         self.plugin_notice = Some(message.clone());
-        // Own the keyboard in this frame, so Esc/Enter reach the notice
-        // rather than the pane under it.
-        self.sync_plugin_notice_focus();
         Err(message)
     }
 
-    /// The notice owns a focus layer exactly while `plugin_notice` is set.
-    pub(crate) fn sync_plugin_notice_focus(&mut self) {
-        self.reconcile_focus_layer(
-            crate::app::FocusKind::PluginNotice,
-            self.plugin_notice.is_some(),
-        );
-    }
-
-    pub(crate) fn plugin_notice_handle_key(
-        &mut self,
-        input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::view_trait::KeyDisposition {
-        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-            || input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-        {
-            self.dismiss_plugin_notice("keyboard");
-        }
-        crate::app::view_trait::KeyDisposition::Consumed
-    }
-
-    fn dismiss_plugin_notice(&mut self, via: &str) {
-        if self.plugin_notice.take().is_some() {
-            log::info!("plugins: core-only notice dismissed via {via}");
-        }
-        self.sync_plugin_notice_focus();
-    }
-
+    /// The refusal notice never takes keyboard focus: the refused launch may
+    /// be an agent's or script's request, and nothing an agent does may move
+    /// the user's focus. It is dismissed with its own Dismiss action.
     pub(crate) fn draw_plugin_notice(&mut self, ctx: &egui::Context) {
         let Some(message) = self.plugin_notice.clone() else {
             return;
@@ -55,8 +28,13 @@ impl super::PlexiApp {
         let colors = self.colors;
         let response = crate::ui::toast::ToastShell::bottom("plugin_unavailable")
             .notice_action(ctx, &colors, &message, "Dismiss");
+        #[cfg(test)]
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("plugin_notice_dismiss_rect"), response.rect)
+        });
         if response.clicked() {
-            self.dismiss_plugin_notice("button");
+            self.plugin_notice = None;
+            log::info!("plugins: core-only notice dismissed");
         }
     }
 
