@@ -58,20 +58,31 @@ test:
 
 # Full release host suite, test-target compilation and strict lint.
 release-host-gate:
-    {{TEST_ENV_SCRUB}} bash scripts/release-host-gate.sh
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee release-host-gate -- bash scripts/release-host-gate.sh
+
+# Run any long command with the full output in a named log, a one-line heartbeat,
+# a bounded error tail on failure, and one final machine-readable line:
+#   RESULT name=<name> status=<pass|fail> exit=<code> seconds=<n> log=<abs path>
+# The same line is written to <name>.status beside the log (.stint/runs/logs/ by
+# default, PLEXI_RUN_LOG_DIR to override), so a later process can check completion
+# without reading output. The exit code is the command's. See scripts/run_logged.py.
+#   just run-logged build-1 -- just build
+[positional-arguments, no-exit-message]
+run-logged name *command:
+    @python3 scripts/run_logged.py "$@"
 
 # Run selected host tests with the same flags and isolation as `just scene`.
 # Pass libtest filters and options after the recipe name. A filter that matches
 # no test fails (exit 1) with the nearest real module and test names; it never
 # reports a pass for zero tests. See scripts/filter_check.py.
 test-host +args:
-    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py host -- {{args}} < /dev/null
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-host -- python3 scripts/filter_check.py host -- {{args}} < /dev/null
 
 # Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
 # A file with no table entry falls back to its own module tests and says so.
 #   just test-for src/host/model.rs
 test-for path:
-    {{TEST_ENV_SCRUB}} python3 scripts/filter_check.py for {{path}} < /dev/null
+    {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -117,7 +128,7 @@ perf-clippy:
 
 # Strict lint gate with the same managed build inputs and warning flags.
 clippy:
-    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
+    python3 scripts/run_logged.py --tee clippy -- bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
 
 # Verify host surface registration and scoped raw-composition exceptions.
 check-ui-layout:
@@ -337,11 +348,11 @@ sdk-smoke:
 # selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
 # Removes the previous managed PR installation and profile first.
 pr-install number test_scope="scoped":
-    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
+    python3 scripts/run_logged.py --tee pr-install-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
 
 # Build the final PR-channel candidate once, without installing it.
 pr-candidate number test_scope="scoped":
-    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
+    python3 scripts/run_logged.py --tee pr-candidate-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
 
 [private]
 _pr-prepare number test_scope action:
@@ -594,6 +605,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_filter_check.py
+    uv run --no-project python scripts/test_run_logged.py
     uv run --no-project python scripts/test_build_lifecycle.py
     uv run --no-project python scripts/test_distribution_cache.py
     uv run --no-project python scripts/test_publish_pr_image.py
