@@ -449,6 +449,7 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
     let (tx, _rx) = std::sync::mpsc::channel();
     crate::plexi_ai::tool_dispatch::register(
         provider_pane_id,
+        crate::plexi_ai::tool_dispatch::ViewInstanceKey::detached(),
         "connector-app".to_string(),
         vec![crate::protocol::AiTool {
             name: "connector_tool".to_string(),
@@ -499,6 +500,7 @@ fn two_harnesses_do_not_share_a_chess_tool_namespace() {
         let (tx, _rx) = std::sync::mpsc::channel();
         crate::plexi_ai::tool_dispatch::register(
             pane_id,
+            crate::plexi_ai::tool_dispatch::ViewInstanceKey::detached(),
             "chess".to_string(),
             vec![crate::protocol::AiTool {
                 name: "chess.play".to_string(),
@@ -564,9 +566,16 @@ fn register_top_view_tool(h: &HostHarness, pane_id: u64, plugin_id: &str, tool: 
         .app
         .origin_for_pane(pane_id)
         .expect("origin_for_pane must resolve for a live view pane");
+    let owner = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|pane| pane.as_view())
+        .map(crate::plexi_ai::tool_dispatch::ViewInstanceKey::of)
+        .expect("a view is on top of the pane");
     let (tx, _rx) = std::sync::mpsc::channel();
     crate::plexi_ai::tool_dispatch::register(
         pane_id,
+        owner,
         plugin_id.to_string(),
         vec![crate::protocol::AiTool {
             name: tool.to_string(),
@@ -12637,6 +12646,7 @@ mod flight_recorder_session {
         let tool_timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
         tool_dispatch::register(
             target,
+            crate::plexi_ai::tool_dispatch::ViewInstanceKey::detached(),
             "flight-probe".into(),
             vec![AiTool {
                 name: "probe.todo".into(),

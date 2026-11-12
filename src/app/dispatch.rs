@@ -501,17 +501,23 @@ impl PlexiApp {
                             let provider = self.windows.iter().find_map(|window| {
                                 window.panes.get(&pane_id).and_then(|pane| {
                                     pane.as_view().and_then(|app| {
-                                        app.runtime
-                                            .tool_event_sender(ctx.clone())
-                                            .map(|sender| (app.manifest_id.clone(), sender))
+                                        app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
+                                            (
+                                                app.manifest_id.clone(),
+                                                sender,
+                                                crate::plexi_ai::tool_dispatch::ViewInstanceKey::of(
+                                                    app,
+                                                ),
+                                            )
+                                        })
                                     })
                                 })
                             });
-                            if let (Some((plugin_id, sender)), Some(origin)) =
+                            if let (Some((plugin_id, sender, owner)), Some(origin)) =
                                 (provider, self.origin_for_pane(pane_id))
                             {
                                 crate::plexi_ai::tool_dispatch::register(
-                                    pane_id, plugin_id, tools, sender, origin,
+                                    pane_id, owner, plugin_id, tools, sender, origin,
                                 );
                                 Some(InputEvent::DeclareToolsResult(Ok(names)))
                             } else {
@@ -549,17 +555,21 @@ impl PlexiApp {
                     let provider = self.windows.iter().find_map(|window| {
                         window.panes.get(&pane_id).and_then(|pane| {
                             pane.as_view().and_then(|app| {
-                                app.runtime
-                                    .tool_event_sender(ctx.clone())
-                                    .map(|sender| (app.manifest_id.clone(), sender))
+                                app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
+                                    (
+                                        app.manifest_id.clone(),
+                                        sender,
+                                        crate::plexi_ai::tool_dispatch::ViewInstanceKey::of(app),
+                                    )
+                                })
                             })
                         })
                     });
-                    if let (Some((plugin_id, sender)), Some(origin)) =
+                    if let (Some((plugin_id, sender, owner)), Some(origin)) =
                         (provider, self.origin_for_pane(pane_id))
                     {
                         crate::plexi_ai::tool_dispatch::register(
-                            pane_id, plugin_id, tools, sender, origin,
+                            pane_id, owner, plugin_id, tools, sender, origin,
                         );
                     } else {
                         log::warn!(

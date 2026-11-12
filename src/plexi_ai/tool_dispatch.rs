@@ -117,6 +117,9 @@ struct RegistryEntry {
     sender: PluginEventSender,
     /// App type id (manifest `plugin.id`) — used to group tools by plugin for `/plugins`.
     plugin_id: String,
+    /// The view instance that exposed these tools. Overlays share a pane id,
+    /// so only the owner's drop may release this entry.
+    owner: ViewInstanceKey,
     /// Host-established origin of the pane that exposed these tools, captured
     /// once at registration time via `PlexiApp::origin_for_pane` — stint 0724
     /// Phase C. Reachability is decided from `origin.context_id`, never from
@@ -140,39 +143,131 @@ impl RegistryEntry {
     }
 }
 
+/// Identity of one live view instance, distinct from its pane id.
+///
+/// An overlay view reuses the pane id of the pane it covers (`place_view_pane`
+/// with `hint = "overlay"`), so a pane id alone cannot say which of the stacked
+/// views owns a registration. The key is the address of the view's heap
+/// allocation: `Pane::View` holds a `Box<ViewPane>`, which does not move while
+/// the view lives, and `ViewPane::drop` releases the key's registrations before
+/// that allocation is freed, so a later view at a reused address never matches
+/// a stale entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewInstanceKey(usize);
+
+impl ViewInstanceKey {
+    pub(crate) fn of(view: &crate::host::pane::ViewPane) -> Self {
+        Self(view as *const crate::host::pane::ViewPane as usize)
+    }
+
+    /// Owner for registrations a test makes without a live view. The null
+    /// address never belongs to a view, so `release_view` never matches it;
+    /// such entries go only through `unregister`.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self(0)
+    }
+}
+
+/// What `ToolRegistry::release` did for one dropped view.
+#[derive(Debug, PartialEq, Eq)]
+enum Release {
+    /// The view owned the live tools; `restored` names the plugin whose shelved
+    /// tools became live again, if any.
+    Live { restored: Option<String> },
+    /// The view's tools were shelved under an overlay and are now discarded.
+    Shelved,
+    /// The view had registered no tools on this pane.
+    NotOwned,
+}
+
 /// Global map from `pane_id` → `RegistryEntry`.
 struct ToolRegistry {
+    /// The live registration per pane: what callers see and dispatch reaches.
     entries: HashMap<u64, RegistryEntry>,
+    /// Registrations of views covered by an overlay that registered its own
+    /// tools on the same pane id, oldest first. The newest comes back when the
+    /// overlay above it releases the pane.
+    shelved: HashMap<u64, Vec<RegistryEntry>>,
 }
 
 impl ToolRegistry {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            shelved: HashMap::new(),
         }
     }
 
+    /// Install `owner`'s tools as the pane's live tools. A different view's
+    /// live registration is shelved, not lost; it is returned by plugin id for
+    /// the caller's trace. The same owner registering again replaces its tools.
     fn register(
         &mut self,
         pane_id: u64,
+        owner: ViewInstanceKey,
         plugin_id: String,
         tools: Vec<AiTool>,
         sender: PluginEventSender,
         origin: ScopeOrigin,
-    ) {
-        self.entries.insert(
-            pane_id,
-            RegistryEntry {
-                tools,
-                sender,
-                plugin_id,
-                origin,
-            },
-        );
+    ) -> Option<String> {
+        let entry = RegistryEntry {
+            tools,
+            sender,
+            plugin_id,
+            owner,
+            origin,
+        };
+        let previous = self.entries.insert(pane_id, entry)?;
+        if previous.owner == owner {
+            return None;
+        }
+        let shelved_plugin = previous.plugin_id.clone();
+        self.shelved.entry(pane_id).or_default().push(previous);
+        Some(shelved_plugin)
     }
 
+    /// Drop exactly `owner`'s registration on `pane_id`. When it was live, the
+    /// most recently shelved registration on that pane becomes live again.
+    fn release(&mut self, pane_id: u64, owner: ViewInstanceKey) -> Release {
+        if self
+            .entries
+            .get(&pane_id)
+            .is_some_and(|entry| entry.owner == owner)
+        {
+            self.entries.remove(&pane_id);
+            let restored = self.shelved.get_mut(&pane_id).and_then(Vec::pop);
+            if self.shelved.get(&pane_id).is_some_and(Vec::is_empty) {
+                self.shelved.remove(&pane_id);
+            }
+            let restored_plugin = restored.as_ref().map(|entry| entry.plugin_id.clone());
+            if let Some(entry) = restored {
+                self.entries.insert(pane_id, entry);
+            }
+            return Release::Live {
+                restored: restored_plugin,
+            };
+        }
+        let Some(stack) = self.shelved.get_mut(&pane_id) else {
+            return Release::NotOwned;
+        };
+        let before = stack.len();
+        stack.retain(|entry| entry.owner != owner);
+        let removed = stack.len() != before;
+        if stack.is_empty() {
+            self.shelved.remove(&pane_id);
+        }
+        if removed {
+            Release::Shelved
+        } else {
+            Release::NotOwned
+        }
+    }
+
+    #[cfg(test)]
     fn unregister(&mut self, pane_id: u64) {
         self.entries.remove(&pane_id);
+        self.shelved.remove(&pane_id);
     }
 
     /// Snapshot of tools visible to a caller in `viewer_context_id`, keyed by
@@ -396,22 +491,63 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 /// `ScopeOrigin` for `pane_id`, resolved by the caller via
 /// `PlexiApp::origin_for_pane` — never derived from the pane's own
 /// `workspace_root` field, which `sync_plugin_cwd` can mutate live.
+///
+/// `owner` is the view that exposed the tools. When another view on the same
+/// pane id (an overlay and the pane it covers) already owns the live tools,
+/// those are shelved and come back when `owner` releases the pane.
 pub(crate) fn register(
     pane_id: u64,
+    owner: ViewInstanceKey,
     plugin_id: String,
     tools: Vec<AiTool>,
     sender: PluginEventSender,
     origin: ScopeOrigin,
 ) {
     let count = tools.len();
-    global_registry()
+    let trace_plugin = plugin_id.clone();
+    let shelved = global_registry()
         .lock()
         .unwrap()
-        .register(pane_id, plugin_id, tools, sender, origin);
-    log::info!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
+        .register(pane_id, owner, plugin_id, tools, sender, origin);
+    match shelved {
+        Some(covered) => log::info!(
+            "tool_dispatch: registered {count} tool(s) for pane {pane_id} view {trace_plugin}; shelved the tools of covered view {covered}"
+        ),
+        None => log::info!(
+            "tool_dispatch: registered {count} tool(s) for pane {pane_id} view {trace_plugin}"
+        ),
+    }
 }
 
-/// Remove all tools for `pane_id`. Called when a pane is closed.
+/// Release the tools `owner` registered on `pane_id`, and only those. Called
+/// from `ViewPane::drop`; a covered view's shelved tools become live again.
+pub(crate) fn release_view(pane_id: u64, owner: ViewInstanceKey, plugin_id: &str) {
+    let outcome = global_registry()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .release(pane_id, owner);
+    match outcome {
+        Release::Live {
+            restored: Some(restored),
+        } => log::info!(
+            "tool_dispatch: cleared tools of view {plugin_id} on pane {pane_id}; restored the tools of uncovered view {restored}"
+        ),
+        Release::Live { restored: None } => {
+            log::info!("tool_dispatch: cleared tools of view {plugin_id} on pane {pane_id}")
+        }
+        Release::Shelved => log::info!(
+            "tool_dispatch: cleared shelved tools of covered view {plugin_id} on pane {pane_id}"
+        ),
+        Release::NotOwned => log::info!(
+            "tool_dispatch: view {plugin_id} on pane {pane_id} owned no tools; registry unchanged"
+        ),
+    }
+}
+
+/// Remove every registration for `pane_id`, live and shelved. Production
+/// release goes through `release_view`; tests use this for registrations made
+/// without a view instance.
+#[cfg(test)]
 pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
@@ -1320,6 +1456,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             1,
+            ViewInstanceKey::detached(),
             "search-app".to_string(),
             vec![make_tool("search")],
             PluginEventSender::Channel(tx),
@@ -1340,6 +1477,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             10,
+            ViewInstanceKey::detached(),
             "attacker-app".to_string(),
             vec![make_tool("dangerous_tool")],
             PluginEventSender::Channel(tx.clone()),
@@ -1347,6 +1485,7 @@ mod tests {
         );
         reg.register(
             20,
+            ViewInstanceKey::detached(),
             "victim-app".to_string(),
             vec![make_tool("safe_tool")],
             PluginEventSender::Channel(tx),
@@ -1376,6 +1515,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             5,
+            ViewInstanceKey::detached(),
             "app-x".to_string(),
             vec![make_tool("tool_a")],
             PluginEventSender::Channel(tx),
@@ -1388,6 +1528,101 @@ mod tests {
             reg.snapshot_for_caller(1).is_empty(),
             "tools must disappear after pane unregisters"
         );
+    }
+
+    /// Stint 1324: views stacked on one pane id own their registrations
+    /// separately. The overlay's release hands the pane back to the covered
+    /// view; releasing a view that registered nothing changes nothing.
+    #[test]
+    fn stacked_views_release_only_their_own_tools() {
+        let covered = ViewInstanceKey(0x1000);
+        let overlay = ViewInstanceKey(0x2000);
+        let silent = ViewInstanceKey(0x3000);
+        let mut reg = ToolRegistry::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert_eq!(
+            reg.register(
+                7,
+                covered,
+                "chess".to_string(),
+                vec![make_tool("chess.play")],
+                PluginEventSender::Channel(tx.clone()),
+                origin(1, 7),
+            ),
+            None
+        );
+        assert_eq!(reg.release(7, silent), Release::NotOwned);
+        assert!(reg.snapshot_for_caller(1).contains_key("chess.play"));
+
+        assert_eq!(
+            reg.register(
+                7,
+                overlay,
+                "snake".to_string(),
+                vec![make_tool("snake.turn")],
+                PluginEventSender::Channel(tx.clone()),
+                origin(1, 7),
+            ),
+            Some("chess".to_string())
+        );
+        let live = reg.snapshot_for_caller(1);
+        assert!(live.contains_key("snake.turn") && !live.contains_key("chess.play"));
+
+        // Re-exposing from the same view replaces its tools, no extra shelf.
+        assert_eq!(
+            reg.register(
+                7,
+                overlay,
+                "snake".to_string(),
+                vec![make_tool("snake.reset")],
+                PluginEventSender::Channel(tx),
+                origin(1, 7),
+            ),
+            None
+        );
+
+        assert_eq!(
+            reg.release(7, overlay),
+            Release::Live {
+                restored: Some("chess".to_string())
+            }
+        );
+        let live = reg.snapshot_for_caller(1);
+        assert!(live.contains_key("chess.play") && !live.contains_key("snake.reset"));
+
+        assert_eq!(reg.release(7, covered), Release::Live { restored: None });
+        assert!(reg.snapshot_for_caller(1).is_empty());
+        assert!(reg.shelved.is_empty());
+    }
+
+    /// Stint 1324: a covered view dropped while still under an overlay (its
+    /// tile closed) discards its shelved tools and leaves the overlay's live.
+    #[test]
+    fn releasing_a_covered_view_discards_its_shelved_tools() {
+        let covered = ViewInstanceKey(0x1000);
+        let overlay = ViewInstanceKey(0x2000);
+        let mut reg = ToolRegistry::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        reg.register(
+            8,
+            covered,
+            "chess".to_string(),
+            vec![make_tool("chess.play")],
+            PluginEventSender::Channel(tx.clone()),
+            origin(1, 8),
+        );
+        reg.register(
+            8,
+            overlay,
+            "snake".to_string(),
+            vec![make_tool("snake.turn")],
+            PluginEventSender::Channel(tx),
+            origin(1, 8),
+        );
+        assert_eq!(reg.release(8, covered), Release::Shelved);
+        assert!(reg.shelved.is_empty());
+        assert_eq!(reg.release(8, overlay), Release::Live { restored: None });
+        assert!(reg.snapshot_for_caller(1).is_empty());
     }
 
     #[test]
@@ -1422,6 +1657,7 @@ mod tests {
         };
         reg.register(
             30,
+            ViewInstanceKey::detached(),
             "root-app".to_string(),
             vec![make_tool("shared_root_tool")],
             PluginEventSender::Channel(tx),
@@ -1452,6 +1688,7 @@ mod tests {
         let (tx_b, _rx_b) = std::sync::mpsc::channel();
         register(
             999,
+            ViewInstanceKey::detached(),
             "app-b".to_string(),
             vec![make_tool("secret_tool")],
             PluginEventSender::Channel(tx_b),
@@ -1500,6 +1737,7 @@ mod tests {
             let (original, _original_rx) = std::sync::mpsc::channel();
             register(
                 pane,
+                ViewInstanceKey::detached(),
                 "todo".into(),
                 vec![make_tool("todo.list")],
                 PluginEventSender::Channel(original),
@@ -1512,6 +1750,7 @@ mod tests {
             let (replacement, replacement_rx) = std::sync::mpsc::channel();
             register(
                 pane,
+                ViewInstanceKey::detached(),
                 app.into(),
                 vec![make_tool(tool)],
                 PluginEventSender::Channel(replacement),
@@ -1549,6 +1788,7 @@ mod tests {
         let (tx2, _rx2) = std::sync::mpsc::channel();
         reg.register(
             10,
+            ViewInstanceKey::detached(),
             "app-conflict-1".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_a")],
             PluginEventSender::Channel(tx1),
@@ -1556,6 +1796,7 @@ mod tests {
         );
         reg.register(
             20,
+            ViewInstanceKey::detached(),
             "app-conflict-2".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_b")],
             PluginEventSender::Channel(tx2),
@@ -1587,6 +1828,7 @@ mod tests {
         let (tx2, _rx2) = std::sync::mpsc::channel();
         reg.register(
             30,
+            ViewInstanceKey::detached(),
             "same-app".to_string(),
             vec![make_tool("echo")],
             PluginEventSender::Channel(tx1),
@@ -1594,6 +1836,7 @@ mod tests {
         );
         reg.register(
             20,
+            ViewInstanceKey::detached(),
             "same-app".to_string(),
             vec![make_tool("echo"), make_tool("unique")],
             PluginEventSender::Channel(tx2),
@@ -1630,6 +1873,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         register(
             998,
+            ViewInstanceKey::detached(),
             "hooks-app".to_string(),
             vec![make_tool("gated_tool")],
             PluginEventSender::Channel(tx),
@@ -1671,6 +1915,7 @@ mod tests {
         let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
         register(
             997,
+            ViewInstanceKey::detached(),
             "wasm-tools".to_string(),
             vec![make_tool("wasm.echo")],
             PluginEventSender::Wasm(sender),
@@ -1746,6 +1991,7 @@ mod tests {
         let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
         register(
             996,
+            ViewInstanceKey::detached(),
             "wasm-denied".to_string(),
             vec![make_tool("wasm.write")],
             PluginEventSender::Wasm(sender),
@@ -1804,6 +2050,7 @@ mod tests {
         };
         register(
             1901,
+            ViewInstanceKey::detached(),
             "calc".to_string(),
             vec![add_tool.clone(), state_tool.clone()],
             PluginEventSender::Channel(tx1),
@@ -1811,6 +2058,7 @@ mod tests {
         );
         register(
             1902,
+            ViewInstanceKey::detached(),
             "calc".to_string(),
             vec![add_tool.clone()],
             PluginEventSender::Channel(tx2),
@@ -1818,6 +2066,7 @@ mod tests {
         );
         register(
             1903,
+            ViewInstanceKey::detached(),
             "other".to_string(),
             vec![make_tool("other.secret")],
             PluginEventSender::Channel(tx3),

@@ -5347,6 +5347,7 @@ enabled = ["allowed.tool"]
         };
         tool_dispatch::register(
             9200,
+            tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![ro_tool, rw_tool],
             PluginEventSender::Channel(tx),
@@ -5375,6 +5376,7 @@ enabled = ["allowed.tool"]
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9205,
+            tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![crate::protocol::AiTool {
                 name: "csv.read_range".to_string(),
@@ -5413,6 +5415,7 @@ enabled = ["allowed.tool"]
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9206,
+            tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![crate::protocol::AiTool {
                 name: "csv.read_range".to_string(),
@@ -5447,6 +5450,7 @@ enabled = ["allowed.tool"]
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9207,
+            tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![
                 crate::protocol::AiTool {
@@ -5513,6 +5517,7 @@ enabled = ["allowed.tool"]
         let (tx, _rx) = std::sync::mpsc::channel();
         tool_dispatch::register(
             9201,
+            tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![
                 crate::protocol::AiTool {
@@ -5739,6 +5744,7 @@ enabled = ["allowed.tool"]
             .collect();
         tool_dispatch::register(
             pane_id,
+            tool_dispatch::ViewInstanceKey::detached(),
             "test-app".to_string(),
             tools,
             PluginEventSender::Channel(tx),
