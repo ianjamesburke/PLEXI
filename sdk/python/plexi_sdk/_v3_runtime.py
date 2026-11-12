@@ -1061,9 +1061,12 @@ def _exit_with_fatal_error(exc: Exception, *, phase: str, plugin_root: Path, mod
     The report replaces CPython's own stderr traceback: the host leads with the
     plugin's exception instead of a generic "exited before responding".
     """
-    _emit(_v3_errors.fatal_error_message(
-        exc, phase=phase, plugin_root=plugin_root, module=module
-    ))
+    _emit({
+        "type": "fatal_error",
+        **_v3_errors.fatal_error_fields(
+            exc, phase=phase, plugin_root=plugin_root, module=module
+        ),
+    })
     raise SystemExit(1) from None
 
 

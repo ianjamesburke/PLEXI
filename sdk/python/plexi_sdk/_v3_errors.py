@@ -56,14 +56,14 @@ def _signature_text(function: Any) -> str:
         return "(...)"
 
 
-def fatal_error_message(
+def fatal_error_fields(
     exc: BaseException,
     *,
     phase: str,
     plugin_root: Path,
     module: ModuleType | None,
 ) -> dict:
-    """Build the `fatal_error` protocol message for `exc`.
+    """Describe `exc` as the fields of the runtime's `fatal_error` message.
 
     `file` and `line` point at the innermost frame inside the plugin folder.
     When the exception never entered plugin code (a wrong return value, a wrong
@@ -78,7 +78,6 @@ def fatal_error_message(
     summary = traceback.TracebackException.from_exception(exc)
     _relativize(summary, plugin_root)
     return {
-        "type": "fatal_error",
         "phase": phase,
         "file": location[0] if location else None,
         "line": location[1] if location else None,
