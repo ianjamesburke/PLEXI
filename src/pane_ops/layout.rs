@@ -24,7 +24,7 @@ pub(crate) enum SwapResult {
 /// Which rule of `choose_focus_after_close` picked the focus after a close.
 /// Named in the `close_tile: focus rule=` trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloseFocusRule {
+pub(crate) enum CloseFocusRule {
     /// The tab the tab bar activated in place of the closed tab.
     TabSibling,
     /// The only adjacent pane, or the first adjacent pane with no history.

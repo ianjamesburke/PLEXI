@@ -468,6 +468,9 @@ pub struct PlexiApp {
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
+    /// Focus hand-off made by the last hide of a focused pane, so the next
+    /// Cmd+U can bring that pane back (`toggle_focused_pane_hidden`).
+    pub(crate) last_hide_handoff: Option<cli_actions::HideHandoff>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -1883,6 +1886,7 @@ impl PlexiApp {
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
+                    last_hide_handoff: None,
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2171,6 +2175,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
+            last_hide_handoff: None,
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3157,6 +3162,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
+            last_hide_handoff: None,
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
@@ -4682,16 +4688,7 @@ impl PlexiApp {
                 self.open_rename_for_focused();
             }
             Action::HidePane => {
-                let win = &self.windows[self.active_window];
-                let target = win
-                    .focused_pane
-                    .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
-                    .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
-                if let Some((pane_id, hidden)) = target {
-                    if let Err(error) = self.set_pane_hidden(pane_id, hidden) {
-                        log::warn!("pane_hide: {error}");
-                    }
-                }
+                self.toggle_focused_pane_hidden();
             }
             Action::SwitchContext(n) => {
                 // Map display position n (0-indexed) to the actual router
