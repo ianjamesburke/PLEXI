@@ -107,7 +107,7 @@ LIST="$(cli pane list)"
 python3 - "$LIST" <<'PY'
 import json, sys
 rows = json.loads(sys.argv[1])
-titles = [row.get("title") for row in rows if row.get("type") == "app"]
+titles = [row.get("title") for row in rows if row.get("type") == "view"]
 assert "Lead A" in titles, titles
 assert "Lead B" in titles, titles
 print("pane titles", titles)

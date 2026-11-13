@@ -575,7 +575,7 @@ except Exception:
 for row in rows:
     title = str(row.get("title") or "")
     manifest = str(row.get("manifest_id") or "")
-    if row.get("type") == "app" and (
+    if row.get("type") == "view" and (
         title.lower() == "assistant" or manifest.lower() == "assistant"
     ):
         print(row.get("id", ""))

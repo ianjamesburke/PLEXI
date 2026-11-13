@@ -179,7 +179,7 @@ for _ in $(seq 1 20); do
   ASSIST="$(python3 - "$EVID/panes.json" <<'PY'
 import json, sys
 rows=json.load(open(sys.argv[1]))
-hits=[str(r["id"]) for r in rows if r.get("type")=="app" and "assistant" in str(r.get("title","")).lower()]
+hits=[str(r["id"]) for r in rows if r.get("type")=="view" and "assistant" in str(r.get("title","")).lower()]
 print(hits[-1] if hits else "")
 PY
 )"
