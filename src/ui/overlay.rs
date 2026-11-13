@@ -191,21 +191,27 @@ impl<'a> ModalShell<'a> {
                         if self.width > 0.0 {
                             ui.set_width(content_width);
                         }
-                        if let Some(title) = self.title {
-                            crate::ui::typography::modal_title(ui, title, colors);
-                            ui.add_space(style::SPACE_MD);
-                        }
-                        if self.width > 0.0 && self.fit_height {
+                        let fit_height = self.width > 0.0 && self.fit_height;
+                        if fit_height {
                             // The Area's Ui is only as tall as last frame's
                             // content, seeded from egui's default area size, so
                             // a scroll area sized from the available height
                             // never grows past that seed and clips rows the
-                            // window has room for. Give the body its real
-                            // budget; a body taller than the window scrolls.
+                            // window has room for. Give the frame its real
+                            // budget before anything is painted: `set_max_height`
+                            // moves the cursor to the top of the new max rect,
+                            // so after the title it would paint the body over it.
+                            ui.set_max_height(max_frame_content_height);
+                        }
+                        if let Some(title) = self.title {
+                            crate::ui::typography::modal_title(ui, title, colors);
+                            ui.add_space(style::SPACE_MD);
+                        }
+                        if fit_height {
+                            // A body taller than the window scrolls.
                             let title_height = ui.cursor().min.y - ui.min_rect().min.y;
                             let max_body_height = (max_frame_content_height - title_height)
                                 .max(style::MODAL_BODY_MIN_H);
-                            ui.set_max_height(max_body_height);
                             if ui.is_sizing_pass() {
                                 log::info!(
                                     "modal {:?}: body height budget {max_body_height:.1} (screen {:.1})",
