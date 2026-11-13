@@ -108,6 +108,10 @@ promote_alpha_to_beta() {
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
     check_clean "$BETA_TREE" "beta"
 
+    echo "Checking the public roadmap against the stints..."
+    (cd "$ALPHA_TREE" && just check-roadmap origin/alpha) \
+        || die "roadmap drift: fix website/src/lib/roadmap.json or the stints, then promote again"
+
     echo "Checking CLI docs are up to date..."
     if ! (cd "$ALPHA_TREE" && just check-cli-docs) 2>/dev/null; then
         echo "CLI docs are stale — regenerating automatically..."
@@ -152,6 +156,10 @@ fi
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
+
+echo "Checking the public roadmap against the stints..."
+(cd "$ALPHA_TREE" && just check-roadmap origin/beta) \
+    || die "roadmap drift: fix website/src/lib/roadmap.json or the stints, then promote again"
 [[ $(git -C "$MAIN_TREE" rev-parse --abbrev-ref HEAD) == "main" ]] || die "main worktree is not on 'main' branch"
 
 # Stable releases must ship a skill that documents this binary's actual CLI

@@ -547,6 +547,14 @@ bump bump="patch":
 promote to="" *flags="":
     bash scripts/promote.sh "{{to}}" {{flags}}
 
+# Compare the public roadmap (website/src/lib/roadmap.json) with the stints
+# that deliver it; exit 1 on drift. Needs the `stint` CLI and the release
+# owner's .stint/. `just promote` runs it before moving code. Not for CI.
+#   just check-roadmap              candidate is origin/alpha
+#   just check-roadmap origin/beta  candidate is origin/beta
+check-roadmap ref="origin/alpha":
+    uv run --no-project python scripts/check_roadmap.py --ref {{ref}}
+
 # Cut and publish the binary release tag for a channel already
 # promoted to its target branch. Never moves code — that's `just promote`.
 #   just release beta — cut vX.Y.Z-beta.N at beta HEAD, publish, trigger CI
@@ -589,6 +597,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_distribution_cache.py
     uv run --no-project python scripts/test_publish_pr_image.py
     uv run --no-project python scripts/test_probe_one_note_authority.py
+    uv run --no-project python scripts/test_check_roadmap.py
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
