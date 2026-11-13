@@ -24,7 +24,7 @@ pub(crate) enum SwapResult {
 /// Which rule of `choose_focus_after_close` picked the focus after a close.
 /// Named in the `close_tile: focus rule=` trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloseFocusRule {
+pub(crate) enum CloseFocusRule {
     /// The tab the tab bar activated in place of the closed tab.
     TabSibling,
     /// The only adjacent pane, or the first adjacent pane with no history.
@@ -1115,7 +1115,7 @@ impl PlexiApp {
     ///    beats above and left beats right.
     /// 3. `History`: no adjacent pane; the newest live window-local history entry.
     /// 4. `NearestColumn`: the closest remaining column, left before right.
-    fn choose_focus_after_close(
+    pub(crate) fn choose_focus_after_close(
         &self,
         ctx_idx: usize,
         closing_tile: TileId,
