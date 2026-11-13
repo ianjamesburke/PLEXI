@@ -67,10 +67,12 @@ class ProbeFixture:
         self.global_notes = root / "global" / ".plexi" / "notes"
         self.profile = root / "profile"
         self.pi_agent_dir = root / "pi-agent"
+        self.home = root / "home"
         self.context_notes.mkdir(parents=True)
         self.global_notes.mkdir(parents=True)
         self.profile.mkdir()
         self.pi_agent_dir.mkdir()
+        self.home.mkdir()
         self.source_note = self.context_notes / "selected.md"
         self.unrelated_context_note = self.context_notes / "UNSELECTED_SECRET_NOTE.md"
         self.unrelated_global_note = self.global_notes / "GLOBAL_SECRET_NOTE.md"
@@ -113,6 +115,20 @@ class ProbeFixture:
             for index, (name, args) in enumerate(calls)
         ]
 
+    def neutral(self, text: str) -> str:
+        """Replace the developer-specific fixture location so retained evidence carries no local paths."""
+        for root in {str(self.root.resolve()), str(self.root)}:
+            text = text.replace(root, "<fixture>")
+        return text
+
+    def confined_env(self) -> dict[str, str]:
+        """One environment for every pi invocation: HOME and the pi config dir inside the fixture, offline, no secrets or proxies."""
+        env = {key: value for key, value in os.environ.items() if key not in SECRET_ENV_NAMES | PROXY_ENV_NAMES}
+        env["HOME"] = str(self.home)
+        env["PI_CODING_AGENT_DIR"] = str(self.pi_agent_dir)
+        env["PI_OFFLINE"] = "1"
+        return env
+
     def cleanup(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -127,7 +143,7 @@ class ScriptedProvider:
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
+            def log_message(self, format, *args):
                 pass
 
             def do_POST(self):
@@ -166,13 +182,14 @@ class ScriptedProvider:
         return f"http://127.0.0.1:{self.server.server_port}/v1"
 
 
-def pi_metadata() -> dict[str, Any]:
-    version = subprocess.run([PI, "--version"], capture_output=True, text=True, check=False)
-    help_result = subprocess.run([PI, "--help"], capture_output=True, text=True, check=False)
+def pi_metadata(fixture: ProbeFixture) -> dict[str, Any]:
+    env = fixture.confined_env()
+    version = subprocess.run([PI, "--version"], capture_output=True, text=True, env=env, cwd=fixture.context_root, check=False)
+    help_result = subprocess.run([PI, "--help"], capture_output=True, text=True, env=env, cwd=fixture.context_root, check=False)
     help_text = help_result.stdout + help_result.stderr
     required = ["--no-tools", "--tools", "read", "write", "bash"]
     return {
-        "binary": PI,
+        "binary": Path(PI).name,
         "version": (version.stdout + version.stderr).strip(),
         "help_exit_code": help_result.returncode,
         "required_flags_present": {flag: flag in help_text for flag in required},
@@ -203,8 +220,7 @@ def observe_launch(fixture: ProbeFixture, flags: list[str], payload: bytes) -> d
     forced = fixture.forced_tool_calls()
     with ScriptedProvider(forced) as provider:
         write_probe_agent_dir(fixture, provider.base_url)
-        env = {key: value for key, value in os.environ.items() if key not in SECRET_ENV_NAMES | PROXY_ENV_NAMES}
-        env["PI_CODING_AGENT_DIR"] = str(fixture.pi_agent_dir)
+        env = fixture.confined_env()
         try:
             result = subprocess.run(argv, input=payload, capture_output=True, cwd=fixture.context_root, env=env, timeout=PI_TIMEOUT_SECONDS, check=False)
             exit_code: Optional[int] = result.returncode
@@ -234,10 +250,10 @@ def observe_launch(fixture: ProbeFixture, flags: list[str], payload: bytes) -> d
         tool_results.append({
             "tool": call["function"]["name"],
             "answered": content is not None,
-            "result_text": "<withheld: contains fixture secret bytes>" if leaked else content,
+            "result_text": "<withheld: contains fixture secret bytes>" if leaked else None if content is None else fixture.neutral(content if isinstance(content, str) else text or ""),
         })
     return {
-        "argv": argv,
+        "argv": [Path(PI).name, *flags],
         "exit_code": exit_code,
         "provider_request_count": len(requests),
         "tools_offered_to_model": tools_offered,
@@ -267,7 +283,7 @@ def capture_no_tools_launch(fixture: ProbeFixture) -> dict[str, Any]:
         **observed,
         "stdin_sha256": compute_sha256(payload),
         "stdin_byte_size": len(payload),
-        "environment_secret_names_withheld": sorted(SECRET_ENV_NAMES),
+        "environment_secret_vars_withheld_count": len(SECRET_ENV_NAMES),
         "forbidden_bytes_absent": forbidden_absent,
         "payload_contains_selected_hash": fixture.source_hash.encode() in outbound and observed["selected_hash_reached_provider"],
         "provider_payload_verdict": "ONLY_SELECTED_NOTE" if forbidden_absent else "LEAK_DETECTED",
@@ -290,7 +306,7 @@ def native_tools_negative_control(fixture: ProbeFixture) -> dict[str, Any]:
 
 
 def run_probe(fixture: ProbeFixture) -> dict[str, Any]:
-    metadata = pi_metadata()
+    metadata = pi_metadata(fixture)
     no_tools = capture_no_tools_launch(fixture)
     native = native_tools_negative_control(fixture)
     flags_ok = all(metadata["required_flags_present"].values())

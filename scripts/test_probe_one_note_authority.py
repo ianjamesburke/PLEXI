@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import sys
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import importlib.util
 PROBE_PATH = Path(__file__).with_name("probe-one-note-authority.py")
 spec = importlib.util.spec_from_file_location("probe_one_note_authority", PROBE_PATH)
+assert spec and spec.loader
 probe = importlib.util.module_from_spec(spec)
 sys.modules["probe_one_note_authority"] = probe
 spec.loader.exec_module(probe)
@@ -56,11 +58,8 @@ class ProbeAuthorityTests(unittest.TestCase):
                 flags = probe.CONTROL_FLAGS
             return real_observe(fixture, flags, payload)
 
-        probe.observe_launch = tools_left_on
-        try:
+        with mock.patch.object(probe, "observe_launch", tools_left_on):
             evidence = probe.run_probe(self.fixture)
-        finally:
-            probe.observe_launch = real_observe
         self.assertEqual(evidence["no_tools_stdin_mode"]["tools_verdict"], "NOT_REFUSED")
         self.assertEqual(evidence["no_tools_stdin_mode"]["provider_payload_verdict"], "LEAK_DETECTED")
         self.assertEqual(evidence["overall_verdict"], "AUTHORITY_VIOLATION")
@@ -80,6 +79,13 @@ class ProbeAuthorityTests(unittest.TestCase):
         self.assertNotIn("UNSELECTED_SECRET_NOTE", evidence_str)
         self.assertNotIn("GLOBAL_SECRET_NOTE", evidence_str)
         self.assertNotIn("ATTACHMENT_SECRET", evidence_str)
+
+        # Assert no local paths or local secret variable names are retained
+        self.assertNotIn(str(Path.home()), evidence_str)
+        self.assertNotIn(str(self.fixture.root.resolve()), evidence_str)
+        self.assertNotIn(str(self.fixture.root), evidence_str)
+        self.assertNotIn("environment_secret_names_withheld", evidence_str)
+        self.assertIsInstance(evidence["no_tools_stdin_mode"]["environment_secret_vars_withheld_count"], int)
 
         # Assert fingerprints and metadata are present
         self.assertEqual(evidence["input_hash_sha256"], self.fixture.source_hash)

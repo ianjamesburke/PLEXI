@@ -1,6 +1,6 @@
 {
   "harness": {
-    "binary": "/Users/ianburke/.local/bin/pi",
+    "binary": "pi",
     "help_exit_code": 0,
     "isolated_dir_present": false,
     "required_flags_present": {
@@ -17,7 +17,7 @@
   "live_acceptance": "NO_TOOLS_STDIN_ONLY",
   "native_tool_negative_control": {
     "argv": [
-      "/Users/ianburke/.local/bin/pi",
+      "pi",
       "--print",
       "--tools",
       "read,write,bash",
@@ -48,7 +48,7 @@
       },
       {
         "answered": true,
-        "result_text": "Successfully wrote to /var/folders/zb/qtrt3hvx6jd87f45s51mg8bm0000gn/T/plexi-note-probe-rqgkn1q_/context/.plexi/notes/selected.md",
+        "result_text": "Successfully wrote to <fixture>/context/.plexi/notes/selected.md",
         "tool": "write"
       }
     ],
@@ -65,7 +65,7 @@
   },
   "no_tools_stdin_mode": {
     "argv": [
-      "/Users/ianburke/.local/bin/pi",
+      "pi",
       "--print",
       "--no-tools",
       "--no-session",
@@ -73,28 +73,7 @@
       "--no-approve",
       "--offline"
     ],
-    "environment_secret_names_withheld": [
-      "AI_VIDEO_FAL_KEY",
-      "AI_VIDEO_GEMINI_KEY",
-      "ANTHROPIC_API_KEY",
-      "BITBUCKET_API_TOKEN",
-      "CF_API_TOKEN",
-      "CLAUDE_CODE_MESSAGING_TOKEN",
-      "CLAWMART_API_KEY",
-      "CODING_SHOWDOWN_GEMINI_API_KEY",
-      "CONTEXT7_API_KEY",
-      "DU_OWUI_KEY",
-      "ELEVENLABS_API_KEY",
-      "FAL_KEY",
-      "FRAMEIO_CLIENT_SECRET",
-      "FRAMEIO_TOKEN",
-      "GOOGLE_API_KEY",
-      "KALSHI_API_KEY_ID",
-      "KALSHI_PRIVATE_KEY_PATH",
-      "NVIDIA_API_KEY",
-      "OPENAI_API_KEY",
-      "OPENROUTER_API_KEY"
-    ],
+    "environment_secret_vars_withheld_count": 20,
     "exit_code": 0,
     "forbidden_bytes_absent": true,
     "forbidden_bytes_reached_provider": false,
