@@ -540,8 +540,9 @@ class PolicyTests(unittest.TestCase):
         root = SCRIPT.parent.parent
         host = (root / ".github/workflows/rust-host.yml").read_text()
         trigger = host.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(trigger, "  pull_request:\n    branches: [alpha]\n"
-                                  "  push:\n    branches: [alpha]\n  workflow_call:")
+        self.assertEqual(trigger.split("\n    outputs:\n", 1)[0],
+                         "  pull_request:\n    branches: [alpha]\n"
+                         "  push:\n    branches: [alpha]\n  workflow_call:")
         self.assertIn("\npermissions:\n  contents: read\n", host)
         for banned in ("secrets.", "secrets:", "pull_request_target", "environment:", "codesign", "notary"):
             self.assertNotIn(banned, host)
@@ -553,6 +554,16 @@ class PolicyTests(unittest.TestCase):
         nightly = (root / ".github/workflows/nightly.yml").read_text()
         self.assertIn("uses: ./.github/workflows/rust-host.yml", nightly)
         self.assertIn("schedule:", nightly)
+        # Nightly tags on the required macOS jobs only; the advisory linux job
+        # (whose timeout is a cancellation) never decides the tag.
+        self.assertIn("      required_passed:\n        value: ${{ jobs.scope.outputs.build == 'true'"
+                      " && jobs.test.outputs.passed == 'true' && jobs.clippy.outputs.passed == 'true' }}",
+                      trigger)
+        self.assertEqual(host.count("      passed: ${{ steps.passed.outputs.passed }}\n"), 2)
+        self.assertEqual(host.count("        id: passed\n        run: echo \"passed=true\" >> \"$GITHUB_OUTPUT\"\n"), 2)
+        self.assertNotIn("jobs.linux", host)
+        self.assertIn("  tag:\n    needs: host\n", nightly)
+        self.assertIn("    if: ${{ !cancelled() && needs.host.outputs.required_passed == 'true' }}\n", nightly)
 
     def test_waivers_cannot_be_self_attested_to_automated_merge(self):
         record = json.loads(json.dumps(self.record))

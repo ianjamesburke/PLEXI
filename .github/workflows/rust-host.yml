@@ -19,6 +19,13 @@ on:
   push:
     branches: [alpha]
   workflow_call:
+    outputs:
+      # nightly.yml tags on this, never on the run result: a linux timeout
+      # is a cancellation, which continue-on-error does not absorb. Each
+      # output is set by its job's last step, so it is 'true' only when every
+      # step of that job succeeded.
+      required_passed:
+        value: ${{ jobs.scope.outputs.build == 'true' && jobs.test.outputs.passed == 'true' && jobs.clippy.outputs.passed == 'true' }}
 
 # Pull requests group on refs/pull/<n>/merge, so a push cancels that PR's
 # superseded run and no other. Alpha runs queue instead: cancelling would let a
@@ -75,6 +82,8 @@ jobs:
     # A warm-cache run took 26.8 min on 2026-11-01 (release build, test build,
     # 6 min of tests); 30 left no headroom for a cold cache.
     timeout-minutes: 45
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -105,6 +114,10 @@ jobs:
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             cargo test --bin plexi
 
+      - name: Record pass
+        id: passed
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
+
   clippy:
     name: clippy
     needs: scope
@@ -112,6 +125,8 @@ jobs:
     if: ${{ !cancelled() && needs.scope.outputs.build != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 30
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -124,6 +139,10 @@ jobs:
 
       - name: Lint host
         run: cargo clippy --bin plexi -- -D warnings
+
+      - name: Record pass
+        id: passed
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
 
   # Advisory observer, deliberately (PR #2814). `continue-on-error` keeps the
   # WORKFLOW RUN green when this job fails, and `alpha` has no required status
