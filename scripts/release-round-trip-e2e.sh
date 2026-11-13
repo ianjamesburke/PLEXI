@@ -116,7 +116,7 @@ TOML
 printf -- '---\nplexi_version: "0.1.0"\n---\n' > skills/plexi-cli/SKILL.md
 echo "# CLI" > website/src/content/docs/cli.md
 printf '# Changelog\n\nNewest releases appear first.\n' > CHANGELOG.md
-printf 'check-cli-docs:\n    @true\n\ngen-cli-docs:\n    @true\n' > justfile
+printf 'check-cli-docs:\n    @true\n\ngen-cli-docs:\n    @true\n\ncheck-roadmap *args:\n    @true\n' > justfile
 printf 'target/\nworktrees/\n' > .gitignore
 cp "$REPO/cliff.toml" cliff.toml
 for s in release-version.sh promote.sh release-tag.sh gen-doc-safe.sh cargo-with-lease.sh; do
