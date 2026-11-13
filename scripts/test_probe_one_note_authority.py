@@ -27,11 +27,45 @@ class ProbeAuthorityTests(unittest.TestCase):
         evidence = probe.run_probe(self.fixture)
         self.assertEqual(evidence["overall_verdict"], "VERIFIED_RESTRICTED")
         self.assertEqual(evidence["live_acceptance"], "NO_TOOLS_STDIN_ONLY")
-        self.assertEqual(evidence["harness"]["version"], "1.4.0")
+        self.assertTrue(evidence["harness"]["version"], "installed pi version must be recorded")
         self.assertFalse(evidence["harness"]["isolated_dir_present"])
-        self.assertTrue(evidence["no_tools_stdin_mode"]["forbidden_bytes_absent"])
-        self.assertEqual(evidence["native_tool_negative_control"]["verdict"], "FAIL_UNRESTRICTED")
-        self.assertEqual(evidence["native_tool_negative_control"]["live_acceptance"], "WITHHELD_SYNTHETIC_FIXTURE_ONLY")
+        no_tools = evidence["no_tools_stdin_mode"]
+        self.assertEqual(no_tools["argv"][1:], probe.LIVE_FLAGS)
+        self.assertEqual(no_tools["exit_code"], 0)
+        self.assertEqual(no_tools["tools_offered_to_model"], [])
+        self.assertEqual(no_tools["forced_tool_calls"], ["read", "bash", "write"])
+        self.assertTrue(all(result["answered"] for result in no_tools["forced_tool_results"]))
+        self.assertFalse(no_tools["forbidden_bytes_reached_provider"])
+        self.assertTrue(no_tools["source_note_unchanged"])
+        self.assertTrue(no_tools["selected_hash_reached_provider"])
+        self.assertTrue(no_tools["forbidden_bytes_absent"])
+        self.assertEqual(no_tools["tools_verdict"], "OBSERVED_REFUSED")
+        native = evidence["native_tool_negative_control"]
+        self.assertEqual(sorted(native["tools_offered_to_model"]), ["bash", "read", "write"])
+        self.assertTrue(native["forbidden_bytes_reached_provider"])
+        self.assertFalse(native["source_note_unchanged"])
+        self.assertEqual(native["verdict"], "FAIL_UNRESTRICTED")
+        self.assertEqual(native["live_acceptance"], "WITHHELD_SYNTHETIC_FIXTURE_ONLY")
+        self.assertEqual(self.fixture.source_note.read_bytes(), self.fixture.source_content)
+
+    def test_verdict_requires_observed_refusal(self):
+        real_observe = probe.observe_launch
+
+        def tools_left_on(fixture, flags, payload):
+            if flags == probe.LIVE_FLAGS:
+                flags = probe.CONTROL_FLAGS
+            return real_observe(fixture, flags, payload)
+
+        probe.observe_launch = tools_left_on
+        try:
+            evidence = probe.run_probe(self.fixture)
+        finally:
+            probe.observe_launch = real_observe
+        self.assertEqual(evidence["no_tools_stdin_mode"]["tools_verdict"], "NOT_REFUSED")
+        self.assertEqual(evidence["no_tools_stdin_mode"]["provider_payload_verdict"], "LEAK_DETECTED")
+        self.assertEqual(evidence["overall_verdict"], "AUTHORITY_VIOLATION")
+        self.assertEqual(evidence["live_acceptance"], "WITHHELD_LIVE_ACCEPTANCE")
+        self.assertNotIn("UNSELECTED_SECRET_NOTE", json.dumps(evidence))
 
     def test_retained_evidence_excludes_secrets_and_raw_note_content(self):
         evidence = probe.run_probe(self.fixture)
