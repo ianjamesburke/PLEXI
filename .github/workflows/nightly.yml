@@ -19,6 +19,9 @@ jobs:
     uses: ./.github/workflows/rust-host.yml
   tag:
     needs: host
+    # Tags only when the required macOS jobs passed, whatever the advisory
+    # linux job did; a user cancelling the run still stops it.
+    if: ${{ !cancelled() && needs.host.outputs.required_passed == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
