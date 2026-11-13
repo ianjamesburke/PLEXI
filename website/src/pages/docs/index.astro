@@ -32,7 +32,7 @@ const [start, ...rest] = docsNav;
     </header>
 
     <section class="start-path" aria-labelledby="path-title">
-      <h2 id="path-title">Three steps in</h2>
+      <h2 id="path-title">Start</h2>
       <ol>
         {start.items.map((item, index) => (
           <li>
@@ -50,13 +50,12 @@ const [start, ...rest] = docsNav;
     </section>
 
     <aside class="start-version">
-      <h2>Which version these pages describe</h2>
+      <h2>Version</h2>
       <p>
-        The docs follow the <code>alpha</code> branch, which matches Beta 0.5 Groundwork (0.5.0) and newer work. 0.5 Groundwork renamed
-        apps to plugins and views: <code>plexi plugin</code> manages packages and
-        <code>plexi view</code> opens them in panes. Releases before 0.5 Groundwork use
-        <code>plexi app</code> for the same jobs. Run <code>plexi --version</code>, and trust
-        <code>plexi --help</code> over this site when they disagree.
+        These docs follow the <code>alpha</code> branch: Beta {release.beta.label} and newer.
+        {release.beta.name} renamed apps to plugins and views. Earlier releases use
+        <code>plexi app</code> for both. Where this site and <code>plexi --help</code>
+        disagree, trust <code>plexi --help</code>.
       </p>
     </aside>
 
@@ -64,7 +63,6 @@ const [start, ...rest] = docsNav;
       <section class="start-group" aria-labelledby={`group-${group.section.replace(/\s+/g, '-').toLowerCase()}`}>
         <div class="group-head">
           <h2 id={`group-${group.section.replace(/\s+/g, '-').toLowerCase()}`}>{group.section}</h2>
-          <p>{group.blurb}</p>
         </div>
         <ul>
           {group.items.map(item => (
@@ -83,12 +81,11 @@ const [start, ...rest] = docsNav;
     ))}
 
     <section class="start-help" aria-labelledby="help-title">
-      <h2 id="help-title">When the docs fall short</h2>
+      <h2 id="help-title">Help</h2>
       <p>
-        Every command explains itself: <code>plexi --help</code> lists the namespaces and
-        <code>plexi &lt;command&gt; --help</code> covers flags and examples. Agents learn Plexi from
-        that same text. For anything else, <a href="/support">get support</a> or
-        <a href="https://github.com/ianjamesburke/PLEXI/issues">open an issue</a>.
+        <code>plexi --help</code> lists the namespaces and
+        <code>plexi &lt;command&gt; --help</code> covers flags and examples. For anything else,
+        <a href={`${release.repo}/issues`}>open an issue</a>.
       </p>
     </section>
   </div>
@@ -149,7 +146,6 @@ const [start, ...rest] = docsNav;
   /* Grouped index: title on the left, what the page answers on the right. */
   .start-group { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px 40px; margin-top: 72px; padding: 0; border: 0; }
   .group-head h2 { font-size: clamp(24px, 2.2vw, 30px); letter-spacing: -.025em; line-height: 1.15; }
-  .group-head p { margin-top: 10px; font-size: 14.5px; line-height: 1.5; color: var(--fg-2); }
   .start-group ul { list-style: none; border-top: 1px solid var(--border-2); }
   .start-group li { border-bottom: 1px solid var(--border); }
   .start-group li a { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 4px 28px; align-items: baseline; padding: 16px 8px; transition: background-color 140ms ease; }

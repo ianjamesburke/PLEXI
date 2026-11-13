@@ -20,7 +20,7 @@ const parts = [
     ],
     cmd: 'plexi pane new -n tests',
     cmdNote: 'Opens a terminal pane named "tests".',
-    shot: { id: 'S7', pending: 'Four terminals tiled in one window, each in a different directory, with pane names set.', caption: 'Four terminals in one context.' },
+    shot: { id: 'S7', caption: 'Four terminals in one context.' },
     doc: { href: '/docs/panes', label: 'Panes' },
   },
   {
@@ -34,7 +34,7 @@ const parts = [
     ],
     cmd: 'plexi agent hook install --claude-code',
     cmdNote: 'Use --codex for Codex. Then run plexi agent status.',
-    shot: { id: 'S3', pending: 'Two agent panes, one working and one blocked, with the list of items waiting on you open beside them.', caption: 'One agent working, one waiting on you.' },
+    shot: { id: 'S3', caption: 'One agent working, one waiting on you.' },
     doc: { href: '/docs/first-agent', label: 'Run your first agent' },
   },
   {
@@ -48,7 +48,7 @@ const parts = [
     ],
     cmd: 'plexi view open todo',
     cmdNote: 'Opens the bundled Todo plugin in a split to the right.',
-    shot: { id: 'S6', src: '/shots/todo.png', alt: 'The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete.', ratio: '4 / 3', caption: 'The bundled Todo view, rendered by plexi view render with seeded items.' },
+    shot: { id: 'S6', src: '/shots/todo.png', alt: 'The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete.', ratio: '4 / 3', caption: 'The bundled Todo view.' },
     doc: { href: '/plugins', label: 'Plugins and views' },
   },
   {
@@ -62,7 +62,7 @@ const parts = [
     ],
     cmd: 'plexi permissions list',
     cmdNote: 'Prints the live permission decisions.',
-    shot: { id: 'S4', pending: 'A plugin asking for a capability, with the prompt visible before any decision is made.', caption: 'A capability request.' },
+    shot: { id: 'S4', caption: 'A capability request.' },
     doc: { href: '/docs/plugins#execution-and-permissions', label: 'Execution and permissions' },
   },
   {
@@ -75,7 +75,7 @@ const parts = [
     ],
     cmd: 'plexi note add "check the flaky upload test"',
     cmdNote: 'Writes a timestamped note.',
-    shot: { id: 'S8', pending: 'The Quick Note overlay open over a tiled layout, with two lines typed.', caption: 'Quick Note over a working layout.' },
+    shot: { id: 'S8', caption: 'Quick Note over a working layout.' },
     doc: { href: '/docs/quick-note', label: 'Quick Note' },
   },
   {
@@ -88,16 +88,16 @@ const parts = [
     ],
     cmd: 'plexi --help',
     cmdNote: 'The same actions, listed for an agent or a script.',
-    shot: { id: 'S9', pending: 'The command palette open with a query typed and matching actions listed.', caption: 'The command palette.' },
+    shot: { id: 'S9', caption: 'The command palette.' },
     doc: { href: '/docs/config', label: 'Configuration' },
   },
 ];
 ---
 <Layout
   title="Product tour | Plexi"
-  description="What is in the Plexi window: panes and terminals, agents and their state, plugins and views, permissions, notes and the command palette. Each with the command that reaches it."
+  description="Panes and terminals, agents and their state, plugins and views, permissions, notes and the command palette."
 >
-  <PageHead title="What is in the window." lede="Six things, each with the command an agent uses to reach it.">
+  <PageHead title="Product.">
     <a class="btn lg" href="/download">Download for Mac <Arrow dir="down" /></a>
   </PageHead>
 
@@ -120,7 +120,7 @@ const parts = [
           </div>
           <a class="link-arrow" href={p.doc.href}>{p.doc.label} <Arrow /></a>
         </div>
-        <Shot caption={p.shot.caption} pending={p.shot.pending} src={p.shot.src} alt={p.shot.alt} ratio={p.shot.ratio} />
+        <Shot caption={p.shot.caption} src={p.shot.src} alt={p.shot.alt} ratio={p.shot.ratio} />
       </div>
       {p.id === 'permissions' && (
         <div class="wrap part-notice">

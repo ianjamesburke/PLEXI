@@ -24,7 +24,7 @@ const steps = [
 ---
 <Layout
   title="Plugins and views | Plexi"
-  description="A Plexi plugin is a small Python package that draws a view in a pane. See the plugins that ship with Plexi and how to build your own."
+  description="A Plexi plugin is a small Python package that draws a view in a pane."
 >
   <PageHead title="Plugins." lede="Small local tools that run in a pane. A set of them ships with Plexi, and you or your agent can write more in Python.">
     <a class="btn lg" href="/docs/first-plugin">Build your first plugin <Arrow /></a>
@@ -44,12 +44,12 @@ const steps = [
   <section class="wrap" id="bundled" aria-labelledby="bundled-title">
     <div class="bundled-head">
       <h2 class="h2" id="bundled-title">In the box.</h2>
-      <p class="lead">{plugins.length} plugins ship with Plexi. Each is built on the same SDK you get, so each one is also example code.</p>
+      <p class="lead">Built with the same SDK you get.</p>
     </div>
 
     <div class="renders">
-      <Shot ratio="4 / 3" src="/shots/todo.png" alt="The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete." caption="Todo, rendered by plexi view render with seeded items." />
-      <Shot ratio="4 / 3" src="/shots/calc.png" alt="The Calculator plugin showing a display reading 0 and a keypad with digits and operators." caption="Calculator, rendered by plexi view render." />
+      <Shot ratio="4 / 3" src="/shots/todo.png" alt="The Todo plugin showing five items, two done and three open, with the third selected, and buttons to add, toggle and delete." caption="Todo" />
+      <Shot ratio="4 / 3" src="/shots/calc.png" alt="The Calculator plugin showing a display reading 0 and a keypad with digits and operators." caption="Calculator" />
     </div>
 
     <h3 class="group-label">Tools</h3>
@@ -63,7 +63,7 @@ const steps = [
       ))}
     </ul>
 
-    <h3 class="group-label">Games, which double as SDK examples</h3>
+    <h3 class="group-label">Games</h3>
     <ul class="plugin-list">
       {games.map(p => (
         <li>
@@ -73,13 +73,12 @@ const steps = [
         </li>
       ))}
     </ul>
-    <p class="list-source">This list is generated from <a class="text-link" href={`${release.repo}/blob/alpha/packs/core.toml`}>packs/core.toml</a> and each plugin's manifest.</p>
   </section>
 
   <section class="wrap" id="build" aria-labelledby="build-title">
     <div class="bundled-head">
       <h2 class="h2" id="build-title">Three functions.</h2>
-      <p class="lead">A plugin is <code class="inline">init</code>, <code class="inline">update</code> and <code class="inline">view</code>. No class and nothing to inherit from.</p>
+      <p class="lead">A plugin is <code class="inline">init</code>, <code class="inline">update</code> and <code class="inline">view</code>.</p>
     </div>
     <div class="build-grid">
       <pre class="code" tabindex="0" aria-label="Counter plugin source"><code><span class="k">from</span> plexi_sdk <span class="k">import</span> log, state
@@ -106,7 +105,7 @@ const steps = [
         FooterKeys([("+", "increment")]),
     ], grow=True)</code></pre>
       <div class="build-side">
-        <Shot ratio="3 / 2" src="/shots/counter.png" alt="The counter plugin running: a header reading Counter, the count 0, and a footer hint that the plus key increments." caption="This source, rendered by plexi view render." />
+        <Shot ratio="3 / 2" src="/shots/counter.png" alt="The counter plugin running: a header reading Counter, the count 0, and a footer hint that the plus key increments." caption="This source, rendered." />
         <dl class="facts">
           <div><dt>init</dt><dd>Runs once on launch and returns the starting effects.</dd></div>
           <div><dt>update</dt><dd>Runs for every input event and returns effects. State changes only through those effects.</dd></div>
@@ -119,7 +118,7 @@ const steps = [
   <section class="wrap split" id="loop" aria-labelledby="loop-title">
     <div class="sticky-head">
       <h2 class="h2" id="loop-title">Scaffold, check, open.</h2>
-      <p class="muted">The loop is four commands, and an agent can run all four. Run them from inside a Plexi pane.</p>
+      <p class="muted">Run these from inside a Plexi pane.</p>
     </div>
     <ol class="steps">
       {steps.map(s => (
@@ -171,7 +170,6 @@ const steps = [
   .plugin-list p { color: var(--fg-2); font-size: 15px; line-height: 1.5; }
   .plugin-list .caps { margin-top: auto; padding-top: 6px; font: 12px/1.5 var(--mono); color: var(--fg); }
   .caps span { color: var(--fg-3); }
-  .list-source { margin-top: 24px; font-size: 14px; color: var(--fg-3); }
 
   .build-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: clamp(28px, 4vw, 64px); align-items: start; }
   .build-grid .code { font-size: clamp(12px, 1vw, 14px); }

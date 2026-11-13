@@ -11,8 +11,8 @@ const recent = versions.slice(0, RECENT);
 const older = versions.slice(RECENT);
 const prUrl = (n: number) => `${release.repo}/pull/${n}`;
 ---
-<Layout title="Changelog | Plexi" description="What changed in each Plexi version, newest first. Generated from the commit history.">
-  <PageHead title="Changelog." lede="What changed in each version, newest first. Generated from the commit history, so the entries read like commits.">
+<Layout title="Changelog | Plexi" description="What changed in each Plexi version.">
+  <PageHead title="Changelog.">
     <a class="link-arrow" href={release.releases}>Releases on GitHub <Arrow dir="ne" /></a>
   </PageHead>
 

@@ -52,7 +52,7 @@ import { release } from '../lib/release';
       <h2 class="display" id="cli-title">Every feature<br />is a command.</h2>
       <div class="statement-bottom">
         <div>
-          <p>Plexi is built so that every feature is reachable from the <code>plexi</code> CLI. An agent in one pane can open another pane, brief the agent in it, read its state and capture what it drew.</p>
+          <p>An agent in one pane can open another pane, brief the agent in it, read its state and capture what it drew.</p>
           <a class="link-arrow" href="/docs/cli">CLI reference <Arrow /></a>
         </div>
         <pre class="code" tabindex="0" aria-label="Example plexi commands"><code><span class="p">$ </span>plexi pane new --agent claude -n worker
@@ -67,7 +67,7 @@ import { release } from '../lib/release';
     <h2 class="h2" id="files-title">Files you can read.</h2>
     <div>
       <p class="lead">Config is TOML. Notes and todo lists are Markdown. They sit on your disk in formats that open without Plexi.</p>
-      <p class="after-lead muted">The Todo plugin keeps its list in a Markdown checklist that you or an agent can edit directly. Quick Note saves each capture as a timestamped Markdown file. Nothing you make in Plexi needs Plexi to read it back.</p>
+      <p class="after-lead muted">The Todo plugin keeps its list in a Markdown checklist that you or an agent can edit directly. Quick Note saves each capture as a timestamped Markdown file.</p>
     </div>
   </section>
 
@@ -78,8 +78,8 @@ import { release } from '../lib/release';
     </div>
     <dl class="facts">
       <div><dt>Platform</dt><dd><strong>Apple Silicon Mac.</strong> Windows and Linux are coming soon.</dd></div>
-      <div><dt>Release</dt><dd><strong>Beta {release.beta.label}</strong> is the current build. It renamed apps to plugins and views, and these pages use the new names. The next release is {release.next}.</dd></div>
-      <div><dt>Signing</dt><dd>Builds are self-signed and not notarized. macOS warns the first time you open one, and the <a class="text-link" href="/download">download page</a> says what to do about it.</dd></div>
+      <div><dt>Release</dt><dd><strong>Beta {release.beta.label}</strong> is the current build. The next release is {release.next}.</dd></div>
+      <div><dt>Signing</dt><dd>Builds are self-signed and not notarized. macOS warns the first time you open one. <a class="text-link" href="/download#trust">How to open it</a>.</dd></div>
       <div><dt>Stability</dt><dd>Plexi is pre-1.0. Commands, config keys and the plugin API can change between releases.</dd></div>
     </dl>
   </section>
