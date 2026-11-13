@@ -8919,6 +8919,42 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_cleared")).unwrap();
     }
 
+    /// Stint 1342 and ledger row 49: Cmd+U on the focused pane dims it and
+    /// hands the keyboard to its neighbour; a second Cmd+U brings it back.
+    #[test]
+    fn screenshot_cmd_u_hands_focus_on_and_second_press_reveals() {
+        let (mut h, [a, b, _c]) = three_column_fixture();
+        let press_cmd_u = |h: &mut PlexiUiHarness| {
+            for pressed in [true, false] {
+                h.harness().input_mut().events.push(egui::Event::Key {
+                    key: egui::Key::U,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            h.run_steps(3);
+        };
+        let hidden = |h: &PlexiUiHarness, pane: u64| {
+            h.with_app(|app| app.windows[app.active_window].panes[&pane].is_hidden())
+        };
+        h.focus_pane(a).unwrap();
+        h.run_steps(2);
+
+        press_cmd_u(&mut h);
+        assert!(hidden(&h, a), "Cmd+U hides the focused pane");
+        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(b));
+        assert!(h.with_app(|app| app.pane_qualifies_for_input(b)));
+        h.save_screenshot(&evidence_png!("_hidden")).unwrap();
+
+        press_cmd_u(&mut h);
+        assert!(!hidden(&h, a), "a second Cmd+U brings the pane back");
+        assert!(!hidden(&h, b), "the neighbour stays visible");
+        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(a));
+        h.save_screenshot(&evidence_png!("_revealed")).unwrap();
+    }
+
     #[test]
     fn pane_chrome_selected_view_keeps_its_state_ring() {
         let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);

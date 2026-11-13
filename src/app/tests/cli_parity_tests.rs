@@ -422,6 +422,63 @@ fn cmd_u_on_the_focused_pane_leaves_a_pane_that_owns_the_keyboard() {
     );
 }
 
+/// Owner ruling 2026-11-12 (ledger row 49): Cmd+U stays a hide-and-peek
+/// toggle. After the first press hands focus to the neighbour, a second press
+/// brings back the pane hidden last instead of hiding the neighbour.
+#[test]
+fn second_cmd_u_reveals_the_pane_hidden_last_instead_of_hiding_the_neighbour() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let other = h.add_test_pane();
+    tile_pair(&mut h, pane, other);
+    h.focus_pane(pane).run_frames(1);
+
+    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
+    h.run_frames(1);
+    assert!(h.app.windows[0].panes[&pane].is_hidden());
+    assert_eq!(h.app.active_focused_pane_id(), Some(other));
+
+    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
+    h.run_frames(1);
+    assert!(
+        !h.app.windows[0].panes[&other].is_hidden(),
+        "the second Cmd+U must not hide the neighbour that took focus"
+    );
+    assert!(
+        !h.app.windows[0].panes[&pane].is_hidden(),
+        "the second Cmd+U brings back the pane hidden last"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
+    assert!(h.app.pane_qualifies_for_input(pane));
+}
+
+/// The toggle only answers the hide it follows: once the hidden pane is back
+/// by another route, Cmd+U on the neighbour hides the neighbour.
+#[test]
+fn cmd_u_hides_the_neighbour_once_the_hidden_pane_was_revealed_another_way() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let other = h.add_test_pane();
+    tile_pair(&mut h, pane, other);
+    h.focus_pane(pane).run_frames(1);
+
+    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
+    h.run_frames(1);
+    assert_eq!(h.app.active_focused_pane_id(), Some(other));
+    let reply = request(
+        &mut h,
+        serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":false}),
+    );
+    assert_eq!(reply["ok"], true);
+    assert_eq!(h.app.active_focused_pane_id(), Some(other));
+
+    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
+    h.run_frames(1);
+    assert!(h.app.windows[0].panes[&other].is_hidden());
+    assert!(!h.app.windows[0].panes[&pane].is_hidden());
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
+}
+
 /// With no other visible pane to take focus, the hidden pane keeps it, so a
 /// second Cmd+U reveals the pane instead of leaving it unreachable.
 #[test]
