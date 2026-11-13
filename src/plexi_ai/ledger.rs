@@ -743,10 +743,7 @@ impl std::fmt::Display for BudgetDenial {
 /// Check if an `ai.query` from `plugin_id` would exceed budget limits.
 /// Fails open on a read error (`today_spend` returns zero), but fails closed
 /// while an old-name ledger makes spend unrecordable.
-pub fn check_budget(
-    plugin_id: &str,
-    config: &crate::config::AiConfig,
-) -> Result<(), BudgetDenial> {
+pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result<(), BudgetDenial> {
     // Spend cannot be read or recorded while the old-name ledger is in place,
     // so the caps cannot be enforced: refuse rather than spend unmetered.
     if let Some(error) = retired_ledger_error() {
