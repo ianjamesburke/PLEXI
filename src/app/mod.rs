@@ -584,6 +584,8 @@ pub struct PlexiApp {
     pub(crate) update_rx: Option<ui_mailbox::MailboxReceiver<crate::host::update_status::UpdateEvent>>,
     /// Starts update check threads; headless hosts never touch the network.
     pub(crate) update_check_launcher: update_check::UpdateCheckLauncher,
+    /// Schedules the relaunch for an update restart; headless hosts record.
+    pub(crate) restart_scheduler: quit::RestartScheduler,
     /// Last time the host scheduled an update-check thread. Used to re-check
     /// long-running sessions at the same interval as the updater cache.
     last_update_check: std::time::Instant,
@@ -1905,6 +1907,7 @@ impl PlexiApp {
                     ui_wake: std::sync::Arc::clone(&ui_wake),
                     update_rx,
                     update_check_launcher: crate::cli::updater::spawn_update_check,
+                    restart_scheduler: quit::schedule_installed_restart,
                     last_update_check,
                     display_version: read_display_version(),
                     update_status: update_status.clone(),
@@ -2189,6 +2192,7 @@ impl PlexiApp {
             ui_wake: std::sync::Arc::clone(&ui_wake),
             update_rx,
             update_check_launcher: crate::cli::updater::spawn_update_check,
+            restart_scheduler: quit::schedule_installed_restart,
             last_update_check,
             display_version: read_display_version(),
             update_status,
@@ -3171,6 +3175,7 @@ impl PlexiApp {
             ui_wake,
             update_rx: None,
             update_check_launcher: update_check::test_launcher::record,
+            restart_scheduler: quit::test_restart_scheduler::record,
             last_update_check: std::time::Instant::now(),
             display_version: read_display_version(),
             update_status: crate::host::update_status::UpdateStatus::default(),
