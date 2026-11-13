@@ -5924,6 +5924,7 @@ mod tests {
                 .title
                 .clone();
             let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
             let mut output = None;
             for frame in 0..2 {
                 output = Some(ctx.run_ui(
