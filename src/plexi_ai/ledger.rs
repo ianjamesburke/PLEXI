@@ -718,6 +718,12 @@ pub fn today_spend() -> DailySpend {
 /// Fails open: if `today_spend` returns zero due to I/O errors, the query
 /// is allowed through.
 pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result<(), String> {
+    // Spend cannot be read or recorded while the old-name ledger is in place,
+    // so the caps cannot be enforced: refuse rather than spend unmetered.
+    if let Some(error) = retired_ledger_error() {
+        log::error!("ai_broker[{plugin_id}]: refused, budget unenforceable: {error}");
+        return Err(error);
+    }
     let spend = today_spend();
     let global_cap = config.effective_global_daily_usd();
     if spend.global_usd >= global_cap {
@@ -1086,7 +1092,9 @@ mod ledger_tests {
             Ok(report) => panic!("an old-name ledger must stop the summary: {report:?}"),
             Err(error) => error,
         };
-        for message in [appended, summarized] {
+        let budget = check_budget("app1", &crate::config::AiConfig::default())
+            .expect_err("an unmetered ledger must refuse AI calls");
+        for message in [appended, summarized, budget] {
             assert!(message.contains(&old.display().to_string()), "{message}");
             assert!(
                 message.contains(&ledger_file().display().to_string()),
