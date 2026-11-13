@@ -1,5 +1,6 @@
 //! One-time, versioned rename of installed configuration. Original packages
 //! remain in an inert backup; document state and permission stores never move.
+use crate::host::wasm_python::ScriptError;
 use std::path::{Path, PathBuf};
 
 const MIGRATION: &str = "migration-plugin-v2";
@@ -308,6 +309,50 @@ fn count_entries(dir: &Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |entries| entries.flatten().count())
 }
 
+/// Stage a package tree for conversion as the 0.4 converter did: symlinks are
+/// copied as links and never followed, `.venv` and `__pycache__` are skipped at
+/// every depth, and file modes and modification times are kept.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".venv" || name == "__pycache__" {
+            continue;
+        }
+        let (source, target) = (entry.path(), to.join(&name));
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            copy_symlink(&source, &target)?;
+        } else if kind.is_dir() {
+            copy_tree(&source, &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(&source, &target)?;
+            let modified = std::fs::metadata(&source)?.modified()?;
+            std::fs::File::open(&target)?.set_modified(modified)?;
+        } else {
+            return Err(std::io::Error::other(format!(
+                "cannot migrate special file {}",
+                source.display()
+            )));
+        }
+    }
+    std::fs::set_permissions(to, std::fs::metadata(from)?.permissions())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(source)?, target)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(source: &Path, _target: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other(format!(
+        "cannot migrate symlink {} on this platform",
+        source.display()
+    )))
+}
+
 /// Convert a failed attempt into the single place failures are logged. The
 /// failure is also buffered so it reaches `plexi.log` when it happened before
 /// the logger existed.
@@ -400,36 +445,43 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
             if staged.exists() {
                 std::fs::remove_dir_all(&staged)?;
             }
-            let output = std::process::Command::new("uv")
-                .args([
-                    "run",
-                    "--offline",
-                    "--no-project",
-                    "--python",
-                    "3.12",
-                    "python",
-                    "-I",
-                    "-c",
-                ])
-                .arg(include_str!("plugin_source_migration.py"))
-                .arg(&old)
-                .arg(&staged)
-                .stdin(std::process::Stdio::null())
-                .output()
-                .map_err(|error| {
-                    MigrationFailure::new(
-                        OPERATION_TREE,
-                        root,
-                        format!("cannot run `uv` for the source migration: {error}"),
-                    )
-                    .plain("Plexi could not run uv, which it needs to convert plugin source code.")
-                    .hint("install uv and make sure it is on PATH, then relaunch.")
-                })?;
-            if !output.status.success() {
+            trace(format!(
+                "plugin_migration: needed source={} packages={source_count}",
+                old.display()
+            ));
+            let began = std::time::Instant::now();
+            copy_tree(&old, &staged)?;
+            trace(format!(
+                "plugin_migration: staged={} interpreter=bundled-cpython-wasi",
+                staged.display()
+            ));
+            let output = crate::host::wasm_python::run_bundled_script(
+                include_str!("plugin_source_migration.py"),
+                &["/staged"],
+                &staged,
+                "/staged",
+            )
+            .map_err(|error| match error {
+                ScriptError::Interpreter(detail) => MigrationFailure::new(
+                    OPERATION_TREE,
+                    root,
+                    format!("bundled CPython is unusable for the source migration: {detail}"),
+                )
+                .plain("Plexi's bundled Python is missing or damaged, so it cannot convert plugin source code.")
+                .hint("reinstall Plexi, then relaunch."),
+                ScriptError::Sandbox(detail) => MigrationFailure::new(
+                    OPERATION_TREE,
+                    root,
+                    format!("source migration sandbox failed: {detail}"),
+                )
+                .plain(format!("Plexi's source converter stopped unexpectedly: {detail}"))
+                .file(old.clone()),
+            })?;
+            if output.exit_code != 0 {
                 // The last stderr line is the exception message; earlier lines
                 // of a Python traceback quote source code.
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let summary: String = stderr
+                let summary: String = output
+                    .stderr
                     .lines()
                     .rev()
                     .find(|line| !line.trim().is_empty())
@@ -446,6 +498,12 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                 .file(old.clone())
                 .into());
             }
+            trace(format!(
+                "plugin_migration: rewrote python_files={} compile_ms={} total_ms={}",
+                output.stdout.trim(),
+                output.compiled_in.as_millis(),
+                began.elapsed().as_millis()
+            ));
             for entry in std::fs::read_dir(&staged)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -558,6 +616,12 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
         }
         let mut failure = into_failure(OPERATION_TREE, root, error);
         failure.unchanged = old.exists() && !backup.exists();
+        trace(format!(
+            "plugin_migration: restored source={} unchanged={} staged_removed={}",
+            old.display(),
+            failure.unchanged,
+            !staged.exists()
+        ));
         failure
     })?;
     trace(format!(
@@ -883,13 +947,298 @@ mod tests {
         let line = traces
             .iter()
             .map(|(_, line)| line)
-            .find(|line| line.contains(&root.path().join("apps").display().to_string()))
+            .find(|line| {
+                line.contains(&root.path().join("apps").display().to_string())
+                    && line.contains("outcome=")
+            })
             .expect("migration must record a trace");
         assert!(
             line.contains("packages_in=1 packages_out=1 outcome=ok"),
             "{line}"
         );
         assert!(line.contains("destination="), "{line}");
+    }
+
+    const CHILD_ROOT: &str = "PLEXI_TEST_MIGRATION_CHILD_ROOT";
+
+    /// Child half of the launch-environment tests: migrates the profile named
+    /// by `CHILD_ROOT` and panics with the failure. A no-op in a normal run.
+    #[test]
+    fn plugin_rename_child_migrate() {
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            migrate(Path::new(&root)).unwrap_or_else(|failure| panic!("{failure}"));
+        }
+    }
+
+    /// Migrate `root` in a child process whose whole environment is `path`,
+    /// a temp `HOME`, and the CPython bundle directory `bundle_dir`.
+    fn migrate_in_child(root: &Path, path: &str, bundle_dir: &Path) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "app::plugin_migration::tests::plugin_rename_child_migrate",
+                "--exact",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", root)
+            .env(
+                crate::host::wasm_python::CPYTHON_BUNDLE_CACHE_ENV,
+                bundle_dir,
+            )
+            .env(CHILD_ROOT, root)
+            .output()
+            .unwrap()
+    }
+
+    fn real_bundle_dir() -> PathBuf {
+        let bundle = crate::host::wasm_python::resolve_default_cpython_bundle().unwrap();
+        bundle.parent().unwrap().parent().unwrap().to_path_buf()
+    }
+
+    fn stage_notes(root: &Path) {
+        let legacy = root.join("apps/notes");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'notes'\nname = 'Notes'\ntype = 'app'\nentry = 'main.py'\n").unwrap();
+        std::fs::write(legacy.join("main.py"), "from plexi_sdk import AppBar\n").unwrap();
+    }
+
+    /// A Finder, Dock or LaunchServices launch carries launchd's PATH, and
+    /// migration runs during profile init, before the login-shell PATH exists.
+    /// Neither that PATH nor an empty one (no uv, no Python) may matter.
+    #[test]
+    fn plugin_rename_migrates_with_launchd_path() {
+        for path in ["/usr/bin:/bin:/usr/sbin:/sbin", ""] {
+            let root = tempfile::tempdir().unwrap();
+            stage_notes(root.path());
+            let output = migrate_in_child(root.path(), path, &real_bundle_dir());
+            assert!(
+                output.status.success(),
+                "migration failed with PATH={path:?}:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("plugins/notes/main.py")).unwrap(),
+                "from plexi_sdk import SurfaceHeader\n"
+            );
+        }
+    }
+
+    /// A missing or damaged interpreter names the fix and leaves the profile
+    /// exactly as it was.
+    #[test]
+    fn plugin_rename_unusable_bundle_says_reinstall_and_restores_profile() {
+        let corrupt = tempfile::tempdir().unwrap();
+        let wasm = corrupt
+            .path()
+            .join(crate::host::wasm_python::CPYTHON_BUNDLE_FILE);
+        std::fs::create_dir_all(wasm.parent().unwrap()).unwrap();
+        std::fs::write(&wasm, b"not a wasm module").unwrap();
+        let missing = tempfile::tempdir().unwrap();
+        for bundle_dir in [missing.path(), corrupt.path()] {
+            let root = tempfile::tempdir().unwrap();
+            stage_notes(root.path());
+            let output = migrate_in_child(root.path(), "", bundle_dir);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{stderr}");
+            assert!(stderr.contains("bundled CPython is unusable"), "{stderr}");
+            assert!(
+                stderr.contains("fix: reinstall Plexi, then relaunch."),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("uv"), "{stderr}");
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("apps/notes/main.py")).unwrap(),
+                "from plexi_sdk import AppBar\n"
+            );
+            assert!(!root.path().join("plugins").exists());
+            assert!(!root.path().join(MIGRATION).exists());
+        }
+    }
+
+    /// A profile with nothing to migrate never loads the interpreter, so a
+    /// normal launch pays nothing (proved with an unusable bundle).
+    #[test]
+    fn plugin_rename_profile_without_apps_never_loads_interpreter() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("plugins/notes")).unwrap();
+        let missing = tempfile::tempdir().unwrap();
+        let output = migrate_in_child(root.path(), "", missing.path());
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Golden conversion of a fixture covering every rewrite rule, the copy
+    /// rules (skipped dirs, links, modes) and the rewritten-file trace. The
+    /// expected text was checked once by hand against the previous converter.
+    #[test]
+    #[cfg(unix)]
+    fn plugin_rename_bundled_conversion_matches_previous_converter() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let notes = root.path().join("apps/notes");
+        for dir in ["pkg", ".venv/lib", "__pycache__", ".git"] {
+            std::fs::create_dir_all(notes.join(dir)).unwrap();
+        }
+        std::fs::write(notes.join("manifest.toml"), "schema_version = 1\n[app]\nid = \"notes\"\nname = \"Notes\"\ntype = \"app\"\nentry = \"main.py\"\n").unwrap();
+        std::fs::write(notes.join("main.py"), "from plexi_sdk import AppHarness, AppBar, AppPalette, AppEvent\nfrom plexi_sdk.runtime import V3AppRuntime\n\ndef view(app_id, app_path):\n    héllo = \"ünïcode\"; bar = AppBar(héllo, actor=\"app\", label=\"app\")\n    meta = {\"actor\": \"app\", \"kind\": \"app_event\", 'cap': 'spawn.app', \"proto\": \"pgap/3\"}\n    other = dict(actor='app', key=\"app_id\", ui=\"app_bar\", name=\"AppBar\")\n    self_id = obj._app_id  # app_id in a comment stays\n    return AppHarness(V3AppRuntime(app_id), AppPalette, AppEvent, f\"{app_id}\")\n").unwrap();
+        std::fs::write(
+            notes.join("pkg/helper.py"),
+            "app_id = \"app\"\nx = b\"app_id\"\ny = r\"spawn.app\"\nz = \"\"\"app_id\"\"\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            notes.join("pkg/latin.py"),
+            b"# -*- coding: latin-1 -*-\nname = \"caf\xe9\"\napp_id = 1\n",
+        )
+        .unwrap();
+        std::fs::write(notes.join("pkg/plain.py"), "print(\"untouched\")\n").unwrap();
+        std::fs::write(notes.join("run.sh"), "#!/bin/sh\necho app_id\n").unwrap();
+        std::fs::set_permissions(notes.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::write(notes.join(".venv/lib/skip.py"), "app_id = 1\n").unwrap();
+        std::fs::write(notes.join("__pycache__/main.cpython-312.pyc"), "junk").unwrap();
+        std::fs::write(notes.join(".git/hook.py"), "app_id = 1\n").unwrap();
+        std::fs::write(notes.join("data.txt"), "data").unwrap();
+        std::os::unix::fs::symlink("data.txt", notes.join("link.txt")).unwrap();
+
+        migrate(root.path()).unwrap();
+
+        let out = root.path().join("plugins/notes");
+        let read = |name: &str| std::fs::read(out.join(name)).unwrap();
+        assert_eq!(read("main.py"), "from plexi_sdk import PluginHarness, SurfaceHeader, PluginPalette, PluginEvent\nfrom plexi_sdk.runtime import PluginRuntime\n\ndef view(plugin_id, plugin_path):\n    héllo = \"ünïcode\"; bar = SurfaceHeader(héllo, actor='plugin', label=\"app\")\n    meta = {\"actor\": 'plugin', \"kind\": 'plugin_event', 'cap': 'spawn.plugin', \"proto\": 'pgap/4'}\n    other = dict(actor='plugin', key='plugin_id', ui='surface_header', name='SurfaceHeader')\n    self_id = obj._plugin_id  # app_id in a comment stays\n    return PluginHarness(PluginRuntime(plugin_id), PluginPalette, PluginEvent, f\"{plugin_id}\")\n".as_bytes());
+        assert_eq!(
+            read("pkg/helper.py"),
+            b"plugin_id = \"app\"\nx = b\"app_id\"\ny = 'spawn.plugin'\nz = 'plugin_id'\n"
+        );
+        assert_eq!(
+            read("pkg/latin.py"),
+            b"# -*- coding: latin-1 -*-\nname = \"caf\xe9\"\nplugin_id = 1\n"
+        );
+        assert_eq!(read("pkg/plain.py"), b"print(\"untouched\")\n");
+        assert_eq!(read(".git/hook.py"), b"app_id = 1\n");
+        assert_eq!(read("run.sh"), b"#!/bin/sh\necho app_id\n");
+        assert_eq!(read("data.txt"), b"data");
+        let mode = |name: &str| {
+            std::fs::metadata(out.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("run.sh"), 0o755);
+        assert_eq!(mode("main.py"), 0o644);
+        assert_eq!(
+            std::fs::read_link(out.join("link.txt")).unwrap(),
+            Path::new("data.txt")
+        );
+        assert!(!out.join(".venv").exists());
+        assert!(!out.join("__pycache__").exists());
+        let traces = EARLY_TRACES.lock().unwrap();
+        let rewrote = traces
+            .iter()
+            .map(|(_, line)| line)
+            .find(|line| line.starts_with("plugin_migration: rewrote python_files=3 "))
+            .expect("rewrite trace with file count");
+        assert!(rewrote.contains("compile_ms="), "{rewrote}");
+    }
+
+    /// The converter sees only the staged copy. A symlinked directory pointing
+    /// out of `apps/` is copied as a link, never followed or rewritten; a
+    /// symlinked Python file is refused and the profile is restored.
+    #[test]
+    #[cfg(unix)]
+    fn plugin_rename_symlinks_out_of_apps_are_never_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("evil.py"), "app_id = 1\n").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        stage_notes(root.path());
+        std::os::unix::fs::symlink(outside.path(), root.path().join("apps/notes/outdir")).unwrap();
+        migrate(root.path()).unwrap();
+        assert_eq!(
+            std::fs::read_link(root.path().join("plugins/notes/outdir")).unwrap(),
+            outside.path()
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("evil.py")).unwrap(),
+            "app_id = 1\n"
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        stage_notes(root.path());
+        std::os::unix::fs::symlink(
+            outside.path().join("evil.py"),
+            root.path().join("apps/notes/escape.py"),
+        )
+        .unwrap();
+        let failure = migrate(root.path()).unwrap_err();
+        assert!(
+            failure.reason.contains("symlinked Python source"),
+            "{}",
+            failure.reason
+        );
+        assert!(failure.unchanged);
+        assert!(!root.path().join(MIGRATION).exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("evil.py")).unwrap(),
+            "app_id = 1\n"
+        );
+    }
+
+    /// A directory the converter cannot list fails the migration instead of
+    /// being skipped with its source left unconverted.
+    #[test]
+    #[cfg(unix)]
+    fn plugin_rename_unlistable_directory_fails_the_conversion() {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = tempfile::tempdir().unwrap();
+        let locked = staged.path().join("notes/pkg");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("main.py"), "app_id = 1\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let run = crate::host::wasm_python::run_bundled_script(
+            include_str!("plugin_source_migration.py"),
+            &["/staged"],
+            staged.path(),
+            "/staged",
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = run.unwrap_or_else(|_| panic!("sandbox did not start"));
+        assert_ne!(run.exit_code, 0, "{}", run.stdout);
+        assert!(run.stderr.contains("PermissionError"), "{}", run.stderr);
+        assert_eq!(
+            std::fs::read_to_string(locked.join("main.py")).unwrap(),
+            "app_id = 1\n"
+        );
+    }
+
+    /// The sandbox itself, independent of the converter's own checks: guest
+    /// code cannot read host files or follow a link out of the staged tree.
+    #[test]
+    #[cfg(unix)]
+    fn plugin_rename_sandbox_cannot_reach_outside_staged_tree() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), staged.path().join("out")).unwrap();
+        let probe = "import sys\nfor path in sys.argv[1:]:\n    try:\n        open(path).read(); print('read', path)\n    except OSError as error:\n        print('denied', path)\ntry:\n    open('/staged/out/new.txt', 'w').write('x'); print('wrote')\nexcept OSError:\n    print('denied write')\n";
+        let run = crate::host::wasm_python::run_bundled_script(
+            probe,
+            &[
+                "/staged/out/secret.txt",
+                &outside.path().join("secret.txt").display().to_string(),
+                "/etc/hosts",
+            ],
+            staged.path(),
+            "/staged",
+        )
+        .unwrap_or_else(|_| panic!("sandbox did not start"));
+        assert_eq!(run.exit_code, 0, "{}", run.stderr);
+        assert_eq!(run.stdout.matches("denied").count(), 4, "{}", run.stdout);
+        assert!(!outside.path().join("new.txt").exists());
     }
 
     const LEGACY_WITH_INERT_KEYS: &str = "schema_version = 1\nextra_note = 'x'\n[app]\nid = 'logs'\nname = 'Logs'\ntype = 'app'\nentry = 'main.py'\nmouse_tracking = true\n[runtime]\npython_compat = true\n[launch]\non_launch = 'focus'\n";

@@ -1,22 +1,29 @@
-"""Version 2 package migration. Parse source without importing or executing it."""
+"""Version 2 package migration: rewrite the staged copy's Python source in place.
+Runs in the bundled CPython WASI sandbox, which sees only the staged tree.
+Parse source without importing or executing it. Prints the rewritten file count."""
 import ast
 import io
 import os
 from pathlib import Path
-import shutil
 import sys
 import tokenize
 
-source, target = map(Path, sys.argv[1:])
-shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+(target,) = map(Path, sys.argv[1:])
+rewritten = 0
 names = {
     "AppHarness": "PluginHarness", "AppBar": "SurfaceHeader",
     "AppPalette": "PluginPalette", "AppEvent": "PluginEvent",
     "app_id": "plugin_id", "_app_id": "_plugin_id",
     "V3AppRuntime": "PluginRuntime", "app_path": "plugin_path",
 }
-for root, dirs, files in os.walk(target, followlinks=False):
-    dirs[:] = [d for d in dirs if d not in {".git", ".venv", "__pycache__"}]
+def unreadable(error):
+    # A directory the walk cannot list would otherwise be skipped silently,
+    # leaving its source unconverted while the migration reports success.
+    raise error
+
+
+for root, dirs, files in os.walk(target, onerror=unreadable, followlinks=False):
+    dirs[:] = [d for d in dirs if d != ".git"]
     for filename in files:
         path = Path(root) / filename
         if path.suffix != ".py":
@@ -67,3 +74,5 @@ for root, dirs, files in os.walk(target, followlinks=False):
         if edits:
             ast.parse(text, filename=str(path))
             path.write_text(text, encoding=encoding)
+            rewritten += 1
+print(rewritten)
