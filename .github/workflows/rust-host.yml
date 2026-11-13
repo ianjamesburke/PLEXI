@@ -98,9 +98,12 @@ jobs:
 
       - name: Build host and tests
         # Closed-stdout regression drives the real CLI, never a libtest child.
+        # Cargo goes through cargo-channel-inputs.py: CI has no .channel, and
+        # raw Cargo reruns build.rs (recompiling plexi) on every invocation
+        # while that watched file is missing.
         run: |
-          cargo build --release --bin plexi
-          cargo test --bin plexi --no-run
+          python3 scripts/cargo-channel-inputs.py build --release --bin plexi
+          python3 scripts/cargo-channel-inputs.py test --bin plexi --no-run
 
       - name: Test host
         # Alpha pushes only seed the cache.
@@ -112,7 +115,7 @@ jobs:
         run: |
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
-            cargo test --bin plexi
+            python3 scripts/cargo-channel-inputs.py test --bin plexi
 
       - name: Record pass
         id: passed
@@ -179,7 +182,7 @@ jobs:
           uv: 'true'
       - name: Build and test host
         run: |
-          cargo build --release --bin plexi
+          python3 scripts/cargo-channel-inputs.py build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
-            cargo test --bin plexi
+            python3 scripts/cargo-channel-inputs.py test --bin plexi
