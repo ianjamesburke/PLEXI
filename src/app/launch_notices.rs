@@ -59,7 +59,10 @@ impl PlexiApp {
     /// reported again on every launch until the user moves it.
     pub(crate) fn surface_retired_data_notices(&mut self) {
         let checks = [
-            ("Old notes folder found", crate::notes::pre_tier_notes_error()),
+            (
+                "Old notes folder found",
+                crate::notes::pre_tier_notes_error(),
+            ),
             (
                 "Old AI ledger found",
                 crate::plexi_ai::ledger::retired_ledger_error(),
