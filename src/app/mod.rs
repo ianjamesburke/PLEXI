@@ -3679,6 +3679,7 @@ impl eframe::App for PlexiApp {
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
+        self.service_editor_positions();
 
         // File watching/reload is core plugin servicing, including for an
         // occluded host. Keep it independent of change-set preview.
@@ -4379,6 +4380,7 @@ impl eframe::App for PlexiApp {
         quit::trace("on_exit_begin");
         log::info!("quit_phase: on_exit begin");
         self.flush_ui_scale_persist_now();
+        self.flush_editor_positions_now();
         self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
         // Backend teardown can call on_exit before destroying its window.
