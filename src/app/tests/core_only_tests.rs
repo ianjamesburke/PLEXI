@@ -309,14 +309,40 @@ fn core_only_refusal_notice_never_moves_keyboard_focus_and_dismisses_by_click() 
         "a refusal notice must not take keyboard focus"
     );
 
+    // Esc goes to the focused pane exactly as it would with no notice up.
+    // The harness pane is an Explorer, which hands focus back on Esc.
+    let without_notice = {
+        let control_profile = self::profile(true);
+        let mut control = HostHarness::from_profile_dir(control_profile.path());
+        let control_pane = control.add_test_pane();
+        control.focus_pane(control_pane);
+        control.run_frames(1);
+        control.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        let control_ctx = control.app.ctx.clone();
+        match control.app.input_owner(&control_ctx) {
+            InputOwner::Pane(id) if id == control_pane => InputOwner::Pane(pane),
+            owner => owner,
+        }
+    };
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(
         h.app.plugin_notice.is_some(),
         "Esc belongs to the focused pane, not to an unfocused notice"
     );
-    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        without_notice,
+        "the notice must not change where Esc goes"
+    );
+    // With no pane left to take it, Esc still never dismisses the notice.
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Esc never dismisses the notice; only its Dismiss action does"
+    );
 
     h.run_frames(1);
+    let owner_before_click = h.app.input_owner(&ctx);
     let rect: egui::Rect = ctx
         .data(|data| data.get_temp(egui::Id::new("plugin_notice_dismiss_rect")))
         .expect("the notice paints its Dismiss action");
@@ -336,5 +362,9 @@ fn core_only_refusal_notice_never_moves_keyboard_focus_and_dismisses_by_click() 
         });
     }
     assert!(h.app.plugin_notice.is_none(), "Dismiss closes the notice");
-    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        owner_before_click,
+        "dismissing the notice must not move keyboard focus"
+    );
 }
