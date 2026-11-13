@@ -1339,12 +1339,18 @@ impl TerminalPane {
 
     /// Observed agent state from the agent-output settle: Idle once the agent
     /// has produced no output of its own for `OBSERVED_AGENT_SETTLE`.
+    ///
+    /// Before the agent has any output of its own (a fresh boot whose every
+    /// byte landed in host-induced windows: the first layout resize, the
+    /// focus it took), there is nothing to discount against, so the settle
+    /// runs on the PTY's own last output. Otherwise the boot never settles.
     pub(crate) fn observed_output_state(
         &self,
         now: std::time::Instant,
     ) -> crate::protocol::AgentState {
         let settled = self
             .last_agent_activity_at
+            .or(self.last_pty_output_at)
             .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
         if settled {
             crate::protocol::AgentState::Idle

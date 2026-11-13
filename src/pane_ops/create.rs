@@ -3995,16 +3995,24 @@ mod tests {
             })
             .expect("overlay with empty context launches as root pane");
 
-        let root = h.app.windows[0].tree.root.expect("root tile installed");
+        // The settled tree wraps the root pane in its Tabs container (stint
+        // 1230), so the root is that container and focus is the pane inside.
+        let win = &h.app.windows[0];
+        let root = win.tree.root.expect("root tile installed");
+        let pane_tile = win
+            .tree
+            .tiles
+            .find_pane(&pane_id)
+            .expect("the launched wasm pane has a tile");
         assert_eq!(
-            h.app.windows[0].focused_pane,
-            Some(root),
+            win.focused_pane,
+            Some(pane_tile),
             "new root pane must be focused"
         );
         assert_eq!(
-            h.app.windows[0].tree.tiles.get(root),
-            Some(&Tile::Pane(pane_id)),
-            "root tile must hold the launched wasm pane"
+            win.find_first_pane_in(root),
+            Some(pane_tile),
+            "the root must hold the launched wasm pane"
         );
     }
 }
