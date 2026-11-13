@@ -3015,12 +3015,30 @@ impl PlexiApp {
                                     || key.eq_ignore_ascii_case("return");
                                 if is_enter && term.is_standby() {
                                     self.resume_standby_pane(*pane_id);
+                                    Ok(serde_json::json!({"ok": true}))
                                 } else {
-                                    let bytes = super::key_str_to_pty_bytes(key);
-                                    term.backend
-                                        .process_command(egui_term::BackendCommand::Write(bytes));
+                                    match super::key_str_to_pty_bytes(key) {
+                                        Ok(bytes) => {
+                                            log::info!(
+                                                "pane_ipc: key_pane: terminal pane_id={pane_id} \
+                                                 key_chars={} bytes={}",
+                                                key.chars().count(),
+                                                bytes.len()
+                                            );
+                                            term.backend.process_command(
+                                                egui_term::BackendCommand::Write(bytes),
+                                            );
+                                            Ok(serde_json::json!({"ok": true}))
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "pane_ipc: key_pane: terminal pane_id={pane_id} \
+                                                 rejected: {e}"
+                                            );
+                                            Err(e)
+                                        }
+                                    }
                                 }
-                                Ok(serde_json::json!({"ok": true}))
                             } else if pane.as_view_mut().is_some()
                                 && text_input_focused
                                 && key.eq_ignore_ascii_case("escape")
