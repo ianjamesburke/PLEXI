@@ -8836,6 +8836,89 @@ open(out + ".done", "w").close()
         );
     }
 
+    /// Three laid-out columns `[a | b | c]` in the active window.
+    fn three_column_fixture() -> (PlexiUiHarness, [u64; 3]) {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 600.0);
+        h.step();
+        let panes = [
+            add_focused_pane(&mut h),
+            add_focused_pane(&mut h),
+            add_focused_pane(&mut h),
+        ];
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, panes.iter().map(|p| vec![*p]).collect());
+        });
+        h.run_steps(3);
+        (h, panes)
+    }
+
+    fn click_pane_center(h: &mut PlexiUiHarness, pane: u64) {
+        let pos = h
+            .with_app(|app| app.visible_pane_rect(pane))
+            .expect("pane is laid out")
+            .center();
+        for pressed in [true, false] {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+        }
+        h.run_steps(2);
+    }
+
+    /// Stint 1251: closing the focused rightmost column focuses the column
+    /// beside it, not the newer focus-history entry two columns away.
+    #[test]
+    fn screenshot_close_focused_pane_focuses_spatial_neighbour() {
+        let (mut h, [a, b, c]) = three_column_fixture();
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.focus_pane(c).unwrap();
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_before")).unwrap();
+        h.close_pane(c).unwrap();
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|app| app.active_focused_pane_id()),
+            Some(b),
+            "focus lands on the adjacent column, not the history entry"
+        );
+        h.save_screenshot(&evidence_png!("_after")).unwrap();
+    }
+
+    /// Stint 1340: a click on a pane clears the multi-pane selection and
+    /// focuses the clicked pane; the selection rings disappear.
+    #[test]
+    fn screenshot_pane_click_clears_multi_selection() {
+        let (mut h, [a, b, c]) = three_column_fixture();
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| app.extend_pane_selection(crate::host::keys::Direction::Right));
+        h.run_steps(2);
+        let window = h.with_app(|app| app.windows[app.active_window].window_id);
+        assert_eq!(
+            h.with_app(|app| app.host.pane_selection(window).map(|s| s.panes.clone())),
+            Some(vec![a, b]),
+            "fixture selects a and b"
+        );
+        h.save_screenshot(&evidence_png!("_selected")).unwrap();
+        click_pane_center(&mut h, c);
+        assert!(
+            h.with_app(|app| app.host.pane_selection(window).is_none()),
+            "a pane click clears the selection"
+        );
+        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(c));
+        h.save_screenshot(&evidence_png!("_cleared")).unwrap();
+    }
+
     #[test]
     fn pane_chrome_selected_view_keeps_its_state_ring() {
         let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);
