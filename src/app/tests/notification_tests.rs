@@ -2303,7 +2303,10 @@ fn retired_data_shapes_surface_as_launch_notices() {
     }
     h.add_test_pane();
     h.app.mark_workspace_dirty();
-    assert!(!h.app.save_workspace_now(), "the version 2 file is never replaced");
+    assert!(
+        !h.app.save_workspace_now(),
+        "the version 2 file is never replaced"
+    );
     assert_eq!(std::fs::read(&workspace).unwrap(), layout);
     assert_eq!(
         std::fs::read_to_string(notes.join("inbox").join("staged.md")).unwrap(),
