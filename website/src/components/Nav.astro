@@ -9,6 +9,7 @@ const links = [
   { href: '/plugins', label: 'Plugins' },
   { href: '/docs', label: 'Docs' },
   { href: '/changelog', label: 'Changelog' },
+  { href: '/roadmap', label: 'Roadmap' },
   ...(hasPosts ? [{ href: '/blog', label: 'Blog' }] : []),
 ];
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';

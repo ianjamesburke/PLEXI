@@ -1,0 +1,167 @@
+---
+import Layout from '../layouts/Layout.astro';
+import PageHead from '../components/PageHead.astro';
+import Arrow from '../components/Arrow.astro';
+import { roadmap, currentSlug, feedbackUrl } from '../lib/roadmap';
+
+const statusLabel = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+// "0.6 Palette" -> number "0.6", name "Palette". "1.0" has no name; "After 1.0" has no number.
+const splitTitle = (title: string) => {
+  const [first, ...rest] = title.split(' ');
+  return /^\d/.test(first) ? { num: first, name: rest.join(' ') } : { num: '', name: title };
+};
+const currentIndex = roadmap.findIndex(r => r.slug === currentSlug);
+---
+<Layout
+  title="Roadmap | Plexi"
+  description="What has shipped in Plexi, what comes next, and the order the releases come in, from 0.5 Groundwork to 1.0."
+>
+  <PageHead title="Roadmap." lede="What has shipped, what comes next, and the order it comes in. No dates, only the sequence." />
+
+  <div class="wrap roadmap">
+    <p class="platforms">Apple Silicon Mac today. Windows and Linux after 1.0.</p>
+
+    <ol class="track">
+      {roadmap.map((r, i) => {
+        const { num, name } = splitTitle(r.title);
+        const current = r.slug === currentSlug;
+        return (
+          <li
+            class:list={['rel', `s-${r.status.replace(/[ .]/g, '-')}`, { current, 'done-line': i < currentIndex }]}
+            id={r.slug}
+            aria-labelledby={`${r.slug}-title`}
+          >
+            <span class="node" aria-hidden="true"></span>
+            <div class="rel-head">
+              {current && <p class="here">You are here</p>}
+              <h2 id={`${r.slug}-title`}>
+                <a href={`#${r.slug}`}>
+                  {num && <span class="num">{num}</span>}
+                  {name && <span class="name">{name}</span>}
+                </a>
+              </h2>
+              <p class="status">{statusLabel(r.status)}</p>
+            </div>
+            <div class="rel-body">
+              <p class="purpose">{r.purpose}</p>
+              {r.build && (
+                <a class="link-arrow build" href={r.build.url}>Release {r.build.label} on GitHub <Arrow dir="ne" /></a>
+              )}
+              <ul class="items">
+                {r.items.map(item => (
+                  <li class={`i-${item.status.replace(' ', '-')}`}>
+                    <span class="item-text">{item.text}</span>
+                    <span class="item-status">{statusLabel(item.status)}</span>
+                  </li>
+                ))}
+              </ul>
+              {r.forYou && <p class="for-you"><strong>What this means for you.</strong> {r.forYou}</p>}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  </div>
+
+  <section class="wrap split feedback" aria-labelledby="feedback-title">
+    <h2 class="h2" id="feedback-title">Tell me what you think.</h2>
+    <div>
+      <p class="lead">If something here matters to you, or something you need is missing, say so.</p>
+      <a class="link-arrow" href={feedbackUrl}>Open an issue on GitHub <Arrow dir="ne" /></a>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .roadmap { padding-top: clamp(40px, 5vw, 72px); }
+  .roadmap + .feedback { border-top: 1px solid var(--border); }
+  .platforms { font: 13px/1.6 var(--mono); color: var(--fg-3); margin-bottom: clamp(40px, 5vw, 64px); }
+
+  .track { --rail: 40px; --node: 14px; list-style: none; }
+  .rel {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+    gap: 20px clamp(40px, 8vw, 128px);
+    padding: 0 0 clamp(56px, 6vw, 88px) var(--rail);
+    scroll-margin-top: calc(var(--nav-h) + 32px);
+  }
+  .rel > * { min-width: 0; }
+
+  /* The rail: each release draws its own segment down to the next node.
+     Solid accent through the releases you can already install. */
+  .rel::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--node) / 2 - 1px);
+    top: 30px;
+    bottom: -18px;
+    width: 2px;
+    background: var(--border);
+  }
+  .rel.done-line::before { background: var(--accent-light); }
+  .rel:last-child::before { display: none; }
+  .s-after-1-0::before { background: none; }
+
+  .node {
+    position: absolute;
+    left: 0;
+    top: 16px;
+    width: var(--node);
+    height: var(--node);
+    border-radius: 50%;
+    border: 2px solid var(--border-2);
+    background: var(--bg);
+  }
+  .s-shipped .node { background: var(--accent-light); border-color: var(--accent-light); }
+  .s-next .node, .s-in-progress .node { border-color: var(--accent-light); }
+  .s-after-1-0 .node { border-style: dashed; }
+  .rel.current .node { outline: 2px solid var(--accent-light); outline-offset: 4px; }
+
+  .here {
+    display: inline-block;
+    margin-bottom: 14px;
+    padding: 4px 10px;
+    font: 700 12px/1.4 var(--mono);
+    color: var(--bg);
+    background: var(--accent-light);
+  }
+  .rel-head h2 { line-height: .9; }
+  .rel-head h2 a { display: inline-flex; flex-direction: column; align-items: flex-start; gap: .06em; }
+  .num { font: 900 clamp(2.5rem, 5vw, 4.75rem)/.9 var(--display); letter-spacing: -.03em; }
+  .name { font: 900 clamp(2rem, 3.6vw, 3.4rem)/.95 var(--display); letter-spacing: -.03em; text-transform: uppercase; color: var(--fg-2); }
+  .rel.current .name, .s-next .name { color: var(--fg); }
+  .rel-head h2 a:hover .name { color: var(--accent-light); }
+  .s-planned .num, .s-after-1-0 .num, .s-planned .name, .s-after-1-0 .name { color: var(--fg-3); }
+  .status { margin-top: 14px; font: 700 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3); }
+  .s-shipped .status, .s-next .status, .s-in-progress .status { color: var(--accent-light); }
+
+  .purpose { font-size: var(--text-lead); line-height: 1.32; letter-spacing: -.02em; color: var(--fg); max-width: 40ch; padding-top: 10px; }
+  .build { margin-top: 16px; font-size: 15px; }
+  .items { list-style: none; margin-top: 28px; border-top: 1px solid var(--border); }
+  .items li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 24px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-2);
+  }
+  .item-text { max-width: 62ch; }
+  .item-status { font: 12px/1.9 var(--mono); color: var(--fg-4); white-space: nowrap; }
+  .i-shipped .item-status { color: var(--good); }
+  .i-in-progress .item-status { color: var(--amber); }
+  .for-you { margin-top: 22px; color: var(--fg-2); max-width: 62ch; }
+  .for-you strong { color: var(--fg); }
+
+  .feedback .lead { margin-bottom: 20px; }
+
+  @media (max-width: 860px) {
+    .track { --rail: 32px; }
+    .rel { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    .purpose { padding-top: 0; }
+  }
+  @media (max-width: 520px) {
+    .items li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  }
+</style>
