@@ -457,21 +457,17 @@ pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration
 /// 60s default boot window.
 pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// PTY output this soon after a host-induced event (a committed resize, a
-/// pane focus change) is the host's doing, not the agent's (stint 1231): a
-/// TUI repaints on SIGWINCH, and that repaint must not flip an idle agent to
-/// Working.
+/// PTY output this soon after a committed resize is the host's doing, not the
+/// agent's (stint 1231): a TUI repaints on SIGWINCH, and that repaint must not
+/// flip an idle agent to Working. A focus change writes nothing to the PTY
+/// (egui_term sends no focus-in/out reports), so it opens no window (stint 1438).
 pub(crate) const HOST_INDUCED_QUIET: std::time::Duration = std::time::Duration::from_millis(750);
 
-/// `host_induced` is true inside a host-induced quiet window: a stale hook
-/// Idle then keeps the state even against observed Working, because that
-/// output is the host's own resize or focus change, not the agent waking.
 fn select_terminal_agent<'a>(
     reported: Option<&'a crate::protocol::PaneAgentState>,
     hook: Option<&'a crate::protocol::PaneAgentState>,
     hook_reported_at: Option<std::time::Instant>,
     observed: Option<&'a crate::protocol::PaneAgentState>,
-    host_induced: bool,
     now: std::time::Instant,
 ) -> Option<&'a crate::protocol::PaneAgentState> {
     if reported.is_some() {
@@ -491,7 +487,7 @@ fn select_terminal_agent<'a>(
     let contradicts_idle = observed.is_some_and(|observed| {
         observed.agent == hook.agent && observed.state == crate::protocol::AgentState::Working
     });
-    if hook_is_stale && contradicts_idle && !host_induced {
+    if hook_is_stale && contradicts_idle {
         observed
     } else {
         Some(hook)
@@ -914,9 +910,9 @@ pub struct TerminalPane {
     /// report a busy pane as idle.
     pub last_pty_output_at: Option<std::time::Instant>,
     /// When the pane last produced PTY output the host did not provoke itself.
-    /// Observed agent state settles on this (`observed_output_state`), never on
-    /// `last_pty_output_at`, so a host resize or focus change cannot read as
-    /// agent activity (stint 1231).
+    /// Observed agent state settles on this (`observed_output_state`), so an
+    /// idle agent's resize repaint cannot read as agent activity (stints 1231,
+    /// 1438).
     pub(crate) last_agent_activity_at: Option<std::time::Instant>,
     /// End of the current host-induced quiet window (`HOST_INDUCED_QUIET`).
     pub(crate) host_induced_until: Option<std::time::Instant>,
@@ -1287,13 +1283,12 @@ impl TerminalPane {
             self.agent.as_ref(),
             self.agent_reported_at,
             self.observed_agent.as_ref(),
-            self.host_induced_quiet(now),
             now,
         )
     }
 
     /// Open a host-induced quiet window: the host just did something that
-    /// makes the program repaint (`cause`: a committed resize, a focus change).
+    /// makes the program repaint (`cause`: a committed resize).
     pub(crate) fn mark_host_induced(&mut self, now: std::time::Instant, cause: &str) {
         self.host_induced_until = Some(now + HOST_INDUCED_QUIET);
         self.host_induced_output_logged = false;
@@ -1320,11 +1315,16 @@ impl TerminalPane {
     }
 
     /// Stamp one PTY event. `last_pty_output_at` always advances (`pane send
-    /// --submit` settles on every event); agent activity advances only outside
-    /// a host-induced quiet window.
+    /// --submit` settles on every event). Agent activity advances outside a
+    /// host-induced quiet window, and inside one while the agent is already
+    /// active: a working agent keeps working through a resize drag, so only an
+    /// idle agent's SIGWINCH repaint is discounted.
     pub(crate) fn record_pty_event(&mut self, now: std::time::Instant) {
         self.last_pty_output_at = Some(now);
-        if !self.host_induced_quiet(now) {
+        let already_active = self
+            .last_agent_activity_at
+            .is_some_and(|at| now.saturating_duration_since(at) < OBSERVED_AGENT_SETTLE);
+        if !self.host_induced_quiet(now) || already_active {
             self.last_agent_activity_at = Some(now);
             return;
         }
@@ -1725,7 +1725,6 @@ mod agent_source_tests {
             Some(&hook),
             Some(now - Duration::from_millis(100)),
             Some(&observed),
-            false,
             now,
         )
         .expect("agent");
@@ -1745,14 +1744,13 @@ mod agent_source_tests {
             Some(&hook),
             Some(stale_at),
             Some(&working),
-            false,
             now,
         )
         .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
         let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), false, now)
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
                 .expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
     }
@@ -1768,7 +1766,6 @@ mod agent_source_tests {
             Some(&hook),
             Some(now),
             Some(&observed),
-            false,
             now,
         )
         .expect("agent");
@@ -1781,27 +1778,13 @@ mod agent_source_tests {
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
         let selected =
-            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), false, now)
+            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
                 .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
         let selected =
-            select_terminal_agent(None, None, None, Some(&observed), false, now).expect("agent");
+            select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
-        assert!(select_terminal_agent(None, None, None, None, false, now).is_none());
-    }
-
-    /// Stint 1231: inside a host-induced quiet window a stale hook Idle keeps
-    /// the state; observed Working there is the host's own repaint.
-    #[test]
-    fn stale_hook_idle_holds_against_observed_working_while_host_induced() {
-        let now = Instant::now();
-        let hook = state(AgentState::Idle);
-        let working = state(AgentState::Working);
-        let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), true, now)
-                .expect("agent");
-        assert_eq!(selected.state, AgentState::Idle);
+        assert!(select_terminal_agent(None, None, None, None, now).is_none());
     }
 
     #[test]
@@ -1814,7 +1797,6 @@ mod agent_source_tests {
             Some(&hook),
             Some(now - HOOK_AGENT_FRESHNESS - Duration::from_secs(1)),
             Some(&observed),
-            false,
             now,
         )
         .expect("agent");

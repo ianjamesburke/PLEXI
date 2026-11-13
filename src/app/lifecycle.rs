@@ -6009,7 +6009,7 @@ impl PlexiApp {
                         .map(|agent| {
                             // A TUI that has stopped redrawing on its own is
                             // sitting at its prompt; host-induced repaints
-                            // (resize, focus change) do not count (stint 1231).
+                            // (a committed resize) do not count (stints 1231, 1438).
                             crate::protocol::PaneAgentState {
                                 pane_id: *pane_id,
                                 state: t.observed_output_state(std::time::Instant::now()),
