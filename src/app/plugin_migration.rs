@@ -1028,13 +1028,21 @@ mod tests {
     /// exactly as it was.
     #[test]
     fn plugin_rename_unusable_bundle_says_reinstall_and_restores_profile() {
-        let corrupt = tempfile::tempdir().unwrap();
+        // The message names these paths; "uv" in a path must not read as the
+        // message naming uv.
+        let corrupt = tempfile::Builder::new()
+            .prefix("uv-corrupt")
+            .tempdir()
+            .unwrap();
         let wasm = corrupt
             .path()
             .join(crate::host::wasm_python::CPYTHON_BUNDLE_FILE);
         std::fs::create_dir_all(wasm.parent().unwrap()).unwrap();
         std::fs::write(&wasm, b"not a wasm module").unwrap();
-        let missing = tempfile::tempdir().unwrap();
+        let missing = tempfile::Builder::new()
+            .prefix("uv-missing")
+            .tempdir()
+            .unwrap();
         for bundle_dir in [missing.path(), corrupt.path()] {
             let root = tempfile::tempdir().unwrap();
             stage_notes(root.path());
@@ -1046,7 +1054,10 @@ mod tests {
                 stderr.contains("fix: reinstall Plexi, then relaunch."),
                 "{stderr}"
             );
-            assert!(!stderr.contains("uv"), "{stderr}");
+            let prose = stderr
+                .replace(&bundle_dir.display().to_string(), "<bundle>")
+                .replace(&root.path().display().to_string(), "<profile>");
+            assert!(!prose.contains("uv"), "{stderr}");
             assert_eq!(
                 std::fs::read_to_string(root.path().join("apps/notes/main.py")).unwrap(),
                 "from plexi_sdk import AppBar\n"
