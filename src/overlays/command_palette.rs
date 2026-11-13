@@ -2891,13 +2891,7 @@ impl PlexiApp {
         // Focus the specific pane if requested — find its TileId in the tree.
         if let Some(pid) = target.pane_id {
             let win = &mut self.windows[ctx_idx];
-            if let Some(tile_id) = win.tree.tiles.iter().find_map(|(tid, tile)| {
-                if matches!(tile, egui_tiles::Tile::Pane(p) if *p == pid) {
-                    Some(*tid)
-                } else {
-                    None
-                }
-            }) {
+            if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
                 // navigate_to, not a bare assignment: a pane in an inactive
                 // tab must become the visible tab (stint 1230).
                 win.navigate_to(tile_id);
