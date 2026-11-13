@@ -25,8 +25,7 @@
         { "text": "The design of the shared picker.", "status": "in progress", "stints": ["1390"] },
         { "text": "Cmd+P opens commands. Tab moves to Files, then to Agents.", "status": "planned", "stints": ["1391"] },
         { "text": "Files lists the files in your workspace, with a preview of text and images.", "status": "planned", "stints": ["1392"] },
-        { "text": "Agents shows each agent's state, whether it is waiting on you, and its latest message.", "status": "planned", "stints": ["1396"] },
-        { "text": "Commands that need a name or a folder ask for it right in the palette.", "status": "planned", "stints": ["1393"] },
+        { "text": "Agents shows each agent's state, whether it is waiting on you, and its latest message. Focus it, answer it or close it from there.", "status": "planned", "stints": ["1396"] },
         { "text": "Commands that plugins add show up in the palette, labelled with their plugin.", "status": "planned", "stints": ["1151"] },
         { "text": "Agents you define appear by name. Pick one and it picks up its last chat.", "status": "planned", "stints": ["1396", "1397"] },
         { "text": "Permission system hardening continues.", "status": "planned", "stints": ["1285", "1283", "1288", "1279", "1277", "1349", "1344", "1158"] }
