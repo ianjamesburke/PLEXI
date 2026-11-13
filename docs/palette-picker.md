@@ -160,10 +160,8 @@ Each waits on one trigger: Ian's daily use of this slice says the palette is goo
 - **Explorer on the picker** (was stint 1394): docked picker in a right split, typing always filters, chord claim, `intent.rs` deleted.
 - **Notes on the picker**: a Notes stop replaces the notes picker modal and Cmd+O lands on it.
 - **Plugins** (stint 1395, 0.7 Workbench): a public Picker node and plugin-contributed stops, using the row seam above.
-- **Inline fields** (stint 1393): commands that take input collect it under the field; needed once the first such command or the Explorer arrives.
+- **Inline fields** (stint 1393): commands that take input collect it under the field. Trigger: the first command that needs typed input, or the Explorer move.
 
-## Decisions for Ian
+## Decisions
 
-| # | Decision | Options | My pick |
-|---|---|---|---|
-| 1 | Inline fields (1393) leave 0.6 Palette. No command in this slice needs typed input, but 1151's done-when says an argument-bearing command reaches "the same picker/form". | A. Move 1393 to Later; 1151 records argument schemas, and argument-bearing commands keep their current entry UI until 1393 lands. B. Keep 1393 in 0.6. | A |
+Inline fields (stint 1393) are out of 0.6 Palette (lead ruling, 2026-11-13, within Ian's slice ruling). Stint 1151 records argument schemas; commands that take input keep their current entry UI until 1393 lands. No open decisions remain.
