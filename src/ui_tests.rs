@@ -1065,6 +1065,13 @@ mod tests {
                 h.with_app(|app| (app.ctx.content_rect(), app.ctx.pixels_per_point()));
             let area = ui_scale_area_rect(&h, "shortcuts");
             assert_inside("shortcuts", scale, area, screen);
+            // The body starts below the title, never over it.
+            let title = h.harness().get_by_label("Keyboard Shortcuts").rect() / ppp;
+            let first_section = h.harness().get_by_label("LAYOUT").rect() / ppp;
+            assert!(
+                first_section.min.y >= title.max.y,
+                "shortcuts body {first_section:?} overlaps the title {title:?} at scale {scale}"
+            );
             // Rows paint inside the frame's vertical padding.
             let viewport_bottom = area.max.y - pad;
             let hidden: Vec<&str> = LAST_ROWS
@@ -3064,7 +3071,10 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     /// tile too short for its body hides rows instead of overflowing.
     #[test]
     fn portal_tiles_keep_long_names_inside_small_tiles() {
-        for (width, height) in [(360.0_f32, 200.0_f32), (520.0, 260.0), (520.0, 90.0)] {
+        // 520x110 leaves the tiles taller than the pane header but shorter
+        // than the header plus `PORTAL_MINIMAP_MIN_H`: the header alone shows.
+        // (At 520x90 the strip gives each tile less height than the header.)
+        for (width, height) in [(360.0_f32, 200.0_f32), (520.0, 260.0), (520.0, 110.0)] {
             let mut h = PlexiUiHarness::new_sized(width, height);
             h.step();
             let portals = seed_long_name_portals(&mut h, None);
