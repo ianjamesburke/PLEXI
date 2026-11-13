@@ -131,6 +131,9 @@ def main(args):
                     hook = profile_home / '.plexi/hooks/claude-code-agent-state.sh'
                     assert hook.is_file() and os.access(hook, os.X_OK), 'host startup did not restore shared hook'
                     run([hook])  # Outside a pane the registered hook exits cleanly.
+                if channel == 'alpha' or channel.startswith('pr-'):
+                    seeded = profile_home / ('.plexi-' + channel) / 'plugins/calc/manifest.toml'
+                    assert seeded.is_file(), f'host startup did not seed packaged maintained plugins: {seeded}'
                 env['PLEXI_SOCKET'] = status['socket']
                 if manifest['channel'] != 'stable': env['PLEXI_CHANNEL'] = manifest['channel']
                 panes = json.loads(run([executable, 'pane', 'list']))
