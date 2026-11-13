@@ -48,6 +48,7 @@ class CheckRules(unittest.TestCase):
         self.assertEqual(len(drift), 1)
         self.assertIn('item "A" is \'planned\'', drift[0])
         self.assertIn("stint 1001 (title 1001)", drift[0])
+        self.assertIn("Set its status to 'in progress'", drift[0])
         self.assertIn("website/src/lib/roadmap.json", drift[0])
 
     def test_shipped_item_with_open_stint_is_drift_and_names_it(self):
@@ -110,6 +111,22 @@ class Loading(unittest.TestCase):
             cr.load_roadmap(self.write(roadmap(rel("now", "next"), current="gone")))
 
 
+class RoadmapSource(unittest.TestCase):
+    def test_ref_reads_the_committed_roadmap_not_the_working_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / cr.EDIT_HINT
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(roadmap(rel("now", "next", item("committed", "planned")))))
+            for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed"]):
+                subprocess.run(["git", "-C", d, *args], check=True, capture_output=True)
+            path.write_text(json.dumps(roadmap(rel("now", "next", item("edited", "planned")))))
+            data = cr.load_roadmap_at("HEAD", Path(d))
+            self.assertEqual(data["releases"][0]["items"][0]["text"], "committed")
+            self.assertEqual(cr.load_roadmap(path)["releases"][0]["items"][0]["text"], "edited")
+            with self.assertRaisesRegex(cr.CheckError, "git show no-such-ref:website/src/lib/roadmap.json"):
+                cr.load_roadmap_at("no-such-ref", Path(d))
+
+
 class Cli(unittest.TestCase):
     """Runs the script as `just check-roadmap` does, with a fake `stint` on PATH."""
 
@@ -126,10 +143,19 @@ class Cli(unittest.TestCase):
         exe.write_text(f"#!/bin/sh\n{body}\n")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, fixture=True):
         git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
         env = {"PATH": f"{self.bin}:{Path(git).parent}", "HOME": self.tmp.name}
-        return subprocess.run([sys.executable, str(SCRIPT), "--roadmap", str(self.roadmap), "--ref", "HEAD", *args], capture_output=True, text=True, env=env)
+        base = ["--roadmap", str(self.roadmap), "--ref", "HEAD"] if fixture else []
+        return subprocess.run([sys.executable, str(SCRIPT), *base, *args], capture_output=True, text=True, env=env)
+
+    def test_first_line_names_the_roadmap_source(self):
+        self.fake_stint("echo '[]'")
+        committed = self.run_cli("--ref", "HEAD", fixture=False).stdout.splitlines()[0]
+        self.assertIn("read committed HEAD:website/src/lib/roadmap.json", committed)
+        self.assertIn("commits searched on HEAD", committed)
+        working = self.run_cli(fixture=False).stdout.splitlines()[0]
+        self.assertIn("read working tree website/src/lib/roadmap.json", working)
 
     def test_missing_stint_cli_is_an_error_not_a_pass(self):
         proc = self.run_cli()

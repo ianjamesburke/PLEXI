@@ -15,6 +15,11 @@ Information (exit 0): items whose linked stints are all done and named in a
 commit message on REF, so they ship with the release cut from REF. Mark them
 "shipped" in roadmap.json once that release is published.
 
+Source: with --ref, the roadmap is read from that commit (`git show
+REF:website/src/lib/roadmap.json`), so a promotion judges the committed
+candidate. Without --ref, the working tree file is read and commits are
+searched on HEAD. --roadmap PATH reads that file instead (tests).
+
 Errors (exit 2): no `stint` on PATH, no .stint/ above the repo, unreadable
 roadmap, unknown REF.
 
@@ -60,9 +65,28 @@ class Stint:
 
 def load_roadmap(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        text = path.read_text()
+    except OSError as e:
         raise CheckError(f"cannot read roadmap {path}: {e}") from e
+    return parse_roadmap(text, str(path))
+
+
+def load_roadmap_at(ref: str, repo: Path = REPO) -> dict:
+    spec = f"{ref}:{EDIT_HINT}"
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), "show", spec], capture_output=True, text=True, check=False)
+    except OSError as e:
+        raise CheckError(f"`git show {spec}` failed to start: {e}") from e
+    if proc.returncode != 0:
+        raise CheckError(f"`git show {spec}` exited {proc.returncode}: {proc.stderr.strip()} (fetch the ref, or check the roadmap was committed there)")
+    return parse_roadmap(proc.stdout, spec)
+
+
+def parse_roadmap(text: str, path: str) -> dict:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise CheckError(f"cannot parse roadmap {path}: {e}") from e
     releases = data.get("releases")
     if not isinstance(releases, list) or not isinstance(data.get("currentSlug"), str):
         raise CheckError(f"{path}: needs a 'currentSlug' string and a 'releases' list")
@@ -145,7 +169,7 @@ def check(data: dict, stints: dict[str, Stint], named: set[str], ref: str) -> tu
             if missing or open_ or any(s.state == "archived" for s in known):
                 continue
             if status == "planned":
-                drift.append(f"{at} is 'planned' but every linked stint is done: {', '.join(s.label() for s in known)}. Set it to at least 'in progress' in {EDIT_HINT}.")
+                drift.append(f"{at} is 'planned' but every linked stint is done: {', '.join(s.label() for s in known)}. Set its status to 'in progress' in {EDIT_HINT}; it becomes 'shipped' only once a published release carries the work.")
             unnamed = [s for s in known if s.id not in named]
             if unnamed:
                 info.append(f"{at}: all linked stints are done, but no commit on {ref} names {', '.join(s.label() for s in unnamed)}; confirm the work is in this release before marking it shipped.")
@@ -156,20 +180,29 @@ def check(data: dict, stints: dict[str, Stint], named: set[str], ref: str) -> tu
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--ref", default="origin/alpha", help="the commit the next release is cut from (default: origin/alpha)")
-    parser.add_argument("--roadmap", type=Path, default=DEFAULT_ROADMAP)
+    parser.add_argument("--ref", help="the commit the next release is cut from; the roadmap is read from it (default: working tree, commits on HEAD)")
+    parser.add_argument("--roadmap", type=Path, help="read this roadmap file instead (tests)")
     args = parser.parse_args(argv)
+    ref = args.ref or "HEAD"
     try:
-        data = load_roadmap(args.roadmap)
+        if args.roadmap is not None:
+            source = f"file {args.roadmap}"
+            data = load_roadmap(args.roadmap)
+        elif args.ref:
+            source = f"committed {args.ref}:{EDIT_HINT}"
+            data = load_roadmap_at(args.ref)
+        else:
+            source = f"working tree {EDIT_HINT}"
+            data = load_roadmap(DEFAULT_ROADMAP)
         stints = load_stints()
-        named = stints_named_on(args.ref)
+        named = stints_named_on(ref)
     except CheckError as e:
         print(f"check-roadmap: error: {e}", file=sys.stderr)
         return 2
-    drift, info = check(data, stints, named, args.ref)
+    drift, info = check(data, stints, named, ref)
     linked = sum(1 for r in data["releases"] for i in r.get("items", []) if i.get("stints"))
     total = sum(len(r.get("items", [])) for r in data["releases"])
-    print(f"check-roadmap: {linked} of {total} items linked to stints; release candidate {args.ref}")
+    print(f"check-roadmap: read {source}; {linked} of {total} items linked to stints; commits searched on {ref}")
     for line in info:
         print(f"  info: {line}")
     for line in drift:
