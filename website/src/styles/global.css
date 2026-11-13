@@ -287,7 +287,9 @@ section + section { border-top: 1px solid var(--border); }
 .prose a { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
 .prose pre { border-radius: 0; padding: 22px 18px; font-size: 14px; overflow-x: auto; }
 .prose pre code { font-family: var(--mono); overflow-wrap: normal; }
-.prose table { display: block; overflow-x: auto; font-size: 14px; }
+.prose .table-scroll { margin-bottom: 18px; overflow-x: auto; }
+.prose .table-scroll > table { margin-bottom: 0; }
+.prose table { font-size: 14px; }
 .prose .callout { border-radius: 0; }
 .prose table { overflow-wrap: normal; }
 .prose th { white-space: nowrap; }

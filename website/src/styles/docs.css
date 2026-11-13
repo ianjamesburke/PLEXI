@@ -102,7 +102,8 @@
 .docs-article .prose :not(pre) > code { font-size: .82em; overflow-wrap: anywhere; }
 .docs-article .prose :is(h2, h3, h4) code { font-size: .88em; background: none; border: 0; padding: 0; color: inherit; }
 .docs-article .prose pre { border-color: var(--border); }
-.docs-article .prose table { border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.docs-article .prose .table-scroll { border: 1px solid var(--border); }
+.docs-article .prose table { font-variant-numeric: tabular-nums; }
 .docs-article .prose thead th { background: var(--bg-2); font: 700 12px/1.4 var(--mono); letter-spacing: .04em; color: var(--fg); }
 .docs-article .prose tbody tr + tr td { border-top: 1px solid var(--border); }
 .docs-article .prose td { min-width: 9ch; }
