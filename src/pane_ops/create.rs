@@ -789,6 +789,7 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
+            ctx.simplify_and_reconcile();
             log::info!("plugin::{plugin_id}: launched as root pane {new_id} (empty context)");
             return Some(new_id);
         }
@@ -841,6 +842,7 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
+            ctx.simplify_and_reconcile();
             log::info!("plugin::{plugin_id}: launch-failed tile inserted as root pane {new_id}");
             return;
         }
@@ -2062,6 +2064,7 @@ impl PlexiApp {
         if self.windows[target_win_idx].focused_pane.is_none() {
             self.windows[target_win_idx].focused_pane = Some(new_tile);
         }
+        self.windows[target_win_idx].simplify_and_reconcile();
 
         if let Some(schema) = result_schema {
             if let Err(err) = self
