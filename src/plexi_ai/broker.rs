@@ -239,13 +239,15 @@ impl AiBroker for LiveAiBroker {
             }
         };
 
-        // Budget gate — fail open on ledger I/O errors (today_spend returns 0 on error).
-        if let Err(reason) = ledger::check_budget(&request.plugin_id, ai_config) {
+        // Budget gate: fails open on a ledger read error (today_spend returns
+        // 0), closed while an old-name ledger makes spend unrecordable.
+        if let Err(denial) = ledger::check_budget(&request.plugin_id, ai_config) {
             log::warn!(
-                "ai_broker[{}]: request denied by budget gate — {reason}",
-                request.plugin_id
+                "ai_broker[{}]: request denied by budget gate ({}) — {denial}",
+                request.plugin_id,
+                denial.code()
             );
-            return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
+            return AiBrokerResponse::err(format!("{}: {denial}", denial.code()));
         }
 
         let configured = match request.model_mode {
@@ -1642,6 +1644,47 @@ mod tests {
                 .contains("ai_config_missing"),
             "missing config error must surface the ai_config_missing tag"
         );
+    }
+
+    /// Stint 1312: while only an old-name ledger exists, spend cannot be
+    /// recorded, so the broker refuses with its own code, never as a budget
+    /// overrun, and leaves the ledger untouched.
+    #[test]
+    fn live_broker_refuses_with_ledger_unavailable_while_an_old_name_ledger_exists() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let old = profile.path().join("agent-ledger.jsonl");
+        let original = "{\"ts\":\"2026-09-01T00:00:00Z\",\"cost_usd\":0.5}\n";
+        std::fs::write(&old, original).unwrap();
+        let broker = LiveAiBroker::new(Some(AiConfig::default()));
+        let resp = broker.dispatch(
+            AiBrokerRequest {
+                plugin_id: "test".to_string(),
+                model_mode: ModelMode::Fast,
+                concrete_model: None,
+                reasoning_effort: None,
+                system: String::new(),
+                messages: vec![AiMessage {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+                tools: vec![],
+                workspace_root: None,
+                open_panes: Arc::new(Vec::new()),
+                tool_dispatcher: None,
+                cancel: CancelToken::new(),
+                max_tool_iterations: None,
+                client: None,
+                kind: None,
+            },
+            &mut |_| {},
+        );
+        let error = resp.error.expect("the request must be refused");
+        assert!(error.starts_with("ledger_unavailable: "), "{error}");
+        assert!(!error.contains("budget_exceeded"), "{error}");
+        assert!(error.contains("Rename it to"), "{error}");
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), original);
+        assert!(!profile.path().join("ai-ledger.jsonl").exists());
     }
 
     /// Verify the tool loop: a backend that returns one tool call on the first

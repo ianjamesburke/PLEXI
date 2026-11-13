@@ -400,9 +400,10 @@ impl WorkspaceLoadError {
         }
     }
 
-    /// The file is a layout version whose converter was deleted. No 0.4 or
-    /// later build has opened that profile. A profile that can still hold
-    /// never-migrated pre-tier notes (none opened by 0.3 or later) has one.
+    /// The file is a layout version whose converter was deleted. No build
+    /// that carried the converter (Plexi 0.4.1 to 0.4.6, 0.5 Groundwork beta 1)
+    /// has opened that profile. A profile that can still hold never-migrated
+    /// pre-tier notes was opened by no 0.3 or later build, so it has one too.
     pub fn is_retired_version(&self) -> bool {
         matches!(
             self,
@@ -441,7 +442,7 @@ impl std::fmt::Display for WorkspaceLoadError {
                             .to_owned()
                     }
                     UnusableCause::RetiredVersion => format!(
-                        "open this profile once with any Plexi 0.4 release, which converts it to \
+                        "open this profile once with Plexi 0.4.1 to 0.4.6, which converts it to \
                          version {CURRENT_VERSION}, then update again; or move the file aside to \
                          start with an empty layout"
                     ),
@@ -1071,7 +1072,7 @@ fn save_error(operation: &str, temp_path: &Path, error: io::Error) -> io::Error 
 /// The only workspace version this build reads or writes.
 const CURRENT_VERSION: u32 = 3;
 
-/// The pre-strip layout. Its converter shipped in the 0.4 releases and was
+/// The pre-strip layout. Its converter shipped in Plexi 0.4.1 to 0.4.6 and was
 /// deleted in stint 1312; a file at this version is reported, never rewritten.
 const RETIRED_VERSION: u32 = 2;
 
@@ -1094,7 +1095,7 @@ fn retired_version_error(path: &Path) -> io::Error {
         format!(
             "workspace {} is a version {RETIRED_VERSION} layout, which this Plexi no longer \
              converts. It was left unchanged and nothing from it was restored. Fix: open this \
-             profile once with any Plexi 0.4 release, which converts it to version \
+             profile once with Plexi 0.4.1 to 0.4.6, which converts it to version \
              {CURRENT_VERSION}, then update again; or move {} aside to start with an empty \
              layout.",
             path.display(),
@@ -1335,7 +1336,7 @@ mod tests {
         );
         let block = error.save_block().expect("a retired file blocks saves");
         assert!(block.contains("version 2"), "{block}");
-        assert!(block.contains("Plexi 0.4"), "{block}");
+        assert!(block.contains("Plexi 0.4.1 to 0.4.6"), "{block}");
         assert!(block.contains("move the file aside"), "{block}");
         assert!(!block.contains("repair"), "{block}");
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -1350,7 +1351,7 @@ mod tests {
         assert!(message.contains("version 2"), "{message}");
         assert!(message.contains("left unchanged"), "{message}");
         assert!(
-            message.contains("Plexi 0.4"),
+            message.contains("Plexi 0.4.1 to 0.4.6"),
             "the fix names the converting release: {message}"
         );
         assert!(

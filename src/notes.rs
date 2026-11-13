@@ -993,9 +993,10 @@ fn holds_a_note(dir: &Path) -> bool {
 /// The migration always moved `inbox/` and loose `.md` files, so those are
 /// always reported. It deliberately left context folders it could not match
 /// (orphan `ctx-` folders, ambiguous slug folders) in place; those get one
-/// info line instead, unless `workspace_retired` says no 0.4 or later build
-/// opened this profile, which is the only case in which a folder can be
-/// genuinely unmigrated.
+/// info line instead, unless `workspace_retired` says no build carrying the
+/// workspace converter (0.4.1 or later) opened this profile. Every profile
+/// that can hold a genuinely unmigrated folder (opened by no 0.3 or later
+/// build) is in that case.
 ///
 /// On the stable channel the pre-tier base and the global tier are the same
 /// directory, so only hashed `ctx-` folders count there: everything else in

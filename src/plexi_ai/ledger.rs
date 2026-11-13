@@ -344,7 +344,7 @@ pub fn append_result(row: &LedgerRow) -> Result<(), String> {
 /// File name of the AI ledger in the channel profile.
 const LEDGER_FILE: &str = "ai-ledger.jsonl";
 
-/// The ledger's name before April 2026 (Plexi 0.1.7). Its rename shim is deleted
+/// The ledger's name before Plexi 0.1.7 (April 2026). Its rename shim is deleted
 /// (stint 1312); a ledger still under this name is reported, never moved.
 const RETIRED_LEDGER_FILE: &str = "agent-ledger.jsonl";
 
@@ -352,7 +352,7 @@ pub(crate) fn ledger_path() -> PathBuf {
     crate::config::config_dir().join(LEDGER_FILE)
 }
 
-/// The error for a ledger still under its pre-April-2026 name with no current
+/// The error for a ledger still under its pre-0.1.7 name with no current
 /// ledger beside it, or `None`. Reads only.
 pub fn retired_ledger_error() -> Option<String> {
     let config_dir = crate::config::config_dir();
@@ -360,7 +360,7 @@ pub fn retired_ledger_error() -> Option<String> {
     let new_path = config_dir.join(LEDGER_FILE);
     (old_path.exists() && !new_path.exists()).then(|| {
         format!(
-            "AI ledger {} uses the name from before April 2026 (Plexi 0.1.7), which Plexi no \
+            "AI ledger {} uses the name from before Plexi 0.1.7 (April 2026), which Plexi no \
              longer migrates. It was left unchanged. Until it is moved, AI requests are refused \
              and no usage is recorded. Fix: Rename it to {} to keep its history, or delete it.",
             old_path.display(),
@@ -713,16 +713,45 @@ pub fn today_spend() -> DailySpend {
     }
 }
 
+/// Why the budget gate refused an AI request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetDenial {
+    /// Spend cannot be read or recorded, so no cap can be enforced.
+    LedgerUnavailable(String),
+    /// A daily cap is reached.
+    Exceeded(String),
+}
+
+impl BudgetDenial {
+    /// The machine-readable code the broker reports to its caller.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::LedgerUnavailable(_) => "ledger_unavailable",
+            Self::Exceeded(_) => "budget_exceeded",
+        }
+    }
+}
+
+impl std::fmt::Display for BudgetDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LedgerUnavailable(message) | Self::Exceeded(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Check if an `ai.query` from `plugin_id` would exceed budget limits.
-/// Returns `Ok(())` if under budget, `Err(reason)` if over.
-/// Fails open: if `today_spend` returns zero due to I/O errors, the query
-/// is allowed through.
-pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result<(), String> {
+/// Fails open on a read error (`today_spend` returns zero), but fails closed
+/// while an old-name ledger makes spend unrecordable.
+pub fn check_budget(
+    plugin_id: &str,
+    config: &crate::config::AiConfig,
+) -> Result<(), BudgetDenial> {
     // Spend cannot be read or recorded while the old-name ledger is in place,
     // so the caps cannot be enforced: refuse rather than spend unmetered.
     if let Some(error) = retired_ledger_error() {
         log::error!("ai_broker[{plugin_id}]: refused, budget unenforceable: {error}");
-        return Err(error);
+        return Err(BudgetDenial::LedgerUnavailable(error));
     }
     let spend = today_spend();
     let global_cap = config.effective_global_daily_usd();
@@ -732,10 +761,10 @@ pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result
             spend.global_usd,
             global_cap,
         );
-        return Err(format!(
+        return Err(BudgetDenial::Exceeded(format!(
             "global daily AI budget exceeded (${:.2} / ${:.2})",
             spend.global_usd, global_cap
-        ));
+        )));
     }
     let plugin_cap = config.effective_per_plugin_daily_usd();
     let plugin_spend = spend.per_plugin.get(plugin_id).copied().unwrap_or(0.0);
@@ -745,10 +774,10 @@ pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result
             plugin_spend,
             plugin_cap,
         );
-        return Err(format!(
+        return Err(BudgetDenial::Exceeded(format!(
             "per-plugin daily AI budget exceeded for '{plugin_id}' (${:.2} / ${:.2})",
             plugin_spend, plugin_cap
-        ));
+        )));
     }
     Ok(())
 }
@@ -883,7 +912,9 @@ mod ledger_tests {
         };
         let result = check_budget("app1", &config);
         assert!(result.is_err(), "should block when global spend >= cap");
-        let msg = result.unwrap_err();
+        let denial = result.unwrap_err();
+        assert_eq!(denial.code(), "budget_exceeded");
+        let msg = denial.to_string();
         assert!(
             msg.contains("global daily"),
             "error must mention 'global daily': {msg}"
@@ -902,7 +933,9 @@ mod ledger_tests {
         // With empty ledger, plugin_spend = 0.0 which is NOT >= 0.0... actually 0.0 >= 0.0 is true.
         let result = check_budget("app1", &config);
         assert!(result.is_err(), "should block when per-plugin spend >= cap");
-        let msg = result.unwrap_err();
+        let denial = result.unwrap_err();
+        assert_eq!(denial.code(), "budget_exceeded");
+        let msg = denial.to_string();
         assert!(
             msg.contains("app1"),
             "error must mention the plugin_id: {msg}"
@@ -1094,7 +1127,8 @@ mod ledger_tests {
         };
         let budget = check_budget("app1", &crate::config::AiConfig::default())
             .expect_err("an unmetered ledger must refuse AI calls");
-        for message in [appended, summarized, budget] {
+        assert_eq!(budget.code(), "ledger_unavailable");
+        for message in [appended, summarized, budget.to_string()] {
             assert!(message.contains(&old.display().to_string()), "{message}");
             assert!(
                 message.contains(&ledger_file().display().to_string()),
@@ -1102,6 +1136,7 @@ mod ledger_tests {
             );
             assert!(message.contains("left unchanged"), "{message}");
             assert!(message.contains("AI requests are refused"), "{message}");
+            assert!(message.contains("before Plexi 0.1.7"), "{message}");
             assert!(
                 message.contains("Rename"),
                 "the fix names the rename: {message}"

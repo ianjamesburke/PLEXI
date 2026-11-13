@@ -2419,3 +2419,52 @@ fn a_loose_pre_tier_note_notifies_beside_a_healthy_workspace() {
     assert!(notes.body.contains("loose.md"), "{}", notes.body);
     assert_eq!(std::fs::read_to_string(&loose).unwrap(), "loose body");
 }
+
+/// A host-condition notice is a standing condition: each launch replaces the
+/// notice restored from the previous launch instead of adding another, and a
+/// condition that no longer holds clears its notice.
+#[test]
+fn host_condition_notices_show_once_across_launches_and_clear_when_resolved() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    let layout = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+    std::fs::write(&workspace, layout).unwrap();
+    let ledger = profile.join("agent-ledger.jsonl");
+    std::fs::write(&ledger, "{\"ts\":\"2026-09-01T00:00:00Z\"}\n").unwrap();
+    let saved = profile.join("notifications.json");
+
+    let launch = |profile: &std::path::Path| {
+        let mut h = HostHarness::from_profile_dir(profile.to_path_buf());
+        // Mirrors `PlexiApp::new`, which restores the persisted queue.
+        h.app.pending_notifications = load_pending_notifications_from(&saved);
+        h.app.surface_workspace_load_failure();
+        h.app.surface_retired_data_notices();
+        h.app.save_notifications();
+        let mut titles: Vec<String> = h
+            .app
+            .pending_notifications
+            .iter()
+            .map(|n| n.title.clone())
+            .collect();
+        titles.sort();
+        titles
+    };
+
+    let expected = vec![
+        "Old AI ledger found".to_string(),
+        "Workspace not restored".to_string(),
+    ];
+    assert_eq!(launch(&profile), expected);
+    assert_eq!(launch(&profile), expected, "a relaunch must not duplicate");
+    assert_eq!(launch(&profile), expected, "nor a third launch");
+
+    std::fs::rename(&ledger, profile.join("ai-ledger.jsonl")).unwrap();
+    assert_eq!(
+        launch(&profile),
+        vec!["Workspace not restored".to_string()],
+        "a resolved condition clears its notice"
+    );
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+}
