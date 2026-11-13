@@ -1,6 +1,6 @@
 {
   "harness": {
-    "binary": "/Users/ianburke/.local/bin/pi",
+    "binary": "pi",
     "help_exit_code": 0,
     "isolated_dir_present": false,
     "required_flags_present": {
@@ -10,26 +10,62 @@
       "read": true,
       "write": true
     },
-    "version": "1.4.0"
+    "version": "1.5.2"
   },
   "input_byte_size": 25,
   "input_hash_sha256": "012ece489f78290b448818a63f29ed53cd17c7288e4b998a7d0dedbc1d19f8d8",
   "live_acceptance": "NO_TOOLS_STDIN_ONLY",
   "native_tool_negative_control": {
-    "can_read_unrelated_paths": true,
-    "can_write_source_note": true,
-    "launch_flags": [
-      "/Users/ianburke/.local/bin/pi",
+    "argv": [
+      "pi",
       "--print",
       "--tools",
-      "read,write,bash"
+      "read,write,bash",
+      "--no-session",
+      "--no-context-files",
+      "--no-approve",
+      "--offline"
+    ],
+    "can_read_unrelated_paths": true,
+    "can_write_source_note": true,
+    "exit_code": 0,
+    "forbidden_bytes_reached_provider": true,
+    "forced_tool_calls": [
+      "read",
+      "bash",
+      "write"
+    ],
+    "forced_tool_results": [
+      {
+        "answered": true,
+        "result_text": "<withheld: contains fixture secret bytes>",
+        "tool": "read"
+      },
+      {
+        "answered": true,
+        "result_text": "<withheld: contains fixture secret bytes>",
+        "tool": "bash"
+      },
+      {
+        "answered": true,
+        "result_text": "Successfully wrote to <fixture>/context/.plexi/notes/selected.md",
+        "tool": "write"
+      }
     ],
     "live_acceptance": "WITHHELD_SYNTHETIC_FIXTURE_ONLY",
+    "provider_request_count": 2,
+    "selected_hash_reached_provider": true,
+    "source_note_unchanged": false,
+    "tools_offered_to_model": [
+      "bash",
+      "read",
+      "write"
+    ],
     "verdict": "FAIL_UNRESTRICTED"
   },
   "no_tools_stdin_mode": {
     "argv": [
-      "/Users/ianburke/.local/bin/pi",
+      "pi",
       "--print",
       "--no-tools",
       "--no-session",
@@ -37,36 +73,43 @@
       "--no-approve",
       "--offline"
     ],
-    "environment_secret_names_withheld": [
-      "AI_VIDEO_FAL_KEY",
-      "AI_VIDEO_GEMINI_KEY",
-      "ANTHROPIC_API_KEY",
-      "BITBUCKET_API_TOKEN",
-      "CF_API_TOKEN",
-      "CLAWMART_API_KEY",
-      "CODING_SHOWDOWN_GEMINI_API_KEY",
-      "CONTEXT7_API_KEY",
-      "DU_OWUI_KEY",
-      "ELEVENLABS_API_KEY",
-      "FAL_KEY",
-      "FRAMEIO_CLIENT_SECRET",
-      "FRAMEIO_TOKEN",
-      "GOOGLE_API_KEY",
-      "KALSHI_API_KEY_ID",
-      "KALSHI_PRIVATE_KEY_PATH",
-      "NVIDIA_API_KEY",
-      "OPENAI_API_KEY",
-      "OPENROUTER_API_KEY",
-      "PLEXI_HOST_MCP_TOKEN"
-    ],
+    "environment_secret_vars_withheld_count": 20,
     "exit_code": 0,
     "forbidden_bytes_absent": true,
+    "forbidden_bytes_reached_provider": false,
+    "forced_tool_calls": [
+      "read",
+      "bash",
+      "write"
+    ],
+    "forced_tool_results": [
+      {
+        "answered": true,
+        "result_text": "Tool read not found",
+        "tool": "read"
+      },
+      {
+        "answered": true,
+        "result_text": "Tool bash not found",
+        "tool": "bash"
+      },
+      {
+        "answered": true,
+        "result_text": "Tool write not found",
+        "tool": "write"
+      }
+    ],
     "payload_contains_selected_hash": true,
     "provider_payload_verdict": "ONLY_SELECTED_NOTE",
+    "provider_request_count": 2,
+    "selected_hash_reached_provider": true,
+    "source_note_unchanged": true,
     "stdin_byte_size": 148,
-    "stdin_sha256": "1dd3ecff309e54359122420ca96eca27b1d00bdc5e62b74bf0a9d612dfa5daae"
+    "stdin_sha256": "1dd3ecff309e54359122420ca96eca27b1d00bdc5e62b74bf0a9d612dfa5daae",
+    "tools_offered_to_model": [],
+    "tools_verdict": "OBSERVED_REFUSED"
   },
   "overall_verdict": "VERIFIED_RESTRICTED",
-  "schema_version": "2.0",
-  "stint": "1009"
+  "schema_version": "3.0",
+  "stint": "1423"
 }

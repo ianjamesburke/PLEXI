@@ -253,15 +253,15 @@ Plexi's Permission Monitor (`src/broker/gate.rs`) intercepts host-brokered capab
 However, **harness-native tools** (e.g. bash execution, file read/write tools built into `pi`, `claude -p`, `codex`, `agy`) execute inside the child harness process on the host OS, completely bypassing Plexi's host broker gate. A system prompt saying "You are read-only" provides zero security enforcement against a compromised or hallucinating model.
 
 ### 8.2 Supported Harness Configuration
-The qualified installed harness is `pi 1.4.0`. The only live V1 configuration is:
+The qualified harness is whichever `pi` is installed, provided it passes the authority probe below; the probe records the version it qualified. The only live V1 configuration is:
 
 ```text
 pi --print --no-tools --no-session --no-context-files --no-approve --offline
 ```
 
-The host validates and hashes the one saved note, builds the bounded proposal payload, and sends it to the worker's stdin. `--no-tools` disables `read`, `bash`, `edit`, `write`, and all other worker tools; it does not make a staged file selectively readable. There is no `--isolated-dir` flag in this Pi version. The probe verifies `pi --version`, `pi --help`, the real launch argv, the captured stdin digest/size, and that the outbound capture contains no unselected note, attachment, directory-listing, or secret bytes.
+The host validates and hashes the one saved note, builds the bounded proposal payload, and sends it to the worker's stdin. `--no-tools` disables `read`, `bash`, `edit`, `write`, and all other worker tools; it does not make a staged file selectively readable. The probe requires that `pi --help` offers no `--isolated-dir` flag. It records `pi --version` and `pi --help`, the real launch argv, and the captured stdin digest/size. It then runs that argv against a scripted loopback provider (a probe-only Pi config dir, no network, no paid model) that demands `read`, `bash` and `write` calls on the unselected fixture files, and observes the result: no tools offered to the model, every forced call answered without executing, no unselected note, attachment, or secret bytes in any request Pi sends, and the source note unchanged.
 
-The native tool-bearing negative control uses `pi --print --tools read,write,bash`. Pi's native tools retain the OS user's filesystem authority and cannot enforce a single-note boundary. Its result is `FAIL_UNRESTRICTED` and `WITHHELD_SYNTHETIC_FIXTURE_ONLY`; it is not live V1 acceptance. Prompt wording, a working-directory convention, and an invented isolation flag are not security boundaries.
+The native tool-bearing negative control runs the same argv with `--tools read,write,bash` in place of `--no-tools`, against the same scripted provider. Pi's native tools retain the OS user's filesystem authority and cannot enforce a single-note boundary. Its result is `FAIL_UNRESTRICTED` and `WITHHELD_SYNTHETIC_FIXTURE_ONLY`; it is not live V1 acceptance. Prompt wording, a working-directory convention, and an invented isolation flag are not security boundaries.
 
 ### 8.3 Release Decision Gate
 If the selected harness cannot enforce the path boundary (i.e. cannot demonstrably deny writes to the source note and reads of unrelated files), **live V1 acceptance of the exemplar MUST BE WITHHELD**.
@@ -275,13 +275,13 @@ In that event, the exemplar is restricted to a **synthetic-fixture-only demonstr
 The contract includes an automated, fixture-backed authority probe (`scripts/probe-one-note-authority.py`) and test suite (`scripts/test_probe_one_note_authority.py`).
 
 ### 9.1 Qualification Vectors
-1. `pi --no-tools` is verified against the installed binary and help output; the worker has zero file/bash tools.
+1. `pi --no-tools` is observed on the installed binary: the model is offered zero tools and forced `read`/`bash`/`write` calls do not execute.
 2. The exact argv and stdin payload are captured; only the selected note's bounded content and schema framing are present.
 3. The fixture includes an unselected sibling, global note, attachment, directory-listing candidate, and secret environment value; byte-for-byte inspection proves they are absent.
-4. The native `--tools read,write,bash` mode is a negative control: because it can reach unrelated paths and write the source, it records `FAIL_UNRESTRICTED` and withholds live acceptance.
+4. The native `--tools read,write,bash` mode is a negative control: it is observed to read unrelated paths and overwrite the source, so it records `FAIL_UNRESTRICTED` and withholds live acceptance.
 
 ### 9.2 Negative-Control Proof
-The probe includes an explicit native-tool negative control using the real installed Pi flags. It proves that tool-bearing execution is unrestricted and records `FAIL_UNRESTRICTED` / `WITHHELD_SYNTHETIC_FIXTURE_ONLY`, while the accepted path is the real `--no-tools` stdin-only subprocess.
+The negative control runs the real installed Pi through the same scripted provider. Its observed leak proves the probe can detect one; if the control does not leak, the probe cannot vouch for `--no-tools` and the overall verdict is `AUTHORITY_VIOLATION`. The accepted path is the real `--no-tools` stdin-only subprocess.
 
 ### 9.3 Retained Evidence Record
 The retained qualification evidence is saved at `docs/security/probe-one-note-authority-evidence.json`. It records:
