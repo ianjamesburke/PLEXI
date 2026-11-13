@@ -18749,8 +18749,11 @@ mod host_induced_terminal_output_tests {
         );
     }
 
+    /// Stint 1438: a focus change writes nothing to the PTY (egui_term has
+    /// no focus-in/out reporting), so it opens no host-induced window, and an
+    /// idle agent with nothing to say stays Idle across it.
     #[test]
-    fn focus_change_then_burst_keeps_idle_agent_idle() {
+    fn focus_change_opens_no_host_window_and_idle_agent_stays_idle() {
         let mut h = HostHarness::new();
         let term = h.add_focused_terminal();
         let other = h.app.windows[0]
@@ -18764,19 +18767,22 @@ mod host_induced_terminal_output_tests {
 
         h.focus_pane(other);
         h.app.reconcile_focus_logging(Duration::ZERO);
+        h.focus_pane(term);
+        h.app.reconcile_focus_logging(Duration::ZERO);
         let t = terminal(&mut h, term);
         assert!(
-            t.host_induced_quiet(Instant::now()),
-            "a focus change opens the host-induced window on the terminal it left"
+            !t.host_induced_quiet(Instant::now()),
+            "a focus change is not host-induced PTY output"
         );
-        let stamped_before = t.last_pty_output_at;
-        burst_then_observe(t);
-
+        let state = t.observed_output_state(Instant::now());
+        t.set_observed_agent(Some(PaneAgentState {
+            pane_id: t.id,
+            state,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }));
         assert_eq!(t.effective_agent_state().0, AgentState::Idle);
-        assert_ne!(
-            t.last_pty_output_at, stamped_before,
-            "pane send --submit settling still sees every PTY event"
-        );
     }
 
     #[test]
@@ -18834,8 +18840,12 @@ mod host_induced_terminal_output_tests {
         );
     }
 
+    /// Stint 1438 (hosted CI failure in
+    /// `stale_hook_idle_yields_to_observed_working_and_settles_back`): an
+    /// open host-induced window must not let a stale hook Idle hide an agent
+    /// the observed detector reports Working.
     #[test]
-    fn hook_idle_beats_observed_working_inside_host_window() {
+    fn observed_working_beats_stale_hook_idle_inside_host_window() {
         let mut h = HostHarness::new();
         let term = h.add_focused_terminal();
         let t = terminal(&mut h, term);
@@ -18847,17 +18857,67 @@ mod host_induced_terminal_output_tests {
             detail: None,
             session_id: None,
         }));
-        assert_eq!(
-            t.effective_agent_state().0,
-            AgentState::Working,
-            "outside a host window a stale hook Idle still yields to observed Working"
-        );
+        assert_eq!(t.effective_agent_state().0, AgentState::Working);
 
         t.mark_host_induced(Instant::now(), "test");
         assert_eq!(
             t.effective_agent_state().0,
+            AgentState::Working,
+            "a host-induced window never turns observed Working into the stale hook Idle"
+        );
+    }
+
+    /// Stint 1438: an agent that is already working keeps producing output
+    /// through a resize drag, where every committed resize re-opens the
+    /// window. That output is the agent's, so the pane stays Working. The
+    /// clock is driven explicitly, so runner speed does not matter.
+    #[test]
+    fn working_agent_output_through_a_resize_drag_stays_working() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let start = Instant::now();
+        t.agent = None;
+        t.host_induced_until = None;
+        t.last_agent_activity_at = None;
+        t.record_pty_event(start);
+        assert_eq!(t.observed_output_state(start), AgentState::Working);
+
+        // A three-second drag: a resize commit every 100 ms, agent output
+        // right after each one.
+        let mut now = start;
+        for step in 1..=30 {
+            now = start + Duration::from_millis(100 * step);
+            t.mark_host_induced(now, "resize");
+            t.record_pty_event(now + Duration::from_millis(10));
+        }
+        let end = now + Duration::from_millis(20);
+        assert_eq!(
+            t.observed_output_state(end),
+            AgentState::Working,
+            "a working agent's output during a resize drag is agent activity"
+        );
+    }
+
+    /// The 1231 property stays: an idle agent's repaint right after a resize
+    /// commit does not count as activity, judged on an explicit clock.
+    #[test]
+    fn idle_agent_repaint_after_resize_commit_stays_idle() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let start = Instant::now();
+        t.last_agent_activity_at = Some(start);
+        t.last_pty_output_at = Some(start);
+        t.host_induced_until = None;
+        let resize = start + Duration::from_secs(5);
+        t.mark_host_induced(resize, "resize");
+        t.record_pty_event(resize + Duration::from_millis(30));
+        t.record_pty_event(resize + Duration::from_millis(60));
+        assert_eq!(
+            t.observed_output_state(resize + Duration::from_millis(100)),
             AgentState::Idle,
-            "inside a host window the hook Idle wins"
+            "an idle agent's SIGWINCH repaint is not activity"
         );
     }
 }

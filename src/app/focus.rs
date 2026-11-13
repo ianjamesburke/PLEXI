@@ -516,33 +516,6 @@ impl PlexiApp {
             .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)))
     }
 
-    /// Stint 1231: a focus change can make the terminal it enters or leaves
-    /// repaint. Open that terminal's host-induced quiet window so the repaint
-    /// does not read as agent activity.
-    fn mark_focus_change_host_induced(
-        &mut self,
-        target: Option<(u64, egui_tiles::TileId)>,
-        now: std::time::Instant,
-    ) {
-        let Some((window_id, tile_id)) = target else {
-            return;
-        };
-        let Some(window) = self.windows.iter_mut().find(|w| w.window_id == window_id) else {
-            return;
-        };
-        let Some(egui_tiles::Tile::Pane(pane_id)) = window.tree.tiles.get(tile_id) else {
-            return;
-        };
-        let pane_id = *pane_id;
-        if let Some(terminal) = window
-            .panes
-            .get_mut(&pane_id)
-            .and_then(|pane| pane.as_terminal_mut())
-        {
-            terminal.mark_host_induced(now, "focus change");
-        }
-    }
-
     /// Stint 1231: open a host-induced quiet window on every terminal whose
     /// backend committed a resize (SIGWINCH to its program) this frame. Runs
     /// after the render pass, which is where terminal views commit resizes.
@@ -565,9 +538,6 @@ impl PlexiApp {
         let now = std::time::Instant::now();
 
         if current_focus != self.last_logged_focus {
-            let previous_focus = self.last_logged_focus;
-            self.mark_focus_change_host_induced(previous_focus, now);
-            self.mark_focus_change_host_induced(current_focus, now);
             let had_previous_focus = self.last_logged_focus.is_some();
             if let Some((window_id, tile_id)) = self.last_logged_focus {
                 let duration_secs = self
