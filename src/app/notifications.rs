@@ -144,12 +144,20 @@ impl Default for PendingNotification {
     }
 }
 
-/// The one way a notification id is minted. `prefix` names the source
+/// How an event notification id is minted. `prefix` names the source
 /// (`wasm:<pane_id>`, `config-error`, `routine`, …); the uuid makes the id
 /// collision-free by construction, so no caller needs its own sequence
 /// counter. Nothing parses the id back apart — it is an opaque identity key.
 pub(crate) fn new_notify_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
+/// The id of a notice about a standing host condition (a workspace that
+/// cannot be restored, a retired data shape). One condition has one id
+/// across launches, so its notice replaces the one restored from an earlier
+/// launch instead of piling up.
+pub(crate) fn condition_notify_id(condition: &str) -> String {
+    format!("host-condition:{condition}")
 }
 
 /// Serializable snapshot of a `PendingNotification`. Session-only handles

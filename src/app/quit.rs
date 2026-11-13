@@ -145,7 +145,7 @@ impl super::PlexiApp {
                 // `plexi host stop` has nobody to answer a dialog, and a
                 // boot-time block never clears. The file stays as found and
                 // the exit reports the workspace unsaved.
-                if self.workspace_save_block.is_some()
+                if self.workspace_load_failure.is_some()
                     && self.quit_coordinator.reason == Some(ExitReason::HostStop)
                 {
                     log::error!(
@@ -155,7 +155,7 @@ impl super::PlexiApp {
                     return true;
                 }
                 // A boot-time block cannot clear by retrying: ask at once.
-                if self.workspace_save_block.is_some()
+                if self.workspace_load_failure.is_some()
                     || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
                 {
                     self.quit_coordinator.save_failure = Some(error.to_string());
@@ -849,8 +849,7 @@ mod tests {
         let (mut h, path) = harness_with_corrupt_workspace(profile.path());
         let block = h
             .app
-            .workspace_save_block
-            .clone()
+            .workspace_save_block()
             .expect("boot must record the unusable workspace");
         assert!(block.contains(&path.display().to_string()), "{block}");
         h.add_test_pane();
@@ -892,8 +891,7 @@ mod tests {
         let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
         let block = h
             .app
-            .workspace_save_block
-            .clone()
+            .workspace_save_block()
             .expect("a failed plugin migration blocks saves");
         assert!(
             block.contains("fix the plugin migration problem") && !block.contains("move the file"),
@@ -954,8 +952,7 @@ mod tests {
         let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
         let block = h
             .app
-            .workspace_save_block
-            .clone()
+            .workspace_save_block()
             .expect("a workspace that fails validation blocks saves");
         assert!(block.contains("invalid workspace"), "{block}");
         h.add_test_pane();

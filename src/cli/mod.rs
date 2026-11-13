@@ -1976,8 +1976,7 @@ pub use events::{
     events_subscribe_cli, pane_lifecycle_follow_cli, pane_lifecycle_wait_cli, EmitArgs,
 };
 pub use host::{
-    host_key_cli, host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli,
-    host_stop_cli, host_workspace_rollback_cli,
+    host_key_cli, host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli,
 };
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, self_update_cli,

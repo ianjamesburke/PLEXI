@@ -2260,3 +2260,211 @@ fn notification_counts_toward_context_matrix() {
         6
     ));
 }
+
+/// Stint 1312: each retired on-disk shape found at launch is a host notice
+/// that names the file and the fix. Reporting never touches the file.
+#[test]
+fn retired_data_shapes_surface_as_launch_notices() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    let layout = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+    std::fs::write(&workspace, layout).unwrap();
+    let notes = profile.join("notes");
+    std::fs::create_dir_all(notes.join("inbox")).unwrap();
+    std::fs::write(notes.join("inbox").join("staged.md"), "staged body").unwrap();
+    let ledger = profile.join("agent-ledger.jsonl");
+    std::fs::write(&ledger, "{\"ts\":\"2026-09-01T00:00:00Z\"}\n").unwrap();
+
+    let mut h = HostHarness::from_profile_dir(profile.clone());
+    assert!(
+        h.app.workspace_load_failure.is_some(),
+        "a version 2 layout blocks this session's saves"
+    );
+    // Notices about the user's own data ignore the notifications switch.
+    h.app.notifications_enabled = false;
+    h.app.surface_workspace_load_failure();
+    h.app.surface_retired_data_notices();
+
+    let bodies: Vec<&str> = h
+        .app
+        .pending_notifications
+        .iter()
+        .map(|n| n.body.as_str())
+        .collect();
+    assert_eq!(bodies.len(), 3, "one notice per retired shape: {bodies:?}");
+    for path in [&workspace, &notes, &ledger] {
+        let path = path.display().to_string();
+        assert!(
+            bodies.iter().any(|body| body.contains(&path)),
+            "no launch notice names {path}: {bodies:?}"
+        );
+    }
+    h.add_test_pane();
+    h.app.mark_workspace_dirty();
+    assert!(
+        !h.app.save_workspace_now(),
+        "the version 2 file is never replaced"
+    );
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+    assert_eq!(
+        std::fs::read_to_string(notes.join("inbox").join("staged.md")).unwrap(),
+        "staged body"
+    );
+    assert!(ledger.is_file());
+    assert!(!profile.join("ai-ledger.jsonl").exists());
+}
+
+/// Stint 1312 ruling: folders the deleted notes migration left on purpose
+/// (an orphan `ctx-` folder, an ambiguous slug folder) are not a retired
+/// shape in an upgraded profile. With a healthy version 3 workspace they
+/// raise no notice and stay byte-identical. With a version 2 workspace the
+/// profile was never migrated, so the same folders are reported.
+#[test]
+fn folders_left_by_the_notes_migration_notify_only_in_a_never_migrated_profile() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    {
+        let mut first = HostHarness::from_profile_dir(profile.clone());
+        first.add_test_pane();
+        assert!(first.app.save_workspace_now());
+    }
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    let orphan = profile
+        .join("notes")
+        .join("ctx-gone-0a1b2c3d")
+        .join("orphan.md");
+    let ambiguous = profile.join("notes").join("project").join("slug.md");
+    for (path, body) in [(&orphan, "orphan body"), (&ambiguous, "slug body")] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    let mut healthy = HostHarness::from_profile_dir(profile.clone());
+    assert!(healthy.app.workspace_load_failure.is_none());
+    healthy.app.notifications_enabled = false;
+    healthy.app.surface_workspace_load_failure();
+    healthy.app.surface_retired_data_notices();
+    assert!(
+        healthy.app.pending_notifications.is_empty(),
+        "folders left on purpose raise no notice: {:?}",
+        healthy
+            .app
+            .pending_notifications
+            .iter()
+            .map(|n| &n.title)
+            .collect::<Vec<_>>()
+    );
+    drop(healthy);
+    assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "orphan body");
+    assert_eq!(std::fs::read_to_string(&ambiguous).unwrap(), "slug body");
+
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&workspace).unwrap()).unwrap();
+    value["version"] = serde_json::json!(2);
+    value.as_object_mut().unwrap().remove("strips");
+    let layout = serde_json::to_vec(&value).unwrap();
+    std::fs::write(&workspace, &layout).unwrap();
+
+    let mut retired = HostHarness::from_profile_dir(profile.clone());
+    retired.app.notifications_enabled = false;
+    retired.app.surface_workspace_load_failure();
+    retired.app.surface_retired_data_notices();
+    let titles: Vec<&str> = retired
+        .app
+        .pending_notifications
+        .iter()
+        .map(|n| n.title.as_str())
+        .collect();
+    assert!(titles.contains(&"Workspace not restored"), "{titles:?}");
+    let notes = retired
+        .app
+        .pending_notifications
+        .iter()
+        .find(|n| n.title == "Old notes folder found")
+        .expect("a never-migrated profile reports its notes folders");
+    assert!(notes.body.contains("ctx-gone-0a1b2c3d/"), "{}", notes.body);
+    assert!(notes.body.contains("project/"), "{}", notes.body);
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+    assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "orphan body");
+    assert_eq!(std::fs::read_to_string(&ambiguous).unwrap(), "slug body");
+}
+
+/// A loose pre-tier note was always moved by the deleted migration, so it is
+/// reported even beside a healthy version 3 workspace.
+#[test]
+fn a_loose_pre_tier_note_notifies_beside_a_healthy_workspace() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    {
+        let mut first = HostHarness::from_profile_dir(profile.clone());
+        first.add_test_pane();
+        assert!(first.app.save_workspace_now());
+    }
+    let loose = profile.join("notes").join("loose.md");
+    std::fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    std::fs::write(&loose, "loose body").unwrap();
+
+    let mut h = HostHarness::from_profile_dir(profile.clone());
+    assert!(h.app.workspace_load_failure.is_none());
+    h.app.notifications_enabled = false;
+    h.app.surface_retired_data_notices();
+    let notes = h
+        .app
+        .pending_notifications
+        .iter()
+        .find(|n| n.title == "Old notes folder found")
+        .expect("a loose note is always reported");
+    assert!(notes.body.contains("loose.md"), "{}", notes.body);
+    assert_eq!(std::fs::read_to_string(&loose).unwrap(), "loose body");
+}
+
+/// A host-condition notice is a standing condition: each launch replaces the
+/// notice restored from the previous launch instead of adding another, and a
+/// condition that no longer holds clears its notice.
+#[test]
+fn host_condition_notices_show_once_across_launches_and_clear_when_resolved() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    let layout = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+    std::fs::write(&workspace, layout).unwrap();
+    let ledger = profile.join("agent-ledger.jsonl");
+    std::fs::write(&ledger, "{\"ts\":\"2026-09-01T00:00:00Z\"}\n").unwrap();
+    let saved = profile.join("notifications.json");
+
+    let launch = |profile: &std::path::Path| {
+        let mut h = HostHarness::from_profile_dir(profile.to_path_buf());
+        // Mirrors `PlexiApp::new`, which restores the persisted queue.
+        h.app.pending_notifications = load_pending_notifications_from(&saved);
+        h.app.surface_workspace_load_failure();
+        h.app.surface_retired_data_notices();
+        h.app.save_notifications();
+        let mut titles: Vec<String> = h
+            .app
+            .pending_notifications
+            .iter()
+            .map(|n| n.title.clone())
+            .collect();
+        titles.sort();
+        titles
+    };
+
+    let expected = vec![
+        "Old AI ledger found".to_string(),
+        "Workspace not restored".to_string(),
+    ];
+    assert_eq!(launch(&profile), expected);
+    assert_eq!(launch(&profile), expected, "a relaunch must not duplicate");
+    assert_eq!(launch(&profile), expected, "nor a third launch");
+
+    std::fs::rename(&ledger, profile.join("ai-ledger.jsonl")).unwrap();
+    assert_eq!(
+        launch(&profile),
+        vec!["Workspace not restored".to_string()],
+        "a resolved condition clears its notice"
+    );
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+}

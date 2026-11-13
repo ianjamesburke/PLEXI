@@ -1,6 +1,7 @@
 //! One-time launch checks: is this binary the channel's installed build, are
-//! old copies of the plugin lying around, and did the saved workspace fail to
-//! restore? Each is reported, never acted on.
+//! old copies of the plugin lying around, did the saved workspace fail to
+//! restore, and does the profile still hold a data shape Plexi no longer
+//! converts? Each is reported, never acted on.
 use super::PlexiApp;
 
 impl PlexiApp {
@@ -38,30 +39,89 @@ impl PlexiApp {
         #[cfg(target_os = "macos")]
         self.surface_stray_bundles(receipt.as_ref());
         self.surface_workspace_load_failure();
+        self.surface_retired_data_notices();
     }
 
     /// A saved workspace that could not be restored is reported once, with
-    /// the file and the reason. The session's saves are already refused.
+    /// the file and the reason. The session's saves are already refused. A
+    /// retired version 2 layout (stint 1312) arrives here too.
     pub(crate) fn surface_workspace_load_failure(&mut self) {
-        let Some(block) = self.workspace_save_block.clone() else {
+        let block = self.workspace_save_block();
+        if let Some(block) = &block {
+            log::error!("workspace_load: surfacing restore failure to the user: {block}");
+        }
+        self.refresh_integrity_notice("workspace-load", "Workspace not restored", block);
+    }
+
+    /// Notes and ledger shapes whose converters were deleted (stint 1312): a
+    /// pre-tier notes folder and an `agent-ledger.jsonl` ledger. Each is
+    /// reported with the file and the fix and never touched, so it is
+    /// reported again on every launch until the user moves it.
+    pub(crate) fn surface_retired_data_notices(&mut self) {
+        let checks = [
+            (
+                "retired-notes",
+                "Old notes folder found",
+                crate::notes::pre_tier_notes_error(
+                    self.workspace_load_failure
+                        .as_ref()
+                        .is_some_and(crate::workspace::WorkspaceLoadError::is_retired_version),
+                ),
+            ),
+            (
+                "retired-ledger",
+                "Old AI ledger found",
+                crate::plexi_ai::ledger::retired_ledger_error(),
+            ),
+        ];
+        let mut reported = 0usize;
+        for (condition, title, error) in checks {
+            if let Some(error) = &error {
+                log::error!("retired data: {error}");
+                reported += 1;
+            }
+            self.refresh_integrity_notice(condition, title, error);
+        }
+        log::info!("retired data: launch check reported={reported}");
+    }
+
+    /// A notice about the user's own data. It ignores the notifications
+    /// master switch and stays until acknowledged. The condition is standing,
+    /// so it has one identity across launches: a notice restored from an
+    /// earlier launch is replaced, never duplicated, and is cleared once the
+    /// condition (`body` is `None`) no longer holds.
+    fn refresh_integrity_notice(&mut self, condition: &str, title: &str, body: Option<String>) {
+        let notify_id = crate::app::notifications::condition_notify_id(condition);
+        let before = self.pending_notifications.len();
+        self.pending_notifications
+            .retain(|notification| notification.notify_id != notify_id);
+        let replaced = before - self.pending_notifications.len();
+        if self.current_notify_id.as_deref() == Some(notify_id.as_str()) {
+            self.current_notify_id = None;
+        }
+        let Some(body) = body else {
+            if replaced > 0 {
+                log::info!("launch notice: {title:?} cleared, its condition no longer holds");
+                self.save_notifications();
+                self.sync_attention_queue();
+            }
             return;
         };
-        log::error!("workspace_load: surfacing restore failure to the user: {block}");
+        log::info!("launch notice: {title:?} replaced={replaced}");
         let queued = self.enqueue_notification(
             crate::app::notifications::NotifySource::HostIntegrity,
             crate::app::notifications::PendingNotification {
-                notify_id: crate::app::notifications::new_notify_id("workspace-load"),
-                title: "Workspace not restored".to_string(),
-                body: block,
-                // The workspace file belongs to the whole host profile, and
-                // the notice stays until the user acknowledges it (#2978).
+                notify_id,
+                title: title.to_string(),
+                body,
+                // Profile data belongs to the whole host, not one context.
                 scope: crate::protocol::NotifyScope::Global,
                 required: true,
                 ..Default::default()
             },
         );
         if !queued {
-            log::error!("workspace_load: restore-failure notice was not queued");
+            log::error!("launch notice: {title:?} was not queued");
         }
     }
 
