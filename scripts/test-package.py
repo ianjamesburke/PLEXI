@@ -131,6 +131,9 @@ def main(args):
                     hook = profile_home / '.plexi/hooks/claude-code-agent-state.sh'
                     assert hook.is_file() and os.access(hook, os.X_OK), 'host startup did not restore shared hook'
                     run([hook])  # Outside a pane the registered hook exits cleanly.
+                if channel == 'alpha' or channel.startswith('pr-'):
+                    seeded = profile_home / ('.plexi-' + channel) / 'plugins/calc/manifest.toml'
+                    assert seeded.is_file(), f'host startup did not seed packaged maintained plugins: {seeded}'
                 env['PLEXI_SOCKET'] = status['socket']
                 if manifest['channel'] != 'stable': env['PLEXI_CHANNEL'] = manifest['channel']
                 panes = json.loads(run([executable, 'pane', 'list']))
@@ -153,11 +156,11 @@ def main(args):
                         if time.monotonic() > deadline: raise AssertionError('Tab did not complete the host subcommand')
                         time.sleep(.2)
                     run([executable, 'pane', 'key', str(terminal), 'ctrl+u'])
-                run([executable, 'app', 'open', 'calc'])
+                run([executable, 'view', 'open', 'calc'])
                 deadline = time.monotonic() + 60
                 while True:
                     panes = json.loads(run([executable, 'pane', 'list']))
-                    candidates = [p for p in panes if p['type'] == 'app']
+                    candidates = [p for p in panes if p['type'] == 'view']
                     if candidates:
                         app = candidates[-1]['id']
                         state = run([executable, 'pane', 'state', str(app)])

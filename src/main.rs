@@ -2172,7 +2172,7 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
     log::info!("titlebar: native title hidden; toolbar renders measured window title");
     #[cfg(target_os = "linux")]
-    let viewport = viewport.with_plugin_id(crate::config::current_exe_basename());
+    let viewport = viewport.with_app_id(crate::config::current_exe_basename());
     let native_options = eframe::NativeOptions {
         // eframe 0.34 split root close into CloseRequested followed by Exit.
         // On macOS its run-on-demand loop can stall between those events after

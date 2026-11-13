@@ -177,7 +177,7 @@ def assemble(args):
         shutil.copytree(REPO / source, resources / destination, ignore=ignore)
     if channel == "alpha" or channel.startswith("pr-"):
         for manifest in (REPO / "apps").glob("*/manifest.toml"):
-            shutil.copytree(manifest.parent, resources / "maintained-apps" / manifest.parent.name, ignore=ignore)
+            shutil.copytree(manifest.parent, resources / "maintained-plugins" / manifest.parent.name, ignore=ignore)
 
     signing = None
     if args.platform.startswith("macos-"):
