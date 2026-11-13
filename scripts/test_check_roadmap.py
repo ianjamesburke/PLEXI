@@ -1,6 +1,8 @@
 """Tests for scripts/check_roadmap.py (stint 1437)."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("check_roadmap.py")
 spec = importlib.util.spec_from_file_location("check_roadmap", SCRIPT)
@@ -40,8 +43,8 @@ def stints(**states):
 
 
 class CheckRules(unittest.TestCase):
-    def run_check(self, data, known, named=frozenset()):
-        return cr.check(data, known, set(named), "origin/alpha")
+    def run_check(self, data, known, named: frozenset[str] = frozenset()):
+        return cr.check(data, known, named, "origin/alpha")
 
     def test_planned_item_with_every_stint_done_is_drift(self):
         drift, _ = self.run_check(roadmap(rel("now", "next", item("A", "planned", "1001", "1002"))), stints(s1001="done", s1002="done"))
@@ -76,7 +79,7 @@ class CheckRules(unittest.TestCase):
         self.assertEqual(info, [])
 
     def test_done_and_named_on_ref_is_eligible_not_drift(self):
-        drift, info = self.run_check(roadmap(rel("now", "next", item("A", "in progress", "1001"))), stints(s1001="done"), {"1001"})
+        drift, info = self.run_check(roadmap(rel("now", "next", item("A", "in progress", "1001"))), stints(s1001="done"), frozenset({"1001"}))
         self.assertEqual(drift, [])
         self.assertEqual(len(info), 1)
         self.assertIn("eligible", info[0])
@@ -109,6 +112,28 @@ class Loading(unittest.TestCase):
             cr.load_roadmap(self.write(roadmap(rel("now", "next", {"text": "A", "status": "planned", "stints": [577]}))))
         with self.assertRaisesRegex(cr.CheckError, "names no release"):
             cr.load_roadmap(self.write(roadmap(rel("now", "next"), current="gone")))
+
+    def test_valid_json_of_the_wrong_shape_is_a_named_error(self):
+        bad = {
+            "must be an object": [],
+            "a 'releases' list": {"currentSlug": "now", "releases": {"now": {}}},
+            "every release must be an object": {"currentSlug": "now", "releases": ["now"]},
+            "an item that is not an object": roadmap(rel("now", "next", "just text")),
+            "optional 'stints' list": roadmap(rel("now", "next", {"text": "A", "status": "planned", "stints": "1001"})),
+        }
+        for message, data in bad.items():
+            with self.subTest(message), self.assertRaisesRegex(cr.CheckError, message):
+                cr.load_roadmap(self.write(data))
+
+    def test_stint_list_of_the_wrong_shape_is_a_named_error(self):
+        self.assertEqual(cr.parse_stints('[{"id": "1001", "state": "done", "title": "A"}]')["1001"].state, "done")
+        for message, text in {
+            "printed a dict, expected a list": '{"id": "1001"}',
+            "without string 'id', 'state' and 'title'": '[{"state": "done", "title": "A"}]',
+            "without string 'id'": '["1001"]',
+        }.items():
+            with self.subTest(message), self.assertRaisesRegex(cr.CheckError, message):
+                cr.parse_stints(text)
 
 
 class RoadmapSource(unittest.TestCase):
@@ -146,16 +171,15 @@ class Cli(unittest.TestCase):
     def run_cli(self, *args, fixture=True):
         git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
         env = {"PATH": f"{self.bin}:{Path(git).parent}", "HOME": self.tmp.name}
-        base = ["--roadmap", str(self.roadmap), "--ref", "HEAD"] if fixture else []
+        base = ["--roadmap", str(self.roadmap), "--commits-ref", "HEAD"] if fixture else []
         return subprocess.run([sys.executable, str(SCRIPT), *base, *args], capture_output=True, text=True, env=env)
 
     def test_first_line_names_the_roadmap_source(self):
         self.fake_stint("echo '[]'")
-        committed = self.run_cli("--ref", "HEAD", fixture=False).stdout.splitlines()[0]
-        self.assertIn("read committed HEAD:website/src/lib/roadmap.json", committed)
-        self.assertIn("commits searched on HEAD", committed)
+        both = self.run_cli("--roadmap-ref", "HEAD", "--commits-ref", "HEAD~1", fixture=False).stdout.splitlines()[0]
+        self.assertIn("roadmap from committed HEAD:website/src/lib/roadmap.json; commits from HEAD~1;", both)
         working = self.run_cli(fixture=False).stdout.splitlines()[0]
-        self.assertIn("read working tree website/src/lib/roadmap.json", working)
+        self.assertIn("roadmap from working tree website/src/lib/roadmap.json; commits from HEAD;", working)
 
     def test_missing_stint_cli_is_an_error_not_a_pass(self):
         proc = self.run_cli()
@@ -176,19 +200,77 @@ class Cli(unittest.TestCase):
         self.fake_stint('echo \'[{"id": "1001", "state": "done", "title": "Do A"}]\'')
         self.assertEqual(self.run_cli().returncode, 0)
 
+    def test_wrongly_shaped_stint_output_exits_two_not_drift(self):
+        self.fake_stint('echo \'{"tasks": []}\'')
+        proc = self.run_cli()
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertIn("expected a list of tasks", proc.stderr)
+        self.assertNotIn("DRIFT", proc.stdout)
+
 
 class CommitNames(unittest.TestCase):
-    def test_stint_ids_are_read_from_stint_lines_only(self):
+    def test_repo_convention_counts(self):
+        cases = {
+            "fix(ci): route cargo through inputs (stint 1419) (#3117)": {"1419"},
+            "workspace fail-loud (stints 1127, 1259, 1260) (#3088)": {"1127", "1259", "1260"},
+            "rows honor grow (stints 1363 and 1358)": {"1363", "1358"},
+            "refactor(permissions): admission trace (stint 1238 step 1) (#3063)": {"1238"},
+            "Stint: 0560, 0561": {"0560", "0561"},
+            "* test(workspace): unusable workspace is named (stint 1127, red)": {"1127"},
+        }
+        for message, ids in cases.items():
+            with self.subTest(message):
+                self.assertEqual(cr.stint_ids_in(message), ids)
+
+    def test_years_pr_numbers_and_shas_do_not_count(self):
+        for message in (
+            "Owner ruling 2026-11-13: stints are linked in 2026",
+            "fix #1300 and 1400 (#3088)",
+            "revert a1b2c3d41234ef5 and 9bc6beee8",
+            "stint pane names now show 1427 rows",
+            "stints 2026-11-13 plan",
+            "stint 12345",
+        ):
+            with self.subTest(message):
+                self.assertEqual(cr.stint_ids_in(message), set())
+
+    def test_git_log_is_read_from_the_ref(self):
         with tempfile.TemporaryDirectory() as d:
-            def git(*a):
-                subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
+            git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)  # noqa: E731
             git("init", "-q")
             git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m",
                 "feat: thing (stints 1127, 1259 and 1260) (#3088)\n\nfix #1300 and 1400\nStint: 0577")
-            named = cr.stints_named_on("HEAD", Path(d))
-        self.assertEqual(named, {"1127", "1259", "1260", "0577"})
-        with self.assertRaisesRegex(cr.CheckError, "git log no-such-ref"):
-            cr.stints_named_on("no-such-ref", cr.REPO)
+            self.assertEqual(cr.stints_named_on("HEAD", Path(d)), {"1127", "1259", "1260", "0577"})
+            with self.assertRaisesRegex(cr.CheckError, "git log no-such-ref"):
+                cr.stints_named_on("no-such-ref", Path(d))
+
+
+class PromoteMain(unittest.TestCase):
+    """`promote main` reads the published roadmap on alpha and searches beta's commits."""
+
+    def test_stale_roadmap_on_beta_does_not_block_a_fixed_one_on_alpha(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            git = lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)  # noqa: E731
+            path = repo / cr.EDIT_HINT
+            path.parent.mkdir(parents=True)
+            git("init", "-q", "-b", "alpha")
+            path.write_text(json.dumps(roadmap(rel("now", "next", item("A", "planned", "1001")))))
+            git("add", "-A")
+            git("commit", "-q", "-m", "feat: A (stint 1001)")
+            git("branch", "beta")
+            path.write_text(json.dumps(roadmap(rel("now", "next", item("A", "in progress", "1001")))))
+            git("commit", "-q", "-am", "docs(website): A is in progress")
+            known = stints(s1001="done")
+            with mock.patch.object(cr, "REPO", repo), mock.patch.object(cr, "load_stints", return_value=known):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cr.main(["--roadmap-ref", "alpha", "--commits-ref", "beta"]), 0)
+                first = out.getvalue().splitlines()[0]
+                self.assertIn("roadmap from committed alpha:website/src/lib/roadmap.json; commits from beta;", first)
+                self.assertIn("eligible", out.getvalue())
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cr.main(["--roadmap-ref", "beta", "--commits-ref", "beta"]), 1)
 
 
 if __name__ == "__main__":

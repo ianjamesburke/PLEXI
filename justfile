@@ -550,10 +550,10 @@ promote to="" *flags="":
 # Compare the public roadmap (website/src/lib/roadmap.json) with the stints
 # that deliver it; exit 1 on drift. Needs the `stint` CLI and the release
 # owner's .stint/. `just promote` runs it before moving code. Not for CI.
-#   just check-roadmap               working-tree roadmap, commits on HEAD
-#   just check-roadmap origin/alpha  the roadmap committed on origin/alpha
-check-roadmap ref="":
-    uv run --no-project python scripts/check_roadmap.py {{ if ref == "" { "" } else { "--ref " + ref } }}
+#   just check-roadmap                            working-tree roadmap, commits on HEAD
+#   just check-roadmap origin/alpha origin/beta   published roadmap, beta's commits
+check-roadmap roadmap_ref="" commits_ref="":
+    uv run --no-project python scripts/check_roadmap.py {{ if roadmap_ref == "" { "" } else { "--roadmap-ref " + roadmap_ref } }} {{ if commits_ref == "" { "" } else { "--commits-ref " + commits_ref } }}
 
 # Cut and publish the binary release tag for a channel already
 # promoted to its target branch. Never moves code — that's `just promote`.
