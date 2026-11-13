@@ -937,6 +937,92 @@ fn pane_state_response_always_carries_claimed_and_observed_state_together() {
     );
 }
 
+/// A worker that ends its turn while its `status` slot still reads
+/// `impl:working` (stint 1130): the process is alive and the claim is fresh, so
+/// neither `process_alive` nor `stale_claim` says anything is wrong. The host's
+/// agent detector does know the turn ended, and `pane state` must put that
+/// next to the claim as a typed condition instead of leaving a supervisor to
+/// take the slot's word for it.
+#[test]
+fn pane_state_reports_an_ended_agent_turn_next_to_a_working_claim() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_focused_terminal();
+
+    let slot_response = temp_response(tmp.path(), "pane-liveness-working-claim");
+    h.inject_ipc(HostRequest::SlotWrite {
+        pane_id,
+        slot_name: "status".to_string(),
+        content: b"impl:working".to_vec(),
+        append: false,
+        replace: false,
+        response_file: slot_response.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&slot_response)["ok"], true);
+
+    let set_agent_state = |h: &mut HostHarness, state: crate::protocol::AgentState| {
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("terminal pane")
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id,
+                state,
+                agent: "codex".to_string(),
+                detail: None,
+                session_id: None,
+            }));
+    };
+    let pane_state = |h: &mut HostHarness, name: &str| {
+        let response_file = temp_response(tmp.path(), name);
+        h.inject_ipc(HostRequest::GetPaneState {
+            pane_id,
+            response_file: response_file.clone(),
+            stale_after_secs: None,
+        });
+        h.run_hidden_frames(1);
+        read_json_response(&response_file)
+    };
+
+    // Control: while the agent is in a turn the claim is corroborated.
+    set_agent_state(&mut h, crate::protocol::AgentState::Working);
+    let working = pane_state(&mut h, "pane-liveness-agent-working");
+    assert_eq!(
+        working["agent_activity"]["state"], "working",
+        "response={working}"
+    );
+    assert_eq!(
+        working["agent_activity"]["in_turn"], true,
+        "response={working}"
+    );
+    assert!(
+        working["inactive_claim"].is_null(),
+        "a claim made by an agent that is in a turn is not inactive: response={working}"
+    );
+
+    // The failure: the turn ended and the slot was never updated.
+    set_agent_state(&mut h, crate::protocol::AgentState::Idle);
+    let ended = pane_state(&mut h, "pane-liveness-agent-turn-ended");
+    assert_eq!(
+        ended["claimed_state"]["value"], "impl:working",
+        "the agent's claim must still be reported verbatim: response={ended}"
+    );
+    assert_eq!(ended["agent_activity"]["state"], "idle", "response={ended}");
+    assert_eq!(
+        ended["agent_activity"]["in_turn"], false,
+        "response={ended}"
+    );
+    assert_eq!(
+        ended["inactive_claim"]["reason"], "agent_turn_ended",
+        "a claim outliving the agent's turn must be raised as a typed condition: response={ended}"
+    );
+    assert_eq!(
+        ended["inactive_claim"]["agent_state"], "idle",
+        "response={ended}"
+    );
+}
+
 /// The wedge this stint closes: an agent's own `status` slot still reads
 /// `running` while the host observes the pane's process is dead. Both facts
 /// must be reported truthfully and separately — the claim is not
@@ -10748,6 +10834,136 @@ mod pane_send_submit_tests {
             reply["ok"].as_bool(),
             Some(true),
             "submits must settle, submit and confirm on logic-only passes: {reply}"
+        );
+    }
+
+    /// The settle window is measured from the moment the text was typed, not
+    /// only from the pane's last output. A pane that has sat idle is already
+    /// "quiet" the instant the text lands, so a settle that looks at output
+    /// age alone presses Enter on the same pass, before the pane has echoed a
+    /// single typed character. An agent TUI reads text and Enter arriving
+    /// together as one paste burst and keeps the Enter as a newline: the brief
+    /// sits in the input box, unsent, while the caller is told it submitted.
+    #[test]
+    fn pane_send_submit_never_presses_enter_before_the_quiet_window_since_typing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        // Leaves the pane quiet for longer than the host's quiet window, which
+        // is exactly the state a waiting agent pane is in when it is briefed.
+        settle_terminal(&mut h, term);
+
+        h.terminal_backend(term).enable_input_tap();
+        let response = temp_response(tmp.path(), "submit-settle-since-typed");
+        let typed_at = Instant::now();
+        submit(&h, term, "echo settle-proof", Some(response.clone()));
+        h.run_frames(2);
+        let early = h.terminal_backend(term).take_input_tap();
+        let elapsed = typed_at.elapsed();
+        // The host's quiet window is 350ms. An Enter is only legitimate once
+        // that much time has passed since the text was typed; `typed_at` was
+        // taken before the host saw the request, so this bound is exact rather
+        // than load-sensitive.
+        assert!(
+            !early.contains(&b'\r') || elapsed >= Duration::from_millis(350),
+            "Enter reached the PTY {elapsed:?} after the text was typed, before the pane could \
+             have been observed quiet since typing; wrote {:?}",
+            String::from_utf8_lossy(&early)
+        );
+
+        let reply = resolve(&mut h, &response, false);
+        assert_eq!(reply["ok"].as_bool(), Some(true), "reply was {reply}");
+        assert_eq!(
+            reply["evidence"].as_str(),
+            Some("screen_changed"),
+            "a shell pane has no agent report; the ack must say what it was confirmed by: {reply}"
+        );
+        assert!(
+            reply["agent_state"].is_null(),
+            "a plain shell has no agent state to report: {reply}"
+        );
+        let mut written = early;
+        written.extend(h.terminal_backend(term).take_input_tap());
+        assert_eq!(
+            written,
+            b"echo settle-proof\r",
+            "the text must still be followed by exactly one Enter, got {:?}",
+            String::from_utf8_lossy(&written)
+        );
+    }
+
+    /// The unsubmitted-input negative control. The pane echoes what is typed
+    /// but shows nothing new when Enter arrives (`cat` discarding its input),
+    /// so the only screen change in the whole exchange is the echo of the
+    /// typed text itself. That echo is the text arriving, not the text being
+    /// accepted, and must never be reported as a confirmed submission.
+    #[test]
+    fn pane_send_submit_does_not_confirm_on_the_echo_of_its_own_text() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+
+        type_only(&h, term, "cat > /dev/null\n", None);
+        wait_for_output(&mut h, term, "cat > /dev/null");
+        settle_terminal(&mut h, term);
+
+        let response = temp_response(tmp.path(), "submit-echo-only");
+        submit(&h, term, "typed-not-accepted", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert!(
+            reply["ok"].as_bool().is_none(),
+            "the echo of the typed text must not confirm a submission: {reply}"
+        );
+        assert!(
+            reply["input_line"]
+                .as_array()
+                .expect("unconfirmed reply must carry input_line")
+                .iter()
+                .any(|line| line
+                    .as_str()
+                    .is_some_and(|line| line.contains("typed-not-accepted"))),
+            "the caller must be shown the text still sitting where it was typed: {reply}"
+        );
+    }
+
+    /// Submitted is not working, and working is not done. When the target is
+    /// an agent pane the ack carries the agent's own reported state at the
+    /// moment of confirmation, so a caller can tell "the Enter was accepted"
+    /// from "the agent has started a turn" without reading the screen.
+    #[test]
+    fn pane_send_submit_ack_reports_agent_state_separately_from_submission() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        settle_terminal(&mut h, term);
+        h.app.windows[0]
+            .panes
+            .get_mut(&term)
+            .expect("terminal pane")
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: term,
+                state: crate::protocol::AgentState::Idle,
+                agent: "codex".to_string(),
+                detail: None,
+                session_id: None,
+            }));
+
+        let response = temp_response(tmp.path(), "submit-agent-state");
+        submit(&h, term, "echo agent-ack-proof", Some(response.clone()));
+
+        let reply = resolve(&mut h, &response, false);
+        assert_eq!(reply["ok"].as_bool(), Some(true), "reply was {reply}");
+        assert_eq!(
+            reply["evidence"].as_str(),
+            Some("screen_changed"),
+            "an agent that never reported a new turn was confirmed by the screen only: {reply}"
+        );
+        assert_eq!(
+            reply["agent_state"].as_str(),
+            Some("idle"),
+            "the ack must not imply the agent started working: {reply}"
         );
     }
 

@@ -3808,14 +3808,17 @@ impl PlexiApp {
                                 "type": "unknown",
                             })
                         };
-                        // Every branch above carries the same two liveness
+                        // Every branch above carries the same liveness
                         // fields, merged in exactly once here — the only way
-                        // to reach either field is through this one call, so
+                        // to reach any of them is through this one call, so
                         // reading the claim without the observation (or vice
-                        // versa) is not expressible.
-                        response["claimed_state"] = liveness["claimed_state"].clone();
-                        response["observed_state"] = liveness["observed_state"].clone();
-                        response["stale_claim"] = liveness["stale_claim"].clone();
+                        // versa) is not expressible. Every field `compute`
+                        // returns is merged, so a new one cannot be dropped.
+                        if let serde_json::Value::Object(fields) = liveness {
+                            for (key, value) in fields {
+                                response[key.as_str()] = value;
+                            }
+                        }
                         response.to_string()
                     }
                 };

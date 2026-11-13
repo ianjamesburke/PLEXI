@@ -1769,6 +1769,8 @@ For terminal panes: returns a simple status object (type, title, pane_id).
 
 Every response also carries `claimed_state` (the pane's own `status` slot — an agent-authored claim, with its step token embedded in the value by convention, or `null` if never written) and `observed_state` (host-derived: process alive, seconds since last output, child pids, current foreground command) — always together, never one without the other. Pass `--stale-after <secs>` to additionally raise a typed `stale_claim` when a claim exists but the host has observed no output within that many seconds; omit it and `stale_claim` stays `null` with no evaluation performed.
 
+`agent_activity` is the agent detector's current state for the pane (`state`, and `in_turn`, true only while the agent is working), or `null` when no agent is detected. `inactive_claim` is raised, with a `reason`, when a claim exists but the process has exited or the agent is not in a working turn: a slot that still says working after the agent ended its turn is not ongoing work.
+
 Defaults to the current pane when no pane id is given.
 
 Example: plexi pane state 42 --stale-after 300
