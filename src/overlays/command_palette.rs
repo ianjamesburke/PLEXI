@@ -3125,10 +3125,11 @@ mod tests {
     }
 
     /// Cmd+P then Enter on the ready row only asks; a second Enter restarts.
-    /// The test clears the restart request and never runs another frame, so
-    /// nothing schedules a real restart.
+    /// The harness's restart scheduler only records, so the frames run the
+    /// real quit path without touching an installed channel.
     #[test]
     fn palette_update_ready_enter_asks_then_second_enter_restarts() {
+        crate::app::quit::test_restart_scheduler::take();
         let mut h = harness_with_ready_update();
         open_palette_and_press_enter(&mut h);
         assert!(!h.app.show_command_palette);
@@ -3138,28 +3139,22 @@ mod tests {
             !h.app.update_quit_pending,
             "the first Enter must never restart"
         );
-
-        // The second Enter goes straight to the changelog's key handler (the
-        // owner the focus stack routes it to). Delivering it through a real
-        // frame would let that frame's preamble schedule an actual restart.
-        let mut enter = crate::app::input_router::PlexiInput::synthetic(
-            vec![egui::Event::Key {
-                key: egui::Key::Enter,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-            egui::Modifiers::NONE,
-        );
         assert_eq!(
             h.app.focus_stack.last(),
             Some(&crate::app::FocusKind::Changelog)
         );
-        h.app.changelog_handle_key(&mut enter);
-        assert!(h.app.update_quit_pending, "the second Enter confirms");
+
+        // The second Enter confirms, and the same frame's logic pass takes
+        // the restart. A frame after the window hides would reach
+        // `exit_host`, so the test stops here.
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(crate::app::quit::test_restart_scheduler::take(), 1);
         assert!(!h.app.update_confirm_prompt);
-        h.app.update_quit_pending = false;
+        assert!(!h.app.update_quit_pending);
+        assert_eq!(
+            h.app.quit_coordinator.reason,
+            Some(crate::app::quit::ExitReason::UpdateRestart)
+        );
     }
 
     #[test]

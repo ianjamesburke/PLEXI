@@ -19,6 +19,41 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+/// Schedules the relaunch into the installed build for an update restart.
+/// Production uses [`schedule_installed_restart`]; headless hosts use
+/// `test_restart_scheduler::record`, which never reads an installed receipt.
+pub(crate) type RestartScheduler = fn() -> Result<(), String>;
+
+/// Look up this machine's installed receipt and schedule the relaunch.
+pub(crate) fn schedule_installed_restart() -> Result<(), String> {
+    let receipt = crate::distribution::installed()?
+        .ok_or_else(|| "no managed installation available for restart".to_string())?;
+    plexi_distribution::transaction::schedule_restart(&receipt, std::process::id())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+pub(crate) mod test_restart_scheduler {
+    //! Headless restart scheduler: counts requests on this thread and touches
+    //! no installation.
+    use std::cell::Cell;
+
+    thread_local! {
+        static REQUESTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record() -> Result<(), String> {
+        log::info!("update restart: test scheduler recorded a request");
+        REQUESTS.with(|requests| requests.set(requests.get() + 1));
+        Ok(())
+    }
+
+    /// Requests recorded on this thread since the last call.
+    pub(crate) fn take() -> usize {
+        REQUESTS.with(|requests| requests.replace(0))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct QuitCoordinator {
     pub(crate) reason: Option<ExitReason>,
@@ -142,17 +177,7 @@ impl super::PlexiApp {
     /// Returns true while the coordinator owns servicing. Hidden windows do
     /// not run App::ui, so retry, restart and cleanup must all live in logic.
     pub(crate) fn service_quit(&mut self, frame: &eframe::Frame) -> bool {
-        self.service_quit_with_restart(frame, || {
-            crate::distribution::installed()
-                .and_then(|receipt| {
-                    receipt
-                        .ok_or_else(|| "no managed installation available for restart".to_string())
-                })
-                .and_then(|receipt| {
-                    plexi_distribution::transaction::schedule_restart(&receipt, std::process::id())
-                        .map_err(|e| e.to_string())
-                })
-        })
+        self.service_quit_with_restart(frame, self.restart_scheduler)
     }
 
     pub(crate) fn service_quit_with_restart(
@@ -745,6 +770,26 @@ mod tests {
         h.press_key(egui::Key::Q, egui::Modifiers::NONE);
         assert!(h.app.quit_coordinator.save_waived, "Q quits without saving");
         assert!(h.app.quit_coordinator.save_failure().is_none());
+    }
+
+    /// A real frame with an update restart pending goes through the injected
+    /// scheduler: the harness records exactly one request and never reads an
+    /// installed receipt or schedules a real restart.
+    #[test]
+    fn update_restart_frame_records_one_request_through_the_injected_scheduler() {
+        test_restart_scheduler::take();
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.update_quit_pending = true;
+        h.run_frames(1);
+        assert_eq!(test_restart_scheduler::take(), 1);
+        assert_eq!(
+            h.app.quit_coordinator.reason,
+            Some(ExitReason::UpdateRestart)
+        );
+        assert!(h.app.quit_coordinator.restart_scheduled);
+        assert!(h.app.quit_coordinator.hide_requested);
+        // A second pass after the hide would call `exit_host`; stop here.
     }
 
     #[test]
