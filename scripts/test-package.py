@@ -153,11 +153,11 @@ def main(args):
                         if time.monotonic() > deadline: raise AssertionError('Tab did not complete the host subcommand')
                         time.sleep(.2)
                     run([executable, 'pane', 'key', str(terminal), 'ctrl+u'])
-                run([executable, 'app', 'open', 'calc'])
+                run([executable, 'view', 'open', 'calc'])
                 deadline = time.monotonic() + 60
                 while True:
                     panes = json.loads(run([executable, 'pane', 'list']))
-                    candidates = [p for p in panes if p['type'] == 'app']
+                    candidates = [p for p in panes if p['type'] == 'view']
                     if candidates:
                         app = candidates[-1]['id']
                         state = run([executable, 'pane', 'state', str(app)])
