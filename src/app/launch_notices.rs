@@ -1,5 +1,6 @@
-//! One-time launch checks: is this binary the channel's installed build, and
-//! are old copies of the plugin lying around? Both are reported, never acted on.
+//! One-time launch checks: is this binary the channel's installed build, are
+//! old copies of the plugin lying around, and did the saved workspace fail to
+//! restore? Each is reported, never acted on.
 use super::PlexiApp;
 
 impl PlexiApp {
@@ -36,6 +37,32 @@ impl PlexiApp {
         }
         #[cfg(target_os = "macos")]
         self.surface_stray_bundles(receipt.as_ref());
+        self.surface_workspace_load_failure();
+    }
+
+    /// A saved workspace that could not be restored is reported once, with
+    /// the file and the reason. The session's saves are already refused.
+    pub(crate) fn surface_workspace_load_failure(&mut self) {
+        let Some(block) = self.workspace_save_block.clone() else {
+            return;
+        };
+        log::error!("workspace_load: surfacing restore failure to the user: {block}");
+        let queued = self.enqueue_notification(
+            crate::app::notifications::NotifySource::HostIntegrity,
+            crate::app::notifications::PendingNotification {
+                notify_id: crate::app::notifications::new_notify_id("workspace-load"),
+                title: "Workspace not restored".to_string(),
+                body: block,
+                // The workspace file belongs to the whole host profile, and
+                // the notice stays until the user acknowledges it (#2978).
+                scope: crate::protocol::NotifyScope::Global,
+                required: true,
+                ..Default::default()
+            },
+        );
+        if !queued {
+            log::error!("workspace_load: restore-failure notice was not queued");
+        }
     }
 
     /// Only the Applications folders are scanned here: Downloads and Desktop

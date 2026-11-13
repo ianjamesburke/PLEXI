@@ -262,7 +262,12 @@ impl HostHarness {
         app.permission_store_dir = profile_path.clone();
         app.focus_journal_path = profile_path.join("focus-journal.jsonl");
 
-        let restored = crate::workspace::WorkspaceFile::load_from(&profile_path).and_then(|ws| {
+        // Mirrors `PlexiApp::new`: an unusable file blocks this session's saves.
+        let loaded = crate::workspace::WorkspaceFile::load_from(&profile_path);
+        if let Err(error) = &loaded {
+            app.workspace_save_block = error.save_block();
+        }
+        let restored = loaded.ok().and_then(|ws| {
             let cfg = app.config.clone();
             let colors = app.colors.clone();
             let pty_event_tx = app.pty_event_tx.clone();

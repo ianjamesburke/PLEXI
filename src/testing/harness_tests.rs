@@ -1454,7 +1454,7 @@ fn legacy_view_pane_without_launch_context_still_loads() {
 
     let loaded = crate::workspace::WorkspaceFile::load();
     assert!(
-        loaded.is_some(),
+        loaded.is_ok(),
         "a legacy record missing runtime_kind/launch must still load, not be discarded as corrupt"
     );
     let record = &loaded.expect("loaded above").windows[0].panes[0];

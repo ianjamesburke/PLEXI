@@ -641,9 +641,21 @@ pub struct InstalledPlugin {
     pub state_declared: bool,
 }
 
+/// A plugin directory the scan found but did not load: its manifest failed
+/// to parse or validate, or it claims a command another plugin owns. Kept as
+/// data so `plexi plugin list` can show it; it is never loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedPlugin {
+    pub dir: PathBuf,
+    pub source: RegistrySource,
+    pub error: String,
+}
+
 pub struct PluginRegistry {
     /// All discovered plugins keyed by their id.
     plugins: HashMap<String, InstalledPlugin>,
+    /// Plugin directories the scan could not load, in scan order.
+    skipped: Vec<SkippedPlugin>,
     /// Extension → plugin id mapping (first match wins).
     extension_map: HashMap<String, String>,
     /// The workspace root the local scan was done for. `None` when no local
@@ -656,6 +668,7 @@ impl PluginRegistry {
     pub(crate) fn empty() -> Self {
         Self {
             plugins: HashMap::new(),
+            skipped: Vec::new(),
             extension_map: HashMap::new(),
             loaded_workspace: None,
         }
@@ -687,6 +700,7 @@ impl PluginRegistry {
         let channel_dir = registry_config_dir();
         let mut registry = Self {
             plugins: HashMap::new(),
+            skipped: Vec::new(),
             extension_map: HashMap::new(),
             loaded_workspace: None,
         };
@@ -727,6 +741,11 @@ impl PluginRegistry {
         registry
     }
 
+    /// Plugin directories found but not loaded, each with its error.
+    pub fn skipped(&self) -> &[SkippedPlugin] {
+        &self.skipped
+    }
+
     /// Look up an installed entry by id (returns `None` if not discovered).
     pub fn get(&self, id: &str) -> Option<&InstalledPlugin> {
         self.plugins.get(id)
@@ -763,7 +782,7 @@ impl PluginRegistry {
         // Collected rather than logged per-entry (stint 0417): a channel with
         // several unbundled example/dev plugins produced a dozen WARN lines per
         // rescan, drowning real signal. One summary line names them all.
-        let mut skipped: Vec<String> = Vec::new();
+        let mut skipped: Vec<SkippedPlugin> = Vec::new();
 
         for entry in read_dir.flatten() {
             let entry_dir = entry.path();
@@ -829,7 +848,11 @@ impl PluginRegistry {
                             .err()
                     });
                     if let Some(error) = collision {
-                        skipped.push(error.to_string());
+                        skipped.push(SkippedPlugin {
+                            dir: entry_dir,
+                            source,
+                            error: error.to_string(),
+                        });
                         continue;
                     }
                     for ext in &installed.manifest.capabilities.file_types {
@@ -863,7 +886,11 @@ impl PluginRegistry {
                             entry_dir.file_name()
                         );
                     } else {
-                        skipped.push(format!("{:?}: {e}", entry_dir.file_name()));
+                        skipped.push(SkippedPlugin {
+                            dir: entry_dir,
+                            source,
+                            error: e,
+                        });
                     }
                 }
             }
@@ -875,8 +902,13 @@ impl PluginRegistry {
                 skipped.len(),
                 if skipped.len() == 1 { "y" } else { "ies" },
                 dir,
-                skipped.join("; ")
+                skipped
+                    .iter()
+                    .map(|entry| format!("{:?}: {}", entry.dir.file_name(), entry.error))
+                    .collect::<Vec<_>>()
+                    .join("; ")
             );
+            self.skipped.extend(skipped);
         }
     }
 
@@ -1539,19 +1571,34 @@ mod tests {
         assert!(error.contains("plugin"), "must name [plugin]: {error}");
     }
 
+    /// Stint 1260: the legacy `[app]` message states the schema the manifest
+    /// actually declares instead of always calling it schema 1.
     #[test]
     fn legacy_app_table_error_says_rename_to_plugin_schema_2() {
-        for raw in [
-            "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
-            "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+        for (raw, declared) in [
+            (
+                "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares schema_version = 1",
+            ),
+            (
+                "schema_version = 2\n[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares schema_version = 2",
+            ),
+            (
+                "[app]\nid = 'legacy'\nname = 'Legacy'\n",
+                "this manifest declares no schema_version",
+            ),
         ] {
             let error = super::PluginManifest::parse(raw)
                 .expect_err("legacy must fail")
                 .to_string();
             assert!(
-                error.contains("schema 1 `[app]` manifests are no longer accepted"),
+                error.contains("`[app]` manifests are no longer accepted"),
                 "{error}"
             );
+            assert!(error.contains(declared), "{error}");
+            assert!(!error.contains('\n'), "one line: {error:?}");
+            assert!(!error.contains("schema 1 `[app]`"), "{error}");
             assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
             assert!(error.contains("schema_version = 2"), "{error}");
         }
@@ -1667,6 +1714,42 @@ mod tests {
         assert!(registry.get("broken-one").is_none());
         assert!(registry.get("broken-two").is_none());
         assert!(registry.get("broken-three").is_none());
+    }
+
+    /// Stint 1260: a plugin whose manifest fails to load is recorded on the
+    /// registry with its directory and error, and is never loaded.
+    #[test]
+    fn broken_manifest_is_recorded_as_skipped_with_dir_and_error() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        write_plugin(global.path(), "valid-app", "Valid App");
+        let broken = global.path().join("broken-app");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("manifest.toml"),
+            "schema_version = 2\n[plugin]\nid = \"broken-app\"\n",
+        )
+        .unwrap();
+
+        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
+        assert!(registry.get("valid-app").is_some());
+        assert!(registry.get("broken-app").is_none());
+        let skipped = registry.skipped();
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert_eq!(skipped[0].dir, broken);
+        assert_eq!(skipped[0].source, RegistrySource::Global);
+        assert!(
+            skipped[0].error.contains("invalid manifest"),
+            "{}",
+            skipped[0].error
+        );
+        assert!(
+            registry
+                .list()
+                .iter()
+                .all(|plugin| plugin.plugin_dir != broken),
+            "a skipped plugin is data, never a loaded entry"
+        );
     }
 
     #[test]

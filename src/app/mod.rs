@@ -547,6 +547,10 @@ pub struct PlexiApp {
     pub(crate) last_workspace_save: std::time::Instant,
     /// Earliest retry after a failed workspace write.
     pub(crate) workspace_save_retry_at: Option<std::time::Instant>,
+    /// Set at boot when the saved workspace exists but could not be restored
+    /// (`WorkspaceLoadError::save_block`). Every save in this session is
+    /// refused with this message so the fresh layout never replaces the file.
+    pub(crate) workspace_save_block: Option<String>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
@@ -1725,8 +1729,12 @@ impl PlexiApp {
         // over the PLEXI_SOCKET, so the directory is dead weight.
         let _ = std::fs::remove_dir_all(profile_dir.join("notify-queue"));
 
-        // Try to load saved workspace
-        if let Some(ws) = WorkspaceFile::load() {
+        // Restore the saved workspace. A file that exists but cannot be
+        // restored is never replaced: the fresh session below refuses to save
+        // and `surface_workspace_load_failure` tells the user why.
+        let loaded = WorkspaceFile::load();
+        let workspace_save_block = loaded.as_ref().err().and_then(|error| error.save_block());
+        if let Ok(ws) = loaded {
             if let Some(restored) = restore_workspace(
                 ws,
                 &config,
@@ -1893,6 +1901,7 @@ impl PlexiApp {
                     workspace_dirty: false,
                     last_workspace_save: std::time::Instant::now(),
                     workspace_save_retry_at: None,
+                    workspace_save_block: None,
                     minimap: crate::render::minimap::MinimapState::with_visible(
                         restored.minimap_visible,
                     ),
@@ -2180,6 +2189,7 @@ impl PlexiApp {
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
             workspace_save_retry_at: None,
+            workspace_save_block,
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -3163,6 +3173,7 @@ impl PlexiApp {
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
             workspace_save_retry_at: None,
+            workspace_save_block: None,
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -4383,6 +4394,12 @@ impl eframe::App for PlexiApp {
         // Normal quit never gets here: it hides, yields, and exits from logic.
         // On unexpected backend teardown we must still preserve durability.
         while !self.persist_quit_state() {
+            // A boot-time block never clears and no dialog can answer during
+            // teardown. Exit unsaved, leaving the file as it was found.
+            if let Some(block) = &self.workspace_save_block {
+                log::error!("quit: backend teardown cannot save the workspace: {block}");
+                break;
+            }
             log::error!("quit: backend teardown waiting for durable workspace save");
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
@@ -4391,6 +4408,7 @@ impl eframe::App for PlexiApp {
             self.quit_coordinator
                 .reason
                 .unwrap_or(quit::ExitReason::WindowClosed),
+            self.quit_workspace_durability(),
         );
     }
 }

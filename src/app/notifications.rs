@@ -318,6 +318,10 @@ pub(crate) enum NotifySource {
     Wasm,
     /// Raised by the host itself (config errors and the like).
     HostInternal,
+    /// Raised by the host about the integrity of the user's own state, such
+    /// as a saved workspace it could not restore. Never dropped by the
+    /// notifications master switch.
+    HostIntegrity,
 }
 
 impl NotifySource {
@@ -327,6 +331,7 @@ impl NotifySource {
             NotifySource::View => "view",
             NotifySource::Wasm => "wasm",
             NotifySource::HostInternal => "host",
+            NotifySource::HostIntegrity => "host-integrity",
         }
     }
 }
@@ -582,7 +587,7 @@ impl PlexiApp {
             );
             return false;
         }
-        if !self.notifications_enabled {
+        if !self.notifications_enabled && source != NotifySource::HostIntegrity {
             log::info!(
                 "notify: dropped source={} title={:?} — notifications disabled",
                 source.as_str(),

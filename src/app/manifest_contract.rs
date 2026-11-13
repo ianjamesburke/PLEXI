@@ -214,13 +214,22 @@ impl PluginManifest {
             .unwrap_or("<unknown>")
             .to_owned();
         let legacy = value.get("app").is_some();
+        // Name the schema the file declares; a schema 2 file can still carry
+        // a leftover `[app]` table.
+        let declared = match value.get("schema_version") {
+            Some(version) => format!("this manifest declares schema_version = {version}"),
+            None => "this manifest declares no schema_version".to_string(),
+        };
         let wire: PluginManifestWire = value.try_into().map_err(|e: toml::de::Error| {
+            // toml's message ends in a newline; keep the error one line.
+            let e = e.to_string();
+            let e = e.trim_end();
             let message = if legacy {
                 format!(
-                    "schema 1 `[app]` manifests are no longer accepted; rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
+                    "`[app]` manifests are no longer accepted ({declared}); rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
                 )
             } else {
-                e.to_string()
+                e.to_owned()
             };
             ManifestError::reject(&plugin, "manifest", ManifestErrorKind::InvalidField(message))
         })?;
@@ -262,7 +271,18 @@ impl PluginManifest {
                 continue;
             }
             let raw = std::fs::read_to_string(&path).map_err(&io)?;
-            let existing = Self::parse(&raw)?;
+            // The registry skips a manifest that does not parse, so it owns
+            // no commands; `plexi plugin list` reports it as broken.
+            let existing = match Self::parse(&raw) {
+                Ok(existing) => existing,
+                Err(error) => {
+                    log::warn!(
+                        "plugin_install: ignoring unparseable manifest {} for command ownership: {error}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             self.contributes.check_command_owner(
                 &self.plugin.id,
                 &existing.plugin.id,
@@ -599,6 +619,29 @@ mod tests {
                 "{namespace}"
             );
         }
+    }
+
+    /// Stint 1260: a sibling whose manifest no longer parses is skipped by
+    /// the registry and owns no commands, so it must not block an unrelated
+    /// install.
+    #[test]
+    fn command_install_lock_skips_a_sibling_whose_manifest_does_not_parse() {
+        let target = tempfile::tempdir().unwrap();
+        let broken = target.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(
+            broken.join("manifest.toml"),
+            "schema_version = 1\n[app]\nid = 'broken'\nname = 'Broken'\n",
+        )
+        .unwrap();
+        let candidate = PluginManifest::parse(GOOD).unwrap();
+        let lock = candidate
+            .lock_command_install(target.path())
+            .expect("a broken sibling must not block the install");
+        assert!(
+            lock.is_some(),
+            "a plugin with commands holds the install lock"
+        );
     }
 
     #[test]

@@ -142,12 +142,37 @@ impl super::PlexiApp {
             Ok(()) => self.quit_coordinator.save_failures = 0,
             Err(error) => {
                 self.quit_coordinator.save_failures += 1;
-                if self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS {
+                // `plexi host stop` has nobody to answer a dialog, and a
+                // boot-time block never clears. The file stays as found and
+                // the exit reports the workspace unsaved.
+                if self.workspace_save_block.is_some()
+                    && self.quit_coordinator.reason == Some(ExitReason::HostStop)
+                {
+                    log::error!(
+                        "quit: host stop exits without saving; the session never restored its workspace: {error}"
+                    );
+                    self.quit_coordinator.save_waived = true;
+                    return true;
+                }
+                // A boot-time block cannot clear by retrying: ask at once.
+                if self.workspace_save_block.is_some()
+                    || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
+                {
                     self.quit_coordinator.save_failure = Some(error.to_string());
                 }
             }
         }
         saved
+    }
+
+    /// Whether the workspace this process is about to exit with is on disk.
+    /// Only a successful final save counts; a waived save does not.
+    pub(crate) fn quit_workspace_durability(&self) -> WorkspaceDurability {
+        if self.quit_coordinator.saved {
+            WorkspaceDurability::Saved
+        } else {
+            WorkspaceDurability::Unsaved
+        }
     }
 
     /// Dialog outcome for a quit whose save kept failing. `quit_anyway` skips
@@ -213,8 +238,8 @@ impl super::PlexiApp {
         if !self.persist_quit_state() {
             if let Some(cause) = self.quit_coordinator.save_failure() {
                 log::error!(
-                    "quit: workspace save failed {MAX_QUIT_SAVE_ATTEMPTS} times, \
-                     giving up retries: {cause}"
+                    "quit: workspace save failed {} time(s), asking the user: {cause}",
+                    self.quit_coordinator.save_failures
                 );
                 self.quit_coordinator.retry_at = None;
                 self.pending_close = true;
@@ -276,7 +301,7 @@ impl super::PlexiApp {
         self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
-        exit_host(reason);
+        exit_host(reason, self.quit_workspace_durability());
     }
 
     pub(super) fn begin_quit_cleanup(&self) {
@@ -492,8 +517,28 @@ impl ExitReason {
     }
 }
 
+/// Whether the final workspace save reached disk before exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceDurability {
+    Saved,
+    /// The save failed and the user quit without it, or a blocked session
+    /// was torn down. The file on disk is whatever was there before.
+    Unsaved,
+}
+
+/// Process exit status: zero only for a clean quit. Leftover pane
+/// processes, a socket that could not be released, or a workspace that was
+/// not saved each make the exit unclean.
+fn exit_status(remaining: usize, socket: &SocketRelease, workspace: WorkspaceDurability) -> i32 {
+    i32::from(
+        remaining != 0
+            || matches!(socket, SocketRelease::Failed(_))
+            || workspace == WorkspaceDurability::Unsaved,
+    )
+}
+
 /// Tear the host down and end the process. Never returns.
-pub(crate) fn exit_host(reason: ExitReason) -> ! {
+pub(crate) fn exit_host(reason: ExitReason, workspace: WorkspaceDurability) -> ! {
     trace("cleanup_begin");
     let start = Instant::now();
     let reason_label = reason.label();
@@ -523,10 +568,16 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
     trace("socket_release_begin");
     let socket = release_notify_socket();
     trace("socket_release_end");
-    log::info!(
-        "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} total_ms={}",
+    let status = exit_status(k.remaining, &socket, workspace);
+    let message = format!(
+        "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} workspace={workspace:?} status={status} total_ms={}",
         start.elapsed().as_millis()
     );
+    if workspace == WorkspaceDurability::Unsaved {
+        log::error!("{message}; the workspace was not saved");
+    } else {
+        log::info!("{message}");
+    }
     // The log file is the only record of a quit; flush before the fd dies.
     trace("exit_call");
     log::logger().flush();
@@ -534,9 +585,7 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
     // `on_exit` returns and which this call therefore skips: the wgpu device
     // and its worker threads are reclaimed by process teardown, exactly as on
     // the `plexi host stop` path that has always exited from mid-frame.
-    std::process::exit(i32::from(
-        k.remaining != 0 || matches!(socket, SocketRelease::Failed(_)),
-    ));
+    std::process::exit(status);
 }
 
 #[cfg(test)]
@@ -604,7 +653,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
         std::fs::remove_file(&path).unwrap();
         assert!(h.app.persist_quit_state());
-        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
         assert!(!h.app.workspace_dirty);
     }
 
@@ -738,6 +787,195 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
     }
 
+    /// Stint 1127: quitting without saving is not a clean exit.
+    #[test]
+    fn quit_without_saving_is_not_reported_as_a_clean_exit() {
+        let (mut h, _path) = quit_with_unsaveable_workspace();
+        h.app.resolve_quit_save_failure(true);
+        assert!(h
+            .app
+            .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
+        assert_eq!(
+            h.app.quit_workspace_durability(),
+            WorkspaceDurability::Unsaved
+        );
+
+        let mut saved = crate::testing::HostHarness::new();
+        saved.add_test_pane();
+        saved.app.request_quit(ExitReason::HostStop);
+        assert!(saved
+            .app
+            .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
+        assert_eq!(
+            saved.app.quit_workspace_durability(),
+            WorkspaceDurability::Saved
+        );
+
+        assert_eq!(
+            exit_status(0, &SocketRelease::Removed, WorkspaceDurability::Saved),
+            0
+        );
+        assert_eq!(
+            exit_status(0, &SocketRelease::Removed, WorkspaceDurability::Unsaved),
+            1
+        );
+        assert_eq!(
+            exit_status(1, &SocketRelease::Removed, WorkspaceDurability::Saved),
+            1
+        );
+        assert_eq!(
+            exit_status(
+                0,
+                &SocketRelease::Failed("fixture".into()),
+                WorkspaceDurability::Saved
+            ),
+            1
+        );
+    }
+
+    fn harness_with_corrupt_workspace(profile: &Path) -> (crate::testing::HostHarness, PathBuf) {
+        let path = crate::workspace::workspace_path_in(profile);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{corrupt workspace").unwrap();
+        let h = crate::testing::HostHarness::from_profile_dir(profile.to_path_buf());
+        (h, path)
+    }
+
+    /// Stint 1127: a workspace file that exists but cannot be restored is
+    /// surfaced with its path, and the fresh session never saves over it.
+    #[test]
+    fn unusable_workspace_at_boot_blocks_every_save_and_is_surfaced() {
+        let profile = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_corrupt_workspace(profile.path());
+        let block = h
+            .app
+            .workspace_save_block
+            .clone()
+            .expect("boot must record the unusable workspace");
+        assert!(block.contains(&path.display().to_string()), "{block}");
+        h.add_test_pane();
+        h.app.mark_workspace_dirty();
+        assert!(
+            !h.app.save_workspace_now(),
+            "a blocked session must not save"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt workspace");
+
+        // A host integrity notice ignores the notifications master switch.
+        h.app.notifications_enabled = false;
+        h.app.surface_workspace_load_failure();
+        assert!(
+            h.app.pending_notifications.iter().any(|notification| {
+                notification.title == "Workspace not restored"
+                    && notification.body.contains(&path.display().to_string())
+            }),
+            "the load failure must be surfaced with the file path even with notifications off"
+        );
+    }
+
+    /// Stint 1127: a valid workspace whose plugin migration fails must not be
+    /// replaced by the fresh session the host falls back to.
+    #[test]
+    fn failed_plugin_migration_at_boot_never_saves_over_the_workspace() {
+        let profile = tempfile::tempdir().unwrap();
+        {
+            let mut first =
+                crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+            first.add_test_pane();
+            assert!(first.app.save_workspace_now());
+        }
+        let path = crate::workspace::workspace_path_in(profile.path());
+        let original = std::fs::read(&path).unwrap();
+        // Both trees present is a classified migration failure.
+        std::fs::create_dir_all(profile.path().join("apps/legacy")).unwrap();
+        std::fs::create_dir_all(profile.path().join("plugins")).unwrap();
+        let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+        let block = h
+            .app
+            .workspace_save_block
+            .clone()
+            .expect("a failed plugin migration blocks saves");
+        assert!(
+            block.contains("fix the plugin migration problem") && !block.contains("move the file"),
+            "an intact file must not be blamed: {block}"
+        );
+        h.add_test_pane();
+        h.app.mark_workspace_dirty();
+        assert!(!h.app.save_workspace_now());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    /// Stint 1127: a block cannot clear by retrying, so the quit asks at once.
+    #[test]
+    fn blocked_workspace_quit_asks_on_the_first_failure() {
+        let profile = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_corrupt_workspace(profile.path());
+        h.add_test_pane();
+        h.app.request_quit(ExitReason::WindowClosed);
+        assert!(!h
+            .app
+            .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
+                panic!("restart must wait for durability")
+            }));
+        assert_eq!(h.app.quit_coordinator.save_failures, 1);
+        let cause = h
+            .app
+            .quit_coordinator
+            .save_failure()
+            .expect("a permanent block is not retried")
+            .to_owned();
+        assert!(cause.contains(&path.display().to_string()), "{cause}");
+        assert!(h.app.pending_close, "the save-failure dialog is requested");
+        assert!(!h.app.quit_coordinator.hide_requested);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt workspace");
+    }
+
+    /// Stint 1127: `plexi host stop` (IPC `Shutdown`) on a session whose
+    /// workspace never restored has nobody to answer the save dialog. It
+    /// exits unsaved instead of hanging until the CLI kills it, and the file
+    /// is left as found. The file parses but fails validation, so the boot
+    /// block, not `save_to`'s refusal of unparseable JSON, is what is tested.
+    #[test]
+    fn host_stop_over_ipc_on_a_blocked_workspace_exits_unsaved_without_asking() {
+        let profile = tempfile::tempdir().unwrap();
+        {
+            let mut first =
+                crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+            first.add_test_pane();
+            assert!(first.app.save_workspace_now());
+        }
+        let path = crate::workspace::workspace_path_in(profile.path());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["active_context"] = serde_json::json!(999);
+        let original = serde_json::to_vec_pretty(&value).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+        let block = h
+            .app
+            .workspace_save_block
+            .clone()
+            .expect("a workspace that fails validation blocks saves");
+        assert!(block.contains("invalid workspace"), "{block}");
+        h.add_test_pane();
+        h.app.mark_workspace_dirty();
+        h.inject_ipc(crate::protocol::HostRequest::Shutdown);
+        h.hidden_frame();
+        assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert!(!h.app.pending_close, "host stop must not raise the dialog");
+        assert!(h.app.quit_coordinator.save_failure().is_none());
+        assert!(
+            h.app.quit_coordinator.hide_requested,
+            "host stop must proceed to exit"
+        );
+        assert_eq!(
+            h.app.quit_workspace_durability(),
+            WorkspaceDurability::Unsaved
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
     #[test]
     fn cancelling_after_save_failures_keeps_the_window() {
         let (mut h, path) = quit_with_unsaveable_workspace();
@@ -805,7 +1043,7 @@ mod tests {
         assert!(!h.app.quit_coordinator.is_active());
         assert!(!h.app.quit_coordinator.hide_requested);
         assert!(!h.app.quitting);
-        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
         h.app.request_quit(ExitReason::WindowClosed);
         assert!(h.app.service_quit(&eframe::Frame::_new_kittest()));
         assert!(h.app.quit_coordinator.hide_requested);

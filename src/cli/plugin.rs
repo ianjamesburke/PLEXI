@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
+pub(crate) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
 pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 6;
 
@@ -472,7 +472,9 @@ fn write_python_scaffold_support_files(plugin_dir: &std::path::Path, name: &str)
     Ok(())
 }
 
-pub(super) fn write_scaffold_metadata_file(
+/// The one writer of `plexi.scaffold.toml`: `plugin init`, `--adopt` and the
+/// package migration all stamp metadata through it.
+pub(crate) fn write_scaffold_metadata_file(
     plugin_dir: &std::path::Path,
     generated_by: &str,
 ) -> io::Result<()> {

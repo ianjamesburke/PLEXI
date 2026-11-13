@@ -1075,7 +1075,7 @@ wait
                 for _ in 0..3 {
                     h.app
                         .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
-                            assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_some());
+                            assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_ok());
                             assert!(!evidence.join("restart-scheduled").exists());
                             std::fs::write(
                                 evidence.join("restart-scheduled"),

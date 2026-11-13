@@ -175,7 +175,7 @@ fn saved_strip_missing_visible_pane_is_rejected_without_overwrite() {
     let path = crate::workspace::workspace_path_in(&profile);
     let original = serde_json::to_vec(&saved).unwrap();
     std::fs::write(&path, &original).unwrap();
-    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
@@ -202,7 +202,7 @@ fn invalid_legacy_tree_is_rejected_without_replacing_original() {
     let path = crate::workspace::workspace_path_in(&profile);
     let original = serde_json::to_vec(&saved).unwrap();
     std::fs::write(&path, &original).unwrap();
-    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
@@ -513,7 +513,7 @@ fn legacy_grid_conversion_reports_unsupported_and_preserves_file() {
     tree.root = Some(tree.tiles.insert_grid_tile(children));
     let original = serde_json::to_vec(&legacy).unwrap();
     std::fs::write(&path, &original).unwrap();
-    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_err());
     assert_eq!(std::fs::read(path).unwrap(), original);
 }
 
@@ -640,7 +640,7 @@ fn legacy_deleted_context_active_window_is_migrated_without_losing_workspace() {
     conflicting["context_active_window"]["999999"] = legacy["windows"][0]["window_id"].clone();
     let conflicting_bytes = serde_json::to_vec(&conflicting).unwrap();
     std::fs::write(&path, &conflicting_bytes).unwrap();
-    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), conflicting_bytes);
     legacy["context_active_window"]["999999"] = 999998.into();
     let original = serde_json::to_vec(&legacy).unwrap();

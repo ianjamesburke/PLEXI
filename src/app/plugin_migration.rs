@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 const MIGRATION: &str = "migration-plugin-v2";
 const OPERATION_TREE: &str = "plugin migration v2";
 const OPERATION_PACK: &str = "plugin pack migration v2";
+/// `generated_by` stamped into a migrated package's regenerated scaffold metadata.
+const SCAFFOLD_GENERATED_BY: &str = "plexi plugin migration v2";
 
 /// Migration runs during profile initialization, before `platform::logging::init`
 /// installs the file logger, so lines logged then are dropped. Every trace is
@@ -568,6 +570,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     ));
                 }
                 std::fs::write(&path, rewritten)?;
+                regenerate_scaffold_metadata(&entry.path(), &name)?;
             }
             std::fs::write(&ready, b"schema=2\n")?;
             std::fs::rename(&old, &backup)?;
@@ -631,6 +634,53 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
         backup.display(),
         source_count,
         count_entries(&new),
+    ));
+    Ok(())
+}
+
+/// A package that carried scaffold metadata gets it rewritten for schema 2
+/// and this build, so `plugin check` does not report the migration itself as
+/// drift. The staged copy is rewritten; the backup keeps the original.
+fn regenerate_scaffold_metadata(package: &Path, name: &str) -> std::io::Result<()> {
+    let metadata = package.join(crate::cli::plugin::SCAFFOLD_METADATA_FILE);
+    match std::fs::symlink_metadata(&metadata) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "package {name}: cannot inspect scaffold metadata {}: {error}",
+                    metadata.display()
+                ),
+            ))
+        }
+        Ok(found) if !found.file_type().is_file() => {
+            // Writing through a link would change a file outside the package.
+            record(
+                log::Level::Warn,
+                format!(
+                    "plugin_migration: package={name} scaffold metadata {} is not a regular file; left as is",
+                    metadata.display()
+                ),
+            );
+            return Ok(());
+        }
+        Ok(_) => {}
+    }
+    crate::cli::plugin::write_scaffold_metadata_file(package, SCAFFOLD_GENERATED_BY).map_err(
+        |error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "package {name}: cannot regenerate scaffold metadata {}: {error}",
+                    metadata.display()
+                ),
+            )
+        },
+    )?;
+    trace(format!(
+        "plugin_migration: package={name} regenerated scaffold metadata {}",
+        metadata.display()
     ));
     Ok(())
 }
@@ -1259,6 +1309,74 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
         std::fs::write(dir.join("main.py"), "").unwrap();
+    }
+
+    /// Stint 1259: a migrated package's `plexi.scaffold.toml` is regenerated
+    /// by the writer `plugin init` uses, so it describes schema 2 and this
+    /// build. A package without one is not given one; the backup keeps the old.
+    /// A metadata write that fails names the package and the file.
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_metadata_write_failure_names_package_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let package = tempfile::tempdir().unwrap();
+        let metadata = package.path().join("plexi.scaffold.toml");
+        std::fs::write(&metadata, "schema_version = 1\n").unwrap();
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(package.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = regenerate_scaffold_metadata(package.path(), "logs");
+        std::fs::set_permissions(package.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result
+            .expect_err("a read-only package cannot be rewritten")
+            .to_string();
+        assert!(error.contains("package logs"), "{error}");
+        assert!(error.contains(&metadata.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn plugin_rename_regenerates_scaffold_metadata_of_migrated_packages() {
+        let root = tempfile::tempdir().unwrap();
+        stage_legacy(root.path(), "logs", LEGACY_WITH_INERT_KEYS);
+        stage_legacy(
+            root.path(),
+            "bare",
+            &LEGACY_WITH_INERT_KEYS.replace("id = 'logs'", "id = 'bare'"),
+        );
+        let stale = "schema_version = 1\ngenerated_by = \"plexi app init --adopt\"\nplexi_cli_version = \"0.4.4\"\nsdk_version = \"0.4.0\"\nmanifest_schema_version = 1\npython_runtime_version = \"3.11\"\ntemplate_version = 1\nchannel = \"stale\"\nprofile_dir = \".plexi-stale\"\n";
+        std::fs::write(root.path().join("apps/logs/plexi.scaffold.toml"), stale).unwrap();
+        migrate(root.path()).unwrap();
+
+        let migrated =
+            std::fs::read_to_string(root.path().join("plugins/logs/plexi.scaffold.toml")).unwrap();
+        let fresh = tempfile::tempdir().unwrap();
+        crate::cli::plugin::write_scaffold_metadata_file(fresh.path(), SCAFFOLD_GENERATED_BY)
+            .unwrap();
+        assert_eq!(
+            migrated,
+            std::fs::read_to_string(fresh.path().join("plexi.scaffold.toml")).unwrap(),
+            "migration must write exactly what the shared scaffold writer writes"
+        );
+        let metadata: toml::Value = toml::from_str(&migrated).unwrap();
+        assert_eq!(
+            metadata
+                .get("manifest_schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(i64::from(super::super::registry::MANIFEST_SCHEMA_VERSION))
+        );
+        assert!(!root
+            .path()
+            .join("plugins/bare/plexi.scaffold.toml")
+            .exists());
+        assert_eq!(
+            std::fs::read_to_string(
+                root.path()
+                    .join(MIGRATION)
+                    .join("apps/logs/plexi.scaffold.toml")
+            )
+            .unwrap(),
+            stale,
+            "the backup keeps the original metadata"
+        );
     }
 
     /// 0.4.x ignored unknown keys in the top level and `[app]` (the owner's
