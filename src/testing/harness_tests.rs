@@ -18716,6 +18716,39 @@ mod host_induced_terminal_output_tests {
         });
     }
 
+    /// A freshly spawned agent whose whole boot output lands inside
+    /// host-induced windows (its first layout resize and the focus it takes)
+    /// has no agent activity stamp at all. It must still settle to Idle once
+    /// the PTY has been quiet for `OBSERVED_AGENT_SETTLE`, or an observed boot
+    /// never completes (hosted CI: `agent_spawn_completes_from_observed_codex_boot`).
+    #[test]
+    fn boot_output_only_inside_host_induced_windows_still_settles() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let start = Instant::now();
+        t.last_agent_activity_at = None;
+        t.last_pty_output_at = None;
+        t.mark_host_induced(start, "resize");
+        t.record_pty_event(start);
+        assert!(
+            t.last_agent_activity_at.is_none(),
+            "precondition: the boot output was attributed to the host"
+        );
+        let later = start + crate::host::pane::OBSERVED_AGENT_SETTLE + Duration::from_millis(1);
+        assert!(!t.host_induced_quiet(later));
+        assert_eq!(
+            t.observed_output_state(later),
+            AgentState::Idle,
+            "a PTY quiet for the settle window is idle even when every byte was host-induced"
+        );
+        assert_eq!(
+            t.observed_output_state(start + Duration::from_millis(100)),
+            AgentState::Working,
+            "inside the settle window it is still drawing"
+        );
+    }
+
     #[test]
     fn focus_change_then_burst_keeps_idle_agent_idle() {
         let mut h = HostHarness::new();
