@@ -538,7 +538,7 @@ pub enum Commands {
     ///
     /// One host record covers click approvals, agent questions, and blocked
     /// runs. The desktop badge reads that record.
-    /// `resolve --pluginrove` on a click approval is refused. `--deny` still denies.
+    /// `resolve --approve` on a click approval is refused. `--deny` still denies.
     #[command(name = "needs-you")]
     NeedsYou {
         #[command(subcommand)]

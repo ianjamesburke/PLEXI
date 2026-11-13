@@ -2006,7 +2006,7 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 List everything waiting on you.
 
-One host record covers click approvals, agent questions, and blocked runs. The desktop badge reads that record. `resolve --pluginrove` on a click approval is refused. `--deny` still denies.
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge reads that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
 
 | Subcommand | Description |
 |---|---|
