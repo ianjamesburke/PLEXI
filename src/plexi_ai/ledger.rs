@@ -344,7 +344,7 @@ pub fn append_result(row: &LedgerRow) -> Result<(), String> {
 /// File name of the AI ledger in the channel profile.
 const LEDGER_FILE: &str = "ai-ledger.jsonl";
 
-/// The ledger's name before October 2026. Its rename shim is deleted
+/// The ledger's name before April 2026 (Plexi 0.1.7). Its rename shim is deleted
 /// (stint 1312); a ledger still under this name is reported, never moved.
 const RETIRED_LEDGER_FILE: &str = "agent-ledger.jsonl";
 
@@ -352,7 +352,7 @@ pub(crate) fn ledger_path() -> PathBuf {
     crate::config::config_dir().join(LEDGER_FILE)
 }
 
-/// The error for a ledger still under its pre-October name with no current
+/// The error for a ledger still under its pre-April-2026 name with no current
 /// ledger beside it, or `None`. Reads only.
 pub fn retired_ledger_error() -> Option<String> {
     let config_dir = crate::config::config_dir();
@@ -360,9 +360,9 @@ pub fn retired_ledger_error() -> Option<String> {
     let new_path = config_dir.join(LEDGER_FILE);
     (old_path.exists() && !new_path.exists()).then(|| {
         format!(
-            "AI ledger {} uses the name from before October 2026, which Plexi no longer \
-             migrates. It was left unchanged, and no usage is recorded until it is moved. \
-             Fix: Rename it to {} to keep its history, or delete it.",
+            "AI ledger {} uses the name from before April 2026 (Plexi 0.1.7), which Plexi no \
+             longer migrates. It was left unchanged. Until it is moved, AI requests are refused \
+             and no usage is recorded. Fix: Rename it to {} to keep its history, or delete it.",
             old_path.display(),
             new_path.display()
         )
@@ -1101,6 +1101,7 @@ mod ledger_tests {
                 "{message}"
             );
             assert!(message.contains("left unchanged"), "{message}");
+            assert!(message.contains("AI requests are refused"), "{message}");
             assert!(
                 message.contains("Rename"),
                 "the fix names the rename: {message}"
