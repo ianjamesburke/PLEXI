@@ -14,6 +14,16 @@ pub type PaneId = u64;
 
 pub(crate) const TAB_BAR_HEIGHT: f32 = crate::ui::style::PANE_HEADER_HEIGHT;
 
+/// The one set of options every window tree is simplified with: egui's own
+/// pass at the start of `Tree::ui` (through `PlexiBehavior`) and
+/// `Window::simplify_and_reconcile`. Every pane sits in a Tabs container.
+pub(crate) fn host_simplification_options() -> SimplificationOptions {
+    SimplificationOptions {
+        all_panes_must_have_tabs: true,
+        ..SimplificationOptions::default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabBarAction {
     Switch(usize),
@@ -470,6 +480,9 @@ pub struct PlexiBehavior<'a> {
     pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
+    /// Set only by a pointer press inside a pane, never by file-drag hover,
+    /// which also sets `new_focused` (stint 1340: a click clears selection).
+    pub clicked: Option<TileId>,
     pub close_exited: Option<TileId>,
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
@@ -585,6 +598,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
+        }
+        if is_click {
+            self.clicked = Some(tile_id);
         }
 
         let is_focused = self.owner_pane == Some(*pane_id);
@@ -981,10 +997,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn simplification_options(&self) -> SimplificationOptions {
-        SimplificationOptions {
-            all_panes_must_have_tabs: true,
-            ..SimplificationOptions::default()
-        }
+        host_simplification_options()
     }
 
     fn tab_ui(

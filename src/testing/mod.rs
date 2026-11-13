@@ -575,6 +575,39 @@ impl HostHarness {
         self.app.windows.len()
     }
 
+    /// Stint 1230: assert that `windows[window]` is settled after a tree
+    /// mutation, with no frame run in between. Settled means the tree is
+    /// already in the host's simplified form (so egui's per-frame simplify
+    /// cannot re-id a tile under the window's focus), `focused_pane` and any
+    /// `zoomed_pane` name `Tile::Pane` tiles of that tree, and the workspace
+    /// saves. `step` names the mutation in failure messages.
+    pub fn assert_window_settled(&mut self, window: usize, step: &str) {
+        let win = &self.app.windows[window];
+        let mut simplified = win.tree.clone();
+        simplified.simplify(&crate::spatial::tiling::host_simplification_options());
+        assert!(
+            simplified == win.tree,
+            "{step}: window {window} tree is not simplified; the next frame would re-id its tiles"
+        );
+        let is_pane = |tile: egui_tiles::TileId| {
+            matches!(win.tree.tiles.get(tile), Some(egui_tiles::Tile::Pane(_)))
+        };
+        assert!(
+            win.focused_pane.is_some_and(is_pane),
+            "{step}: window {window} focused_pane {:?} must be a Tile::Pane",
+            win.focused_pane
+        );
+        assert!(
+            win.zoomed_pane.is_none_or(is_pane),
+            "{step}: window {window} zoomed_pane {:?} must be a Tile::Pane",
+            win.zoomed_pane
+        );
+        assert!(
+            self.app.save_workspace_now(),
+            "{step}: workspace save failed for window {window}"
+        );
+    }
+
     /// Focus a pane by PaneId, looking up its TileId in the active window's
     /// tile tree. No-op if the pane has no corresponding tile.
     pub fn focus_pane(&mut self, pane_id: PaneId) -> &mut Self {

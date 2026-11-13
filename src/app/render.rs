@@ -603,7 +603,9 @@ impl PlexiApp {
                 let canvas_full_rect = ui.available_rect_before_wrap();
                 let ctx = &mut self.windows[self.active_window];
 
-                ctx.reconcile_stale_tiles();
+                // Settle before Tree::ui so egui's own simplify at its start is a
+                // no-op and cannot re-id a tile under focus mid-frame (stint 1230).
+                ctx.simplify_and_reconcile();
                 #[cfg(debug_assertions)]
                 ctx.assert_focus_invariants();
 
@@ -766,6 +768,7 @@ impl PlexiApp {
                     child_agent_dive: None,
                     theme: self.theme.clone(),
                     new_focused: None,
+                    clicked: None,
                     close_exited: None,
                     tab_action: None,
                     tab_info,
@@ -889,6 +892,7 @@ impl PlexiApp {
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
+                let pane_clicked = behavior.clicked.is_some();
                 if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
@@ -1129,6 +1133,21 @@ impl PlexiApp {
                     }
                 } else {
                     drop(behavior);
+                }
+
+                // Tree::ui can still restructure the tree (a tab or pane drag);
+                // heal focus and zoom against the tree it left (stint 1230).
+                ctx.reconcile_stale_tiles();
+
+                // A pointer click on a pane replaces any multi-pane selection
+                // with that pane alone (stint 1340). File-drag hover also moves
+                // focus but leaves the selection.
+                if pane_clicked {
+                    let window_id = ctx.window_id;
+                    if self.host.clear_pane_selection(window_id).is_some() {
+                        log::info!("pane_selection: cleared by pane click window={window_id}");
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 // Apply canvas focus change now that behavior is dropped and

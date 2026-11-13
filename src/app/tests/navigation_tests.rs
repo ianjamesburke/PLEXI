@@ -334,8 +334,10 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
     );
 }
 
+/// Stint 1251: B's left (A) and right (C) neighbours are equally adjacent, so
+/// window-local history breaks the tie; history no longer outranks adjacency.
 #[test]
-fn close_focused_pane_prefers_window_local_history_and_keeps_successor_visible() {
+fn close_focused_pane_uses_history_as_neighbour_tie_break_and_keeps_successor_visible() {
     let mut h = HostHarness::new();
     let a = h.add_test_pane();
     let b = h.add_test_pane();
@@ -392,6 +394,110 @@ fn close_focused_pane_prefers_window_local_history_and_keeps_successor_visible()
     assert!(
         c_column >= offset && c_column < offset + 2,
         "close target column must remain in the visible strip"
+    );
+}
+
+/// Push `panes` onto the focus history of window 0, oldest first.
+fn push_history(h: &mut HostHarness, panes: &[u64]) {
+    let window_id = h.app.windows[0].window_id;
+    for pane in panes {
+        let tile = h.app.windows[0]
+            .tree
+            .tiles
+            .find_pane(pane)
+            .expect("history pane has a tile");
+        h.app.pane_focus_history.push((window_id, tile));
+    }
+}
+
+/// Stint 1251 (Ian's three-pane case): terminal | explorer | editor. Closing
+/// the focused editor focuses the adjacent explorer even though the newest
+/// focus-history entry is the far-left terminal.
+#[test]
+fn close_focused_rightmost_column_focuses_adjacent_column_over_history() {
+    let mut h = HostHarness::new();
+    let terminal = h.add_test_pane();
+    let explorer = h.add_test_pane();
+    let editor = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.set_context_columns(
+        context_id,
+        vec![vec![terminal], vec![explorer], vec![editor]],
+    );
+    push_history(&mut h, &[terminal]);
+    assert!(h.app.focus_pane_in_strip(editor));
+
+    h.app.close_pane_by_id(editor);
+
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(explorer),
+        "closing the editor must focus the explorer next to it, not the terminal"
+    );
+}
+
+/// Stint 1251: the three-pane case with no focus history also lands on the
+/// adjacent explorer.
+#[test]
+fn close_focused_rightmost_column_without_history_focuses_adjacent_column() {
+    let mut h = HostHarness::new();
+    let terminal = h.add_test_pane();
+    let explorer = h.add_test_pane();
+    let editor = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app.set_context_columns(
+        context_id,
+        vec![vec![terminal], vec![explorer], vec![editor]],
+    );
+    h.app.pane_focus_history.clear();
+    assert!(h.app.focus_pane_in_strip(editor));
+
+    h.app.close_pane_by_id(editor);
+
+    assert_eq!(h.app.active_focused_pane_id(), Some(explorer));
+}
+
+/// Stint 1251: in a vertical stack the panes above and below are equally
+/// adjacent. With no history the pane below wins.
+#[test]
+fn close_focused_middle_of_stack_without_history_focuses_pane_below() {
+    let mut h = HostHarness::new();
+    let top = h.add_test_pane();
+    let middle = h.add_test_pane();
+    let bottom = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, vec![vec![top, middle, bottom]]);
+    h.app.pane_focus_history.clear();
+    assert!(h.app.focus_pane_in_strip(middle));
+
+    h.app.close_pane_by_id(middle);
+
+    assert_eq!(h.app.active_focused_pane_id(), Some(bottom));
+}
+
+/// Stint 1251: history breaks the tie between the equally adjacent panes
+/// above and below, and a newer history entry for a non-adjacent pane does not
+/// pull focus away from the neighbours.
+#[test]
+fn close_focused_middle_of_stack_uses_history_only_between_neighbours() {
+    let mut h = HostHarness::new();
+    let top = h.add_test_pane();
+    let middle = h.add_test_pane();
+    let bottom = h.add_test_pane();
+    let other = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, vec![vec![top, middle, bottom], vec![other]]);
+    push_history(&mut h, &[top, other]);
+    assert!(h.app.focus_pane_in_strip(middle));
+
+    h.app.close_pane_by_id(middle);
+
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(top),
+        "history picks top over bottom; the newer non-adjacent entry must not win"
     );
 }
 

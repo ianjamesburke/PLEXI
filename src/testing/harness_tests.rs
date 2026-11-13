@@ -18653,3 +18653,211 @@ fn titlebar_drag_and_exclusions_preserve_pointer_routing() {
         "expected drag, got {commands:?}"
     );
 }
+
+/// Stint 1231: output the host provoked itself (a committed resize, a pane
+/// focus change) must not read as agent activity. These drive real terminal
+/// panes and simulate the PTY burst through `TerminalPane::record_pty_event`,
+/// the stamp `drain_pty_events` applies to every PTY event.
+#[cfg(test)]
+mod host_induced_terminal_output_tests {
+    use super::*;
+    use crate::protocol::{AgentState, PaneAgentState};
+    use std::time::{Duration, Instant};
+
+    fn terminal(h: &mut HostHarness, id: PaneId) -> &mut crate::host::pane::TerminalPane {
+        h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("terminal pane")
+    }
+
+    /// An idle agent: a hook Idle older than `HOOK_AGENT_FRESHNESS`, settled
+    /// output, and no host-induced window open.
+    fn idle_agent_with_stale_hook(t: &mut crate::host::pane::TerminalPane) {
+        let now = Instant::now();
+        t.agent = Some(PaneAgentState {
+            pane_id: t.id,
+            state: AgentState::Idle,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        });
+        t.agent_reported_at =
+            Some(now - crate::host::pane::HOOK_AGENT_FRESHNESS - Duration::from_secs(1));
+        t.last_agent_activity_at = Some(now - Duration::from_secs(5));
+        t.host_induced_until = None;
+        t.observed_agent = None;
+    }
+
+    /// A burst of PTY events, then the observed-agent synthesis
+    /// `tick_terminal_activity` runs for a known agent in the foreground.
+    fn burst_then_observe(t: &mut crate::host::pane::TerminalPane) {
+        for _ in 0..5 {
+            t.record_pty_event(Instant::now());
+        }
+        let state = t.observed_output_state(Instant::now());
+        t.set_observed_agent(Some(PaneAgentState {
+            pane_id: t.id,
+            state,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }));
+    }
+
+    fn frame_at_width(h: &mut HostHarness, width: f32) {
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 800.0),
+            )),
+            ..Default::default()
+        });
+    }
+
+    /// A freshly spawned agent whose whole boot output lands inside
+    /// host-induced windows (its first layout resize and the focus it takes)
+    /// has no agent activity stamp at all. It must still settle to Idle once
+    /// the PTY has been quiet for `OBSERVED_AGENT_SETTLE`, or an observed boot
+    /// never completes (hosted CI: `agent_spawn_completes_from_observed_codex_boot`).
+    #[test]
+    fn boot_output_only_inside_host_induced_windows_still_settles() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let start = Instant::now();
+        t.last_agent_activity_at = None;
+        t.last_pty_output_at = None;
+        t.mark_host_induced(start, "resize");
+        t.record_pty_event(start);
+        assert!(
+            t.last_agent_activity_at.is_none(),
+            "precondition: the boot output was attributed to the host"
+        );
+        let later = start + crate::host::pane::OBSERVED_AGENT_SETTLE + Duration::from_millis(1);
+        assert!(!t.host_induced_quiet(later));
+        assert_eq!(
+            t.observed_output_state(later),
+            AgentState::Idle,
+            "a PTY quiet for the settle window is idle even when every byte was host-induced"
+        );
+        assert_eq!(
+            t.observed_output_state(start + Duration::from_millis(100)),
+            AgentState::Working,
+            "inside the settle window it is still drawing"
+        );
+    }
+
+    #[test]
+    fn focus_change_then_burst_keeps_idle_agent_idle() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let other = h.app.windows[0]
+            .panes
+            .keys()
+            .copied()
+            .find(|id| *id != term)
+            .expect("the view pane the terminal split from");
+        h.app.reconcile_focus_logging(Duration::ZERO);
+        idle_agent_with_stale_hook(terminal(&mut h, term));
+
+        h.focus_pane(other);
+        h.app.reconcile_focus_logging(Duration::ZERO);
+        let t = terminal(&mut h, term);
+        assert!(
+            t.host_induced_quiet(Instant::now()),
+            "a focus change opens the host-induced window on the terminal it left"
+        );
+        let stamped_before = t.last_pty_output_at;
+        burst_then_observe(t);
+
+        assert_eq!(t.effective_agent_state().0, AgentState::Idle);
+        assert_ne!(
+            t.last_pty_output_at, stamped_before,
+            "pane send --submit settling still sees every PTY event"
+        );
+    }
+
+    #[test]
+    fn resize_commit_then_burst_keeps_idle_agent_idle() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        for _ in 0..4 {
+            frame_at_width(&mut h, 1280.0);
+        }
+        idle_agent_with_stale_hook(terminal(&mut h, term));
+        let commits_before = h.terminal_backend(term).resize_commits();
+
+        // Stop on the committing frame: the window it opens is short, so the
+        // assertion must not wait behind extra frames on a loaded machine.
+        let mut committed = false;
+        for _ in 0..6 {
+            frame_at_width(&mut h, 900.0);
+            if h.terminal_backend(term).resize_commits() > commits_before {
+                committed = true;
+                break;
+            }
+        }
+        assert!(committed, "narrowing the window commits a terminal resize");
+        let t = terminal(&mut h, term);
+        assert!(
+            t.host_induced_quiet(Instant::now()),
+            "a committed resize opens the host-induced window"
+        );
+        burst_then_observe(t);
+
+        assert_eq!(t.effective_agent_state().0, AgentState::Idle);
+    }
+
+    #[test]
+    fn genuine_burst_without_or_after_host_window_shows_working() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+
+        idle_agent_with_stale_hook(t);
+        burst_then_observe(t);
+        assert_eq!(
+            t.effective_agent_state().0,
+            AgentState::Working,
+            "output with no host-induced event is agent activity"
+        );
+
+        idle_agent_with_stale_hook(t);
+        t.host_induced_until = Some(Instant::now() - Duration::from_millis(1));
+        burst_then_observe(t);
+        assert_eq!(
+            t.effective_agent_state().0,
+            AgentState::Working,
+            "output after the quiet window closes is agent activity"
+        );
+    }
+
+    #[test]
+    fn hook_idle_beats_observed_working_inside_host_window() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        idle_agent_with_stale_hook(t);
+        t.set_observed_agent(Some(PaneAgentState {
+            pane_id: term,
+            state: AgentState::Working,
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }));
+        assert_eq!(
+            t.effective_agent_state().0,
+            AgentState::Working,
+            "outside a host window a stale hook Idle still yields to observed Working"
+        );
+
+        t.mark_host_induced(Instant::now(), "test");
+        assert_eq!(
+            t.effective_agent_state().0,
+            AgentState::Idle,
+            "inside a host window the hook Idle wins"
+        );
+    }
+}

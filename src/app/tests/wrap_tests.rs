@@ -832,3 +832,16 @@ fn direct_focus_preserves_deliberate_portal_with_sibling() {
     assert!(h.app.focus_pane_in_strip(portal));
     assert_eq!(h.app.router.active().context_id, parent);
 }
+
+/// Stint 1230: wrapping leaves both the pruned parent window and the new child
+/// window settled before any frame runs.
+#[test]
+fn wrap_leaves_parent_and_child_windows_settled() {
+    let mut h = HostHarness::new();
+    let [a, b, _c, _d] = grid(&mut h);
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let child = h.app.active_window;
+    assert_ne!(child, 0, "wrap enters the child window");
+    h.assert_window_settled(child, "wrap child window");
+    h.assert_window_settled(0, "wrap parent window");
+}

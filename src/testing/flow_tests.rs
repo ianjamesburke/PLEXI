@@ -338,3 +338,303 @@ fn invalid_focus_on_disk_does_not_block_later_saves_and_focus_survives_reload() 
         Some(egui_tiles::Tile::Pane(_))
     ));
 }
+
+// ── Stint 1230: every tree mutation leaves its window settled ─────────────
+
+/// Window 0 holds `[a | b]` as bare panes with `a` focused, the shape a
+/// mutation sees before any frame wraps panes in tabs. Window 1, to its right
+/// in the same context, holds one pane `c`. Returns `(a, b, c)`.
+fn two_window_fixture(h: &mut HostHarness) -> (PaneId, PaneId, PaneId) {
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let window = &mut h.app.windows[0];
+    let a_tile = window.tree.tiles.find_pane(&a).expect("a has a tile");
+    let b_tile = window.tree.tiles.find_pane(&b).expect("b has a tile");
+    let root = window
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![a_tile, b_tile]);
+    window.tree.root = Some(root);
+    window.focused_pane = Some(a_tile);
+    let context_id = window.context_id;
+    let window_id = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(crate::host::context::Window {
+        name: "right".into(),
+        path: crate::testing::scratch_context_root("stint-1230-right"),
+        tree: egui_tiles::Tree::empty("stint_1230_right"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id,
+        context_id,
+    });
+    let (c_tile, c) = h.app.add_view_pane_in_window(1, "right");
+    h.app.windows[1].focused_pane = Some(c_tile);
+    h.app.active_window = 0;
+    (a, b, c)
+}
+
+#[test]
+fn split_focused_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(2);
+    h.app
+        .split_focused(true, None, false, false, None)
+        .expect("split spawns a terminal");
+    let w = h.app.active_window;
+    h.assert_window_settled(w, "split_focused");
+}
+
+/// A view launched into an empty context becomes the tree root (the
+/// `place_view_pane` root path in `src/pane_ops/create.rs`).
+#[test]
+fn view_launched_into_an_empty_context_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    assert!(
+        h.app.windows[0].focused_pane.is_none(),
+        "precondition: the harness window starts empty"
+    );
+    h.app
+        .launch_view_by_id_with_layout("agents", None, &[], None)
+        .expect("agents view launches");
+    h.assert_window_settled(0, "view launched as root pane");
+}
+
+/// An agent worker spawned into an empty context takes focus through the
+/// `spawn_agent_worker_pane` split-insert path.
+#[test]
+fn agent_worker_spawned_into_an_empty_context_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    let ws = h.workspace_root();
+    let agent = ws.join(".plexi/agents/settle-test");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::write(agent.join("AGENT.md"), "Test agent").expect("AGENT.md");
+    std::fs::write(
+        agent.join("settings.toml"),
+        "[agent]\nid = \"settle-test\"\ndisplay_name = \"Settle test\"\ndefault_tier = \"medium\"\n[harness]\ncli = \"claude\"\n",
+    )
+    .expect("settings.toml");
+    assert!(
+        h.app.windows[0].focused_pane.is_none(),
+        "precondition: the harness window starts empty"
+    );
+    h.app
+        .spawn_agent_worker_pane(
+            "settle-test",
+            "claude",
+            "sleep 30",
+            "test",
+            None,
+            false,
+            None,
+            Some(ws),
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("agent worker spawns");
+    h.assert_window_settled(0, "agent worker spawned into an empty context");
+}
+
+#[test]
+fn new_tab_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    let (a, _b, _c) = two_window_fixture(&mut h);
+    assert!(h.app.windows[0].tree.tiles.find_pane(&a).is_some());
+    h.app.new_tab(0, None, false, None, false, false);
+    assert_eq!(h.app.windows[0].panes.len(), 3, "new_tab adds a pane");
+    h.assert_window_settled(0, "new_tab");
+}
+
+#[test]
+fn move_focused_pane_to_adjacent_window_leaves_both_windows_settled() {
+    let mut h = HostHarness::new();
+    let (a, _b, _c) = two_window_fixture(&mut h);
+    assert!(h
+        .app
+        .move_focused_pane_to_adjacent_window(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.active_window, 1);
+    assert!(h.app.windows[1].panes.contains_key(&a));
+    h.assert_window_settled(1, "move_focused_pane_to_adjacent_window destination");
+    h.assert_window_settled(0, "move_focused_pane_to_adjacent_window source");
+}
+
+#[test]
+fn send_pane_to_adjacent_window_leaves_source_focus_on_a_pane() {
+    let mut h = HostHarness::new();
+    let (a, b, _c) = two_window_fixture(&mut h);
+    assert!(h
+        .app
+        .send_pane_to_adjacent_window(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.active_window, 0, "send keeps focus in the source");
+    assert!(h.app.windows[1].panes.contains_key(&a));
+    h.assert_window_settled(0, "send_pane_to_adjacent_window source");
+    assert_eq!(h.app.active_focused_pane_id(), Some(b));
+    h.assert_window_settled(1, "send_pane_to_adjacent_window destination");
+}
+
+#[test]
+fn move_focused_pane_to_row_boundary_leaves_new_window_settled() {
+    let mut h = HostHarness::new();
+    let (a, _b, _c) = two_window_fixture(&mut h);
+    assert!(h.app.move_focused_pane_to_row_boundary(true));
+    let w = h.app.active_window;
+    assert!(h.app.windows[w].panes.contains_key(&a));
+    h.assert_window_settled(w, "move_focused_pane_to_row_boundary new window");
+    h.assert_window_settled(0, "move_focused_pane_to_row_boundary source");
+}
+
+#[test]
+fn set_context_columns_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let c = h.add_test_pane();
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, vec![vec![a], vec![b, c]]);
+    h.assert_window_settled(0, "set_context_columns");
+}
+
+/// egui simplifies the tree at the start of `Tree::ui`. A bare pane focused by
+/// a path outside the settling method must still be focused by pane, not by
+/// the Tabs container that took over its tile id, when the frame ends.
+#[test]
+fn render_frame_leaves_focus_on_a_pane_after_egui_simplify() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(1);
+    let second = h.add_test_pane();
+    let window = &mut h.app.windows[0];
+    let second_tile = window
+        .tree
+        .tiles
+        .find_pane(&second)
+        .expect("second has a tile");
+    let root = window.tree.root.expect("window has a root");
+    let split = window
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![root, second_tile]);
+    window.tree.root = Some(split);
+    window.focused_pane = Some(second_tile);
+    h.run_frames(1);
+    assert!(
+        focus_is_pane(&h, 0),
+        "focus must name a pane after the frame's simplify"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(second));
+}
+
+// ── Stint 1340: a pane click clears the multi-pane selection ──────────────
+
+/// Window 0 holds three side-by-side panes `[a | b | c]`, laid out, with `a`
+/// and `b` selected (Cmd+Shift+L from `a`) and `b` focused.
+fn selection_fixture(h: &mut HostHarness) -> [PaneId; 3] {
+    let panes = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
+    let context_id = h.app.windows[0].context_id;
+    h.app
+        .set_context_columns(context_id, panes.iter().map(|pane| vec![*pane]).collect());
+    h.focus_pane(panes[0]);
+    h.run_frames(3);
+    h.app
+        .extend_pane_selection(crate::host::keys::Direction::Right);
+    let window_id = h.app.windows[0].window_id;
+    let selected = &h
+        .app
+        .host
+        .pane_selection(window_id)
+        .expect("selection")
+        .panes;
+    assert_eq!(
+        selected,
+        &vec![panes[0], panes[1]],
+        "fixture selects a and b"
+    );
+    h.run_frames(1);
+    panes
+}
+
+fn pane_center(h: &HostHarness, pane: PaneId) -> egui::Pos2 {
+    let tree = &h.app.windows[0].tree;
+    let tile = tree.tiles.find_pane(&pane).expect("pane tile");
+    tree.tiles.rect(tile).expect("pane laid out").center()
+}
+
+fn pointer_frame(h: &mut HostHarness, pos: egui::Pos2, pressed: Option<bool>, hovering: bool) {
+    let mut events = vec![egui::Event::PointerMoved(pos)];
+    if let Some(pressed) = pressed {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        hovered_files: if hovering {
+            vec![egui::HoveredFile::default()]
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    });
+}
+
+fn click_pane(h: &mut HostHarness, pane: PaneId) {
+    let pos = pane_center(h, pane);
+    pointer_frame(h, pos, Some(true), false);
+    pointer_frame(h, pos, Some(false), false);
+}
+
+#[test]
+fn clicking_a_selected_pane_clears_selection_and_focuses_it() {
+    let mut h = HostHarness::new();
+    let [a, _b, _c] = selection_fixture(&mut h);
+    click_pane(&mut h, a);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_none(),
+        "a click on a selected pane clears the multi-selection"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(a));
+}
+
+#[test]
+fn clicking_an_unselected_pane_clears_selection_and_focuses_it() {
+    let mut h = HostHarness::new();
+    let [_a, _b, c] = selection_fixture(&mut h);
+    click_pane(&mut h, c);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_none(),
+        "a click on an unselected pane clears the multi-selection"
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(c));
+}
+
+#[test]
+fn file_drag_hover_over_a_pane_keeps_selection() {
+    let mut h = HostHarness::new();
+    let [_a, _b, c] = selection_fixture(&mut h);
+    let pos = pane_center(&h, c);
+    pointer_frame(&mut h, pos, None, true);
+    pointer_frame(&mut h, pos, None, true);
+    let window_id = h.app.windows[0].window_id;
+    assert!(
+        h.app.host.pane_selection(window_id).is_some(),
+        "hovering a file drag over a pane must not clear the selection"
+    );
+}

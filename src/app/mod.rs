@@ -4360,6 +4360,7 @@ impl eframe::App for PlexiApp {
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
+        self.observe_terminal_resize_commits();
         self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_banner(ctx);
 

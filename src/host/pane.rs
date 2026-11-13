@@ -449,11 +449,29 @@ pub enum Pane {
 /// hook Idle; fresh hook reports and hook Working always remain authoritative.
 pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Quiet window after which a foreground agent TUI with no hook report yet is
+/// considered idle by the host-observed detector. Measured against a real
+/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
+/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
+/// "still drawing" from "sitting at the prompt" while staying far inside the
+/// 60s default boot window.
+pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// PTY output this soon after a host-induced event (a committed resize, a
+/// pane focus change) is the host's doing, not the agent's (stint 1231): a
+/// TUI repaints on SIGWINCH, and that repaint must not flip an idle agent to
+/// Working.
+pub(crate) const HOST_INDUCED_QUIET: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// `host_induced` is true inside a host-induced quiet window: a stale hook
+/// Idle then keeps the state even against observed Working, because that
+/// output is the host's own resize or focus change, not the agent waking.
 fn select_terminal_agent<'a>(
     reported: Option<&'a crate::protocol::PaneAgentState>,
     hook: Option<&'a crate::protocol::PaneAgentState>,
     hook_reported_at: Option<std::time::Instant>,
     observed: Option<&'a crate::protocol::PaneAgentState>,
+    host_induced: bool,
     now: std::time::Instant,
 ) -> Option<&'a crate::protocol::PaneAgentState> {
     if reported.is_some() {
@@ -473,7 +491,7 @@ fn select_terminal_agent<'a>(
     let contradicts_idle = observed.is_some_and(|observed| {
         observed.agent == hook.agent && observed.state == crate::protocol::AgentState::Working
     });
-    if hook_is_stale && contradicts_idle {
+    if hook_is_stale && contradicts_idle && !host_induced {
         observed
     } else {
         Some(hook)
@@ -577,13 +595,7 @@ impl Pane {
     /// boot predicate — reads through here, so they stay correct together.
     pub fn agent(&self) -> Option<&crate::protocol::PaneAgentState> {
         match self {
-            Pane::Terminal(t) => select_terminal_agent(
-                t.reported_7501.as_ref(),
-                t.agent.as_ref(),
-                t.agent_reported_at,
-                t.observed_agent.as_ref(),
-                std::time::Instant::now(),
-            ),
+            Pane::Terminal(t) => t.selected_agent(std::time::Instant::now()),
             Pane::View(a) => a
                 .agent
                 .as_ref()
@@ -879,8 +891,8 @@ pub struct TerminalPane {
     pub(crate) agent_reported_at: Option<std::time::Instant>,
     /// Host-observed agent state, synthesized in `tick_terminal_activity`
     /// when a known agent binary holds the PTY foreground: identity from the
-    /// foreground process name or interpreter script argv, state from the PTY
-    /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
+    /// foreground process name or interpreter script argv, state from the
+    /// agent-output settle (`observed_output_state`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
     pub observed_agent: Option<crate::protocol::PaneAgentState>,
     /// Last detected foreground identity until the shell is observed idle.
@@ -901,6 +913,18 @@ pub struct TerminalPane {
     /// redraw (Claude Code, Codex) never advances that counter, so it would
     /// report a busy pane as idle.
     pub last_pty_output_at: Option<std::time::Instant>,
+    /// When the pane last produced PTY output the host did not provoke itself.
+    /// Observed agent state settles on this (`observed_output_state`), never on
+    /// `last_pty_output_at`, so a host resize or focus change cannot read as
+    /// agent activity (stint 1231).
+    pub(crate) last_agent_activity_at: Option<std::time::Instant>,
+    /// End of the current host-induced quiet window (`HOST_INDUCED_QUIET`).
+    pub(crate) host_induced_until: Option<std::time::Instant>,
+    /// Whether output inside the current host-induced window was already traced.
+    host_induced_output_logged: bool,
+    /// `backend.resize_commits()` when last observed; a higher count means the
+    /// host committed a resize since.
+    seen_resize_commits: u64,
     /// OSC 7501 program-status records, fed by the PTY byte tap.
     pub program_status: crate::program_status::SharedProgramStatus,
     /// Test-only copy of the environment handed to the PTY constructor.
@@ -1026,6 +1050,10 @@ impl TerminalPane {
             activity: None,
             slots: HashMap::new(),
             last_pty_output_at: None,
+            last_agent_activity_at: None,
+            host_induced_until: None,
+            host_induced_output_logged: false,
+            seen_resize_commits: 0,
             program_status,
             #[cfg(test)]
             spawn_env,
@@ -1238,57 +1266,102 @@ impl TerminalPane {
 
     pub(crate) fn set_reported_7501(&mut self, reported: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(
-            self.reported_7501.as_ref(),
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            now,
-        )
-        .map(|a| a.state.clone());
+        let before = self.selected_agent(now).map(|a| a.state.clone());
         self.reported_7501 = reported;
-        let after = select_terminal_agent(
-            self.reported_7501.as_ref(),
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            now,
-        )
-        .map(|a| a.state.clone());
+        let after = self.selected_agent(now).map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(
-            self.reported_7501.as_ref(),
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            now,
-        )
-        .map(|a| a.state.clone());
+        let before = self.selected_agent(now).map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(
+        let after = self.selected_agent(now).map(|a| a.state.clone());
+        self.update_fleet_transition(before.as_ref(), after.as_ref());
+    }
+
+    /// Hook, observed and OSC 7501 state merged by `select_terminal_agent`.
+    fn selected_agent(&self, now: std::time::Instant) -> Option<&crate::protocol::PaneAgentState> {
+        select_terminal_agent(
             self.reported_7501.as_ref(),
             self.agent.as_ref(),
             self.agent_reported_at,
             self.observed_agent.as_ref(),
+            self.host_induced_quiet(now),
             now,
         )
-        .map(|a| a.state.clone());
-        self.update_fleet_transition(before.as_ref(), after.as_ref());
+    }
+
+    /// Open a host-induced quiet window: the host just did something that
+    /// makes the program repaint (`cause`: a committed resize, a focus change).
+    pub(crate) fn mark_host_induced(&mut self, now: std::time::Instant, cause: &str) {
+        self.host_induced_until = Some(now + HOST_INDUCED_QUIET);
+        self.host_induced_output_logged = false;
+        log::info!(
+            "terminal {}: host-induced quiet window {}ms ({cause})",
+            self.id,
+            HOST_INDUCED_QUIET.as_millis()
+        );
+    }
+
+    /// True while PTY output is attributed to the host, not the agent.
+    pub(crate) fn host_induced_quiet(&self, now: std::time::Instant) -> bool {
+        self.host_induced_until.is_some_and(|until| now < until)
+    }
+
+    /// Open a quiet window when the backend committed a resize (SIGWINCH to
+    /// the child) since the last call. Called once per rendered frame.
+    pub(crate) fn observe_resize_commits(&mut self, now: std::time::Instant) {
+        let commits = self.backend.resize_commits();
+        if commits > self.seen_resize_commits {
+            self.seen_resize_commits = commits;
+            self.mark_host_induced(now, "resize");
+        }
+    }
+
+    /// Stamp one PTY event. `last_pty_output_at` always advances (`pane send
+    /// --submit` settles on every event); agent activity advances only outside
+    /// a host-induced quiet window.
+    pub(crate) fn record_pty_event(&mut self, now: std::time::Instant) {
+        self.last_pty_output_at = Some(now);
+        if !self.host_induced_quiet(now) {
+            self.last_agent_activity_at = Some(now);
+            return;
+        }
+        if !self.host_induced_output_logged {
+            self.host_induced_output_logged = true;
+            log::info!(
+                "terminal {}: PTY output inside host-induced window ignored for agent state",
+                self.id
+            );
+        }
+    }
+
+    /// Observed agent state from the agent-output settle: Idle once the agent
+    /// has produced no output of its own for `OBSERVED_AGENT_SETTLE`.
+    ///
+    /// Before the agent has any output of its own (a fresh boot whose every
+    /// byte landed in host-induced windows: the first layout resize, the
+    /// focus it took), there is nothing to discount against, so the settle
+    /// runs on the PTY's own last output. Otherwise the boot never settles.
+    pub(crate) fn observed_output_state(
+        &self,
+        now: std::time::Instant,
+    ) -> crate::protocol::AgentState {
+        let settled = self
+            .last_agent_activity_at
+            .or(self.last_pty_output_at)
+            .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
+        if settled {
+            crate::protocol::AgentState::Idle
+        } else {
+            crate::protocol::AgentState::Working
+        }
     }
 
     /// Completion takes precedence over a failed process exit, then the report.
     pub(crate) fn effective_agent_state(&self) -> (crate::protocol::AgentState, Option<String>) {
-        let report = select_terminal_agent(
-            self.reported_7501.as_ref(),
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            std::time::Instant::now(),
-        );
+        let report = self.selected_agent(std::time::Instant::now());
         let state = report
             .map(|a| a.state.clone())
             .or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone()))
@@ -1652,6 +1725,7 @@ mod agent_source_tests {
             Some(&hook),
             Some(now - Duration::from_millis(100)),
             Some(&observed),
+            false,
             now,
         )
         .expect("agent");
@@ -1666,13 +1740,20 @@ mod agent_source_tests {
         let idle = state(AgentState::Idle);
         let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
 
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now)
-                .expect("agent");
+        let selected = select_terminal_agent(
+            None,
+            Some(&hook),
+            Some(stale_at),
+            Some(&working),
+            false,
+            now,
+        )
+        .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
-        let selected = select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
-            .expect("agent");
+        let selected =
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), false, now)
+                .expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
     }
 
@@ -1687,6 +1768,7 @@ mod agent_source_tests {
             Some(&hook),
             Some(now),
             Some(&observed),
+            false,
             now,
         )
         .expect("agent");
@@ -1698,13 +1780,28 @@ mod agent_source_tests {
         let now = Instant::now();
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
-        let selected = select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
-            .expect("agent");
+        let selected =
+            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), false, now)
+                .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
         let selected =
-            select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
+            select_terminal_agent(None, None, None, Some(&observed), false, now).expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
-        assert!(select_terminal_agent(None, None, None, None, now).is_none());
+        assert!(select_terminal_agent(None, None, None, None, false, now).is_none());
+    }
+
+    /// Stint 1231: inside a host-induced quiet window a stale hook Idle keeps
+    /// the state; observed Working there is the host's own repaint.
+    #[test]
+    fn stale_hook_idle_holds_against_observed_working_while_host_induced() {
+        let now = Instant::now();
+        let hook = state(AgentState::Idle);
+        let working = state(AgentState::Working);
+        let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
+        let selected =
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), true, now)
+                .expect("agent");
+        assert_eq!(selected.state, AgentState::Idle);
     }
 
     #[test]
@@ -1717,6 +1814,7 @@ mod agent_source_tests {
             Some(&hook),
             Some(now - HOOK_AGENT_FRESHNESS - Duration::from_secs(1)),
             Some(&observed),
+            false,
             now,
         )
         .expect("agent");

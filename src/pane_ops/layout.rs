@@ -9,7 +9,7 @@ use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
-use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
+use egui_tiles::{Container, Tile, TileId};
 use std::{collections::HashMap, path::PathBuf};
 
 pub(crate) enum SwapResult {
@@ -19,6 +19,34 @@ pub(crate) enum SwapResult {
     },
     AtBoundary,
     NoFocus,
+}
+
+/// Which rule of `choose_focus_after_close` picked the focus after a close.
+/// Named in the `close_tile: focus rule=` trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseFocusRule {
+    /// The tab the tab bar activated in place of the closed tab.
+    TabSibling,
+    /// The only adjacent pane, or the first adjacent pane with no history.
+    SpatialNeighbour,
+    /// Focus history chose between two equally adjacent panes.
+    HistoryTieBreak,
+    /// No pane was adjacent; the newest live focus-history entry.
+    History,
+    /// No pane was adjacent and history had no live entry.
+    NearestColumn,
+}
+
+impl CloseFocusRule {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TabSibling => "tab_sibling",
+            Self::SpatialNeighbour => "spatial_neighbour",
+            Self::HistoryTieBreak => "history_tie_break",
+            Self::History => "history",
+            Self::NearestColumn => "nearest_column",
+        }
+    }
 }
 
 /// If `pane_id` is a view pane that was opened as an overlay over another
@@ -491,6 +519,7 @@ impl PlexiApp {
             new_pane_first,
         );
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
         self.zoom.context_last_pane.insert(ctx_id, new_id);
         log::info!("pane split: pane={new_id} source={focused:?} stacked={vertical}");
 
@@ -566,6 +595,7 @@ impl PlexiApp {
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
             ctx.tree.root = Some(tab_tile);
             ctx.navigate_to(pane_tile);
+            ctx.simplify_and_reconcile();
             return;
         }
 
@@ -644,26 +674,25 @@ impl PlexiApp {
                 tabs.add_child(new_tile);
                 tabs.set_active(new_tile);
             }
-            ctx.navigate_to(new_tile);
-            return;
-        }
-
-        let parent = ctx.tree.tiles.parent_of(focused);
-        let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![focused, new_tile]);
-
-        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
-            tabs.set_active(new_tile);
-        }
-
-        if let Some(parent_id) = parent {
-            if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
-                replace_child(parent_container, focused, tab_tile);
-            }
         } else {
-            ctx.tree.root = Some(tab_tile);
+            let parent = ctx.tree.tiles.parent_of(focused);
+            let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![focused, new_tile]);
+
+            if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
+                tabs.set_active(new_tile);
+            }
+
+            if let Some(parent_id) = parent {
+                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
+                    replace_child(parent_container, focused, tab_tile);
+                }
+            } else {
+                ctx.tree.root = Some(tab_tile);
+            }
         }
 
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool) {
@@ -942,7 +971,11 @@ impl PlexiApp {
         // deliberately window-local: closing a pane never switches windows.
         let next = is_focused
             .then(|| self.choose_focus_after_close(ctx_idx, tile_id))
-            .flatten();
+            .flatten()
+            .map(|(new_focus, rule)| {
+                log::info!("close_tile: focus rule={} -> {new_focus:?}", rule.as_str());
+                new_focus
+            });
 
         // Phase 3: Remove tile and extract pane — defer drop so background plugins can be parked.
         let mut closed_pane_id = None;
@@ -968,11 +1001,6 @@ impl PlexiApp {
             } else {
                 None
             };
-
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
 
             // Only update focused_pane when focus actually needs to transfer.
             // A background-pane close must not steal focus from the current pane.
@@ -1001,7 +1029,7 @@ impl PlexiApp {
 
             // Unconditional: simplify can re-id a surviving focused pane into
             // a Tabs container even when the closed pane was not focused.
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
 
             removed
         };
@@ -1060,7 +1088,8 @@ impl PlexiApp {
             // else: builtin view pane drops here
         }
 
-        if let Some(new_focus) = next {
+        // The settled focus, not `next`: simplify may have re-id'd that tile.
+        if let Some(new_focus) = next.and(self.windows[ctx_idx].focused_pane) {
             self.record_close_focus_column(ctx_idx, new_focus);
         }
         if closed_pane_id.is_some() {
@@ -1071,23 +1100,69 @@ impl PlexiApp {
 
     /// Choose focus after closing a focused tile without leaving its window.
     ///
-    /// The newest live focus-history entry in this window wins. Otherwise prefer
-    /// the pane below then above in the same column, then the left and right
-    /// columns, using that column's remembered pane when it remains visible.
-    fn choose_focus_after_close(&self, ctx_idx: usize, closing_tile: TileId) -> Option<TileId> {
+    /// Stint 1251: the successor is the pane the user is looking next to, so
+    /// the rules run in this order and the first one that finds a visible pane
+    /// wins. The order is the whole policy; reorder the blocks below to change
+    /// it (for example, move the history block first to restore history-first).
+    ///
+    /// 1. `TabSibling`: the closed tile was a tab. Phase 2 of `close_tile`
+    ///    already activated the next tab (else the previous one); focus it so
+    ///    the tab bar and focus agree.
+    /// 2. `SpatialNeighbour` / `HistoryTieBreak`: the panes directly below and
+    ///    above in the same column, else the remembered panes of the columns
+    ///    directly left and right. When both sides are candidates, the newer
+    ///    window-local focus-history entry breaks the tie; with no entry, below
+    ///    beats above and left beats right.
+    /// 3. `History`: no adjacent pane; the newest live window-local history entry.
+    /// 4. `NearestColumn`: the closest remaining column, left before right.
+    fn choose_focus_after_close(
+        &self,
+        ctx_idx: usize,
+        closing_tile: TileId,
+    ) -> Option<(TileId, CloseFocusRule)> {
         let window = self.windows.get(ctx_idx)?;
         let is_visible_pane = |tile_id: TileId| {
             tile_id != closing_tile
                 && window.tree.active_tiles().contains(&tile_id)
                 && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id)) if window.panes.get(pane_id).is_some_and(|pane| !pane.is_hidden()))
         };
+        let newest_in_history = |candidates: &[TileId]| {
+            self.pane_focus_history
+                .iter()
+                .rev()
+                .find(|(window_id, tile_id)| {
+                    *window_id == window.window_id && candidates.contains(tile_id)
+                })
+                .map(|(_, tile_id)| *tile_id)
+        };
+        // Both sides of an adjacency tier are equally adjacent: history breaks
+        // the tie, else the first candidate (below, or left) wins.
+        let pick_neighbour = |candidates: &[TileId]| -> Option<(TileId, CloseFocusRule)> {
+            let first = *candidates.first()?;
+            if candidates.len() > 1 {
+                if let Some(tile_id) = newest_in_history(candidates) {
+                    return Some((tile_id, CloseFocusRule::HistoryTieBreak));
+                }
+            }
+            Some((first, CloseFocusRule::SpatialNeighbour))
+        };
 
-        for (window_id, tile_id) in self.pane_focus_history.iter().rev() {
-            if *window_id == window.window_id && is_visible_pane(*tile_id) {
-                return Some(*tile_id);
+        // 1. Tab sibling.
+        if let Some((parent_id, child_in_parent)) = window.find_logical_parent(closing_tile) {
+            if let Some(Tile::Container(Container::Tabs(tabs))) = window.tree.tiles.get(parent_id) {
+                if let Some(tile_id) = tabs
+                    .active
+                    .filter(|active| *active != child_in_parent)
+                    .and_then(|active| window.find_first_pane_in(active))
+                    .filter(|tile_id| is_visible_pane(*tile_id))
+                {
+                    return Some((tile_id, CloseFocusRule::TabSibling));
+                }
             }
         }
 
+        // 2. Spatial neighbour. Columns hold only visible panes in tree order,
+        // so the closed pane is found here only when it was not a tab.
         let closing_pane = match window.tree.tiles.get(closing_tile) {
             Some(Tile::Pane(pane_id)) => *pane_id,
             _ => return None,
@@ -1107,49 +1182,23 @@ impl PlexiApp {
             })
             .filter(|column| !column.panes.is_empty())
             .collect();
-        let (column_pos, row_pos) =
-            columns
+        let position = columns.iter().enumerate().find_map(|(column_pos, column)| {
+            column
+                .panes
                 .iter()
-                .enumerate()
-                .find_map(|(column_pos, column)| {
-                    column
-                        .panes
-                        .iter()
-                        .position(|pane_id| *pane_id == closing_pane)
-                        .map(|row_pos| (column_pos, row_pos))
-                })?;
-
-        let tile_for_pane = |pane_id| {
+                .position(|pane_id| *pane_id == closing_pane)
+                .map(|row_pos| (column_pos, row_pos))
+        });
+        let tile_for_pane = |pane_id: PaneId| {
             window
                 .tree
                 .tiles
                 .find_pane(&pane_id)
                 .filter(|tile_id| is_visible_pane(*tile_id))
         };
-        let same_column = &columns[column_pos].panes;
-        if let Some(tile_id) = same_column[row_pos + 1..]
-            .iter()
-            .find_map(|pane_id| tile_for_pane(*pane_id))
-            .or_else(|| {
-                same_column[..row_pos]
-                    .iter()
-                    .rev()
-                    .find_map(|pane_id| tile_for_pane(*pane_id))
-            })
-        {
-            return Some(tile_id);
-        }
-
-        for adjacent_pos in [
-            column_pos.checked_sub(1),
-            (column_pos + 1 < columns.len()).then_some(column_pos + 1),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let column = &columns[adjacent_pos];
-            let remembered = column.last_focused;
-            if let Some(tile_id) = remembered
+        let column_pick = |column: &crate::app::zoom::StripColumn| {
+            column
+                .last_focused
                 .filter(|pane_id| column.panes.contains(pane_id))
                 .and_then(tile_for_pane)
                 .or_else(|| {
@@ -1158,11 +1207,55 @@ impl PlexiApp {
                         .iter()
                         .find_map(|pane_id| tile_for_pane(*pane_id))
                 })
-            {
-                return Some(tile_id);
+        };
+        if let Some((column_pos, row_pos)) = position {
+            let same_column = &columns[column_pos].panes;
+            let below = same_column[row_pos + 1..]
+                .iter()
+                .find_map(|pane_id| tile_for_pane(*pane_id));
+            let above = same_column[..row_pos]
+                .iter()
+                .rev()
+                .find_map(|pane_id| tile_for_pane(*pane_id));
+            let vertical: Vec<TileId> = [below, above].into_iter().flatten().collect();
+            if let Some(choice) = pick_neighbour(vertical.as_slice()) {
+                return Some(choice);
+            }
+            let left = column_pos
+                .checked_sub(1)
+                .and_then(|pos| column_pick(&columns[pos]));
+            let right = columns.get(column_pos + 1).and_then(column_pick);
+            let lateral: Vec<TileId> = [left, right].into_iter().flatten().collect();
+            if let Some(choice) = pick_neighbour(lateral.as_slice()) {
+                return Some(choice);
             }
         }
-        None
+
+        // 3. History, only when no pane is adjacent.
+        if let Some(tile_id) = self
+            .pane_focus_history
+            .iter()
+            .rev()
+            .find(|(window_id, tile_id)| {
+                *window_id == window.window_id && is_visible_pane(*tile_id)
+            })
+            .map(|(_, tile_id)| *tile_id)
+        {
+            return Some((tile_id, CloseFocusRule::History));
+        }
+
+        // 4. Nearest remaining column, left before right.
+        let (column_pos, _) = position?;
+        (2..columns.len())
+            .flat_map(|distance| {
+                [
+                    column_pos.checked_sub(distance),
+                    Some(column_pos + distance).filter(|pos| *pos < columns.len()),
+                ]
+            })
+            .flatten()
+            .find_map(|pos| column_pick(&columns[pos]))
+            .map(|tile_id| (tile_id, CloseFocusRule::NearestColumn))
     }
 
     fn record_close_focus_column(&mut self, ctx_idx: usize, tile_id: TileId) {
@@ -1516,15 +1609,10 @@ impl PlexiApp {
             return false;
         }
 
-        // Determine next_src_focus before calling move_focused_pane_to_adjacent_window
-        // (the function sets it internally, but we need active_window to remain src_idx).
-        let focused_tile = match self.windows[src_idx].focused_pane {
-            Some(t) => t,
-            None => return false,
-        };
-        let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
-
-        // Delegate the actual move (this sets active_window = adj_idx).
+        // Delegate the actual move (this sets active_window = adj_idx). It also
+        // settles the source window's focus on the pane that filled the
+        // vacated slot (stint 1230); re-assigning a tile id computed before the
+        // move would undo that, since simplify can re-id the pane.
         let moved = self.move_focused_pane_to_adjacent_window(dir);
         if !moved {
             return false;
@@ -1534,9 +1622,6 @@ impl PlexiApp {
         // find the source by its previously known index — it may have shifted if adj
         // was deleted, but since source had >1 pane it was never deleted.
         self.active_window = src_idx;
-
-        // Restore focus to the pane that filled the vacated slot in the source.
-        self.windows[src_idx].focused_pane = next_src_focus;
 
         log::info!(
             "send_pane_to_adjacent_window({:?}): pane sent, focus stays at source window",
@@ -1616,12 +1701,8 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
             ctx.focused_pane = next_src_focus;
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
             pane
         };
 
@@ -1689,6 +1770,7 @@ impl PlexiApp {
         });
 
         self.active_window = self.windows.len() - 1;
+        self.windows[self.active_window].simplify_and_reconcile();
         self.context_active_window.insert(ws_id, win_id);
         self.record_context_visit(win_id);
         self.minimap.visible = true;
@@ -1793,12 +1875,8 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(src_focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.tree.simplify(&SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..SimplificationOptions::default()
-            });
             ctx.focused_pane = next_src_focus;
-            ctx.reconcile_stale_tiles();
+            ctx.simplify_and_reconcile();
             pane
         };
 
@@ -1880,6 +1958,7 @@ impl PlexiApp {
             }
         }
         ctx.navigate_to(new_tile);
+        ctx.simplify_and_reconcile();
 
         log::info!(
             "move_focused_pane_to_adjacent_window({:?}): pane {} moved from window index {} to {}",
@@ -2298,6 +2377,107 @@ mod close_pane_by_id_tests {
             Some(zoom),
             "focus and zoom name the same tile"
         );
+    }
+
+    /// Stint 1251 fixture: window 0 is `[D | Tabs[A, B, C]]` with tab
+    /// `focused_idx` active and focused. `history` names the panes pushed onto
+    /// the focus history, oldest first. Returns `(d, [a, b, c])`.
+    fn tab_close_fixture(
+        h: &mut crate::testing::HostHarness,
+        focused_idx: usize,
+        history: impl Fn(PaneId, [PaneId; 3]) -> Vec<PaneId>,
+    ) -> (PaneId, [PaneId; 3]) {
+        let d = h.add_test_pane();
+        let tabs = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
+        let window = &mut h.app.windows[0];
+        let tile_of = |window: &crate::host::context::Window, pane: PaneId| {
+            window
+                .tree
+                .tiles
+                .find_pane(&pane)
+                .expect("fixture pane tile")
+        };
+        let d_tile = tile_of(&*window, d);
+        let tab_tiles: Vec<TileId> = tabs.iter().map(|pane| tile_of(&*window, *pane)).collect();
+        let tabs_tile = window.tree.tiles.insert_tab_tile(tab_tiles.clone());
+        if let Some(Tile::Container(Container::Tabs(container))) =
+            window.tree.tiles.get_mut(tabs_tile)
+        {
+            container.set_active(tab_tiles[focused_idx]);
+        }
+        let root = window
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![d_tile, tabs_tile]);
+        window.tree.root = Some(root);
+        window.focused_pane = Some(tab_tiles[focused_idx]);
+        let window_id = window.window_id;
+        for pane in history(d, tabs) {
+            let tile = tile_of(&h.app.windows[0], pane);
+            h.app.pane_focus_history.push((window_id, tile));
+        }
+        (d, tabs)
+    }
+
+    /// The tab bar's active tab after a close must hold `expected`, and focus
+    /// must be on that same pane.
+    fn assert_active_tab_is_focused(app: &PlexiApp, expected: PaneId, message: &str) {
+        assert_focus_pane(app, expected, message);
+        let window = &app.windows[0];
+        let tile = window
+            .tree
+            .tiles
+            .find_pane(&expected)
+            .expect("expected pane stays in the tree");
+        let (tabs_id, child) = window
+            .find_ancestor_tabs(tile)
+            .expect("expected pane stays inside a tab group");
+        let Some(Tile::Container(Container::Tabs(tabs))) = window.tree.tiles.get(tabs_id) else {
+            panic!("{message}: ancestor is not a Tabs container");
+        };
+        assert_eq!(
+            tabs.active,
+            Some(child),
+            "{message}: the tab bar must show the focused pane"
+        );
+    }
+
+    /// Stint 1251: closing the focused first tab focuses the next tab even
+    /// when the newest focus-history entry is a visible pane outside the group.
+    #[test]
+    fn close_focused_first_tab_focuses_next_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [a, b, _c]) = tab_close_fixture(&mut h, 0, |d, _| vec![d]);
+        h.app.close_pane_by_id(a);
+        assert_active_tab_is_focused(&h.app, b, "closing tab A must focus tab B, not pane D");
+    }
+
+    /// Stint 1251: closing the focused middle tab focuses the tab after it.
+    #[test]
+    fn close_focused_middle_tab_focuses_next_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [_a, b, c]) = tab_close_fixture(&mut h, 1, |d, _| vec![d]);
+        h.app.close_pane_by_id(b);
+        assert_active_tab_is_focused(&h.app, c, "closing tab B must focus tab C, not pane D");
+    }
+
+    /// Stint 1251: closing the focused last tab focuses the previous tab.
+    #[test]
+    fn close_focused_last_tab_focuses_previous_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [_a, b, c]) = tab_close_fixture(&mut h, 2, |d, _| vec![d]);
+        h.app.close_pane_by_id(c);
+        assert_active_tab_is_focused(&h.app, b, "closing tab C must focus tab B, not pane D");
+    }
+
+    /// Stint 1251: a history entry naming another (inactive) tab of the same
+    /// group does not override the tab the tab bar activates.
+    #[test]
+    fn close_focused_tab_ignores_history_entry_for_sibling_tab() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [a, b, _c]) = tab_close_fixture(&mut h, 0, |_, [_, _, c]| vec![c]);
+        h.app.close_pane_by_id(a);
+        assert_active_tab_is_focused(&h.app, b, "closing tab A must focus tab B, not tab C");
     }
 }
 

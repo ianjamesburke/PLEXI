@@ -789,6 +789,7 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
+            ctx.simplify_and_reconcile();
             log::info!("plugin::{plugin_id}: launched as root pane {new_id} (empty context)");
             return Some(new_id);
         }
@@ -841,6 +842,7 @@ impl PlexiApp {
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
+            ctx.simplify_and_reconcile();
             log::info!("plugin::{plugin_id}: launch-failed tile inserted as root pane {new_id}");
             return;
         }
@@ -2062,6 +2064,7 @@ impl PlexiApp {
         if self.windows[target_win_idx].focused_pane.is_none() {
             self.windows[target_win_idx].focused_pane = Some(new_tile);
         }
+        self.windows[target_win_idx].simplify_and_reconcile();
 
         if let Some(schema) = result_schema {
             if let Err(err) = self
@@ -3992,16 +3995,24 @@ mod tests {
             })
             .expect("overlay with empty context launches as root pane");
 
-        let root = h.app.windows[0].tree.root.expect("root tile installed");
+        // The settled tree wraps the root pane in its Tabs container (stint
+        // 1230), so the root is that container and focus is the pane inside.
+        let win = &h.app.windows[0];
+        let root = win.tree.root.expect("root tile installed");
+        let pane_tile = win
+            .tree
+            .tiles
+            .find_pane(&pane_id)
+            .expect("the launched wasm pane has a tile");
         assert_eq!(
-            h.app.windows[0].focused_pane,
-            Some(root),
+            win.focused_pane,
+            Some(pane_tile),
             "new root pane must be focused"
         );
         assert_eq!(
-            h.app.windows[0].tree.tiles.get(root),
-            Some(&Tile::Pane(pane_id)),
-            "root tile must hold the launched wasm pane"
+            win.find_first_pane_in(root),
+            Some(pane_tile),
+            "the root must hold the launched wasm pane"
         );
     }
 }
