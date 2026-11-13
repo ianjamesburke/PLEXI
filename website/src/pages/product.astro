@@ -124,8 +124,8 @@ const parts = [
       </div>
       {p.id === 'permissions' && (
         <div class="wrap part-notice">
-          <Notice tone="warn" title={`Being reworked for ${release.next}`}>
-            <p>The permission system is being hardened for {release.next}. On Beta {release.beta.version}, install only plugins you wrote or trust.</p>
+          <Notice tone="warn" title="Being reworked">
+            <p>The permission system is still being hardened. On Beta {release.beta.label}, install only plugins you wrote or trust.</p>
           </Notice>
         </div>
       )}
@@ -137,7 +137,7 @@ const parts = [
       <h2 class="display" id="closer-title">Install it.</h2>
       <div class="closer-body">
         <CopyCommand cmd={release.installBeta} label="install command" />
-        <p>Apple Silicon. Beta {release.beta.version}. Builds are self-signed and not notarized. <a class="text-link" href="/download#trust">What that means</a>.</p>
+        <p>Apple Silicon. Beta {release.beta.label}. Builds are self-signed and not notarized. <a class="text-link" href="/download#trust">What that means</a>.</p>
       </div>
     </div>
   </section>

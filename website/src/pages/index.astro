@@ -18,7 +18,7 @@ import { release } from '../lib/release';
         <a class="link-arrow" href="/product">See how it works <Arrow /></a>
       </div>
     </div>
-    <p class="platform-note">Apple Silicon. Beta {release.beta.version}. Windows and Linux are coming soon.</p>
+    <p class="platform-note">Apple Silicon. Beta {release.beta.label}. Windows and Linux are coming soon.</p>
   </header>
 
   <div class="wrap hero-figure"><WindowDiagram /></div>
@@ -78,7 +78,7 @@ import { release } from '../lib/release';
     </div>
     <dl class="facts">
       <div><dt>Platform</dt><dd><strong>Apple Silicon Mac.</strong> Windows and Linux are coming soon.</dd></div>
-      <div><dt>Release</dt><dd><strong>Beta {release.beta.version}</strong> is the current build. {release.next} is in progress and renames apps to plugins and views. These pages already use the new names.</dd></div>
+      <div><dt>Release</dt><dd><strong>Beta {release.beta.label}</strong> is the current build. It renamed apps to plugins and views, and these pages use the new names. The next release is {release.next}.</dd></div>
       <div><dt>Signing</dt><dd>Builds are self-signed and not notarized. macOS warns the first time you open one, and the <a class="text-link" href="/download">download page</a> says what to do about it.</dd></div>
       <div><dt>Stability</dt><dd>Plexi is pre-1.0. Commands, config keys and the plugin API can change between releases.</dd></div>
     </dl>

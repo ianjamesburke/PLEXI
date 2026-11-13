@@ -1,10 +1,10 @@
 ---
 title: Plugins and views
-description: The 0.5.0 model. A plugin is a package, a view is what it shows in a pane, and capabilities decide what it may touch.
+description: The 0.5 Groundwork model. A plugin is a package, a view is what it shows in a pane, and capabilities decide what it may touch.
 order: 4
 ---
 
-Plexi 0.5.0 replaces the word "app" with two more exact ones.
+Plexi 0.5 Groundwork (0.5.0) replaces the word "app" with two more exact ones.
 
 A **plugin** is a package: a folder with a `manifest.toml` and code. You
 install, update and remove plugins.
@@ -92,6 +92,6 @@ reports its state to the host and drives Plexi through the CLI.
 
 ## If you are on an older release
 
-Releases up to 0.4.6 use `plexi app` for both jobs, and their manifests use
+Releases before 0.5 Groundwork use `plexi app` for both jobs, and their manifests use
 `[app]` tables. The concepts on this page still apply; only the names differ.
 `plexi --help` on your install shows which you have.
