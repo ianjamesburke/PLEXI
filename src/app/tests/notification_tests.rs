@@ -2279,7 +2279,7 @@ fn retired_data_shapes_surface_as_launch_notices() {
 
     let mut h = HostHarness::from_profile_dir(profile.clone());
     assert!(
-        h.app.workspace_save_block.is_some(),
+        h.app.workspace_load_failure.is_some(),
         "a version 2 layout blocks this session's saves"
     );
     // Notices about the user's own data ignore the notifications switch.
@@ -2314,4 +2314,108 @@ fn retired_data_shapes_surface_as_launch_notices() {
     );
     assert!(ledger.is_file());
     assert!(!profile.join("ai-ledger.jsonl").exists());
+}
+
+/// Stint 1312 ruling: folders the deleted notes migration left on purpose
+/// (an orphan `ctx-` folder, an ambiguous slug folder) are not a retired
+/// shape in an upgraded profile. With a healthy version 3 workspace they
+/// raise no notice and stay byte-identical. With a version 2 workspace the
+/// profile was never migrated, so the same folders are reported.
+#[test]
+fn folders_left_by_the_notes_migration_notify_only_in_a_never_migrated_profile() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    {
+        let mut first = HostHarness::from_profile_dir(profile.clone());
+        first.add_test_pane();
+        assert!(first.app.save_workspace_now());
+    }
+    let workspace = crate::workspace::workspace_path_in(&profile);
+    let orphan = profile
+        .join("notes")
+        .join("ctx-gone-0a1b2c3d")
+        .join("orphan.md");
+    let ambiguous = profile.join("notes").join("project").join("slug.md");
+    for (path, body) in [(&orphan, "orphan body"), (&ambiguous, "slug body")] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    let mut healthy = HostHarness::from_profile_dir(profile.clone());
+    assert!(healthy.app.workspace_load_failure.is_none());
+    healthy.app.notifications_enabled = false;
+    healthy.app.surface_workspace_load_failure();
+    healthy.app.surface_retired_data_notices();
+    assert!(
+        healthy.app.pending_notifications.is_empty(),
+        "folders left on purpose raise no notice: {:?}",
+        healthy
+            .app
+            .pending_notifications
+            .iter()
+            .map(|n| &n.title)
+            .collect::<Vec<_>>()
+    );
+    drop(healthy);
+    assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "orphan body");
+    assert_eq!(std::fs::read_to_string(&ambiguous).unwrap(), "slug body");
+
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&workspace).unwrap()).unwrap();
+    value["version"] = serde_json::json!(2);
+    value.as_object_mut().unwrap().remove("strips");
+    let layout = serde_json::to_vec(&value).unwrap();
+    std::fs::write(&workspace, &layout).unwrap();
+
+    let mut retired = HostHarness::from_profile_dir(profile.clone());
+    retired.app.notifications_enabled = false;
+    retired.app.surface_workspace_load_failure();
+    retired.app.surface_retired_data_notices();
+    let titles: Vec<&str> = retired
+        .app
+        .pending_notifications
+        .iter()
+        .map(|n| n.title.as_str())
+        .collect();
+    assert!(titles.contains(&"Workspace not restored"), "{titles:?}");
+    let notes = retired
+        .app
+        .pending_notifications
+        .iter()
+        .find(|n| n.title == "Old notes folder found")
+        .expect("a never-migrated profile reports its notes folders");
+    assert!(notes.body.contains("ctx-gone-0a1b2c3d/"), "{}", notes.body);
+    assert!(notes.body.contains("project/"), "{}", notes.body);
+    assert_eq!(std::fs::read(&workspace).unwrap(), layout);
+    assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "orphan body");
+    assert_eq!(std::fs::read_to_string(&ambiguous).unwrap(), "slug body");
+}
+
+/// A loose pre-tier note was always moved by the deleted migration, so it is
+/// reported even beside a healthy version 3 workspace.
+#[test]
+fn a_loose_pre_tier_note_notifies_beside_a_healthy_workspace() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
+    {
+        let mut first = HostHarness::from_profile_dir(profile.clone());
+        first.add_test_pane();
+        assert!(first.app.save_workspace_now());
+    }
+    let loose = profile.join("notes").join("loose.md");
+    std::fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    std::fs::write(&loose, "loose body").unwrap();
+
+    let mut h = HostHarness::from_profile_dir(profile.clone());
+    assert!(h.app.workspace_load_failure.is_none());
+    h.app.notifications_enabled = false;
+    h.app.surface_retired_data_notices();
+    let notes = h
+        .app
+        .pending_notifications
+        .iter()
+        .find(|n| n.title == "Old notes folder found")
+        .expect("a loose note is always reported");
+    assert!(notes.body.contains("loose.md"), "{}", notes.body);
+    assert_eq!(std::fs::read_to_string(&loose).unwrap(), "loose body");
 }

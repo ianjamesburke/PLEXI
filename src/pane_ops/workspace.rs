@@ -2444,14 +2444,19 @@ impl PlexiApp {
         self.save_workspace_result().is_ok()
     }
 
+    /// Why this session must not save its workspace, if its boot-time restore
+    /// failed on an existing file.
+    pub(crate) fn workspace_save_block(&self) -> Option<String> {
+        self.workspace_load_failure
+            .as_ref()
+            .and_then(crate::workspace::WorkspaceLoadError::save_block)
+    }
+
     /// Same save, but hands the cause back so the quit path can show it.
     pub(crate) fn save_workspace_result(&mut self) -> std::io::Result<()> {
-        if let Some(block) = &self.workspace_save_block {
+        if let Some(block) = self.workspace_save_block() {
             log::error!("workspace_save: refused; {block}");
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                block.clone(),
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, block));
         }
         let save_start = std::time::Instant::now();
         // Trees can also be simplified by egui, independently of pane commands.

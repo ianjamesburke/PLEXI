@@ -959,6 +959,9 @@ fn comparable_scope_path(path: &Path) -> PathBuf {
 /// Folders under the pre-tier base that never held a context's notes.
 const PRE_TIER_RESERVED_DIRS: [&str; 3] = [ASSETS_DIR, "trash", "templates"];
 
+/// The pre-tier staging folder. The migration always moved its notes.
+const PRE_TIER_INBOX_DIR: &str = "inbox";
+
 /// True for the pre-tier context folder name `ctx-<slug>-<hash8>`, the only
 /// shape that cannot be ordinary tier content.
 fn is_hashed_pre_tier_dir_name(name: &str) -> bool {
@@ -983,13 +986,21 @@ fn holds_a_note(dir: &Path) -> bool {
     })
 }
 
-/// The launch error for a pre-tier notes folder that still holds notes, or
-/// `None`. Names the folder, what it holds, and the manual move. Reads only.
+/// The launch error for pre-tier notes the deleted migration would have
+/// moved, or `None`. Names the folder, what it holds, and the manual move.
+/// Reads only.
+///
+/// The migration always moved `inbox/` and loose `.md` files, so those are
+/// always reported. It deliberately left context folders it could not match
+/// (orphan `ctx-` folders, ambiguous slug folders) in place; those get one
+/// info line instead, unless `workspace_retired` says no 0.4 or later build
+/// opened this profile, which is the only case in which a folder can be
+/// genuinely unmigrated.
 ///
 /// On the stable channel the pre-tier base and the global tier are the same
 /// directory, so only hashed `ctx-` folders count there: everything else in
 /// it is already global-tier content.
-pub(crate) fn pre_tier_notes_error() -> Option<String> {
+pub(crate) fn pre_tier_notes_error(workspace_retired: bool) -> Option<String> {
     let base = crate::config::config_dir().join(TIER_DIR);
     let global = global_notes_dir();
     let base_is_global_tier = comparable_scope_path(&base) == comparable_scope_path(&global);
@@ -1004,35 +1015,50 @@ pub(crate) fn pre_tier_notes_error() -> Option<String> {
             ));
         }
     };
-    let mut found: Vec<String> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let pre_tier = if path.is_dir() {
-                if base_is_global_tier {
-                    is_hashed_pre_tier_dir_name(&name) && holds_a_note(&path)
-                } else {
-                    !PRE_TIER_RESERVED_DIRS.contains(&name.as_str()) && holds_a_note(&path)
-                }
+    // Always moved by the migration, so never left on purpose.
+    let mut unmigrated: Vec<String> = Vec::new();
+    // Context folders the migration may have left on purpose.
+    let mut folders: Vec<String> = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            let pre_tier = if base_is_global_tier {
+                is_hashed_pre_tier_dir_name(&name)
             } else {
-                !base_is_global_tier
-                    && path.is_file()
-                    && path.extension().is_some_and(|x| x == "md")
+                !PRE_TIER_RESERVED_DIRS.contains(&name.as_str())
             };
-            pre_tier.then(|| {
-                if path.is_dir() {
-                    format!("{name}/")
-                } else {
-                    name
-                }
-            })
-        })
-        .collect();
-    if found.is_empty() {
+            if !pre_tier || !holds_a_note(&path) {
+                continue;
+            }
+            if !base_is_global_tier && name == PRE_TIER_INBOX_DIR {
+                unmigrated.push(format!("{name}/"));
+            } else {
+                folders.push(format!("{name}/"));
+            }
+        } else if !base_is_global_tier
+            && path.is_file()
+            && path.extension().is_some_and(|x| x == "md")
+        {
+            unmigrated.push(name);
+        }
+    }
+    folders.sort();
+    if workspace_retired {
+        unmigrated.append(&mut folders);
+    } else if !folders.is_empty() {
+        log::info!(
+            "notes: {} holds pre-tier folders the old migration left in place because no \
+             open context matched them: {}. Left unchanged; move their notes into a \
+             project's .plexi/notes/ by hand if wanted.",
+            base.display(),
+            folders.join(", ")
+        );
+    }
+    if unmigrated.is_empty() {
         return None;
     }
-    found.sort();
+    unmigrated.sort();
     Some(format!(
         "notes: {} holds notes in the pre-tier layout, which Plexi no longer migrates: {}. \
          They were left unchanged. Fix: move the notes in inbox/ and any loose .md files \
@@ -1040,7 +1066,7 @@ pub(crate) fn pre_tier_notes_error() -> Option<String> {
          <project>/.plexi/notes/ (the folder is named after the project directory, as \
          ctx-<name>-<hash> in newer profiles). Then delete the emptied folders.",
         base.display(),
-        found.join(", "),
+        unmigrated.join(", "),
         global.display()
     ))
 }
@@ -1521,7 +1547,8 @@ mod tests {
         seed(&ctx_dir.join("kept.md"), "kept body");
         seed(&env.legacy.join("assets").join("pic-1.png"), "PNGBYTES");
 
-        let message = pre_tier_notes_error().expect("a pre-tier notes dir must be reported");
+        // Never-migrated profile (its workspace is version 2): every shape.
+        let message = pre_tier_notes_error(true).expect("a pre-tier notes dir must be reported");
         assert!(
             message.contains(&env.legacy.display().to_string()),
             "{message}"
@@ -1551,20 +1578,54 @@ mod tests {
         assert!(scan_tier(&env.global).is_empty(), "nothing is copied");
         assert!(scan_tier(&context_notes_dir(&env.root)).is_empty());
         assert_eq!(
-            pre_tier_notes_error(),
+            pre_tier_notes_error(true),
             Some(message),
             "reported again on every launch until the user moves it"
         );
+    }
+
+    /// The deleted migration left context folders it could not match in
+    /// place on purpose. In an upgraded profile they are not reported; loose
+    /// and inbox notes, which it always moved, still are.
+    #[test]
+    fn folders_left_by_the_migration_are_not_reported_in_an_upgraded_profile() {
+        let env = tier_env("pre-tier-left");
+        let orphan = env.legacy.join("ctx-gone-0a1b2c3d").join("orphan.md");
+        let ambiguous = env.legacy.join("project").join("slug.md");
+        seed(&orphan, "orphan body");
+        seed(&ambiguous, "slug body");
+        assert_eq!(pre_tier_notes_error(false), None);
+        let message = pre_tier_notes_error(true).expect("a never-migrated profile reports them");
+        assert!(message.contains("ctx-gone-0a1b2c3d/"), "{message}");
+        assert!(message.contains("project/"), "{message}");
+
+        seed(&env.legacy.join("loose.md"), "loose body");
+        for retired in [false, true] {
+            let message = pre_tier_notes_error(retired).expect("a loose note is always reported");
+            assert!(message.contains("loose.md"), "{message}");
+            assert_eq!(
+                message.contains("ctx-gone-0a1b2c3d"),
+                retired,
+                "folders only when the profile was never migrated: {message}"
+            );
+        }
+        seed(&env.legacy.join("inbox").join("staged.md"), "staged body");
+        let message = pre_tier_notes_error(false).expect("inbox is always reported");
+        assert!(message.contains("inbox/"), "{message}");
+
+        assert_eq!(std::fs::read_to_string(&orphan).unwrap(), "orphan body");
+        assert_eq!(std::fs::read_to_string(&ambiguous).unwrap(), "slug body");
+        assert!(scan_tier(&env.global).is_empty(), "nothing is copied");
     }
 
     /// An empty pre-tier base, or one holding only attachments, holds no note.
     #[test]
     fn a_pre_tier_base_without_notes_is_not_reported() {
         let env = tier_env("pre-tier-empty");
-        assert_eq!(pre_tier_notes_error(), None);
+        assert_eq!(pre_tier_notes_error(true), None);
         seed(&env.legacy.join("assets").join("pic-1.png"), "PNGBYTES");
         seed(&env.legacy.join("trash").join("gone.md"), "trashed");
-        assert_eq!(pre_tier_notes_error(), None);
+        assert_eq!(pre_tier_notes_error(true), None);
     }
 
     /// On the stable channel the pre-tier base IS the global tier, so only a
@@ -1586,13 +1647,18 @@ mod tests {
         seed(&tier.join("precious.md"), "do not eat me");
         seed(&tier.join("inbox").join("staged.md"), "staged body");
         seed(&tier.join("ctx-manual").join("own.md"), "a user folder");
-        assert_eq!(pre_tier_notes_error(), None);
+        assert_eq!(pre_tier_notes_error(true), None);
 
         seed(
             &tier.join("ctx-project-1a2b3c4d").join("kept.md"),
             "kept body",
         );
-        let message = pre_tier_notes_error().expect("a hashed ctx dir must be reported");
+        assert_eq!(
+            pre_tier_notes_error(false),
+            None,
+            "a ctx folder in an upgraded profile was left on purpose"
+        );
+        let message = pre_tier_notes_error(true).expect("a hashed ctx dir must be reported");
         assert!(message.contains("ctx-project-1a2b3c4d"), "{message}");
         assert!(!message.contains("precious"), "{message}");
         assert!(!message.contains("ctx-manual"), "{message}");

@@ -400,6 +400,19 @@ impl WorkspaceLoadError {
         }
     }
 
+    /// The file is a layout version whose converter was deleted. No 0.4 or
+    /// later build has opened that profile. A profile that can still hold
+    /// never-migrated pre-tier notes (none opened by 0.3 or later) has one.
+    pub fn is_retired_version(&self) -> bool {
+        matches!(
+            self,
+            Self::Unusable {
+                cause: UnusableCause::RetiredVersion,
+                ..
+            }
+        )
+    }
+
     /// Why a session started after this outcome must not save its workspace.
     /// `None` when there was simply nothing to restore.
     pub fn save_block(&self) -> Option<String> {

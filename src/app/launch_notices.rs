@@ -46,7 +46,7 @@ impl PlexiApp {
     /// the file and the reason. The session's saves are already refused. A
     /// retired version 2 layout (stint 1312) arrives here too.
     pub(crate) fn surface_workspace_load_failure(&mut self) {
-        let Some(block) = self.workspace_save_block.clone() else {
+        let Some(block) = self.workspace_save_block() else {
             return;
         };
         log::error!("workspace_load: surfacing restore failure to the user: {block}");
@@ -61,7 +61,11 @@ impl PlexiApp {
         let checks = [
             (
                 "Old notes folder found",
-                crate::notes::pre_tier_notes_error(),
+                crate::notes::pre_tier_notes_error(
+                    self.workspace_load_failure
+                        .as_ref()
+                        .is_some_and(crate::workspace::WorkspaceLoadError::is_retired_version),
+                ),
             ),
             (
                 "Old AI ledger found",

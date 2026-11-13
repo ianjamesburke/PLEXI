@@ -265,7 +265,9 @@ impl HostHarness {
         // Mirrors `PlexiApp::new`: an unusable file blocks this session's saves.
         let loaded = crate::workspace::WorkspaceFile::load_from(&profile_path);
         if let Err(error) = &loaded {
-            app.workspace_save_block = error.save_block();
+            if error.save_block().is_some() {
+                app.workspace_load_failure = Some(error.clone());
+            }
         }
         let restored = loaded.ok().and_then(|ws| {
             let cfg = app.config.clone();
