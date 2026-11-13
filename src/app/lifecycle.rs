@@ -8,14 +8,6 @@ use super::PlexiApp;
 
 const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 
-/// Quiet window after which a foreground agent TUI with no hook report yet is
-/// considered idle by the host-observed detector. Measured against a real
-/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
-/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
-/// "still drawing" from "sitting at the prompt" while staying far inside the
-/// 60s default boot window.
-const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
-
 use crate::rpc::{write_json_response, write_response};
 
 fn slot_error(response_file: &str, message: impl Into<String>) {
@@ -5997,20 +5989,12 @@ impl PlexiApp {
                             },
                         )
                         .map(|agent| {
-                            // A TUI that has stopped redrawing is sitting at its
-                            // prompt; one that is still streaming (banner draw,
-                            // spinner animation) is not ready yet. Same physical
-                            // signal `pane send --submit` settles on.
-                            let settled = t
-                                .last_pty_output_at
-                                .is_some_and(|at| at.elapsed() >= OBSERVED_AGENT_SETTLE);
+                            // A TUI that has stopped redrawing on its own is
+                            // sitting at its prompt; host-induced repaints
+                            // (resize, focus change) do not count (stint 1231).
                             crate::protocol::PaneAgentState {
                                 pane_id: *pane_id,
-                                state: if settled {
-                                    AgentState::Idle
-                                } else {
-                                    AgentState::Working
-                                },
+                                state: t.observed_output_state(std::time::Instant::now()),
                                 agent: t.agent_role.clone().unwrap_or_else(|| agent.to_string()),
                                 detail: None,
                                 session_id: None,
@@ -6510,7 +6494,9 @@ impl PlexiApp {
                 .find_map(|win| win.panes.get_mut(&id))
                 .and_then(crate::host::pane::Pane::as_terminal_mut)
             {
-                term.last_pty_output_at = Some(std::time::Instant::now());
+                // Host-induced output (stint 1231) still stamps send --submit
+                // settling but not agent activity.
+                term.record_pty_event(std::time::Instant::now());
             }
             match &event {
                 PtyEvent::Exit(pty_status) => {
