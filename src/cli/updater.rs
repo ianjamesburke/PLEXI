@@ -2,60 +2,99 @@ use std::{path::Path, time::Duration};
 
 use crate::app::ui_mailbox::UiMailbox;
 use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
+use crate::host::update_status::{CheckMode, UpdateEvent};
 
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
-/// Spawns a background thread that checks for updates, and if a newer version
-/// is found, downloads and installs it silently. Only sends on `mailbox` when the
-/// new binary is ready - the UI badge means "restart to apply", not
-/// "downloading". The mailbox wakes the UI thread so the badge appears even on
-/// an idle host.
-pub fn spawn_update_check(cache_dir: std::path::PathBuf, mailbox: UiMailbox<String>) {
+/// Spawns a background thread that checks for updates and, if a newer version
+/// is found, downloads and installs it silently. Reports each phase on
+/// `mailbox` and always ends with exactly one outcome event (`Ready`,
+/// `UpToDate`, `Failed` or `Unavailable`); "ready" means "restart to apply".
+/// A manual check skips the update cache. The mailbox wakes the UI thread so
+/// the status reaches an idle host.
+pub(crate) fn spawn_update_check(
+    cache_dir: std::path::PathBuf,
+    mailbox: UiMailbox<UpdateEvent>,
+    mode: CheckMode,
+) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
-            if let Ok(Some(receipt)) = crate::distribution::installed() {
-                if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
-                    log::info!("update check: running and installed builds differ; restart available");
-                    let _ = mailbox.send(receipt.active.tag.trim_start_matches('v').to_string());
-                    return;
-                }
-            }
-            if crate::config::build_channel().is_some_and(|c| c != "alpha" && c != "beta") { return; }
-            let channel = detect_channel();
-            let cache_path = cache_dir.join("update_cache.json");
-            let current_raw = installed_version();
-            match cached_or_fetch(&cache_path, channel, &current_raw) {
-                Some(latest) => {
-                    let current = ReleaseTag::parse(&current_raw);
-                    let latest_tag = ReleaseTag::parse(&latest);
-                    let newer = match (&latest_tag, &current) {
-                        (Some(l), Some(c)) => l > c,
-                        _ => false,
-                    };
-                    if newer {
-                        log::info!(
-                            "update check: newer release available: {latest} (current {current_raw}, channel {channel:?})"
-                        );
-                        match background_build(&latest, &cache_dir) {
-                            Ok(()) => {
-                                log::info!("update check: background build complete for {latest}");
-                                let _ = mailbox.send(latest.trim_start_matches('v').to_string());
-                            }
-                            Err(e) => {
-                                log::warn!("update check: background build failed: {e}");
-                            }
-                        }
-                    } else {
-                        log::info!(
-                            "update check: already on latest or ahead ({current_raw}, channel {channel:?})"
-                        );
-                    }
-                }
-                None => log::info!("update check: no newer release for channel {channel:?}"),
-            }
+            log::info!("update check: {} check started", mode.label());
+            let outcome = run_check(&cache_dir, mode, &mailbox);
+            log::info!("update check: {} check finished: {outcome:?}", mode.label());
+            send_event(&mailbox, outcome);
         })
-        .ok();
+        .map(|_| ())
+}
+
+fn send_event(mailbox: &UiMailbox<UpdateEvent>, event: UpdateEvent) {
+    if let Err(error) = mailbox.send(event) {
+        log::warn!(
+            "update check: host stopped listening before {:?} arrived",
+            error.0
+        );
+    }
+}
+
+fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>) -> UpdateEvent {
+    if let Ok(Some(receipt)) = crate::distribution::installed() {
+        if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
+            log::info!("update check: running and installed builds differ; restart available");
+            return UpdateEvent::Ready {
+                version: receipt.active.tag.trim_start_matches('v').to_string(),
+            };
+        }
+    }
+    if let Some(build_channel) =
+        crate::config::build_channel().filter(|c| c != "alpha" && c != "beta")
+    {
+        return UpdateEvent::Unavailable {
+            reason: format!("{build_channel} builds do not check for updates"),
+        };
+    }
+    let channel = detect_channel();
+    let cache_path = cache_dir.join("update_cache.json");
+    let current_raw = installed_version();
+    let (latest, checked_at) = match latest_release(&cache_path, channel, &current_raw, mode) {
+        Ok(found) => found,
+        Err(reason) => {
+            log::warn!("update check: {reason}");
+            return UpdateEvent::Failed { reason };
+        }
+    };
+    let Some(latest) = latest else {
+        log::info!("update check: no newer release for channel {channel:?}");
+        return UpdateEvent::UpToDate { checked_at };
+    };
+    let newer = match (ReleaseTag::parse(&latest), ReleaseTag::parse(&current_raw)) {
+        (Some(l), Some(c)) => l > c,
+        _ => false,
+    };
+    if !newer {
+        log::info!("update check: already on latest or ahead ({current_raw}, channel {channel:?})");
+        return UpdateEvent::UpToDate { checked_at };
+    }
+    log::info!(
+        "update check: newer release available: {latest} (current {current_raw}, channel {channel:?})"
+    );
+    let version = latest.trim_start_matches('v').to_string();
+    send_event(
+        mailbox,
+        UpdateEvent::Downloading {
+            version: version.clone(),
+        },
+    );
+    match background_build(&latest, cache_dir) {
+        Ok(()) => {
+            log::info!("update check: background build complete for {latest}");
+            UpdateEvent::Ready { version }
+        }
+        Err(reason) => {
+            log::warn!("update check: background build failed: {reason}");
+            UpdateEvent::Failed { reason }
+        }
+    }
 }
 
 pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
@@ -79,12 +118,24 @@ fn detect_channel() -> UpdateChannel {
 }
 
 /// Returns the best candidate tag (e.g. `v0.1.13-beta.1`) for `channel`, or
-/// `None` when the cache is fresh and held no candidate or the fetch found none.
-fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
-    if let Ok(bytes) = std::fs::read(cache_path) {
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if cached_json_fresh_for_channel(&json, channel, crate::platform::clock::now_secs()) {
-                return json["latest"].as_str().map(|s| s.to_string());
+/// `None` when there is none, with the time of the check that found it. A
+/// scheduled check answers from a fresh cache; a manual one always fetches.
+fn latest_release(
+    cache_path: &Path,
+    channel: UpdateChannel,
+    current_raw: &str,
+    mode: CheckMode,
+) -> Result<(Option<String>, u64), String> {
+    if mode == CheckMode::Scheduled {
+        if let Ok(bytes) = std::fs::read(cache_path) {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if cached_json_fresh_for_channel(&json, channel, crate::platform::clock::now_secs())
+                {
+                    return Ok((
+                        json["latest"].as_str().map(|s| s.to_string()),
+                        json["checked_at"].as_u64().unwrap_or(0),
+                    ));
+                }
             }
         }
     }
@@ -163,15 +214,19 @@ mod tests {
 
 }
 
-fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
+fn fetch_and_cache(
+    cache_path: &Path,
+    channel: UpdateChannel,
+    current_raw: &str,
+) -> Result<(Option<String>, u64), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(5))
         .build();
     let releases = release_resolver::fetch_releases(&agent)
-        .map_err(|e| log::warn!("update check: {e}"))
-        .ok()?;
+        .map_err(|e| format!("could not fetch releases: {e}"))?;
 
-    let current = ReleaseTag::parse(current_raw)?;
+    let current = ReleaseTag::parse(current_raw)
+        .ok_or_else(|| format!("could not read the running version {current_raw}"))?;
     let best = release_resolver::resolve_best(&releases, channel, &current);
 
     let now = crate::platform::clock::now_secs();
@@ -187,7 +242,7 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
             cache_path.display()
         );
     }
-    latest_raw
+    Ok((latest_raw, now))
 }
 
 /// Foreground and background updates run the same native transaction.

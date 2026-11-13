@@ -27,7 +27,7 @@ impl PlexiApp {
         };
         let version_text = format!(
             "{}v{}",
-            if self.update_available.is_some() {
+            if self.update_status.ready().is_some() {
                 "↑ "
             } else {
                 ""
@@ -109,12 +109,12 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                let (version_label, version_color) = if self.update_available.is_some() {
+                let (version_label, version_color) = if self.update_status.ready().is_some() {
                     (format!("\u{2191} v{}", self.display_version), self.colors.accent)
                 } else {
                     (format!("v{}", self.display_version), self.colors.text_dim)
                 };
-                let hover_text = if self.update_available.is_some() {
+                let hover_text = if self.update_status.ready().is_some() {
                     "Update available — click to open changelog"
                 } else {
                     "Changelog"

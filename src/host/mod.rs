@@ -39,6 +39,7 @@ pub mod shell;
 pub mod state_scope;
 pub mod state_watch;
 pub mod typed_pipes;
+pub(crate) mod update_status;
 mod wasm_engine;
 pub mod wasm_frame;
 pub mod wasm_gpu;
