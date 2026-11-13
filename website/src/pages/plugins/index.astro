@@ -37,7 +37,7 @@ const steps = [
       <div><dt>Plugin</dt><dd><strong>The package.</strong> A folder with a <code class="inline">manifest.toml</code> and Python source. The manifest names the plugin, its entry point and the capabilities it asks for.</dd></div>
       <div><dt>View</dt><dd><strong>What you see.</strong> The interface a plugin draws inside a pane. Views tile, split and close like terminals do.</dd></div>
       <div><dt>Capability</dt><dd><strong>What it may touch.</strong> File access, network requests, secrets and timers are host APIs. A plugin lists the ones it wants. Listing one is a request, not a grant.</dd></div>
-      <div><dt>Before {release.next}</dt><dd>Plugins were called apps. Beta {release.beta.version} and older docs still use that word in places.</dd></div>
+      <div><dt>Before {release.beta.name}</dt><dd>Plugins were called apps. Older releases and docs still use that word.</dd></div>
     </dl>
   </section>
 
@@ -137,8 +137,8 @@ const steps = [
       <p class="lead">Python plugins run as CPython compiled to WebAssembly, inside a Wasmtime sandbox.</p>
       <p class="muted">The guest gets read-only mounts for its own folder, the SDK and the Python standard library. Reading your files, calling the network and reading a secret all go through host APIs, and each one is gated by a capability.</p>
       <p class="muted">The sandbox covers plugins opened in panes. A terminal pane running <code class="inline">python3</code> is an ordinary process with your permissions, and so are the type checks and tests you run while developing.</p>
-      <Notice tone="warn" title={`Being reworked for ${release.next}`}>
-        <p>The permission system is being hardened for {release.next}. On Beta {release.beta.version}, install only plugins you wrote or trust.</p>
+      <Notice tone="warn" title="Being reworked">
+        <p>The permission system is still being hardened. On Beta {release.beta.label}, install only plugins you wrote or trust.</p>
       </Notice>
       <Notice title="Registry installs are in beta">
         <p>Installing plugins from a registry is in beta and off by default. Today the supported path is a local plugin that you scaffold and open by name or by path.</p>
