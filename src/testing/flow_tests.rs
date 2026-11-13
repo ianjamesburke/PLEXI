@@ -390,6 +390,58 @@ fn split_focused_leaves_window_settled() {
     h.assert_window_settled(w, "split_focused");
 }
 
+/// A view launched into an empty context becomes the tree root (the
+/// `place_view_pane` root path in `src/pane_ops/create.rs`).
+#[test]
+fn view_launched_into_an_empty_context_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    assert!(
+        h.app.windows[0].focused_pane.is_none(),
+        "precondition: the harness window starts empty"
+    );
+    h.app
+        .launch_view_by_id_with_layout("agents", None, &[], None)
+        .expect("agents view launches");
+    h.assert_window_settled(0, "view launched as root pane");
+}
+
+/// An agent worker spawned into an empty context takes focus through the
+/// `spawn_agent_worker_pane` split-insert path.
+#[test]
+fn agent_worker_spawned_into_an_empty_context_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    let ws = h.workspace_root();
+    let agent = ws.join(".plexi/agents/settle-test");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::write(agent.join("AGENT.md"), "Test agent").expect("AGENT.md");
+    std::fs::write(
+        agent.join("settings.toml"),
+        "[agent]\nid = \"settle-test\"\ndisplay_name = \"Settle test\"\ndefault_tier = \"medium\"\n[harness]\ncli = \"claude\"\n",
+    )
+    .expect("settings.toml");
+    assert!(
+        h.app.windows[0].focused_pane.is_none(),
+        "precondition: the harness window starts empty"
+    );
+    h.app
+        .spawn_agent_worker_pane(
+            "settle-test",
+            "claude",
+            "sleep 30",
+            "test",
+            None,
+            false,
+            None,
+            Some(ws),
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("agent worker spawns");
+    h.assert_window_settled(0, "agent worker spawned into an empty context");
+}
+
 #[test]
 fn new_tab_leaves_window_settled() {
     let mut h = HostHarness::new();
