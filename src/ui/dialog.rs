@@ -266,12 +266,19 @@ fn button_row<'a>(
             add(ui, index, true);
         }
     } else {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-            for index in (0..actions.len()).rev() {
-                add(ui, index, false);
-            }
-        });
+        // One button-high row: a bare `with_layout` takes the whole remaining
+        // height and centres the buttons in it, which leaves a tall gap in a
+        // modal whose body has a window-sized height budget.
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), style::BUTTON_H_MD),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                for index in (0..actions.len()).rev() {
+                    add(ui, index, false);
+                }
+            },
+        );
     }
     let rect = egui::Rect::from_min_max(start, ui.min_rect().max);
     capture.finish(ui.painter(), rect, colors.bg_sidebar, reports, vec![]);
