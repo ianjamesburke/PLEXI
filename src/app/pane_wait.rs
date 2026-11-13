@@ -49,7 +49,8 @@ use super::PlexiApp;
 use crate::protocol::AgentState;
 
 /// No PTY event for this long means the pane has finished redrawing and is
-/// ready to receive Enter.
+/// ready to receive Enter. The window is also measured from the moment the
+/// text was typed — see [`submit_settled`].
 const SUBMIT_QUIET_WINDOW: Duration = Duration::from_millis(350);
 
 /// Upper bound on the settle phase. A pane that never goes quiet (a spinner, a
@@ -790,9 +791,10 @@ impl PlexiApp {
         }
         match submit.phase {
             SubmitPhase::Settle { until } => {
-                let quiet = self
-                    .pane_quiet_for(pane_id)
-                    .is_none_or(|quiet_for| quiet_for >= SUBMIT_QUIET_WINDOW);
+                let quiet = submit_settled(
+                    now.saturating_duration_since(submit.requested_at),
+                    self.pane_quiet_for(pane_id),
+                );
                 if !quiet && now < until {
                     return None;
                 }
@@ -819,7 +821,16 @@ impl PlexiApp {
                         submit.requested_at.elapsed().as_secs_f64(),
                         submit.retried
                     );
-                    return Some(serde_json::json!({ "ok": true, "retried": submit.retried }));
+                    let agent_state = self.pane_agent_state(pane_id);
+                    log::info!(
+                        "pane_submit: pane_id={pane_id} ack evidence=screen_changed agent_state={agent_state:?}"
+                    );
+                    return Some(serde_json::json!({
+                        "ok": true,
+                        "retried": submit.retried,
+                        "evidence": "screen_changed",
+                        "agent_state": agent_state,
+                    }));
                 }
                 // The collapsed-paste heal. Fire as soon as a redraw kept the
                 // hint up, and otherwise at the window's end — never before the
@@ -852,6 +863,21 @@ impl PlexiApp {
                 None
             }
         }
+    }
+
+    /// The agent detector's current state for `pane_id`, as the wire string.
+    ///
+    /// Carried on a confirmed submit so the acknowledgement stays three
+    /// separate facts: the Enter was accepted (`ok`), what proved it
+    /// (`evidence`), and what the agent itself reports (`agent_state`). A
+    /// confirmed submit is not a claim that the agent started a turn, and
+    /// never a claim that the work is done.
+    fn pane_agent_state(&self, pane_id: u64) -> Option<&'static str> {
+        self.windows
+            .iter()
+            .find_map(|win| win.panes.get(&pane_id))
+            .and_then(|pane| pane.agent())
+            .map(|agent| agent.state.as_str())
     }
 
     /// How long `pane_id` has been producing nothing, or `None` when it has
@@ -1188,6 +1214,23 @@ impl PlexiApp {
             predicted_frame,
         ));
     }
+}
+
+/// Whether a typed submit may press Enter.
+///
+/// Both clocks must clear the quiet window. Output age alone is not enough: a
+/// pane that has sat idle is already quiet the instant the text is written, so
+/// Enter would follow the text on the same pass, before the pane has echoed
+/// one typed character. Two things then go wrong at once. An agent TUI reads
+/// text and Enter arriving together as a single paste burst and keeps the
+/// Enter as a newline, leaving the brief unsent in its input box. And the
+/// pre-Enter tail is hashed before the echo lands, so the echo itself later
+/// reads as "the screen changed" and the unsent brief is reported confirmed.
+/// Waiting out the window from the typing instant puts the echo on the
+/// baseline side of the comparison, where it belongs.
+fn submit_settled(since_typed: Duration, since_last_output: Option<Duration>) -> bool {
+    since_typed >= SUBMIT_QUIET_WINDOW
+        && since_last_output.is_none_or(|quiet_for| quiet_for >= SUBMIT_QUIET_WINDOW)
 }
 
 /// Digest of a rendered tail, so a submit compares two grids across polls at
@@ -1723,5 +1766,40 @@ impl PlexiApp {
                 until_expiry.min(Duration::from_millis(500) + predicted_frame),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submit_does_not_settle_until_the_quiet_window_has_passed_since_typing() {
+        let long_idle = Some(Duration::from_secs(600));
+        assert!(
+            !submit_settled(Duration::ZERO, long_idle),
+            "a pane idle for minutes is not settled the instant text is typed into it"
+        );
+        assert!(!submit_settled(
+            SUBMIT_QUIET_WINDOW - Duration::from_millis(1),
+            long_idle
+        ));
+        assert!(submit_settled(SUBMIT_QUIET_WINDOW, long_idle));
+    }
+
+    #[test]
+    fn submit_does_not_settle_while_the_pane_is_still_producing() {
+        let since_typed = Duration::from_secs(2);
+        assert!(!submit_settled(
+            since_typed,
+            Some(Duration::from_millis(10))
+        ));
+        assert!(submit_settled(since_typed, Some(SUBMIT_QUIET_WINDOW)));
+    }
+
+    #[test]
+    fn a_pane_that_never_produced_output_settles_on_the_typing_clock_alone() {
+        assert!(!submit_settled(Duration::from_millis(100), None));
+        assert!(submit_settled(SUBMIT_QUIET_WINDOW, None));
     }
 }

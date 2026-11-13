@@ -11,6 +11,7 @@
 //! a caller cannot read one without the other.
 
 use crate::host::pane::Pane;
+use crate::protocol::AgentState;
 
 /// Read the pane's `status` slot (the agent-authored liveness claim), if one
 /// has been written. The value is opaque to the host — an agent embeds its
@@ -164,25 +165,90 @@ fn evaluate_stale_claim(
     }))
 }
 
+/// What the host's agent detector says about the pane's occupant, or `None`
+/// when no agent is detected there (a plain shell, a view with no agent).
+///
+/// `in_turn` is true only for [`AgentState::Working`]. Every other state means
+/// the agent is not currently doing work: it finished a turn, is waiting on
+/// someone, or has stopped.
+fn agent_activity(agent_state: Option<&AgentState>) -> Option<serde_json::Value> {
+    let state = agent_state?;
+    Some(serde_json::json!({
+        "state": state.as_str(),
+        "in_turn": *state == AgentState::Working,
+    }))
+}
+
+/// Raise a typed `inactive_claim` condition when a `status` claim exists but
+/// the host can see that nothing is acting on it: the pane's process is gone,
+/// or the agent detector reports a state other than a working turn.
+///
+/// This is the worker that ends its turn and leaves `impl:working` in its
+/// slot. The process is alive and the claim may be seconds old, so neither
+/// `process_alive` nor `stale_claim` flags it; the agent's own lifecycle
+/// report does. The host still never parses the claim: a caller holding a
+/// claim that says finished or blocked reads this condition as agreement, and
+/// a caller holding one that says working reads it as the contradiction it
+/// is. With no detected agent and a live process the host has no second
+/// opinion and raises nothing.
+fn evaluate_inactive_claim(
+    claimed: &Option<serde_json::Value>,
+    observed: &serde_json::Value,
+    agent_state: Option<&AgentState>,
+) -> Option<serde_json::Value> {
+    claimed.as_ref()?;
+    let process_alive = observed
+        .get("process_alive")
+        .and_then(|alive| alive.as_bool());
+    let reason = if process_alive == Some(false) {
+        "process_exited"
+    } else {
+        match agent_state? {
+            AgentState::Working => return None,
+            AgentState::Idle => "agent_turn_ended",
+            AgentState::Blocked | AgentState::NeedsYou => "agent_waiting",
+            AgentState::Completed => "agent_completed",
+            AgentState::Interrupted | AgentState::Failed | AgentState::ExitedUnreported => {
+                "agent_stopped"
+            }
+        }
+    };
+    log::info!(
+        "pane_liveness: inactive-claim raised: reason={reason} agent_state={:?}",
+        agent_state.map(AgentState::as_str)
+    );
+    Some(serde_json::json!({
+        "reason": reason,
+        "agent_state": agent_state.map(AgentState::as_str),
+    }))
+}
+
 /// The single accessor for a pane's liveness: the agent's own claim and the
 /// host's observation, always together. `stale_after_secs` comes from
 /// `plexi pane state --stale-after <secs>`; omit it (`None`) to skip
-/// stale-claim evaluation entirely.
+/// stale-claim evaluation entirely. `agent_activity` and `inactive_claim` need
+/// no window: they compare the claim with the agent detector's current state.
 pub fn compute(pane: &Pane, stale_after_secs: Option<u64>) -> serde_json::Value {
     let claimed = claimed_state(pane);
     let observed = observed_state(pane);
+    let agent_state = pane.agent().map(|agent| &agent.state);
     let stale = evaluate_stale_claim(&claimed, &observed, stale_after_secs);
+    let inactive = evaluate_inactive_claim(&claimed, &observed, agent_state);
     log::info!(
-        "pane_liveness: computed: claimed_present={} process_alive={} last_output_seconds_ago={} stale_claim={}",
+        "pane_liveness: computed: claimed_present={} process_alive={} last_output_seconds_ago={} stale_claim={} agent_state={:?} inactive_claim={}",
         claimed.is_some(),
         observed["process_alive"],
         observed["last_output_seconds_ago"],
         stale.is_some(),
+        agent_state.map(AgentState::as_str),
+        inactive.is_some(),
     );
     serde_json::json!({
         "claimed_state": claimed,
         "observed_state": observed,
         "stale_claim": stale,
+        "agent_activity": agent_activity(agent_state),
+        "inactive_claim": inactive,
     })
 }
 
@@ -208,6 +274,69 @@ mod tests {
         let claimed = Some(serde_json::json!({"value": "running", "written_seconds_ago": 1}));
         let observed = serde_json::json!({"last_output_seconds_ago": 5});
         assert!(evaluate_stale_claim(&claimed, &observed, Some(60)).is_none());
+    }
+
+    fn working_claim() -> Option<serde_json::Value> {
+        Some(serde_json::json!({"value": "impl:working", "written_seconds_ago": 1}))
+    }
+
+    #[test]
+    fn inactive_claim_absent_while_the_agent_is_in_a_turn() {
+        let observed = serde_json::json!({"process_alive": true});
+        assert!(
+            evaluate_inactive_claim(&working_claim(), &observed, Some(&AgentState::Working))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn inactive_claim_absent_without_a_claim_or_without_an_agent() {
+        let observed = serde_json::json!({"process_alive": true});
+        assert!(evaluate_inactive_claim(&None, &observed, Some(&AgentState::Idle)).is_none());
+        assert!(
+            evaluate_inactive_claim(&working_claim(), &observed, None).is_none(),
+            "a live pane with no detected agent gives the host no second opinion"
+        );
+    }
+
+    #[test]
+    fn inactive_claim_names_why_the_agent_is_not_working() {
+        let observed = serde_json::json!({"process_alive": true});
+        for (state, reason) in [
+            (AgentState::Idle, "agent_turn_ended"),
+            (AgentState::Blocked, "agent_waiting"),
+            (AgentState::NeedsYou, "agent_waiting"),
+            (AgentState::Completed, "agent_completed"),
+            (AgentState::Interrupted, "agent_stopped"),
+            (AgentState::Failed, "agent_stopped"),
+            (AgentState::ExitedUnreported, "agent_stopped"),
+        ] {
+            let raised = evaluate_inactive_claim(&working_claim(), &observed, Some(&state))
+                .expect("inactive-claim");
+            assert_eq!(raised["reason"], reason);
+            assert_eq!(raised["agent_state"], state.as_str());
+        }
+    }
+
+    #[test]
+    fn inactive_claim_raised_for_a_dead_process_even_with_no_agent() {
+        let observed = serde_json::json!({"process_alive": false});
+        let raised =
+            evaluate_inactive_claim(&working_claim(), &observed, None).expect("inactive-claim");
+        assert_eq!(raised["reason"], "process_exited");
+        assert!(raised["agent_state"].is_null());
+    }
+
+    #[test]
+    fn agent_activity_marks_only_a_working_agent_as_in_turn() {
+        assert!(agent_activity(None).is_none());
+        assert_eq!(
+            agent_activity(Some(&AgentState::Working)).expect("activity")["in_turn"],
+            true
+        );
+        let idle = agent_activity(Some(&AgentState::Idle)).expect("activity");
+        assert_eq!(idle["state"], "idle");
+        assert_eq!(idle["in_turn"], false);
     }
 
     #[test]

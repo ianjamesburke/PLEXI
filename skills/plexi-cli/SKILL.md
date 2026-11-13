@@ -71,6 +71,10 @@ The first command waits until the agent is idle; the second confirms the
 prompt left its input line. Avoid sleeps, capture polling, and manual Enter.
 `pane state` reports both claimed and observed state; an idle agent has not
 necessarily completed its task. Use `--stale-after` to detect a stale claim.
+A non-null `inactive_claim` means the `status` slot is not backed by a working
+agent (the turn ended, the agent is waiting, or the process exited): treat a
+slot that still says working as inconsistent, never as progress, and never as
+completion. Completion is `plexi pane result wait <id>`.
 
 <!-- experiment: agent_mesh -->
 Print-mode workers ask their parent, wait for a mailbox reply in bounded
