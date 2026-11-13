@@ -1739,19 +1739,13 @@ mod agent_source_tests {
         let idle = state(AgentState::Idle);
         let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
 
-        let selected = select_terminal_agent(
-            None,
-            Some(&hook),
-            Some(stale_at),
-            Some(&working),
-            now,
-        )
-        .expect("agent");
+        let selected =
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now)
+                .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
-                .expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
     }
 
@@ -1777,9 +1771,8 @@ mod agent_source_tests {
         let now = Instant::now();
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
-                .expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
         let selected =
             select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
