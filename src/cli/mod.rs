@@ -768,9 +768,19 @@ mod reply_error_tests {
 
 #[cfg(test)]
 mod socket_resolution_tests {
-    use super::{command_socket_available_from, resolve_command_socket_from};
+    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET};
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+
+    /// Stint 1124: with no routing input the error names `--socket`.
+    #[test]
+    fn no_host_error_names_the_socket_flag() {
+        assert!(
+            NO_COMMAND_SOCKET.contains("--socket"),
+            "{NO_COMMAND_SOCKET}"
+        );
+        assert!(!NO_COMMAND_SOCKET.contains("run this inside a Plexi terminal pane"));
+    }
 
     #[test]
     fn binary_channel_wins_over_ambient_socket() {
@@ -939,6 +949,10 @@ mod socket_resolution_tests {
         );
     }
 }
+
+/// Printed when no routing input names a host.
+pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLEXI_SOCKET is \
+     not set. Run this inside a Plexi pane, or pass --socket <path> to name the host";
 
 /// Resolve the command socket endpoint from target-routing inputs.
 ///
@@ -1572,7 +1586,7 @@ fn send_to_socket_connected(
     let socket_path = match resolve_command_socket() {
         Some(path) => path,
         None => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            eprintln!("{NO_COMMAND_SOCKET}");
             return Err(1);
         }
     };

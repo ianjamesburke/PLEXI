@@ -66,7 +66,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            eprintln!("{}", super::NO_COMMAND_SOCKET);
             return 1;
         }
     };
@@ -224,7 +224,7 @@ pub fn dismiss_notify_cli(
         return 1;
     };
     let Some(socket_path) = super::resolve_command_socket() else {
-        eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+        eprintln!("{}", super::NO_COMMAND_SOCKET);
         return 1;
     };
     let response_file = crate::rpc::response_file("notify-dismiss", "txt");

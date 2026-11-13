@@ -25,7 +25,7 @@ fn connect_socket() -> Result<IpcStream, i32> {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            eprintln!("{}", super::NO_COMMAND_SOCKET);
             return Err(1);
         }
     };
@@ -50,7 +50,7 @@ fn from_pane_id() -> Option<u64> {
 /// Connect to the host socket and write one control line + flush, logging the
 /// sent type. Returns the live stream so the caller can read its reply (a
 /// single line for publish, an open NDJSON stream for subscribe). Shared
-/// prologue for [`stream_control_line`] and [`send_and_read_reply`].
+/// prologue for [`stream_control_line`] and [`read_publish_reply`].
 fn connect_and_send(payload: &serde_json::Value) -> Result<IpcStream, i32> {
     let mut stream = connect_socket()?;
     let line = format!("{payload}\n");
@@ -124,59 +124,146 @@ pub fn events_subscribe_cli(
     stream_control_line(req)
 }
 
-/// Send one control line, read exactly one JSON reply line, print a
-/// human-readable result, and return the process exit code. Used by the
-/// one-shot publish commands (`declare`, `emit`): the host answers with a
-/// single `ok`/`error` object rather than an open NDJSON stream.
-fn send_and_read_reply(payload: serde_json::Value) -> i32 {
-    let stream = match connect_and_send(&payload) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let mut reader = BufReader::new(stream);
-    let mut reply = String::new();
-    if let Err(e) = reader.read_line(&mut reply) {
-        eprintln!("error: reading reply: {e}");
+/// How long a publish reply may take before `declare` tells the caller it is
+/// waiting on a consent prompt. Pre-granted publishes answer well inside it.
+const CONSENT_NOTICE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A publish that may block on the host consent modal: after `notice_after`
+/// without a reply, stderr names `what` is waiting and where to answer; after
+/// `timeout` the CLI gives up with exit 2.
+struct ConsentWait<'a> {
+    what: &'a str,
+    notice_after: std::time::Duration,
+    timeout: std::time::Duration,
+}
+
+/// Read exactly one JSON reply line for a one-shot publish (`declare`,
+/// `emit`), print a human-readable result, and return the exit code: 0 ok,
+/// 1 host error or plumbing failure, 2 when `consent` is set and its timeout
+/// passes with no answer.
+fn read_publish_reply<W: Write, E: Write>(
+    conn: IpcStream,
+    consent: Option<ConsentWait<'_>>,
+    out: &mut W,
+    errors: &mut E,
+) -> i32 {
+    let first_wait = consent
+        .as_ref()
+        .map(|wait| wait.notice_after.min(wait.timeout));
+    if let Err(e) = conn.set_read_timeout(first_wait) {
+        let _ = writeln!(errors, "error: setting the publish reply deadline: {e}");
         return 1;
+    }
+    let started = std::time::Instant::now();
+    let mut reader = BufReader::new(conn);
+    let mut reply = String::new();
+    let mut noticed = false;
+    loop {
+        match reader.read_line(&mut reply) {
+            Ok(_) => break,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                let Some(wait) = consent.as_ref() else {
+                    let _ = writeln!(errors, "error: reading reply: {e}");
+                    return 1;
+                };
+                let elapsed = started.elapsed();
+                if elapsed >= wait.timeout {
+                    log::info!(
+                        "events: {} got no consent answer within {:?}",
+                        wait.what,
+                        wait.timeout
+                    );
+                    let _ = writeln!(
+                        errors,
+                        "error: no answer to the consent prompt for {} within {:.1}s (--timeout). \
+                         The host keeps the prompt open; answering it later can still apply the request.",
+                        wait.what,
+                        wait.timeout.as_secs_f64()
+                    );
+                    return 2;
+                }
+                let remaining = wait.timeout - elapsed;
+                if !noticed {
+                    noticed = true;
+                    log::info!(
+                        "events: {} waiting on host consent, remaining={remaining:?}",
+                        wait.what
+                    );
+                    let _ = writeln!(
+                        errors,
+                        "waiting: the host is asking whether to allow {}. Answer the consent \
+                         prompt in the Plexi window; giving up in {:.0}s (--timeout).",
+                        wait.what,
+                        remaining.as_secs_f64().ceil()
+                    );
+                    let _ = errors.flush();
+                }
+                if let Err(e) = reader.get_ref().set_read_timeout(Some(remaining)) {
+                    let _ = writeln!(errors, "error: setting the publish reply deadline: {e}");
+                    return 1;
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(errors, "error: reading reply: {e}");
+                return 1;
+            }
+        }
     }
     let reply = reply.trim();
     if reply.is_empty() {
-        eprintln!("error: host closed the connection without replying");
+        let _ = writeln!(errors, "error: host closed the connection without replying");
         return 1;
     }
     match serde_json::from_str::<serde_json::Value>(reply) {
         Ok(val) => match val["type"].as_str() {
             Some("error") => {
-                eprintln!(
+                let _ = writeln!(
+                    errors,
                     "error: {}",
                     val["message"].as_str().unwrap_or("unknown error")
                 );
                 1
             }
             _ => {
-                println!("{}", val["detail"].as_str().unwrap_or(reply));
+                let _ = writeln!(out, "{}", val["detail"].as_str().unwrap_or(reply));
                 0
             }
         },
         Err(_) => {
-            eprintln!("error: host reply was not valid JSON: {reply}");
+            let _ = writeln!(errors, "error: host reply was not valid JSON: {reply}");
             1
         }
     }
 }
 
 /// `plexi events declare <plugin_id> <stream>` — register a stream schema.
+///
+/// A first declare under a namespace the caller does not own waits for the
+/// host consent modal; `timeout_secs` bounds that wait (exit 2).
 pub fn events_declare_cli(
     plugin_id: &str,
     stream: &str,
     schema: &str,
     description: Option<&str>,
+    timeout_secs: f64,
 ) -> i32 {
+    let Some(timeout) = std::time::Duration::try_from_secs_f64(timeout_secs)
+        .ok()
+        .filter(|timeout| !timeout.is_zero())
+    else {
+        eprintln!("error: --timeout must be a finite, positive number of seconds");
+        return 1;
+    };
     let schema_json: serde_json::Value = match serde_json::from_str(schema) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: --schema is not valid JSON: {e}");
-            return 2;
+            return 1;
         }
     };
     let mut decl = serde_json::json!({ "name": stream, "schema": schema_json });
@@ -189,7 +276,21 @@ pub fn events_declare_cli(
         "streams": [decl],
         "from_pane_id": from_pane_id(),
     });
-    send_and_read_reply(req)
+    let conn = match connect_and_send(&req) {
+        Ok(conn) => conn,
+        Err(code) => return code,
+    };
+    let what = format!("declare stream {plugin_id}/{stream}");
+    read_publish_reply(
+        conn,
+        Some(ConsentWait {
+            what: &what,
+            notice_after: CONSENT_NOTICE_AFTER,
+            timeout,
+        }),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
 }
 
 /// Arguments for `plexi events emit`, mirroring the `EventsCmd::Emit` fields.
@@ -236,7 +337,16 @@ pub fn events_emit_cli(args: EmitArgs) -> i32 {
         "changed_resources": args.changed_resources,
         "from_pane_id": from_pane_id(),
     });
-    send_and_read_reply(req)
+    let conn = match connect_and_send(&req) {
+        Ok(conn) => conn,
+        Err(code) => return code,
+    };
+    read_publish_reply(
+        conn,
+        None,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
 }
 
 /// `plexi events list` — print declared streams once and exit.
@@ -428,6 +538,138 @@ fn lifecycle_request(request: serde_json::Value, timeout: Option<std::time::Dura
         &mut std::io::stderr().lock(),
         timeout.is_some(),
     )
+}
+
+#[cfg(test)]
+mod declare_consent_wait_tests {
+    use super::{read_publish_reply, ConsentWait};
+    use crate::platform::ipc::{IpcListener, IpcStream};
+    use std::io::{BufRead, BufReader, Write};
+    use std::time::{Duration, Instant};
+
+    /// A fake host that accepts one connection, reads the control line, writes
+    /// `reply` (if any), then holds the connection open until released, the
+    /// way the real host holds it while its consent modal is unanswered.
+    struct FakeHost {
+        conn: IpcStream,
+        release: std::sync::mpsc::Sender<()>,
+        host: std::thread::JoinHandle<()>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn fake_host(reply: Option<&'static str>) -> FakeHost {
+        let dir = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let endpoint = dir.path().join("consent.sock");
+        #[cfg(windows)]
+        let endpoint = std::path::PathBuf::from(format!(
+            r"\\.\pipe\plexi-consent-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let listener = IpcListener::bind(&endpoint).expect("bind fake host");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let host = std::thread::spawn(move || {
+            let stream = listener
+                .incoming()
+                .next()
+                .expect("one connection")
+                .expect("accept");
+            let mut writer = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read control line");
+            if let Some(reply) = reply {
+                writeln!(writer, "{reply}").expect("write reply");
+                writer.flush().expect("flush reply");
+            }
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        });
+        let mut conn = IpcStream::connect(&endpoint).expect("connect to fake host");
+        conn.write_all(b"{\"type\":\"events_declare\"}\n")
+            .expect("send control line");
+        conn.flush().expect("flush control line");
+        FakeHost {
+            conn,
+            release: release_tx,
+            host,
+            _dir: dir,
+        }
+    }
+
+    /// Stint 1124: an unanswered consent prompt must not block `declare`
+    /// forever. It says on stderr what it waits for and where to answer, then
+    /// exits 2 once `--timeout` passes.
+    #[test]
+    fn declare_unanswered_consent_exits_2_within_timeout_and_says_why() {
+        let FakeHost {
+            conn,
+            release,
+            host,
+            _dir,
+        } = fake_host(None);
+        let timeout = Duration::from_millis(400);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let started = Instant::now();
+        let code = read_publish_reply(
+            conn,
+            Some(ConsentWait {
+                what: "stream probe/task.done",
+                notice_after: Duration::from_millis(100),
+                timeout,
+            }),
+            &mut out,
+            &mut err,
+        );
+        let elapsed = started.elapsed();
+        let _ = release.send(());
+        host.join().expect("fake host");
+
+        let err = String::from_utf8(err).expect("utf8 stderr");
+        assert_eq!(code, 2, "unanswered consent must exit 2; stderr={err}");
+        assert!(
+            elapsed >= timeout && elapsed < Duration::from_secs(5),
+            "must give up at --timeout, took {elapsed:?}"
+        );
+        assert!(
+            err.contains("stream probe/task.done")
+                && err.contains("consent prompt")
+                && err.contains("Plexi window")
+                && err.contains("--timeout"),
+            "stderr must name what it waits for and where to answer: {err}"
+        );
+        assert!(out.is_empty(), "stdout carries only the payload");
+    }
+
+    /// A prompt answer prints the host's detail and exits 0 with no waiting
+    /// notice, so pre-granted declares stay quiet.
+    #[test]
+    fn declare_prompt_reply_prints_detail_without_waiting_notice() {
+        let FakeHost {
+            conn,
+            release,
+            host,
+            _dir,
+        } = fake_host(Some(r#"{"type":"ok","detail":"declared"}"#));
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = read_publish_reply(
+            conn,
+            Some(ConsentWait {
+                what: "stream probe/task.done",
+                notice_after: Duration::from_secs(2),
+                timeout: Duration::from_secs(5),
+            }),
+            &mut out,
+            &mut err,
+        );
+        let _ = release.send(());
+        host.join().expect("fake host");
+
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(out).expect("utf8"), "declared\n");
+        assert!(err.is_empty(), "no notice for a prompt answer");
+    }
 }
 
 #[cfg(test)]

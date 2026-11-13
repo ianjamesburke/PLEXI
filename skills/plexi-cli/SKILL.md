@@ -140,6 +140,15 @@ Completed continuations must not repeat their mutation. For plugin-to-plugin dat
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.
 
+`pane key` sends one key, never text. Terminal panes accept a single
+character, the named keys, `ctrl+<key>`, `shift+tab` and `alt+<key>`; view
+panes add their own chords. `plexi pane key --help` lists the exact set. Any
+other name or chord exits 1 and sends nothing, so a failed key never types
+its own name into the pane. Exit 0 means the host delivered the key, not that
+the program in the pane acted on it, so check the pane when it matters. Hosts
+built before this rule typed unknown chords such as `alt+m` as literal text;
+do not rely on Alt chords against an older host.
+
 ## Open files and native surfaces
 
 You run inside a pane, so prefer a Plexi surface over an OS plugin or an external

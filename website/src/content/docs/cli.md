@@ -1685,7 +1685,9 @@ For terminal panes, injects the keystroke into the terminal. For view panes, del
 
 To submit a prompt or command with host confirmation, prefer `plexi pane send <id> "<text>" --submit` (or `plexi pane command <id> "<cmd>" --enter`) instead of chaining `pane send` + `pane key <id> enter`: `--submit` settles the pane, handles collapsed-paste Enter, and exits 0 only once the host confirms the input line cleared.
 
-Key formats: single character ("h"), named key ("enter", "escape", "space", "up", "down", "left", "right", "backspace", "plus", "minus", "equals"), or chord ("ctrl+c").
+Terminal panes accept: one character ("h", "H"); a named key ("enter", "escape", "space", "tab", "backspace", "up", "down", "left", "right", "plus", "minus", "equals"); "ctrl+<key>" for a-z, `@`, `[`, `\`, `]`, `^`, `_`, `-` and space; "shift+tab"; and "alt+<key>" for any of those that sends one character ("alt+m" sends ESC then m). Anything else, such as "alt+up", "cmd+c" or an unknown name, exits 1 and sends nothing. View panes accept the same names plus their own chords ("cmd+s", "f5").
+
+Exit 0 means the host delivered the key, not that the receiving program acted on it. Check the pane afterwards when it matters.
 
 Example: plexi pane key 42 escape
 
@@ -1958,7 +1960,7 @@ Example: plexi events subscribe event-probe probe.tick --payload full
 
 Declare an event stream so it can be emitted on and subscribed to.
 
-Registers a named stream under a plugin-id namespace with a JSON-Schema object describing its payload. Declaring is a prerequisite for `emit`. Re-declaring a stream replaces its previous schema. The first declare under a namespace you do not own prompts for host consent.
+Registers a named stream under a plugin-id namespace with a JSON-Schema object describing its payload. Declaring is a prerequisite for `emit`. Re-declaring a stream replaces its previous schema. The first declare under a namespace you do not own prompts for host consent: the command says on stderr that it is waiting for an answer in the Plexi window. Exit 0 declared, 1 refused or failed, 2 no answer within `--timeout`.
 
 Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
 
@@ -1968,6 +1970,7 @@ Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
 | `<stream>` | string | yes | Stream name to declare (e.g. `task.done`) |
 | `--schema` | string | no | JSON-Schema object describing the event payload Default: `{"type":"object"}`. |
 | `--description` | string | no | Human-readable description of when this event fires |
+| `--timeout` | string | no | Seconds to wait for a consent answer before exiting 2 Default: `60`. |
 
 ### `plexi events emit`
 
