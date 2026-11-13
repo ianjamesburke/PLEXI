@@ -73,7 +73,7 @@ try:
 except Exception:
     raise SystemExit
 for row in rows:
-    if row.get("type") == "app":
+    if row.get("type") == "view":
         print(row.get("id",""))'
 }
 
