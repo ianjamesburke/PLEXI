@@ -13,7 +13,7 @@ const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
   title="Download | Plexi"
   description={`Install Plexi on an Apple Silicon Mac with one command. Beta ${release.beta.label}. Builds are self-signed and not notarized. Windows and Linux are coming soon.`}
 >
-  <PageHead title="Install Plexi." lede="For Apple Silicon Macs. One command, no admin password, no Rust toolchain." />
+  <PageHead title="Install Plexi." lede="For Apple Silicon Macs." />
 
   <section class="wrap install" aria-labelledby="install-title">
     <div class="install-main">
@@ -22,7 +22,7 @@ const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
       <p class="under">Installs <a class="text-link" href={release.beta.url}>Beta {release.beta.label}</a> for {release.beta.platform}.</p>
 
       <dl class="facts">
-        <div><dt>Needs</dt><dd><code class="inline">bash</code>, <code class="inline">curl</code>, <code class="inline">tar</code> and <code class="inline">shasum</code>. All four come with macOS.</dd></div>
+        <div><dt>Needs</dt><dd><code class="inline">bash</code>, <code class="inline">curl</code>, <code class="inline">tar</code> and <code class="inline">shasum</code>. All come with macOS.</dd></div>
         <div><dt>Does</dt><dd>Downloads the release archive, verifies its SHA-256 checksum and installs into directories you own.</dd></div>
         <div><dt>Then</dt><dd>Open Plexi. The beta's launcher is <code class="inline">plexi-beta</code>; inside a Plexi pane, plain <code class="inline">plexi</code> runs the build that pane belongs to. <code class="inline">plexi --help</code> lists the commands and <code class="inline">plexi ai onboard</code> walks through AI setup, which you can skip.</dd></div>
         <div><dt>Update</dt><dd><code class="inline">plexi update</code> moves to the newest build on your channel. <code class="inline">plexi update --rollback</code> restores the previous one.</dd></div>
@@ -36,8 +36,8 @@ const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
     <h2 class="h2" id="trust-title">Before you open it.</h2>
     <div class="trust-body">
       <p class="lead">Plexi builds are self-signed and not notarized by Apple. macOS will warn you the first time you open one.</p>
-      <p class="muted">The installer verifies the archive's SHA-256 checksum before it installs anything. The <a class="text-link" href={release.unsignedGuide}>guide to opening the build</a> explains the warning and how to get past it.</p>
-      <p class="muted">If you would rather build it yourself, clone the repository and run the source install. It needs Rust, just, uv and Python 3.11.</p>
+      <p class="muted"><a class="text-link" href={release.unsignedGuide}>How to open the build</a>.</p>
+      <p class="muted">To build it yourself, clone the repository and run the source install. It needs Rust, just, uv and Python 3.11.</p>
       <CopyCommand cmd={SOURCE_CMD} label="source install command" />
       <p class="muted">Plexi is pre-1.0 beta software. Commands, config keys and the plugin API can change between releases, and the permission system is still being hardened. Install only plugins you wrote or trust.</p>
     </div>
@@ -47,9 +47,9 @@ const SOURCE_CMD = 'scripts/install.sh --from-source alpha';
     <h2 class="h2" id="channels-title">Channels.</h2>
     <div>
       <dl class="facts">
-        <div><dt>Beta</dt><dd><strong>{release.beta.tag}.</strong> The current build and the one this site describes. The command above installs it.</dd></div>
+        <div><dt>Beta</dt><dd><strong>{release.beta.tag}.</strong> The current build. The command above installs it.</dd></div>
         <div><dt>Alpha</dt><dd><strong>Moves fast and can break.</strong> For following development closely.</dd></div>
-        <div><dt>Stable</dt><dd><strong>{release.stable.tag}.</strong> Published before the 0.4 line, so it is older than everything described here. A new stable comes after {release.next}.</dd></div>
+        <div><dt>Stable</dt><dd><strong>{release.stable.tag}.</strong> Published before the 0.4 line. A new stable comes after {release.next}.</dd></div>
       </dl>
       <div class="alt-cmd">
         <p>Alpha channel</p>

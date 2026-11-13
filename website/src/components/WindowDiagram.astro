@@ -1,7 +1,7 @@
 ---
 /**
  * Schematic of a Plexi window: contexts on the left, tiled panes on the right.
- * It is a diagram, drawn as one, and the caption says so. Replace with a real
+ * It is a diagram, drawn as one. Replace with a real
  * capture through Shot.astro when one exists (see IMAGES-NEEDED.md).
  */
 const contexts = ['api-refactor', 'website', 'notes'];
@@ -22,7 +22,6 @@ const contexts = ['api-refactor', 'website', 'notes'];
       </div>
     </div>
   </div>
-  <figcaption>Diagram, not a screenshot. One window: contexts on the left, panes tiled on the right.</figcaption>
 </figure>
 
 <style>
@@ -55,7 +54,6 @@ const contexts = ['api-refactor', 'website', 'notes'];
   .state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
   .state.needs { color: var(--amber); }
   .state.needs::before { background: var(--amber); }
-  figcaption { margin-top: 14px; color: var(--fg-2); font: 13px/1.5 var(--mono); }
 
   /* The one authored moment: the window tiles itself, pane by pane. */
   @media (prefers-reduced-motion: no-preference) {

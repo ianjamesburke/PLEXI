@@ -5,8 +5,8 @@ order: 3
 ---
 
 A plugin is a folder with a manifest and some Python. Its view renders in a
-pane next to your terminals. This page builds a counter. Every step is a CLI
-command, so you can hand the whole page to your agent instead.
+pane next to your terminals. Every step here is a CLI command, so you can hand
+this page to your agent.
 
 These commands are the 0.5 Groundwork names. On an older release that still has `plexi app`,
 the steps are the same under that namespace.

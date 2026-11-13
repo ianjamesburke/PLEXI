@@ -7,6 +7,7 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   site: 'https://plexiapp.com',
+  redirects: { '/product': '/tour' },
   integrations: [mdx(), sitemap({ filter: (page) => !page.endsWith('/kit/') })],
   adapter: node({ mode: 'standalone' }),
   markdown: {
