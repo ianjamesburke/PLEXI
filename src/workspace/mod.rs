@@ -369,18 +369,32 @@ pub enum WorkspaceLoadError {
     NotSaved,
     /// A workspace file exists but cannot be restored. The file is left as it
     /// was found, and a session started without it must not save over it.
-    Unusable { path: PathBuf, reason: String },
+    Unusable {
+        path: PathBuf,
+        reason: String,
+        cause: UnusableCause,
+    },
+}
+
+/// What stopped the restore, which decides what the user is told to fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnusableCause {
+    /// The workspace file itself is unreadable, malformed or inconsistent.
+    WorkspaceFile,
+    /// The file is intact; the plugin migration it depends on failed.
+    PluginMigration,
 }
 
 impl WorkspaceLoadError {
-    fn unusable(path: &Path, reason: String) -> Self {
+    fn unusable(path: &Path, reason: String, cause: UnusableCause) -> Self {
         log::error!(
-            "workspace_load: cannot restore {}: {reason}; preserving original",
+            "workspace_load: cannot restore {} ({cause:?}): {reason}; preserving original",
             path.display()
         );
         Self::Unusable {
             path: path.to_path_buf(),
             reason,
+            cause,
         }
     }
 
@@ -398,12 +412,24 @@ impl std::fmt::Display for WorkspaceLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotSaved => f.write_str("no saved workspace"),
-            Self::Unusable { path, reason } => write!(
-                f,
-                "workspace file {} could not be restored: {reason}. It was left untouched and \
-                 this session will not save over it; repair or move the file, then restart Plexi",
-                path.display()
-            ),
+            Self::Unusable {
+                path,
+                reason,
+                cause,
+            } => {
+                let remedy = match cause {
+                    UnusableCause::WorkspaceFile => "repair or move the file, then restart Plexi",
+                    UnusableCause::PluginMigration => {
+                        "the file itself is intact; fix the plugin migration problem, then restart Plexi"
+                    }
+                };
+                write!(
+                    f,
+                    "workspace file {} could not be restored: {reason}. It was left untouched and \
+                     this session will not save over it; {remedy}",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -528,7 +554,12 @@ impl WorkspaceFile {
     /// [`WorkspaceLoadError::Unusable`] naming the file, and leaves it as found.
     pub fn load_from(profile_dir: &Path) -> Result<Self, WorkspaceLoadError> {
         let path = workspace_path_in(profile_dir);
-        let unusable = |reason: String| WorkspaceLoadError::unusable(&path, reason);
+        let unusable = |reason: String| {
+            WorkspaceLoadError::unusable(&path, reason, UnusableCause::WorkspaceFile)
+        };
+        let migration_failed = |reason: String| {
+            WorkspaceLoadError::unusable(&path, reason, UnusableCause::PluginMigration)
+        };
         let mut data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -568,7 +599,7 @@ impl WorkspaceFile {
         }
         let mut migrated = false;
         crate::app::plugin_migration::migrate(profile_dir)
-            .map_err(|error| unusable(format!("plugin migration failed: {error}")))?;
+            .map_err(|error| migration_failed(format!("plugin migration failed: {error}")))?;
         for window in &mut ws.windows {
             for pane in &mut window.panes {
                 if matches!(pane.plugin_id.as_deref(), Some("command" | "command-view")) {
@@ -582,7 +613,7 @@ impl WorkspaceFile {
                 };
                 if let Some(launch_path) = launch_path {
                     crate::app::plugin_migration::migrate_launch_root(launch_path).map_err(
-                        |error| unusable(format!("plugin-path migration failed: {error}")),
+                        |error| migration_failed(format!("plugin-path migration failed: {error}")),
                     )?;
                     if let Some(path) = crate::app::plugin_migration::migrated_path(launch_path) {
                         *launch_path = path;
@@ -1457,6 +1488,7 @@ mod tests {
         let WorkspaceLoadError::Unusable {
             path: named,
             reason,
+            cause: UnusableCause::WorkspaceFile,
         } = &error
         else {
             panic!("corrupt file must be Unusable, got {error:?}");
@@ -1466,6 +1498,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains(&path.display().to_string()), "{message}");
         assert!(message.contains(reason.as_str()), "{message}");
+        assert!(message.contains("repair or move the file"), "{message}");
         assert_eq!(error.save_block().as_deref(), Some(message.as_str()));
         assert_eq!(std::fs::read(&path).unwrap(), original);
 

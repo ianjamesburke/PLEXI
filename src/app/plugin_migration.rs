@@ -645,7 +645,15 @@ fn regenerate_scaffold_metadata(package: &Path, name: &str) -> std::io::Result<(
     let metadata = package.join(crate::cli::plugin::SCAFFOLD_METADATA_FILE);
     match std::fs::symlink_metadata(&metadata) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "package {name}: cannot inspect scaffold metadata {}: {error}",
+                    metadata.display()
+                ),
+            ))
+        }
         Ok(found) if !found.file_type().is_file() => {
             // Writing through a link would change a file outside the package.
             record(
@@ -659,7 +667,17 @@ fn regenerate_scaffold_metadata(package: &Path, name: &str) -> std::io::Result<(
         }
         Ok(_) => {}
     }
-    crate::cli::plugin::write_scaffold_metadata_file(package, SCAFFOLD_GENERATED_BY)?;
+    crate::cli::plugin::write_scaffold_metadata_file(package, SCAFFOLD_GENERATED_BY).map_err(
+        |error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "package {name}: cannot regenerate scaffold metadata {}: {error}",
+                    metadata.display()
+                ),
+            )
+        },
+    )?;
     trace(format!(
         "plugin_migration: package={name} regenerated scaffold metadata {}",
         metadata.display()
@@ -1296,6 +1314,25 @@ mod tests {
     /// Stint 1259: a migrated package's `plexi.scaffold.toml` is regenerated
     /// by the writer `plugin init` uses, so it describes schema 2 and this
     /// build. A package without one is not given one; the backup keeps the old.
+    /// A metadata write that fails names the package and the file.
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_metadata_write_failure_names_package_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let package = tempfile::tempdir().unwrap();
+        let metadata = package.path().join("plexi.scaffold.toml");
+        std::fs::write(&metadata, "schema_version = 1\n").unwrap();
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(package.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = regenerate_scaffold_metadata(package.path(), "logs");
+        std::fs::set_permissions(package.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result
+            .expect_err("a read-only package cannot be rewritten")
+            .to_string();
+        assert!(error.contains("package logs"), "{error}");
+        assert!(error.contains(&metadata.display().to_string()), "{error}");
+    }
+
     #[test]
     fn plugin_rename_regenerates_scaffold_metadata_of_migrated_packages() {
         let root = tempfile::tempdir().unwrap();

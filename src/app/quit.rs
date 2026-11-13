@@ -142,6 +142,18 @@ impl super::PlexiApp {
             Ok(()) => self.quit_coordinator.save_failures = 0,
             Err(error) => {
                 self.quit_coordinator.save_failures += 1;
+                // `plexi host stop` has nobody to answer a dialog, and a
+                // boot-time block never clears. The file stays as found and
+                // the exit reports the workspace unsaved.
+                if self.workspace_save_block.is_some()
+                    && self.quit_coordinator.reason == Some(ExitReason::HostStop)
+                {
+                    log::error!(
+                        "quit: host stop exits without saving; the session never restored its workspace: {error}"
+                    );
+                    self.quit_coordinator.save_waived = true;
+                    return true;
+                }
                 // A boot-time block cannot clear by retrying: ask at once.
                 if self.workspace_save_block.is_some()
                     || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
@@ -849,14 +861,15 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt workspace");
 
-        h.app.notifications_enabled = true;
+        // A host integrity notice ignores the notifications master switch.
+        h.app.notifications_enabled = false;
         h.app.surface_workspace_load_failure();
         assert!(
             h.app.pending_notifications.iter().any(|notification| {
                 notification.title == "Workspace not restored"
                     && notification.body.contains(&path.display().to_string())
             }),
-            "the load failure must be surfaced with the file path"
+            "the load failure must be surfaced with the file path even with notifications off"
         );
     }
 
@@ -877,7 +890,15 @@ mod tests {
         std::fs::create_dir_all(profile.path().join("apps/legacy")).unwrap();
         std::fs::create_dir_all(profile.path().join("plugins")).unwrap();
         let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
-        assert!(h.app.workspace_save_block.is_some());
+        let block = h
+            .app
+            .workspace_save_block
+            .clone()
+            .expect("a failed plugin migration blocks saves");
+        assert!(
+            block.contains("fix the plugin migration problem") && !block.contains("move the file"),
+            "an intact file must not be blamed: {block}"
+        );
         h.add_test_pane();
         h.app.mark_workspace_dirty();
         assert!(!h.app.save_workspace_now());
@@ -890,7 +911,7 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let (mut h, path) = harness_with_corrupt_workspace(profile.path());
         h.add_test_pane();
-        h.app.request_quit(ExitReason::HostStop);
+        h.app.request_quit(ExitReason::WindowClosed);
         assert!(!h
             .app
             .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
@@ -909,31 +930,50 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt workspace");
     }
 
-    /// Stint 1127: `plexi host stop` (IPC `Shutdown`) carries the same
-    /// guarantee as a desktop quit: no hide or exit until the save lands.
+    /// Stint 1127: `plexi host stop` (IPC `Shutdown`) on a session whose
+    /// workspace never restored has nobody to answer the save dialog. It
+    /// exits unsaved instead of hanging until the CLI kills it, and the file
+    /// is left as found. The file parses but fails validation, so the boot
+    /// block, not `save_to`'s refusal of unparseable JSON, is what is tested.
     #[test]
-    fn host_stop_over_ipc_waits_for_its_pending_save() {
-        let mut h = crate::testing::HostHarness::new();
+    fn host_stop_over_ipc_on_a_blocked_workspace_exits_unsaved_without_asking() {
+        let profile = tempfile::tempdir().unwrap();
+        {
+            let mut first =
+                crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+            first.add_test_pane();
+            assert!(first.app.save_workspace_now());
+        }
+        let path = crate::workspace::workspace_path_in(profile.path());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["active_context"] = serde_json::json!(999);
+        let original = serde_json::to_vec_pretty(&value).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut h = crate::testing::HostHarness::from_profile_dir(profile.path().to_path_buf());
+        let block = h
+            .app
+            .workspace_save_block
+            .clone()
+            .expect("a workspace that fails validation blocks saves");
+        assert!(block.contains("invalid workspace"), "{block}");
         h.add_test_pane();
         h.app.mark_workspace_dirty();
-        let path = crate::workspace::workspace_path_in(h.profile_dir());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"invalid workspace").unwrap();
         h.inject_ipc(crate::protocol::HostRequest::Shutdown);
         h.hidden_frame();
         assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert!(!h.app.pending_close, "host stop must not raise the dialog");
+        assert!(h.app.quit_coordinator.save_failure().is_none());
         assert!(
-            !h.app.quit_coordinator.hide_requested,
-            "a failed save must keep the host alive"
+            h.app.quit_coordinator.hide_requested,
+            "host stop must proceed to exit"
         );
-        assert!(h.app.workspace_dirty);
-        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
-        std::fs::remove_file(&path).unwrap();
-        h.app.quit_coordinator.retry_at = None;
-        h.hidden_frame();
-        assert!(h.app.quit_coordinator.hide_requested);
-        assert!(!h.app.workspace_dirty);
-        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
+        assert_eq!(
+            h.app.quit_workspace_durability(),
+            WorkspaceDurability::Unsaved
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]

@@ -1597,6 +1597,7 @@ mod tests {
                 "{error}"
             );
             assert!(error.contains(declared), "{error}");
+            assert!(!error.contains('\n'), "one line: {error:?}");
             assert!(!error.contains("schema 1 `[app]`"), "{error}");
             assert!(error.contains("rename `[app]` to `[plugin]`"), "{error}");
             assert!(error.contains("schema_version = 2"), "{error}");

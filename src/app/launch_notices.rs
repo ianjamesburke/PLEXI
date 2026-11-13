@@ -46,9 +46,9 @@ impl PlexiApp {
         let Some(block) = self.workspace_save_block.clone() else {
             return;
         };
-        log::info!("workspace_load: surfacing restore failure to the user");
-        self.enqueue_notification(
-            crate::app::notifications::NotifySource::HostInternal,
+        log::error!("workspace_load: surfacing restore failure to the user: {block}");
+        let queued = self.enqueue_notification(
+            crate::app::notifications::NotifySource::HostIntegrity,
             crate::app::notifications::PendingNotification {
                 notify_id: crate::app::notifications::new_notify_id("workspace-load"),
                 title: "Workspace not restored".to_string(),
@@ -60,6 +60,9 @@ impl PlexiApp {
                 ..Default::default()
             },
         );
+        if !queued {
+            log::error!("workspace_load: restore-failure notice was not queued");
+        }
     }
 
     /// Only the Applications folders are scanned here: Downloads and Desktop

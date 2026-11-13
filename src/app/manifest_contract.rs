@@ -221,12 +221,15 @@ impl PluginManifest {
             None => "this manifest declares no schema_version".to_string(),
         };
         let wire: PluginManifestWire = value.try_into().map_err(|e: toml::de::Error| {
+            // toml's message ends in a newline; keep the error one line.
+            let e = e.to_string();
+            let e = e.trim_end();
             let message = if legacy {
                 format!(
                     "`[app]` manifests are no longer accepted ({declared}); rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
                 )
             } else {
-                e.to_string()
+                e.to_owned()
             };
             ManifestError::reject(&plugin, "manifest", ManifestErrorKind::InvalidField(message))
         })?;
