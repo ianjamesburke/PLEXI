@@ -410,6 +410,15 @@ fn hide_native_window(frame: &eframe::Frame) -> Result<bool, &'static str> {
         let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
         let window = view.window().ok_or("NSView has no window")?;
         window.orderOut(None);
+        // AppKit hands `orderOut` to the window server when the run loop next
+        // turns, and quit cleanup blocks the main thread straight after, so
+        // the window stayed on screen until exit (stint 1522). Commit now.
+        match objc2::runtime::AnyClass::get(c"CATransaction") {
+            // SAFETY: `+[CATransaction flush]` takes no arguments, returns
+            // void, and is called on the AppKit main thread checked above.
+            Some(transaction) => unsafe { objc2::msg_send![transaction, flush] },
+            None => log::warn!("quit: CATransaction unavailable; window hide is not flushed"),
+        }
         if window.isVisible() {
             Err("AppKit window remains visible")
         } else {
