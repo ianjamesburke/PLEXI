@@ -218,6 +218,12 @@ fn resolve_note_path(
 /// `plexi note list` — every note across every visible tier, newest first.
 pub fn notes_list_cli() -> i32 {
     let scopes = cli_notes_scopes();
+    if let Some(budget) = crate::notes::rollup_walk_budget_hit() {
+        eprintln!(
+            "note list: stopped looking for nested notes after {budget} folders; \
+             notes deeper in this tree may be missing"
+        );
+    }
     log::info!(
         "notes_list: scanning {:?}",
         scopes.iter().map(|s| &s.dir).collect::<Vec<_>>()
