@@ -1147,7 +1147,7 @@ fn main() -> eframe::Result {
                         PluginCmd::Uninstall { id, yes } => {
                             cli::trace::exit(cli::plugin_uninstall(&id, yes))
                         }
-                        PluginCmd::List => cli::trace::exit(cli::plugin_list()),
+                        PluginCmd::List => cli::trace::exit(cli::plugin_list(json)),
                         PluginCmd::Prune { dry_run } => {
                             cli::trace::exit(cli::plugin_prune_cli(dry_run))
                         }
