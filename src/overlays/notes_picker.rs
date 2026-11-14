@@ -12,7 +12,9 @@
 //!
 //! Deleting a note that is open in a text-editor pane closes that pane first so
 //! the editor cannot write the file back, then moves the file to Trash; the
-//! picker stays open.
+//! picker stays open. Copy and cut are optimistic: the picker closes in the
+//! frame the key is pressed, the read and the trash run on a worker thread,
+//! `App::logic` drains their results, and a failure shows as a notice toast.
 
 use crate::app::text_editor_view::note_path_identity;
 use crate::app::{FocusKind, PlexiApp};
@@ -24,9 +26,10 @@ use crate::ui::{
     text_field::TextField,
 };
 
-/// Recoverable destination returned by the platform trash operation.
-pub(crate) trait NotesTrash {
-    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String>;
+/// Recoverable destination returned by the platform trash operation. Shared
+/// with the cut worker thread, so implementations are `Send + Sync`.
+pub(crate) trait NotesTrash: Send + Sync {
+    fn trash(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String>;
 }
 
 pub(crate) struct DeletedNote {
@@ -38,6 +41,114 @@ pub(crate) struct DeletedNote {
     closed_editor: bool,
 }
 
+/// What a cached preview was read at. A different modified time or length
+/// means the note was rewritten since, so the cache is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NoteStamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+impl NoteStamp {
+    fn of(path: &std::path::Path) -> std::io::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+}
+
+/// The preview half's cached note body. `checked` is cleared whenever the
+/// picker closes, so the next open stats the note once before trusting it.
+pub(crate) struct NotePreview {
+    path: std::path::PathBuf,
+    stamp: Option<NoteStamp>,
+    text: std::sync::Arc<str>,
+    checked: bool,
+}
+
+/// What a background preview load found.
+enum PreviewLoad {
+    /// The file still matches the stamp the cached text was read at.
+    Unchanged,
+    /// The note body as of `stamp`, or a readable error in its place.
+    Fresh {
+        stamp: Option<NoteStamp>,
+        text: std::sync::Arc<str>,
+    },
+}
+
+/// A preview stat-and-read running off the UI thread. Drained from
+/// `App::logic`; a newer selection replaces it and its result is dropped.
+pub(crate) struct NotePreviewJob {
+    path: std::path::PathBuf,
+    rx: std::sync::mpsc::Receiver<PreviewLoad>,
+}
+
+/// Worker body: one stat, and a read only when the stamp moved from `known`.
+fn load_preview(path: &std::path::Path, known: Option<NoteStamp>) -> PreviewLoad {
+    // Stamp before reading: a write landing mid-read leaves an older stamp,
+    // so the next check re-reads rather than trusting a torn body.
+    let stamp = NoteStamp::of(path).ok();
+    if stamp.is_some() && stamp == known {
+        return PreviewLoad::Unchanged;
+    }
+    let text: std::sync::Arc<str> = match std::fs::read_to_string(path) {
+        // Preview and clipboard share one projection: the note body, with a
+        // Plexi capture metadata envelope stripped and user text preserved.
+        Ok(text) => crate::notes::note_body(&text).into(),
+        Err(e) => {
+            log::warn!("notes_picker: preview read failed for {path:?}: {e}");
+            format!("Could not read note: {e}").into()
+        }
+    };
+    PreviewLoad::Fresh { stamp, text }
+}
+
+/// Which picker chord started a background clipboard job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipKind {
+    Copy,
+    Cut,
+}
+
+impl ClipKind {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Cut => "cut",
+        }
+    }
+}
+
+/// One finished step of a background copy or cut, sent from its worker.
+enum ClipStep {
+    /// The note body (capture envelope stripped), or why it could not be read.
+    Read(Result<String, String>),
+    /// Where the cut note went in Trash, or why it could not move.
+    Trashed(Result<std::path::PathBuf, String>),
+}
+
+/// A Cmd+C / Cmd+X still finishing off the UI thread after the picker closed.
+/// Everything the result needs is captured at the key press, so the drain
+/// never looks it up from picker state that may have changed since.
+pub(crate) struct NotesClipJob {
+    kind: ClipKind,
+    entry: crate::notes::NotePickerEntry,
+    index: usize,
+    context_root: std::path::PathBuf,
+    closed_editor: bool,
+    rx: std::sync::mpsc::Receiver<ClipStep>,
+}
+
+/// The note body the preview shows and the clipboard receives.
+fn read_note_body(path: &std::path::Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map(|text| crate::notes::note_body(&text).to_string())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(not(test))]
 struct PlatformTrash;
 
@@ -45,17 +156,21 @@ struct PlatformTrash;
 // guessed ~/.Trash path: https://developer.apple.com/documentation/foundation/filemanager/trashitem(at:resultingitemurl:)
 #[cfg(all(not(test), target_os = "macos"))]
 impl NotesTrash for PlatformTrash {
-    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    fn trash(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
         use objc2_foundation::{NSFileManager, NSString, NSURL};
         let path = path.to_str().ok_or("Note path is not valid UTF-8")?;
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        let mut result = None;
-        NSFileManager::defaultManager()
-            .trashItemAtURL_resultingItemURL_error(&url, Some(&mut result))
-            .map_err(|e| e.to_string())?;
-        let result = result.ok_or("Trash did not return the moved item's location")?;
-        let path = result.path().ok_or("Trash returned a non-file URL")?;
-        Ok(std::path::PathBuf::from(path.to_string()))
+        // The cut worker calls this off the main thread, where no pool drains
+        // autoreleased Foundation objects; scope one to this call.
+        objc2::rc::autoreleasepool(|_pool| -> Result<std::path::PathBuf, String> {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+            let mut result = None;
+            NSFileManager::defaultManager()
+                .trashItemAtURL_resultingItemURL_error(&url, Some(&mut result))
+                .map_err(|e| e.to_string())?;
+            let result = result.ok_or("Trash did not return the moved item's location")?;
+            let path = result.path().ok_or("Trash returned a non-file URL")?;
+            Ok(std::path::PathBuf::from(path.to_string()))
+        })
     }
 }
 
@@ -90,7 +205,7 @@ fn move_to_recovery(
 
 #[cfg(all(not(test), not(target_os = "macos")))]
 impl NotesTrash for PlatformTrash {
-    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    fn trash(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
         let parent = path.parent().ok_or("Note has no parent directory")?;
         move_to_recovery(path, &parent.join(".plexi-notes-trash"))
     }
@@ -112,21 +227,21 @@ impl FakeNotesTrash {
 }
 #[cfg(test)]
 impl NotesTrash for FakeNotesTrash {
-    fn trash(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    fn trash(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
         if self.fail {
             return Err("injected trash failure".into());
         }
         move_to_recovery(path, self.dir.path())
     }
 }
-pub(crate) fn default_notes_trash() -> Box<dyn NotesTrash> {
+pub(crate) fn default_notes_trash() -> std::sync::Arc<dyn NotesTrash> {
     #[cfg(test)]
     {
-        Box::new(FakeNotesTrash::new())
+        std::sync::Arc::new(FakeNotesTrash::new())
     }
     #[cfg(not(test))]
     {
-        Box::new(PlatformTrash)
+        std::sync::Arc::new(PlatformTrash)
     }
 }
 
@@ -223,28 +338,117 @@ impl PlexiApp {
             .copied()
     }
 
-    /// Content of the selected note for the preview half, read once per path
-    /// and cached until the selection moves to another note or the note goes.
+    /// Content of the selected note for the preview half. Never touches the
+    /// file on the calling (UI) thread: a cached body shows at once, and the
+    /// stat (once per picker open) and any read run on a worker whose result
+    /// `App::logic` swaps in. `None` means the first read has not landed yet.
     pub(crate) fn notes_picker_preview_text(&mut self) -> Option<std::sync::Arc<str>> {
         let path = self
             .notes_picker_selected_entry()
             .map(|idx| self.notes_picker_entries[idx].path.clone())?;
-        if let Some((cached, text)) = &self.notes_picker_preview {
-            if *cached == path {
-                return Some(text.clone());
+        let cached = self
+            .notes_picker_preview
+            .as_ref()
+            .filter(|cached| cached.path == path);
+        let text = cached.map(|cached| cached.text.clone());
+        if cached.is_some_and(|cached| cached.checked) {
+            return text;
+        }
+        let known = cached.and_then(|cached| cached.stamp);
+        let in_flight = self
+            .notes_picker_preview_job
+            .as_ref()
+            .is_some_and(|job| job.path == path);
+        if !in_flight {
+            self.notes_picker_preview_spawn(path, known);
+        }
+        text
+    }
+
+    fn notes_picker_preview_spawn(&mut self, path: std::path::PathBuf, known: Option<NoteStamp>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        let worker_path = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("notes-preview".to_string())
+            .spawn(move || {
+                // A send fails only when a newer selection replaced this job;
+                // its result is obsolete by design.
+                if tx.send(load_preview(&worker_path, known)).is_ok() {
+                    wake.wake("notes_preview");
+                }
+            });
+        match spawned {
+            Ok(_) => self.notes_picker_preview_job = Some(NotePreviewJob { path, rx }),
+            Err(e) => {
+                log::warn!("notes_picker: could not start the preview read for {path:?}: {e}");
+                self.notes_picker_preview_job = None;
+                self.notes_picker_preview = Some(NotePreview {
+                    path,
+                    stamp: None,
+                    text: format!("Could not read note: {e}").into(),
+                    checked: true,
+                });
             }
         }
-        let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
-            // Preview and clipboard share one projection: the note body, with a
-            // Plexi capture metadata envelope stripped and user text preserved.
-            Ok(text) => crate::notes::note_body(&text).into(),
-            Err(e) => {
-                log::warn!("notes_picker: preview read failed for {path:?}: {e}");
-                format!("Could not read note: {e}").into()
+    }
+
+    /// Swap in a finished background preview load. Called from `App::logic`.
+    pub(crate) fn drain_notes_preview_read(&mut self) {
+        let received = {
+            let Some(job) = self.notes_picker_preview_job.as_ref() else {
+                return;
+            };
+            job.rx.try_recv()
+        };
+        let load = match received {
+            Ok(load) => load,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(job) = self.notes_picker_preview_job.take() {
+                    log::warn!(
+                        "notes_picker: preview worker for {:?} stopped without a result",
+                        job.path
+                    );
+                }
+                return;
             }
         };
-        self.notes_picker_preview = Some((path, text.clone()));
-        Some(text)
+        let Some(job) = self.notes_picker_preview_job.take() else {
+            return;
+        };
+        let cached = self
+            .notes_picker_preview
+            .as_mut()
+            .filter(|cached| cached.path == job.path);
+        match (load, cached) {
+            (PreviewLoad::Unchanged, Some(cached)) => cached.checked = true,
+            (PreviewLoad::Unchanged, None) => {
+                // The cache moved to another note meanwhile; nothing to confirm.
+            }
+            (PreviewLoad::Fresh { stamp, text }, cached) => {
+                if cached.is_some() {
+                    log::info!(
+                        "notes_picker: cached preview of {:?} was stale; swapped in the current body",
+                        job.path
+                    );
+                }
+                self.notes_picker_preview = Some(NotePreview {
+                    path: job.path,
+                    stamp,
+                    text,
+                    checked: true,
+                });
+            }
+        }
+    }
+
+    /// The note may be edited while the picker is away; make the next preview
+    /// read stat it before reusing the cached text.
+    pub(crate) fn notes_picker_preview_needs_check(&mut self) {
+        if let Some(cached) = self.notes_picker_preview.as_mut() {
+            cached.checked = false;
+        }
     }
 
     /// Dismiss the notes picker overlay and restore focus to the originating pane.
@@ -252,6 +456,7 @@ impl PlexiApp {
         log::info!("notes_picker: closed");
         self.notes_picker_status = None;
         self.notes_picker_last_drawn_selected = None;
+        self.notes_picker_preview_needs_check();
         self.pop_focus_layer(&FocusKind::NotesPicker);
     }
 
@@ -264,27 +469,196 @@ impl PlexiApp {
         }
     }
 
-    /// Copy the selected note's body to the clipboard, stripping a Plexi capture
-    /// metadata envelope. Returns the path copied so cut can reuse it.
-    fn notes_picker_copy_selected(&mut self) -> Option<std::path::PathBuf> {
-        let entry_idx = self.notes_picker_selected_entry()?;
-        let path = self.notes_picker_entries[entry_idx].path.clone();
-        let title = self.notes_picker_entries[entry_idx].title.clone();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let body = crate::notes::note_body(&text).to_string();
-                log::info!("notes_picker: copied {} byte(s) from {path:?}", body.len());
-                self.notes_picker_last_copied = Some(body);
-                self.notes_picker_copy_unsent = true;
-                Some(path)
+    /// Cmd+C / Cmd+X: after the in-memory refusals (no selection, a cut of a
+    /// note whose pane has unsaved edits) the picker closes in this frame and
+    /// the read, clipboard write and (for cut) trash finish in the background.
+    fn notes_picker_clip_selected(&mut self, kind: ClipKind) {
+        let Some(index) = self.notes_picker_selected_entry() else {
+            return;
+        };
+        let entry = self.notes_picker_entries[index].clone();
+        if kind == ClipKind::Cut
+            && self.notes_picker_refuse_if_dirty(&entry.path, &entry.title, true)
+        {
+            return;
+        }
+        let verb = kind.verb();
+        log::info!("notes_picker: {verb} requested for {:?}", entry.path);
+        let path = entry.path.clone();
+        match self.notes_clip_spawn(move || ClipStep::Read(read_note_body(&path))) {
+            Ok(rx) => {
+                let context_root = self.router.active().root.clone();
+                self.notes_clip_jobs.push(NotesClipJob {
+                    kind,
+                    entry,
+                    index,
+                    context_root,
+                    closed_editor: false,
+                    rx,
+                });
+                self.close_notes_picker();
             }
             Err(e) => {
-                log::warn!("notes_picker: copy failed for {path:?}: {e}");
-                self.notes_picker_status =
-                    Some(format!("Can't copy \u{201c}{title}\u{201d}: {e}."));
-                None
+                log::warn!(
+                    "notes_picker: could not start the {verb} worker for {:?}: {e}",
+                    entry.path
+                );
+                self.notes_picker_status = Some(format!(
+                    "Can't {verb} \u{201c}{}\u{201d}: could not start the background copy ({e}).",
+                    entry.title
+                ));
             }
         }
+    }
+
+    /// Run one step of a copy or cut on a worker thread. The result wakes the
+    /// UI and is applied by [`Self::drain_notes_clip_jobs`] in `App::logic`.
+    fn notes_clip_spawn(
+        &self,
+        work: impl FnOnce() -> ClipStep + Send + 'static,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<ClipStep>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        std::thread::Builder::new()
+            .name("notes-clip".to_string())
+            .spawn(move || {
+                if tx.send(work()).is_err() {
+                    log::warn!("notes_picker: clip result dropped; the host stopped waiting");
+                }
+                wake.wake("notes_clip");
+            })?;
+        Ok(rx)
+    }
+
+    /// Apply finished background copy and cut steps. Called from `App::logic`,
+    /// so an occluded window still completes a cut it started.
+    pub(crate) fn drain_notes_clip_jobs(&mut self, ctx: &egui::Context) {
+        if self.notes_clip_jobs.is_empty() {
+            return;
+        }
+        for job in std::mem::take(&mut self.notes_clip_jobs) {
+            // Bind the result first so the receiver borrow ends before `job` moves.
+            let received = job.rx.try_recv();
+            match received {
+                Ok(step) => self.notes_clip_apply(ctx, job, step),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.notes_clip_jobs.push(job),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let verb = job.kind.verb();
+                    log::warn!(
+                        "notes_picker: {verb} worker for {:?} stopped without a result",
+                        job.entry.path
+                    );
+                    self.notes_picker_show_notice(format!(
+                        "Can't {verb} \u{201c}{}\u{201d}: the background task stopped.",
+                        job.entry.title
+                    ));
+                }
+            }
+        }
+    }
+
+    fn notes_clip_apply(&mut self, ctx: &egui::Context, job: NotesClipJob, step: ClipStep) {
+        let verb = job.kind.verb();
+        match step {
+            ClipStep::Read(Err(e)) => {
+                log::info!(
+                    "notes_picker: {verb} failed reading {:?}: {e}",
+                    job.entry.path
+                );
+                self.notes_picker_show_notice(format!(
+                    "Can't {verb} \u{201c}{}\u{201d}: {e}.",
+                    job.entry.title
+                ));
+            }
+            ClipStep::Read(Ok(body)) => {
+                log::info!(
+                    "notes_picker: copied {} byte(s) from {:?}",
+                    body.len(),
+                    job.entry.path
+                );
+                self.notes_picker_last_copied = Some(body);
+                self.notes_picker_copy_unsent = true;
+                self.notes_picker_flush_copy(ctx);
+                if job.kind == ClipKind::Cut {
+                    self.notes_cut_start_trash(job);
+                }
+            }
+            ClipStep::Trashed(Err(e)) => {
+                log::info!(
+                    "notes_picker: cut copied {:?} but trash failed: {e}",
+                    job.entry.path
+                );
+                self.notes_picker_show_notice(format!(
+                    "Copied \u{201c}{}\u{201d}, but could not move it to Trash: {e}.",
+                    job.entry.title
+                ));
+            }
+            ClipStep::Trashed(Ok(trashed_path)) => {
+                log::info!(
+                    "notes_picker: cut trashed {:?} to {:?}",
+                    job.entry.path,
+                    trashed_path
+                );
+                self.notes_picker_record_trashed(DeletedNote {
+                    entry: job.entry,
+                    index: job.index,
+                    trashed_path,
+                    context_root: job.context_root,
+                    at: std::time::Instant::now(),
+                    closed_editor: job.closed_editor,
+                });
+            }
+        }
+    }
+
+    /// Second half of a cut, once the body is on the clipboard: close the
+    /// note's (clean) editor panes so none can write it back, then trash it
+    /// off the UI thread. The clipboard already holds the body, so no failure
+    /// here can lose the note.
+    fn notes_cut_start_trash(&mut self, mut job: NotesClipJob) {
+        let path = job.entry.path.clone();
+        if self.open_text_editor_pane_is_dirty(&path) {
+            log::info!(
+                "notes_picker: cut of {path:?} copied but not trashed; its pane gained unsaved edits"
+            );
+            self.notes_picker_show_notice(format!(
+                "Copied \u{201c}{}\u{201d}; not moved to Trash because its pane has unsaved edits.",
+                job.entry.title
+            ));
+            return;
+        }
+        match self.notes_close_editor_panes(&path) {
+            Ok(closed) => job.closed_editor = closed,
+            Err(reason) => {
+                self.notes_picker_show_notice(format!(
+                    "Copied \u{201c}{}\u{201d}, but could not move it to Trash: {reason}",
+                    job.entry.title
+                ));
+                return;
+            }
+        }
+        let trash = std::sync::Arc::clone(&self.notes_trash);
+        match self.notes_clip_spawn(move || ClipStep::Trashed(trash.trash(&path))) {
+            Ok(rx) => {
+                job.rx = rx;
+                self.notes_clip_jobs.push(job);
+            }
+            Err(e) => {
+                log::warn!(
+                    "notes_picker: could not start the trash worker for {:?}: {e}",
+                    job.entry.path
+                );
+                self.notes_picker_show_notice(format!(
+                    "Copied \u{201c}{}\u{201d}, but could not move it to Trash: {e}.",
+                    job.entry.title
+                ));
+            }
+        }
+    }
+
+    /// A toast for an outcome the user must see after the picker is gone.
+    fn notes_picker_show_notice(&mut self, message: String) {
+        self.notes_picker_notice = Some((message, std::time::Instant::now()));
     }
 
     /// Whether the open text-editor pane for `path` (if any) has unsaved edits.
@@ -322,20 +696,6 @@ impl PlexiApp {
         true
     }
 
-    fn notes_picker_cut_selected(&mut self) {
-        let Some(idx) = self.notes_picker_selected_entry() else {
-            return;
-        };
-        let entry = &self.notes_picker_entries[idx];
-        let (path, title) = (entry.path.clone(), entry.title.clone());
-        if self.notes_picker_refuse_if_dirty(&path, &title, true) {
-            return;
-        }
-        if self.notes_picker_copy_selected().is_some() {
-            self.notes_picker_delete_entry(idx);
-        }
-    }
-
     fn notes_picker_request_delete(&mut self) {
         let Some(idx) = self.notes_picker_selected_entry() else {
             return;
@@ -355,18 +715,13 @@ impl PlexiApp {
             return false;
         }
         let context_root = self.router.active().root.clone();
-        let closed_editor = self
-            .find_open_text_editor_pane_any_window(&entry.path)
-            .is_some();
-        while let Some(pane_id) = self.find_open_text_editor_pane_any_window(&entry.path) {
-            self.close_pane_by_id(pane_id);
-            if self.find_open_text_editor_pane_any_window(&entry.path) == Some(pane_id) {
-                self.notes_picker_status =
-                    Some("Can't delete: the editor pane could not close.".into());
-                log::info!("notes_picker: trash failed; editor pane {pane_id} did not close");
+        let closed_editor = match self.notes_close_editor_panes(&entry.path) {
+            Ok(closed) => closed,
+            Err(reason) => {
+                self.notes_picker_status = Some(format!("Can't delete: {reason}"));
                 return false;
             }
-        }
+        };
         let trashed_path = match self.notes_trash.trash(&entry.path) {
             Ok(path) => path,
             Err(e) => {
@@ -380,9 +735,7 @@ impl PlexiApp {
             entry.path,
             trashed_path
         );
-        self.notes_picker_entries.remove(entry_idx);
-        self.notes_picker_notice = None;
-        self.notes_picker_undo = Some(DeletedNote {
+        self.notes_picker_record_trashed(DeletedNote {
             entry,
             index: entry_idx,
             trashed_path,
@@ -390,6 +743,37 @@ impl PlexiApp {
             at: std::time::Instant::now(),
             closed_editor,
         });
+        true
+    }
+
+    /// Close every editor pane holding `path` so none can write the note back
+    /// after it moves. `Ok` says whether any pane was closed; `Err` says why
+    /// the trash must not proceed.
+    fn notes_close_editor_panes(&mut self, path: &std::path::Path) -> Result<bool, String> {
+        let closed_editor = self.find_open_text_editor_pane_any_window(path).is_some();
+        while let Some(pane_id) = self.find_open_text_editor_pane_any_window(path) {
+            self.close_pane_by_id(pane_id);
+            if self.find_open_text_editor_pane_any_window(path) == Some(pane_id) {
+                log::info!("notes_picker: trash failed; editor pane {pane_id} did not close");
+                return Err("the editor pane could not close.".into());
+            }
+        }
+        Ok(closed_editor)
+    }
+
+    /// Book a note that is now in Trash: drop its row (wherever it sits now,
+    /// since a background cut may land after the list changed) and arm undo.
+    fn notes_picker_record_trashed(&mut self, mut deleted: DeletedNote) {
+        if let Some(pos) = self
+            .notes_picker_entries
+            .iter()
+            .position(|entry| entry.path == deleted.entry.path)
+        {
+            self.notes_picker_entries.remove(pos);
+            deleted.index = pos;
+        }
+        self.notes_picker_notice = None;
+        self.notes_picker_undo = Some(deleted);
         self.notes_picker_preview = None;
         let visible = self.notes_picker_filtered().len();
         self.notes_picker_selected = self.notes_picker_selected.min(visible.saturating_sub(1));
@@ -399,7 +783,6 @@ impl PlexiApp {
             .map(|entry| entry.path.clone())
             .collect();
         self.invalidate_notes_index();
-        true
     }
 
     pub(crate) fn notes_picker_undo_delete(&mut self) {
@@ -449,50 +832,77 @@ impl PlexiApp {
         self.notes_picker_notice = Some((message, std::time::Instant::now()));
     }
 
-    pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
-        let Some(deleted) = self.notes_picker_undo.as_ref() else {
-            if let Some((message, at)) = &self.notes_picker_notice {
-                let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
-                if !remaining.is_zero() {
-                    crate::ui::toast::ToastShell::bottom("notes_delete_notice").show(
-                        ctx,
-                        &self.colors,
-                        |ui| {
-                            crate::ui::toast::toast_caption(ui, message, &self.colors);
-                        },
-                    );
-                    ctx.request_repaint_after(
-                        remaining
-                            + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
-                    );
-                }
+    /// Drop the undo record and the notice once their toasts have dwelt, so
+    /// Cmd+Z and the toast always agree on what is undoable. Runs from
+    /// `App::logic`, so a hidden window still expires them.
+    pub(crate) fn expire_notes_toasts(&mut self) {
+        let undo_expired = self
+            .notes_picker_undo
+            .as_ref()
+            .is_some_and(|deleted| deleted.at.elapsed() >= style::TOAST_DWELL_UNDO);
+        if undo_expired {
+            if let Some(deleted) = self.notes_picker_undo.take() {
+                log::info!(
+                    "notes_picker: undo window for {:?} expired after {:?}; the note stays in Trash",
+                    deleted.entry.path,
+                    style::TOAST_DWELL_UNDO
+                );
             }
-            return;
-        };
-        const DURATION: std::time::Duration = std::time::Duration::from_secs(8);
-        let remaining = DURATION.saturating_sub(deleted.at.elapsed());
-        if remaining.is_zero() {
-            return;
         }
-        let caption = format!("Deleted {}", deleted.entry.title);
-        let undo_error = self
-            .notes_picker_status
-            .as_deref()
-            .filter(|status| status.starts_with("Can't undo"));
-        let colors = self.colors;
-        let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
-            .offset(egui::vec2(0.0, -style::SPACE_SM))
-            .action(ctx, &colors, &caption, "Undo", undo_error);
-        #[cfg(test)]
-        ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
-        });
-        if response.clicked() {
-            self.notes_picker_undo_delete();
+        if self
+            .notes_picker_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= style::TOAST_DWELL_NOTICE)
+        {
+            self.notes_picker_notice = None;
         }
-        ctx.request_repaint_after(
-            remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
-        );
+    }
+
+    pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
+        // A pending undo stays visible and clickable for its whole dwell. A
+        // notice (a restore, or a background copy or cut that failed after the
+        // picker closed) stacks above it rather than hiding it.
+        let mut undo_height = None;
+        if let Some(deleted) = self.notes_picker_undo.as_ref() {
+            let remaining = style::TOAST_DWELL_UNDO.saturating_sub(deleted.at.elapsed());
+            if !remaining.is_zero() {
+                let caption = format!("Deleted {}", deleted.entry.title);
+                let undo_error = self
+                    .notes_picker_status
+                    .as_deref()
+                    .filter(|status| status.starts_with("Can't undo"));
+                let colors = self.colors;
+                let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
+                    .offset(egui::vec2(0.0, -style::SPACE_SM))
+                    .action(ctx, &colors, &caption, "Undo", undo_error);
+                #[cfg(test)]
+                ctx.data_mut(|data| {
+                    data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
+                });
+                undo_height = Some(response.rect.height());
+                if response.clicked() {
+                    self.notes_picker_undo_delete();
+                }
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
+        }
+        if let Some((message, at)) = &self.notes_picker_notice {
+            let remaining = style::TOAST_DWELL_NOTICE.saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                let mut shell = crate::ui::toast::ToastShell::bottom("notes_delete_notice");
+                if let Some(height) = undo_height {
+                    shell = shell.offset(egui::vec2(0.0, -(height + 2.0 * style::SPACE_SM)));
+                }
+                shell.show(ctx, &self.colors, |ui| {
+                    crate::ui::toast::toast_caption(ui, message, &self.colors);
+                });
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
+        }
     }
 
     pub(crate) fn notes_picker_handle_key(
@@ -608,13 +1018,8 @@ impl PlexiApp {
                 self.notes_picker_request_delete();
             }
             Some(PickerKey::Undo) => self.notes_picker_undo_delete(),
-            Some(PickerKey::Copy) => {
-                if self.notes_picker_copy_selected().is_some() {
-                    log::info!("notes_picker: copy successful — closing picker");
-                    self.close_notes_picker();
-                }
-            }
-            Some(PickerKey::Cut) => self.notes_picker_cut_selected(),
+            Some(PickerKey::Copy) => self.notes_picker_clip_selected(ClipKind::Copy),
+            Some(PickerKey::Cut) => self.notes_picker_clip_selected(ClipKind::Cut),
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
             None => {}
         }
@@ -853,22 +1258,28 @@ impl PlexiApp {
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| {
                                             ui.set_width(ui.available_width());
-                                            let body_text = preview.as_deref().unwrap_or("");
-                                            if body_text.trim().is_empty() {
-                                                ui.label(
-                                                    egui::RichText::new("Empty note")
-                                                        .font(font_id.clone())
-                                                        .color(colors.text_dim),
-                                                );
-                                            } else {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        egui::RichText::new(body_text)
+                                            // `None`: the first read is still in flight
+                                            // (a frame or two); paint nothing rather
+                                            // than a false "Empty note".
+                                            match preview.as_deref() {
+                                                None => {}
+                                                Some(body) if body.trim().is_empty() => {
+                                                    ui.label(
+                                                        egui::RichText::new("Empty note")
                                                             .font(font_id.clone())
-                                                            .color(colors.text_primary),
-                                                    )
-                                                    .wrap(),
-                                                );
+                                                            .color(colors.text_dim),
+                                                    );
+                                                }
+                                                Some(body) => {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(body)
+                                                                .font(font_id.clone())
+                                                                .color(colors.text_primary),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
                                             }
                                         });
                                 });
@@ -1469,14 +1880,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&profile);
     }
 
-    /// Dispatch one picker chord and return the frame output, so a test can read
-    /// the real egui clipboard command rather than only intermediate state.
+    /// Dispatch one picker chord through the picker's key handler.
     fn press_picker_chord(
         app: &mut PlexiApp,
         ctx: &egui::Context,
         modifiers: egui::Modifiers,
         key: egui::Key,
-    ) -> egui::FullOutput {
+    ) {
         let mut input = picker_frame_input();
         input.events.push(egui::Event::Key {
             key,
@@ -1485,23 +1895,39 @@ mod tests {
             repeat: false,
             modifiers,
         });
-        ctx.run_ui(input, |ui| {
+        let _ = ctx.run_ui(input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
             app.notes_picker_flush_copy(ui.ctx());
-        })
+        });
     }
 
-    /// The text egui was actually handed for the clipboard during a frame.
-    fn clipboard_text(output: &egui::FullOutput) -> Option<String> {
-        output
-            .platform_output
-            .commands
-            .iter()
-            .find_map(|command| match command {
-                egui::OutputCommand::CopyText(text) => Some(text.clone()),
-                _ => None,
-            })
+    /// Wait for the picker's background copy/cut work, applying each result in
+    /// an egui pass the way `App::logic` does, and return the text egui was
+    /// actually handed for the clipboard rather than only intermediate state.
+    fn finish_clip(app: &mut PlexiApp, ctx: &egui::Context) -> Vec<String> {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        let mut copied = Vec::new();
+        loop {
+            let output = ctx.run_ui(picker_frame_input(), |ui| {
+                app.drain_notes_clip_jobs(ui.ctx());
+            });
+            copied.extend(output.platform_output.commands.iter().filter_map(
+                |command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                },
+            ));
+            if app.notes_clip_jobs.is_empty() {
+                return copied;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "notes picker background work did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn picker_with_notes(
@@ -1534,28 +1960,80 @@ mod tests {
         (app, ctx, paths)
     }
 
+    /// The preview once its background read has landed: ask, drain the way
+    /// `App::logic` does until no read is in flight, and ask again.
+    fn settled_preview(app: &mut PlexiApp) -> Option<std::sync::Arc<str>> {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        loop {
+            let text = app.notes_picker_preview_text();
+            if app.notes_picker_preview_job.is_none() {
+                return text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "notes picker preview read did not land"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            app.drain_notes_preview_read();
+        }
+    }
+
     #[test]
     fn notes_picker_preview_shows_selected_content_and_follows_selection() {
         let (mut app, ctx, paths) = picker_with_notes("preview", &["alpha body", "beta body"]);
-        assert_eq!(
-            app.notes_picker_preview_text().as_deref(),
-            Some("alpha body")
-        );
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("alpha body"));
         draw_picker_frame(&mut app, &ctx);
         press_picker_key(&mut app, &ctx, egui::Key::ArrowDown);
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("beta body"));
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Stint 1270: the preview cache is validated against the file, so an
+    /// edit made between two opens shows on the next open without moving the
+    /// selection away and back.
+    #[test]
+    fn notes_picker_preview_follows_an_edit_made_between_opens() {
+        let (mut app, _ctx, paths) = picker_with_notes("preview-edit", &["top note", "other"]);
+        assert_eq!(settled_preview(&mut app).as_deref(), Some("top note"));
+        app.close_notes_picker();
+        std::fs::write(&paths[0], "top note, edited in its editor pane").expect("edit note");
+        app.push_focus_layer(FocusKind::NotesPicker);
         assert_eq!(
             app.notes_picker_preview_text().as_deref(),
-            Some("beta body")
+            Some("top note"),
+            "opening shows the cached text at once; the file check runs off the UI thread"
+        );
+        assert_eq!(
+            settled_preview(&mut app).as_deref(),
+            Some("top note, edited in its editor pane"),
+            "a reopened picker must swap in the edited body"
         );
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
     }
 
+    #[test]
+    fn notes_picker_preview_keeps_the_cached_text_when_the_note_is_unchanged() {
+        let (mut app, _ctx, paths) = picker_with_notes("preview-same", &["unchanged body"]);
+        let first = settled_preview(&mut app).expect("preview");
+        app.close_notes_picker();
+        app.push_focus_layer(FocusKind::NotesPicker);
+        let again = settled_preview(&mut app).expect("preview");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &again),
+            "an unchanged note must reuse the cached text, not re-read it"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
     /// Baseline regression: a real saved capture's clipboard payload is exactly
     /// its parsed body. The assertion reads the egui clipboard command, and
-    /// reverting the body projection in `notes_picker_copy_selected` makes it
-    /// fail because the envelope returns to the payload.
+    /// reverting the body projection in `read_note_body` makes it fail because
+    /// the envelope returns to the payload.
     #[test]
     fn notes_picker_preview_and_copy_share_the_note_body_without_metadata() {
         // Written the way `write_note` writes a capture.
@@ -1565,12 +2043,12 @@ mod tests {
         );
         let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full.as_str()]);
         let before = std::fs::read(&paths[0]).expect("read note before copy");
-        assert_eq!(app.notes_picker_preview_text().as_deref(), Some(body));
+        assert_eq!(settled_preview(&mut app).as_deref(), Some(body));
 
-        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(
-            clipboard_text(&output).as_deref(),
-            Some(body),
+            finish_clip(&mut app, &ctx),
+            vec![body.to_string()],
             "clipboard must carry the body, not storage metadata"
         );
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some(body));
@@ -1606,8 +2084,8 @@ mod tests {
         app.notes_picker_selected = 0;
         app.push_focus_layer(FocusKind::NotesPicker);
 
-        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
-        assert_eq!(clipboard_text(&output).as_deref(), Some(content));
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(finish_clip(&mut app, &ctx), vec![content.to_string()]);
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some(content));
         let _ = std::fs::remove_file(&path);
     }
@@ -1619,7 +2097,7 @@ mod tests {
         let (mut app, ctx, paths) = picker_with_notes("copy-focus", &["copy me"]);
         // Stands in for the surface that owned focus before the picker opened.
         app.focus_stack.insert(0, FocusKind::CommandPalette);
-        let _ = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(
             app.focus_stack.last(),
             Some(&FocusKind::CommandPalette),
@@ -1631,29 +2109,30 @@ mod tests {
     #[test]
     fn notes_picker_cmd_c_copies_content_and_closes_picker() {
         let (mut app, ctx, paths) = picker_with_notes("copy", &["copy me"]);
-        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
-        assert_eq!(clipboard_text(&output).as_deref(), Some("copy me"));
-        assert_eq!(app.notes_picker_last_copied.as_deref(), Some("copy me"));
-        assert!(paths[0].exists());
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert!(
             !app.focus_stack.contains(&FocusKind::NotesPicker),
-            "Cmd+C must close the notes picker on successful copy"
+            "Cmd+C must close the notes picker in the frame it is pressed"
         );
+        assert_eq!(finish_clip(&mut app, &ctx), vec!["copy me".to_string()]);
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some("copy me"));
+        assert!(paths[0].exists());
         let _ = std::fs::remove_file(&paths[0]);
     }
 
     #[test]
-    fn notes_picker_cmd_c_read_failure_keeps_picker_open_with_error() {
+    fn notes_picker_cmd_c_read_failure_closes_and_reports_with_a_notice() {
         let (mut app, ctx, paths) = picker_with_notes("copy-fail", &["missing note"]);
         let _ = std::fs::remove_file(&paths[0]);
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
-        assert!(app.notes_picker_last_copied.is_none());
         assert!(
-            app.focus_stack.contains(&FocusKind::NotesPicker),
-            "failed copy must keep the notes picker open"
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "copy is optimistic: the picker closes before the read"
         );
-        let status = app.notes_picker_status.as_deref().expect("error status");
-        assert!(status.contains("Can't copy"));
+        assert!(finish_clip(&mut app, &ctx).is_empty());
+        assert!(app.notes_picker_last_copied.is_none());
+        let (notice, _) = app.notes_picker_notice.as_ref().expect("failure notice");
+        assert!(notice.contains("Can't copy"), "{notice}");
     }
 
     #[test]
@@ -1731,6 +2210,116 @@ mod tests {
 
         app.notes_picker_query.clear();
         assert_eq!(app.notes_picker_filtered(), vec![0, 1, 2]);
+    }
+
+    /// A harness with one focused pane and the picker open on a single note.
+    fn harness_with_note(
+        dir: &std::path::Path,
+    ) -> (crate::testing::HostHarness, std::path::PathBuf) {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        let path = dir.join("note.md");
+        std::fs::write(&path, b"original\nbytes\n").unwrap();
+        h.app.notes_picker_entries = vec![picker_entry(path.clone(), "note")];
+        h.app.push_focus_layer(FocusKind::NotesPicker);
+        h.run_frames(2);
+        (h, path)
+    }
+
+    /// Runs one frame and reports whether the undo toast painted in it.
+    fn undo_toast_painted(h: &mut crate::testing::HostHarness) -> bool {
+        let id = egui::Id::new("notes_delete_undo_rect");
+        let ctx = h.app.ctx.clone();
+        ctx.data_mut(|data| data.remove::<egui::Rect>(id));
+        h.run_frames(1);
+        ctx.data(|data| data.get_temp::<egui::Rect>(id)).is_some()
+    }
+
+    fn age_undo(h: &mut crate::testing::HostHarness, by: std::time::Duration) {
+        let deleted = h.app.notes_picker_undo.as_mut().expect("pending undo");
+        deleted.at = deleted
+            .at
+            .checked_sub(by)
+            .expect("clock has room to backdate");
+    }
+
+    #[test]
+    fn notes_delete_undo_expires_after_its_dwell_even_after_the_picker_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists(), "delete moves the note to Trash at once");
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.focus_stack.contains(&FocusKind::NotesPicker));
+        assert!(
+            undo_toast_painted(&mut h),
+            "the undo toast stays up inside its dwell after the picker closes"
+        );
+
+        age_undo(
+            &mut h,
+            style::TOAST_DWELL_UNDO + std::time::Duration::from_millis(50),
+        );
+        assert!(
+            !undo_toast_painted(&mut h),
+            "the undo toast must be gone once its dwell passes"
+        );
+        assert!(
+            h.app.notes_picker_undo.is_none(),
+            "expiry must clear the undo record so Cmd+Z and the toast agree"
+        );
+
+        h.app.push_focus_layer(FocusKind::NotesPicker);
+        h.run_frames(1);
+        h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert!(
+            !path.exists(),
+            "Cmd+Z in a reopened picker must not undo an expired delete"
+        );
+    }
+
+    #[test]
+    fn notes_delete_undo_inside_its_dwell_restores_bytes_and_the_notice_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists());
+        age_undo(
+            &mut h,
+            style::TOAST_DWELL_UNDO.saturating_sub(std::time::Duration::from_secs(1)),
+        );
+        assert!(undo_toast_painted(&mut h), "still inside the dwell");
+        h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+
+        let (_, at) = h.app.notes_picker_notice.as_mut().expect("restored notice");
+        *at = at
+            .checked_sub(style::TOAST_DWELL_NOTICE + std::time::Duration::from_millis(50))
+            .expect("clock has room to backdate");
+        h.run_frames(1);
+        assert!(
+            h.app.notes_picker_notice.is_none(),
+            "the restored notice clears after its dwell"
+        );
+    }
+
+    /// A notice raised during the undo dwell stacks above the undo toast;
+    /// it never hides the only way back for a deleted note.
+    #[test]
+    fn notes_undo_toast_stays_painted_while_a_notice_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists());
+        h.app.notes_picker_notice = Some((
+            "Couldn't copy another note".to_string(),
+            std::time::Instant::now(),
+        ));
+        assert!(
+            undo_toast_painted(&mut h),
+            "the undo toast is drawn while a notice is up"
+        );
     }
 
     fn set_editor_pane_unsaved(app: &mut PlexiApp, pane_id: u64, text: &str) {

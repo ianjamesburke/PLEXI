@@ -17829,12 +17829,12 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
         InputOwner::Pane(pane),
         "focus must return to originating pane"
     );
-    assert!(
-        h.last_platform_output
-            .commands
-            .contains(&egui::OutputCommand::CopyText(
-                "harness note text".to_string()
-            )),
+    let copied = pump_notes_until(&mut h, "copy reaches the clipboard", |h| {
+        h.app.notes_picker_last_copied.is_some()
+    });
+    assert_eq!(
+        copied,
+        vec!["harness note text".to_string()],
         "clipboard command must receive full note contents"
     );
     let _ = std::fs::remove_file(&note_path);
@@ -17884,24 +17884,6 @@ fn notes_delete_fixture(h: &mut HostHarness, dir: &std::path::Path) -> std::path
 }
 
 #[test]
-fn notes_picker_cut_copies_then_trashes_and_undo_restores() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    h.focus_pane(pane);
-    let dir = tempfile::tempdir().unwrap();
-    let path = notes_delete_fixture(&mut h, dir.path());
-    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
-    assert_eq!(
-        h.app.notes_picker_last_copied.as_deref(),
-        Some("original\nbytes\n")
-    );
-    assert!(!path.exists());
-    assert!(h.app.notes_picker_entries.is_empty());
-    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
-    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
-}
-
-#[test]
 fn notes_picker_dirty_editor_refuses_delete_and_cut() {
     let mut h = HostHarness::new();
     let dir = tempfile::tempdir().unwrap();
@@ -17935,6 +17917,206 @@ fn notes_picker_dirty_editor_refuses_delete_and_cut() {
         .as_deref()
         .unwrap()
         .contains("unsaved edits"));
+    assert!(
+        h.app
+            .focus_stack
+            .contains(&crate::app::FocusKind::NotesPicker),
+        "a refused cut keeps the picker open with its message"
+    );
+}
+
+/// Pump frames until `done` holds, returning every clipboard write egui was
+/// handed on the way. The notes picker finishes copy and cut off the UI
+/// thread, so their effects land on a later frame than the key press.
+fn pump_notes_until(
+    h: &mut HostHarness,
+    what: &str,
+    done: impl Fn(&HostHarness) -> bool,
+) -> Vec<String> {
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    let mut copied = Vec::new();
+    loop {
+        h.run_frames(1);
+        copied.extend(
+            h.last_platform_output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                }),
+        );
+        if done(h) {
+            return copied;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "notes picker background work did not finish: {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn notes_picker_cut_closes_at_once_then_copies_and_trashes_in_background() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert!(
+        !h.app
+            .focus_stack
+            .contains(&crate::app::FocusKind::NotesPicker),
+        "Cmd+X must close the picker in the frame it is pressed"
+    );
+    assert!(
+        path.exists() && h.app.notes_picker_last_copied.is_none(),
+        "copy and trash finish off the UI thread, after the picker is gone"
+    );
+
+    let copied = pump_notes_until(&mut h, "cut trashes the note", |h| {
+        !path.exists() && h.app.notes_picker_undo.is_some()
+    });
+    assert_eq!(copied, vec!["original\nbytes\n".to_string()]);
+    assert_eq!(
+        h.app.notes_picker_last_copied.as_deref(),
+        Some("original\nbytes\n")
+    );
+    assert!(h.app.notes_picker_entries.is_empty());
+
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+}
+
+#[test]
+fn notes_picker_copy_closes_at_once_then_copies_in_background() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::C, egui::Modifiers::COMMAND);
+    assert!(!h
+        .app
+        .focus_stack
+        .contains(&crate::app::FocusKind::NotesPicker));
+    assert!(
+        h.app.notes_picker_last_copied.is_none(),
+        "the read finishes off the UI thread, after the picker is gone"
+    );
+    let copied = pump_notes_until(&mut h, "copy reaches the clipboard", |h| {
+        h.app.notes_picker_last_copied.is_some()
+    });
+    assert_eq!(copied, vec!["original\nbytes\n".to_string()]);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+}
+
+#[test]
+fn notes_picker_cut_read_failure_leaves_the_note_and_shows_a_notice() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    // Not UTF-8, so the read fails while the file stays exactly where it is.
+    let unreadable = [0xff_u8, 0xfe, b'n', b'o', b't', b'e'];
+    std::fs::write(&path, unreadable).unwrap();
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert!(!h
+        .app
+        .focus_stack
+        .contains(&crate::app::FocusKind::NotesPicker));
+    let copied = pump_notes_until(&mut h, "failed cut reports", |h| {
+        h.app.notes_picker_notice.is_some()
+    });
+    assert!(copied.is_empty(), "nothing reaches the clipboard");
+    assert_eq!(std::fs::read(&path).unwrap(), unreadable);
+    assert!(h.app.notes_picker_last_copied.is_none());
+    assert!(h.app.notes_picker_undo.is_none());
+    let (notice, _) = h.app.notes_picker_notice.as_ref().unwrap();
+    assert!(notice.contains("Can't cut"), "{notice}");
+}
+
+#[test]
+fn notes_picker_cut_trash_failure_keeps_the_copy_and_the_note() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    let mut fake = crate::overlays::notes_picker::FakeNotesTrash::new();
+    fake.fail = true;
+    h.app.notes_trash = std::sync::Arc::new(fake);
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert!(!h
+        .app
+        .focus_stack
+        .contains(&crate::app::FocusKind::NotesPicker));
+    let copied = pump_notes_until(&mut h, "failed trash reports", |h| {
+        h.app.notes_picker_notice.is_some()
+    });
+    assert_eq!(copied, vec!["original\nbytes\n".to_string()]);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+    assert!(h.app.notes_picker_undo.is_none());
+    let (notice, _) = h.app.notes_picker_notice.as_ref().unwrap();
+    assert!(
+        notice.contains("could not move it to Trash") && notice.contains("injected trash failure"),
+        "{notice}"
+    );
+}
+
+#[test]
+fn notes_picker_cut_close_does_not_leak_keys_to_the_terminal() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert!(!h
+        .app
+        .focus_stack
+        .contains(&crate::app::FocusKind::NotesPicker));
+    h.terminal_backend(term).enable_input_tap();
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::X,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }],
+        ..Default::default()
+    });
+    pump_notes_until(&mut h, "cut trashes the note", |h| {
+        !path.exists() && h.app.notes_picker_undo.is_some()
+    });
+    assert!(
+        h.terminal_backend(term).take_input_tap().is_empty(),
+        "the cut's key-up must not reach the terminal"
+    );
+    h.frame(egui::RawInput {
+        events: vec![
+            egui::Event::Key {
+                key: egui::Key::V,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("v".into()),
+        ],
+        ..Default::default()
+    });
+    assert_eq!(
+        h.terminal_backend(term).take_input_tap(),
+        b"v",
+        "after the optimistic close, plain typing reaches the terminal unmodified"
+    );
 }
 
 #[test]
@@ -17946,7 +18128,7 @@ fn notes_picker_trash_failure_preserves_note_and_shows_error() {
     let path = notes_delete_fixture(&mut h, dir.path());
     let mut fake = crate::overlays::notes_picker::FakeNotesTrash::new();
     fake.fail = true;
-    h.app.notes_trash = Box::new(fake);
+    h.app.notes_trash = std::sync::Arc::new(fake);
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
     assert_eq!(h.app.notes_picker_entries[0].path, path);

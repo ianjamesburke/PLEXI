@@ -212,6 +212,13 @@
       "rationale": "The quit toast uses a content-sized row for its caption and progress dots; the registered toast fixture renders the quit state."
     },
     {
+      "source": "src/ui/toast.rs",
+      "site": "notice_action | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {",
+      "count": 1,
+      "surface": "src/app/core_only.rs::draw_plugin_notice",
+      "rationale": "A notice toast wraps its whole explanation and right-aligns one kit action below it, so the action never competes with the message for width; the core-only scene renders it at narrow and normal widths."
+    },
+    {
       "source": "src/overlays/toolbar.rs",
       "site": "draw_toolbar | let response = ui.interact(",
       "count": 1,

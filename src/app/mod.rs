@@ -217,7 +217,9 @@ pub struct PlexiApp {
     pub(crate) show_shortcuts: bool,
     pub(crate) show_changelog: bool,
     pub(crate) show_ui_gallery: bool,
-    pub(crate) plugin_notice: Option<String>,
+    /// The core-only refusal notice and when it was raised. It expires after
+    /// the kit notice dwell (`expire_plugin_notice`) or by its Dismiss action.
+    pub(crate) plugin_notice: Option<(String, std::time::Instant)>,
     pub(crate) ui_gallery_normal_buf: String,
     pub(crate) ui_gallery_focused_buf: String,
     pub(crate) ui_gallery_show_text_modal: bool,
@@ -402,12 +404,17 @@ pub struct PlexiApp {
     pub(crate) notes_picker_last_drawn_selected: Option<usize>,
     /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
-    /// Notes picker: file content shown in the preview half, keyed by path so
-    /// it is read once per selection rather than every frame.
-    pub(crate) notes_picker_preview: Option<(std::path::PathBuf, std::sync::Arc<str>)>,
+    /// Notes picker: file content shown in the preview half, read once per
+    /// selection rather than every frame and re-checked on each open.
+    pub(crate) notes_picker_preview: Option<crate::overlays::notes_picker::NotePreview>,
+    /// Notes picker: the preview stat/read running off the UI thread.
+    pub(crate) notes_picker_preview_job: Option<crate::overlays::notes_picker::NotePreviewJob>,
     /// Last recoverable notes picker deletion.
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
-    pub(crate) notes_trash: Box<dyn crate::overlays::notes_picker::NotesTrash>,
+    pub(crate) notes_trash: std::sync::Arc<dyn crate::overlays::notes_picker::NotesTrash>,
+    /// Notes picker Cmd+C / Cmd+X still finishing off the UI thread. Drained
+    /// from `App::logic`.
+    pub(crate) notes_clip_jobs: Vec<crate::overlays::notes_picker::NotesClipJob>,
     pub(crate) notes_picker_notice: Option<(String, std::time::Instant)>,
     pub(crate) config_notice: Option<(String, std::time::Instant)>,
     /// Notes picker: inline status/error message shown in the fixed status slot.
@@ -1861,8 +1868,10 @@ impl PlexiApp {
                     notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
                     notes_picker_preview: None,
+                    notes_picker_preview_job: None,
                     notes_picker_undo: None,
                     notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+                    notes_clip_jobs: Vec::new(),
                     notes_picker_notice: None,
                     config_notice: None,
                     notes_picker_status: None,
@@ -2149,8 +2158,10 @@ impl PlexiApp {
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
+            notes_picker_preview_job: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+            notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
             config_notice: None,
             notes_picker_status: None,
@@ -3135,8 +3146,10 @@ impl PlexiApp {
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
+            notes_picker_preview_job: None,
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
+            notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
             config_notice: None,
             notes_picker_status: None,
@@ -3777,6 +3790,13 @@ impl eframe::App for PlexiApp {
         // started, and the open path only reads the in-memory cache.
         self.ensure_notes_index_loaded();
         self.drain_notes_index_refresh();
+        // Notes picker copy/cut results from their worker threads; then the
+        // undo and notice toasts expire here, not in the draw, so Cmd+Z in a
+        // reopened picker cannot undo a delete whose toast is already gone.
+        self.drain_notes_clip_jobs(ctx);
+        self.drain_notes_preview_read();
+        self.expire_notes_toasts();
+        self.expire_plugin_notice();
 
         // Expired needs-you items auto-deny even while the window is hidden.
         // A queue file left by the previous process is opened once. A frame
@@ -5065,6 +5085,7 @@ impl PlexiApp {
             },
             None,
         );
+        self.notes_picker_preview_needs_check();
         self.push_focus_layer(FocusKind::NotesPicker);
         self.kick_notes_index_refresh();
         log::info!(

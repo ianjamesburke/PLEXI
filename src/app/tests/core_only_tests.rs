@@ -67,7 +67,10 @@ fn core_only_restore_save_normal_restart_preserves_plugin_state() {
         assert!(!pane.runtime.needs_background_tick());
         h.app.force_reload_focused_view();
         assert_eq!(
-            h.app.plugin_notice.as_deref(),
+            h.app
+                .plugin_notice
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
             Some(crate::app::core_only::unavailable("agents").as_str())
         );
         assert!(h.app.save_workspace_now());
@@ -138,6 +141,7 @@ fn core_only_shortcuts_refuse_before_creating_files_and_report_even_without_noti
         .plugin_notice
         .as_ref()
         .unwrap()
+        .0
         .contains("core-only mode"));
     assert!(!h
         .app
@@ -279,4 +283,123 @@ fn core_only_terminal_executes_and_splits() {
         .panes
         .values()
         .all(|p| p.as_view().is_none()));
+}
+
+/// Stint 1210: a refusal notice never moves keyboard focus. This launch comes
+/// from a direct call, the way an agent's or script's CLI request reaches the
+/// host, so input must stay with the pane. The notice wraps its message and
+/// is dismissed with its kit Dismiss action. Focus for the user's own input
+/// is a follow-up that needs the typed requesting principal.
+#[test]
+fn core_only_refusal_notice_never_moves_keyboard_focus_and_dismisses_by_click() {
+    use crate::app::input_owner::InputOwner;
+    let profile = profile(true);
+    let mut h = HostHarness::from_profile_dir(profile.path());
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    let ctx = h.app.ctx.clone();
+    assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+
+    h.app.open_notes_picker();
+    h.run_frames(2);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Notes is refused in core-only mode"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "a refusal notice must not take keyboard focus"
+    );
+
+    // Esc goes to the focused pane exactly as it would with no notice up.
+    // The harness pane is an Explorer, which hands focus back on Esc.
+    let without_notice = {
+        let control_profile = self::profile(true);
+        let mut control = HostHarness::from_profile_dir(control_profile.path());
+        let control_pane = control.add_test_pane();
+        control.focus_pane(control_pane);
+        control.run_frames(1);
+        control.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        let control_ctx = control.app.ctx.clone();
+        match control.app.input_owner(&control_ctx) {
+            InputOwner::Pane(id) if id == control_pane => InputOwner::Pane(pane),
+            owner => owner,
+        }
+    };
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Esc belongs to the focused pane, not to an unfocused notice"
+    );
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        without_notice,
+        "the notice must not change where Esc goes"
+    );
+    // With no pane left to take it, Esc still never dismisses the notice.
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(
+        h.app.plugin_notice.is_some(),
+        "Esc never dismisses the notice; only its Dismiss action does"
+    );
+
+    h.run_frames(1);
+    let owner_before_click = h.app.input_owner(&ctx);
+    let rect: egui::Rect = ctx
+        .data(|data| data.get_temp(egui::Id::new("plugin_notice_dismiss_rect")))
+        .expect("the notice paints its Dismiss action");
+    let pos = rect.center();
+    for pressed in [true, false] {
+        h.frame(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    assert!(h.app.plugin_notice.is_none(), "Dismiss closes the notice");
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        owner_before_click,
+        "dismissing the notice must not move keyboard focus"
+    );
+}
+
+/// Stint 1210 ruling: the refusal notice cannot be a mouse-only, permanent
+/// overlay in a keyboard-first app. It expires after the kit notice dwell,
+/// and expiring it leaves keyboard focus where it was.
+#[test]
+fn core_only_refusal_notice_expires_after_the_notice_dwell_without_moving_focus() {
+    use crate::app::input_owner::InputOwner;
+    let profile = self::profile(true);
+    let mut h = HostHarness::from_profile_dir(profile.path());
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    let ctx = h.app.ctx.clone();
+    h.app.open_notes_picker();
+    h.run_frames(2);
+    let owner = h.app.input_owner(&ctx);
+    assert_eq!(owner, InputOwner::Pane(pane));
+    h.run_frames(1);
+    assert!(h.app.plugin_notice.is_some(), "still inside the dwell");
+
+    let (_, at) = h.app.plugin_notice.as_mut().expect("refusal notice");
+    *at = at
+        .checked_sub(crate::ui::style::TOAST_DWELL_NOTICE + std::time::Duration::from_millis(50))
+        .expect("clock has room to backdate");
+    h.run_frames(1);
+    assert!(
+        h.app.plugin_notice.is_none(),
+        "the notice expires after the kit notice dwell"
+    );
+    assert_eq!(h.app.input_owner(&ctx), owner, "expiry must not move focus");
 }
