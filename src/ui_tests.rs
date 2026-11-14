@@ -9965,6 +9965,60 @@ open(out + ".done", "w").close()
         );
     }
 
+    /// Stint 1514: the trap order is the one Tab order. In "Unsaved changes",
+    /// Tab past the last action (Discard) wraps to the first (Save), and
+    /// Shift+Tab from the first goes to the last.
+    #[test]
+    fn unsaved_changes_tab_wraps_both_ways_in_trap_order() {
+        let labels = ["Save", "Cancel", "Discard"];
+        let (mut h, _dir) = open_unsaved_prompt();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            tab(&mut h, false);
+            seen.push(focused_label(&mut h, &labels));
+        }
+        assert_eq!(
+            seen,
+            ["Save", "Cancel", "Discard", "Save"].map(|l| Some(l.to_string())),
+            "Tab past Discard wraps to Save"
+        );
+        tab(&mut h, true);
+        assert_eq!(
+            focused_label(&mut h, &labels).as_deref(),
+            Some("Discard"),
+            "Shift+Tab from Save goes to Discard"
+        );
+        tab(&mut h, true);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+    }
+
+    /// Stint 1514: context close with Dissolve showing enters at Cancel, steps
+    /// Close all then Dissolve, and wraps both ways.
+    #[test]
+    fn context_close_with_dissolve_tabs_in_trap_order() {
+        let labels = ["Cancel", "Close all", "Dissolve"];
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        seed_context_close_confirm(&mut h, true);
+        h.harness().get_by_label("Dissolve");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            tab(&mut h, false);
+            seen.push(focused_label(&mut h, &labels));
+        }
+        assert_eq!(
+            seen,
+            ["Cancel", "Close all", "Dissolve", "Cancel"].map(|l| Some(l.to_string())),
+            "Tab order and wrap"
+        );
+        tab(&mut h, true);
+        assert_eq!(
+            focused_label(&mut h, &labels).as_deref(),
+            Some("Dissolve"),
+            "Shift+Tab from Cancel goes to Dissolve"
+        );
+        assert!(h.with_app(|app| app.pending_context_close.is_some()));
+    }
+
     /// The label of the widget holding keyboard focus, matched by rect
     /// against the labels a modal can show.
     fn focused_label(h: &mut PlexiUiHarness, labels: &[&str]) -> Option<String> {

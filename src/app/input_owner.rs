@@ -47,17 +47,24 @@ pub(crate) enum OverlaySurface {
 
 /// Memory slot for the trap member that held focus at the end of last frame.
 const FOCUS_TRAP_LAST_ID: &str = "plexi_focus_trap_last";
-/// Memory slot for a Tab direction (`true` = backwards) seen last frame.
-const FOCUS_TRAP_TAB_ID: &str = "plexi_focus_trap_tab";
+/// Memory slot set while a focus trap owns input, so the next frame's Tab is
+/// taken from egui before its own traversal runs (stint 1514).
+const FOCUS_TRAP_ACTIVE_ID: &str = "plexi_focus_trap_active";
 /// Memory slot for this frame's Tab (`Some(shift)`), noted before an overlay
 /// owner takes the input buffer (stint 1505).
 const FOCUS_TRAP_TAB_NOW_ID: &str = "plexi_focus_trap_tab_now";
 
 /// Note this frame's Tab press for the focus trap, at the start of the frame:
 /// an overlay that takes the whole input buffer (unsaved changes) would
-/// otherwise hide it from the reconciler.
+/// otherwise hide it from the reconciler. While a trap owns input, egui's own
+/// Tab traversal is cancelled here, before any widget registers, so the
+/// trap's order is the only Tab order (stint 1514).
 pub(crate) fn note_tab_key(ctx: &egui::Context) {
     let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab).then_some(i.modifiers.shift));
+    let trap_active = ctx.data(|d| d.get_temp::<bool>(egui::Id::new(FOCUS_TRAP_ACTIVE_ID)));
+    if tab.is_some() && trap_active == Some(true) {
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
     ctx.data_mut(|d| match tab {
         Some(shift) => {
             d.insert_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID), shift);
@@ -186,43 +193,28 @@ impl PlexiApp {
         // turned back into the next (or previous) control here, in the one
         // focus authority, rather than in the modal.
         if let Some(trap) = owner_key.and_then(|key| registry.trap_for(key)) {
+            // The trap order is the one Tab order (stint 1514): every Tab
+            // steps from the member focused last frame (entering at the
+            // first, safe member with none, stint 1505); egui's own
+            // traversal was cancelled in `note_tab_key`.
             let last_id = egui::Id::new(FOCUS_TRAP_LAST_ID);
-            let pending_id = egui::Id::new(FOCUS_TRAP_TAB_ID);
             let last: Option<egui::Id> = ctx.data(|d| d.get_temp(last_id));
-            // egui may apply a Tab's focus move in the frame after the key
-            // arrives, so the direction is carried one frame.
-            let pending: Option<bool> = ctx.data(|d| d.get_temp(pending_id));
             let noted: Option<bool> =
                 ctx.data(|d| d.get_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID)));
-            let (tab_now, shift) = match noted {
-                Some(shift) => (true, shift),
-                None => ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift)),
-            };
-            let direction = if tab_now { Some(shift) } else { pending };
+            let tab = noted.or_else(|| {
+                ctx.input(|i| i.key_pressed(egui::Key::Tab).then_some(i.modifiers.shift))
+            });
             let focused = ctx.memory(|m| m.focused());
-            let outside = match focused {
-                Some(id) => !trap.contains(&id),
-                None => direction.is_some(),
-            };
-            // Entering from nothing, either direction lands on the trap's
-            // first member, the dialog's safe action (stint 1505), whichever
-            // widget egui's own Tab traversal picked.
-            let entering = last.is_none()
-                && direction.is_some()
-                && focused != crate::ui::focus::trap_step(trap, None, false);
-            if outside || entering {
-                match direction
-                    .and_then(|backwards| crate::ui::focus::trap_step(trap, last, backwards))
-                {
-                    Some(target) => {
-                        log::info!("input_owner: focus trap moved Tab to {target:?}");
-                        ctx.memory_mut(|m| m.request_focus(target));
-                    }
-                    None => {
-                        if let Some(id) = focused {
-                            log::info!("input_owner: focus trap surrendered {id:?}");
-                            ctx.memory_mut(|m| m.surrender_focus(id));
-                        }
+            match tab.and_then(|backwards| crate::ui::focus::trap_step(trap, last, backwards)) {
+                Some(target) if focused != Some(target) => {
+                    log::info!("input_owner: focus trap moved Tab to {target:?}");
+                    ctx.memory_mut(|m| m.request_focus(target));
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(id) = focused.filter(|id| !trap.contains(id)) {
+                        log::info!("input_owner: focus trap surrendered {id:?}");
+                        ctx.memory_mut(|m| m.surrender_focus(id));
                     }
                 }
             }
@@ -234,19 +226,14 @@ impl PlexiApp {
                     }
                     None => d.remove::<egui::Id>(last_id),
                 }
-                match tab_now.then_some(shift) {
-                    Some(backwards) => {
-                        d.insert_temp(pending_id, backwards);
-                    }
-                    None => d.remove::<bool>(pending_id),
-                }
+                d.insert_temp(egui::Id::new(FOCUS_TRAP_ACTIVE_ID), true);
             });
         } else {
-            // No trap this frame: forget the last trapped position and Tab,
-            // so a dialog that reopens enters at its first action.
+            // No trap this frame: forget the last trapped position, so a
+            // dialog that reopens enters at its first action.
             ctx.data_mut(|d| {
                 d.remove::<egui::Id>(egui::Id::new(FOCUS_TRAP_LAST_ID));
-                d.remove::<bool>(egui::Id::new(FOCUS_TRAP_TAB_ID));
+                d.remove::<bool>(egui::Id::new(FOCUS_TRAP_ACTIVE_ID));
             });
         }
 
