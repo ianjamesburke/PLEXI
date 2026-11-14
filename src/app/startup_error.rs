@@ -68,6 +68,24 @@ impl StartupErrorView {
         }
     }
 
+    /// The host could not take its profile lock at all (for example a
+    /// profile on a file system without locks), so it cannot tell whether
+    /// another Plexi already runs there.
+    pub(crate) fn host_lock_failure(reason: &str, log_path: &Path) -> Self {
+        Self {
+            title: "Plexi could not check for another running copy".into(),
+            plugin: None,
+            file: None,
+            reason: plain_text(reason),
+            fix: Some(
+                "Keep the Plexi profile on a local disk that supports file locks, then open Plexi again."
+                    .into(),
+            ),
+            reassurance: Some("Nothing was moved or changed.".into()),
+            log_path: log_path.display().to_string(),
+        }
+    }
+
     /// Everything on screen as plain text, for the Copy details action.
     pub(crate) fn details(&self) -> String {
         let mut lines = vec![self.title.clone()];
@@ -242,6 +260,27 @@ pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window
     crate::cli::trace::exit(1)
 }
 
+/// Report a startup failure once logging is running: log at error, flush,
+/// print the CLI line, open the window for a GUI launch, exit with status 1.
+pub(crate) fn exit_with_startup_error(view: StartupErrorView, show_window: bool) -> ! {
+    log::error!(
+        "startup: {}: {} (window={show_window})",
+        view.title,
+        view.reason
+    );
+    log::logger().flush();
+    eprintln!("{}: {}", view.title, view.reason);
+    if show_window {
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
+        if let Err(window_error) = show(view, colors) {
+            log::error!("startup_error: cannot open the error window: {window_error}");
+            log::logger().flush();
+            eprintln!("cannot open the error window: {window_error}");
+        }
+    }
+    crate::cli::trace::exit(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +288,31 @@ mod tests {
 
     const MISSING_TYPE: &str =
         "schema_version = 1\n[app]\nid = 'brokenpkg'\nname = 'Broken'\nentry = 'main.py'\n";
+
+    /// Critic on PR #3133: a profile lock that cannot be taken is shown with
+    /// what failed and what to do.
+    #[test]
+    fn host_lock_failure_names_the_reason_and_the_fix() {
+        let view = StartupErrorView::host_lock_failure(
+            "cannot check for a running Plexi host: lock host.lock: no locks available",
+            Path::new("/tmp/plexi.log"),
+        );
+        assert!(
+            view.title.contains("another running copy"),
+            "{}",
+            view.title
+        );
+        assert!(
+            view.reason.contains("no locks available"),
+            "{}",
+            view.reason
+        );
+        assert!(view
+            .fix
+            .as_deref()
+            .is_some_and(|fix| fix.contains("file locks")));
+        assert_eq!(view.log_path, "/tmp/plexi.log");
+    }
 
     fn migration_error() -> ProfileInitError {
         let root = tempfile::tempdir().unwrap();

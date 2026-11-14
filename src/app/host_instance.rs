@@ -24,6 +24,30 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// restart` may start the next host as soon as the socket is gone.
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
+/// What a launch is, decided before anything claims the profile.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HostLaunch {
+    /// A CLI command: never a host, never claims.
+    Cli,
+    /// A bare launch typed inside a Plexi pane (`PLEXI_RUNNING=1`): prints
+    /// help instead of starting a second window, and never claims.
+    InsidePlexi,
+    /// A host launch: claims the profile.
+    Host,
+}
+
+/// Classify a launch from whether argv starts a host and the value of
+/// `PLEXI_RUNNING`.
+pub(crate) fn host_launch(cli_mode: bool, plexi_running: Option<&str>) -> HostLaunch {
+    if cli_mode {
+        HostLaunch::Cli
+    } else if plexi_running == Some("1") {
+        HostLaunch::InsidePlexi
+    } else {
+        HostLaunch::Host
+    }
+}
+
 /// Proof that this process is the profile's host. Dropping it (or exiting)
 /// releases the lock.
 pub(crate) struct HostInstance {
@@ -40,6 +64,14 @@ pub(crate) enum Refusal {
     SocketLive { endpoint: PathBuf },
     /// The lock file could not be opened or locked at all.
     LockUnavailable(String),
+}
+
+impl Refusal {
+    /// Another host owns the profile. Otherwise the check itself failed and
+    /// must be shown as a startup error, not as a refused second launch.
+    pub(crate) fn is_another_host(&self) -> bool {
+        !matches!(self, Self::LockUnavailable(_))
+    }
 }
 
 impl std::fmt::Display for Refusal {
@@ -145,6 +177,32 @@ fn claim_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Critic on PR #3133: a bare launch typed inside a Plexi pane prints
+    /// help as before; it never claims, waits or reports "already running".
+    #[test]
+    fn a_launch_inside_a_plexi_pane_never_claims_the_profile() {
+        assert_eq!(host_launch(false, Some("1")), HostLaunch::InsidePlexi);
+        assert_eq!(host_launch(true, Some("1")), HostLaunch::Cli);
+        assert_eq!(host_launch(false, None), HostLaunch::Host);
+        assert_eq!(host_launch(false, Some("0")), HostLaunch::Host);
+    }
+
+    /// A lock that cannot be taken at all is a startup error, not a second
+    /// host.
+    #[test]
+    fn a_lock_failure_is_not_reported_as_another_host() {
+        assert!(!Refusal::LockUnavailable("lock host.lock: ENOLCK".into()).is_another_host());
+        assert!(Refusal::LockHeld {
+            lock: PathBuf::from("/p/host.lock"),
+            pid: None
+        }
+        .is_another_host());
+        assert!(Refusal::SocketLive {
+            endpoint: PathBuf::from("/p/notify.sock")
+        }
+        .is_another_host());
+    }
 
     fn endpoint_in(dir: &Path) -> PathBuf {
         dir.join("notify.sock")
