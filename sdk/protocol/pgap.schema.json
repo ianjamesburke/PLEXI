@@ -494,34 +494,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Set pane visibility without changing its identity or focus.",
-          "properties": {
-            "hidden": {
-              "type": "boolean"
-            },
-            "pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "response_file": {
-              "type": "string"
-            },
-            "type": {
-              "const": "pane_visibility",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "pane_id",
-            "hidden",
-            "response_file"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Focus a pane and toggle its zoom, including portal navigation.",
           "properties": {
             "pane_id": {

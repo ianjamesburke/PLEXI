@@ -92,7 +92,6 @@ pane drop
 pane events
 pane focus
 pane heartbeat
-pane hide
 pane info
 pane key
 pane layout
@@ -105,7 +104,6 @@ pane new
 pane result
 pane result read
 pane result wait
-pane reveal
 pane self
 pane send
 pane slot

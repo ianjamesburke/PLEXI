@@ -139,10 +139,6 @@
     "cli": "context set-root .",
     "note": ""
   },
-  "HidePane": {
-    "cli": "pane hide 42",
-    "note": "Use pane reveal to restore visibility; the shortcut toggles."
-  },
   "ParkContext": {
     "cli": "context park 42",
     "note": "Use context unpark to restore and focus; the shortcut toggles."

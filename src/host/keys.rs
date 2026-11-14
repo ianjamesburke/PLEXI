@@ -28,7 +28,6 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+Up / Cmd+Shift+Down — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
-// Cmd+U                       — toggle pane hidden state
 // Cmd+E                       — file browser
 // Cmd+Shift+W                 — close context (with confirm dialog)
 // Cmd+Shift+I                 — set context root from focused pane CWD
