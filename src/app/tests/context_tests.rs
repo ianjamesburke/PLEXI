@@ -32,6 +32,46 @@ fn failed_workspace_save_remains_dirty_for_retry() {
     assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
 }
 
+/// Stint 1517: marking the workspace dirty with nothing changed does not
+/// rewrite the file (every write replaces it by rename, so its inode would
+/// change); a real change still writes.
+#[test]
+fn unchanged_workspace_is_not_rewritten() {
+    use std::os::unix::fs::MetadataExt;
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    assert!(h.app.save_workspace_now());
+    let path = crate::workspace::workspace_path_in(h.profile_dir());
+    let inode = |path: &std::path::Path| std::fs::metadata(path).unwrap().ino();
+    let written = inode(&path);
+    let flush = |h: &mut crate::testing::HostHarness| {
+        h.app.mark_workspace_dirty();
+        h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.hidden_frame();
+        assert!(!h.app.workspace_dirty, "the flush completed");
+    };
+
+    flush(&mut h);
+    assert_eq!(
+        inode(&path),
+        written,
+        "an unchanged workspace was rewritten"
+    );
+
+    let second = h.add_test_pane();
+    h.app
+        .set_context_columns(context, vec![vec![pane], vec![second]]);
+    flush(&mut h);
+    assert_ne!(
+        inode(&path),
+        written,
+        "a changed workspace must still be written"
+    );
+}
+
 #[test]
 fn deleting_context_preserves_workspace_save_and_restore() {
     let mut h = crate::testing::HostHarness::new();
