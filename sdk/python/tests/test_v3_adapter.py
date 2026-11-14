@@ -28,7 +28,6 @@ from plexi_sdk.events import (
     KeyEvent,
     PipeMessage,
     PipePayload,
-    SystemStatsResult,
     ToolCall,
 )
 from plexi_sdk.ui import (
@@ -299,22 +298,6 @@ def test_effects_reject_unknown_dataclass() -> None:
 
 
 def test_events_decode_nested_payloads() -> None:
-    stats = _decode_event(
-        {
-            "type": "SystemStatsResult",
-            "stats": {
-                "cpu_usage_pct": 1.0,
-                "memory_used_bytes": 2,
-                "memory_total_bytes": 3,
-                "disk_read_bps": 4,
-                "disk_write_bps": 5,
-                "net_rx_bps": 6,
-                "net_tx_bps": 7,
-                "uptime_secs": 8,
-                "load_avg_one_min": 9.0,
-            },
-        }
-    )
     pipe = _decode_event(
         {"type": "PipeMessage", "handle": 1, "payload": {"json": "{}"}}
     )
@@ -322,8 +305,6 @@ def test_events_decode_nested_payloads() -> None:
         {"type": "HttpResponse", "status": 200, "headers": [], "body": [111, 107]}
     )
 
-    assert isinstance(stats, SystemStatsResult)
-    assert stats.stats.memory_total_bytes == 3
     assert isinstance(pipe, PipeMessage)
     assert pipe.payload == PipePayload(json="{}")
     assert isinstance(http, HttpResponse)

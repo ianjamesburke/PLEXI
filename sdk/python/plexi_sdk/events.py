@@ -94,24 +94,6 @@ class RenderFrame:
 
 
 @dataclass
-class SystemStats:
-    cpu_usage_pct: float
-    memory_used_bytes: int
-    memory_total_bytes: int
-    disk_read_bps: int
-    disk_write_bps: int
-    net_rx_bps: int
-    net_tx_bps: int
-    uptime_secs: int
-    load_avg_one_min: float
-
-
-@dataclass
-class SystemStatsResult:
-    stats: SystemStats
-
-
-@dataclass
 class FileReadResult:
     content: Optional[bytes]
     error: Optional[str]
@@ -254,14 +236,6 @@ class CliOperationResult:
 
 
 @dataclass
-class AiStreamChunk:
-    request_id: str
-    delta: str
-    reasoning: Optional[str]
-    done: bool
-
-
-@dataclass
 class AiResponse:
     request_id: str
     content: Optional[str]
@@ -348,22 +322,6 @@ class PipeMessage:
 
 
 @dataclass
-class PipePeerConnected:
-    handle: int
-
-
-@dataclass
-class PipeClosed:
-    handle: int
-
-
-@dataclass
-class PipeError:
-    handle: int
-    error: str
-
-
-@dataclass
 class StateChanged:
     """A state scope's backing file changed outside this app's own persist
     flow — an external edit (CLI, agent, editor), or a persist this app lost
@@ -391,13 +349,3 @@ class CapabilityGranted:
 @dataclass
 class CapabilityDenied:
     name: str
-
-
-@dataclass
-class PaymentComplete:
-    pass
-
-
-@dataclass
-class PaymentFailed:
-    reason: str

@@ -112,8 +112,6 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     }
     if cls is event_types.KeyEvent and isinstance(kwargs.get("modifiers"), dict):
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
-    if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
-        kwargs["stats"] = event_types.SystemStats(**kwargs["stats"])
     if cls is event_types.HttpResponse:
         if isinstance(kwargs.get("body"), list):
             kwargs["body"] = bytes(kwargs["body"])

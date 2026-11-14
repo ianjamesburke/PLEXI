@@ -209,10 +209,6 @@ class SetSchedulerMode:
 
 # ── System ────────────────────────────────────────────────────────────────────
 
-@dataclass
-class GetSystemStats:
-    pass    # → get-system-stats (no payload)
-
 # ── Pane chrome ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -342,22 +338,6 @@ class RenderFrame:
     elapsed: float      # seconds since previous render frame
 
 @dataclass
-class SystemStats:
-    cpu_usage_pct: float
-    memory_used_bytes: int
-    memory_total_bytes: int
-    disk_read_bps: int
-    disk_write_bps: int
-    net_rx_bps: int
-    net_tx_bps: int
-    uptime_secs: int
-    load_avg_one_min: float
-
-@dataclass
-class SystemStatsResult:
-    stats: SystemStats  # → input-event::system-stats-result(system-stats)
-
-@dataclass
 class FileReadResult:
     content: Optional[bytes]    # None on error
     error: Optional[str]        # None on success
@@ -380,14 +360,6 @@ class HttpResponse:
     # .text(encoding="utf-8", errors="replace") -> str
     # .json() -> Any
     # → input-event::http-response(http-response)
-
-@dataclass
-class AiStreamChunk:
-    request_id: str
-    delta: str
-    reasoning: Optional[str]
-    done: bool
-    # → input-event::ai-stream-chunk(ai-stream-chunk-event)
 
 @dataclass
 class AiResponse:
@@ -436,19 +408,6 @@ class PipeMessage:
     # → input-event::pipe-message(pipe-message-event)
 
 @dataclass
-class PipePeerConnected:
-    handle: int             # → input-event::pipe-peer-connected(u32)
-
-@dataclass
-class PipeClosed:
-    handle: int             # → input-event::pipe-closed(u32)
-
-@dataclass
-class PipeError:
-    handle: int
-    error: str              # → input-event::pipe-error(tuple<u32, string>)
-
-@dataclass
 class CapabilityGranted:
     name: str               # → input-event::capability-granted(string)
 
@@ -456,13 +415,6 @@ class CapabilityGranted:
 class CapabilityDenied:
     name: str               # → input-event::capability-denied(string)
 
-@dataclass
-class PaymentComplete:
-    pass                    # → input-event::payment-complete
-
-@dataclass
-class PaymentFailed:
-    reason: str             # → input-event::payment-failed(string)
 ```
 
 **Adapter dispatch:** the adapter receives a WIT `input-event`, reads the variant tag, constructs the corresponding Python dataclass, and passes it to `update(event)`.

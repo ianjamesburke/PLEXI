@@ -280,11 +280,6 @@ class CancelTimer:
 
 
 @dataclass
-class GetSystemStats:
-    pass
-
-
-@dataclass
 class SetTitle:
     title: str
 

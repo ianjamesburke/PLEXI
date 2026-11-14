@@ -186,8 +186,8 @@ fields is in `sdk.md` (Effects section). The common ones:
 `RequestCapability` never asks the user. It reports whether the capability was
 granted at launch, as `CapabilityGranted` or `CapabilityDenied`.
 
-`effects.py` also defines effects the host does not act on. `AiQuery` is not
-available yet, and `GetSystemStats` is not available; the runtime refuses both.
+`effects.py` also defines an effect the host does not act on yet: `AiQuery`
+is not available, and the runtime refuses it.
 The host accepts `SetStatus` and discards it, so the text shows nowhere.
 
 `SetState` is process-local runtime state — view/update data, caches, game
