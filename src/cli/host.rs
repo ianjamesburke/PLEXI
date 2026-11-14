@@ -1107,8 +1107,8 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
 }
 
 /// What stopping a host came to (stint 1430). Callers that only need the host
-/// gone (`host restart`, uninstall) act on [`StopOutcome::host_gone`]; only
-/// `host stop` itself turns an unclean exit into a non-zero status.
+/// gone (`host restart`, uninstall) treat an unclean stop as a warning; only
+/// `host stop` itself turns it into a non-zero status.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StopOutcome {
     /// The host answered status 0 and exited.
@@ -1126,12 +1126,6 @@ pub(crate) enum StopOutcome {
 }
 
 impl StopOutcome {
-    /// The host process is gone, or was told to go, so a caller that only
-    /// needs it out of the way can continue.
-    pub(crate) fn host_gone(&self) -> bool {
-        !matches!(self, Self::Failed(_))
-    }
-
     fn exit_code(&self) -> i32 {
         match self {
             Self::Clean | Self::StoppedUnknown | Self::TerminationRequested(_) => 0,
@@ -1968,7 +1962,6 @@ mod tests {
             WorkspaceDurability::Unsaved,
         ));
         assert_eq!(unsaved.exit_code(), 1);
-        assert!(unsaved.host_gone(), "the host did stop");
         assert_eq!(
             unsaved.message(),
             "Plexi host stopped, but the workspace was not saved; the existing \
