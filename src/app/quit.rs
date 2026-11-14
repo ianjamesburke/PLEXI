@@ -647,6 +647,20 @@ pub(crate) fn stop_reply(
     })
 }
 
+/// Stamp a clean shutdown only when no owned process is left, so the next
+/// start can tell a clean quit from a death (stint 1523). Returns whether the
+/// stamp was written.
+pub(crate) fn record_quit_integrity(remaining: usize, dir: &std::path::Path) -> bool {
+    if remaining == 0 {
+        crate::broker::integrity::mark_clean_shutdown(dir);
+        trace("integrity_written");
+        true
+    } else {
+        log::error!("quit: refusing clean-shutdown stamp; {remaining} owned processes remain");
+        false
+    }
+}
+
 /// Tear the host down and end the process. Never returns. `stop_reply` is
 /// `plexi host stop`'s reply token, answered with the real outcome before the
 /// process ends.
@@ -671,16 +685,7 @@ pub(crate) fn exit_host(
         k.kill.as_millis(),
         start.elapsed().as_millis()
     );
-    // A kill skips this, so the next start can tell a clean quit from a death.
-    if k.remaining == 0 {
-        crate::broker::integrity::mark_clean_shutdown(&crate::config::config_dir());
-        trace("integrity_written");
-    } else {
-        log::error!(
-            "quit: refusing clean-shutdown stamp; {} owned processes remain",
-            k.remaining
-        );
-    }
+    record_quit_integrity(k.remaining, &crate::config::config_dir());
     trace("socket_release_begin");
     let socket = release_notify_socket();
     trace("socket_release_end");
