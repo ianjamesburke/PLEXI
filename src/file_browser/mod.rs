@@ -400,6 +400,111 @@ pub(crate) struct StatusBarLayout {
 /// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
 /// Trash see them. `NSFileManager` is chosen over the crate's Finder default
 /// because it needs no Automation permission prompt.
+/// How many taken names a paste skips before it gives up (stint 1496).
+const PASTE_NAME_ATTEMPTS: usize = 100;
+
+/// A copy failure with the I/O kind that caused it.
+struct CopyError {
+    message: String,
+    kind: std::io::ErrorKind,
+}
+
+impl CopyError {
+    fn new(context: String, err: std::io::Error) -> Self {
+        Self {
+            message: format!("{context}: {err}"),
+            kind: err.kind(),
+        }
+    }
+}
+
+/// Why one paste step stopped.
+enum PasteStepError {
+    /// Another writer took the chosen name first; nothing was written.
+    NameTaken,
+    Failed(String),
+}
+
+impl PasteStepError {
+    fn into_message(self) -> String {
+        match self {
+            Self::NameTaken => format!(
+                "Every free name was taken while pasting ({PASTE_NAME_ATTEMPTS} tried); nothing was overwritten"
+            ),
+            Self::Failed(message) => message,
+        }
+    }
+}
+
+/// Rename `from` to `to` only if nothing is at `to`: fails with
+/// `AlreadyExists` instead of replacing a file or an empty folder there, and
+/// never follows a symlink at `to` (stint 1496).
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both pointers are valid NUL-terminated C strings for the call.
+        let status = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both pointers are valid NUL-terminated C strings for the call.
+        let status = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |path: &Path| -> Vec<u16> {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        };
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both buffers are NUL-terminated UTF-16 paths valid for the
+        // call. Without MOVEFILE_REPLACE_EXISTING the move fails if `to` exists.
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
+        };
+        if ok != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = (from, to);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a no-replace rename is not available on this platform",
+        ))
+    }
+}
+
 fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let context = {
@@ -1493,25 +1598,37 @@ impl FileBrowserView {
     /// Copy `source` to `target`. `created` is set once `target` itself
     /// exists because this call made it, so a failure further down knows
     /// whether there is a partial copy of its own to remove.
-    fn copy_path_recursive(source: &Path, target: &Path, created: &mut bool) -> Result<(), String> {
+    ///
+    /// Every create is exclusive (stint 1496): a folder with `create_dir`, a
+    /// link with `symlink`, a file with `create_new`. None replaces, truncates
+    /// or follows anything already at `target`; a name taken in the meantime
+    /// fails with `AlreadyExists`.
+    fn copy_path_recursive(
+        source: &Path,
+        target: &Path,
+        created: &mut bool,
+    ) -> Result<(), CopyError> {
         let file_type = fs::symlink_metadata(source)
-            .map_err(|err| format!("Unable to read '{}': {err}", source.display()))?
+            .map_err(|err| CopyError::new(format!("Unable to read '{}'", source.display()), err))?
             .file_type();
         if file_type.is_symlink() {
             Self::copy_symlink(source, target)?;
             *created = true;
         } else if file_type.is_dir() {
             fs::create_dir(target).map_err(|err| {
-                format!(
-                    "Unable to create copied folder '{}': {err}",
-                    target.display()
+                CopyError::new(
+                    format!("Unable to create copied folder '{}'", target.display()),
+                    err,
                 )
             })?;
             *created = true;
-            let entries = fs::read_dir(source)
-                .map_err(|err| format!("Unable to read folder '{}': {err}", source.display()))?;
+            let entries = fs::read_dir(source).map_err(|err| {
+                CopyError::new(format!("Unable to read folder '{}'", source.display()), err)
+            })?;
             for entry in entries {
-                let entry = entry.map_err(|err| format!("Unable to read folder entry: {err}"))?;
+                let entry = entry.map_err(|err| {
+                    CopyError::new("Unable to read folder entry".to_string(), err)
+                })?;
                 Self::copy_path_recursive(
                     &entry.path(),
                     &target.join(entry.file_name()),
@@ -1519,51 +1636,134 @@ impl FileBrowserView {
                 )?;
             }
         } else {
-            fs::copy(source, target).map_err(|err| {
-                format!(
-                    "Unable to copy '{}' to '{}': {err}",
-                    source.display(),
-                    target.display()
-                )
-            })?;
-            *created = true;
+            Self::copy_file_new(source, target, created)?;
         }
         Ok(())
+    }
+
+    /// Copy a file's bytes into a file this call creates with `create_new`,
+    /// so nothing already at `target` (a file, or a symlink to one) is ever
+    /// opened. `created` is set as soon as `target` exists.
+    fn copy_file_new(source: &Path, target: &Path, created: &mut bool) -> Result<(), CopyError> {
+        Self::copy_file_new_with(source, target, created, Self::copy_file_contents)
+    }
+
+    /// `copy_file_new` with the byte copy supplied, so a test can fail it
+    /// after `target` exists.
+    fn copy_file_new_with(
+        source: &Path,
+        target: &Path,
+        created: &mut bool,
+        copy_contents: fn(&mut fs::File, &mut fs::File) -> std::io::Result<()>,
+    ) -> Result<(), CopyError> {
+        let copy_error = |err| {
+            CopyError::new(
+                format!(
+                    "Unable to copy '{}' to '{}'",
+                    source.display(),
+                    target.display()
+                ),
+                err,
+            )
+        };
+        let mut input = fs::File::open(source).map_err(copy_error)?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)
+            .map_err(copy_error)?;
+        *created = true;
+        copy_contents(&mut input, &mut output).map_err(copy_error)
+    }
+
+    /// Data and metadata, as `fs::copy` copies them, between open files.
+    #[cfg(target_os = "macos")]
+    fn copy_file_contents(input: &mut fs::File, output: &mut fs::File) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: both descriptors are open for the duration of the call and
+        // owned by `input` and `output`; a null state asks fcopyfile for none.
+        let status = unsafe {
+            libc::fcopyfile(
+                input.as_raw_fd(),
+                output.as_raw_fd(),
+                std::ptr::null_mut(),
+                libc::COPYFILE_DATA | libc::COPYFILE_METADATA,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Data and permissions, as `fs::copy` copies them, between open files.
+    #[cfg(not(target_os = "macos"))]
+    fn copy_file_contents(input: &mut fs::File, output: &mut fs::File) -> std::io::Result<()> {
+        std::io::copy(input, output)?;
+        output.set_permissions(input.metadata()?.permissions())
+    }
+
+    /// A single-file paste: `copy_path_recursive`'s file step with
+    /// `copy_to_new_path`'s cleanup.
+    #[cfg(test)]
+    fn copy_file_to_new_path(
+        source: &Path,
+        target: &Path,
+        copy_contents: fn(&mut fs::File, &mut fs::File) -> std::io::Result<()>,
+    ) -> Result<(), String> {
+        let mut created = false;
+        let result = Self::copy_file_new_with(source, target, &mut created, copy_contents);
+        Self::finish_copy(target, created, result).map_err(PasteStepError::into_message)
     }
 
     /// Copy `source` to `target`, a path no entry held when the paste chose
     /// it. If the copy fails after creating `target`, remove that partial
     /// copy (and only it) and say so in the error (stint 1468).
-    fn copy_to_new_path(source: &Path, target: &Path) -> Result<(), String> {
+    fn copy_to_new_path(source: &Path, target: &Path) -> Result<(), PasteStepError> {
         let mut created = false;
-        let Err(err) = Self::copy_path_recursive(source, target, &mut created) else {
+        let result = Self::copy_path_recursive(source, target, &mut created);
+        Self::finish_copy(target, created, result)
+    }
+
+    /// Turn a copy's outcome into the paste's: a name another writer took
+    /// first is `NameTaken` (nothing was written), and a failure after this
+    /// copy created `target` removes that partial copy and says so.
+    fn finish_copy(
+        target: &Path,
+        created: bool,
+        result: Result<(), CopyError>,
+    ) -> Result<(), PasteStepError> {
+        let Err(error) = result else {
             return Ok(());
         };
         if !created {
-            return Err(err);
+            if error.kind == std::io::ErrorKind::AlreadyExists {
+                return Err(PasteStepError::NameTaken);
+            }
+            return Err(PasteStepError::Failed(error.message));
         }
-        match Self::remove_partial_copy(target) {
+        let err = error.message;
+        let message = match Self::remove_partial_copy(target) {
             Ok(()) => {
                 log::info!(
                     "file_browser: removed partial copy '{}' after a failed paste",
                     target.display()
                 );
-                Err(format!(
-                    "{err}. Removed the partial copy '{}'.",
-                    target.display()
-                ))
+                format!("{err}. Removed the partial copy '{}'.", target.display())
             }
             Err(remove_err) => {
                 log::error!(
                     "file_browser: could not remove partial copy '{}': {remove_err}",
                     target.display()
                 );
-                Err(format!(
+                format!(
                     "{err}. The partial copy '{}' could not be removed: {remove_err}",
                     target.display()
-                ))
+                )
             }
-        }
+        };
+        Err(PasteStepError::Failed(message))
     }
 
     /// Remove a partial copy this paste created. Never follows a symlink: a
@@ -1580,9 +1780,10 @@ impl FileBrowserView {
     }
 
     /// Recreate the symlink at `source` as `target`, pointing at the same path.
-    fn copy_symlink(source: &Path, target: &Path) -> Result<(), String> {
-        let link = fs::read_link(source)
-            .map_err(|err| format!("Unable to read link '{}': {err}", source.display()))?;
+    fn copy_symlink(source: &Path, target: &Path) -> Result<(), CopyError> {
+        let link = fs::read_link(source).map_err(|err| {
+            CopyError::new(format!("Unable to read link '{}'", source.display()), err)
+        })?;
         #[cfg(unix)]
         let result = std::os::unix::fs::symlink(&link, target);
         #[cfg(windows)]
@@ -1592,10 +1793,13 @@ impl FileBrowserView {
             std::os::windows::fs::symlink_file(&link, target)
         };
         result.map_err(|err| {
-            format!(
-                "Unable to copy link '{}' to '{}': {err}",
-                source.display(),
-                target.display()
+            CopyError::new(
+                format!(
+                    "Unable to copy link '{}' to '{}'",
+                    source.display(),
+                    target.display()
+                ),
+                err,
             )
         })
     }
@@ -1629,6 +1833,16 @@ impl FileBrowserView {
     }
 
     fn paste_into_current_dir(&mut self) -> Result<Vec<PathBuf>, String> {
+        self.paste_into_current_dir_with(&mut |_| {})
+    }
+
+    /// `paste_into_current_dir`, with `target_chosen` called after each free
+    /// name is chosen and before anything is written there. Tests use it to
+    /// race another writer into that name (stint 1496).
+    fn paste_into_current_dir_with(
+        &mut self,
+        target_chosen: &mut dyn FnMut(&Path),
+    ) -> Result<Vec<PathBuf>, String> {
         let Some(clipboard) = self.operation_clipboard.clone() else {
             return Ok(Vec::new());
         };
@@ -1653,16 +1867,37 @@ impl FileBrowserView {
                     _ => (file_name, None),
                 }
             };
-            let target = Self::unique_child_path(&self.cwd, stem, ext);
-            let result = match clipboard.operation {
-                FileOperation::Copy => Self::copy_to_new_path(source, &target),
-                FileOperation::Cut => fs::rename(source, &target).map_err(|err| {
-                    format!(
-                        "Unable to move '{}' to '{}': {err}",
-                        source.display(),
-                        target.display()
-                    )
-                }),
+            // Every write below is exclusive: if another writer takes the
+            // chosen name first, nothing is replaced and the next free name
+            // is tried (stint 1496).
+            let mut attempts = 0;
+            let (target, result) = loop {
+                let target = Self::unique_child_path(&self.cwd, stem, ext);
+                target_chosen(&target);
+                let result = match clipboard.operation {
+                    FileOperation::Copy => Self::copy_to_new_path(source, &target),
+                    FileOperation::Cut => match rename_no_replace(source, &target) {
+                        Ok(()) => Ok(()),
+                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                            Err(PasteStepError::NameTaken)
+                        }
+                        Err(err) => Err(PasteStepError::Failed(format!(
+                            "Unable to move '{}' to '{}': {err}",
+                            source.display(),
+                            target.display()
+                        ))),
+                    },
+                };
+                attempts += 1;
+                match result {
+                    Err(PasteStepError::NameTaken) if attempts < PASTE_NAME_ATTEMPTS => {
+                        log::info!(
+                            "file_browser: '{}' was taken before the paste wrote it; trying the next name",
+                            target.display()
+                        );
+                    }
+                    other => break (target, other.map_err(PasteStepError::into_message)),
+                }
             };
             if let Err(err) = result {
                 failure = Some(err);
@@ -2609,8 +2844,12 @@ impl FileBrowserView {
                     {
                         self.cancel_rename_modal();
                     }
-                    if ui.add(crate::ui::button::KitButton::new("Rename", colors).min_width(style::BUTTON_MIN_W_MODAL))
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Rename", colors)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.confirm_rename_modal();
                     }
@@ -2850,8 +3089,7 @@ impl FileBrowserView {
                     label.clone()
                 };
                 let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
-                let synthetic_click =
-                    pending_click.is_some_and(|click| click.targets_id(btn.id));
+                let synthetic_click = pending_click.is_some_and(|click| click.targets_id(btn.id));
                 if btn.clicked() || synthetic_click {
                     navigate_target = Some(seg_path.clone());
                 }
@@ -6118,6 +6356,150 @@ mod tests {
             .is_symlink());
     }
 
+    /// Paste one `source` with `op`, letting `race` create something at the
+    /// chosen name between the choice and the write (stint 1496).
+    fn paste_racing(
+        dst: &Path,
+        source: PathBuf,
+        op: FileOperation,
+        mut race: impl FnMut(&Path),
+    ) -> Result<Vec<PathBuf>, String> {
+        let mut app = FileBrowserView::new(dst.to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: op,
+            paths: vec![source],
+        });
+        let mut raced = false;
+        app.paste_into_current_dir_with(&mut |target: &Path| {
+            if !raced {
+                raced = true;
+                race(target);
+            }
+        })
+    }
+
+    /// Stint 1496: a file that appears at the chosen name before the copy is
+    /// neither truncated nor replaced; the paste lands under the next name.
+    #[test]
+    fn copy_never_overwrites_a_file_that_appears_at_the_chosen_name() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::write(src.path().join("doc.txt"), b"mine").expect("write source");
+        let pasted = paste_racing(
+            dst.path(),
+            src.path().join("doc.txt"),
+            FileOperation::Copy,
+            |target| {
+                std::fs::write(target, b"theirs").expect("racer writes");
+            },
+        )
+        .expect("paste lands under the next name");
+        assert_eq!(
+            std::fs::read(dst.path().join("doc.txt")).unwrap(),
+            b"theirs"
+        );
+        assert_eq!(pasted, vec![dst.path().join("doc 1.txt")]);
+        assert_eq!(
+            std::fs::read(dst.path().join("doc 1.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    /// Same for a symlink at the chosen name: its target is untouched.
+    #[cfg(unix)]
+    #[test]
+    fn copy_never_writes_through_a_symlink_that_appears_at_the_chosen_name() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        let victim = src.path().join("victim.txt");
+        std::fs::write(&victim, b"precious").expect("write victim");
+        std::fs::write(src.path().join("doc.txt"), b"mine").expect("write source");
+        paste_racing(
+            dst.path(),
+            src.path().join("doc.txt"),
+            FileOperation::Copy,
+            |target| {
+                std::os::unix::fs::symlink(&victim, target).expect("racer links");
+            },
+        )
+        .expect("paste lands under the next name");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(
+            std::fs::read_link(dst.path().join("doc.txt")).unwrap(),
+            victim
+        );
+        assert_eq!(
+            std::fs::read(dst.path().join("doc 1.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    /// A cut onto a name that appeared in the window does not replace it.
+    #[test]
+    fn cut_never_replaces_a_file_that_appears_at_the_chosen_name() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::write(src.path().join("doc.txt"), b"mine").expect("write source");
+        paste_racing(
+            dst.path(),
+            src.path().join("doc.txt"),
+            FileOperation::Cut,
+            |target| {
+                std::fs::write(target, b"theirs").expect("racer writes");
+            },
+        )
+        .expect("cut lands under the next name");
+        assert_eq!(
+            std::fs::read(dst.path().join("doc.txt")).unwrap(),
+            b"theirs"
+        );
+        assert_eq!(
+            std::fs::read(dst.path().join("doc 1.txt")).unwrap(),
+            b"mine"
+        );
+        assert!(!src.path().join("doc.txt").exists(), "the source moved");
+    }
+
+    /// The exclusive copy keeps what `fs::copy` kept: the file mode.
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_copy_keeps_the_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("tool.sh");
+        std::fs::write(&source, b"#!/bin/sh\n").expect("write source");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let target = dir.path().join("copy.sh");
+        FileBrowserView::copy_to_new_path(&source, &target)
+            .ok()
+            .expect("copy");
+        assert_eq!(std::fs::read(&target).unwrap(), b"#!/bin/sh\n");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+    }
+
+    /// A single-file copy that fails after creating its target leaves no
+    /// truncated file and says what it removed. The byte copy writes part of
+    /// the file, then fails, as a full disk or an I/O error would.
+    #[test]
+    fn single_file_copy_failing_mid_write_removes_its_partial_file() {
+        fn half_then_fail(_: &mut fs::File, output: &mut fs::File) -> std::io::Result<()> {
+            use std::io::Write;
+            output.write_all(b"half")?;
+            Err(std::io::Error::other("disk full"))
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.txt");
+        std::fs::write(&source, b"the whole file").expect("write source");
+        let target = dir.path().join("copy.txt");
+        let err = FileBrowserView::copy_file_to_new_path(&source, &target, half_then_fail)
+            .expect_err("the byte copy fails part way");
+        assert!(!target.exists(), "no partial file is left behind");
+        assert!(err.contains("Removed the partial copy"), "{err}");
+    }
+
     /// The cleanup guard: when the copy fails before creating its target
     /// (here the target already exists as a real folder), nothing is removed.
     /// Without the `created` guard in `copy_to_new_path`, this deletes the
@@ -6135,7 +6517,9 @@ mod tests {
         let err = FileBrowserView::copy_to_new_path(&source, &existing)
             .expect_err("copying onto an existing folder must fail");
 
-        assert!(!err.contains("Removed the partial copy"), "{err}");
+        // The name is taken: nothing was written, so nothing is removed and
+        // the paste moves on to the next free name (stint 1496).
+        assert!(matches!(err, PasteStepError::NameTaken));
         assert_eq!(
             names_in(&existing),
             vec!["keep.txt"],
