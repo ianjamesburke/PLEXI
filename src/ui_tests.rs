@@ -9681,6 +9681,13 @@ open(out + ".done", "w").close()
 
     /// Stint 1493: open "Close pane?" over two panes, pane `a` focused.
     fn open_close_dialog() -> (PlexiUiHarness, u64, u64) {
+        open_close_dialog_after(|_| {})
+    }
+
+    /// As [`open_close_dialog`], running `before` just ahead of the dialog.
+    fn open_close_dialog_after(
+        before: impl FnOnce(&mut PlexiUiHarness),
+    ) -> (PlexiUiHarness, u64, u64) {
         let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
         let a = add_focused_pane(&mut h);
         let b = add_focused_pane(&mut h);
@@ -9692,6 +9699,7 @@ open(out + ".done", "w").close()
         h.run_steps(3);
         h.focus_pane(a).unwrap();
         h.run_steps(1);
+        before(&mut h);
         h.with_app_mut(|app| {
             // Set here: the frames above reload config from the harness profile.
             app.config.confirm_close = Some(true);
@@ -9809,6 +9817,154 @@ open(out + ".done", "w").close()
         assert!(!open(&mut h), "a fresh real D discards");
     }
 
+    /// Stint 1513 critic: a Tab-focused destructive row ignores Enter or Space
+    /// with any modifier; a fresh real Enter still fires it.
+    fn focused_row_checks(
+        h: &mut PlexiUiHarness,
+        open: impl Fn(&mut PlexiUiHarness) -> bool,
+        what: &str,
+    ) {
+        use egui::{Key, Modifiers};
+        for (mods, k) in [
+            (Modifiers::SHIFT, Key::Enter),
+            (Modifiers::ALT, Key::Enter),
+            (Modifiers::COMMAND, Key::Enter),
+            (Modifiers::SHIFT, Key::Space),
+        ] {
+            h.harness().key_press_modifiers(mods, k);
+            h.run_steps(3);
+            assert!(open(h), "{what}: {mods:?}+{k:?} fired the focused row");
+        }
+        h.harness().key_press(Key::Enter);
+        h.run_steps(3);
+        assert!(!open(h), "{what}: a fresh real Enter fires the focused row");
+    }
+
+    #[test]
+    fn focused_discard_row_takes_only_a_fresh_real_enter() {
+        let (mut h, _dir) = open_unsaved_prompt_after(|h| {
+            // Held from before the prompt, so the dialog only sees repeats.
+            h.harness().key_down(egui::Key::Enter);
+            h.run_steps(1);
+        });
+        for _ in 0..3 {
+            tab(&mut h, false);
+        }
+        assert_eq!(
+            focused_label(&mut h, &["Save", "Cancel", "Discard"]).as_deref(),
+            Some("Discard")
+        );
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(3);
+        let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Unsaved changes").is_some();
+        assert!(open(&mut h), "a held Enter discarded");
+        h.harness().key_up(egui::Key::Enter);
+        h.run_steps(1);
+        focused_row_checks(&mut h, open, "Discard");
+    }
+
+    #[test]
+    fn focused_close_row_takes_only_a_fresh_real_enter() {
+        let (mut h, a, _b) = open_close_dialog_after(|h| {
+            // Held from before the dialog, so the dialog only sees repeats.
+            h.harness().key_down(egui::Key::Enter);
+            h.run_steps(1);
+        });
+        tab(&mut h, false);
+        tab(&mut h, false);
+        assert_eq!(
+            focused_label(&mut h, &["Close", "Cancel", "UI"]).as_deref(),
+            Some("Close")
+        );
+        let open = move |h: &mut PlexiUiHarness| {
+            h.with_app(|app| {
+                app.pending_close && app.windows[app.active_window].panes.contains_key(&a)
+            })
+        };
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(open(&mut h), "a held Enter closed the focused row's pane");
+        h.harness().key_up(egui::Key::Enter);
+        h.run_steps(1);
+        focused_row_checks(&mut h, open, "Close");
+    }
+
+    /// Stint 1513 critic: a fresh real Enter runs Close all.
+    #[test]
+    fn context_close_fresh_real_enter_closes_all() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        seed_context_close_confirm(&mut h, true);
+        assert!(h.with_app(|app| app.pending_context_close.is_some()));
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(
+            h.with_app(|app| app.pending_context_close.is_none()),
+            "a fresh real Enter runs Close all"
+        );
+    }
+
+    /// Stint 1513 critic: a fresh real Q selects Quit without saving. Checked on
+    /// the dialog itself: in the harness the quit would end the test process.
+    #[test]
+    fn quit_save_failure_dialog_takes_a_fresh_real_q() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+        );
+        let actions = crate::overlays::confirmations::quit_save_failure_actions();
+        let mut selected = None;
+        for stage in 0..3 {
+            let mut input = egui::RawInput::default();
+            if stage > 0 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Q,
+                    physical_key: None,
+                    pressed: stage == 1,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let _ = ctx.run_ui(input, |_| {
+                let response = crate::overlays::confirmations::quit_save_failure_modal(&actions)
+                    .destructive_input(false)
+                    .show(&ctx, &colors, |_| {});
+                selected = selected.or(response.selected);
+            });
+        }
+        assert_eq!(selected, Some("quit_without_saving"));
+    }
+
+    /// Stint 1513 critic, documenting today's behaviour (owner question,
+    /// ledger row 109; not changed here): an Enter that arrives on the frame
+    /// the Close pane dialog first draws is a fresh real press, so it closes.
+    #[test]
+    fn close_pane_enter_on_the_dialogs_first_frame_closes_today() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        let a = add_focused_pane(&mut h);
+        let b = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, vec![vec![a], vec![b]]);
+        });
+        h.run_steps(3);
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| {
+            app.config.confirm_close = Some(true);
+            let ctx = app.ctx.clone();
+            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
+        });
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let closed = h.with_app(|app| !app.windows[app.active_window].panes.contains_key(&a));
+        assert!(
+            closed,
+            "today an Enter on the first drawn frame closes the pane"
+        );
+    }
+
     /// The label of the widget holding keyboard focus, matched by rect
     /// against the labels a modal can show.
     fn focused_label(h: &mut PlexiUiHarness, labels: &[&str]) -> Option<String> {
@@ -9840,11 +9996,19 @@ open(out + ".done", "w").close()
 
     /// A dirty text editor with its "Unsaved changes" prompt open.
     fn open_unsaved_prompt() -> (PlexiUiHarness, tempfile::TempDir) {
+        open_unsaved_prompt_after(|_| {})
+    }
+
+    /// As [`open_unsaved_prompt`], running `before` ahead of the prompt.
+    fn open_unsaved_prompt_after(
+        before: impl FnOnce(&mut PlexiUiHarness),
+    ) -> (PlexiUiHarness, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("draft.txt");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let mut h = PlexiUiHarness::new_sized(900.0, 320.0);
         h.step();
+        before(&mut h);
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {

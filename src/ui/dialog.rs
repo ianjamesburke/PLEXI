@@ -264,10 +264,7 @@ impl<'a> ActionModal<'a> {
         let mut selected = focused_action
             .filter(|action| {
                 if guarded_destructive(action) {
-                    [egui::Key::Enter, egui::Key::Space].into_iter().any(|key| {
-                        DialogShortcut::new(&[], egui::Modifiers::NONE, key)
-                            .pressed_fresh(ctx, true)
-                    })
+                    take_fresh_activation(ctx)
                 } else {
                     ctx.input_mut(|i| {
                         i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
@@ -429,6 +426,30 @@ impl<'a> ActionModal<'a> {
             dismissed,
         }
     }
+}
+
+/// A Tab-focused destructive row (stint 1513): every Enter and Space press
+/// is removed from the frame, whatever its modifiers or repeat flag, so egui
+/// cannot turn one into a click on the focused row; only a fresh press with
+/// no modifiers activates it.
+fn take_fresh_activation(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| {
+        let mut fresh = false;
+        i.events.retain(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter | egui::Key::Space,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } => {
+                fresh |= !*repeat && modifiers.matches_exact(egui::Modifiers::NONE);
+                false
+            }
+            _ => true,
+        });
+        fresh
+    })
 }
 
 /// The shortcut spelled as one compact hint, e.g. `⌘S`, `D`, `Esc`.
@@ -957,6 +978,26 @@ mod adoption_tests {
             frame(&ctx, &dialog, true, true, save),
             Some(UnsavedChangesChoice::Save),
             "Save stays instant"
+        );
+
+        // Cmd+S is Overwrite disk when conflicted: injected, it is refused.
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let conflicted = UnsavedChangesDialog {
+            path: "/tmp/draft.txt".to_string(),
+            conflicted: true,
+            reload: false,
+            error: None,
+        };
+        frame(&ctx, &conflicted, false, true, vec![]);
+        let overwrite = vec![
+            key(Key::S, Modifiers::COMMAND, true),
+            key(Key::S, Modifiers::COMMAND, false),
+        ];
+        assert_eq!(
+            frame(&ctx, &conflicted, true, true, overwrite),
+            None,
+            "an injected Cmd+S overwrote the disk"
         );
     }
     #[test]
