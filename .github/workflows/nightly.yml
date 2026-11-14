@@ -4,7 +4,9 @@ name: Nightly alpha
 # removed (stint 0799); the local gate is the merge gate. This runs the full
 # host tests, then, only if alpha has commits since the last alpha tag, tags
 # the next vX.Y.Z-alpha.N and dispatches release.yml (package, signing and
-# A-to-B Keychain continuity gates, then publish). Never promotes beta/stable.
+# A-to-B Keychain continuity gates, then publish). The dispatched release waits
+# for a human approval before signing (scripts/RELEASE_CHANNELS.md); this
+# workflow never holds signing secrets itself. Never promotes beta/stable.
 on:
   schedule:
     - cron: '17 8 * * *'
