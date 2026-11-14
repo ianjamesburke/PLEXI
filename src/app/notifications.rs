@@ -404,6 +404,23 @@ impl PlexiApp {
 
     /// A confirmed "Close pane?" closed nothing because focus moved off the
     /// pane it asked about (stint 1491).
+    /// The pane a "Close pane?" dialog asked about was closed another way
+    /// while the dialog was up (stint 1500).
+    pub(crate) fn notify_close_target_gone(&mut self, label: &str) {
+        self.enqueue_notification(
+            NotifySource::HostInternal,
+            PendingNotification {
+                notify_id: new_notify_id("close-target-gone"),
+                title: format!("\u{201c}{label}\u{201d} was already closed"),
+                body: "It was closed another way while the dialog was open. Nothing else \
+                       was closed."
+                    .to_string(),
+                scope: crate::protocol::NotifyScope::Global,
+                ..Default::default()
+            },
+        );
+    }
+
     pub(crate) fn notify_close_not_run(&mut self, label: &str) {
         self.enqueue_notification(
             NotifySource::HostInternal,

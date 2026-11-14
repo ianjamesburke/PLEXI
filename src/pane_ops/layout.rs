@@ -2061,21 +2061,54 @@ impl PlexiApp {
     }
 
     /// `pane` with the name the dialog shows: a terminal's title, a view's
-    /// name, a portal's context.
+    /// name, a portal's context. When other panes in its window share that
+    /// name, its position among them in reading order says which one closes
+    /// (stint 1500).
     pub(crate) fn close_confirm_target_for(&self, pane: u64) -> crate::app::CloseConfirmTarget {
-        let label = self
-            .windows
+        let name = |p: &crate::host::pane::Pane| match p {
+            crate::host::pane::Pane::Terminal(t) => {
+                t.display_name().unwrap_or("Terminal").to_string()
+            }
+            crate::host::pane::Pane::View(v) => v.name.clone(),
+            crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+        };
+        let Some(window) = self.windows.iter().find(|w| w.panes.contains_key(&pane)) else {
+            return crate::app::CloseConfirmTarget {
+                pane,
+                label: format!("pane {pane}"),
+            };
+        };
+        let label = name(&window.panes[&pane]);
+        let place = |id: u64| {
+            window
+                .tree
+                .tiles
+                .find_pane(&id)
+                .and_then(|tile| window.tree.tiles.rect(tile))
+                .map_or((f32::INFINITY, f32::INFINITY), |rect| {
+                    (rect.top(), rect.left())
+                })
+        };
+        let mut same: Vec<(u64, (f32, f32))> = window
+            .panes
             .iter()
-            .find_map(|w| w.panes.get(&pane))
-            .map(|p| match p {
-                crate::host::pane::Pane::Terminal(t) => {
-                    t.display_name().unwrap_or("Terminal").to_string()
-                }
-                crate::host::pane::Pane::View(v) => v.name.clone(),
-                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
-            })
-            .unwrap_or_else(|| format!("pane {pane}"));
-        crate::app::CloseConfirmTarget { pane, label }
+            .filter(|(_, p)| name(p) == label)
+            .map(|(&id, _)| (id, place(id)))
+            .collect();
+        if same.len() < 2 {
+            return crate::app::CloseConfirmTarget { pane, label };
+        }
+        same.sort_by(|a, b| {
+            a.1 .0
+                .total_cmp(&b.1 .0)
+                .then(a.1 .1.total_cmp(&b.1 .1))
+                .then(a.0.cmp(&b.0))
+        });
+        let index = same.iter().position(|(id, _)| *id == pane).unwrap_or(0) + 1;
+        crate::app::CloseConfirmTarget {
+            pane,
+            label: format!("{label} ({index} of {})", same.len()),
+        }
     }
 
     /// Confirm of a single-pane "Close pane?" dialog: close the pane it asked
@@ -2092,6 +2125,7 @@ impl PlexiApp {
                 "close_confirm: cancel, pane={} is already gone; nothing closed",
                 target.pane
             );
+            self.notify_close_target_gone(&target.label);
             return;
         }
         if self.active_focused_pane_id() != Some(target.pane) {
