@@ -5727,6 +5727,10 @@ fn required_capability_for_python_plugin_command(
         } => Some(Capability::PanesControl.as_str()),
         // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
         ViewCommand::ShowNotification { .. } => Some("notify"),
+        // Pipes reach other panes: both directed-pipe effects need `pipe.open`.
+        ViewCommand::OpenDirectedPipe { .. } | ViewCommand::DeliverPipeMessage { .. } => {
+            Some(Capability::PipeOpen.as_str())
+        }
         _ => None,
     }
 }
@@ -11283,6 +11287,7 @@ default = true
             Family::Network,
             Family::CliExec,
             Family::Panes,
+            Family::Pipes,
             Family::Notify,
             Family::HostRead,
         ];
@@ -11354,7 +11359,7 @@ default = true
                 (Outcome::Deny, Mech::PythonLaunchSet)
             }
         });
-        assert_eq!(checked, 14 * matrix::STATES.len());
+        assert_eq!(checked, 15 * matrix::STATES.len());
     }
 
     /// Characterisation pin (stint 1238 step 1 review): `insert_path_token` and
