@@ -201,6 +201,7 @@ impl<'a> SearchBar<'a> {
                 .layout(Layout::left_to_right(Align::Center)),
         );
         let resp = TextField::singleline(self.id, self.hint)
+            .font_size(self.font_size)
             .log_name("search_bar")
             .show(&mut input_ui, query, colors);
         if query.is_empty() {
@@ -524,6 +525,46 @@ mod tests {
             color, colors.text_primary,
             "glyph stays dim, not primary text"
         );
+    }
+
+    /// The query text follows the bar's font size, so a pane that scales its
+    /// content with Cmd+/- scales what the user typed with it (stint 1110 PR 1).
+    #[test]
+    fn search_bar_query_text_follows_pane_font_size() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let query_font_size = |font_size: f32| {
+            let mut output = None;
+            for frame in 0..2 {
+                let mut query = String::from("needle");
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            SearchBar::new("query_font_test", "Search")
+                                .font_size(font_size)
+                                .show(ui, &mut query, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .find_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "needle" => {
+                        Some(t.galley.job.sections[0].format.font_id.size)
+                    }
+                    _ => None,
+                })
+                .expect("query text")
+        };
+        assert_eq!(query_font_size(12.0), 12.0);
+        assert_eq!(query_font_size(20.0), 20.0);
     }
 }
 

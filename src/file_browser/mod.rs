@@ -361,6 +361,11 @@ pub struct FileBrowserView {
     search_indices: Vec<usize>, // indices into `entries` that match the query
     search_session: crate::search::SearchSession,
     search_focus_pending: bool,
+    /// The search hit the user explicitly chose (keyboard, click) or that a
+    /// filesystem refresh must keep. Same-query result updates keep this file
+    /// selected wherever it ranks; without it the selection follows the top
+    /// result. A query change clears it.
+    search_pinned_path: Option<PathBuf>,
     // Action palette (`/` and `Cmd+K`, stint 0813)
     in_palette: bool,
     palette_query: String,
@@ -449,6 +454,7 @@ impl FileBrowserView {
             search_indices: Vec::new(),
             search_session: crate::search::SearchSession::new(),
             search_focus_pending: false,
+            search_pinned_path: None,
             in_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -593,11 +599,54 @@ impl FileBrowserView {
             let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
             self.search_session
                 .update_query(&self.cwd, hidden, &self.search_query, &shallow, true);
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
+    }
+
+    /// Place the selection after the hits for the unchanged query were
+    /// replaced (a background phase, a rewalk). A pinned file stays selected
+    /// wherever it now ranks; if it left the results, or nothing is pinned,
+    /// the selection is the top result. Rows never change identity by index.
+    fn apply_search_results_update(&mut self) {
+        self.sync_search_indices();
+        let Some(pinned) = self.search_pinned_path.clone() else {
+            self.selected = 0;
+            return;
+        };
+        match self
+            .search_session
+            .hits()
+            .iter()
+            .position(|hit| hit.path == pinned)
+        {
+            Some(index) => {
+                if index != self.selected {
+                    log::info!(
+                        "file_browser: search results reranked; selection kept on its file (row {} -> {index})",
+                        self.selected
+                    );
+                }
+                self.selected = index;
+            }
+            None => {
+                log::info!(
+                    "file_browser: selected search result left the results; selecting the top result"
+                );
+                self.search_pinned_path = None;
+                self.selected = 0;
+                self.pending_scroll = true;
+            }
+        }
+    }
+
+    /// Select a search hit by row as the user's explicit choice.
+    fn pin_search_selection(&mut self, index: usize) {
+        self.selected = index;
+        self.search_pinned_path = self
+            .search_session
+            .hits()
+            .get(index)
+            .map(|hit| hit.path.clone());
     }
 
     /// Refresh after an external change, keeping the selected path selected
@@ -606,9 +655,16 @@ impl FileBrowserView {
     fn refresh_after_external_change(&mut self) {
         let selected_path = self.selected_entry_or_hit().map(|entry| entry.path);
         let scroll = self.pending_scroll;
-        self.refresh_preserving_filter();
-        if let Some(path) = selected_path {
-            self.select_path(&path);
+        if self.in_search {
+            // Search rows are ordered hits, not directory entries: pin the
+            // file so this rewalk and its background phases keep it selected.
+            self.search_pinned_path = selected_path;
+            self.refresh_preserving_filter();
+        } else {
+            self.refresh_preserving_filter();
+            if let Some(path) = selected_path {
+                self.select_path(&path);
+            }
         }
         self.pending_scroll = scroll;
         log::info!(
@@ -807,7 +863,11 @@ impl FileBrowserView {
     }
 
     fn set_single_selection(&mut self, visible_idx: usize) {
-        self.selected = visible_idx;
+        if self.in_search {
+            self.pin_search_selection(visible_idx);
+        } else {
+            self.selected = visible_idx;
+        }
         self.clear_multi_selection();
         self.selection_anchor = Some(visible_idx);
     }
@@ -872,6 +932,7 @@ impl FileBrowserView {
         self.search_session
             .update_query(&self.cwd, hidden, &self.search_query, &shallow, false);
         self.sync_search_indices();
+        self.search_pinned_path = None;
         self.selected = 0;
         self.pending_scroll = true;
     }
@@ -891,6 +952,7 @@ impl FileBrowserView {
             self.search_query.clear();
             self.search_indices.clear();
             self.search_session.clear();
+            self.search_pinned_path = None;
             self.selected = 0;
             self.pending_scroll = true;
             log::info!("file_browser: exiting search mode");
@@ -2833,6 +2895,7 @@ impl FileBrowserView {
                                 input_id,
                                 "Type a /command or intent (e.g. /new file notes.md, /hidden, rename to \u{2026})",
                             )
+                            .font_size(self.font_size)
                             .log_name("file_browser_palette")
                             .show(ui, &mut self.palette_query, colors)
                         })
@@ -2927,6 +2990,8 @@ impl FileBrowserView {
                 // Ranked candidate list
                 ui.add_space(style::SPACE_XS);
                 let row_h = (22.0 * self.font_scale()).round().max(20.0);
+                // Row text scales with the pane font like the row height does.
+                let row_text_size = style::TEXT_META * self.font_scale();
                 for (idx, candidate) in candidates
                     .iter()
                     .take(PALETTE_MAX_VISIBLE_CANDIDATES)
@@ -2945,7 +3010,7 @@ impl FileBrowserView {
                         colors,
                     );
                     let inner = row_rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
-                    let cmd_font = egui::FontId::monospace(style::TEXT_META);
+                    let cmd_font = egui::FontId::monospace(row_text_size);
                     let cmd_color = colors.accent;
                     let cmd_galley = ui.fonts_mut(|f| {
                         f.layout_no_wrap(
@@ -2964,7 +3029,7 @@ impl FileBrowserView {
                         .galley(cmd_pos, cmd_galley, cmd_color);
 
                     let title_left = (inner.left() + cmd_w + style::SPACE_MD).min(inner.right());
-                    let title_font = egui::FontId::proportional(style::TEXT_META);
+                    let title_font = egui::FontId::proportional(row_text_size);
                     let title_color = colors.text_primary;
                     let title_galley = ui.fonts_mut(|f| {
                         f.layout_no_wrap(
@@ -3166,10 +3231,7 @@ impl View for FileBrowserView {
     ) -> bool {
         let mut changed = self.search_session.service_external(wake);
         if changed && self.in_search {
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
         if self.watch.as_ref().map(|(dir, _)| dir) != Some(&self.cwd) {
             self.watch = None;
@@ -3243,10 +3305,7 @@ impl View for FileBrowserView {
             ui.ctx().copy_text(text);
         }
         if self.in_search && self.search_session.poll() {
-            self.sync_search_indices();
-            self.selected = self
-                .selected
-                .min(self.search_session.hits().len().saturating_sub(1));
+            self.apply_search_results_update();
         }
 
         egui::Frame::new()
@@ -3558,12 +3617,12 @@ impl View for FileBrowserView {
             }
             (Mode::Search, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.search_session.hits().len().saturating_sub(1);
-                self.selected = (self.selected + 1).min(last);
+                self.pin_search_selection((self.selected + 1).min(last));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::SelectPrev)) => {
-                self.selected = self.selected.saturating_sub(1);
+                self.pin_search_selection(self.selected.saturating_sub(1));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
@@ -5446,6 +5505,145 @@ mod tests {
         );
     }
 
+    /// Poll the real search worker until its final phase for the current query
+    /// has been applied and `done` holds.
+    fn settle_search(
+        app: &mut FileBrowserView,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+        done: impl Fn(&FileBrowserView) -> bool,
+    ) {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            let _ = app.service_external(wake);
+            if !app.search_session.is_scanning() && done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        panic!(
+            "search worker did not settle for query {:?}",
+            app.search_query
+        );
+    }
+
+    fn selected_hit_name(app: &FileBrowserView) -> Option<String> {
+        app.selected_search_hit().map(|hit| hit.file_name.clone())
+    }
+
+    /// Two shallow hits are scored on the UI thread first; the worker's deep
+    /// walk then ranks an exact nested match above both. A file the user moved
+    /// to before that update must stay selected, not the row now at its index.
+    fn make_reranking_search_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("my_alpha.md"), b"x").expect("write my_alpha.md");
+        std::fs::write(dir.path().join("xalpha.md"), b"x").expect("write xalpha.md");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir sub");
+        std::fs::write(dir.path().join("sub").join("alpha"), b"x").expect("write sub/alpha");
+        dir
+    }
+
+    #[test]
+    fn search_selection_keeps_its_file_when_async_results_rerank() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        assert!(app.in_search);
+        let immediate: Vec<String> = app
+            .search_session
+            .hits()
+            .iter()
+            .map(|hit| hit.file_name.clone())
+            .collect();
+        assert_eq!(
+            immediate,
+            vec!["my_alpha.md".to_string(), "xalpha.md".to_string()],
+            "the synchronous shallow phase scores only the current directory"
+        );
+
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("xalpha.md"));
+
+        settle_search(&mut app, &wake, |app| {
+            app.search_session
+                .hits()
+                .first()
+                .is_some_and(|hit| hit.file_name == "alpha")
+        });
+
+        assert_eq!(
+            selected_hit_name(&app).as_deref(),
+            Some("xalpha.md"),
+            "a background rerank must not move the selection to another file"
+        );
+    }
+
+    #[test]
+    fn unchosen_search_selection_follows_the_top_result_through_async_reranks() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("my_alpha.md"));
+
+        settle_search(&mut app, &wake, |app| {
+            app.search_session
+                .hits()
+                .first()
+                .is_some_and(|hit| hit.file_name == "alpha")
+        });
+        assert_eq!(
+            selected_hit_name(&app).as_deref(),
+            Some("alpha"),
+            "before the user chooses a row, the selection is the best result"
+        );
+    }
+
+    #[test]
+    fn search_query_change_releases_the_chosen_result() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(app.search_pinned_path, Some(dir.path().join("xalpha.md")));
+
+        run_handle_key(&mut app, vec![Event::Text(".md".to_string())]);
+        assert_eq!(app.search_pinned_path, None);
+        assert_eq!(app.selected, 0);
+        assert_eq!(selected_hit_name(&app).as_deref(), Some("my_alpha.md"));
+    }
+
+    #[test]
+    fn search_selection_falls_back_to_the_top_result_when_its_file_leaves() {
+        let dir = make_reranking_search_dir();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        run_handle_key(&mut app, vec![Event::Text("alpha".to_string())]);
+        app.selected = 1;
+        app.search_pinned_path = Some(dir.path().join("deleted_alpha.md"));
+        app.pending_scroll = false;
+
+        app.apply_search_results_update();
+
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.search_pinned_path, None);
+        assert!(
+            app.pending_scroll,
+            "the new action target is scrolled into view"
+        );
+    }
+
     #[test]
     fn arrow_down_still_selects_next_in_search() {
         let (mut app, _dir) = make_populated_dir_plugin();
@@ -5708,6 +5906,57 @@ mod tests {
             registry.default_for(key).is_some() && registry.claim_for(key).is_some(),
             "SearchBar must register its TextInput under SurfaceKey::Pane(pane_id) and claim focus"
         );
+    }
+
+    /// Cmd+/- changes the pane `font_size`; the action palette's typed query
+    /// and its command rows must scale with it (stint 1110 PR 1).
+    #[test]
+    fn action_palette_query_and_rows_follow_pane_font_size() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let text_sizes = |font_size: f32| {
+            let (mut app, _dir) = make_three_file_plugin();
+            app.font_size = font_size;
+            app.open_palette("/hid");
+            let title = app
+                .rank_palette_candidates()
+                .first()
+                .expect("a candidate for /hid")
+                .title
+                .clone();
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(ctx.run_ui(
+                    RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        app.draw_action_palette(ui, &colors, 42, None);
+                    },
+                ));
+            }
+            let shapes = output.unwrap().shapes;
+            let size_of = |text: &str| {
+                shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == text => {
+                            Some(t.galley.job.sections[0].format.font_id.size)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("no painted text {text:?}"))
+            };
+            (size_of("/hid"), size_of(&title))
+        };
+        let (query_default, row_default) = text_sizes(FONT_SIZE_DEFAULT);
+        let (query_large, row_large) = text_sizes(FONT_SIZE_DEFAULT * 2.0);
+        assert_eq!(query_default, FONT_SIZE_DEFAULT);
+        assert_eq!(query_large, FONT_SIZE_DEFAULT * 2.0);
+        assert_eq!(row_default, style::TEXT_META);
+        assert_eq!(row_large, style::TEXT_META * 2.0);
     }
 
     #[test]
@@ -6407,6 +6656,141 @@ mod tests {
         assert!(
             h.pane_count() >= 2,
             "CreateFile with open_in_editor must open hello.rs in a sibling editor pane"
+        );
+    }
+
+    /// A File Explorer pane in a real host, settled until it owns input.
+    fn explorer_harness(dir: &Path) -> crate::testing::HostHarness {
+        let mut h = crate::testing::HostHarness::new();
+        h.app.open_builtin_view_pane(
+            Box::new(FileBrowserView::new(dir.to_path_buf())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.to_path_buf(),
+            None,
+            None,
+            None,
+        );
+        h.run_frames(2);
+        h
+    }
+
+    fn explorer_in_harness(h: &mut crate::testing::HostHarness) -> (u64, &mut FileBrowserView) {
+        h.app
+            .windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .find_map(|(pane_id, pane)| {
+                let crate::host::pane::ViewRuntime::Builtin(b) = &mut pane.as_view_mut()?.runtime
+                else {
+                    return None;
+                };
+                let browser = b.as_any_mut().downcast_mut::<FileBrowserView>()?;
+                Some((*pane_id, browser))
+            })
+            .expect("file_browser runtime")
+    }
+
+    /// The egui id `draw_search_bar` gives the search TextEdit.
+    fn explorer_search_input_id(pane_id: u64) -> egui::Id {
+        egui::Id::new(("file_browser_search", pane_id))
+    }
+
+    /// One frame carrying exactly the text events a keystroke produces.
+    fn type_frame(h: &mut crate::testing::HostHarness, text: &str) {
+        h.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Text(text.to_string())],
+            ..Default::default()
+        });
+    }
+
+    /// Leave a caret at `index` in the search field's stored TextEdit state,
+    /// the state a prior focus of the field leaves behind.
+    fn store_search_caret(h: &mut crate::testing::HostHarness, index: usize) {
+        let (pane_id, _) = explorer_in_harness(h);
+        let id = explorer_search_input_id(pane_id);
+        let mut state = egui::TextEdit::load_state(&h.app.ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(index),
+            )));
+        state.store(&h.app.ctx, id);
+    }
+
+    fn search_query_and_caret(h: &mut crate::testing::HostHarness) -> (String, Option<usize>) {
+        let (pane_id, browser) = explorer_in_harness(h);
+        let query = browser.search_query.clone();
+        let caret = egui::TextEdit::load_state(&h.app.ctx, explorer_search_input_id(pane_id))
+            .and_then(|state| state.cursor.char_range())
+            .map(|range| range.primary.index);
+        (query, caret)
+    }
+
+    #[test]
+    fn explorer_search_keeps_typed_order_after_a_stale_caret_from_an_earlier_focus() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("abc.txt"), b"x").expect("write abc.txt");
+        let mut h = explorer_harness(dir.path());
+        // An earlier focus of the empty field left its caret at 0.
+        store_search_caret(&mut h, 0);
+
+        for ch in ["a", "b", "c"] {
+            type_frame(&mut h, ch);
+        }
+        h.run_frames(1);
+
+        assert_eq!(
+            search_query_and_caret(&mut h),
+            ("abc".to_string(), Some(3)),
+            "the keystroke that opens search is consumed once and later keys append after it"
+        );
+    }
+
+    #[test]
+    fn explorer_search_keeps_typed_order_on_cold_open_burst_and_unicode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cases: [(&[&str], &str); 3] = [
+            (&["a", "b", "c"], "abc"),
+            (&["ab", "c"], "abc"),
+            (&["\u{e9}", "\u{df}", "x"], "\u{e9}\u{df}x"),
+        ];
+        for (keys, expected) in cases {
+            let mut h = explorer_harness(dir.path());
+            for key in keys {
+                type_frame(&mut h, key);
+            }
+            h.run_frames(1);
+            assert_eq!(
+                search_query_and_caret(&mut h),
+                (expected.to_string(), Some(expected.chars().count())),
+                "typing {keys:?} into a freshly opened explorer"
+            );
+        }
+    }
+
+    #[test]
+    fn explorer_search_keeps_an_intentional_mid_query_caret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut h = explorer_harness(dir.path());
+        for ch in ["a", "b", "c"] {
+            type_frame(&mut h, ch);
+        }
+        h.run_frames(1);
+        assert_eq!(search_query_and_caret(&mut h).0, "abc");
+
+        // The user moves the caret back inside the query; the field owns it.
+        store_search_caret(&mut h, 1);
+        type_frame(&mut h, "x");
+        h.run_frames(1);
+
+        assert_eq!(
+            search_query_and_caret(&mut h),
+            ("axbc".to_string(), Some(2)),
+            "a caret the user placed mid-query must not be forced to the end"
         );
     }
 
