@@ -11,6 +11,110 @@ import sys
 import time
 
 MARKER = "plexi-owned-build-cache-v1"
+GIB = 1024**3
+# Defaults; both overridable (stint 1495). Documented in src/testing/TESTING.md.
+DEFAULT_MIN_FREE_BYTES = 12 * GIB
+DEFAULT_TOTAL_MAX_BYTES = 40 * GIB
+# The release binary a stamped candidate hands to its install (stints 1443, 0637).
+ARTIFACT = Path("release") / "plexi"
+
+
+class DiskFloorError(OSError):
+    """Free space on the build volume is below the floor."""
+
+
+def free_bytes(path):
+    return shutil.disk_usage(path).free
+
+
+def require_free_space(path, floor, free=None):
+    """Refuse to build when the volume holding `path` has less than `floor` free."""
+    free = free_bytes(path) if free is None else free
+    if free < floor:
+        raise DiskFloorError(
+            f"refusing to build: {free / GIB:.1f} GiB free on the volume holding {path}, "
+            f"floor {floor / GIB:.1f} GiB (PLEXI_BUILD_MIN_FREE_BYTES). Reclaim space with "
+            f"`just clean-stale-targets` (merged worktrees' target dirs), `just trim-targets` "
+            f"(debug and incremental output), or a lower PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES.")
+    print(f"build-cache: free_bytes={free} floor_bytes={floor} volume={path}", flush=True)
+
+
+def tree_bytes(path):
+    if not path.exists():
+        return 0
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file() and not p.is_symlink())
+
+
+def prune_slot(slot):
+    """Remove a slot's build output but keep its release artifact. Returns bytes freed."""
+    target = slot / "target"
+    if target.is_symlink() or not target.exists():
+        return 0
+    before = tree_bytes(target)
+    keep = target / ARTIFACT
+    for child in target.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.name == ARTIFACT.parts[0] and keep.is_file():
+            for inner in child.iterdir():
+                if inner == keep:
+                    continue
+                if inner.is_dir() and not inner.is_symlink():
+                    shutil.rmtree(inner)
+                else:
+                    inner.unlink()
+        else:
+            shutil.rmtree(child)
+    freed = before - tree_bytes(target)
+    print(f"build-cache: pruned slot={slot} freed_bytes={freed} kept={ARTIFACT if keep.is_file() else 'nothing'}",
+          flush=True)
+    return freed
+
+
+def owned_slots(root):
+    return [slot for slot in sorted(root.glob("*/slot-*"))
+            if slot.is_dir() and not slot.is_symlink()
+            and (slot / "owner").is_file() and (slot / "owner").read_text() == MARKER]
+
+
+def prune_to_cap(root, cap, keep):
+    """Prune slots, oldest use first, until every slot together fits `cap`.
+
+    A slot whose lock another build holds is skipped; `keep` (the slot this
+    build is about to use) is pruned last. Release artifacts always survive.
+    """
+    slots = owned_slots(root)
+    sizes = {slot: tree_bytes(slot / "target") for slot in slots}
+    total = sum(sizes.values())
+    if total <= cap:
+        return total
+    print(f"build-cache: total_bytes={total} over cap_bytes={cap}", flush=True)
+
+    def last_used(slot):
+        record = slot / "last-channel"
+        return record.stat().st_mtime if record.exists() else 0
+
+    order = sorted((slot for slot in slots if slot != keep), key=last_used)
+    order += [slot for slot in slots if slot == keep]
+    for slot in order:
+        if total <= cap:
+            break
+        if slot != keep:
+            lock = (slot / "lock").open("a+")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock.close()
+                print(f"build-cache: skip leased slot={slot}", flush=True)
+                continue
+            try:
+                total -= prune_slot(slot)
+            finally:
+                lock.close()
+        else:
+            total -= prune_slot(slot)
+    print(f"build-cache: total_bytes={total} after prune", flush=True)
+    return total
 
 
 def run(channel, command):
@@ -80,12 +184,16 @@ def run(channel, command):
                         raise ValueError("target must not be a symlink")
                     # Limit retained data before reuse, only inside our marked and
                     # locked slot. Never traverse an arbitrary caller target tree.
-                    maximum = int(os.environ.get("PLEXI_BUILD_CACHE_MAX_BYTES", str(40 * 1024**3)))
-                    total = sum(p.stat().st_size for p in target.rglob("*") if p.is_file() and not p.is_symlink()) if target.exists() else 0
+                    maximum = int(os.environ.get("PLEXI_BUILD_CACHE_MAX_BYTES", str(40 * GIB)))
+                    total = tree_bytes(target)
                     if total > maximum:
-                        print(f"build-cache: discard owned oversized slot bytes={total}", flush=True)
-                        shutil.rmtree(target)
+                        print(f"build-cache: prune owned oversized slot bytes={total}", flush=True)
+                        total -= prune_slot(slot)
                     target.mkdir(exist_ok=True)
+                    prune_to_cap(base.parent, int(os.environ.get(
+                        "PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES", str(DEFAULT_TOTAL_MAX_BYTES))), keep=slot)
+                    require_free_space(base, int(os.environ.get(
+                        "PLEXI_BUILD_MIN_FREE_BYTES", str(DEFAULT_MIN_FREE_BYTES))))
                     (slot / "last-channel").write_text(owner)
                     env = {**os.environ, "CARGO_TARGET_DIR": str(target),
                            "PLEXI_BUILD_TELEMETRY": str(slot / "telemetry.jsonl")}

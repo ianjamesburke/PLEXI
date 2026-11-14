@@ -347,7 +347,7 @@ class Lifecycle(unittest.TestCase):
         lock = (leased / 'lock').open('a+')
         self.addCleanup(lock.close)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        CACHE.prune_to_cap(self.root / 'cache', cap=2100, keep=current)
+        CACHE.prune_to_cap(self.root / 'cache', cap=3100, keep=current)
         self.assertFalse((oldest / 'target' / 'debug').exists(), 'oldest unleased slot pruned first')
         self.assertTrue((leased / 'target' / 'debug' / 'deps.bin').exists(), 'a live lease is never pruned')
         self.assertTrue((newer / 'target' / 'debug' / 'deps.bin').exists(), 'stops once under the cap')
