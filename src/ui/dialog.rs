@@ -88,6 +88,13 @@ pub(crate) struct ActionModal<'a> {
     actions: &'a [DialogAction<'a>],
     default_action: Option<&'a str>,
     button_row: bool,
+    focus_surface: Option<crate::ui::focus::SurfaceKey>,
+}
+
+/// Memory slot holding the egui ids of a modal's actions from last frame, so
+/// this frame can tell which action holds keyboard focus before it draws.
+fn action_ids_slot(modal: &str) -> egui::Id {
+    egui::Id::new(("plexi_action_modal_ids", modal))
 }
 
 impl<'a> ActionModal<'a> {
@@ -99,7 +106,15 @@ impl<'a> ActionModal<'a> {
             actions,
             default_action: None,
             button_row: false,
+            focus_surface: None,
         }
+    }
+
+    /// Keep Tab inside this modal's actions while `key` owns input (stint
+    /// 1493), and let Enter or Space activate the Tab-focused action.
+    pub(crate) fn focus_surface(mut self, key: crate::ui::focus::SurfaceKey) -> Self {
+        self.focus_surface = Some(key);
+        self
     }
 
     /// Conventional confirm layout: one right-aligned row of kit buttons in
@@ -126,20 +141,48 @@ impl<'a> ActionModal<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
-        let mut selected = self
-            .actions
-            .iter()
-            .find(|action| {
-                action
-                    .shortcut
-                    .as_ref()
-                    .is_some_and(|shortcut| shortcut.pressed(ctx))
-                    || action
-                        .alternate
+        // A Tab-focused action takes Enter and Space before any shortcut, so
+        // Enter on a focused Cancel cancels instead of firing Close's Enter.
+        let previous_ids: Vec<(String, egui::Id)> = ctx
+            .data(|d| d.get_temp(action_ids_slot(self.id)))
+            .unwrap_or_default();
+        let focused_action = ctx.memory(|m| m.focused()).and_then(|focused| {
+            previous_ids
+                .iter()
+                .find(|(_, id)| *id == focused)
+                .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
+        });
+        let mut selected = focused_action
+            .filter(|_| {
+                ctx.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+                })
+            })
+            .map(|action| {
+                log::info!(
+                    "ui: modal {} activated focused action {}",
+                    self.id,
+                    action.id
+                );
+                action.id
+            });
+        if selected.is_none() {
+            selected = self
+                .actions
+                .iter()
+                .find(|action| {
+                    action
+                        .shortcut
                         .as_ref()
                         .is_some_and(|shortcut| shortcut.pressed(ctx))
-            })
-            .map(|action| action.id);
+                        || action
+                            .alternate
+                            .as_ref()
+                            .is_some_and(|shortcut| shortcut.pressed(ctx))
+                })
+                .map(|action| action.id);
+        }
 
         if selected.is_none()
             && self.default_action.is_some()
@@ -154,13 +197,14 @@ impl<'a> ActionModal<'a> {
             .title(self.title)
             .width(self.width);
 
+        let mut action_ids: Vec<(String, egui::Id)> = Vec::new();
         let response = shell.show(ctx, colors, |ui| {
             add_body(ui);
             ui.add_space(style::SPACE_MD);
 
             if self.button_row {
                 ui.add_space(style::SPACE_SM);
-                if let Some(id) = button_row(ui, self.actions, colors) {
+                if let Some(id) = button_row(ui, self.actions, colors, &mut action_ids) {
                     selected = Some(id);
                 }
                 return;
@@ -180,11 +224,18 @@ impl<'a> ActionModal<'a> {
                 .fold(0.0_f32, f32::max);
 
             for action in self.actions {
-                if action_row(ui, action, chip_col_w, colors).clicked() {
+                let response = action_row(ui, action, chip_col_w, colors);
+                action_ids.push((action.id.to_string(), response.id));
+                if response.clicked() {
                     selected = Some(action.id);
                 }
             }
         });
+        if let Some(key) = self.focus_surface {
+            let ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
+            crate::ui::focus::register_focus_trap(ctx, key, &ids);
+        }
+        ctx.data_mut(|d| d.insert_temp(action_ids_slot(self.id), action_ids));
 
         DialogResponse {
             selected,
@@ -220,6 +271,7 @@ fn button_row<'a>(
     ui: &mut egui::Ui,
     actions: &'a [DialogAction<'a>],
     colors: &Colors,
+    action_ids: &mut Vec<(String, egui::Id)>,
 ) -> Option<&'a str> {
     let hints: Vec<String> = actions
         .iter()
@@ -248,6 +300,7 @@ fn button_row<'a>(
             button = button.min_width(ui.available_width());
         }
         let response = ui.add(button);
+        action_ids.push((action.id.to_string(), response.id));
         reports.push(super::layout_report::Action {
             id: action.id.into(),
             name: action.label.into(),
@@ -280,6 +333,8 @@ fn button_row<'a>(
             },
         );
     }
+    // Painted right to left; Tab order is the given (left to right) order.
+    action_ids.sort_by_key(|(id, _)| actions.iter().position(|a| a.id == id));
     let rect = egui::Rect::from_min_max(start, ui.min_rect().max);
     capture.finish(ui.painter(), rect, colors.bg_sidebar, reports, vec![]);
     selected
@@ -374,6 +429,7 @@ fn action_row(
         ),
         egui::Sense::click(),
     );
+
     let mut capture = super::layout_report::Capture::begin(ui.painter(), "modal_action");
     let background = if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -420,6 +476,16 @@ fn action_row(
     );
     ui.painter()
         .galley_with_override_text_color(label_pos, galley, color);
+    if response.has_focus() {
+        // The kit focus ring (stint 1460), drawn inside so the modal never
+        // clips it.
+        ui.painter().rect_stroke(
+            rect.expand2(egui::vec2(style::SPACE_XS, 0.0)),
+            style::RADIUS_SM,
+            egui::Stroke::new(crate::ui::button::FOCUS_RING_WIDTH, colors.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), action.label)
     });
@@ -506,6 +572,11 @@ impl UnsavedChangesDialog {
             format!("Save changes to {name}?")
         };
         let response = ActionModal::new("unsaved_changes", "Unsaved changes", &actions)
+            .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+                crate::app::input_owner::OverlaySurface::Layer(
+                    crate::app::FocusKind::UnsavedChanges,
+                ),
+            ))
             .width(style::MODAL_WIDTH_SM)
             .default_action("save")
             .button_row()

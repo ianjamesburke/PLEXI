@@ -59,6 +59,9 @@ impl PlexiApp {
             "Workspace could not be saved",
             &actions,
         )
+        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ConfirmClose),
+        ))
         .width(super::MODAL_WIDTH)
         .show(ctx, &self.colors, |ui| {
             crate::ui::typography::caption(ui, cause, &self.colors);
@@ -121,6 +124,11 @@ impl PlexiApp {
         };
         let response =
             crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
+                .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::ConfirmClose,
+                    ),
+                ))
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
@@ -227,6 +235,11 @@ impl PlexiApp {
         );
         let response =
             crate::ui::dialog::ActionModal::new("ctx_close_confirm_modal", &title, &actions)
+                .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::ContextCloseConfirm,
+                    ),
+                ))
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &colors, |ui| {
                     for item in &state.items {
@@ -370,6 +383,9 @@ impl PlexiApp {
             "Event subscription request",
             &actions,
         )
+        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::EventConsent),
+        ))
         .width(super::MODAL_WIDTH)
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(ui, format!("{subscriber} wants to {verb}:"), &colors);
@@ -434,6 +450,9 @@ impl PlexiApp {
             "Raw WASM import review",
             &actions,
         )
+        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::RawWasmReview),
+        ))
         .width(super::MODAL_WIDTH)
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(

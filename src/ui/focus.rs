@@ -31,6 +31,9 @@ pub(crate) struct SurfaceRegistry {
     /// Explicit focus claims; the last claim whose key matches the frame's
     /// input owner wins.
     pub(crate) claims: Vec<(SurfaceKey, Id)>,
+    /// Modal focus traps (stint 1493): while `key` owns input, keyboard focus
+    /// stays on these ids, in Tab order.
+    pub(crate) traps: Vec<(SurfaceKey, Vec<Id>)>,
 }
 
 impl SurfaceRegistry {
@@ -52,6 +55,15 @@ impl SurfaceRegistry {
             .iter()
             .find(|(skey, _, is_default)| *skey == key && *is_default)
             .map(|(_, sid, _)| *sid)
+    }
+
+    /// The focus trap registered for `key`, if any.
+    pub(crate) fn trap_for(&self, key: SurfaceKey) -> Option<&[Id]> {
+        self.traps
+            .iter()
+            .rev()
+            .find(|(tkey, _)| *tkey == key)
+            .map(|(_, ids)| ids.as_slice())
     }
 
     /// The last claim registered for `key`, if any.
@@ -117,6 +129,42 @@ pub(crate) fn claim_text_surface(ctx: &egui::Context, key: SurfaceKey, id: Id) {
     });
 }
 
+/// Trap keyboard focus inside a modal's controls this frame (stint 1493):
+/// while `key` owns input, Tab and Shift+Tab cycle `ids` in order and focus
+/// never lands on a widget behind the modal. The ids are registered as
+/// surfaces of `key`. Nothing is focused until the first Tab.
+pub(crate) fn register_focus_trap(ctx: &egui::Context, key: SurfaceKey, ids: &[Id]) {
+    with_registry(ctx, |registry| {
+        for id in ids {
+            if !registry
+                .surfaces
+                .iter()
+                .any(|(skey, sid, _)| *skey == key && sid == id)
+            {
+                registry.surfaces.push((key, *id, false));
+            }
+        }
+        registry.traps.push((key, ids.to_vec()));
+    });
+}
+
+/// Where Tab or Shift+Tab moves focus in a trap, from the trap member that
+/// held focus last frame (`last`); with none, Tab enters at the first member
+/// and Shift+Tab at the last. Wraps at both ends.
+pub(crate) fn trap_step(trap: &[Id], last: Option<Id>, backwards: bool) -> Option<Id> {
+    let len = trap.len();
+    if len == 0 {
+        return None;
+    }
+    let index = match last.and_then(|id| trap.iter().position(|t| *t == id)) {
+        Some(i) if backwards => (i + len - 1) % len,
+        Some(i) => (i + 1) % len,
+        None if backwards => len - 1,
+        None => 0,
+    };
+    Some(trap[index])
+}
+
 /// Take this frame's registry, leaving it empty for the next frame. Called
 /// once per frame by the reconciler.
 pub(crate) fn drain_text_surfaces(ctx: &egui::Context) -> SurfaceRegistry {
@@ -166,6 +214,23 @@ mod tests {
         assert_eq!(registry.claim_for(key), Some(second));
         assert!(registry.contains(first));
         assert_eq!(registry.claim_for(SurfaceKey::Pane(1)), None);
+    }
+
+    /// Stint 1493: Tab and Shift+Tab step through a trap and wrap.
+    #[test]
+    fn trap_step_cycles_and_wraps() {
+        let [a, b, c] = [Id::new("a"), Id::new("b"), Id::new("c")];
+        let trap = [a, b, c];
+        assert_eq!(trap_step(&trap, None, false), Some(a), "Tab enters first");
+        assert_eq!(
+            trap_step(&trap, None, true),
+            Some(c),
+            "Shift+Tab enters last"
+        );
+        assert_eq!(trap_step(&trap, Some(a), false), Some(b));
+        assert_eq!(trap_step(&trap, Some(c), false), Some(a), "wraps forward");
+        assert_eq!(trap_step(&trap, Some(a), true), Some(c), "wraps back");
+        assert_eq!(trap_step(&[], None, false), None);
     }
 
     #[test]
