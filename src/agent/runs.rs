@@ -704,6 +704,30 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         .iter()
         .find(|run| run.agent_id == agent.id && run.admission_id == admission_id)
     {
+        // A retry is only the same success if the first attempt was charged
+        // (stint 1441): a run with no ledger row never returns ok.
+        match ledger::has_agent_run_row(&existing.id) {
+            Ok(true) => {}
+            Ok(false) => {
+                log::error!(
+                    "agents_api: admission {admission_id} found run {} with no ledger row; refusing the retry",
+                    existing.id
+                );
+                return json!({
+                    "ok": false,
+                    "error_code": "ledger_missing",
+                    "error": "the existing run for this admission has no ledger row",
+                    "run": existing,
+                });
+            }
+            Err(error) => {
+                log::error!(
+                    "agents_api: ledger unreadable for retry of {}: {error}",
+                    existing.id
+                );
+                return json!({"ok": false, "error_code": "ledger_error", "error": error});
+            }
+        }
         let token = remember_token(workspace, &existing.id, &existing.actor_id);
         log::info!(
             "agents_api: admission {} returned existing run {} for agent {}",
@@ -754,10 +778,9 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         output_tokens,
         grants: agent.grants.clone(),
     };
-    if let Err(error) = append_run_record(workspace, &record) {
-        log::error!("agents_api: append run failed: {error}");
-        return json!({"ok": false, "error_code": "io_error", "error": error});
-    }
+    // The ledger row is written before the run record (stint 1441): a ledger
+    // that refuses the row leaves no run behind, so nothing is active, and a
+    // retry cannot find a run that was never charged.
     let row = LedgerRow::for_agent_run(
         &record.id,
         &record.actor_id,
@@ -772,7 +795,16 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "agents_api: ledger append failed for {}: {error}",
             record.id
         );
-        return json!({"ok": false, "error_code": "ledger_error", "error": error, "run": record});
+        return json!({"ok": false, "error_code": "ledger_error", "error": error});
+    }
+    if let Err(error) = append_run_record(workspace, &record) {
+        // Charged but not started: the ledger row stands (fail closed) and the
+        // run is not recorded, so a retry starts a new run.
+        log::error!(
+            "agents_api: append run failed after its ledger row for {}: {error}",
+            record.id
+        );
+        return json!({"ok": false, "error_code": "io_error", "error": error});
     }
     let token = remember_token(workspace, &record.id, &record.actor_id);
     log::info!(
@@ -1794,6 +1826,89 @@ mod tests {
         assert!(ledger.contains("\"run_id\""));
         assert!(ledger.contains("acme"));
         assert!(ledger.contains("\"input_tokens\":11"));
+    }
+
+    /// Stint 1441: a ledger that refuses the row (an old-name ledger, here)
+    /// leaves no active run behind, so the next spawn is not blocked by
+    /// `assignment_conflict`.
+    #[test]
+    fn failed_ledger_append_leaves_no_active_run() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let retired = crate::config::config_dir().join("agent-ledger.jsonl");
+        fs::write(&retired, b"").unwrap();
+
+        let first = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
+        );
+        assert_eq!(first["error_code"], "ledger_error", "{first}");
+        assert!(
+            load_runs(fix.ws()).unwrap().iter().all(|run| !run.active),
+            "no active run is left behind"
+        );
+
+        fs::remove_file(&retired).unwrap();
+        let next = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
+        );
+        assert_eq!(next["ok"], true, "the next spawn is not blocked: {next}");
+    }
+
+    /// Stint 1441: a retry with the same admission after a failed ledger
+    /// append never returns ok without a ledger row.
+    #[test]
+    fn retry_after_failed_ledger_append_is_not_ok_without_a_row() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let retired = crate::config::config_dir().join("agent-ledger.jsonl");
+        fs::write(&retired, b"").unwrap();
+        let payload = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"});
+
+        let first = handle_request("spawn_run", &payload);
+        assert_eq!(first["error_code"], "ledger_error", "{first}");
+        let retry = handle_request("spawn_run", &payload);
+        assert_ne!(
+            retry["ok"], true,
+            "retry must not succeed without a ledger row: {retry}"
+        );
+        assert!(
+            !crate::config::config_dir().join("ai-ledger.jsonl").exists(),
+            "no ledger row was written"
+        );
+    }
+
+    /// Stint 1441: a run journalled by an older build without its ledger row
+    /// is not returned as an idempotent ok.
+    #[test]
+    fn idempotent_retry_refuses_a_run_with_no_ledger_row() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let agent = find_agent(fix.ws(), "worker").unwrap();
+        let orphan = RunRecord {
+            id: "run_orphan".to_string(),
+            agent_id: agent.id.clone(),
+            actor_id: actor_of(&agent.id),
+            parent_run: None,
+            admission_id: "adm-1".to_string(),
+            version: 1,
+            state: "running".to_string(),
+            active: true,
+            client_ref: String::new(),
+            kind: "output".to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            grants: agent.grants.clone(),
+        };
+        append_run_record(fix.ws(), &orphan).unwrap();
+
+        let retry = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
+        );
+        assert_ne!(retry["ok"], true, "{retry}");
+        assert_eq!(retry["error_code"], "ledger_missing", "{retry}");
     }
 
     #[test]
