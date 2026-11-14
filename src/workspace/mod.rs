@@ -63,8 +63,6 @@ pub struct SavedPane {
     #[serde(default, rename = "app_state")]
     pub plugin_state: Option<serde_json::Value>,
     #[serde(default)]
-    pub hidden: bool,
-    #[serde(default)]
     pub heartbeat: Option<SavedPaneHeartbeat>,
     /// `ViewRuntime::type_id()` at save time (`"python-wasm"` / `"wasm"` /
     /// a builtin's own type id). Distinct from `plugin_id`, which is the plugin's
@@ -605,6 +603,7 @@ impl WorkspaceFile {
         }
         let mut ws: Self = serde_json::from_str(&data)
             .map_err(|error| unusable(format!("not valid workspace JSON: {error}")))?;
+        log_removed_hidden_panes(&data);
         if ws.version != CURRENT_VERSION {
             return Err(unusable(format!(
                 "unsupported workspace version {} (this build reads version {CURRENT_VERSION})",
@@ -972,7 +971,7 @@ fn collect_saved_strip_panes(
     match tile {
         Tile::Pane(id) => {
             if window.panes.iter().any(|pane| {
-                pane.id == *id && !pane.hidden && !matches!(pane.kind, SavedPaneKind::Portal { .. })
+                pane.id == *id && !matches!(pane.kind, SavedPaneKind::Portal { .. })
             }) {
                 panes.push(*id);
             }
@@ -1081,6 +1080,30 @@ const RETIRED_VERSION: u32 = 2;
 #[derive(Deserialize)]
 struct SavedVersion {
     version: u32,
+}
+
+/// Pane hiding was removed (stint 1457). A workspace saved by an older build
+/// may still mark panes `"hidden": true`; serde ignores that unknown field and
+/// every pane restores visible. Name each such pane once in the log, and the
+/// next save drops the field because `SavedPane` no longer has it.
+fn log_removed_hidden_panes(data: &str) {
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(data) else {
+        return;
+    };
+    let panes = doc["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|window| window["panes"].as_array())
+        .flatten();
+    for pane in panes {
+        if pane["hidden"].as_bool() == Some(true) {
+            log::info!(
+                "workspace_restore: pane {} was saved hidden; pane hiding was removed, restoring it visible",
+                pane["id"]
+            );
+        }
+    }
 }
 
 fn saved_version(bytes: &[u8]) -> Option<u32> {
@@ -1513,7 +1536,6 @@ mod tests {
                 name: Some("split-pane".to_string()),
                 plugin_id: matches!(kind, SavedPaneKind::View).then(|| "snake".to_string()),
                 plugin_state: None,
-                hidden: false,
                 heartbeat: None,
                 runtime_kind: None,
                 launch: None,
@@ -1537,7 +1559,6 @@ mod tests {
             name: None,
             plugin_id: None,
             plugin_state: None,
-            hidden: false,
             heartbeat: None,
             runtime_kind: None,
             launch: None,
@@ -1694,7 +1715,6 @@ mod tests {
             name: Some("worker-1".to_string()),
             plugin_id: None,
             plugin_state: None,
-            hidden: false,
             heartbeat: None,
             runtime_kind: None,
             launch: None,

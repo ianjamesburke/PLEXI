@@ -470,7 +470,6 @@ impl PlexiApp {
                     target_context_id: ctx_id,
                     context_state: None,
                     reveal_after_close: false,
-                    hidden: false,
                 })),
             );
         } else {
@@ -1363,7 +1362,6 @@ impl PlexiApp {
         let (pane_id, pane) = page.panes.iter().next()?;
         let portal = pane.as_portal()?;
         if !portal.reveal_after_close
-            || portal.hidden
             || page.tree.tiles.find_pane(pane_id).is_none()
         {
             return None;
@@ -1412,8 +1410,7 @@ impl PlexiApp {
             return;
         };
         let target = portal.target_context_id;
-        if portal.hidden
-            || page.tree.tiles.find_pane(&pane_id).is_none()
+        if page.tree.tiles.find_pane(&pane_id).is_none()
             || !self
                 .router
                 .iter()
@@ -1450,7 +1447,7 @@ impl PlexiApp {
             .any(|w| {
                 w.panes
                     .iter()
-                    .any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+                    .any(|(id, _)| w.tree.tiles.find_pane(id).is_some())
             })
     }
 
@@ -1459,7 +1456,7 @@ impl PlexiApp {
             w.context_id == context_id
                 && w.panes
                     .iter()
-                    .any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+                    .any(|(id, _)| w.tree.tiles.find_pane(id).is_some())
         };
         let preferred = self.context_active_window.get(&context_id).copied();
         if self
@@ -2492,7 +2489,6 @@ impl PlexiApp {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &win.panes {
                 debug_assert_eq!(pane.id(), id);
-                let pane_hidden = pane.is_hidden();
                 if let Some(t) = pane.as_terminal() {
                     let cwd = t
                         .standby_cwd
@@ -2506,7 +2502,6 @@ impl PlexiApp {
                         name: t.name.clone(),
                         plugin_id: None,
                         plugin_state: None,
-                        hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
                                 every_ms: heartbeat
@@ -2530,17 +2525,16 @@ impl PlexiApp {
                         if let Some(original) = view.disabled_plugin_record() {
                             let mut saved = original.clone();
                             saved.id = id;
-                            saved.hidden = pane_hidden;
                             saved.slots = a.slots.clone();
                             saved_panes.push(saved);
                             continue;
                         }
                     }
-                    // A headless Assistant is hidden and absent from the tile
-                    // tree. Saving it would restore a layout-less pane on the
-                    // next launch. Conversation state is already per context.
-                    if a.hidden
-                        && a.manifest_id == "assistant"
+                    // A headless Assistant is absent from the tile tree; that
+                    // absence is what makes it headless. Saving it would
+                    // restore a layout-less pane on the next launch.
+                    // Conversation state is already per context.
+                    if a.manifest_id == "assistant"
                         && !win.tree.tiles.iter().any(
                             |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == id),
                         )
@@ -2558,7 +2552,6 @@ impl PlexiApp {
                         // be looked up in `builtin_factory` or relaunched.
                         plugin_id: Some(a.manifest_id.clone()),
                         plugin_state: a.runtime.serialize_state(),
-                        hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
                                 every_ms: heartbeat
@@ -2588,7 +2581,6 @@ impl PlexiApp {
                         name: None,
                         plugin_id: None,
                         plugin_state: None,
-                        hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
                                 every_ms: heartbeat
@@ -2662,7 +2654,6 @@ mod tests {
                     name: None,
                     plugin_id: Some("test".to_string()),
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,

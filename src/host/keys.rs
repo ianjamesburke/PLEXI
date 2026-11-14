@@ -153,8 +153,6 @@ pub enum Action {
     ContextZoomOut,
     /// Set the active context root to the focused pane's CWD. Bound to Cmd+Shift+I.
     SetContextRootFromCwd,
-    /// Toggle hidden state on the focused pane. Bound to Cmd+U.
-    HidePane,
     /// Park/unpark the focused context. Bound to Cmd+Shift+U.
     ParkContext,
     /// Open the notes picker overlay from any pane type. Bound to Cmd+O.
@@ -234,7 +232,6 @@ pub struct KeyBindings {
     pub push_to_subcontext: (egui::Modifiers, egui::Key),
     pub new_child_context: (egui::Modifiers, egui::Key),
     pub set_context_root_from_cwd: (egui::Modifiers, egui::Key),
-    pub hide_pane: (egui::Modifiers, egui::Key),
     pub park_context: (egui::Modifiers, egui::Key),
     pub open_notes_picker: (egui::Modifiers, egui::Key),
     pub close_context: (egui::Modifiers, egui::Key),
@@ -352,7 +349,6 @@ impl Default for KeyBindings {
             push_to_subcontext: (cmd_alt(), egui::Key::N),
             new_child_context: (cmd_shift_alt(), egui::Key::N),
             set_context_root_from_cwd: (cmd_shift(), egui::Key::I),
-            hide_pane: (cmd(), egui::Key::U),
             park_context: (cmd_shift(), egui::Key::U),
             open_notes_picker: (cmd(), egui::Key::O),
             close_context: (cmd_shift(), egui::Key::W),
@@ -576,7 +572,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(push_to_subcontext, "push_to_subcontext");
     apply_override!(new_child_context, "new_child_context");
     apply_override!(set_context_root_from_cwd, "set_context_root_from_cwd");
-    apply_override!(hide_pane, "hide_pane");
     apply_override!(park_context, "park_context");
     apply_override!(open_notes_picker, "open_notes_picker");
     apply_override!(close_context, "close_context");
@@ -646,7 +641,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
             "set_context_root_from_cwd",
             bindings.set_context_root_from_cwd,
         ),
-        ("hide_pane", bindings.hide_pane),
         ("park_context", bindings.park_context),
         ("open_notes_picker", bindings.open_notes_picker),
         ("close_context", bindings.close_context),
@@ -749,7 +743,6 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("push_to_subcontext", b.push_to_subcontext),
             ("new_child_context", b.new_child_context),
             ("set_context_root_from_cwd", b.set_context_root_from_cwd),
-            ("hide_pane", b.hide_pane),
             ("park_context", b.park_context),
             ("open_notes_picker", b.open_notes_picker),
             ("close_context", b.close_context),
@@ -1418,14 +1411,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SetContextRootFromCwd,
-        },
-        BindingEntry {
-            modifiers: b.hide_pane.0,
-            key: b.hide_pane.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::HidePane,
         },
         BindingEntry {
             modifiers: b.park_context.0,

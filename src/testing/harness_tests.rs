@@ -377,8 +377,7 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
     assert_eq!(panes.len(), 1, "one hidden assistant: {panes:?}");
     let pane_id = panes[0];
     let win = &h.app.windows[0];
-    let pane = win.panes.get(&pane_id).expect("assistant pane");
-    assert!(pane.is_hidden(), "headless assistant stays hidden");
+    assert!(win.panes.contains_key(&pane_id), "assistant pane");
     assert!(
         !win.tree
             .tiles
@@ -1357,7 +1356,7 @@ fn write_restore_fixture_plugin(parent: &std::path::Path, plugin_id: &str) -> st
 
 /// stint 0680 + stint 0686 — a saved Python view pane's `plugin_id` must be the
 /// real manifest id (never the runtime kind), it must carry enough launch
-/// context to relaunch, `hidden` must round-trip, and booting a fresh
+/// context to relaunch, and booting a fresh
 /// `HostHarness::from_profile_dir` against the saved profile must reconstruct
 /// the workspace through `restore_workspace` so the restored pane resolves the
 /// same state paths.
@@ -1406,10 +1405,23 @@ fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
     // Stint 1457: pane hiding was removed. A workspace saved by an older build
     // with `"hidden": true` on a pane loads that pane shown, in the layout and
     // able to take the keyboard.
+    let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let profile = h.profile_dir().to_path_buf();
-    let kept = h.add_test_pane();
-    let was_hidden = h.add_test_pane();
+    let launch = |h: &mut HostHarness, id: &str| {
+        let dir = write_restore_fixture_plugin(tmp.path(), id);
+        h.app
+            .launch_view_by_path_with_layout_no_review_modal(
+                &dir.to_string_lossy(),
+                None,
+                None,
+                &[],
+            )
+            .expect("launch fixture plugin")
+            .expect("a Python launch returns a pane id")
+    };
+    let kept = launch(&mut h, "kept");
+    let was_hidden = launch(&mut h, "once-hidden");
     h.focus_pane(kept).run_frames(1);
     assert!(h.app.save_workspace_now(), "workspace saves");
 
@@ -1463,12 +1475,6 @@ fn saved_python_view_pane_restores_as_that_view() {
     let context_id = h.app.windows[h.app.active_window].context_id;
     let saved_focused = h.app.windows[h.app.active_window].focused_pane;
 
-    h.app.windows[h.app.active_window]
-        .panes
-        .get_mut(&pane_id)
-        .expect("pane exists")
-        .set_hidden(true);
-
     let live_state_paths = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
@@ -1494,7 +1500,6 @@ fn saved_python_view_pane_restores_as_that_view() {
         "plugin_id must be the manifest id, not the runtime kind"
     );
     assert_eq!(record.runtime_kind.as_deref(), Some("python-wasm"));
-    assert!(record.hidden, "hidden must round-trip with the pane");
     let launch = record.launch.clone().expect("launch context recorded");
     let crate::workspace::SavedViewLaunch::Python {
         plugin_dir: recorded_dir,
@@ -1521,10 +1526,6 @@ fn saved_python_view_pane_restores_as_that_view() {
         .panes
         .get(&pane_id)
         .expect("restored window must contain the saved pane");
-    assert!(
-        restored_pane.is_hidden(),
-        "restored pane must preserve hidden state"
-    );
     let restored = restored_pane
         .as_view()
         .expect("restored pane is a view pane");
@@ -1606,7 +1607,6 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                     runtime_kind: None,
                     launch: None,
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: Some(crate::workspace::SavedPaneHeartbeat {
                         every_ms: 15_000,
                         text: "ping".to_string(),
@@ -1634,7 +1634,6 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                     runtime_kind: Some("builtin".to_string()),
                     launch: None,
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: None,
                     slots: std::collections::HashMap::new(),
                     agent_session: None,
@@ -1835,7 +1834,6 @@ fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
         name: Some("Todo".to_string()),
         plugin_id: Some("python-wasm".to_string()),
         plugin_state: None,
-        hidden: false,
         heartbeat: None,
         runtime_kind: None,
         launch: None,
@@ -4094,7 +4092,6 @@ fn portal_context_state_refreshes_when_child_context_changes() {
                 target_context_id: child_ctx_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
     }
@@ -4603,7 +4600,6 @@ fn add_pipe_test_pane(
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -9542,7 +9538,6 @@ mod routine_firing {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
@@ -13634,7 +13629,6 @@ mod agent_state_restoration_tests {
                             name: Some("lead-claude".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -13672,7 +13666,6 @@ mod agent_state_restoration_tests {
                             name: None,
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -13689,7 +13682,6 @@ mod agent_state_restoration_tests {
                             name: None,
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -13714,7 +13706,6 @@ mod agent_state_restoration_tests {
                         name: Some("worker-codex".to_string()),
                         plugin_id: None,
                         plugin_state: None,
-                        hidden: false,
                         heartbeat: None,
                         runtime_kind: None,
                         launch: None,
@@ -13761,7 +13752,6 @@ mod agent_state_restoration_tests {
                         name: Some("ephemeral-pi".to_string()),
                         plugin_id: None,
                         plugin_state: None,
-                        hidden: false,
                         heartbeat: None,
                         runtime_kind: None,
                         launch: None,
@@ -14234,7 +14224,6 @@ mod agent_state_restoration_tests {
                             name: Some("pi-no-sid".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -14268,7 +14257,6 @@ mod agent_state_restoration_tests {
                             name: Some("pi-missing-sid".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -14302,7 +14290,6 @@ mod agent_state_restoration_tests {
                             name: Some("pi-persisted".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -14348,7 +14335,6 @@ mod agent_state_restoration_tests {
                             name: Some("standby-pi-none".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -14382,7 +14368,6 @@ mod agent_state_restoration_tests {
                             name: Some("standby-pi-missing".to_string()),
                             plugin_id: None,
                             plugin_state: None,
-                            hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
                             launch: None,
@@ -14742,7 +14727,6 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
@@ -16397,7 +16381,6 @@ ask = ["pane.send"]
                     name: Some("lead".to_string()),
                     plugin_id: None,
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,
@@ -16430,7 +16413,6 @@ ask = ["pane.send"]
                     name: Some("helper".to_string()),
                     plugin_id: None,
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,
@@ -17187,7 +17169,6 @@ mod restore_followups_0983b {
                     name: Some("finished-script".to_string()),
                     plugin_id: None,
                     plugin_state: None,
-                    hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
                     launch: None,

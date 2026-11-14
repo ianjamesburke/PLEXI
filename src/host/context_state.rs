@@ -411,7 +411,6 @@ mod tests {
                 }),
                 pip_status: None,
                 slots: std::collections::HashMap::new(),
-                hidden: false,
                 overlay_replaced: None,
                 semantic_state: crate::host::pane::SemanticPaneState::default(),
             }))

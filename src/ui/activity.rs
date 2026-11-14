@@ -240,15 +240,10 @@ pub fn paint_pip(
     radius: f32,
     state: Option<&AgentState>,
     color: egui::Color32,
-    hidden: bool,
 ) {
     use egui::{Rect, Stroke, StrokeKind, Vec2};
     let Some(state) = state else {
-        if hidden {
-            painter.circle_stroke(center, radius, Stroke::new(1.0_f32, color));
-        } else {
-            painter.circle_filled(center, radius, color);
-        }
+        painter.circle_filled(center, radius, color);
         return;
     };
     let stroke = Stroke::new(1.4_f32, color);
@@ -331,15 +326,6 @@ pub fn paint_pip(
             );
         }
     }
-    if hidden {
-        painter.line_segment(
-            [
-                center + Vec2::new(-radius, radius + 2.0),
-                center + Vec2::new(radius, radius + 2.0),
-            ],
-            stroke,
-        );
-    }
 }
 
 pub fn paint_attention_chrome(
@@ -421,7 +407,6 @@ mod tests {
                         4.0,
                         None,
                         egui::Color32::YELLOW,
-                        false,
                     );
                 },
             )
@@ -463,7 +448,6 @@ mod tests {
                         4.0,
                         Some(state),
                         egui::Color32::WHITE,
-                        false,
                     );
                 },
             );

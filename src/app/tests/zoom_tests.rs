@@ -500,18 +500,6 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     assert!(h.app.pane_qualifies_for_input(p1));
     assert!(!h.app.pane_qualifies_for_input(p2));
     assert!(!h.app.pane_qualifies_for_input(p3));
-    h.app.windows[0]
-        .panes
-        .get_mut(&p1)
-        .unwrap()
-        .set_hidden(true);
-    assert!(!h.app.pane_qualifies_for_input(p1));
-    h.app.windows[0]
-        .panes
-        .get_mut(&p1)
-        .unwrap()
-        .set_hidden(false);
-    assert!(h.app.pane_qualifies_for_input(p1));
 
     // When AttentionQueue list is open: no pane qualifies for input.
     h.app.toggle_attention_queue_list();

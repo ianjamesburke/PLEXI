@@ -527,28 +527,6 @@ fn close_reveal_preserves_background_focus_and_skips_redundant_ancestor() {
 }
 
 #[test]
-fn close_reveal_does_not_ignore_hidden_owned_panes() {
-    let mut h = HostHarness::new();
-    let [a, b, hidden, outside] = grid(&mut h);
-    let parent = h.app.router.active().context_id;
-    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
-    assert!(h.app.zoom_out_of_context());
-    let parent_win = h
-        .app
-        .windows
-        .iter_mut()
-        .find(|w| w.context_id == parent)
-        .unwrap();
-    parent_win.panes.get_mut(&hidden).unwrap().set_hidden(true);
-    h.app.close_pane_by_id(outside);
-    assert_eq!(
-        h.app.router.active().context_id,
-        parent,
-        "hidden panes still belong to the parent"
-    );
-}
-
-#[test]
 fn close_reveal_survives_workspace_restore() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
@@ -754,27 +732,6 @@ fn close_reveal_when_last_sibling_page_is_removed() {
     h.app.close_pane_by_id(outside);
     assert_eq!(h.app.router.active().context_id, child);
     assert!(h.app.windows.iter().all(|w| w.window_id != 987_654_323));
-}
-
-#[test]
-fn close_reveal_does_not_enter_all_hidden_child() {
-    let mut h = HostHarness::new();
-    let [a, b, c, outside] = grid(&mut h);
-    let parent = h.app.router.active().context_id;
-    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
-    let child = h.app.router.active().context_id;
-    assert!(h.app.zoom_out_of_context());
-    let child_page = h
-        .app
-        .windows
-        .iter_mut()
-        .find(|w| w.context_id == child)
-        .unwrap();
-    for pane in child_page.panes.values_mut() {
-        pane.set_hidden(true);
-    }
-    h.app.close_pane_by_id(outside);
-    assert_eq!(h.app.router.active().context_id, parent);
 }
 
 #[test]

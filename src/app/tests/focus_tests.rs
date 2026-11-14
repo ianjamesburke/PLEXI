@@ -35,7 +35,6 @@ impl crate::app::view_trait::View for ThemeEventRecorder {
 fn add_theme_event_recorder(
     app: &mut PlexiApp,
     window_index: usize,
-    hidden: bool,
 ) -> Arc<Mutex<Vec<crate::protocol::PlexiEvent>>> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
@@ -52,7 +51,6 @@ fn add_theme_event_recorder(
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden,
         agent: None,
         slots: HashMap::new(),
         semantic_state: Default::default(),
@@ -70,7 +68,7 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
     let ctx = egui::Context::default();
     let frame_tick = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
-    let background_events = add_theme_event_recorder(&mut app, 0, true);
+    let background_events = add_theme_event_recorder(&mut app, 0);
     app.windows.push(crate::host::context::Window {
         name: "inactive".to_string(),
         path: "/tmp".into(),
@@ -83,7 +81,7 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
         window_id: 2,
         context_id: 2,
     });
-    let inactive_events = add_theme_event_recorder(&mut app, 1, false);
+    let inactive_events = add_theme_event_recorder(&mut app, 1);
     let parked_events = Arc::new(Mutex::new(Vec::new()));
     app.background_apps.insert(
         "parked-theme-recorder".to_string(),
@@ -745,7 +743,6 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -832,7 +829,6 @@ fn open_note_entries_ignores_non_note_editor_panes() {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -880,7 +876,6 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),

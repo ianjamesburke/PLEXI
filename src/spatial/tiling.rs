@@ -316,7 +316,6 @@ pub(crate) fn paint_tab_bar(
                 TAB_PIP_RADIUS,
                 (!static_health_pip).then_some(state),
                 color,
-                false,
             );
         }
 
@@ -606,11 +605,7 @@ impl PlexiBehavior<'_> {
 
         let is_focused = self.owner_pane == Some(*pane_id);
 
-        let is_hidden = self.panes.get(pane_id).is_some_and(|p| p.is_hidden());
-
-        if is_hidden {
-            ui.set_opacity(0.4);
-        } else if !is_focused {
+        if !is_focused {
             if let Some(opacity) = self.unfocused_opacity {
                 if opacity < 1.0 {
                     ui.set_opacity(opacity);
@@ -908,20 +903,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &PaneId) -> egui::WidgetText {
-        let is_hidden = self.panes.get(pane).is_some_and(|p| p.is_hidden());
-        let explicit_name = self.pane_names.get(pane).cloned();
-        let label = match (is_hidden, explicit_name) {
-            (true, Some(name)) => format!("{name} (hidden)"),
-            (true, None) => "hidden".to_string(),
-            (false, Some(name)) => name,
-            (false, None) => format!("Terminal {}", pane + 1),
-        };
-        let color = if is_hidden {
-            crate::ui::sidebar_row::with_alpha(self.colors.text_dim, 0.5)
-        } else {
-            self.colors.text_dim
-        };
-        egui::RichText::new(label).size(11.0).color(color).into()
+        let label = self
+            .pane_names
+            .get(pane)
+            .cloned()
+            .unwrap_or_else(|| format!("Terminal {}", pane + 1));
+        egui::RichText::new(label)
+            .size(11.0)
+            .color(self.colors.text_dim)
+            .into()
     }
 
     fn simplification_options(&self) -> SimplificationOptions {
@@ -1016,7 +1006,7 @@ pub(crate) fn dispatch_drop_to_plugin(
     source: &str,
     pane_hovered: bool,
 ) -> Result<serde_json::Value, String> {
-    if !pane_hovered || app.hidden {
+    if !pane_hovered {
         return Err(format!(
             "pane {pane_id} is not an eligible hovered drop target"
         ));
@@ -1341,7 +1331,6 @@ pub(crate) fn paint_portal_minimap(
                     ACTIVITY_DOT_R,
                     glyph,
                     color,
-                    false,
                 );
             }
 

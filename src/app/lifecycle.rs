@@ -1793,20 +1793,6 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::PaneVisibility {
-                pane_id,
-                hidden,
-                response_file,
-            } => {
-                log::info!("pane_visibility: pane_id={pane_id} hidden={hidden}");
-                let reply = match self.set_pane_hidden(*pane_id, *hidden) {
-                    Ok(()) => {
-                        serde_json::json!({"ok":true, "pane_id": *pane_id, "hidden": *hidden})
-                    }
-                    Err(error) => serde_json::json!({"error":error}),
-                };
-                write_json_response(response_file, reply);
-            }
             crate::protocol::HostRequest::PaneZoom {
                 pane_id,
                 response_file,

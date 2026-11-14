@@ -289,7 +289,6 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "set_context_root_from_cwd",
     "push_to_subcontext",
     "new_child_context",
-    "hide_pane",
     "park_context",
     "open_notes_picker",
     "close_context",
@@ -911,7 +910,6 @@ pub struct KeybindingsConfig {
     pub push_to_subcontext: Option<String>,
     pub new_child_context: Option<String>,
     pub set_context_root_from_cwd: Option<String>,
-    pub hide_pane: Option<String>,
     pub park_context: Option<String>,
     pub open_notes_picker: Option<String>,
     pub close_context: Option<String>,
@@ -990,7 +988,6 @@ impl KeybindingsConfig {
         overlay_field!(push_to_subcontext);
         overlay_field!(new_child_context);
         overlay_field!(set_context_root_from_cwd);
-        overlay_field!(hide_pane);
         overlay_field!(park_context);
         overlay_field!(open_notes_picker);
         overlay_field!(close_context);
@@ -2435,7 +2432,6 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
             "push_to_subcontext" => global.push_to_subcontext == effective.push_to_subcontext,
             "new_child_context" => global.new_child_context == effective.new_child_context,
             "set_context_root_from_cwd" => global.set_context_root_from_cwd == effective.set_context_root_from_cwd,
-            "hide_pane" => global.hide_pane == effective.hide_pane,
             "park_context" => global.park_context == effective.park_context,
             "open_notes_picker" => global.open_notes_picker == effective.open_notes_picker,
             "close_context" => global.close_context == effective.close_context,

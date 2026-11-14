@@ -216,7 +216,6 @@ pub(crate) fn paint_table_row_background(
 pub(crate) struct ListRowPips {
     pub count: usize,
     pub focused_idx: Option<usize>,
-    pub hidden_indices: Vec<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
     pub activities: Vec<Option<crate::protocol::AgentState>>,
     pub static_health_pips: Vec<usize>,
@@ -953,7 +952,6 @@ fn draw_pips(
             start_x + PANE_PIP_RADIUS + dot_i as f32 * PANE_PIP_SPACING,
             center_y,
         );
-        let hidden = pips.hidden_indices.contains(&dot_i);
         let agent_state = pips.activities.get(dot_i).and_then(|s| s.as_ref());
         let color = crate::ui::activity::pip_color(
             agent_state,
@@ -969,7 +967,6 @@ fn draw_pips(
             PANE_PIP_RADIUS,
             glyph_state,
             color,
-            hidden,
         );
     }
     if pips.count > capped {
@@ -1206,7 +1203,6 @@ mod tests {
             let row = ListRow::new("Workspace").pane_pips(ListRowPips {
                 count: 3,
                 focused_idx: Some(1),
-                hidden_indices: vec![2],
                 activities: vec![None, None, None],
                 static_health_pips: vec![],
             });

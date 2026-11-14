@@ -4887,7 +4887,6 @@ mod tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),

@@ -553,7 +553,7 @@ pub(crate) fn render_name_bar_and_tabs(
 
         if is_error && bar_rect.width() >= pip_space {
             let cx = header_pip_center_x(bar_rect);
-            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
+            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error);
         } else if bar_rect.width() >= pip_space {
             if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
@@ -644,7 +644,7 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = header_pip_center_x(bar_rect);
-    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(state), color, false);
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(state), color);
 }
 
 
