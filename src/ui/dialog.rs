@@ -541,8 +541,9 @@ fn button_row<'a>(
             },
         );
     }
-    // Painted right to left; Tab order is the given (left to right) order.
-    action_ids.sort_by_key(|(id, _)| actions.iter().position(|a| a.id == id));
+    // Painted right to left, and `action_ids` keeps that order: it is the
+    // focus trap's order, the one Tab order (stint 1514), so Tab moves from
+    // the primary action on the right towards the left.
     let rect = egui::Rect::from_min_max(start, ui.min_rect().max);
     capture.finish(ui.painter(), rect, colors.bg_sidebar, reports, vec![]);
     selected
