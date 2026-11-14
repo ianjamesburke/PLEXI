@@ -332,17 +332,19 @@ fn resolve_default_text(
         shape: &mut egui::Shape,
         clip: egui::Rect,
         backdrop: Color32,
+        opacity: f32,
         fills: &mut Vec<(egui::Rect, Color32)>,
         authored: bool,
     ) {
+        use crate::ui::foreground::undim;
         match shape {
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {
-                    resolve(shape, clip, backdrop, fills, authored);
+                    resolve(shape, clip, backdrop, opacity, fills, authored);
                 }
             }
             egui::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => {
-                fills.push((rect.rect.intersect(clip), rect.fill));
+                fills.push((rect.rect.intersect(clip), undim(rect.fill, opacity)));
             }
             egui::Shape::Text(text) if !authored && !text.galley.job.text.is_empty() => {
                 let bounds = text.galley.rect.translate(text.pos.to_vec2());
@@ -371,14 +373,21 @@ fn resolve_default_text(
                             .filter(|c| *c != Color32::PLACEHOLDER)
                     })
                     .unwrap_or(text.fallback_color);
+                // Resolved undimmed and dimmed after (stint 1404), so an
+                // unfocused pane keeps the focused pane's choice of colour.
                 text.override_text_color = Some(
                     crate::ui::foreground::Surface::over(backdrop, fill)
-                        .foreground(preferred, crate::ui::foreground::Role::SmallText),
+                        .foreground(
+                            undim(preferred, opacity),
+                            crate::ui::foreground::Role::SmallText,
+                        )
+                        .gamma_multiply(opacity),
                 );
             }
             _ => {}
         }
     }
+    let opacity = ui.opacity();
     ui.ctx().graphics_mut(|g| {
         if let Some(list) = g.get_mut(ui.layer_id()) {
             let end = list.all_entries().len();
@@ -389,6 +398,7 @@ fn resolve_default_text(
                         &mut entry.shape,
                         entry.clip_rect,
                         backdrop,
+                        opacity,
                         &mut fills,
                         authored.iter().any(|range| range.contains(&index)),
                     );
@@ -1237,12 +1247,14 @@ fn render_column_children(
     }
 
     let head = &children[..first_gap.start];
-    ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
-        ui.set_clip_rect(stack_rect);
-        ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
-            render_span(ui, head, out)
+    let render_head = |ui: &mut egui::Ui, head_rect: egui::Rect, out: &mut RenderResult| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(head_rect), |ui| {
+            ui.set_clip_rect(head_rect);
+            ui.with_layout(egui::Layout::top_down(cross_align(align)), |ui| {
+                render_span(ui, head, out)
+            });
         });
-    });
+    };
 
     // The spans that follow each flex gap.
     let spans: Vec<&[u32]> = gaps
@@ -1254,6 +1266,7 @@ fn render_column_children(
         })
         .collect();
     if spans.iter().all(|span| span.is_empty()) {
+        render_head(ui, stack_rect, out);
         return;
     }
 
@@ -1286,7 +1299,19 @@ fn render_column_children(
         0.0
     };
     let heights: Vec<f32> = spans.iter().map(|span| measure(ui, span)).collect();
-    let leftover = stack_rect.height() - head_h - heights.iter().sum::<f32>();
+    // The head ends where the spans below it begin (stint 1478): a head that
+    // fills what it is offered (a list's scroll area) must not run under a
+    // bottom-pinned span such as an action bar.
+    let tail_h: f32 = heights.iter().sum();
+    let head_rect = egui::Rect::from_min_max(
+        stack_rect.min,
+        egui::pos2(
+            stack_rect.max.x,
+            (stack_rect.max.y - tail_h).max(stack_rect.min.y),
+        ),
+    );
+    render_head(ui, head_rect, out);
+    let leftover = stack_rect.height() - head_h - tail_h;
     let share = (leftover / spans.len() as f32).max(0.0);
     if spans.len() > 1 {
         trace_layout_once(
@@ -2996,11 +3021,19 @@ mod tests {
 
     /// One frame of `tree` in a `pane`-sized screen, as clipped shapes.
     fn paint(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::epaint::ClippedShape> {
+        paint_at_opacity(tree, pane, "catppuccin-mocha", 1.0)
+    }
+
+    /// `paint` with a preset and the pane opacity an unfocused pane gets.
+    fn paint_at_opacity(
+        tree: &UiTree,
+        pane: egui::Vec2,
+        preset: &str,
+        opacity: f32,
+    ) -> Vec<egui::epaint::ClippedShape> {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
-        let colors = Colors::from_config(
-            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
-        );
+        let colors = Colors::from_config(&crate::ui::theme::preset_colors(preset).expect("preset"));
         // The host style, as the live host and the headless harness apply it.
         // Kit button widths depend on it: egui takes the style's widget stroke
         // out of the button padding, and bare egui has no such stroke, which
@@ -3014,6 +3047,7 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
+                    ui.set_opacity(opacity);
                     let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None, 0);
                 });
         });
@@ -3642,6 +3676,100 @@ mod tests {
     /// Stint 1327: with two grow spacers the tail was measured at the full
     /// stack height, laid out from the top over the head, and everything after
     /// the second spacer was pushed past the clip edge.
+    /// Stint 1404: a plugin's accent (Primary) button, the Logs level chip,
+    /// keeps its label colour in an unfocused pane. The pane is drawn at
+    /// reduced opacity; the default-text pass used to resolve against the
+    /// dimmed fill and flip dark text to white.
+    #[test]
+    fn plugin_primary_label_keeps_its_colour_in_an_unfocused_pane() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                column_node(0, vec![1]),
+                node(
+                    1,
+                    UiNodeData::Button(ButtonNode {
+                        label: "INFO".to_string(),
+                        on_click: "info".to_string(),
+                        style: ButtonStyle::Primary,
+                        disabled: false,
+                    }),
+                ),
+            ],
+        };
+        let label = |preset: &str, opacity: f32| {
+            paint_at_opacity(&tree, egui::vec2(400.0, 200.0), preset, opacity)
+                .into_iter()
+                .find_map(|clipped| match clipped.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "INFO" => {
+                        text.override_text_color
+                    }
+                    _ => None,
+                })
+                .expect("INFO label painted")
+        };
+        for preset in crate::ui::theme::preset_names() {
+            let focused = label(preset, 1.0);
+            let unfocused = label(preset, 0.75);
+            let expected = focused.gamma_multiply(0.75);
+            let close = unfocused
+                .to_array()
+                .iter()
+                .zip(expected.to_array())
+                .all(|(a, b)| a.abs_diff(b) <= 2);
+            assert!(
+                close,
+                "{preset}: unfocused INFO label {unfocused:?} is not the focused label \
+                 {focused:?} dimmed ({expected:?})"
+            );
+        }
+    }
+
+    /// Stint 1478: a list above a grow spacer must end where the
+    /// bottom-pinned action row begins. The list is a scroll area that fills
+    /// the height it is offered; laid out in the whole column it ran under the
+    /// action bar (Todo with more items than fit).
+    #[test]
+    fn list_above_a_grow_spacer_stops_above_the_pinned_action_row() {
+        let items: Vec<u32> = (10..30).collect();
+        let mut nodes = vec![
+            column_node(0, vec![1, 2, 3, 4]),
+            text_node(1, "HEAD"),
+            node(
+                2,
+                UiNodeData::ListView(
+                    crate::host::wasm_view::bindings::plexi::platform::types::ListNode {
+                        items: items.clone(),
+                        selected: None,
+                        on_select: None,
+                    },
+                ),
+            ),
+            grow_node(3),
+            row_node(4, vec![5, 6], style::SPACE_SM, Alignment::Start),
+            button_node(5, "Add item"),
+            button_node(6, "Delete"),
+        ];
+        for id in &items {
+            nodes.push(text_node(*id, &format!("Item {id}")));
+        }
+        let tree = UiTree { root: 0, nodes };
+        for pane in CHECK_SIZES {
+            let texts = painted_texts(&tree, pane);
+            let add = painted_text(&texts, "Add item");
+            assert!(add.visible_in(pane), "{pane:?}: actions must stay visible");
+            for item in texts.iter().filter(|t| t.text.starts_with("Item ")) {
+                let visible = item.rect.intersect(item.clip);
+                assert!(
+                    visible.height() <= 0.0 || visible.max.y <= add.rect.min.y + 0.5,
+                    "{pane:?}: {:?} shows at {visible:?}, under the action row at {:?}",
+                    item.text,
+                    add.rect
+                );
+            }
+        }
+    }
+
     #[test]
     fn column_children_after_a_second_grow_spacer_are_painted_without_overlap() {
         let tree = UiTree {

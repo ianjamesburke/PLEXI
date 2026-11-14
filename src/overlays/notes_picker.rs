@@ -2037,10 +2037,11 @@ mod tests {
     /// the envelope returns to the payload.
     #[test]
     fn notes_picker_preview_and_copy_share_the_note_body_without_metadata() {
-        // Written the way `write_note` writes a capture.
-        let body = "\n# Heading\n\nbody line 1\nbody line 2\n";
+        // Written the way `write_note` writes a capture: a blank line after
+        // the envelope, which is not part of the body (stint 1420).
+        let body = "# Heading\n\nbody line 1\nbody line 2\n";
         let full = format!(
-            "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n{body}"
+            "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n\n{body}"
         );
         let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full.as_str()]);
         let before = std::fs::read(&paths[0]).expect("read note before copy");
