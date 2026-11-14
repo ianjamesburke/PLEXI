@@ -4,7 +4,7 @@
 size = [900.0, 700.0]
 
 [[steps]]
-open = { kind = "process", path = "apps/breakout", as = "breakout" }
+open = { kind = "process", path = "plugins/breakout", as = "breakout" }
 
 [[steps]]
 wait_view_frame = { target = "breakout", timeout_s = 30.0 }
