@@ -1340,7 +1340,9 @@ impl FileBrowserView {
                 }
             };
             let path = parent.join(name);
-            if !path.exists() {
+            // `symlink_metadata`, not `exists`: a dangling symlink still
+            // occupies its name, and a paste must never write through it.
+            if fs::symlink_metadata(&path).is_err() {
                 return path;
             }
             index += 1;
@@ -1488,12 +1490,16 @@ impl FileBrowserView {
 
     /// Copy `source` to `target`. A symlink is copied as a link, never
     /// followed, so a link back to an ancestor cannot make the copy recurse.
-    fn copy_path_recursive(source: &Path, target: &Path) -> Result<(), String> {
+    /// Copy `source` to `target`. `created` is set once `target` itself
+    /// exists because this call made it, so a failure further down knows
+    /// whether there is a partial copy of its own to remove.
+    fn copy_path_recursive(source: &Path, target: &Path, created: &mut bool) -> Result<(), String> {
         let file_type = fs::symlink_metadata(source)
             .map_err(|err| format!("Unable to read '{}': {err}", source.display()))?
             .file_type();
         if file_type.is_symlink() {
             Self::copy_symlink(source, target)?;
+            *created = true;
         } else if file_type.is_dir() {
             fs::create_dir(target).map_err(|err| {
                 format!(
@@ -1501,11 +1507,16 @@ impl FileBrowserView {
                     target.display()
                 )
             })?;
+            *created = true;
             let entries = fs::read_dir(source)
                 .map_err(|err| format!("Unable to read folder '{}': {err}", source.display()))?;
             for entry in entries {
                 let entry = entry.map_err(|err| format!("Unable to read folder entry: {err}"))?;
-                Self::copy_path_recursive(&entry.path(), &target.join(entry.file_name()))?;
+                Self::copy_path_recursive(
+                    &entry.path(),
+                    &target.join(entry.file_name()),
+                    &mut false,
+                )?;
             }
         } else {
             fs::copy(source, target).map_err(|err| {
@@ -1515,8 +1526,57 @@ impl FileBrowserView {
                     target.display()
                 )
             })?;
+            *created = true;
         }
         Ok(())
+    }
+
+    /// Copy `source` to `target`, a path no entry held when the paste chose
+    /// it. If the copy fails after creating `target`, remove that partial
+    /// copy (and only it) and say so in the error (stint 1468).
+    fn copy_to_new_path(source: &Path, target: &Path) -> Result<(), String> {
+        let mut created = false;
+        let Err(err) = Self::copy_path_recursive(source, target, &mut created) else {
+            return Ok(());
+        };
+        if !created {
+            return Err(err);
+        }
+        match Self::remove_partial_copy(target) {
+            Ok(()) => {
+                log::info!(
+                    "file_browser: removed partial copy '{}' after a failed paste",
+                    target.display()
+                );
+                Err(format!(
+                    "{err}. Removed the partial copy '{}'.",
+                    target.display()
+                ))
+            }
+            Err(remove_err) => {
+                log::error!(
+                    "file_browser: could not remove partial copy '{}': {remove_err}",
+                    target.display()
+                );
+                Err(format!(
+                    "{err}. The partial copy '{}' could not be removed: {remove_err}",
+                    target.display()
+                ))
+            }
+        }
+    }
+
+    /// Remove a partial copy this paste created. Never follows a symlink: a
+    /// copied link is removed as a link, and `remove_dir_all` does not
+    /// descend through links inside the folder.
+    fn remove_partial_copy(target: &Path) -> Result<(), String> {
+        let meta = fs::symlink_metadata(target).map_err(|err| err.to_string())?;
+        if meta.file_type().is_dir() {
+            fs::remove_dir_all(target)
+        } else {
+            fs::remove_file(target)
+        }
+        .map_err(|err| err.to_string())
     }
 
     /// Recreate the symlink at `source` as `target`, pointing at the same path.
@@ -1576,6 +1636,8 @@ impl FileBrowserView {
             Self::ensure_not_pasting_into_itself(source, &self.cwd)?;
         }
         let mut created = Vec::new();
+        let mut moved = Vec::new();
+        let mut failure = None;
         for source in &clipboard.paths {
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
                 continue;
@@ -1592,31 +1654,69 @@ impl FileBrowserView {
                 }
             };
             let target = Self::unique_child_path(&self.cwd, stem, ext);
-            match clipboard.operation {
-                FileOperation::Copy => Self::copy_path_recursive(source, &target)?,
+            let result = match clipboard.operation {
+                FileOperation::Copy => Self::copy_to_new_path(source, &target),
                 FileOperation::Cut => fs::rename(source, &target).map_err(|err| {
                     format!(
                         "Unable to move '{}' to '{}': {err}",
                         source.display(),
                         target.display()
                     )
-                })?,
+                }),
+            };
+            if let Err(err) = result {
+                failure = Some(err);
+                break;
+            }
+            if clipboard.operation == FileOperation::Cut {
+                moved.push(source.clone());
             }
             created.push(target);
         }
         if clipboard.operation == FileOperation::Cut {
-            self.operation_clipboard = None;
+            // Keep only the sources that did not move, so a retry after a
+            // failure does not reach for paths that already moved.
+            let remaining: Vec<PathBuf> = clipboard
+                .paths
+                .iter()
+                .filter(|path| !moved.contains(path))
+                .cloned()
+                .collect();
+            self.operation_clipboard = (!remaining.is_empty()).then_some(FileOperationClipboard {
+                operation: FileOperation::Cut,
+                paths: remaining,
+            });
         }
         log::info!(
-            "file_browser: pasted {} path(s) into '{}'",
+            "file_browser: pasted {} path(s) into '{}'{}",
             created.len(),
-            self.cwd.display()
+            self.cwd.display(),
+            if failure.is_some() {
+                " before a failure"
+            } else {
+                ""
+            }
         );
         self.refresh_preserving_filter();
         if let Some(path) = created.first() {
             self.select_path(path);
         }
-        Ok(created)
+        match failure {
+            None => Ok(created),
+            Some(err) if created.is_empty() => Err(err),
+            Some(err) => {
+                let names: Vec<String> = created
+                    .iter()
+                    .filter_map(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .collect();
+                Err(format!(
+                    "{}. Already pasted: {}.",
+                    err.trim_end_matches('.'),
+                    names.join(", ")
+                ))
+            }
+        }
     }
 
     fn request_move_selected_to_trash(&mut self) {
@@ -5912,6 +6012,172 @@ mod tests {
                 cwd.display()
             );
         }
+    }
+
+    // ── Stint 1468: a failed paste or cut cleans up and reports ────────────
+    // Every path below lives in a `tempfile` directory; the failure is forced
+    // by an unreadable file (copy) or a source removed after the cut (move).
+
+    /// Make `path` unreadable for the rest of the test; restores on drop so
+    /// the temp dir can be deleted.
+    #[cfg(unix)]
+    struct Unreadable(PathBuf);
+
+    #[cfg(unix)]
+    impl Unreadable {
+        fn new(path: PathBuf) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod 000");
+            Self(path)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A folder copy that fails partway removes the half-built copy it made
+    /// and says so; the source and everything else are untouched.
+    #[cfg(unix)]
+    #[test]
+    fn failed_folder_copy_removes_its_partial_copy() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        let folder = src.path().join("folder");
+        std::fs::create_dir(&folder).expect("mkdir");
+        std::fs::write(folder.join("a.txt"), b"a").expect("write a");
+        std::fs::write(folder.join("b.txt"), b"b").expect("write b");
+        let _lock = Unreadable::new(folder.join("b.txt"));
+        std::fs::write(dst.path().join("keep.txt"), b"k").expect("write keep");
+
+        let mut app = FileBrowserView::new(dst.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![folder.clone()],
+        });
+        let err = app.paste_into_current_dir().expect_err("copy must fail");
+
+        assert_eq!(
+            names_in(dst.path()),
+            vec!["keep.txt"],
+            "partial copy removed"
+        );
+        assert!(err.contains("Removed the partial copy"), "{err}");
+        assert_eq!(
+            names_in(&folder),
+            vec!["a.txt", "b.txt"],
+            "source untouched"
+        );
+    }
+
+    /// The cleanup only removes what this paste created: a dangling symlink
+    /// already holding the folder's name is skipped by the name choice and
+    /// survives the failed copy and its cleanup.
+    #[cfg(unix)]
+    #[test]
+    fn failed_copy_never_removes_an_entry_it_did_not_create() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        let folder = src.path().join("folder");
+        std::fs::create_dir(&folder).expect("mkdir");
+        std::fs::write(folder.join("b.txt"), b"b").expect("write b");
+        let _lock = Unreadable::new(folder.join("b.txt"));
+        let dangling = dst.path().join("folder");
+        std::os::unix::fs::symlink(dst.path().join("gone"), &dangling).expect("symlink");
+
+        let mut app = FileBrowserView::new(dst.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![folder.clone()],
+        });
+        let err = app.paste_into_current_dir().expect_err("copy must fail");
+
+        assert!(err.contains("folder 1"), "copied under a fresh name: {err}");
+        assert_eq!(
+            names_in(dst.path()),
+            vec!["folder"],
+            "only the partial copy removed"
+        );
+        assert!(std::fs::symlink_metadata(&dangling)
+            .expect("the existing link survives")
+            .file_type()
+            .is_symlink());
+    }
+
+    /// A multi-item paste that fails on a later item keeps what it already
+    /// pasted and names it in the error.
+    #[cfg(unix)]
+    #[test]
+    fn failed_multi_item_paste_names_what_it_already_pasted() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::write(src.path().join("one.txt"), b"1").expect("write one");
+        std::fs::write(src.path().join("two.txt"), b"2").expect("write two");
+        let _lock = Unreadable::new(src.path().join("two.txt"));
+
+        let mut app = FileBrowserView::new(dst.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![src.path().join("one.txt"), src.path().join("two.txt")],
+        });
+        let err = app
+            .paste_into_current_dir()
+            .expect_err("second copy must fail");
+
+        assert_eq!(names_in(dst.path()), vec!["one.txt"], "first paste kept");
+        assert!(err.contains("Already pasted: one.txt"), "{err}");
+    }
+
+    /// A cut that fails partway leaves the clipboard holding only the sources
+    /// that did not move, so a retry does not hit paths that already moved.
+    #[cfg(unix)]
+    #[test]
+    fn failed_cut_keeps_only_the_unmoved_sources_on_the_clipboard() {
+        use std::os::unix::fs::PermissionsExt;
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        let locked = src.path().join("locked");
+        std::fs::create_dir(&locked).expect("mkdir locked");
+        let one = src.path().join("one.txt");
+        let two = locked.join("two.txt");
+        let three = src.path().join("three.txt");
+        for path in [&one, &two, &three] {
+            std::fs::write(path, b"x").expect("write");
+        }
+        // `two`'s folder is not writable, so moving `two` out of it fails.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod 555");
+
+        let mut app = FileBrowserView::new(dst.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Cut,
+            paths: vec![one.clone(), two.clone(), three.clone()],
+        });
+        let result = app.paste_into_current_dir();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod 755");
+        let err = result.expect_err("move of two must fail");
+
+        assert_eq!(names_in(dst.path()), vec!["one.txt"], "one moved");
+        assert!(err.contains("Already pasted: one.txt"), "{err}");
+        assert!(two.exists() && three.exists(), "unmoved sources stay put");
+        let clipboard = app.operation_clipboard.as_ref().expect("clipboard kept");
+        assert_eq!(clipboard.operation, FileOperation::Cut);
+        assert_eq!(clipboard.paths, vec![two, three], "moved source dropped");
     }
 
     /// A symlink inside a copied folder is copied as a link, so a link that
