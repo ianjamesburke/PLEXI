@@ -1,0 +1,8 @@
+{
+  "text": "Plexi routes plugin AI calls through one broker that applies grants, budgets and the ledger.",
+  "mode": "slow",
+  "pending": null,
+  "summary": "One broker gates and records every plugin AI call.",
+  "error": "",
+  "asked": 1
+}
