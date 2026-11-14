@@ -14637,7 +14637,8 @@ fn wait_for_http_outcome(h: &mut HostHarness, pane: PaneId) -> String {
             }
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "http probe never reported (title {:?}, error {:?})",
             python_pane_title(h, pane),
             python_pane_error(h, pane)
@@ -14660,7 +14661,10 @@ fn python_http_fetch_reaches_an_allowed_loopback_server_and_returns_the_body() {
     );
     let mut h = HostHarness::new();
     let pane = launch_http_probe(&mut h, dir.path(), true);
-    assert_eq!(wait_for_http_outcome(&mut h, pane), "http:200:hello-from-loopback");
+    assert_eq!(
+        wait_for_http_outcome(&mut h, pane),
+        "http:200:hello-from-loopback"
+    );
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 

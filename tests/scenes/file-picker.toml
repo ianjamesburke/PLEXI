@@ -1,9 +1,10 @@
 # File-picker round trip (stint 0508): the POC app runs save-pick -> write ->
 # open-pick -> read -> cancelled-pick against the scripted picker backend, all
-# through picker-granted absolute paths outside the workspace jail. Spawns a
-# real CPython app process, so it is excluded from scene_suite; run it with
-# `just scene tests/scenes/file-picker.toml`.
-suite = false
+# through picker-granted absolute paths outside the workspace jail.
+# In scene_suite since stint 1455. It was `suite = false` when apps ran as a
+# separate CPython process; they now run as CPython-in-WASM inside the host.
+# Since sensitive capabilities need a human grant, the scene grants `fs.write`
+# (headless only).
 
 picker_script = [
   { paths = ["{out}/roundtrip.txt"] }, # save-1
@@ -12,7 +13,7 @@ picker_script = [
 ]
 
 [[steps]]
-open = { kind = "process", path = "plugins/dev/file-picker-poc", as = "picker", args = ["--auto"] }
+open = { kind = "process", path = "plugins/dev/file-picker-poc", as = "picker", args = ["--auto"], grants = ["fs.write"] }
 
 [[steps]]
 

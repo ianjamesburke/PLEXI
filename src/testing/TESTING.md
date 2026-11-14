@@ -234,7 +234,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 
 | Verb | Effect |
 |---|---|
-| `open = { kind = "process", path = "<dir>", as = "<handle>", args = [...] }` | Spawn a real PGAP app process from an app dir. Relative paths resolve from the repo root. Args surface as `ctx.args`. |
+| `open = { kind = "process", path = "<dir>", as = "<handle>", args = [...], grants = [...] }` | Spawn a real PGAP app process from an app dir. Relative paths resolve from the repo root. Args surface as `ctx.args`. `grants` (headless only) lists manifest capability ids the scene grants before launch, in place of the human approval a sensitive capability needs; live runs refuse it. |
 | `open = { kind = "wasm", path = "<file.wasm>", as = "<handle>", args = [...] }` | Open a reviewed raw WASM component. |
 | `open = { kind = "builtin", id = "<id>", as = "<handle>", cwd = "<dir>" }` | Open a compiled-in host app by id. `cwd` is optional and defaults to a fresh harness-owned directory. |
 | `text = { target = "<handle>", value = "hello" }` | Focus a pane and insert text through egui's normal text-input path. The report records the character count, not the text. |
