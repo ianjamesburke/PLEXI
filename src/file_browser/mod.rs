@@ -440,15 +440,23 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::ffi::OsStrExt;
-        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
-        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        let c_from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let c_to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
         // SAFETY: both pointers are valid NUL-terminated C strings for the call.
-        let status = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        let status = unsafe { libc::renamex_np(c_from.as_ptr(), c_to.as_ptr(), libc::RENAME_EXCL) };
         if status == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
+            return Ok(());
         }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENOTSUP) {
+            return Err(error);
+        }
+        // The volume lacks VOL_CAP_INT_RENAME_EXCL (measured: exFAT and FAT32
+        // return ENOTSUP for a free name). Fall back to check-then-rename. The
+        // race window between the check and the rename returns here, and only
+        // on volumes that cannot refuse a replace themselves (stint 1496).
+        log_check_then_rename_once(to);
+        rename_check_then_rename(from, to)
     }
     #[cfg(target_os = "linux")]
     {
@@ -500,6 +508,30 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
             "a no-replace rename is not available on this platform",
         ))
     }
+}
+
+/// Rename only if nothing is at `to` right now: the fallback for volumes
+/// without an exclusive rename. Unlike the kernel's exclusive rename, it
+/// leaves a window between the check and the rename.
+fn rename_check_then_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a file or folder with that name already exists",
+        ));
+    }
+    fs::rename(from, to)
+}
+
+#[cfg(target_os = "macos")]
+fn log_check_then_rename_once(to: &Path) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        log::info!(
+            "file_browser: volume of '{}' has no exclusive rename; using check-then-rename",
+            to.display()
+        )
+    });
 }
 
 /// Whether `a` and `b` name the same filesystem entry (not following links).
@@ -6729,6 +6761,23 @@ mod tests {
         );
         assert!(!created);
         assert!(!target.exists());
+    }
+
+    /// The fallback for volumes without an exclusive rename (exFAT, FAT32
+    /// measured): refuses a name that is taken, renames onto a free one.
+    #[test]
+    fn check_then_rename_refuses_a_taken_name_and_renames_onto_a_free_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"mine").expect("write a");
+        std::fs::write(dir.path().join("b.txt"), b"theirs").expect("write b");
+        let err = rename_check_then_rename(&dir.path().join("a.txt"), &dir.path().join("b.txt"))
+            .expect_err("taken");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"theirs");
+        rename_check_then_rename(&dir.path().join("a.txt"), &dir.path().join("c.txt"))
+            .expect("free name");
+        assert_eq!(std::fs::read(dir.path().join("c.txt")).unwrap(), b"mine");
+        assert!(!dir.path().join("a.txt").exists());
     }
 
     /// The exclusive copy keeps what `fs::copy` kept: the file mode.
