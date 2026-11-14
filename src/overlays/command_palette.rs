@@ -219,6 +219,9 @@ enum PaletteCommand {
     CheckForUpdates,
     /// Restart into the downloaded build. Listed only while one is ready.
     RestartToUpdate,
+    /// Close every pane in the active window's selection. Listed only while
+    /// a selection exists; shares the close-pane shortcut.
+    CloseSelectedPanes,
 }
 
 struct PaletteCommandEntry {
@@ -435,6 +438,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
+    PaletteCommandEntry { command: PaletteCommand::CloseSelectedPanes, name: "Close selected panes", description: "Close every selected pane, asking about unsaved work one pane at a time", search_text: "close selected panes selection all multiple" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and view back-stacks first)", search_text: "close pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane (dives into an agent's children first)", search_text: "zoom restore pane fullscreen" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
@@ -1028,7 +1032,9 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::PrevTab) => bindings.prev_tab,
         PaletteCommand::Host(Action::NewPageRight) => bindings.new_page_right,
         PaletteCommand::Host(Action::RenamePane) => bindings.rename_pane,
-        PaletteCommand::Host(Action::ClosePane) => bindings.close_pane,
+        PaletteCommand::Host(Action::ClosePane) | PaletteCommand::CloseSelectedPanes => {
+            bindings.close_pane
+        }
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackView) => return bindings.nav_back,
         PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
@@ -1074,6 +1080,18 @@ fn log_missing_palette_shortcut_once(action: &crate::host::keys::Action) {
 impl PlexiApp {
     fn palette_shortcut(&self, command: &PaletteCommand) -> Option<String> {
         palette_host_binding(&self.key_bindings, command).map(shortcut_label)
+    }
+
+    /// Commands that only apply in some states are listed only then.
+    fn palette_command_listed(&self, command: &PaletteCommand) -> bool {
+        match command {
+            PaletteCommand::OpenWorkspaceConfig => self.palette_config_workspace_root.is_some(),
+            PaletteCommand::CloseSelectedPanes => self
+                .host
+                .pane_selection(self.windows[self.active_window].window_id)
+                .is_some(),
+            _ => true,
+        }
     }
 
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
@@ -1452,10 +1470,7 @@ impl PlexiApp {
         entries.extend(
             PALETTE_COMMANDS
                 .iter()
-                .filter(|entry| {
-                    entry.command != PaletteCommand::OpenWorkspaceConfig
-                        || self.palette_config_workspace_root.is_some()
-                })
+                .filter(|entry| self.palette_command_listed(&entry.command))
                 .map(|entry| PaletteEntry::Command {
                     command: entry.command.clone(),
                     name: if entry.command == PaletteCommand::OpenWorkspaceConfig
@@ -2106,6 +2121,11 @@ impl PlexiApp {
                 }
             }
             PaletteCommand::RestartToUpdate => self.offer_update_restart("palette"),
+            PaletteCommand::CloseSelectedPanes => {
+                if !self.start_close_selected_panes("palette_close_selected") {
+                    self.run_palette_host_binding(crate::host::keys::Action::ClosePane);
+                }
+            }
             PaletteCommand::SetupCli => match crate::cli::setup::setup_external_shell(true) {
                 Ok(report) => {
                     log::info!(
@@ -3267,6 +3287,13 @@ mod tests {
                     assert!(
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "needs attention is a palette-only entry with no host chord"
+                    );
+                }
+                PaletteCommand::CloseSelectedPanes => {
+                    assert_eq!(
+                        palette_host_binding(&bindings, &entry.command),
+                        Some(bindings.close_pane),
+                        "close selected shares the close-pane chord, no second binding"
                     );
                 }
                 PaletteCommand::OpenGlobalConfig
@@ -4541,6 +4568,34 @@ mod tests {
         assert!(h.app.attention_queue.open);
         palette_action(&mut h, Action::ToggleAttentionQueue);
         assert!(!h.app.attention_queue.open);
+    }
+
+    /// Stint 1458: "Close selected panes" is listed only while a selection
+    /// exists and closes every selected pane.
+    #[test]
+    fn palette_close_selected_panes_is_listed_with_a_selection_and_closes_it() {
+        let mut h = crate::testing::HostHarness::new();
+        let a = h.add_test_pane();
+        let b = h.add_test_pane();
+        let c = h.add_test_pane();
+        let context = h.app.router.active().context_id;
+        h.app
+            .set_context_columns(context, vec![vec![a], vec![b], vec![c]]);
+        h.focus_pane(a).run_frames(2);
+        let listed = |h: &mut crate::testing::HostHarness| {
+            h.app
+                .palette_command_listed(&PaletteCommand::CloseSelectedPanes)
+        };
+        assert!(!listed(&mut h), "hidden without a selection");
+        let window = h.app.windows[h.app.active_window].window_id;
+        h.app.host.extend_pane_selection(window, a, b);
+        assert!(listed(&mut h), "listed with a selection");
+        h.app
+            .run_palette_command(PaletteCommand::CloseSelectedPanes);
+        h.run_frames(2);
+        let open = &h.app.windows[h.app.active_window].panes;
+        assert!(!open.contains_key(&a) && !open.contains_key(&b));
+        assert!(open.contains_key(&c));
     }
 
     #[test]

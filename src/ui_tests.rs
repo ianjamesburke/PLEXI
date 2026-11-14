@@ -9322,6 +9322,72 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_cleared")).unwrap();
     }
 
+    fn click_pane_center_with(h: &mut PlexiUiHarness, pane: u64, modifiers: egui::Modifiers) {
+        let pos = h
+            .with_app(|app| app.visible_pane_rect(pane))
+            .expect("pane is laid out")
+            .center();
+        for pressed in [true, false] {
+            h.harness().input_mut().modifiers = modifiers;
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                },
+            ]);
+            h.step();
+        }
+        h.harness().input_mut().modifiers = egui::Modifiers::NONE;
+        h.run_steps(2);
+    }
+
+    /// Stint 1458: Cmd+Shift+click adds panes to the selection, and the
+    /// close shortcut closes all three selected panes at once; the fourth
+    /// pane is left, focused.
+    #[test]
+    fn screenshot_cmd_shift_click_selects_and_close_shortcut_closes_all_selected() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 600.0);
+        h.step();
+        let panes = [
+            add_focused_pane(&mut h),
+            add_focused_pane(&mut h),
+            add_focused_pane(&mut h),
+            add_focused_pane(&mut h),
+        ];
+        let [a, b, c, d] = panes;
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, panes.iter().map(|p| vec![*p]).collect());
+        });
+        h.run_steps(3);
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        let extend = egui::Modifiers::COMMAND | egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT;
+        click_pane_center_with(&mut h, b, extend);
+        click_pane_center_with(&mut h, c, extend);
+        let window = h.with_app(|app| app.windows[app.active_window].window_id);
+        assert_eq!(
+            h.with_app(|app| app.host.pane_selection(window).map(|s| s.panes.clone())),
+            Some(vec![a, b, c]),
+            "Cmd+Shift+click extends the selection from the focused pane"
+        );
+        h.save_screenshot(&evidence_png!("_selected")).unwrap();
+        h.with_app_mut(|app| {
+            let ctx = app.ctx.clone();
+            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
+        });
+        h.run_steps(1);
+        let open: Vec<u64> = h.with_app(|app| app.windows[app.active_window].panes.keys().copied().collect());
+        assert_eq!(open, vec![d], "all three selected panes closed");
+        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(d));
+        assert!(h.with_app(|app| app.host.pane_selection(window).is_none()));
+        h.save_screenshot(&evidence_png!("_closed")).unwrap();
+    }
+
     #[test]
     fn pane_chrome_selected_view_keeps_its_state_ring() {
         let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);

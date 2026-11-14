@@ -9,7 +9,10 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Container, Tile, TileId};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 pub(crate) enum SwapResult {
     Swapped {
@@ -37,7 +40,7 @@ pub(crate) enum CloseFocusRule {
 }
 
 impl CloseFocusRule {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::TabSibling => "tab_sibling",
             Self::SpatialNeighbour => "spatial_neighbour",
@@ -1094,11 +1097,24 @@ impl PlexiApp {
         ctx_idx: usize,
         closing_tile: TileId,
     ) -> Option<(TileId, CloseFocusRule)> {
+        self.choose_focus_after_closing(ctx_idx, closing_tile, &HashSet::new())
+    }
+
+    /// [`Self::choose_focus_after_close`] for several panes closing at once:
+    /// the rules run from `closing_tile`'s place and skip every pane in
+    /// `also_closing`, so focus is chosen once against the final layout.
+    pub(crate) fn choose_focus_after_closing(
+        &self,
+        ctx_idx: usize,
+        closing_tile: TileId,
+        also_closing: &HashSet<PaneId>,
+    ) -> Option<(TileId, CloseFocusRule)> {
         let window = self.windows.get(ctx_idx)?;
         let is_visible_pane = |tile_id: TileId| {
             tile_id != closing_tile
                 && window.tree.active_tiles().contains(&tile_id)
-                && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id)) if window.panes.contains_key(pane_id))
+                && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id))
+                    if window.panes.contains_key(pane_id) && !also_closing.contains(pane_id))
         };
         let newest_in_history = |candidates: &[TileId]| {
             self.pane_focus_history

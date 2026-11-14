@@ -30,7 +30,8 @@ There are two kinds:
 |--------|----------|
 | Move focus left / down / up / right | `⌘H` / `⌘J` / `⌘K` / `⌘L` |
 | Swap pane with neighbor | `⌘⌃H` / `⌘⌃J` / `⌘⌃K` / `⌘⌃L` |
-| Close focused pane | `⌘W` |
+| Close focused pane, or every selected pane | `⌘W` |
+| Add panes to the selection | `⌘⇧H` / `⌘⇧J` / `⌘⇧K` / `⌘⇧L`, or `⌘⇧`-click |
 | Rename focused pane | `⌘R` |
 
 ## CWD Inheritance

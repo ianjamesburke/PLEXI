@@ -11,6 +11,7 @@
 //! `PlexiApp` regardless of file, so call sites elsewhere in the crate are
 //! unchanged.
 
+mod close_batch;
 pub(crate) mod create;
 mod events;
 mod layout;
