@@ -106,7 +106,8 @@ persistent, exclusively locked Cargo slots per repository under
 the global Cargo memory lease remains active. Slots survive feature cleanup.
 Before reuse, an owned slot exceeding `PLEXI_BUILD_CACHE_MAX_BYTES` (default
 40 GiB) has its build output pruned. All slots together are then pruned to
-`PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES` (default 40 GiB), least recently used first,
+`PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES` (default 64 GiB, sized for two concurrent
+lanes' warm slots plus headroom), least recently used first,
 skipping any slot another build holds and the slot about to be used until last.
 Pruning always keeps a slot's `release/plexi`, so a stamped candidate survives to
 its install. Finally the build refuses to start, before any compile, when the

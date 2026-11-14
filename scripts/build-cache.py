@@ -14,7 +14,7 @@ MARKER = "plexi-owned-build-cache-v1"
 GIB = 1024**3
 # Defaults; both overridable (stint 1495). Documented in src/testing/TESTING.md.
 DEFAULT_MIN_FREE_BYTES = 12 * GIB
-DEFAULT_TOTAL_MAX_BYTES = 40 * GIB
+DEFAULT_TOTAL_MAX_BYTES = 64 * GIB  # two warm lanes plus headroom
 # The release binary a stamped candidate hands to its install (stints 1443, 0637).
 ARTIFACT = Path("release") / "plexi"
 

@@ -355,6 +355,10 @@ class Lifecycle(unittest.TestCase):
         for slot in (oldest, leased, newer, current):
             self.assertTrue((slot / 'target' / 'release' / 'plexi').exists(), 'stamped artifacts survive')
 
+    def test_default_cap_fits_two_warm_lanes_and_floor_stays_12_gib(self):
+        self.assertEqual(CACHE.DEFAULT_TOTAL_MAX_BYTES, 64 * 1024**3)
+        self.assertEqual(CACHE.DEFAULT_MIN_FREE_BYTES, 12 * 1024**3)
+
     def test_oversized_slot_keeps_its_release_artifact(self):
         slot = self._slot('ns-a', 0, 1000, 100)
         CACHE.prune_slot(slot)
