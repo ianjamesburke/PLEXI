@@ -546,40 +546,37 @@ pub struct PlexiBehavior<'a> {
     pub resized: bool,
 }
 
-impl Behavior<PaneId> for PlexiBehavior<'_> {
-    fn on_edit(&mut self, action: egui_tiles::EditAction) {
-        if matches!(action, egui_tiles::EditAction::TileResized) {
-            self.resized = true;
-        }
-    }
+/// Where one pane is presented this frame. The tiled tree derives it from the
+/// strip snapshot; the zoom overlay passes the whole canvas. Everything else
+/// about the pane (header, attention, corner mask, content) is presented by
+/// [`PlexiBehavior::present_pane`] either way.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaneViewport {
+    /// Accepts pointer focus and file-drag targeting.
+    pub(crate) hit_rect: egui::Rect,
+    /// Pane content is clipped to this rect.
+    pub(crate) clip_rect: egui::Rect,
+    /// The pane is the only drop target (zoom), so a drop needs no pointer
+    /// position: macOS reports a stale pointer during OS-level file drags.
+    pub(crate) sole_drop_target: bool,
+}
 
-    fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
-        // While any pane is zoomed, paint background panes as dark placeholders
-        // and skip all input detection — the zoom overlay owns focus and drop
-        // handling. This avoids per-pane `ui.input()` calls during hover, which
-        // were O(n) and ran even when the results could never be acted on.
-        if self.zoomed_pane.is_some() {
-            let pane_rect = ui.available_rect_before_wrap();
-            ui.painter()
-                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            return UiResponse::None;
-        }
-
-        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
-        if self.off_strip_panes.contains(pane_id) || snapshot_pane.is_some_and(|p| !p.is_visible) {
-            let pane_rect = ui.available_rect_before_wrap();
-            let fill = match self.panes.get(pane_id) {
-                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
-                _ => self.colors.bg_darkest,
-            };
-            ui.painter().rect_filled(pane_rect, 0.0, fill);
-            return UiResponse::None;
-        }
-
-        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
-        let hit_rect = snapshot_pane
-            .map(|p| p.hit_rect.intersect(visible_rect))
-            .unwrap_or(visible_rect);
+impl PlexiBehavior<'_> {
+    /// Present one pane into `ui`, whose max rect is the pane's frame. Shared
+    /// by the tiled tree and the zoom overlay so zoom changes only the
+    /// viewport, never the pane's chrome.
+    pub(crate) fn present_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        tile_id: TileId,
+        pane_id: &mut PaneId,
+        viewport: PaneViewport,
+    ) {
+        let PaneViewport {
+            hit_rect,
+            clip_rect,
+            sole_drop_target,
+        } = viewport;
         let pointer_in_hit_rect = hit_rect.width() > 0.5
             && hit_rect.height() > 0.5
             && ui.input(|i| {
@@ -590,11 +587,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         // Detect clicks or file drags for focus inside the visible hit_rect only.
         let is_click = ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect;
-        let is_drag_hovering = match self.drag_cursor_pos {
-            Some(pos) => {
-                hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos)
+        let is_drag_hovering = if sole_drop_target {
+            ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
+        } else {
+            match self.drag_cursor_pos {
+                Some(pos) => {
+                    hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos)
+                }
+                None => self.hovered_files && pointer_in_hit_rect,
             }
-            None => self.hovered_files && pointer_in_hit_rect,
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
@@ -617,8 +618,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
         }
 
-        // Drop target: the zoomed overlay owns drops when a pane is zoomed,
-        // so this path only runs when zoomed_pane.is_none() (guaranteed above).
+        // Drop target: the tiled pane under the pointer, or the zoomed pane,
+        // which is the sole drop target while zoomed.
         if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
@@ -693,12 +694,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             .unwrap_or_default();
 
         let Some(pane) = self.panes.get_mut(pane_id) else {
-            return UiResponse::None;
+            return;
         };
-
-        let clip_rect = snapshot_pane
-            .map(|p| p.clip_rect.intersect(visible_rect))
-            .unwrap_or(visible_rect);
 
         let pane_state = pane.effective_activity().cloned();
         if let Some(view_pane) = pane.as_view_mut() {
@@ -796,149 +793,36 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 self.tab_action = tab_action;
             }
         } else if pane.as_portal().is_some() {
-            crate::platform::ui_profile::time("portal", || {
-                // Portal tile — direct egui rendering.
-                ui.painter()
-                    .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-                let preview = self.portal_info.get(pane_id).cloned().unwrap_or_default();
-                let colors_for_portal = self.colors;
-                let status_col =
-                    crate::ui::activity::context_status_color(&preview.status, &colors_for_portal);
-                let has_active_status = matches!(
-                    preview.status,
-                    crate::host::context_state::ContextStatus::NeedsYou
-                        | crate::host::context_state::ContextStatus::Blocked
-                        | crate::host::context_state::ContextStatus::Error
-                        | crate::host::context_state::ContextStatus::Working
-                );
-                let active_status_col = if has_active_status { status_col } else { None };
-                if let Some(sc) = active_status_col.filter(|_| {
-                    preview.status != crate::host::context_state::ContextStatus::NeedsYou
-                        || crate::ui::activity::attention(ui.ctx()).alpha > 0.0
-                }) {
-                    let wash_rect = egui::Rect::from_min_size(
-                        pane_rect.min,
-                        egui::vec2(pane_rect.width(), 44.0_f32.min(pane_rect.height())),
-                    );
-                    let wash_col =
-                        egui::Color32::from_rgba_unmultiplied(sc.r(), sc.g(), sc.b(), 24);
-                    ui.painter().rect_filled(wash_rect, 0.0, wash_col);
-                }
-                let padding = style::SPACE_MD;
-                // A column narrower than twice the padding would shrink to a
-                // negative rect, which egui's placer rejects.
-                let inner = egui::Rect::from_min_size(
-                    pane_rect.min + egui::vec2(padding, padding),
-                    egui::vec2(
-                        (pane_rect.width() - 2.0 * padding).max(0.0),
-                        (pane_rect.height() - 2.0 * padding).max(0.0),
-                    ),
-                );
-                let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-                portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(sc) = active_status_col {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(8.0, style::TEXT_BODY),
-                                egui::Sense::hover(),
-                            );
-                            let state = match preview.status {
-                                crate::host::context_state::ContextStatus::NeedsYou => {
-                                    AgentState::NeedsYou
-                                }
-                                crate::host::context_state::ContextStatus::Blocked => {
-                                    AgentState::Blocked
-                                }
-                                crate::host::context_state::ContextStatus::Error => {
-                                    AgentState::Failed
-                                }
-                                crate::host::context_state::ContextStatus::Working => {
-                                    AgentState::Working
-                                }
-                                _ => AgentState::Idle,
-                            };
-                            crate::ui::activity::paint_pip(
-                                ui.painter(),
-                                dot_rect.center(),
-                                3.5,
-                                Some(&state),
-                                sc,
-                                false,
-                            );
-                        }
-                        let title = if let Some(parent) = self.pane_lineage.get(pane_id) {
-                            format!("↳ {} · child of {parent}", preview.context_name)
-                        } else {
-                            preview.context_name.clone()
-                        };
-                        ui.label(
-                            egui::RichText::new(title)
-                                .size(style::TEXT_BODY)
-                                .strong()
-                                .color(colors_for_portal.text_primary),
-                        );
-                    });
-                    if let Some(ref summary) = preview.status_summary {
-                        let summary_col = status_col.unwrap_or(colors_for_portal.text_dim);
-                        ui.label(
-                            egui::RichText::new(summary)
-                                .monospace()
-                                .size(style::TEXT_HINT)
-                                .strong()
-                                .color(summary_col),
-                        );
-                    }
-                    if !preview.context_description.is_empty() {
-                        ui.scope(|ui| {
-                            ui.set_max_width(inner.width());
-                            crate::ui::labels::description_label(
-                                ui,
-                                &preview.context_description,
-                                &colors_for_portal,
-                            );
-                        });
-                    }
-                    {
-                        let count_label =
-                            if preview.window_count > 1 && preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} windows \u{b7} {} notifs",
-                                    preview.pane_count,
-                                    preview.window_count,
-                                    preview.notification_count
-                                )
-                            } else if preview.window_count > 1 {
-                                format!(
-                                    "{} panes \u{b7} {} windows",
-                                    preview.pane_count, preview.window_count
-                                )
-                            } else if preview.notification_count > 0 {
-                                format!(
-                                    "{} panes \u{b7} {} notifs",
-                                    preview.pane_count, preview.notification_count
-                                )
-                            } else {
-                                format!("{} panes", preview.pane_count)
-                            };
-                        ui.label(
-                            egui::RichText::new(count_label)
-                                .size(style::TEXT_HINT)
-                                .color(colors_for_portal.text_dim),
-                        );
-                    }
-                    ui.add_space(style::SPACE_SM);
-                    if !preview.windows.is_empty() {
-                        let header_used = ui.cursor().min.y - inner.min.y;
-                        let map_h = (inner.height() - header_used).max(24.0);
-                        let (map_area, _) = ui.allocate_exact_size(
-                            egui::vec2(inner.width(), map_h),
-                            egui::Sense::hover(),
-                        );
-                        let t = ui.input(|i| i.time);
-                        paint_portal_minimap(ui, map_area, &preview.windows, &colors_for_portal, t);
-                    }
-                });
+            ui.painter()
+                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            portal_ui.set_clip_rect(clip_rect);
+            let portal_pane_id = *pane_id;
+            let preview = self
+                .portal_info
+                .get(&portal_pane_id)
+                .cloned()
+                .unwrap_or_default();
+            let tab_action = crate::platform::ui_profile::time("portal", || {
+                render::portal_pane::render(
+                    &mut portal_ui,
+                    render::portal_pane::PortalRenderParams {
+                        tile_id,
+                        pane_id: &portal_pane_id,
+                        preview: &preview,
+                        lineage_parent: self.pane_lineage.get(&portal_pane_id).map(String::as_str),
+                        tab_info: &self.tab_info,
+                        tab_labels: &self.tab_labels,
+                        tab_activities: &tab_activities,
+                        pane_names: &self.pane_names,
+                        colors: &self.colors,
+                        name_font_size: self.pane_title_font_size,
+                    },
+                )
             });
+            if tab_action.is_some() {
+                self.tab_action = tab_action;
+            }
             // Double-click on portal pane to zoom into the sub-context.
             if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {
                 if ui.rect_contains_pointer(pane_rect)
@@ -976,6 +860,50 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             style::pane_radius(self.pane_corner_radius, outer),
             self.colors.bg_darkest,
         );
+    }
+}
+
+impl Behavior<PaneId> for PlexiBehavior<'_> {
+    fn on_edit(&mut self, action: egui_tiles::EditAction) {
+        if matches!(action, egui_tiles::EditAction::TileResized) {
+            self.resized = true;
+        }
+    }
+
+    fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
+        // While any pane is zoomed, paint background panes as dark placeholders
+        // and skip all input detection — the zoom overlay owns focus and drop
+        // handling. This avoids per-pane `ui.input()` calls during hover, which
+        // were O(n) and ran even when the results could never be acted on.
+        if self.zoomed_pane.is_some() {
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter()
+                .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            return UiResponse::None;
+        }
+
+        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
+        if self.off_strip_panes.contains(pane_id) || snapshot_pane.is_some_and(|p| !p.is_visible) {
+            let pane_rect = ui.available_rect_before_wrap();
+            let fill = match self.panes.get(pane_id) {
+                Some(Pane::Terminal(_)) => self.colors.terminal_bg,
+                _ => self.colors.bg_darkest,
+            };
+            ui.painter().rect_filled(pane_rect, 0.0, fill);
+            return UiResponse::None;
+        }
+
+        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
+        let viewport = PaneViewport {
+            hit_rect: snapshot_pane
+                .map(|p| p.hit_rect.intersect(visible_rect))
+                .unwrap_or(visible_rect),
+            clip_rect: snapshot_pane
+                .map(|p| p.clip_rect.intersect(visible_rect))
+                .unwrap_or(visible_rect),
+            sole_drop_target: false,
+        };
+        self.present_pane(ui, tile_id, pane_id, viewport);
         UiResponse::None
     }
 

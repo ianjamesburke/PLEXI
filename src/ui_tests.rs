@@ -1043,6 +1043,83 @@ mod tests {
         }
     }
 
+    /// Stint 1067: the shortcuts body must not stay capped at egui's seeded
+    /// default area height. When the window has room, every row is inside the
+    /// modal's scroll viewport without scrolling; when it does not, the modal
+    /// fills the screen budget and scrolling reaches the last rows.
+    #[test]
+    fn shortcuts_overlay_every_row_reachable_at_every_scale() {
+        const LAST_ROWS: [&str; 3] = [
+            "Send pane (focus stays)",
+            "Reset UI scale",
+            "ADHDISNTREAL@GMAIL.COM",
+        ];
+        let pad = f32::from(crate::ui::style::MODAL_PADDING_V);
+        let tol = 0.75;
+        for scale in [0.6_f32, 1.0, 1.25, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(4);
+            let (screen, ppp) =
+                h.with_app(|app| (app.ctx.content_rect(), app.ctx.pixels_per_point()));
+            let area = ui_scale_area_rect(&h, "shortcuts");
+            assert_inside("shortcuts", scale, area, screen);
+            // The body starts below the title, never over it.
+            let title = h.harness().get_by_label("Keyboard Shortcuts").rect() / ppp;
+            let first_section = h.harness().get_by_label("LAYOUT").rect() / ppp;
+            assert!(
+                first_section.min.y >= title.max.y,
+                "shortcuts body {first_section:?} overlaps the title {title:?} at scale {scale}"
+            );
+            // Rows paint inside the frame's vertical padding.
+            let viewport_bottom = area.max.y - pad;
+            let hidden: Vec<&str> = LAST_ROWS
+                .iter()
+                .copied()
+                .filter(|label| {
+                    let rect = h.harness().get_by_label(label).rect() / ppp;
+                    rect.max.y > viewport_bottom + tol
+                })
+                .collect();
+            if std::env::var_os("PLEXI_SHORTCUTS_SCREENSHOTS").is_some() {
+                let path = evidence_png!(&format!("_{scale}"));
+                h.save_screenshot(&path).unwrap();
+                eprintln!("shortcuts screenshot: {path}");
+            }
+            if hidden.is_empty() {
+                continue;
+            }
+            // Rows below the fold are only acceptable when the modal already
+            // uses the whole height the window allows.
+            let budget = screen.height() - 2.0 * crate::ui::style::SPACE_MD;
+            assert!(
+                area.height() >= budget - 2.0,
+                "shortcuts rows {hidden:?} are clipped below {viewport_bottom} while the modal \
+                 {area:?} is shorter than the {budget} the screen {screen:?} allows at scale {scale}"
+            );
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(area.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -5000.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            h.run_steps(30);
+            let area = ui_scale_area_rect(&h, "shortcuts");
+            for label in LAST_ROWS {
+                let rect = h.harness().get_by_label(label).rect() / ppp;
+                assert!(
+                    rect.max.y <= area.max.y - pad + tol && rect.min.y >= area.min.y - tol,
+                    "shortcuts row {label:?} {rect:?} is not reachable by scrolling the modal \
+                     {area:?} at scale {scale}"
+                );
+            }
+        }
+    }
+
     /// The QuickNote capture card is content-sized: an empty or one-line note
     /// opens short (no screen-fraction reservation), and a tall note grows the
     /// card while it stays inside the window.
@@ -2838,10 +2915,18 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
                 && r.stroke_kind == egui::StrokeKind::Inside)
         }));
-        assert!(h
-            .harness()
-            .query_by_label("↳ research · child of lead")
-            .is_some());
+        // Stint 1166: the Portal header title is the context name; its
+        // lineage moved to the tile's hover tooltip.
+        h.with_app(|app| {
+            let header =
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, portal)
+                    .expect("portal paints the shared pane header");
+            assert_eq!(header.elided_label.as_deref(), Some("research"));
+            assert_eq!(
+                app.pane_lineage().get(&portal).map(String::as_str),
+                Some("lead")
+            );
+        });
         h.save_screenshot(&evidence_png!()).unwrap();
         h.with_app_mut(|app| {
             let (win, _) = app.find_pane_in_any_window(parent).unwrap();
@@ -2854,6 +2939,521 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 .name = None;
             assert_eq!(app.pane_lineage().get(&portal), Some(&parent.to_string()));
         });
+    }
+
+    const LONG_PORTAL_NAMES: [&str; 2] = [
+        "Investigate Plexi approval routing across nested agent contexts | PLEXI",
+        "Refactor workspace persistence so subcontext previews survive restarts",
+    ];
+
+    /// Portal tiles whose child contexts carry 60+ character names and long
+    /// path-like descriptions. Each child context holds one window so the
+    /// minimap paints. The portals become the active window's only tiles,
+    /// side by side, unless `tabbed_with` names a pane to share a tab group
+    /// with the first portal (stints 1166, 1338).
+    fn seed_long_name_portals(h: &mut PlexiUiHarness, tabbed_with: Option<PaneId>) -> [PaneId; 2] {
+        let browser_root = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let active_ctx_id = app.router.active().context_id;
+            let mut portals = [0; 2];
+            let mut tiles = Vec::new();
+            for (i, name) in LONG_PORTAL_NAMES.iter().enumerate() {
+                let child_ctx_id = active_ctx_id + 6_000 + i as u64;
+                app.router.push(crate::host::context::Context {
+                    name: name.to_string().into(),
+                    root: browser_root.clone(),
+                    description: Some(format!(
+                        "~/Documents/GitHub/PLEXI/worktrees/feature/very-long-branch-name-{i}/src/spatial/tiling.rs"
+                    )),
+                    context_id: child_ctx_id,
+                    parent_id: Some(active_ctx_id),
+                    depth: 1,
+                    parked: false,
+                });
+                let child_pane_id = app.host.alloc_pane_id();
+                let child = ViewPane {
+                    pip_status: None,
+                    id: child_pane_id,
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
+                    )),
+                    workspace_root: browser_root.clone(),
+                    permissions: PluginPermissions::builtin(),
+                    manifest_id: "file-browser".to_string(),
+                    name: "Files for the approval routing investigation".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                };
+                let mut child_panes = std::collections::HashMap::new();
+                child_panes.insert(child_pane_id, Pane::View(Box::new(child)));
+                let mut child_tiles = egui_tiles::Tiles::default();
+                let child_tile = child_tiles.insert_pane(child_pane_id);
+                let window_id = app.next_window_id;
+                app.next_window_id += 1;
+                app.windows.push(Window {
+                    name: name.to_string(),
+                    path: browser_root.clone(),
+                    tree: egui_tiles::Tree::new(
+                        egui::Id::new(("long_portal_child", i)),
+                        child_tile,
+                        child_tiles,
+                    ),
+                    panes: child_panes,
+                    focused_pane: Some(child_tile),
+                    zoomed_pane: None,
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id,
+                    context_id: child_ctx_id,
+                });
+                let portal = app.host.alloc_pane_id();
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(
+                    portal,
+                    Pane::Portal(Box::new(PortalPane {
+                        pane_id: portal,
+                        target_context_id: child_ctx_id,
+                        context_state: None,
+                        reveal_after_close: false,
+                        hidden: false,
+                    })),
+                );
+                tiles.push(win.tree.tiles.insert_pane(portal));
+                portals[i] = portal;
+            }
+            let win = &mut app.windows[app.active_window];
+            let first = match tabbed_with {
+                Some(sibling) => {
+                    let sibling_tile = win
+                        .tree
+                        .tiles
+                        .find_pane(&sibling)
+                        .expect("tab sibling must already be in the tree");
+                    win.tree.tiles.insert_tab_tile(vec![tiles[0], sibling_tile])
+                }
+                None => tiles[0],
+            };
+            let root = win.tree.tiles.insert_horizontal_tile(vec![first, tiles[1]]);
+            win.tree.root = Some(root);
+            win.focused_pane = Some(tiles[0]);
+            portals
+        })
+    }
+
+    fn portal_tile_report(
+        reports: &[crate::ui::layout_report::LayoutReport],
+        tile: egui::Rect,
+    ) -> crate::ui::layout_report::LayoutReport {
+        let matches: Vec<_> = reports
+            .iter()
+            .filter(|r| r.surface == "portal_tile" && tile.expand(1.0).contains(r.parent.center()))
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected one portal_tile layout report for tile {tile:?}, got {:?}",
+            reports
+                .iter()
+                .map(|r| (&r.surface, r.parent))
+                .collect::<Vec<_>>()
+        );
+        matches[0].clone()
+    }
+
+    /// Stint 1338: every text a Portal tile paints stays inside its own tile,
+    /// neighbouring tiles never collide, long names elide with U+2026, and a
+    /// tile too short for its body hides rows instead of overflowing.
+    #[test]
+    fn portal_tiles_keep_long_names_inside_small_tiles() {
+        // 520x110 leaves the tiles taller than the pane header but shorter
+        // than the header plus `PORTAL_MINIMAP_MIN_H`: the header alone shows.
+        // (At 520x90 the strip gives each tile less height than the header.)
+        for (width, height) in [(360.0_f32, 200.0_f32), (520.0, 260.0), (520.0, 110.0)] {
+            let mut h = PlexiUiHarness::new_sized(width, height);
+            h.step();
+            let portals = seed_long_name_portals(&mut h, None);
+            h.run_steps(3);
+            let ppp = h.with_app(|app| app.ctx.pixels_per_point());
+            let tiles: Vec<egui::Rect> = h.with_app(|app| {
+                portals
+                    .iter()
+                    .map(|p| {
+                        app.visible_pane_rect(*p).unwrap_or_else(|| {
+                            panic!("portal {p} not laid out at {width}x{height}")
+                        })
+                    })
+                    .collect()
+            });
+            // Any widget labelled with a context name sits inside its tile.
+            for (name, tile) in LONG_PORTAL_NAMES.iter().zip(&tiles) {
+                let prefix: String = name.chars().take(24).collect();
+                for node in h.harness().query_all_by_label_contains(&prefix) {
+                    let rect = node.rect() / ppp;
+                    assert!(
+                        tile.expand(0.75).contains_rect(rect),
+                        "{width}x{height}: label {prefix:?} {rect:?} leaves its tile {tile:?}"
+                    );
+                }
+            }
+            let reports = h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+            let tile_reports: Vec<_> = tiles
+                .iter()
+                .map(|t| portal_tile_report(&reports, *t))
+                .collect();
+            for (report, tile) in tile_reports.iter().zip(&tiles) {
+                for text in &report.texts {
+                    assert!(
+                        tile.expand(0.75).contains_rect(text.paint),
+                        "{width}x{height}: portal text {:?} {:?} leaves its tile {tile:?}",
+                        text.text,
+                        text.paint
+                    );
+                }
+                assert!(
+                    report
+                        .texts
+                        .iter()
+                        .any(|t| t.text.ends_with(crate::ui::text::ELLIPSIS)),
+                    "{width}x{height}: the long portal title must elide with U+2026: {:?}",
+                    report.texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+                );
+            }
+            for a in &tile_reports[0].texts {
+                for b in &tile_reports[1].texts {
+                    assert!(
+                        !a.paint.intersects(b.paint),
+                        "{width}x{height}: {:?} {:?} collides with neighbouring tile text {:?} {:?}",
+                        a.text,
+                        a.paint,
+                        b.text,
+                        b.paint
+                    );
+                }
+            }
+            h.save_screenshot(&evidence_png!(&format!("_{width}x{height}")))
+                .unwrap();
+        }
+    }
+
+    /// Stint 1166: a Portal tile paints the standard pane header (same
+    /// height, background and centred elided title as a named terminal
+    /// header) and a body holding only the minimap.
+    #[test]
+    fn portal_tile_uses_standard_pane_header() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 500.0);
+        h.step();
+        let portals = seed_long_name_portals(&mut h, None);
+        let workspace_root = h.workspace_root().to_path_buf();
+        let terminal = h.with_app_mut(|app| {
+            let id = app.host.alloc_pane_id();
+            let mut term = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            term.name = Some("build".to_string());
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(term)));
+            let tile = win.tree.tiles.insert_pane(id);
+            let root = win.tree.root.expect("portal root");
+            win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![tile, root]));
+            id
+        });
+        h.run_steps(3);
+        let header_bg = h.with_app(|app| app.colors.pane_header_bg());
+        let header = |h: &PlexiUiHarness, pane: PaneId| {
+            h.with_app(|app| {
+                let tile = app.visible_pane_rect(pane).expect("pane laid out");
+                let bar = crate::ui::layout_report::snapshot(&app.ctx)
+                    .into_iter()
+                    .filter(|r| r.surface == "pane_header")
+                    .map(|r| r.parent)
+                    .find(|bar| tile.expand(1.0).contains_rect(*bar))
+                    .unwrap_or_else(|| panic!("pane {pane} painted no pane_header"));
+                let layout =
+                    crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, pane)
+                        .unwrap_or_else(|| panic!("pane {pane} recorded no header layout"));
+                (tile, bar, layout)
+            })
+        };
+        let (term_tile, term_bar, term_layout) = header(&h, terminal);
+        for portal in portals {
+            let (tile, bar, layout) = header(&h, portal);
+            assert!(
+                (bar.height() - term_bar.height()).abs() < 0.5,
+                "header height {bar:?} vs {term_bar:?}"
+            );
+            assert!(
+                (bar.top() - tile.top()).abs() < 0.5
+                    && (term_bar.top() - term_tile.top()).abs() < 0.5
+            );
+            assert!(
+                (bar.width() - tile.width()).abs() < 1.0,
+                "header spans the tile: {bar:?} in {tile:?}"
+            );
+            assert!(
+                h.harness().output().shapes.iter().any(|s| {
+                    matches!(&s.shape, egui::Shape::Rect(r) if r.rect == bar && r.fill == header_bg)
+                }),
+                "portal header must paint the shared header background"
+            );
+            let title = layout.label_rect.expect("portal title painted");
+            let term_title = term_layout.label_rect.expect("terminal title painted");
+            assert!((title.center().y - bar.center().y).abs() < 1.0);
+            assert!(
+                (title.height() - term_title.height()).abs() < 0.5,
+                "same title font"
+            );
+            assert!(bar.contains_rect(title));
+            assert!(
+                layout
+                    .elided_label
+                    .as_deref()
+                    .is_some_and(|l| l.ends_with(crate::ui::text::ELLIPSIS)),
+                "a long context name elides: {:?}",
+                layout.elided_label
+            );
+            assert!(!layout
+                .elided_label
+                .as_deref()
+                .unwrap_or_default()
+                .contains("child of"));
+        }
+        let mut texts = Vec::new();
+        for shape in &h.harness().output().shapes {
+            gallery_text_shapes(&shape.shape, &mut texts);
+        }
+        for portal in portals {
+            let tile = h.with_app(|app| app.visible_pane_rect(portal).unwrap());
+            for (rect, text) in &texts {
+                if tile.contains_rect(*rect) {
+                    assert!(
+                        !text.contains("very-long-branch-name") && !text.contains(" panes"),
+                        "portal body paints only the minimap; found {text:?}"
+                    );
+                }
+            }
+        }
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
+    /// Stint 1043: zoom changes only the viewport. A terminal waiting on the
+    /// user shows the same shared header (title and NEEDS YOU badge) and the
+    /// same focus ring geometry before zoom, while zoomed and after restore,
+    /// and zooming never clears the pending state.
+    #[test]
+    fn zoomed_pane_keeps_shared_header_attention_and_focus_ring() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let other = add_focused_pane(&mut h);
+        let workspace_root = h.workspace_root().to_path_buf();
+        let pane = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let id = app.host.alloc_pane_id();
+            let mut term = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(workspace_root.clone()),
+                    ..Default::default()
+                },
+                14.0,
+            )
+            .expect("spawn terminal pane");
+            term.name = Some("release checks".to_string());
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(id, Pane::Terminal(Box::new(term)));
+            let tile = win.tree.tiles.insert_pane(id);
+            let other_tile = win.tree.tiles.find_pane(&other).expect("other pane tile");
+            win.tree.root = Some(
+                win.tree
+                    .tiles
+                    .insert_horizontal_tile(vec![other_tile, tile]),
+            );
+            win.focused_pane = Some(tile);
+            assert!(win.panes.get_mut(&id).unwrap().set_agent(Some(
+                crate::protocol::PaneAgentState {
+                    pane_id: id,
+                    agent: "codex".into(),
+                    state: crate::protocol::AgentState::NeedsYou,
+                    detail: Some("Approve the release tag".into()),
+                    session_id: None,
+                },
+            )));
+            id
+        });
+        h.run_steps(3);
+
+        // Header bar and focus ring for the pane, from emitted paint.
+        let chrome = |h: &mut PlexiUiHarness, phase: &str| {
+            let (bar, accent, configured_radius) = h.with_app(|app| {
+                let bar = crate::ui::layout_report::snapshot(&app.ctx)
+                    .into_iter()
+                    .filter(|r| r.surface == "pane_header")
+                    .find(|r| {
+                        r.texts.iter().any(|t| t.text == "NEEDS YOU")
+                            && r.texts.iter().any(|t| t.text == "release checks")
+                    })
+                    .map(|r| r.parent)
+                    .unwrap_or_else(|| {
+                        panic!("{phase}: no shared header with title and NEEDS YOU badge")
+                    });
+                (bar, app.colors.accent, app.config.pane_corner_radius)
+            });
+            let ring = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == accent
+                            && r.stroke_kind == egui::StrokeKind::Inside
+                            && (r.rect.min - bar.min).length() < 0.5 =>
+                    {
+                        Some(r.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{phase}: no focus ring framing the header {bar:?}"));
+            assert_eq!(
+                ring.stroke.width,
+                crate::ui::style::PANE_FOCUS_WIDTH,
+                "{phase}: focus ring width"
+            );
+            assert_eq!(
+                ring.corner_radius,
+                crate::ui::style::pane_radius(configured_radius, ring.rect),
+                "{phase}: focus ring corners"
+            );
+            assert!(
+                (bar.width() - ring.rect.width()).abs() < 0.5,
+                "{phase}: header spans the pane {bar:?} vs ring {:?}",
+                ring.rect
+            );
+            assert_eq!(
+                h.with_app(|app| app
+                    .find_pane_in_any_window(pane)
+                    .and_then(|(w, _)| app.windows[w].panes.get(&pane))
+                    .and_then(|p| p.effective_activity().cloned())),
+                Some(crate::protocol::AgentState::NeedsYou),
+                "{phase}: zoom must not clear the pending state"
+            );
+            (bar, ring.rect)
+        };
+
+        let (before_bar, before_ring) = chrome(&mut h, "tiled");
+        h.save_screenshot(&evidence_png!("_tiled")).unwrap();
+        h.with_app_mut(|app| app.toggle_pane_zoom());
+        h.run_steps(3);
+        assert!(h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()));
+        let (zoom_bar, zoom_ring) = chrome(&mut h, "zoomed");
+        h.save_screenshot(&evidence_png!("_zoomed")).unwrap();
+        assert!(
+            zoom_ring.width() > before_ring.width(),
+            "zoom enlarges the viewport: {zoom_ring:?} vs {before_ring:?}"
+        );
+        assert!(
+            (zoom_bar.height() - before_bar.height()).abs() < 0.5,
+            "same header height"
+        );
+        h.with_app_mut(|app| app.toggle_pane_zoom());
+        h.run_steps(3);
+        assert!(h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_none()));
+        let (after_bar, after_ring) = chrome(&mut h, "restored");
+        h.save_screenshot(&evidence_png!("_restored")).unwrap();
+        assert_eq!(
+            after_bar, before_bar,
+            "restore returns the header to its tile"
+        );
+        assert_eq!(
+            after_ring, before_ring,
+            "restore returns the ring to its tile"
+        );
+        assert_eq!(h.with_app(|app| app.visual_owner_pane()), Some(pane));
+    }
+
+    /// Stint 1166: a Portal that shares a tab group paints the tab bar, and
+    /// clicking a sibling's tab switches to it and back.
+    #[test]
+    fn portal_tile_in_tab_group_switches_to_sibling() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 500.0);
+        h.step();
+        let sibling = add_focused_pane(&mut h);
+        let portals = seed_long_name_portals(&mut h, Some(sibling));
+        h.run_steps(3);
+        let active_member = |h: &PlexiUiHarness| {
+            h.with_app(|app| {
+                let win = &app.windows[app.active_window];
+                let info = win.compute_tab_info();
+                let group = info
+                    .values()
+                    .find(|g| g.members.contains(&sibling))
+                    .expect("portal and sibling share a tab group")
+                    .clone();
+                group.members[group.active_idx]
+            })
+        };
+        let click = |h: &mut PlexiUiHarness, pos: egui::Pos2| {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.run_steps(3);
+        };
+        assert_eq!(active_member(&h), portals[0], "portal starts active");
+        let tile = h.with_app(|app| app.visible_pane_rect(portals[0]).expect("portal laid out"));
+        let tab_y = tile.top() + crate::spatial::tiling::TAB_BAR_HEIGHT / 2.0;
+        assert!(
+            h.with_app(|app| {
+                crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, portals[0])
+            })
+            .is_some(),
+            "active portal tab paints the tab bar"
+        );
+        click(&mut h, egui::pos2(tile.left() + tile.width() * 0.75, tab_y));
+        assert_eq!(
+            active_member(&h),
+            sibling,
+            "clicking the sibling tab switches to it"
+        );
+        let tile = h.with_app(|app| app.visible_pane_rect(sibling).expect("sibling laid out"));
+        click(&mut h, egui::pos2(tile.left() + tile.width() * 0.25, tab_y));
+        assert_eq!(
+            active_member(&h),
+            portals[0],
+            "clicking the portal tab switches back"
+        );
     }
 
     #[test]

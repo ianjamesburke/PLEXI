@@ -196,6 +196,9 @@ pub const PANE_HEADER_GLYPH: f32 = PROVENANCE_ICON_SIZE;
 /// top edge to the ink equals the gap from the ink to the bar's bottom edge; the side inset
 /// (ring + gap) is at least that vertical gap.
 pub const PANE_HEADER_HEIGHT: f32 = PANE_RING_WIDTH + 2.0 * PANE_CONTENT_GAP + PANE_HEADER_GLYPH;
+/// Shortest legible Portal minimap. A tile body shorter than this shows the
+/// pane header alone instead of a squashed or overflowing map.
+pub const PORTAL_MINIMAP_MIN_H: f32 = 24.0;
 
 /// Header chips (outside workspace, state, waiting) are as tall as a glyph slot, so they sit
 /// centered in the band with `PANE_CONTENT_GAP` above and below.
@@ -310,6 +313,9 @@ pub const MODAL_PADDING_V: i8 = 10;
 /// between a dense list row and a form button: the chips need breathing room
 /// but a confirm modal's action stack must not read as a menu.
 pub const MODAL_ACTION_ROW_H: f32 = 30.0;
+/// Floor for a modal's scrolling body when the window is shorter than the
+/// modal chrome; below this the body scrolls in a usable strip.
+pub const MODAL_BODY_MIN_H: f32 = 120.0;
 
 // ── Pane ID overlay ────────────────────────────────────────────────────────
 /// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).
