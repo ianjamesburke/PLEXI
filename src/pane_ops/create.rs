@@ -8,8 +8,7 @@
 
 use crate::app::view_trait::View;
 use crate::app::PlexiApp;
-use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
-use crate::host::effect::HostEffect;
+use crate::host::command::ShareRatio;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_tiles::{Tile, TileId, Tree};
@@ -639,60 +638,19 @@ impl PlexiApp {
         }
     }
 
-    /// Submit an `OpenPane` request to HostModel and extract
-    /// `(pane_id, share, vertical, new_pane_first)` from the resulting `PaneOpened` effect.
-    /// Falls back to `alloc_pane_id()` + 1:1 vertical split if no effect is
-    /// returned (should not happen in practice).
-    fn open_pane_layout(
-        &mut self,
-        plugin_id: &str,
-        group: Option<String>,
-        hint: Option<&str>,
-        share: ShareRatio,
-    ) -> (PaneId, ShareRatio, bool, bool) {
+    /// Allocate the new view pane's id from `HostModel` and derive
+    /// `(pane_id, vertical, new_pane_first)` from the layout `hint`.
+    fn open_pane_layout(&mut self, plugin_id: &str, hint: Option<&str>) -> (PaneId, bool, bool) {
         let new_pane_first = matches!(hint, Some("split_above") | Some("split_left"));
         let vertical = matches!(
             hint,
             Some("split_h") | Some("split_right") | Some("split_left")
         );
-        let placement = if vertical {
-            Placement::Right
-        } else {
-            Placement::Below
-        };
-        let req = OpenPaneRequest {
-            runtime: PaneRuntimeKind::View {
-                plugin_id: plugin_id.to_string(),
-            },
-            placement,
-            share,
-            group,
-            declared_capabilities: vec![],
-        };
-        let effects = self.submit(HostAction::OpenPane(req));
-        log::debug!("open_pane_layout({plugin_id}) effects: {:?}", effects);
-        effects
-            .iter()
-            .find_map(|e| {
-                if let HostEffect::PaneOpened { pane_id, share, placement, .. } = e {
-                    let vert = !matches!(placement, Placement::Below);
-                    Some((*pane_id, *share, vert, new_pane_first))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                let fallback = self.host.alloc_pane_id();
-                log::warn!(
-                    "open_pane_layout({plugin_id}): no PaneOpened effect — allocating fallback id={fallback}"
-                );
-                (
-                    fallback,
-                    ShareRatio::new(1.0, 1.0).expect("1:1 is valid"),
-                    vertical,
-                    new_pane_first,
-                )
-            })
+        let pane_id = self.host.alloc_pane_id();
+        log::debug!(
+            "open_pane_layout({plugin_id}): pane_id={pane_id} vertical={vertical} new_pane_first={new_pane_first}"
+        );
+        (pane_id, vertical, new_pane_first)
     }
 
     /// Single placement authority for a freshly-built view pane. Honors the
@@ -717,7 +675,6 @@ impl PlexiApp {
         &mut self,
         target_win: usize,
         plugin_id: &str,
-        group: Option<String>,
         hint: Option<&str>,
         share_hint: Option<f32>,
         build: F,
@@ -777,8 +734,7 @@ impl PlexiApp {
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
         let share = Self::share_ratio_from_fraction(plugin_id, share_hint);
-        let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(plugin_id, group, hint, share);
+        let (new_id, vertical, new_pane_first) = self.open_pane_layout(plugin_id, hint);
         let pane = build(new_id, linked_pane_id, None);
         self.windows[active].panes.insert(new_id, pane);
 
@@ -811,8 +767,7 @@ impl PlexiApp {
     ) {
         let active = target_win;
         let share = Self::share_ratio_from_fraction(plugin_id, None);
-        let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(plugin_id, None, hint, share);
+        let (new_id, vertical, new_pane_first) = self.open_pane_layout(plugin_id, hint);
         self.windows[active].panes.insert(
             new_id,
             crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
@@ -952,7 +907,6 @@ impl PlexiApp {
             .place_view_pane(
                 target_win,
                 &plugin_id,
-                None,
                 layout,
                 None,
                 move |new_id, linked_pane_id, overlay_replaced| {
@@ -1097,7 +1051,6 @@ impl PlexiApp {
             .place_view_pane(
                 target_win,
                 plugin_id,
-                None,
                 layout,
                 None,
                 move |new_id, linked_pane_id, overlay_replaced| {
@@ -1391,12 +1344,10 @@ impl PlexiApp {
         let plugin_type_id = app.type_id().to_string();
         let app_name = app.display_name();
         let manifest_id = plugin_type_id.clone();
-        let group_for_pane = group.clone();
         let context_id = self.windows[target_win].context_id;
         let placed = self.place_view_pane(
             target_win,
             &plugin_type_id,
-            group,
             hint,
             share,
             move |id, linked_pane_id, overlay_replaced| {
@@ -1409,7 +1360,7 @@ impl PlexiApp {
                     permissions,
                     manifest_id,
                     name: app_name,
-                    pane_group: group_for_pane,
+                    pane_group: group,
                     linked_pane_id,
                     overlay_replaced,
                     hidden: false,

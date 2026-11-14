@@ -2,9 +2,8 @@
 //! zoom-free tree manipulation, font size, scroll.
 
 use crate::app::PlexiApp;
-use crate::host::command::{HostAction, Placement};
+use crate::host::command::Placement;
 use crate::host::context::{replace_child, Window};
-use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
@@ -279,11 +278,6 @@ pub(crate) fn insert_split_tile(
 }
 
 impl PlexiApp {
-    /// Route a HostAction through HostModel and return the resulting effects.
-    pub(super) fn submit(&mut self, cmd: HostAction) -> Vec<HostEffect> {
-        self.host.handle_command(cmd, &mut self.host_services)
-    }
-
     pub(crate) fn split_with_new_pane_at(
         &mut self,
         target_win: usize,
@@ -465,24 +459,6 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return None;
         };
-        self.host.commit_split_pane(new_id);
-        let placement = if vertical {
-            Placement::Right
-        } else {
-            Placement::Below
-        };
-        self.host_services
-            .event_sink
-            .emit(&HostEffect::SplitOpened {
-                pane_id: new_id,
-                kind: crate::host::command::PaneRuntimeKind::Terminal,
-                placement,
-            });
-        self.host_services
-            .event_sink
-            .emit(&HostEffect::FocusChanged {
-                pane_id: Some(new_id),
-            });
         let direction = if vertical { "vertical" } else { "horizontal" }.to_string();
         log::info!("split_focused: emitting PaneSplit pane_id={new_id} direction={direction}");
         crate::host::event_log::emit_scoped(
@@ -825,8 +801,6 @@ impl PlexiApp {
         {
             return;
         }
-        let effects = self.submit(HostAction::CloseFocusedPane);
-        log::debug!("close_focused effects: {:?}", effects);
         self.close_tile(self.active_window, focused);
     }
 
@@ -1341,9 +1315,6 @@ impl PlexiApp {
 
     /// Move focus or active page in `dir`, returning whether navigation succeeded.
     pub(crate) fn navigate(&mut self, dir: Direction) -> bool {
-        let effects = self.submit(HostAction::Navigate(dir));
-        log::debug!("navigate({:?}) effects: {:?}", dir, effects);
-
         // The conjoined parent is rendered beside, rather than inside, the active
         // child window. Its tile therefore cannot participate in that window's
         // ordinary geometric navigation. Treat the visible parent strip as the

@@ -382,11 +382,7 @@ fn summary_of(row: &Value) -> String {
                 d["grant_id"].as_str().unwrap_or("-")
             )
         }
-        "host_event" | "host_effect" => d["kind"]
-            .as_str()
-            .or(d["effect"].as_str())
-            .unwrap_or("?")
-            .to_string(),
+        "host_event" => d["kind"].as_str().unwrap_or("?").to_string(),
         _ => d.to_string(),
     }
 }

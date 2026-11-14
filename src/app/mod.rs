@@ -480,7 +480,6 @@ pub struct PlexiApp {
     /// the history-driven focus change as a new history entry.
     pub(crate) navigating_history: bool,
     pub(crate) host: crate::host::model::HostModel,
-    pub(crate) host_services: crate::host::services::HostServices,
     /// Parked background WASM plugin runtimes — kept alive when their pane is closed.
     /// Keyed by plugin type_id. Value is `(park_context_id, plugin)` where
     /// `park_context_id` is the context_id the plugin was running in when its
@@ -1899,7 +1898,6 @@ impl PlexiApp {
                     last_notify_poll: std::time::Instant::now(),
                     scheduler: crate::host::scheduler::Scheduler::new(),
                     host,
-                    host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
@@ -2189,7 +2187,6 @@ impl PlexiApp {
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
-            host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher,
@@ -3175,7 +3172,6 @@ impl PlexiApp {
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
-            host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher,

@@ -3411,9 +3411,9 @@ pub enum AgentTeamCmd {
 pub enum AiCmd {
     /// Guide first-run AI setup and the next plugin install step.
     ///
-    /// Runs the same checks as `plexi ai doctor`, then prints the shortest path
-    /// to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI
-    /// for now. Ends with the plugin install command to try next.
+    /// Checks whether OpenRouter is configured, then prints the shortest path
+    /// to usable AI: a user-owned OpenRouter key, or skipping AI for now. Ends
+    /// with the plugin install command to try next.
     ///
     /// Example: plexi ai onboard
     Onboard,
@@ -3427,11 +3427,10 @@ pub enum AiCmd {
     /// Example: plexi ai doctor
     Doctor,
 
-    /// Interactive wizard to configure a local AI model via Ollama.
+    /// Retired: local AI providers are not supported in 0.5.0.
     ///
-    /// Walks through Ollama installation detection, model recommendation based on your
-    /// hardware, pulling the recommended model, and writing the [ai.ollama] section to
-    /// your config.toml so Plexi plugins can use it immediately.
+    /// Exits non-zero without touching config.toml. Configure OpenRouter instead with
+    /// `plexi secret set OPENROUTER_API_KEY --global`, then run `plexi ai doctor`.
     ///
     /// Example: plexi ai setup
     Setup,
