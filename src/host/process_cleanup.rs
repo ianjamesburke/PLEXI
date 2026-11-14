@@ -492,12 +492,14 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     }
     let signaled = Instant::now();
     let deadline = (signaled + grace).min(total_deadline);
+    // Pids already reported as zombies, so each is logged once (stint 1523).
+    let mut zombies = BTreeSet::new();
     let tracked: Vec<_> = identities
         .keys()
         .map(|pid| sysinfo::Pid::from_u32(*pid))
         .collect();
     let survivors = loop {
-        let live = refresh_owned_alive(&mut system, &tracked, &identities);
+        let live = refresh_owned_alive(&mut system, &tracked, &identities, &mut zombies);
         if live.is_empty() || Instant::now() >= deadline {
             break live;
         }
@@ -530,7 +532,7 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     // before reporting cleanup complete, bounded independently of the grace.
     let reap_deadline = Instant::now() + Duration::from_millis(250);
     let remaining = loop {
-        let live = refresh_owned_alive(&mut system, &tracked, &identities);
+        let live = refresh_owned_alive(&mut system, &tracked, &identities, &mut zombies);
         if live.is_empty() || Instant::now() >= reap_deadline {
             break live;
         }
@@ -566,6 +568,7 @@ fn refresh_owned_alive(
     system: &mut sysinfo::System,
     tracked: &[sysinfo::Pid],
     identities: &BTreeMap<u32, u64>,
+    zombies: &mut BTreeSet<u32>,
 ) -> Vec<u32> {
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(tracked),
@@ -580,7 +583,18 @@ fn refresh_owned_alive(
             // reaper, and consuming the status here made its `try_wait` fail
             // with ECHILD on every clean host stop (stint 1509). A zombie
             // descendant has also already stopped running.
-            if root_has_exited(*pid) || process_is_zombie(*pid) {
+            if root_has_exited(*pid) {
+                return None;
+            }
+            if process_is_zombie(*pid) {
+                let process = system.process(sysinfo::Pid::from_u32(*pid));
+                let reported = process.map(|p| p.status());
+                if reported != Some(sysinfo::ProcessStatus::Zombie) && zombies.insert(*pid) {
+                    log::info!(
+                        "quit: pid={pid} executable={:?} is a zombie (sysinfo reports {reported:?}); counted gone",
+                        process.map(|p| p.name().to_string_lossy().into_owned())
+                    );
+                }
                 return None;
             }
             system
@@ -751,71 +765,11 @@ mod tests {
         }
     }
 
-    /// Stint 1509: the kill path never consumes a pane root's exit status.
-    /// The root's owner (alacritty's PTY loop, for a terminal pane) reaps it;
-    /// when the kill path reaped first, that owner's `try_wait` failed with
-    /// ECHILD and logged "Error checking child process termination" on every
-    /// clean host stop.
-    /// The pane's shell starts a grandchild in its own process group that
-    /// ignores HUP and TERM (as an agent CLI's worker can), and the shell
-    /// itself ignores TERM like an interactive shell: both need SIGKILL.
-    /// Once killed they must count as gone, so a normal quit is stamped
-    /// clean (Ian's quit: "owned processes remain after SIGKILL").
-    #[test]
-    #[ignore = "requires-pty"]
-    fn processes_dead_after_sigkill_count_as_gone() {
-        use std::io::BufRead;
-        let marker = uuid::Uuid::new_v4().to_string();
-        let mut command = std::process::Command::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                "trap '' HUP TERM; \
-                 perl -e 'setpgrp(0,0); $SIG{HUP}=$SIG{TERM}=q(IGNORE); sleep 60' & \
-                 echo ready; while :; do sleep 1; done",
-            ])
-            .env(SESSION_ENV, &marker)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
-        let mut child = FixtureChild(command.spawn().unwrap());
-        let mut ready = String::new();
-        std::io::BufReader::new(child.0.stdout.take().unwrap())
-            .read_line(&mut ready)
-            .unwrap();
-        assert_eq!(ready.trim(), "ready");
-        std::thread::sleep(Duration::from_millis(200));
-        let _root = PaneProcessGroup::record_for(child.0.id(), &marker);
-        let report = stop_marked_processes(
-            &marker,
-            Duration::from_millis(50),
-            Instant::now() + Duration::from_secs(2),
-        );
-        assert!(
-            report.escalated >= 1,
-            "the fixture needed SIGKILL: {report:?}"
-        );
-        assert_eq!(
-            report.remaining, 0,
-            "killed processes still counted: {report:?}"
-        );
-    }
-
     /// A process that died but is not yet reaped by its parent (a zombie that
     /// is not our child, so `waitid` cannot see it) is gone, not alive.
     /// sysinfo reports such a zombie as running on macOS after a refresh,
     /// which left Ian's quit "owned processes remain after SIGKILL".
     #[test]
-    #[ignore = "requires-pty"]
     fn an_unreaped_zombie_that_is_not_our_child_counts_as_gone() {
         use std::io::BufRead;
         // perl forks a child that lives one second, prints its pid, and never
@@ -847,7 +801,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
         let identities = BTreeMap::from([(zombie, started)]);
         let tracked = [sysinfo::Pid::from_u32(zombie)];
-        let live = refresh_owned_alive(&mut system, &tracked, &identities);
+        let live = refresh_owned_alive(&mut system, &tracked, &identities, &mut BTreeSet::new());
         let _ = parent.kill();
         let _ = parent.wait();
         assert!(
@@ -856,6 +810,105 @@ mod tests {
         );
     }
 
+    /// A child leading its own process group, carrying `marker`, that ignores
+    /// HUP and TERM, forked by a perl parent this host does not own and that
+    /// never reaps it. Returns the
+    /// parent (kill it when done) and the child's pid.
+    fn unreaped_marked_child(marker: &str) -> (std::process::Child, u32) {
+        use std::io::BufRead;
+        let script = format!(
+            "$|=1; my $c = fork(); if ($c == 0) {{ setpgrp(0, 0); $ENV{{{SESSION_ENV}}} = q({marker}); \
+             exec(q(/usr/bin/perl), q(-e), q($SIG{{HUP}}=$SIG{{TERM}}=q(IGNORE); sleep 60)) }} \
+             print \"$c\\n\"; sleep 60"
+        );
+        let mut parent = std::process::Command::new("/usr/bin/perl")
+            .args(["-e", &script])
+            .env_remove(SESSION_ENV)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(parent.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        // Let the child exec and install its signal dispositions.
+        std::thread::sleep(Duration::from_millis(300));
+        (parent, line.trim().parse().unwrap())
+    }
+
+    /// Stint 1523, the stamp decision: a survivor killed by SIGKILL whose
+    /// parent is alive and never reaps it is a zombie, not an owned process
+    /// left running; the kill path reports nothing remaining and the clean
+    /// shutdown is stamped.
+    #[test]
+    fn a_killed_survivor_left_unreaped_still_allows_the_clean_stamp() {
+        let marker = uuid::Uuid::new_v4().to_string();
+        let (mut parent, child) = unreaped_marked_child(&marker);
+        let _owned = PaneProcessGroup::record_for(child, &marker);
+        let report = stop_marked_processes(
+            &marker,
+            Duration::from_millis(50),
+            Instant::now() + Duration::from_secs(2),
+        );
+        let zombie = process_is_zombie(child);
+        let profile = tempfile::tempdir().unwrap();
+        let stamped = crate::app::quit::record_quit_integrity(report.remaining, profile.path());
+        let _ = parent.kill();
+        let _ = parent.wait();
+        assert!(zombie, "the survivor was killed and left unreaped");
+        assert_eq!(
+            report.remaining, 0,
+            "a killed survivor was counted as running"
+        );
+        assert!(stamped, "the clean shutdown was not stamped");
+    }
+
+    /// Stint 1523, the mirror: an owned process that is still running is
+    /// counted, and the clean shutdown is not stamped.
+    #[test]
+    fn a_running_owned_process_refuses_the_clean_stamp() {
+        let marker = uuid::Uuid::new_v4().to_string();
+        let mut running = FixtureChild(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .env(SESSION_ENV, &marker)
+                .spawn()
+                .unwrap(),
+        );
+        let pid = running.0.id();
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        let started = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| p.start_time())
+            .unwrap();
+        let live = refresh_owned_alive(
+            &mut system,
+            &[sysinfo::Pid::from_u32(pid)],
+            &BTreeMap::from([(pid, started)]),
+            &mut BTreeSet::new(),
+        );
+        let profile = tempfile::tempdir().unwrap();
+        let stamped = crate::app::quit::record_quit_integrity(live.len(), profile.path());
+        let _ = running.0.kill();
+        assert_eq!(live, vec![pid]);
+        assert!(!stamped, "a running process was stamped clean");
+        assert_eq!(
+            std::fs::read_dir(profile.path()).unwrap().count(),
+            0,
+            "no stamp written"
+        );
+    }
+
+    /// Stint 1509: the kill path never consumes a pane root's exit status.
+    /// The root's owner (alacritty's PTY loop, for a terminal pane) reaps it;
+    /// when the kill path reaped first, that owner's `try_wait` failed with
+    /// ECHILD and logged "Error checking child process termination" on every
+    /// clean host stop.
     #[test]
     #[ignore = "requires-pty"]
     fn kill_path_leaves_the_roots_exit_status_to_its_owner() {
