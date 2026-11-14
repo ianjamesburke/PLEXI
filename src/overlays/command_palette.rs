@@ -5770,32 +5770,24 @@ steps = [
             })
             .expect("step-right pane");
 
-        let invoker_tile = h.app.windows[0].tree.tiles.find_pane(&invoker).unwrap();
-        let down_tile = h.app.windows[0]
-            .tree
-            .tiles
-            .find_pane(&step_down_id)
-            .unwrap();
-        let right_tile = h.app.windows[0]
-            .tree
-            .tiles
-            .find_pane(&step_right_id)
-            .unwrap();
-        let invoker_parent = h.app.windows[0]
-            .tree
-            .tiles
-            .parent_of(invoker_tile)
-            .expect("invoker parent container");
-        let down_parent = h.app.windows[0]
-            .tree
-            .tiles
-            .parent_of(down_tile)
-            .expect("step-down parent container");
-        let right_parent = h.app.windows[0]
-            .tree
-            .tiles
-            .parent_of(right_tile)
-            .expect("step-right parent container");
+        // The split container holding a pane. A settled tree wraps each pane
+        // in its own Tabs container (stints 1440, 1511), so the split sits one
+        // level above that Tabs.
+        let split_parent = |pane: u64, what: &str| {
+            let window = &h.app.windows[0];
+            let tile = window.tree.tiles.find_pane(&pane).unwrap();
+            let held = window
+                .find_ancestor_tabs(tile)
+                .map_or(tile, |(tabs, _)| tabs);
+            window
+                .tree
+                .tiles
+                .parent_of(held)
+                .unwrap_or_else(|| panic!("{what} split container"))
+        };
+        let invoker_parent = split_parent(invoker, "invoker");
+        let down_parent = split_parent(step_down_id, "step-down");
+        let right_parent = split_parent(step_right_id, "step-right");
         assert_eq!(
             invoker_parent, down_parent,
             "step 2 (--down) must anchor to the invoking pane on the first trigger, not chain off step 1 (--right)"
