@@ -605,6 +605,11 @@ pub enum OpenSpec {
         handle: String,
         #[serde(default)]
         args: Vec<String>,
+        /// Headless only: manifest capability ids the scene grants this plugin
+        /// before launch, in place of the human approval a sensitive
+        /// capability needs. Live runs refuse it.
+        #[serde(default)]
+        grants: Vec<String>,
     },
     /// Launch a reviewed raw WASM component.
     Wasm {
@@ -1931,6 +1936,12 @@ impl LiveBackend {
             }
             Step::Open { open } => {
                 self.handles.ensure_available(open.handle())?;
+                if matches!(open, OpenSpec::Process { grants, .. } if !grants.is_empty()) {
+                    return Err(SceneError::new(
+                        "unsupported_live_verb",
+                        "open grants is headless-only: a live host is never preapproved",
+                    ));
+                }
                 let target = match open {
                     OpenSpec::Process { path, .. } | OpenSpec::Wasm { path, .. } => {
                         resolve(path).display().to_string()
@@ -2859,6 +2870,48 @@ fn resolve(path: &str) -> PathBuf {
     }
 }
 
+/// Grants the scene's listed manifest capabilities to a headless process
+/// fixture in the in-process test profile, keyed the way a path launch
+/// materializes them (manifest id, plugin directory as workspace). Only ids
+/// the manifest declares are accepted, so a scene cannot widen a plugin.
+fn preapprove_process_scene_grants(plugin_dir: &Path, grants: &[String]) -> Result<(), String> {
+    if grants.is_empty() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(plugin_dir.join("manifest.toml"))
+        .map_err(|error| format!("read {}/manifest.toml: {error}", plugin_dir.display()))?;
+    let manifest = crate::app::registry::PluginManifest::parse(&raw)
+        .map_err(|error| format!("{}: {error}", plugin_dir.display()))?;
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+        .map_err(|error| format!("open the test profile's grant store: {error}"))?;
+    for capability_id in grants {
+        if !manifest
+            .plugin
+            .capabilities
+            .capabilities
+            .iter()
+            .any(|declared| declared == capability_id)
+        {
+            return Err(format!(
+                "grant {capability_id:?} is not declared by plugin {}",
+                manifest.plugin.id
+            ));
+        }
+        monitor.grant_capability_id(
+            &manifest.plugin.id,
+            plugin_dir,
+            capability_id,
+            crate::broker::Decision::Allow,
+            crate::broker::GrantSource::User,
+        );
+    }
+    log::info!(
+        "scene: preapproved process grants plugin={} grants={grants:?}",
+        manifest.plugin.id
+    );
+    Ok(())
+}
+
 /// Seeds the in-process test profile's grant store with Allow rows for a
 /// headless scene fixture's raw-WASM imports so the scene never stalls on an
 /// unanswerable capability review. Enforcement reads that store. The legacy
@@ -2943,8 +2996,13 @@ impl HeadlessBackend {
                 let handle = open.handle();
                 self.handles.ensure_available(handle)?;
                 let pane_id = match open {
-                    OpenSpec::Process { path, args, .. } => {
+                    OpenSpec::Process {
+                        path, args, grants, ..
+                    } => {
                         let path = resolve(path);
+                        preapprove_process_scene_grants(&path, grants).map_err(|message| {
+                            SceneError::new("process_preapproval_failed", message)
+                        })?;
                         self.h
                             .open_target(crate::ui_tests::HarnessOpenTarget::Process {
                                 path: &path,
