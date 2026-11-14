@@ -566,9 +566,12 @@ fn refresh_owned_alive(
     identities
         .iter()
         .filter_map(|(pid, started)| {
-            let mut status = 0;
-            // Reap our own roots; a zombie descendant has already stopped running.
-            if unsafe { libc::waitpid(*pid as i32, &mut status, libc::WNOHANG) } == *pid as i32 {
+            // An exited root is gone. Peek without reaping (WNOWAIT): the
+            // root's owner (alacritty's PTY loop for a terminal) is its one
+            // reaper, and consuming the status here made its `try_wait` fail
+            // with ECHILD on every clean host stop (stint 1509). A zombie
+            // descendant has also already stopped running.
+            if root_has_exited(*pid) {
                 return None;
             }
             system
@@ -579,6 +582,21 @@ fn refresh_owned_alive(
                 .map(|_| *pid)
         })
         .collect()
+}
+
+/// Whether our child `pid` has exited, leaving it waitable for its owner.
+#[cfg(unix)]
+fn root_has_exited(pid: u32) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    rc == 0 && unsafe { info.si_pid() } as u32 == pid
 }
 
 #[cfg(not(unix))]
@@ -691,6 +709,56 @@ mod tests {
             }
             let _ = self.0.wait();
         }
+    }
+
+    /// Stint 1509: the kill path never consumes a pane root's exit status.
+    /// The root's owner (alacritty's PTY loop, for a terminal pane) reaps it;
+    /// when the kill path reaped first, that owner's `try_wait` failed with
+    /// ECHILD and logged "Error checking child process termination" on every
+    /// clean host stop.
+    #[test]
+    #[ignore = "requires-pty"]
+    fn kill_path_leaves_the_roots_exit_status_to_its_owner() {
+        use std::io::BufRead;
+        let marker = uuid::Uuid::new_v4().to_string();
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "trap 'exit 0' TERM; echo ready; while :; do :; done"])
+            .env(SESSION_ENV, &marker)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = FixtureChild(command.spawn().unwrap());
+        let mut ready = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let _root = PaneProcessGroup::record_for(child.0.id(), &marker);
+        let budget = crate::testing::load_aware_timeout(Duration::from_secs(2));
+        let report = stop_marked_processes(&marker, budget, Instant::now() + budget);
+        assert_eq!(report.groups, 1);
+        assert_eq!(report.remaining, 0, "the stopped root counts as gone");
+        let status = child
+            .0
+            .try_wait()
+            .expect("the owner can still read its child's exit status")
+            .expect("the child has exited");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGHUP),
+            "stopped by the kill path's HUP"
+        );
     }
 
     #[test]
