@@ -43,9 +43,9 @@ pub fn run(input: &RetentionInput<'_>) -> Result<RetentionReport, String> {
     let mut conversations_pruned = 0;
     if input.retain_local_history {
         let cutoff = input.now - Duration::days(CLOUD_RETENTION_DAYS);
-        for name in ["ai-ledger.jsonl", "agent-ledger.jsonl"] {
-            ledger_rows_pruned += prune_ledger(&input.config_dir.join(name), cutoff)?;
-        }
+        // Only the live ledger. The old-name `agent-ledger.jsonl` is reported,
+        // never rewritten (stints 1312, 1442).
+        ledger_rows_pruned += prune_ledger(&input.config_dir.join("ai-ledger.jsonl"), cutoff)?;
         for dir in input.assistant_dirs {
             conversations_pruned += prune_assistant_dir(dir, cutoff)?;
         }
