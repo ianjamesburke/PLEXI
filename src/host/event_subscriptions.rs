@@ -368,6 +368,9 @@ pub struct PendingEventConsent {
     pub subscriber_context_id: u64,
     /// Workspace the exact grant is bound to. Captured at classify time.
     pub workspace_root: PathBuf,
+    /// Fresh per request (stint 1498): the consent guard arms on this, never
+    /// on the request's content, so a repeated request re-arms.
+    pub request_id: u64,
     /// The effect to apply once allowed — owns the transport's reply channel.
     action: ConsentAction,
 }
@@ -725,6 +728,7 @@ impl HostSubscriptionService {
                     req.publisher_plugin_id
                 );
                 Some(PendingEventConsent {
+                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
                     subscriber_type,
                     subscriber_id,
                     broker_actor_id,
@@ -760,6 +764,7 @@ impl HostSubscriptionService {
             return;
         }
         let PendingEventConsent {
+            request_id: _,
             subscriber_type,
             subscriber_id,
             broker_actor_id,
@@ -1046,6 +1051,7 @@ impl HostSubscriptionService {
                     req.plugin_id
                 );
                 Some(PendingEventConsent {
+                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
                     subscriber_type: actor_type,
                     // Publish is one-shot with no long-poll, so routing and
                     // authorization identity are the same emitter id.

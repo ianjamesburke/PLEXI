@@ -158,7 +158,9 @@ impl<'a> ModalShell<'a> {
                 .show(ctx, |ui| {
                     ui.painter()
                         .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
-                    let clicked = ui.allocate_rect(screen, egui::Sense::click()).clicked();
+                    // Click-away only: a focusable scrim takes Tab, and
+                    // Space or Enter on it would dismiss the modal (stint 1498).
+                    let clicked = ui.allocate_rect(screen, egui::Sense::CLICK).clicked();
                     if self.click_away && clicked {
                         dismissed = true;
                     }

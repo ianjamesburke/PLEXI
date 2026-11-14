@@ -413,10 +413,16 @@ pub(crate) fn resolve_plugin_fs_path(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WasmCapabilityPrompt {
+    /// Fresh per prompt (stint 1498); the consent guard arms on it.
+    request_id: u64,
     capability_id: String,
 }
 
 impl WasmCapabilityPrompt {
+    pub fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
     pub fn capability_id(&self) -> &str {
         &self.capability_id
     }
@@ -1350,7 +1356,10 @@ impl WasmPane {
             return;
         }
         self.pending_capability_prompts
-            .push_back(WasmCapabilityPrompt { capability_id });
+            .push_back(WasmCapabilityPrompt {
+                request_id: crate::app::approval_keyboard::next_consent_request_id(),
+                capability_id,
+            });
     }
 
     fn apply_capability_grant(&mut self, capability_id: &str) {
@@ -1858,6 +1867,8 @@ fn default_live_broker() -> LiveAiBroker {
 
 pub struct LiveWasmPane {
     inner: WasmPane,
+    /// Consent input guard for this pane's capability prompt (stint 1498).
+    capability_guard: crate::app::approval_keyboard::ConsentGuard,
     started: Instant,
     spawn_name: String,
     title: Option<String>,
@@ -1919,6 +1930,7 @@ impl LiveWasmPane {
         LiveWasmPane {
             inner,
             started: Instant::now(),
+            capability_guard: Default::default(),
             spawn_name: spawn_name.into(),
             title: None,
             pending_init: Some(snapshot),
@@ -2068,6 +2080,12 @@ impl LiveWasmPane {
 
     pub fn has_pending_capability_prompt(&self) -> bool {
         self.inner.has_pending_capability_prompt()
+    }
+
+    /// Test hook: the current capability prompt appeared `ago` before now.
+    #[cfg(test)]
+    pub(crate) fn backdate_capability_guard(&mut self, ago: std::time::Duration) {
+        self.capability_guard.backdate(ago);
     }
 
     pub fn set_pane_id(&mut self, pane_id: u64) {
@@ -2223,25 +2241,40 @@ impl LiveWasmPane {
         self.inner.complete_host_effect(event);
     }
 
-    pub fn draw_capability_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
+    pub fn draw_capability_modal(
+        &mut self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        synthetic_frame: bool,
+    ) {
         let Some(prompt) = self.inner.pending_capability_prompt() else {
             return;
         };
         let capability_id = prompt.capability_id().to_string();
+        let now = Instant::now();
+        self.capability_guard
+            .present(prompt.request_id(), ctx.cumulative_pass_nr(), now);
+        let input = self.capability_guard.input(now, synthetic_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.capability_guard.remaining(now));
+        }
         let actions = capability_prompt_actions();
-        let response = capability_prompt_modal(&actions).show(ctx, colors, |ui| {
-            crate::ui::typography::caption(
-                ui,
-                format!("{} requests:", self.display_name()),
-                colors,
-            );
-            crate::ui::typography::caption(ui, capability_id.clone(), colors);
-            crate::ui::typography::caption(
-                ui,
-                "Always decisions are saved for this plugin and workspace.",
-                colors,
-            );
-        });
+        let response =
+            capability_prompt_modal(&actions)
+                .consent_input(input)
+                .show(ctx, colors, |ui| {
+                    crate::ui::typography::caption(
+                        ui,
+                        format!("{} requests:", self.display_name()),
+                        colors,
+                    );
+                    crate::ui::typography::caption(ui, capability_id.clone(), colors);
+                    crate::ui::typography::caption(
+                        ui,
+                        "Always decisions are saved for this plugin and workspace.",
+                        colors,
+                    );
+                });
 
         let decision = match response.selected {
             Some("grant_once") => Some((true, false)),
@@ -2726,6 +2759,7 @@ pub(crate) fn capability_prompt_actions() -> [crate::ui::dialog::DialogAction<'s
             "Deny once",
             crate::ui::button::ButtonKind::Secondary,
         )
+        .refuses()
         .shortcut(crate::ui::dialog::DialogShortcut::new(
             &["Esc"],
             egui::Modifiers::NONE,
@@ -2736,6 +2770,7 @@ pub(crate) fn capability_prompt_actions() -> [crate::ui::dialog::DialogAction<'s
             "Always deny",
             crate::ui::button::ButtonKind::Danger,
         )
+        .refuses()
         .shortcut(crate::ui::dialog::DialogShortcut::new(
             &["Shift", "Esc"],
             egui::Modifiers::SHIFT,
@@ -5142,5 +5177,272 @@ mod tests {
         let out = tool_output(&p.take_host_effects(), "c1");
         assert_eq!(out["count"], 3, "still just the demo playlist");
         Ok(())
+    }
+
+    /// Stint 1498: the capability prompt takes a decision only from a fresh,
+    /// real Enter made after the arm delay; an Enter inside the delay, a held
+    /// key's repeat and an injected (synthetic-frame) Enter grant nothing.
+    #[test]
+    fn capability_prompt_takes_only_a_fresh_real_enter_after_the_arm_delay() {
+        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::host::pane::ViewRuntime;
+        let mut h = crate::testing::HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
+        );
+        live.set_pane_id(pane_id);
+        live.inner.exec(request_capability("fs:read:/tmp"), 0);
+        let window = h.app.active_window;
+        h.app.windows[window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .expect("test pane is a view pane")
+            .runtime = ViewRuntime::Wasm(Box::new(live));
+        h.focus_pane(pane_id);
+        fn wasm_of(h: &mut crate::testing::HostHarness, id: u64) -> &mut LiveWasmPane {
+            let window = h.app.active_window;
+            match &mut h.app.windows[window]
+                .panes
+                .get_mut(&id)
+                .and_then(|p| p.as_view_mut())
+                .expect("wasm pane")
+                .runtime
+            {
+                ViewRuntime::Wasm(live) => live,
+                _ => panic!("expected a WASM runtime"),
+            }
+        }
+        let key = |key: egui::Key, pressed: bool, repeat: bool| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+
+        h.frame(key(egui::Key::Enter, true, false));
+        assert!(
+            wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "Enter inside the arm delay granted"
+        );
+        wasm_of(&mut h, pane_id).backdate_capability_guard(ARM_DELAY);
+        h.frame(key(egui::Key::Enter, true, true));
+        h.frame(key(egui::Key::Enter, false, false));
+        assert!(
+            wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "a key repeat granted"
+        );
+
+        let mut injected = key(egui::Key::Enter, true, false);
+        injected.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.app
+            .pending_pane_inputs
+            .entry(pane_id)
+            .or_default()
+            .push(injected);
+        h.run_frames(1);
+        assert!(h
+            .app
+            .pending_pane_inputs
+            .get(&pane_id)
+            .is_none_or(Vec::is_empty));
+        assert!(
+            wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "an injected Enter granted"
+        );
+
+        h.frame(key(egui::Key::Enter, true, false));
+        h.frame(key(egui::Key::Enter, false, false));
+        assert!(
+            !wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "a real fresh Enter must still grant"
+        );
+    }
+
+    /// Stint 1498: the capability prompt draws only while its pane is
+    /// focused. Focus moving away and back (an agent can move it) re-arms
+    /// the prompt, so the next Enter does not grant; a real Esc denies at once.
+    #[test]
+    fn capability_prompt_re_arms_when_its_pane_regains_focus() {
+        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::host::pane::ViewRuntime;
+        let mut h = crate::testing::HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
+        );
+        live.set_pane_id(pane_id);
+        live.inner.exec(request_capability("fs:read:/tmp"), 0);
+        let window = h.app.active_window;
+        h.app.windows[window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .expect("test pane is a view pane")
+            .runtime = ViewRuntime::Wasm(Box::new(live));
+        h.focus_pane(pane_id);
+        let other = h.add_focused_terminal();
+        fn wasm_of(h: &mut crate::testing::HostHarness, id: u64) -> &mut LiveWasmPane {
+            let window = h.app.active_window;
+            match &mut h.app.windows[window]
+                .panes
+                .get_mut(&id)
+                .and_then(|p| p.as_view_mut())
+                .expect("wasm pane")
+                .runtime
+            {
+                ViewRuntime::Wasm(live) => live,
+                _ => panic!("expected a WASM runtime"),
+            }
+        }
+        let key = |key: egui::Key, pressed: bool| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+
+        h.focus_pane(pane_id);
+        h.run_frames(1);
+        wasm_of(&mut h, pane_id).backdate_capability_guard(ARM_DELAY);
+        assert_eq!(h.app.focused_pane_id(), Some(pane_id));
+        h.focus_pane(other);
+        h.run_frames(2);
+        assert_eq!(h.app.focused_pane_id(), Some(other));
+        h.focus_pane(pane_id);
+        h.frame(key(egui::Key::Enter, true));
+        h.frame(key(egui::Key::Enter, false));
+        assert!(
+            wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "the prompt was armed the instant its pane regained focus"
+        );
+
+        h.frame(key(egui::Key::Escape, true));
+        h.frame(key(egui::Key::Escape, false));
+        assert!(
+            !wasm_of(&mut h, pane_id).has_pending_capability_prompt(),
+            "a real Esc denies inside the arm delay"
+        );
+    }
+
+    /// Stint 1498: a click on the capability prompt delivered on a synthetic
+    /// frame grants nothing; the same click made for real still grants.
+    #[test]
+    fn capability_prompt_ignores_a_click_on_a_synthetic_frame() {
+        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::app::tests::consent_input_guard_tests::{first_modal_action, pointer};
+        use crate::host::pane::ViewRuntime;
+        let mut h = crate::testing::HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
+        );
+        live.set_pane_id(pane_id);
+        live.inner.exec(request_capability("fs:read:/tmp"), 0);
+        let window = h.app.active_window;
+        h.app.windows[window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .expect("test pane is a view pane")
+            .runtime = ViewRuntime::Wasm(Box::new(live));
+        h.focus_pane(pane_id);
+        fn pending(h: &mut crate::testing::HostHarness, id: u64) -> bool {
+            let window = h.app.active_window;
+            match &h.app.windows[window]
+                .panes
+                .get(&id)
+                .and_then(|p| p.as_view())
+                .expect("wasm pane")
+                .runtime
+            {
+                ViewRuntime::Wasm(live) => live.has_pending_capability_prompt(),
+                _ => panic!("expected a WASM runtime"),
+            }
+        }
+        h.run_frames(1);
+        let window = h.app.active_window;
+        if let Some(ViewRuntime::Wasm(live)) = h.app.windows[window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .map(|v| &mut v.runtime)
+        {
+            live.backdate_capability_guard(ARM_DELAY);
+        }
+        h.run_frames(1);
+        let grant = first_modal_action(&h);
+
+        let frames = h
+            .app
+            .pending_pane_pointer_frames
+            .entry(pane_id)
+            .or_default();
+        frames.push_back(pointer(grant, true));
+        frames.push_back(pointer(grant, false));
+        h.run_frames(3);
+        assert!(pending(&mut h, pane_id), "an injected click granted");
+
+        h.frame(pointer(grant, true));
+        h.frame(pointer(grant, false));
+        assert!(
+            !pending(&mut h, pane_id),
+            "a real click on Grant once must still grant"
+        );
+    }
+
+    /// Stint 1498: a capability re-requested after a deny never inherits the
+    /// denied prompt's arm state, because it is not prompted again: a deny
+    /// (once or always) blocks the capability for the session.
+    #[test]
+    fn capability_re_request_after_a_deny_is_refused_without_a_prompt() {
+        let mut p = pane(0.0);
+        p.exec(request_capability("fs:read:/tmp"), 0);
+        assert!(p.has_pending_capability_prompt());
+        p.decide_next_capability_prompt(false);
+        p.queue.clear();
+        p.exec(request_capability("fs:read:/tmp"), 0);
+        assert!(
+            !p.has_pending_capability_prompt(),
+            "a denied capability prompted again"
+        );
+        assert!(
+            matches!(pop_event(&mut p), InputEvent::CapabilityDenied(id) if id == "fs:read:/tmp")
+        );
     }
 }

@@ -8,6 +8,93 @@ use std::time::{Duration, Instant};
 
 pub(crate) const ARM_DELAY: Duration = Duration::from_secs(1);
 
+/// The one consent input guard (stint 1498), shared by the permission banner
+/// and every consent dialog: a decision input counts only on a real
+/// (non-synthetic) frame, once the surface has been on screen for
+/// [`ARM_DELAY`]. Stint 1283 replaces this function with the human-input
+/// witness.
+pub(crate) fn consent_input_admitted(
+    shown_since: Option<Instant>,
+    now: Instant,
+    synthetic_frame: bool,
+) -> bool {
+    !synthetic_frame
+        && shown_since.is_some_and(|since| now.saturating_duration_since(since) >= ARM_DELAY)
+}
+
+/// A fresh id for one consent request (stint 1498). The guard keys on it, so
+/// a request that repeats an earlier one, field for field, still arms anew.
+pub(crate) fn next_consent_request_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What a consent dialog may take this frame (stint 1498).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConsentInput {
+    /// The request has been on screen, without a break, for [`ARM_DELAY`].
+    pub armed: bool,
+    /// This frame carries injected input.
+    pub synthetic: bool,
+}
+
+impl ConsentInput {
+    /// Whether an action decides this frame: nothing on a synthetic frame;
+    /// a refusal (deny, dismiss) any time; an approval only once armed.
+    pub(crate) fn admits(self, refuses: bool) -> bool {
+        !self.synthetic && (refuses || self.armed)
+    }
+}
+
+/// Arms one consent dialog's current request: the delay starts when the
+/// request is first shown, and again whenever it comes back after a frame in
+/// which it was not shown (hidden, unfocused, covered).
+#[derive(Default, Debug)]
+pub(crate) struct ConsentGuard {
+    request: Option<u64>,
+    since: Option<Instant>,
+    last_shown_pass: Option<u64>,
+}
+
+/// Whether a surface shown on `pass` was also shown on the pass before.
+fn shown_without_break(last_shown_pass: Option<u64>, pass: u64) -> bool {
+    last_shown_pass.is_some_and(|last| pass <= last + 1)
+}
+
+impl ConsentGuard {
+    /// The dialog is showing `request` on egui pass `pass` at `now`.
+    pub(crate) fn present(&mut self, request: u64, pass: u64, now: Instant) {
+        if self.request != Some(request) || !shown_without_break(self.last_shown_pass, pass) {
+            log::info!("consent_guard: arming request {request}");
+            self.request = Some(request);
+            self.since = Some(now);
+        }
+        self.last_shown_pass = Some(pass);
+    }
+
+    pub(crate) fn input(&self, now: Instant, synthetic: bool) -> ConsentInput {
+        ConsentInput {
+            armed: consent_input_admitted(self.since, now, false),
+            synthetic,
+        }
+    }
+
+    /// Time left before approvals count, for scheduling the repaint that arms.
+    pub(crate) fn remaining(&self, now: Instant) -> Duration {
+        self.since
+            .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
+            .unwrap_or_default()
+    }
+
+    /// Test hook: the request appeared `ago` before now.
+    #[cfg(test)]
+    pub(crate) fn backdate(&mut self, ago: Duration) {
+        if let Some(since) = self.since.as_mut() {
+            *since -= ago;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ApprovalKeyboard {
     pub id: Option<String>,
@@ -48,10 +135,7 @@ impl ApprovalKeyboard {
     }
 
     pub fn armed(&self, now: Instant) -> bool {
-        self.id.is_some()
-            && self
-                .since
-                .is_some_and(|since| now.saturating_duration_since(since) >= ARM_DELAY)
+        self.id.is_some() && consent_input_admitted(self.since, now, false)
     }
 }
 
@@ -511,6 +595,35 @@ mod tests {
         h.app.approval_key_at(&mut repeated, now);
         assert!(monitor.show_pending(&id).is_some());
         assert!(repeated.is_empty());
+    }
+
+    #[test]
+    /// Stint 1498: pins existing behaviour (this passes on alpha too). The
+    /// banner gives up its request the frame it loses the keyboard, so it can
+    /// only come back through an explicit (real) focus, which re-arms it; an
+    /// armed banner never decides on return.
+    fn approval_keyboard_drops_its_request_when_it_loses_the_keyboard() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let id = pending(&monitor, "SECRET", root.path());
+        h.app.focus_approval();
+        h.run_frames(1);
+        assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&id));
+        let now = Instant::now();
+        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app
+            .focus_stack
+            .retain(|kind| *kind != FocusKind::ApprovalBanner);
+        h.run_frames(1);
+        h.app.push_focus_layer(FocusKind::ApprovalBanner);
+        assert!(h.app.approval_keyboard.id.is_none());
+        h.app
+            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
+        assert!(
+            monitor.show_pending(&id).is_some(),
+            "the banner decided the instant it regained the keyboard"
+        );
     }
 
     #[test]
