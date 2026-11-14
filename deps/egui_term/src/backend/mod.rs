@@ -61,6 +61,23 @@ pub enum PtyEvent {
 }
 
 
+/// See [`TerminalBackend::visible_text_fingerprint`]. Reads the active
+/// screen, not the scrolled-back view, and ignores colours and attributes.
+fn text_fingerprint<T>(term: &Term<T>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let grid = term.grid();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    grid.history_size().hash(&mut hasher);
+    term.mode().contains(TermMode::ALT_SCREEN).hash(&mut hasher);
+    for line in 0..grid.screen_lines() as i32 {
+        let row = &grid[Line(line)];
+        for column in 0..grid.columns() {
+            row[Column(column)].c.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 fn terminal_config() -> term::Config {
     term::Config {
         kitty_keyboard: true,
@@ -1166,6 +1183,13 @@ impl TerminalBackend {
         terminal.scroll_display(Scroll::Bottom);
     }
 
+    /// A hash of the text on screen, how much has scrolled into history and
+    /// which screen is shown. Output that rewrites the screen to the same text
+    /// (a timer repaint, an invisible escape sequence) leaves it unchanged.
+    pub fn visible_text_fingerprint(&self) -> u64 {
+        text_fingerprint(&self.term.lock())
+    }
+
     /// How many grid reflows (PTY `SIGWINCH` + alacritty reflow) this terminal
     /// has committed. Monotonic for the life of the backend.
     pub fn resize_commits(&self) -> u64 {
@@ -1851,6 +1875,51 @@ mod tests {
                 flags & 2 != 0
             );
         }
+    }
+
+    fn fingerprint_after(term: &mut super::Term<super::EventProxy>, bytes: &str) -> u64 {
+        let mut parser: alacritty_terminal::vte::ansi::Processor<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        > = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(term, bytes.as_bytes());
+        super::text_fingerprint(term)
+    }
+
+    #[test]
+    fn text_fingerprint_ignores_attributes_but_not_text_or_screen() {
+        let mut term = scrolled_term();
+        let base = super::text_fingerprint(&term);
+        assert_eq!(
+            fingerprint_after(&mut term, "\x1b[H\x1b[1;7;31m"),
+            base,
+            "an attribute change with no text is not a change"
+        );
+        assert_eq!(
+            fingerprint_after(&mut term, "\x1b[1;1Hline16"),
+            base,
+            "rewriting the same text in a new style is not a change"
+        );
+        assert_ne!(
+            fingerprint_after(&mut term, "\x1b[1;1HLINE16"),
+            base,
+            "different text is a change"
+        );
+        let text = super::text_fingerprint(&term);
+        assert_ne!(
+            fingerprint_after(&mut term, "\x1b[?1049h"),
+            text,
+            "switching to the alternate screen is a change"
+        );
+    }
+
+    #[test]
+    fn text_fingerprint_ignores_a_scrolled_back_view() {
+        use alacritty_terminal::grid::Scroll;
+        let mut term = scrolled_term();
+        let base = super::text_fingerprint(&term);
+        term.scroll_display(Scroll::Top);
+        assert!(term.grid().display_offset() > 0, "test needs a scrolled view");
+        assert_eq!(super::text_fingerprint(&term), base);
     }
 
     fn scrolled_term() -> super::Term<super::EventProxy> {

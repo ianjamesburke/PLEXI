@@ -450,12 +450,14 @@ pub enum Pane {
 pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Quiet window after which a foreground agent TUI with no hook report yet is
-/// considered idle by the host-observed detector. Measured against a real
-/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
-/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
-/// "still drawing" from "sitting at the prompt" while staying far inside the
-/// 60s default boot window.
-pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+/// considered idle by the host-observed detector, measured from the last
+/// change to the text on screen. Two seconds: longer than a once-a-second
+/// counter (an agent whose only visible motion is an elapsed-seconds display)
+/// plus the jitter of the 1 Hz detector tick, so such an agent never samples
+/// Idle between ticks of its counter (stint 1508). A real Codex boot draws in
+/// bursts with gaps under ~300ms and goes quiet within ~2.2s, so this still
+/// separates "drawing" from "at the prompt" well inside the 60s boot window.
+pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// PTY output this soon after a committed resize is the host's doing, not the
 /// agent's (stint 1231): a TUI repaints on SIGWINCH, and that repaint must not
@@ -889,11 +891,17 @@ pub struct TerminalPane {
     /// redraw (Claude Code, Codex) never advances that counter, so it would
     /// report a busy pane as idle.
     pub last_pty_output_at: Option<std::time::Instant>,
-    /// When the pane last produced PTY output the host did not provoke itself.
-    /// Observed agent state settles on this (`observed_output_state`), so an
-    /// idle agent's resize repaint cannot read as agent activity (stints 1231,
-    /// 1438).
+    /// When the pane last changed the text on screen without the host
+    /// provoking it. Observed agent state settles on this
+    /// (`observed_output_state`), so neither an idle agent's resize repaint
+    /// (stints 1231, 1438) nor a timer repaint of the same text counts as
+    /// agent activity.
     pub(crate) last_agent_activity_at: Option<std::time::Instant>,
+    /// `backend.visible_text_fingerprint()` when output was last examined.
+    pub(crate) screen_fingerprint: Option<u64>,
+    /// When output last changed the text on screen, host-induced or not. The
+    /// settle falls back to this before the agent has activity of its own.
+    pub(crate) last_screen_change_at: Option<std::time::Instant>,
     /// End of the current host-induced quiet window (`HOST_INDUCED_QUIET`).
     pub(crate) host_induced_until: Option<std::time::Instant>,
     /// Whether output inside the current host-induced window was already traced.
@@ -1061,6 +1069,8 @@ impl TerminalPane {
             slots: HashMap::new(),
             last_pty_output_at: None,
             last_agent_activity_at: None,
+            screen_fingerprint: None,
+            last_screen_change_at: None,
             host_induced_until: None,
             host_induced_output_logged: false,
             seen_resize_commits: 0,
@@ -1282,12 +1292,31 @@ impl TerminalPane {
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
-    pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
+    /// Store the host's observation. Returns whether the agent the pane shows
+    /// (`selected_agent`: who and in what state) changed; an observation that
+    /// a fresher hook or an OSC 7501 report outranks changes nothing visible.
+    pub(crate) fn set_observed_agent(
+        &mut self,
+        observed: Option<crate::protocol::PaneAgentState>,
+    ) -> bool {
         let now = std::time::Instant::now();
-        let before = self.selected_agent(now).map(|a| a.state.clone());
+        let shown = |t: &Self| {
+            t.selected_agent(now)
+                .map(|a| (a.agent.clone(), a.state.clone()))
+        };
+        let before = shown(self);
         self.observed_agent = observed;
-        let after = self.selected_agent(now).map(|a| a.state.clone());
-        self.update_fleet_transition(before.as_ref(), after.as_ref());
+        let after = shown(self);
+        self.update_fleet_transition(
+            before.as_ref().map(|(_, state)| state),
+            after.as_ref().map(|(_, state)| state),
+        );
+        before != after
+    }
+
+    /// The agent and state the pane shows now.
+    pub(crate) fn shown_agent(&self) -> Option<crate::protocol::PaneAgentState> {
+        self.selected_agent(std::time::Instant::now()).cloned()
     }
 
     /// Hook, observed and OSC 7501 state merged by `select_terminal_agent`.
@@ -1328,13 +1357,31 @@ impl TerminalPane {
         }
     }
 
-    /// Stamp one PTY event. `last_pty_output_at` always advances (`pane send
-    /// --submit` settles on every event). Agent activity advances outside a
-    /// host-induced quiet window, and inside one while the agent is already
-    /// active: a working agent keeps working through a resize drag, so only an
-    /// idle agent's SIGWINCH repaint is discounted.
+    /// Stamp one PTY event. `pane send --submit` settles on every event.
+    pub(crate) fn stamp_pty_event(&mut self, now: std::time::Instant) {
+        self.last_pty_output_at = Some(now);
+    }
+
+    /// After a batch of PTY events: output that left the screen text as it
+    /// was (a timer repaint, an escape sequence with nothing to show) is not
+    /// agent activity.
+    pub(crate) fn observe_screen_change(&mut self, now: std::time::Instant) {
+        let fingerprint = self.backend.visible_text_fingerprint();
+        if self.screen_fingerprint == Some(fingerprint) {
+            return;
+        }
+        self.screen_fingerprint = Some(fingerprint);
+        self.record_pty_event(now);
+    }
+
+    /// Stamp output that changed the screen. `last_pty_output_at` always
+    /// advances. Agent activity advances outside a host-induced quiet window,
+    /// and inside one while the agent is already active: a working agent keeps
+    /// working through a resize drag, so only an idle agent's SIGWINCH repaint
+    /// is discounted.
     pub(crate) fn record_pty_event(&mut self, now: std::time::Instant) {
         self.last_pty_output_at = Some(now);
+        self.last_screen_change_at = Some(now);
         let already_active = self
             .last_agent_activity_at
             .is_some_and(|at| now.saturating_duration_since(at) < OBSERVED_AGENT_SETTLE);
@@ -1357,14 +1404,15 @@ impl TerminalPane {
     /// Before the agent has any output of its own (a fresh boot whose every
     /// byte landed in host-induced windows: the first layout resize, the
     /// focus it took), there is nothing to discount against, so the settle
-    /// runs on the PTY's own last output. Otherwise the boot never settles.
+    /// runs on the last change to the screen text. Otherwise the boot never
+    /// settles, and a timer repaint of the same text would keep it Working.
     pub(crate) fn observed_output_state(
         &self,
         now: std::time::Instant,
     ) -> crate::protocol::AgentState {
         let settled = self
             .last_agent_activity_at
-            .or(self.last_pty_output_at)
+            .or(self.last_screen_change_at)
             .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
         if settled {
             crate::protocol::AgentState::Idle
