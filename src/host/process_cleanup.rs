@@ -30,11 +30,12 @@ pub(crate) fn session_marker() -> &'static str {
 
 const SESSION_RECORD: &str = "pane-session";
 /// Cap on the shared quit cleanup deadline `D` for pane processes and tmux
-/// sessions together. Cleanup ends at `D` unless the two floors below push
-/// it later: `end = max(D, kill_start + POST_KILL_MIN + TMUX_MIN_BUDGET)`,
-/// where the grace ends no later than `D - TMUX_MIN_BUDGET` (so `end` is at
-/// most `D + POST_KILL_MIN` after a full grace) and a slow scan can push
-/// `kill_start` later still (see `cleanup_end`).
+/// sessions together. These are the deadlines cleanup is allocated, not a
+/// wall-clock ceiling: tmux is allocated until `max(D, tmux_start +
+/// TMUX_MIN_BUDGET)` (`cleanup_end`), and `tmux_start` is normally within
+/// `POST_KILL_MIN` of the kill. Process scans, refreshes, survivor logging
+/// and helper spawns are not themselves bounded, so cleanup can end later
+/// than its allocation; there is no hard ceiling on its wall-clock time.
 const QUIT_CLEANUP_CAP: Duration = Duration::from_millis(2500);
 /// What tmux cleanup is always left, however long the pane processes took
 /// (stint 1526). Cleanup asks every session on the default server for its
@@ -311,8 +312,8 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     );
     if tmux_deadline > deadline {
         log::info!(
-            "quit: cleanup runs {}ms past its shared deadline: the post-kill observation \
-             floor or a slow process scan used the tmux share",
+            "quit: tmux cleanup allocated {}ms past the shared deadline: the post-kill \
+             observation floor or a slow process scan used the tmux share",
             (tmux_deadline - deadline).as_millis()
         );
     }
@@ -322,9 +323,9 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     KillReport { grace, ..report }
 }
 
-/// When quit cleanup ends: the shared deadline, unless tmux would get less
-/// than its minimum from `tmux_start`. The only way past the deadline is the
-/// two floors, `POST_KILL_MIN` and `TMUX_MIN_BUDGET` (stint 1526).
+/// The deadline tmux cleanup is allocated: the shared deadline, unless tmux
+/// would get less than its minimum from `tmux_start` (stint 1526). This is an
+/// allocation, not a guarantee the cleanup has finished by then.
 fn cleanup_end(deadline: Instant, tmux_start: Instant) -> Instant {
     deadline.max(tmux_start + TMUX_MIN_BUDGET)
 }
@@ -903,8 +904,8 @@ mod tests {
         assert_eq!(post_kill_deadline(killed, far), killed + POST_KILL_WAIT);
     }
 
-    /// Stint 1526: cleanup ends at the shared deadline unless tmux would get
-    /// less than its minimum; that floor is the only way past it.
+    /// Stint 1526: tmux is allocated until the shared deadline unless that
+    /// would leave it less than its minimum.
     #[test]
     fn cleanup_ends_at_the_deadline_unless_the_tmux_floor_needs_more() {
         let tmux_start = Instant::now();
