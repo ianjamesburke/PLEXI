@@ -119,8 +119,10 @@ fn split_note_metadata(content: &str) -> Option<(&str, &str)> {
             line.split_once(':')
                 .is_some_and(|(key, _)| NOTE_METADATA_KEYS.contains(&key.trim()))
         });
-    // `+ 5` skips the `\n---\n` terminator.
-    is_metadata.then_some((header, &rest[end + 5..]))
+    // `+ 5` skips the `\n---\n` terminator. The blank lines a capture writes
+    // after the fence belong to the envelope, not the body (stint 1420); the
+    // editor's `split_note` holds them out with the header the same way.
+    is_metadata.then_some((header, rest[end + 5..].trim_start_matches('\n')))
 }
 
 /// The user-authored body of a note: the file text minus a Plexi capture
@@ -1111,10 +1113,24 @@ mod tests {
         assert!(!body.contains("source:"), "{body:?}");
         assert_eq!(
             body,
-            "\n# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n"
+            "# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n"
         );
-        // The parser's body and the clipboard projection agree.
-        assert_eq!(parse_note(content).1, body);
+        // The parser's body and the clipboard projection agree, apart from
+        // the blank line the capture writes after the envelope.
+        assert_eq!(parse_note(content).1.trim_start_matches('\n'), body);
+    }
+
+    /// Stint 1420: a capture writes `---\n\n` after its envelope. The picker
+    /// preview and the clipboard show the body, and that separator blank line
+    /// made the note's first line render one line low. The editor already
+    /// holds it out with the header (`split_note`); the body matches it.
+    #[test]
+    fn note_body_starts_at_the_first_line_after_the_capture_envelope() {
+        let content = "---\ntitle: \"\"\nsource: \"scratchpad\"\n---\n\n\nFirst line\nSecond\n";
+        assert_eq!(note_body(content), "First line\nSecond\n");
+        // A body with no separator is untouched.
+        let tight = "---\ntitle: \"\"\n---\nFirst line\n";
+        assert_eq!(note_body(tight), "First line\n");
     }
 
     /// A plain note has no envelope; every byte is body.

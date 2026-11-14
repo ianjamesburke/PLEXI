@@ -809,6 +809,7 @@ fn tactile_button(
     }
     // Egui applies disabled/hover tints while creating shapes. Resolve after
     // that paint step (and press interpolation), against the emitted fill.
+    let opacity = ui.opacity();
     ui.ctx().graphics_mut(|graphics| {
         if let Some(list) = graphics.get_mut(layer) {
             let end = list.all_entries().len();
@@ -833,11 +834,15 @@ fn tactile_button(
                 }
                 return;
             }
+            // An unfocused pane paints at `opacity` (stint 1404): egui has already
+            // multiplied the emitted fill and text by it. Resolve against the
+            // undimmed colours and dim the result, so the label is the same
+            // choice in a focused and an unfocused pane.
             let mut fill = parent;
             for entry in list.all_entries().skip(start) {
                 if let egui::Shape::Rect(rect) = &entry.shape {
                     if rect.rect.contains(response.rect.center()) {
-                        fill = fill.blend(rect.fill);
+                        fill = fill.blend(crate::ui::foreground::undim(rect.fill, opacity));
                     }
                 }
             }
@@ -857,7 +862,12 @@ fn tactile_button(
                             })
                             .unwrap_or(text.fallback_color);
                         text.override_text_color = Some(
-                            surface.foreground(preferred, crate::ui::foreground::Role::SmallText),
+                            surface
+                                .foreground(
+                                    crate::ui::foreground::undim(preferred, opacity),
+                                    crate::ui::foreground::Role::SmallText,
+                                )
+                                .gamma_multiply(opacity),
                         );
                     }
                 });
@@ -929,6 +939,37 @@ mod tests {
                 _ => None,
             })
             .expect("painted label")
+    }
+
+    /// Stint 1404: an unfocused pane is drawn at reduced opacity. The label
+    /// colour of a Primary (accent) button must be the same choice in both:
+    /// the dimmed label is the focused label at that opacity, never a flip
+    /// from dark to light.
+    #[test]
+    fn primary_label_colour_does_not_flip_with_pane_opacity() {
+        for name in crate::ui::theme::preset_names() {
+            let colors = Colors::from_config(&crate::ui::theme::preset_colors(name).unwrap());
+            let label_at = |opacity: f32| {
+                let (output, _) = render(1, None, |ui| {
+                    ui.set_opacity(opacity);
+                    ui.add(KitButton::new("INFO", &colors))
+                });
+                label_shape(&output, "INFO").1
+            };
+            let focused = label_at(1.0);
+            let unfocused = label_at(0.75);
+            let expected = focused.gamma_multiply(0.75);
+            let close = unfocused
+                .to_array()
+                .iter()
+                .zip(expected.to_array())
+                .all(|(a, b)| a.abs_diff(b) <= 2);
+            assert!(
+                close,
+                "{name}: the unfocused label must be the focused label dimmed \
+                 (focused {focused:?}, unfocused {unfocused:?}, expected {expected:?})"
+            );
+        }
     }
 
     #[test]

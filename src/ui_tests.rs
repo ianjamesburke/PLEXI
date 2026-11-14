@@ -2153,6 +2153,57 @@ mod tests {
         }
     }
 
+    /// Stint 1420: a captured note (envelope, then a blank line, then text)
+    /// previews with its first line at the top of the preview, not one blank
+    /// line down. Pinned by `note_body_starts_at_the_first_line_after_the_capture_envelope`;
+    /// this PNG is the before/after evidence.
+    #[test]
+    fn screenshot_notes_picker_preview_starts_at_the_first_line() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        add_focused_pane(&mut h);
+        let path =
+            std::env::temp_dir().join(format!("plexi-1420-capture-{}.md", std::process::id()));
+        std::fs::write(
+            &path,
+            "---\ntitle: \"\"\ncaptured_at: \"2026-11-13T05:35:00Z\"\nsource: \"scratchpad\"\n---\n\nFirst line of the note\nsecond line\n",
+        )
+        .expect("write capture");
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+                path: path.clone(),
+                title: "First line of the note".to_string(),
+                preview: "First line of the note".to_string(),
+                search_text: "first line of the note".to_string(),
+                tier_label: None,
+            }];
+            app.notes_picker_selected = 0;
+            app.notes_picker_last_drawn_selected = None;
+        });
+        let start = Instant::now();
+        let body = loop {
+            h.step();
+            let found = painted_texts(&mut h)
+                .into_iter()
+                .find(|(_, text)| text.contains("second line"));
+            if let Some((_, text)) = found {
+                break text;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "preview never painted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        h.save_screenshot(&evidence_png_path(enclosing_fn_name!(), ""))
+            .expect("save screenshot");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            body.starts_with("First line of the note"),
+            "the preview must start at the note's first line: {body:?}"
+        );
+    }
+
     /// The scene DSL cannot seed PTY output or drag inside a terminal widget.
     /// Exercise real pointer events, selection commands and highlight painting.
     #[test]
@@ -11611,6 +11662,45 @@ open(out + ".done", "w").close()
                     }
                 });
             }
+        }
+    }
+
+    /// Stint 1404 visual review: two Logs panes side by side, the left one
+    /// focused. The INFO chip (an accent Primary tab) must read the same in
+    /// both; the unfocused pane is only dimmed. The colour rule is pinned by
+    /// `primary_label_colour_does_not_flip_with_pane_opacity`; this PNG is the
+    /// screenshot pair for the PR.
+    #[test]
+    fn screenshot_logs_info_chip_focused_and_unfocused() {
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/logs");
+        let mut h = PlexiUiHarness::new_sized(1100.0, 420.0);
+        let workspace = h.workspace_root().to_path_buf();
+        let logs = h.open_view_at(&plugin_dir, &[]).expect("launch logs");
+        h.wait_for_view_frame(logs, Duration::from_secs(30))
+            .expect("logs renders");
+        let other = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "file_browser",
+                cwd: &workspace,
+                args: &[],
+            })
+            .expect("open a second pane");
+        // Select the INFO level tab: it becomes the accent (Primary) chip.
+        h.with_app_mut(|app| {
+            app.handle_pane_ipc_request(crate::protocol::HostRequest::SendPaneAction {
+                pane_id: logs,
+                action: "logs-level:3".into(),
+                args: Vec::new(),
+                response_file: None,
+            })
+        });
+        h.run_steps(6);
+        assert!(h.pane_has_label(logs, "INFO"));
+        for (focus, suffix) in [(logs, "-focused"), (other, "-unfocused")] {
+            h.focus_pane(focus).expect("focus pane");
+            h.run_steps(6);
+            let path = evidence_png_path(enclosing_fn_name!(), suffix);
+            h.save_screenshot(&path).expect("save screenshot");
         }
     }
 
