@@ -10927,6 +10927,84 @@ mod agent_boot {
         );
     }
 
+    fn pi_state(pane_id: u64, state: AgentState) -> crate::protocol::PaneAgentState {
+        crate::protocol::PaneAgentState {
+            pane_id,
+            state,
+            agent: "pi".to_string(),
+            detail: None,
+            session_id: None,
+        }
+    }
+
+    /// Run exactly one detector tick and return the lifecycle kinds it added.
+    fn one_tick(h: &mut HostHarness, pane_id: u64) -> Vec<String> {
+        let before = lifecycle_kinds(h, pane_id).len();
+        h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.run_frames(1);
+        h.app.last_notify_poll = std::time::Instant::now();
+        lifecycle_kinds(h, pane_id)[before..].to_vec()
+    }
+
+    fn terminal_mut(h: &mut HostHarness, pane_id: u64) -> &mut crate::host::pane::TerminalPane {
+        h.app
+            .windows
+            .iter_mut()
+            .find_map(|win| win.panes.get_mut(&pane_id))
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("terminal pane")
+    }
+
+    /// A report that clears in the same tick the observation changes is one
+    /// change to what the pane shows: one event, with the new state.
+    #[test]
+    fn report_clear_and_observed_change_in_one_tick_publish_once() {
+        let dir = persistent_agent_dir("clear-and-change");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = interpreter_script_alias(&dir, "pi");
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+        h.app.last_notify_poll = std::time::Instant::now();
+        let t = terminal_mut(&mut h, pane_id);
+        t.set_observed_agent(Some(pi_state(pane_id, AgentState::Working)));
+        t.set_reported_7501(Some(pi_state(pane_id, AgentState::Working)));
+        t.last_agent_activity_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
+        let added = one_tick(&mut h, pane_id);
+        let states: Vec<&String> = added
+            .iter()
+            .filter(|kind| kind.ends_with("agent_idle") || kind.ends_with("agent_working"))
+            .collect();
+        assert_eq!(
+            states,
+            [&format!("pane {pane_id}: agent_idle")],
+            "one tick, one change shown: {added:?}"
+        );
+    }
+
+    /// A report that clears in the same tick its agent leaves must not
+    /// publish the agent's stale state, least of all a boot.
+    #[test]
+    fn report_clear_and_agent_exit_in_one_tick_publish_no_idle_or_boot() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.app.last_notify_poll = std::time::Instant::now();
+        let t = terminal_mut(&mut h, pane_id);
+        t.set_observed_agent(Some(pi_state(pane_id, AgentState::Idle)));
+        t.set_reported_7501(Some(pi_state(pane_id, AgentState::Working)));
+        let added = one_tick(&mut h, pane_id);
+        assert!(
+            !added
+                .iter()
+                .any(|kind| kind.ends_with("agent_idle") || kind.ends_with("agent_booted")),
+            "the departed agent's stale state was published: {added:?}"
+        );
+    }
+
     #[test]
     fn agent_spawn_fails_fast_for_unmapped_interpreter_script() {
         let dir = persistent_agent_dir("interpreter-unsupported");

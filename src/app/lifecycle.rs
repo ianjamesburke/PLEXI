@@ -5916,6 +5916,10 @@ impl PlexiApp {
                 }
                 let shell_pid = t.backend.child_pid();
                 let fg = t.backend.foreground_pid();
+                // What the pane shows before this tick. A tick publishes at
+                // most one change to it, read after every input is updated.
+                let shown_at_start = t.shown_agent().map(|a| (a.agent, a.state));
+                let mut published = false;
                 let new = if t.exited {
                     Some(AgentState::Blocked)
                 } else {
@@ -5979,18 +5983,11 @@ impl PlexiApp {
                             .map(|a| (&a.agent, &a.state, &a.detail)),
                         reported.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
                     );
-                    let cleared = reported.is_none();
                     if let Some(agent) = &reported {
                         transitions.push((*pane_id, agent.clone()));
+                        published = true;
                     }
                     t.set_reported_7501(reported);
-                    // A cleared report hands the pane back to the hook or the
-                    // host's observation; subscribers hear what it shows now.
-                    if cleared {
-                        if let Some(shown) = t.shown_agent() {
-                            transitions.push((*pane_id, shown));
-                        }
-                    }
                     observed_dirty = true;
                 }
 
@@ -6077,6 +6074,7 @@ impl PlexiApp {
                             hook.state
                         );
                         transitions.push((*pane_id, hook.clone()));
+                        published = true;
                         observed_dirty = true;
                     }
                 }
@@ -6136,10 +6134,21 @@ impl PlexiApp {
                             "observed agent: pane {pane_id} {previous:?} -> {next:?} outranked; not shown"
                         );
                     }
-                    if shown_changed {
-                        if let Some(agent) = observed {
-                            transitions.push((*pane_id, agent));
-                        }
+                }
+                // A cleared report or a changed observation hands the pane to
+                // whatever it shows now: publish that once, from the state at
+                // the end of the tick, never a value read before the
+                // observation updated (stint 1508). An agent that left shows
+                // nothing, so nothing is published for it.
+                let shown_now = t.shown_agent();
+                if !published
+                    && shown_now
+                        .as_ref()
+                        .map(|a| (a.agent.clone(), a.state.clone()))
+                        != shown_at_start
+                {
+                    if let Some(shown) = shown_now {
+                        transitions.push((*pane_id, shown));
                     }
                 }
             }
