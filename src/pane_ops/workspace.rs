@@ -442,11 +442,10 @@ impl PlexiApp {
                 })
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
         });
-        // Snapshot the caller's location before the portal insert. A depth entry
-        // built from `active_window` would be wrong whenever the request came
-        // from a pane the user is not currently looking at.
+        // The caller's window, from `parent_win_idx`. A depth entry built from
+        // `active_window` would be wrong whenever the request came from a pane
+        // the user is not currently looking at.
         let parent_window_id = parent_win_idx.map(|idx| self.windows[idx].window_id);
-        let parent_focused_pane = parent_win_idx.and_then(|idx| self.windows[idx].focused_pane);
         let sub_ctx_pane_id = self.host.alloc_pane_id();
         if let Some(parent_win_idx) = parent_win_idx {
             let split_target = portal_anchor
@@ -472,11 +471,16 @@ impl PlexiApp {
                     reveal_after_close: false,
                 })),
             );
+            // The parent window is saved settled (stint 1440).
+            self.windows[parent_win_idx].simplify_and_reconcile();
         } else {
             log::warn!(
                 "new_child_context: parent ctx_id={parent_id} has no window — child context has no Portal tile"
             );
         }
+        // Read after the settle: simplifying the parent window may re-id the
+        // focused tile, and the depth entry must point at the live one.
+        let parent_focused_pane = parent_win_idx.and_then(|idx| self.windows[idx].focused_pane);
 
         // 3. Register the child context + window.
         ensure_context_state_ignore(&path);

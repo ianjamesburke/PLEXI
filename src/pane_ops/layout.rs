@@ -321,8 +321,11 @@ impl PlexiApp {
             self.windows[target_win].navigate_to(new_tile);
             self.zoom.context_last_pane.insert(ctx_id, new_pane_id);
         }
-
-        Some(new_tile)
+        // Every caller saves a settled tree, not one the next frame would
+        // re-id (stint 1440). Simplify may move the new pane to another tile.
+        let window = &mut self.windows[target_win];
+        window.simplify_and_reconcile();
+        window.tree.tiles.find_pane(&new_pane_id)
     }
 
     /// Split the focused pane in the requested direction, creating a new pane

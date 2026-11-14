@@ -405,6 +405,73 @@ fn view_launched_into_an_empty_context_leaves_window_settled() {
     h.assert_window_settled(0, "view launched as root pane");
 }
 
+// ── Stint 1440: the split_with_new_pane_at callers and the portal inserts ──
+
+/// One focused pane in a settled window, no frame run: so a test fails only
+/// when the mutation under test leaves the window unsettled.
+fn focused_bare_pane(h: &mut HostHarness) -> PaneId {
+    let a = h.add_test_pane();
+    let window = &mut h.app.windows[0];
+    let tile = window.tree.tiles.find_pane(&a).expect("a has a tile");
+    window.focused_pane = Some(tile);
+    window.simplify_and_reconcile();
+    h.assert_window_settled(0, "fixture");
+    a
+}
+
+/// A view opened beside a focused pane splits through
+/// `split_with_new_pane_at` (`place_view_pane`'s non-empty path).
+#[test]
+fn view_opened_beside_a_pane_leaves_window_settled() {
+    let mut h = HostHarness::new();
+    focused_bare_pane(&mut h);
+    let dir = h.workspace_root();
+    let path = dir.join("note.txt");
+    std::fs::write(&path, b"x").expect("write note");
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(path)),
+        crate::app::permissions::PluginPermissions::builtin(),
+        dir,
+        None,
+        Some("split_h"),
+        None,
+    );
+    assert_eq!(h.app.windows[0].panes.len(), 2, "the view joined window 0");
+    h.assert_window_settled(0, "view opened beside a pane");
+}
+
+/// A child context's portal is inserted beside the focused pane
+/// (`new_child_context`).
+#[test]
+fn child_context_portal_insert_leaves_parent_window_settled() {
+    let mut h = HostHarness::new();
+    focused_bare_pane(&mut h);
+    let parent_name = h.app.router.active().name.to_string();
+    h.app
+        .new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
+            None,
+            parent_name,
+            crate::testing::scratch_context_root("stint-1440-child"),
+            true,
+            false,
+            None,
+        ))
+        .expect("child context");
+    h.assert_window_settled(0, "child context portal insert");
+}
+
+/// An agent spawned into a subcontext inserts its portal beside the caller
+/// (`resolve_agent_spawn_location`).
+#[test]
+fn agent_subcontext_portal_insert_leaves_parent_window_settled() {
+    let mut h = HostHarness::new();
+    focused_bare_pane(&mut h);
+    h.app
+        .resolve_agent_spawn_location(Some("stint-1440-sub"), None, None, false, None)
+        .expect("subcontext resolves");
+    h.assert_window_settled(0, "agent subcontext portal insert");
+}
+
 /// An agent worker spawned into an empty context takes focus through the
 /// `spawn_agent_worker_pane` split-insert path.
 #[test]
