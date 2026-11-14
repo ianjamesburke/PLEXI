@@ -10721,14 +10721,26 @@ mod agent_boot {
         }
     }
 
-    fn lifecycle_kinds(pane_id: u64) -> Vec<String> {
+    /// Lifecycle summaries for one pane of this harness. The timeline is
+    /// process-global and parallel harnesses reuse pane ids, so the filter
+    /// also pins this harness's own context id (unique per harness).
+    fn lifecycle_kinds(h: &HostHarness, pane_id: u64) -> Vec<String> {
+        let context_id = h
+            .app
+            .windows
+            .iter()
+            .find(|win| win.panes.contains_key(&pane_id))
+            .map(|win| win.context_id)
+            .expect("pane's window");
         let timeline = crate::host::plugin_timeline::global();
         let timeline = timeline.lock().unwrap();
         timeline
             .events()
             .iter()
             .filter(|event| {
-                event.pane_id == pane_id && event.event == crate::host::pane_lifecycle::STREAM
+                event.pane_id == pane_id
+                    && event.owner_context_id == context_id
+                    && event.event == crate::host::pane_lifecycle::STREAM
             })
             .map(|event| event.summary.clone())
             .collect()
@@ -10764,6 +10776,7 @@ mod agent_boot {
     }
 
     /// The repaint check must not hide real work: changing text is activity.
+    /// A guard, not a red test: it passes with or without the fix.
     #[test]
     fn changing_status_line_still_counts_as_activity() {
         let dir = persistent_agent_dir("repaint-changing");
@@ -10778,7 +10791,10 @@ mod agent_boot {
         let before = terminal_ref(&h, pane_id).last_agent_activity_at;
         pump_repaints(&mut h, pane_id, 2);
         let after = terminal_ref(&h, pane_id).last_agent_activity_at;
-        assert!(after > before, "changing output must advance agent activity");
+        assert!(
+            after > before,
+            "changing output must advance agent activity"
+        );
     }
 
     /// When the agent reports its own state (OSC 7501), the host's guess is
@@ -10790,16 +10806,22 @@ mod agent_boot {
         let mut h = HostHarness::new();
         h.app.set_context_root(dir.clone(), None);
         h.add_test_pane();
-        let command = repainting_pi(&dir, true, 1.6, true);
+        let command = repainting_pi(&dir, true, 3.0, true);
         let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
         h.run_frames(1);
         let pane_id = spawned_terminal(&h);
         pump_until_response(&mut h, &response, false);
-        assert!(std::path::Path::new(&response).exists(), "spawn never completed");
+        assert!(
+            std::path::Path::new(&response).exists(),
+            "spawn never completed"
+        );
         let deadline = std::time::Instant::now()
             + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
         while terminal_ref(&h, pane_id).reported_7501.is_none() {
-            assert!(std::time::Instant::now() < deadline, "no OSC 7501 report arrived");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no OSC 7501 report arrived"
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
             h.run_frames(1);
         }
@@ -10820,7 +10842,7 @@ mod agent_boot {
             }
         };
         wait_observed(&mut h, AgentState::Idle);
-        let events_before = lifecycle_kinds(pane_id);
+        let events_before = lifecycle_kinds(&h, pane_id);
         h.app.workspace_dirty = false;
         wait_observed(&mut h, AgentState::Working);
         assert_eq!(
@@ -10829,13 +10851,79 @@ mod agent_boot {
             "the reported idle outranks the host's guess"
         );
         assert_eq!(
-            lifecycle_kinds(pane_id),
+            lifecycle_kinds(&h, pane_id),
             events_before,
             "a guessed flip the pane does not show must not publish a lifecycle event"
         );
         assert!(
             !h.app.workspace_dirty,
             "a guessed flip the pane does not show must not mark the workspace dirty"
+        );
+    }
+
+    /// A fake `pi` that reports Working over OSC 7501, then clears its report
+    /// and sits silent: the host's own (Idle) observation is what remains.
+    fn reporting_then_clearing_pi(dir: &std::path::Path) -> String {
+        let script = dir.join("cli.py");
+        std::fs::write(
+            &script,
+            "#!/usr/bin/env python3\nimport sys, time\n\
+             sys.stdout.write('\\x1b]7501;state=working:app=pi\\x1b\\\\pi banner\\r\\n')\n\
+             sys.stdout.flush()\ntime.sleep(3)\n\
+             sys.stdout.write('\\x1b]7501;state=clear\\x1b\\\\')\nsys.stdout.flush()\n\
+             time.sleep(60)\n",
+        )
+        .expect("write script");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("pi");
+        std::os::unix::fs::symlink(&script, &link).expect("symlink");
+        link.to_string_lossy().into_owned()
+    }
+
+    /// When a 7501 report clears, the state the pane shows falls back to the
+    /// host's observation, and subscribers must hear that, not keep the old
+    /// reported state until the observation next changes.
+    #[test]
+    fn cleared_report_publishes_the_state_now_shown() {
+        let dir = persistent_agent_dir("report-clear");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = reporting_then_clearing_pi(&dir);
+        let _response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        let wait = |h: &mut HostHarness, what: &str, done: &dyn Fn(&HostHarness) -> bool| {
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+            while !done(h) {
+                assert!(std::time::Instant::now() < deadline, "never saw {what}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                h.run_frames(1);
+            }
+        };
+        wait(&mut h, "the Working report", &|h| {
+            terminal_ref(h, pane_id)
+                .reported_7501
+                .as_ref()
+                .is_some_and(|a| a.state == AgentState::Working)
+        });
+        wait(&mut h, "the report clear", &|h| {
+            terminal_ref(h, pane_id).reported_7501.is_none()
+        });
+        assert_eq!(
+            terminal_ref(&h, pane_id).effective_agent_state().0,
+            AgentState::Idle,
+            "with the report gone the pane shows the host's Idle observation"
+        );
+        assert_eq!(
+            lifecycle_kinds(&h, pane_id).last().map(String::as_str),
+            Some(format!("pane {pane_id}: agent_idle").as_str()),
+            "the clear must publish the state now shown: {:?}",
+            lifecycle_kinds(&h, pane_id)
         );
     }
 
@@ -19745,3 +19833,116 @@ mod terminal_spawn_failure_output {
     }
 }
 
+
+/// Stint 1508: observed agent activity follows the text on screen, driven at
+/// chosen instants against a real terminal (`cat` with echo off), so no
+/// assertion depends on runner speed.
+mod screen_change_activity_tests {
+    use super::*;
+    use crate::host::pane::TerminalPane;
+    use crate::protocol::AgentState;
+    use std::time::{Duration, Instant};
+
+    fn quiet_terminal(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+        let script = dir.join("quiet-cat.sh");
+        std::fs::write(&script, "#!/bin/sh\nstty -echo\nexec cat\n").expect("write script");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let _shell = crate::host::shell::set_test_shell_override(script.to_string_lossy());
+        h.add_focused_terminal()
+    }
+
+    fn terminal(h: &mut HostHarness, pane: PaneId) -> &mut TerminalPane {
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .and_then(|pane| pane.as_terminal_mut())
+            .expect("terminal pane")
+    }
+
+    /// Make the program print `line` and wait until it is on screen. No frame
+    /// runs, so only the test stamps PTY events, at instants it chooses.
+    fn print_line(h: &mut HostHarness, pane: PaneId, line: &str) {
+        let before = h.terminal_backend(pane).visible_text_fingerprint();
+        h.terminal_backend(pane)
+            .process_command(egui_term::BackendCommand::Write(
+                format!("{line}\r").into_bytes(),
+            ));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        while h.terminal_backend(pane).visible_text_fingerprint() == before {
+            assert!(
+                Instant::now() < deadline,
+                "{line:?} never reached the screen"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn fresh(t: &mut TerminalPane) {
+        t.last_agent_activity_at = None;
+        t.last_pty_output_at = None;
+        t.screen_fingerprint = None;
+        t.host_induced_until = None;
+    }
+
+    fn output_at(t: &mut TerminalPane, at: Instant) {
+        t.stamp_pty_event(at);
+        t.observe_screen_change(at);
+    }
+
+    /// An agent with neither hook nor OSC 7501 whose whole banner landed in
+    /// the post-layout resize window has no activity of its own yet. Its
+    /// timer repaints of the same text must still settle it to Idle.
+    #[test]
+    fn identical_repaints_settle_an_agent_whose_banner_landed_in_a_host_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = HostHarness::new();
+        let pane = quiet_terminal(&mut h, dir.path());
+        let t0 = Instant::now();
+        fresh(terminal(&mut h, pane));
+        terminal(&mut h, pane).mark_host_induced(t0, "resize");
+        print_line(&mut h, pane, "banner");
+        output_at(terminal(&mut h, pane), t0 + Duration::from_millis(100));
+        assert_eq!(
+            terminal(&mut h, pane).last_agent_activity_at,
+            None,
+            "precondition: the banner landed inside the host window"
+        );
+        for k in 1..=5u32 {
+            let at = t0 + Duration::from_secs(3) + Duration::from_millis(700) * k;
+            output_at(terminal(&mut h, pane), at);
+            assert_eq!(
+                terminal(&mut h, pane).observed_output_state(at),
+                AgentState::Idle,
+                "identical repaint {k} must not read as Working"
+            );
+        }
+    }
+
+    /// An agent whose only visible change is a once-a-second counter is
+    /// working. The detector samples at 1 Hz, so a sample can land just
+    /// before the next tick of the counter: that must not read Idle.
+    #[test]
+    fn a_once_a_second_text_change_never_reads_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = HostHarness::new();
+        let pane = quiet_terminal(&mut h, dir.path());
+        let t0 = Instant::now();
+        fresh(terminal(&mut h, pane));
+        for k in 0..6u32 {
+            print_line(&mut h, pane, &format!("elapsed {k}s"));
+            let at = t0 + Duration::from_secs(1) * k;
+            output_at(terminal(&mut h, pane), at);
+            for sample in [0, 500, 999, 1000, 1100] {
+                let when = at + Duration::from_millis(sample);
+                assert_eq!(
+                    terminal(&mut h, pane).observed_output_state(when),
+                    AgentState::Working,
+                    "a 1 Hz change read Idle {sample} ms after tick {k}"
+                );
+            }
+        }
+    }
+}

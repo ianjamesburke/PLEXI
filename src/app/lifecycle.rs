@@ -5979,10 +5979,18 @@ impl PlexiApp {
                             .map(|a| (&a.agent, &a.state, &a.detail)),
                         reported.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
                     );
+                    let cleared = reported.is_none();
                     if let Some(agent) = &reported {
                         transitions.push((*pane_id, agent.clone()));
                     }
                     t.set_reported_7501(reported);
+                    // A cleared report hands the pane back to the hook or the
+                    // host's observation; subscribers hear what it shows now.
+                    if cleared {
+                        if let Some(shown) = t.shown_agent() {
+                            transitions.push((*pane_id, shown));
+                        }
+                    }
                     observed_dirty = true;
                 }
 

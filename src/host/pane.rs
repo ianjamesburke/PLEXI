@@ -450,12 +450,14 @@ pub enum Pane {
 pub(crate) const HOOK_AGENT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Quiet window after which a foreground agent TUI with no hook report yet is
-/// considered idle by the host-observed detector. Measured against a real
-/// Codex boot: the banner draws in bursts with gaps under ~300ms and goes
-/// quiet within ~2.2s, so one full second of PTY silence cleanly separates
-/// "still drawing" from "sitting at the prompt" while staying far inside the
-/// 60s default boot window.
-pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+/// considered idle by the host-observed detector, measured from the last
+/// change to the text on screen. Two seconds: longer than a once-a-second
+/// counter (an agent whose only visible motion is an elapsed-seconds display)
+/// plus the jitter of the 1 Hz detector tick, so such an agent never samples
+/// Idle between ticks of its counter (stint 1508). A real Codex boot draws in
+/// bursts with gaps under ~300ms and goes quiet within ~2.2s, so this still
+/// separates "drawing" from "at the prompt" well inside the 60s boot window.
+pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// PTY output this soon after a committed resize is the host's doing, not the
 /// agent's (stint 1231): a TUI repaints on SIGWINCH, and that repaint must not
@@ -896,7 +898,10 @@ pub struct TerminalPane {
     /// agent activity.
     pub(crate) last_agent_activity_at: Option<std::time::Instant>,
     /// `backend.visible_text_fingerprint()` when output was last examined.
-    screen_fingerprint: Option<u64>,
+    pub(crate) screen_fingerprint: Option<u64>,
+    /// When output last changed the text on screen, host-induced or not. The
+    /// settle falls back to this before the agent has activity of its own.
+    pub(crate) last_screen_change_at: Option<std::time::Instant>,
     /// End of the current host-induced quiet window (`HOST_INDUCED_QUIET`).
     pub(crate) host_induced_until: Option<std::time::Instant>,
     /// Whether output inside the current host-induced window was already traced.
@@ -1065,6 +1070,7 @@ impl TerminalPane {
             last_pty_output_at: None,
             last_agent_activity_at: None,
             screen_fingerprint: None,
+            last_screen_change_at: None,
             host_induced_until: None,
             host_induced_output_logged: false,
             seen_resize_commits: 0,
@@ -1308,6 +1314,11 @@ impl TerminalPane {
         before != after
     }
 
+    /// The agent and state the pane shows now.
+    pub(crate) fn shown_agent(&self) -> Option<crate::protocol::PaneAgentState> {
+        self.selected_agent(std::time::Instant::now()).cloned()
+    }
+
     /// Hook, observed and OSC 7501 state merged by `select_terminal_agent`.
     fn selected_agent(&self, now: std::time::Instant) -> Option<&crate::protocol::PaneAgentState> {
         select_terminal_agent(
@@ -1370,6 +1381,7 @@ impl TerminalPane {
     /// is discounted.
     pub(crate) fn record_pty_event(&mut self, now: std::time::Instant) {
         self.last_pty_output_at = Some(now);
+        self.last_screen_change_at = Some(now);
         let already_active = self
             .last_agent_activity_at
             .is_some_and(|at| now.saturating_duration_since(at) < OBSERVED_AGENT_SETTLE);
@@ -1392,14 +1404,15 @@ impl TerminalPane {
     /// Before the agent has any output of its own (a fresh boot whose every
     /// byte landed in host-induced windows: the first layout resize, the
     /// focus it took), there is nothing to discount against, so the settle
-    /// runs on the PTY's own last output. Otherwise the boot never settles.
+    /// runs on the last change to the screen text. Otherwise the boot never
+    /// settles, and a timer repaint of the same text would keep it Working.
     pub(crate) fn observed_output_state(
         &self,
         now: std::time::Instant,
     ) -> crate::protocol::AgentState {
         let settled = self
             .last_agent_activity_at
-            .or(self.last_pty_output_at)
+            .or(self.last_screen_change_at)
             .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
         if settled {
             crate::protocol::AgentState::Idle
