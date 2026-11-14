@@ -263,76 +263,105 @@ fn main() -> eframe::Result {
     // socket have not. A launch from any path (the install, a generation, the
     // app icon) that finds a live host stops here. Held until the process
     // exits.
-    let _host_instance = match app::host_instance::host_launch(
-        cli_mode,
-        std::env::var("PLEXI_RUNNING").ok().as_deref(),
+    struct MainStartup<'a> {
+        dropped_identity: &'a [String],
+        retention_days: u32,
+        retain_local_history: bool,
+        merged_config_root: Option<&'a std::path::Path>,
+    }
+    impl app::host_instance::StartupSteps for MainStartup<'_> {
+        type Instance = app::host_instance::HostInstance;
+        fn claim(&mut self) -> Result<Self::Instance, app::host_instance::Refusal> {
+            app::host_instance::claim(
+                &config::config_dir(),
+                &crate::platform::ipc::endpoint_path(),
+            )
+        }
+        // Host start only (foreground, background and headless hosts all start
+        // here). Every CLI command, `host start` included, stays without custody.
+        fn install_custody(&mut self) -> Result<(), String> {
+            crate::broker::custody::install_for_host_start()
+                .map_err(|error| error.to_string())
+        }
+        fn after_claim(&mut self, host: bool) {
+            crate::app::plugin_migration::replay_early_traces();
+            if !self.dropped_identity.is_empty() {
+                log::info!(
+                    "cli: dropped foreign channel identity variables {:?}",
+                    self.dropped_identity
+                );
+            }
+            if host {
+                let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
+                    .iter()
+                    .filter(|f| crate::release::feature_enabled(**f))
+                    .map(|f| f.key())
+                    .collect();
+                log::info!("experiments: enabled={enabled:?}");
+            }
+        }
+        // Host startup only. A CLI invocation must not prune local history as a
+        // side effect of printing JSON, and its stderr must stay a clean payload.
+        fn retention(&mut self, host: bool) {
+            if !host {
+                #[cfg(unix)]
+                log::info!("cli: default SIGPIPE handling enabled for closed output pipes");
+                log::info!("retention: skipped, argv does not start a host");
+            } else if let Err(error) = crate::cloud::retention::run_at_startup(
+                chrono::Utc::now(),
+                chrono::Local::now().date_naive(),
+                self.retention_days,
+                self.retain_local_history,
+                self.merged_config_root,
+            ) {
+                log::warn!("cloud retention failed: {error}");
+            }
+        }
+    }
+    // The claim runs before custody, retention, the rpc sweep, the window and
+    // the socket; `app::host_instance::startup_sequence` owns that order and
+    // its tests pin it (stint 1487). Held until the process exits.
+    let _host_instance = match app::host_instance::startup_sequence(
+        app::host_instance::host_launch(
+            cli_mode,
+            std::env::var("PLEXI_RUNNING").ok().as_deref(),
+        ),
+        &mut MainStartup {
+            dropped_identity: &dropped_identity,
+            retention_days,
+            retain_local_history,
+            merged_config_root: merged_config_root.as_deref(),
+        },
     ) {
-        app::host_instance::HostLaunch::Cli => None,
+        Ok(instance) => instance,
         // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
         // rather than starting a second GUI, and never claims the profile.
-        app::host_instance::HostLaunch::InsidePlexi => {
+        Err(app::host_instance::StartupStop::InsidePlexi) => {
             let _ = cli::help::gated_command().print_help();
             println!();
             cli::trace::exit(0);
         }
-        app::host_instance::HostLaunch::Host => match app::host_instance::claim(
-            &config::config_dir(),
-            &crate::platform::ipc::endpoint_path(),
-        ) {
-            Ok(instance) => Some(instance),
-            Err(refusal) if refusal.is_another_host() => {
-                log::info!("host_startup: refused second host: {refusal}");
-                log::logger().flush();
-                eprintln!("{refusal}");
-                std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
-            }
-            Err(failure) => app::startup_error::exit_with_startup_error(
+        Err(app::host_instance::StartupStop::Refused(refusal)) => {
+            log::info!("host_startup: refused second host: {refusal}");
+            log::logger().flush();
+            eprintln!("{refusal}");
+            std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
+        }
+        Err(app::host_instance::StartupStop::LockFailure(failure)) => {
+            app::startup_error::exit_with_startup_error(
                 app::startup_error::StartupErrorView::host_lock_failure(
                     &failure.to_string(),
                     &crate::platform::logging::log_path(),
                 ),
                 app::startup_error::shows_window(true, boot_state.is_background()),
-            ),
-        },
-    };
-    // Host start only (foreground, background and headless hosts all start
-    // here). Every CLI command, `host start` included, stays without custody.
-    if !cli_mode {
-        if let Err(error) = crate::broker::custody::install_for_host_start() {
+            )
+        }
+        Err(app::host_instance::StartupStop::Custody(error)) => {
             log::error!("custody: {error}");
             eprintln!("error: {error}");
             cli::trace::exit(1);
         }
-    }
-    crate::app::plugin_migration::replay_early_traces();
-    if !dropped_identity.is_empty() {
-        log::info!("cli: dropped foreign channel identity variables {dropped_identity:?}");
-    }
-    if !cli_mode {
-        let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
-            .iter()
-            .filter(|f| crate::release::feature_enabled(**f))
-            .map(|f| f.key())
-            .collect();
-        log::info!("experiments: enabled={enabled:?}");
-    }
-    // Host startup only. A CLI invocation must not prune local history as a
-    // side effect of printing JSON, and its stderr must stay a clean payload.
-    if cli_mode {
-        #[cfg(unix)]
-        log::info!("cli: default SIGPIPE handling enabled for closed output pipes");
-        log::info!("retention: skipped, argv does not start a host");
-    } else {
-        if let Err(error) = crate::cloud::retention::run_at_startup(
-            chrono::Utc::now(),
-            chrono::Local::now().date_naive(),
-            retention_days,
-            retain_local_history,
-            merged_config_root.as_deref(),
-        ) {
-            log::warn!("cloud retention failed: {error}");
-        }
-    }
+    };
     let frame_tick = crate::platform::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
