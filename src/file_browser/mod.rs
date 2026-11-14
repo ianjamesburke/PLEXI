@@ -6118,6 +6118,35 @@ mod tests {
             .is_symlink());
     }
 
+    /// The cleanup guard: when the copy fails before creating its target
+    /// (here the target already exists as a real folder), nothing is removed.
+    /// Without the `created` guard in `copy_to_new_path`, this deletes the
+    /// existing folder and its file.
+    #[test]
+    fn copy_to_an_existing_target_fails_and_leaves_it_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).expect("mkdir source");
+        std::fs::write(source.join("new.txt"), b"new").expect("write new");
+        let existing = dir.path().join("existing");
+        std::fs::create_dir(&existing).expect("mkdir existing");
+        std::fs::write(existing.join("keep.txt"), b"keep").expect("write keep");
+
+        let err = FileBrowserView::copy_to_new_path(&source, &existing)
+            .expect_err("copying onto an existing folder must fail");
+
+        assert!(!err.contains("Removed the partial copy"), "{err}");
+        assert_eq!(
+            names_in(&existing),
+            vec!["keep.txt"],
+            "existing folder intact"
+        );
+        assert_eq!(
+            std::fs::read(existing.join("keep.txt")).expect("read keep"),
+            b"keep"
+        );
+    }
+
     /// A multi-item paste that fails on a later item keeps what it already
     /// pasted and names it in the error.
     #[cfg(unix)]
