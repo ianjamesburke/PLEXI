@@ -388,13 +388,23 @@ impl egui::Widget for KitButton<'_> {
             .inner;
         // Keyboard focus: an accent ring just outside the frame, so it reads on
         // every fill (an accent Primary included) and never moves the frame.
+        // Where the clip would cut an outside ring (a button at the window or
+        // panel edge), the ring goes inside the frame so it stays whole.
         if response.has_focus() {
             log_first_focus_ring();
+            let kind = if ui
+                .clip_rect()
+                .contains_rect(response.rect.expand(FOCUS_RING_WIDTH))
+            {
+                egui::StrokeKind::Outside
+            } else {
+                egui::StrokeKind::Inside
+            };
             ui.painter().rect_stroke(
                 response.rect,
                 self.class().radius(),
                 egui::Stroke::new(FOCUS_RING_WIDTH, self.colors.accent),
-                egui::StrokeKind::Outside,
+                kind,
             );
         }
         response.widget_info(|| {

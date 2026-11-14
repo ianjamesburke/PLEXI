@@ -11373,6 +11373,46 @@ open(out + ".done", "w").close()
                 focus.as_raw() != rest.as_raw(),
                 "{theme}: keyboard focus must paint a visible ring"
             );
+            // The ring is whole even where the focused button touches the
+            // window edge (Tab lands on the toolbar "UI" button first).
+            let (focused, accent) = h.with_app(|app| {
+                (
+                    app.ctx
+                        .memory(|m| m.focused())
+                        .and_then(|id| app.ctx.read_response(id))
+                        .map(|r| r.rect)
+                        .expect("Tab focused a widget"),
+                    app.colors.accent,
+                )
+            });
+            let rings: Vec<(egui::Rect, egui::Rect)> = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == accent
+                            && (r.rect.min - focused.min).length() < 0.5
+                            && (r.rect.max - focused.max).length() < 0.5 =>
+                    {
+                        let painted = match r.stroke_kind {
+                            egui::StrokeKind::Outside => r.rect.expand(r.stroke.width),
+                            egui::StrokeKind::Middle => r.rect.expand(r.stroke.width / 2.0),
+                            egui::StrokeKind::Inside => r.rect,
+                        };
+                        Some((painted, clipped.clip_rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rings.len(), 1, "{theme}: one ring on the focused button {focused:?}");
+            for (ring, clip) in rings {
+                assert!(
+                    clip.contains_rect(ring),
+                    "{theme}: focus ring {ring:?} is cut by its clip {clip:?}"
+                );
+            }
         }
     }
 
