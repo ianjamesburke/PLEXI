@@ -9615,20 +9615,7 @@ mod routine_firing {
             );
             return;
         }
-        struct Logger;
-        impl log::Log for Logger {
-            fn enabled(&self, metadata: &log::Metadata) -> bool {
-                metadata.level() <= log::Level::Info
-            }
-            fn log(&self, record: &log::Record) {
-                if self.enabled(record.metadata()) {
-                    eprintln!("{}", record.args());
-                }
-            }
-            fn flush(&self) {}
-        }
-        log::set_boxed_logger(Box::new(Logger)).unwrap();
-        log::set_max_level(log::LevelFilter::Info);
+        let logs = crate::testing::test_log::capture();
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();
         root_default_context(&mut h, root.path());
@@ -9667,6 +9654,9 @@ mod routine_firing {
             1,
             "enabled routine must fire"
         );
+        for line in logs.lines() {
+            eprintln!("{line}");
+        }
     }
 
     #[test]
@@ -19514,3 +19504,57 @@ mod host_induced_terminal_output_tests {
         );
     }
 }
+
+/// Stint 1507: a terminal that fails to start names its cause in the failing
+/// test's output, through the shared test logger rather than a production hook.
+mod terminal_spawn_failure_output {
+    use super::*;
+
+    const MISSING_SHELL: &str = "/nonexistent/plexi-1507-shell-that-cannot-spawn";
+
+    #[test]
+    fn failed_split_logs_its_cause_at_error_on_the_test_thread() {
+        let mut h = HostHarness::new();
+        let view = h.add_test_pane();
+        h.focus_pane(view);
+        h.run_frames(1);
+        let logs = crate::testing::test_log::capture();
+        let _shell = crate::host::shell::set_test_shell_override(MISSING_SHELL);
+
+        assert!(h.app.split_focused(true, None, false, false, None).is_none());
+
+        let errors: Vec<String> = logs
+            .records()
+            .into_iter()
+            .filter(|(level, _)| *level == log::Level::Error)
+            .map(|(_, line)| line)
+            .collect();
+        assert!(
+            errors.iter().any(|line| line.contains(MISSING_SHELL)
+                && line.contains("PTY spawn")
+                && line.contains("No such file")),
+            "the spawn failure must be logged at error, naming the program and the OS cause, \
+             on the test's own thread (where libtest captures the logger's println!): {errors:?}"
+        );
+    }
+
+    #[test]
+    fn harness_terminal_helper_points_at_the_logged_cause() {
+        let mut h = HostHarness::new();
+        let _shell = crate::host::shell::set_test_shell_override(MISSING_SHELL);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            h.add_focused_terminal();
+        }))
+        .expect_err("a terminal that cannot spawn must fail the helper");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            message.contains("PTY spawn ... failed"),
+            "the helper's panic must point at the logged cause: {message}"
+        );
+    }
+}
+

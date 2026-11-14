@@ -7340,31 +7340,7 @@ mod tests {
 
     #[test]
     fn empty_search_result_state_and_lifecycle_trace() {
-        use std::sync::{LazyLock, Mutex, Once};
-
-        static TEST_LOGS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-        struct TestLogger;
-        impl log::Log for TestLogger {
-            fn enabled(&self, m: &log::Metadata) -> bool {
-                m.level() <= log::Level::Info
-            }
-            fn log(&self, record: &log::Record) {
-                if self.enabled(record.metadata()) {
-                    if let Ok(mut list) = TEST_LOGS.lock() {
-                        list.push(record.args().to_string());
-                    }
-                }
-            }
-            fn flush(&self) {}
-        }
-        static INIT_LOGGER: Once = Once::new();
-        INIT_LOGGER.call_once(|| {
-            let _ = log::set_boxed_logger(Box::new(TestLogger));
-            log::set_max_level(log::LevelFilter::Info);
-        });
-        if let Ok(mut list) = TEST_LOGS.lock() {
-            list.clear();
-        }
+        let logs = crate::testing::test_log::capture();
 
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("file.txt"), b"content").expect("write");
@@ -7379,7 +7355,7 @@ mod tests {
         assert_eq!(app.search_result_count(), 0);
 
         // Verify lifecycle trace was emitted and that raw query was NOT logged
-        let logs_after_entry = TEST_LOGS.lock().unwrap().clone();
+        let logs_after_entry = logs.lines();
         assert!(
             logs_after_entry
                 .iter()
@@ -7440,7 +7416,7 @@ mod tests {
         // Exiting search returns to browsing and logs exit trace
         app.exit_search();
         assert!(!app.in_search);
-        let logs_after_exit = TEST_LOGS.lock().unwrap().clone();
+        let logs_after_exit = logs.lines();
         assert!(
             logs_after_exit
                 .iter()

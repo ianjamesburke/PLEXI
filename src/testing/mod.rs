@@ -63,6 +63,7 @@ use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};
 
 mod timeout;
+pub(crate) mod test_log;
 pub(crate) use timeout::load_aware_timeout;
 
 // ─── HostSnapshot ────────────────────────────────────────────────────────────
@@ -205,6 +206,7 @@ pub struct HostHarness {
 impl HostHarness {
     /// Create a harness with an empty `PlexiApp` and a 1280×800 viewport.
     pub fn new() -> Self {
+        test_log::install();
         let profile_dir = tempfile::TempDir::new().expect("failed to create test profile tempdir");
         let profile_path = profile_dir.path().to_path_buf();
         let shared_path = profile_path.join("shared");
@@ -653,7 +655,10 @@ impl HostHarness {
         let term = self
             .app
             .split_focused(true, None, false, false, None)
-            .expect("split_focused should create a terminal pane");
+            .expect(
+                "split_focused did not create a terminal pane; the cause is the \
+                 `PTY spawn ... failed` error line in this test's captured output",
+            );
         self.focus_pane(term);
         self.run_frames(3);
         term
