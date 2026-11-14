@@ -32,38 +32,8 @@ impl PlexiApp {
 
     /// Shown when the final quit save failed `MAX_QUIT_SAVE_ATTEMPTS` times.
     fn draw_quit_save_failure(&mut self, ctx: &egui::Context, cause: &str) {
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "quit_without_saving",
-                "Quit without saving",
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Q"],
-                egui::Modifiers::NONE,
-                egui::Key::Q,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "cancel",
-                "Cancel",
-                crate::ui::button::ButtonKind::Secondary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Esc"],
-                egui::Modifiers::NONE,
-                egui::Key::Escape,
-            )),
-        ];
-        let response = crate::ui::dialog::ActionModal::new(
-            "confirm_close_overlay",
-            "Workspace could not be saved",
-            &actions,
-        )
-        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
-            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ConfirmClose),
-        ))
-        .width(super::MODAL_WIDTH)
-        .show(ctx, &self.colors, |ui| {
+        let actions = quit_save_failure_actions();
+        let response = quit_save_failure_modal(&actions).show(ctx, &self.colors, |ui| {
             crate::ui::typography::caption(ui, cause, &self.colors);
             crate::ui::typography::caption(
                 ui,
@@ -346,48 +316,8 @@ impl PlexiApp {
             None => return,
         };
         let colors = self.colors;
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "allow_once",
-                "Allow once",
-                crate::ui::button::ButtonKind::Primary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Enter"],
-                egui::Modifiers::NONE,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "allow_always",
-                "Always",
-                crate::ui::button::ButtonKind::Secondary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["A"],
-                egui::Modifiers::NONE,
-                egui::Key::A,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "deny",
-                "Deny",
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Esc"],
-                egui::Modifiers::NONE,
-                egui::Key::Escape,
-            )),
-        ];
-        let response = crate::ui::dialog::ActionModal::new(
-            "event_consent_overlay",
-            "Event subscription request",
-            &actions,
-        )
-        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
-            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::EventConsent),
-        ))
-        .width(super::MODAL_WIDTH)
-        .show(ctx, &colors, |ui| {
+        let actions = event_consent_actions();
+        let response = event_consent_modal(&actions).show(ctx, &colors, |ui| {
             crate::ui::typography::caption(ui, format!("{subscriber} wants to {verb}:"), &colors);
             crate::ui::typography::caption(ui, target, &colors);
         });
@@ -423,38 +353,8 @@ impl PlexiApp {
             return;
         };
         let colors = self.colors;
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "allow",
-                "Allow and remember",
-                crate::ui::button::ButtonKind::Primary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Enter"],
-                egui::Modifiers::NONE,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "deny",
-                "Deny",
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Esc"],
-                egui::Modifiers::NONE,
-                egui::Key::Escape,
-            )),
-        ];
-        let response = crate::ui::dialog::ActionModal::new(
-            "raw_wasm_review_overlay",
-            "Raw WASM import review",
-            &actions,
-        )
-        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
-            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::RawWasmReview),
-        ))
-        .width(super::MODAL_WIDTH)
-        .show(ctx, &colors, |ui| {
+        let actions = raw_wasm_review_actions();
+        let response = raw_wasm_review_modal(&actions).show(ctx, &colors, |ui| {
             crate::ui::typography::caption(
                 ui,
                 format!("{} requests host imports:", review.plugin_id),
@@ -538,5 +438,141 @@ impl PlexiApp {
         _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::view_trait::KeyDisposition {
         crate::app::view_trait::KeyDisposition::Consumed
+    }
+}
+
+/// The actions of this dialog, shared with its keyboard test (stint 1493).
+pub(crate) fn quit_save_failure_actions() -> [crate::ui::dialog::DialogAction<'static>; 2] {
+    [
+        crate::ui::dialog::DialogAction::new(
+            "quit_without_saving",
+            "Quit without saving",
+            crate::ui::button::ButtonKind::Danger,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Q"],
+            egui::Modifiers::NONE,
+            egui::Key::Q,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "cancel",
+            "Cancel",
+            crate::ui::button::ButtonKind::Secondary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Esc"],
+            egui::Modifiers::NONE,
+            egui::Key::Escape,
+        )),
+    ]
+}
+
+/// The actions of this dialog, shared with its keyboard test (stint 1493).
+pub(crate) fn event_consent_actions() -> [crate::ui::dialog::DialogAction<'static>; 3] {
+    [
+        crate::ui::dialog::DialogAction::new(
+            "allow_once",
+            "Allow once",
+            crate::ui::button::ButtonKind::Primary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "allow_always",
+            "Always",
+            crate::ui::button::ButtonKind::Secondary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["A"],
+            egui::Modifiers::NONE,
+            egui::Key::A,
+        )),
+        crate::ui::dialog::DialogAction::new("deny", "Deny", crate::ui::button::ButtonKind::Danger)
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+    ]
+}
+
+/// The actions of this dialog, shared with its keyboard test (stint 1493).
+pub(crate) fn raw_wasm_review_actions() -> [crate::ui::dialog::DialogAction<'static>; 2] {
+    [
+        crate::ui::dialog::DialogAction::new(
+            "allow",
+            "Allow and remember",
+            crate::ui::button::ButtonKind::Primary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        )),
+        crate::ui::dialog::DialogAction::new("deny", "Deny", crate::ui::button::ButtonKind::Danger)
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+    ]
+}
+
+/// Consent and quit-without-saving dialogs do not trap Tab or route Enter to a
+/// focused action (stint 1493 critic): an approving or destructive action
+/// must never be one stray Tab and Enter away. Keyboard reach for consent is
+/// stint 1498's guard.
+pub(crate) fn quit_save_failure_modal<'a>(
+    actions: &'a [crate::ui::dialog::DialogAction<'a>],
+) -> crate::ui::dialog::ActionModal<'a> {
+    crate::ui::dialog::ActionModal::new(
+        "confirm_close_overlay",
+        "Workspace could not be saved",
+        actions,
+    )
+    .width(super::MODAL_WIDTH)
+}
+
+pub(crate) fn event_consent_modal<'a>(
+    actions: &'a [crate::ui::dialog::DialogAction<'a>],
+) -> crate::ui::dialog::ActionModal<'a> {
+    crate::ui::dialog::ActionModal::new(
+        "event_consent_overlay",
+        "Event subscription request",
+        actions,
+    )
+    .width(super::MODAL_WIDTH)
+}
+
+pub(crate) fn raw_wasm_review_modal<'a>(
+    actions: &'a [crate::ui::dialog::DialogAction<'a>],
+) -> crate::ui::dialog::ActionModal<'a> {
+    crate::ui::dialog::ActionModal::new(
+        "raw_wasm_review_overlay",
+        "Raw WASM import review",
+        actions,
+    )
+    .width(super::MODAL_WIDTH)
+}
+
+#[cfg(test)]
+mod keyboard_reach_tests {
+    /// Stint 1493 critic: the consent dialogs and "Workspace could not be
+    /// saved" never trap Tab or route Enter or Space to a focused action, so
+    /// an approving or destructive action is never one stray Tab and Enter
+    /// away. These are the builders the dialogs draw with.
+    #[test]
+    fn consent_and_quit_without_saving_dialogs_do_not_trap_focus() {
+        let quit = super::quit_save_failure_actions();
+        assert!(!super::quit_save_failure_modal(&quit).traps_focus());
+        let consent = super::event_consent_actions();
+        assert!(!super::event_consent_modal(&consent).traps_focus());
+        let review = super::raw_wasm_review_actions();
+        assert!(!super::raw_wasm_review_modal(&review).traps_focus());
+        let capability = crate::host::wasm_pane::capability_prompt_actions();
+        assert!(!crate::host::wasm_pane::capability_prompt_modal(&capability).traps_focus());
     }
 }

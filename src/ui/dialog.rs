@@ -117,6 +117,12 @@ impl<'a> ActionModal<'a> {
         self
     }
 
+    /// Whether this modal traps Tab and routes Enter to a focused action.
+    #[cfg(test)]
+    pub(crate) fn traps_focus(&self) -> bool {
+        self.focus_surface.is_some()
+    }
+
     /// Conventional confirm layout: one right-aligned row of kit buttons in
     /// the order given (left to right), each carrying its shortcut as a dim
     /// hint. Stacks full-width only when the row cannot fit the modal.
@@ -146,12 +152,17 @@ impl<'a> ActionModal<'a> {
         let previous_ids: Vec<(String, egui::Id)> = ctx
             .data(|d| d.get_temp(action_ids_slot(self.id)))
             .unwrap_or_default();
-        let focused_action = ctx.memory(|m| m.focused()).and_then(|focused| {
-            previous_ids
-                .iter()
-                .find(|(_, id)| *id == focused)
-                .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
-        });
+        // Only a modal that traps focus routes Enter or Space to the focused
+        // action; an untrapped modal keys exactly as before (stint 1493 critic).
+        let focused_action = ctx
+            .memory(|m| m.focused())
+            .filter(|_| self.focus_surface.is_some())
+            .and_then(|focused| {
+                previous_ids
+                    .iter()
+                    .find(|(_, id)| *id == focused)
+                    .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
+            });
         let mut selected = focused_action
             .filter(|_| {
                 ctx.input_mut(|i| {

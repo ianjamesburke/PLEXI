@@ -215,6 +215,13 @@ impl PlexiApp {
                     None => d.remove::<bool>(pending_id),
                 }
             });
+        } else {
+            // No trap this frame: forget the last trapped position and Tab,
+            // so a dialog that reopens enters at its first action.
+            ctx.data_mut(|d| {
+                d.remove::<egui::Id>(egui::Id::new(FOCUS_TRAP_LAST_ID));
+                d.remove::<bool>(egui::Id::new(FOCUS_TRAP_TAB_ID));
+            });
         }
 
         // Surrender a focused surface that does not belong to the owner.
