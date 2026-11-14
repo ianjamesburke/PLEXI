@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::spatial::tiling::PaneId;
 
@@ -16,10 +16,80 @@ pub(crate) struct PaneSelection {
     pub panes: Vec<PaneId>,
 }
 
+/// Where a [`PaneTargets`] set came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneTargetSource {
+    Selection,
+    Focused,
+}
+
+impl PaneTargetSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Selection => "selection",
+            Self::Focused => "focused",
+        }
+    }
+}
+
+/// The panes a pane action applies to: a stable snapshot of pane ids, in
+/// selection order, that survives closes made while the action runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneTargets {
+    pub anchor: PaneId,
+    pub panes: Vec<PaneId>,
+    pub source: PaneTargetSource,
+}
+
+/// What a paused close batch waits for: the normal dialog of one pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseBatchWait {
+    /// A view vetoed the close and shows its unsaved-changes dialog.
+    Unsaved(PaneId),
+    /// `confirm_close` is on; `confirmed` is set by the dialog's Close button.
+    ConfirmClose { pane: PaneId, confirmed: bool },
+    /// A portal whose subcontext is not empty shows the context-close dialog.
+    ContextClose(PaneId),
+}
+
+impl CloseBatchWait {
+    pub(crate) fn pane(self) -> PaneId {
+        match self {
+            Self::Unsaved(pane) | Self::ContextClose(pane) => pane,
+            Self::ConfirmClose { pane, .. } => pane,
+        }
+    }
+}
+
+/// Close several panes one after another, each through its own close veto
+/// and dialog. Owns its snapshot, so closes that clear the window's selection
+/// do not end it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneCloseBatch {
+    pub window: u64,
+    pub anchor: PaneId,
+    pub queue: VecDeque<PaneId>,
+    pub waiting: Option<CloseBatchWait>,
+    /// Pane chosen once, before any close, by the spatial close-focus rule.
+    pub focus_after: Option<PaneId>,
+}
+
+impl PaneCloseBatch {
+    /// The panes not closed yet, the paused one first.
+    pub(crate) fn remaining(&self) -> Vec<PaneId> {
+        self.waiting
+            .map(CloseBatchWait::pane)
+            .into_iter()
+            .chain(self.queue.iter().copied())
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HostModel {
     contexts: Vec<HostContext>,
     pane_selections: HashMap<u64, PaneSelection>,
+    pane_close_batch: Option<PaneCloseBatch>,
     next_pane_id: PaneId,
     pub(crate) pane_lifecycle: HashMap<PaneId, crate::host::pane_lifecycle::PaneLifecycleState>,
     /// Authoritative continuous-strip state per context (`context_id -> Strip`).
@@ -66,10 +136,93 @@ impl HostModel {
         selection
     }
 
+    /// Replace a window's selection, e.g. with the panes a cancelled close
+    /// batch left open. An empty set clears it.
+    pub(crate) fn set_pane_selection(&mut self, window: u64, anchor: PaneId, panes: Vec<PaneId>) {
+        if panes.is_empty() {
+            self.clear_pane_selection(window);
+            return;
+        }
+        let anchor = if panes.contains(&anchor) {
+            anchor
+        } else {
+            panes[0]
+        };
+        log::info!("pane_selection: set window={window} anchor={anchor} panes={panes:?}");
+        self.pane_selections
+            .insert(window, PaneSelection { anchor, panes });
+    }
+
+    /// Which panes `action` applies to in `window`: the selection when it
+    /// still holds a live pane, else the focused pane. Ids `is_live` rejects
+    /// (closed, moved to another window) are dropped and logged. Minimum set
+    /// sizes are the caller's rule, not the resolver's.
+    pub(crate) fn resolve_pane_targets(
+        &self,
+        action: &str,
+        window: u64,
+        focused: Option<PaneId>,
+        is_live: impl Fn(PaneId) -> bool,
+    ) -> Option<PaneTargets> {
+        let from_selection = self.pane_selections.get(&window).and_then(|selection| {
+            let (panes, stale): (Vec<PaneId>, Vec<PaneId>) =
+                selection.panes.iter().copied().partition(|id| is_live(*id));
+            if !stale.is_empty() {
+                log::info!(
+                    "pane_targets: action={action} window={window} dropped stale ids={stale:?}"
+                );
+            }
+            let anchor = if panes.contains(&selection.anchor) {
+                selection.anchor
+            } else {
+                *panes.first()?
+            };
+            Some(PaneTargets {
+                anchor,
+                panes,
+                source: PaneTargetSource::Selection,
+            })
+        });
+        let targets = from_selection.or_else(|| {
+            focused.filter(|id| is_live(*id)).map(|id| PaneTargets {
+                anchor: id,
+                panes: vec![id],
+                source: PaneTargetSource::Focused,
+            })
+        });
+        match &targets {
+            Some(t) => log::info!(
+                "pane_targets: action={action} window={window} source={} anchor={} panes={:?}",
+                t.source.as_str(),
+                t.anchor,
+                t.panes
+            ),
+            None => log::info!("pane_targets: action={action} window={window} none"),
+        }
+        targets
+    }
+
+    pub(crate) fn pane_close_batch(&self) -> Option<&PaneCloseBatch> {
+        self.pane_close_batch.as_ref()
+    }
+
+    pub(crate) fn pane_close_batch_mut(&mut self) -> Option<&mut PaneCloseBatch> {
+        self.pane_close_batch.as_mut()
+    }
+
+    pub(crate) fn start_pane_close_batch(&mut self, batch: PaneCloseBatch) {
+        self.pane_close_batch = Some(batch);
+    }
+
+    pub(crate) fn take_pane_close_batch(&mut self) -> Option<PaneCloseBatch> {
+        self.pane_close_batch.take()
+    }
+
     pub fn new() -> Self {
         Self {
             contexts: vec![HostContext::default()],
             pane_selections: HashMap::new(),
+            pane_close_batch: None,
             // Pane id 0 is the bootstrap pane.
             next_pane_id: 1,
             pane_lifecycle: HashMap::new(),
@@ -209,6 +362,54 @@ impl HostModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1458: the selection wins over focus, keeps selection order and
+    /// its anchor, and drops ids the caller says are no longer live.
+    #[test]
+    fn pane_targets_prefer_selection_and_drop_stale_ids() {
+        let mut model = HostModel::new();
+        model.extend_pane_selection(7, 1, 2);
+        model.extend_pane_selection(7, 2, 3);
+        let live = |id: PaneId| id != 2;
+        let targets = model.resolve_pane_targets("test", 7, Some(9), live).unwrap();
+        assert_eq!(targets.source, PaneTargetSource::Selection);
+        assert_eq!(targets.anchor, 1);
+        assert_eq!(targets.panes, vec![1, 3], "stale id 2 is dropped, order kept");
+
+        let anchor_gone = model
+            .resolve_pane_targets("test", 7, None, |id| id == 3)
+            .unwrap();
+        assert_eq!(anchor_gone.anchor, 3, "a stale anchor yields to the first live pane");
+    }
+
+    #[test]
+    fn pane_targets_fall_back_to_the_focused_pane() {
+        let mut model = HostModel::new();
+        let focused = model.resolve_pane_targets("test", 7, Some(4), |_| true).unwrap();
+        assert_eq!(focused.source, PaneTargetSource::Focused);
+        assert_eq!(focused.panes, vec![4]);
+        assert!(model.resolve_pane_targets("test", 7, None, |_| true).is_none());
+
+        model.extend_pane_selection(7, 1, 2);
+        let all_stale = model.resolve_pane_targets("test", 7, Some(4), |id| id == 4).unwrap();
+        assert_eq!(
+            all_stale.source,
+            PaneTargetSource::Focused,
+            "a selection with no live pane falls through to focus"
+        );
+    }
+
+    /// A selection of one is still the selection; whether one pane is enough
+    /// is the action's rule (close acts on it like a focused close, wrap
+    /// needs two).
+    #[test]
+    fn pane_targets_return_a_selection_of_one_unchanged() {
+        let mut model = HostModel::new();
+        model.extend_pane_selection(7, 5, 5);
+        let one = model.resolve_pane_targets("test", 7, Some(5), |_| true).unwrap();
+        assert_eq!(one.source, PaneTargetSource::Selection);
+        assert_eq!(one.panes, vec![5]);
+    }
 
     /// Stint 1318: the one checkable clause of the HostModel rule. `HostModel`
     /// has no UI toolkit dependency; the needle is split so this test does not match
