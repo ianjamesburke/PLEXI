@@ -257,6 +257,25 @@ fn main() -> eframe::Result {
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    // One host per profile (stint 1459): claim the profile right after logging
+    // starts, before custody, retention, the window, the socket or any other
+    // host work. A launch from any path (the install, a generation, the app
+    // icon) that finds a live host stops here. Held until the process exits.
+    let _host_instance = if cli_mode {
+        None
+    } else {
+        match app::host_instance::claim(
+            &config::config_dir(),
+            &crate::platform::ipc::endpoint_path(),
+        ) {
+            Ok(instance) => Some(instance),
+            Err(refusal) => {
+                log::info!("host_startup: refused second host: {refusal}");
+                eprintln!("{refusal}");
+                std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
+            }
+        }
+    };
     // Host start only (foreground, background and headless hosts all start
     // here). Every CLI command, `host start` included, stays without custody.
     if !cli_mode {
@@ -2090,21 +2109,6 @@ fn main() -> eframe::Result {
         println!();
         cli::trace::exit(0);
     }
-
-    // One host per profile (stint 1459): claim the profile before the window,
-    // the socket or any shared profile state. A launch from any path (the
-    // install, a generation, the app icon) that finds a live host stops here.
-    let _host_instance = match app::host_instance::claim(
-        &config::config_dir(),
-        &crate::platform::ipc::endpoint_path(),
-    ) {
-        Ok(instance) => instance,
-        Err(refusal) => {
-            log::info!("host_startup: refused second host: {refusal}");
-            eprintln!("{refusal}");
-            std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
-        }
-    };
 
     // When invoked with no arguments outside Plexi, print a brief launch
     // notice so the terminal isn't silent for first-time users (#1515).
