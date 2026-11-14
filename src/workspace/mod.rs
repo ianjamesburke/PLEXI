@@ -500,6 +500,9 @@ impl WorkspaceFile {
             })?;
             std::fs::create_dir_all(parent)
                 .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
+            let json = serde_json::to_string_pretty(self).map_err(|error| {
+                save_error("serialize workspace", &temp_path, io::Error::other(error))
+            })?;
             match std::fs::read(&path) {
                 Ok(data) => {
                     if migration_source.is_some_and(|source| source != data) {
@@ -537,21 +540,30 @@ impl WorkspaceFile {
                         &String::from_utf8_lossy(&data),
                     ))?;
                     existing.validate()?;
+                    // One comparison at the one write point covers every save
+                    // trigger (stint 1517): identical bytes are not rewritten.
+                    if data == json.as_bytes() {
+                        return Ok(None);
+                    }
                 }
                 Err(error)
                     if error.kind() == io::ErrorKind::NotFound && migration_source.is_none() => {}
                 Err(error) => return Err(error),
             }
-            let json = serde_json::to_string_pretty(self).map_err(|error| {
-                save_error("serialize workspace", &temp_path, io::Error::other(error))
-            })?;
             atomic_save(&path, &temp_path, json.as_bytes(), |file, bytes| {
                 file.write_all(bytes)
             })?;
-            Ok(json.len())
+            Ok(Some(json.len()))
         })();
         match result {
-            Ok(byte_count) => {
+            Ok(None) => {
+                log::info!(
+                    "workspace_save: unchanged, not rewritten elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                Ok(())
+            }
+            Ok(Some(byte_count)) => {
                 let pane_count: usize = self.windows.iter().map(|window| window.panes.len()).sum();
                 log::info!(
                     "workspace_save: saved bytes={} windows={} panes={} elapsed_ms={}",
