@@ -8927,6 +8927,18 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         "cli.operations",
         "timer",
     ];
+    let manifest = tmp.path().join("manifest.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace(
+            "[runtime]",
+            &format!("[plugin.capabilities]\ncapabilities = {declared:?}\n\n[runtime]"),
+        ),
+    )
+    .unwrap();
+    let mut h = HostHarness::new();
+    // The harness installs its own profile, so the grants go in after it.
     {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
@@ -8942,17 +8954,6 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         }
         store.save();
     }
-    let manifest = tmp.path().join("manifest.toml");
-    let text = std::fs::read_to_string(&manifest).unwrap();
-    std::fs::write(
-        &manifest,
-        text.replace(
-            "[runtime]",
-            &format!("[plugin.capabilities]\ncapabilities = {declared:?}\n\n[runtime]"),
-        ),
-    )
-    .unwrap();
-    let mut h = HostHarness::new();
     let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
     let start = std::time::Instant::now();
     while python_pane_title(&h, pane_id).as_deref() != Some("DONE") {
@@ -8973,6 +8974,37 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
             .any(|line| line.contains("hostile-messages-probe")),
         "the probe's lines must be captured"
     );
+    // Positive evidence that the handlers behind the sensitive grants ran,
+    // so this guard is not passing on refusals alone.
+    let lines = capture.lines();
+    for effect in [
+        "spawn.plugin",
+        "panes.spawn",
+        "panes.control",
+        "fs.write",
+        "net.http",
+    ] {
+        let allowed = format!(
+            "effect={effect} resource_class=capability decision=allow mechanism=python_launch_set"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(&allowed)),
+            "the {effect} grant must admit the plugin's request"
+        );
+    }
+    for trace in [
+        "SpawnView: launch of",
+        "SpawnPane:",
+        "pane_ipc: focus_pane",
+        "plugin::hostile-messages-probe: file_write ",
+        "plugin::hostile-messages-probe: file_read ",
+        "launch refused: requested id",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(trace)),
+            "no {trace:?} line: the handler never ran"
+        );
+    }
     assert_no_raw_guest_text_in_logs(&capture);
 }
 

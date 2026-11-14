@@ -2282,20 +2282,21 @@ impl PlexiApp {
         };
         let Some((win_idx, slot, overlay_depth)) = target else {
             log::info!(
-                "on_launch[{scope}]: no existing '{id}' instance to focus (context {caller_context_id}) — spawning"
+                "on_launch[{scope}]: no existing '{id}' instance to focus (context {caller_context_id}) — spawning", id = crate::host::guest_text::shown(id)
             );
             return None;
         };
         let ctx_id = self.windows[win_idx].context_id;
         log::info!(
-            "on_launch[{scope}]: '{id}' already open at slot {slot} in context {ctx_id} (overlay_depth={overlay_depth}) — focusing instead of spawning"
+            "on_launch[{scope}]: '{id}' already open at slot {slot} in context {ctx_id} (overlay_depth={overlay_depth}) — focusing instead of spawning", id = crate::host::guest_text::shown(id)
         );
         if !args.is_empty() || cwd_override.is_some() {
             log::warn!(
                 "on_launch[{scope}]: '{id}' relaunch carried argc={} cwd={cwd_override:?} \
                  but the policy focused the existing instance — these are NOT delivered to it \
                  (relaunch arg delivery to a running instance is future work)",
-                args.len()
+                args.len(),
+                id = crate::host::guest_text::shown(id)
             );
         }
         self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
@@ -2458,8 +2459,8 @@ impl PlexiApp {
         // cap the shown id instead.
         if id.chars().any(crate::host::guest_text::is_unsafe_to_print) {
             let shown = crate::host::guest_text::shown(id);
-            log::info!("launch refused: requested id {shown:?} is not a plugin or view id");
-            return Err(format!("no plugin or view {shown:?}"));
+            log::info!("launch refused: requested id '{shown}' is not a plugin or view id");
+            return Err(format!("no plugin or view '{shown}'"));
         }
         if id != "terminal" {
             self.require_plugin(id)?;
@@ -2484,7 +2485,7 @@ impl PlexiApp {
                     log::info!(
                         "view_open: plugin_id={} view_id={} context_id={context_id}",
                         plugin.manifest.id,
-                        view.id
+                        crate::host::guest_text::shown(&view.id)
                     );
                     Some(plugin.manifest.id.clone())
                 }
@@ -2593,12 +2594,16 @@ impl PlexiApp {
         log::info!(
             "open_view_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
-            self.context_root_for(context_id)
+            self.context_root_for(context_id),
+            id = crate::host::guest_text::shown(id)
         );
 
         // Builtin plugin factory — resolved before the process registry; builtins never touch disk.
         if let Some(app) = builtin_factory(id, &cwd, args) {
-            log::info!("open_view_by_id_with_layout: '{id}' resolved as builtin");
+            log::info!(
+                "open_view_by_id_with_layout: '{id}' resolved as builtin",
+                id = crate::host::guest_text::shown(id)
+            );
             let group = if id == "file_browser" && !follow_file_browser_cwd {
                 None
             } else {
@@ -2631,7 +2636,10 @@ impl PlexiApp {
             .get(id)
             .is_none()
         {
-            log::info!("open_view_by_id: '{id}' not in startup registry — rescanning from disk");
+            log::info!(
+                "open_view_by_id: '{id}' not in startup registry — rescanning from disk",
+                id = crate::host::guest_text::shown(id)
+            );
             // Rescan the CONTEXT's own root, not `cwd` — `view_for_context`
             // below looks the plugin up by that same key, so rescanning any
             // other path (even one that happens to resolve to the same
@@ -2649,7 +2657,10 @@ impl PlexiApp {
             .view_for_context(context_id, &self.router)
             .check_config_capabilities(id, &self.config);
         if !missing.is_empty() {
-            log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
+            log::warn!(
+                "pre-flight: '{id}' cannot launch — missing: {missing:?}",
+                id = crate::host::guest_text::shown(id)
+            );
             let fail_hint = layout.or_else(|| Some("overlay".to_string()));
             self.open_launch_failed_pane(target_win, id, fail_hint.as_deref(), missing, cwd);
             return Ok(None);
@@ -2722,32 +2733,34 @@ impl PlexiApp {
         if let Some(dev_plugin_dir) = crate::app::registry::find_dev_pack_plugin(id, &search_start)
         {
             log::warn!(
-                "open_view_by_id: '{id}' is a dev-pack plugin ({dev_plugin_dir:?}) — not id-openable"
+                "open_view_by_id: '{id}' is a dev-pack plugin ({dev_plugin_dir:?}) — not id-openable", id = crate::host::guest_text::shown(id)
             );
             return Err(format!(
                 "'{id}' is a dev-pack plugin ({}) — dev plugins are path-open only. Use `plexi view open {}` instead.",
                 dev_plugin_dir.display(),
-                dev_plugin_dir.display()
+                dev_plugin_dir.display(), id = crate::host::guest_text::shown(id)
             ));
         }
 
         match installed {
             None => {
                 log::warn!(
-                    "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry"
+                    "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry", id = crate::host::guest_text::shown(id)
                 );
                 Err(format!(
-                    "plugin '{id}' not found in this context's registry"
+                    "plugin '{id}' not found in this context's registry",
+                    id = crate::host::guest_text::shown(id)
                 ))
             }
             Some(installed) => {
                 log::warn!(
                     "open_view_by_id: plugin '{id}' has manifest type {:?} with no launch runtime for it",
-                    installed.manifest.manifest_type
+                    installed.manifest.manifest_type, id = crate::host::guest_text::shown(id)
                 );
                 Err(format!(
                     "plugin '{id}' has manifest type {:?} with no launch runtime for it",
-                    installed.manifest.manifest_type
+                    installed.manifest.manifest_type,
+                    id = crate::host::guest_text::shown(id)
                 ))
             }
         }
@@ -3768,9 +3781,9 @@ fn bare_wasm_plugin_id(plugin_dir: &Path) -> Result<String, String> {
         Ok(()) => Ok(stem),
         Err(_) => {
             let shown = crate::host::guest_text::shown(&stem);
-            log::info!("wasm launch refused: file name {shown:?} is not a valid plugin id");
+            log::info!("wasm launch refused: file name '{shown}' is not a valid plugin id");
             Err(format!(
-                "cannot launch {shown:?}: a .wasm without a manifest is named by its file, and \
+                "cannot launch '{shown}': a .wasm without a manifest is named by its file, and \
                  plugin ids use only A-Z a-z 0-9 . _ - (no leading '.', no '..'); rename the \
                  file or add a manifest.toml"
             ))

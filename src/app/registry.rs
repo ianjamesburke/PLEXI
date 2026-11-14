@@ -153,7 +153,7 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
                 &shown,
                 "plugin.id",
                 ManifestErrorKind::InvalidField(format!(
-                    "plugin id {shown:?} must be non-empty and use only A-Z a-z 0-9 . _ - \
+                    "plugin id '{shown}' must be non-empty and use only A-Z a-z 0-9 . _ - \
                      (no leading '.', no '..')"
                 )),
             ));

@@ -67,7 +67,7 @@ fn plugin_init_name_error(name: &str) -> Option<String> {
         .err()
         .map(|_| {
             format!(
-                "plugin name {:?} cannot be a plugin id: use only A-Z a-z 0-9 . _ - \
+                "plugin name '{}' cannot be a plugin id: use only A-Z a-z 0-9 . _ - \
              (no leading '.', no '..')",
                 crate::host::guest_text::shown(name)
             )

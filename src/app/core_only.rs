@@ -4,6 +4,7 @@ use crate::host::pane::{Pane, ViewPane, ViewRuntime};
 use crate::workspace::SavedPane;
 
 pub(crate) fn unavailable(plugin: &str) -> String {
+    let plugin = crate::host::guest_text::shown(plugin);
     format!("Plugin '{plugin}' is unavailable because core-only mode is on. Set core_only = false in the profile config and restart Plexi.")
 }
 
@@ -19,7 +20,10 @@ impl super::PlexiApp {
             return Ok(());
         }
         let message = unavailable(plugin);
-        log::info!("plugins: launch refused plugin={plugin}: core-only mode is on");
+        log::info!(
+            "plugins: launch refused plugin={}: core-only mode is on",
+            crate::host::guest_text::shown(plugin)
+        );
         self.plugin_notice = Some((message.clone(), std::time::Instant::now()));
         Err(message)
     }
