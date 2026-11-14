@@ -3445,7 +3445,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_known_keybindings_cover_pane_hide_and_context_park() {
+    fn validate_reports_removed_hide_pane_keybinding_as_unknown() {
+        // Stint 1457: pane hiding was removed. A config that still binds
+        // `hide_pane` gets the ordinary unknown-key warning and keeps loading;
+        // `park_context` stays a known action.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(
@@ -3454,7 +3457,16 @@ mod tests {
         )
         .unwrap();
         let diags = validate_from_path(&path);
-        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+        assert_eq!(diags.len(), 1, "expected one diagnostic, got: {diags:?}");
+        assert!(
+            matches!(
+                &diags[0],
+                ConfigDiagnostic::UnknownKey { table, key, .. }
+                    if table == "keybindings" && key == "hide_pane"
+            ),
+            "{diags:?}"
+        );
+        assert!(!diags[0].is_error(), "an unknown keybinding is a warning");
     }
 
     #[test]

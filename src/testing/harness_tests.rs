@@ -1402,6 +1402,48 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
 }
 
 #[test]
+fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
+    // Stint 1457: pane hiding was removed. A workspace saved by an older build
+    // with `"hidden": true` on a pane loads that pane shown, in the layout and
+    // able to take the keyboard.
+    let mut h = HostHarness::new();
+    let profile = h.profile_dir().to_path_buf();
+    let kept = h.add_test_pane();
+    let was_hidden = h.add_test_pane();
+    h.focus_pane(kept).run_frames(1);
+    assert!(h.app.save_workspace_now(), "workspace saves");
+
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read workspace"))
+            .expect("workspace JSON");
+    let mut marked = 0;
+    for window in doc["windows"].as_array_mut().expect("windows") {
+        for pane in window["panes"].as_array_mut().expect("panes") {
+            if pane["id"].as_u64() == Some(was_hidden) {
+                pane["hidden"] = serde_json::Value::Bool(true);
+                marked += 1;
+            }
+        }
+    }
+    assert_eq!(marked, 1, "fixture marks exactly one saved pane hidden");
+    std::fs::write(&path, doc.to_string()).expect("write workspace");
+
+    let mut restored = HostHarness::from_profile_dir(&profile);
+    let win = &restored.app.windows[restored.app.active_window];
+    assert!(
+        win.tree.tiles.find_pane(&was_hidden).is_some(),
+        "the once-hidden pane is in the restored layout"
+    );
+    restored.focus_pane(was_hidden).run_frames(1);
+    assert_eq!(restored.app.active_focused_pane_id(), Some(was_hidden));
+    assert!(
+        restored.app.pane_qualifies_for_input(was_hidden),
+        "the once-hidden pane takes the keyboard like any other pane"
+    );
+}
+
+#[test]
 fn saved_python_view_pane_restores_as_that_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugin_dir = write_restore_fixture_plugin(tmp.path(), "todo");
