@@ -19267,13 +19267,15 @@ mod host_induced_terminal_output_tests {
         t.observed_agent = None;
     }
 
-    /// A burst of PTY events, then the observed-agent synthesis
-    /// `tick_terminal_activity` runs for a known agent in the foreground.
-    fn burst_then_observe(t: &mut crate::host::pane::TerminalPane) {
+    /// A burst of PTY events at `at`, then the observed-agent synthesis
+    /// `tick_terminal_activity` runs for a known agent in the foreground. The
+    /// caller picks `at` against the window it opened, never a fresh
+    /// `Instant::now()` a loaded runner can push past it (stint 1484).
+    fn burst_then_observe(t: &mut crate::host::pane::TerminalPane, at: Instant) {
         for _ in 0..5 {
-            t.record_pty_event(Instant::now());
+            t.record_pty_event(at);
         }
-        let state = t.observed_output_state(Instant::now());
+        let state = t.observed_output_state(at);
         t.set_observed_agent(Some(PaneAgentState {
             pane_id: t.id,
             state,
@@ -19348,7 +19350,7 @@ mod host_induced_terminal_output_tests {
         h.app.reconcile_focus_logging(Duration::ZERO);
         let t = terminal(&mut h, term);
         assert!(
-            !t.host_induced_quiet(Instant::now()),
+            t.host_induced_until.is_none(),
             "a focus change is not host-induced PTY output"
         );
         let state = t.observed_output_state(Instant::now());
@@ -19383,12 +19385,16 @@ mod host_induced_terminal_output_tests {
             }
         }
         assert!(committed, "narrowing the window commits a terminal resize");
+        // Judge the burst at the instant the commit opened the window, not at
+        // a fresh wall clock: on a loaded runner more than the window can pass
+        // between that frame and these lines (stint 1484).
         let t = terminal(&mut h, term);
-        assert!(
-            t.host_induced_quiet(Instant::now()),
-            "a committed resize opens the host-induced window"
-        );
-        burst_then_observe(t);
+        let opened = t
+            .host_induced_until
+            .expect("a committed resize opens the host-induced window")
+            - crate::host::pane::HOST_INDUCED_QUIET;
+        assert!(t.host_induced_quiet(opened));
+        burst_then_observe(t, opened);
 
         assert_eq!(t.effective_agent_state().0, AgentState::Idle);
     }
@@ -19400,7 +19406,7 @@ mod host_induced_terminal_output_tests {
         let t = terminal(&mut h, term);
 
         idle_agent_with_stale_hook(t);
-        burst_then_observe(t);
+        burst_then_observe(t, Instant::now());
         assert_eq!(
             t.effective_agent_state().0,
             AgentState::Working,
@@ -19408,8 +19414,9 @@ mod host_induced_terminal_output_tests {
         );
 
         idle_agent_with_stale_hook(t);
-        t.host_induced_until = Some(Instant::now() - Duration::from_millis(1));
-        burst_then_observe(t);
+        let now = Instant::now();
+        t.host_induced_until = Some(now - Duration::from_millis(1));
+        burst_then_observe(t, now);
         assert_eq!(
             t.effective_agent_state().0,
             AgentState::Working,
@@ -19436,7 +19443,9 @@ mod host_induced_terminal_output_tests {
         }));
         assert_eq!(t.effective_agent_state().0, AgentState::Working);
 
-        t.mark_host_induced(Instant::now(), "test");
+        // A window still open whenever the state is read, however slow the
+        // runner: the claim is about an open window (stint 1484).
+        t.host_induced_until = Some(Instant::now() + Duration::from_secs(3600));
         assert_eq!(
             t.effective_agent_state().0,
             AgentState::Working,
