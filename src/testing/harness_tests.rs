@@ -14521,9 +14521,15 @@ fn write_directed_pipe_receiver_plugin(dir: &std::path::Path) {
 }
 
 fn write_directed_pipe_sender_plugin(dir: &std::path::Path) {
+    write_directed_pipe_sender_plugin_with(dir, "[\"pipe.open\"]");
+}
+
+/// The directed-pipe sender fixture with `capabilities` as the manifest's
+/// capability list (a TOML array literal).
+fn write_directed_pipe_sender_plugin_with(dir: &std::path::Path, capabilities: &str) {
     std::fs::write(
         dir.join("manifest.toml"),
-        "schema_version = 2\n\n[plugin]\nid = \"pipe-sender-probe\"\nname = \"Pipe Sender Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe sender\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-sender-probe.main\"\ndefault = true\n",
+        format!("schema_version = 2\n\n[plugin]\nid = \"pipe-sender-probe\"\nname = \"Pipe Sender Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe sender\"\n\n[plugin.capabilities]\ncapabilities = {capabilities}\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-sender-probe.main\"\ndefault = true\n"),
     )
     .expect("write sender manifest.toml");
     std::fs::write(
@@ -14549,6 +14555,79 @@ fn write_directed_pipe_sender_plugin(dir: &std::path::Path) {
          \x20   return Column([])\n",
     )
     .expect("write sender main.py");
+}
+
+/// Stint 1453: a Python plugin that does not declare `pipe.open` cannot open a
+/// directed pipe to another pane or send on it. The same sender with
+/// `pipe.open` declared completes the round trip in
+/// `real_python_apps_open_and_exchange_directed_pipe_end_to_end`.
+#[test]
+fn python_plugin_without_pipe_open_cannot_open_or_send_a_directed_pipe() {
+    let receiver_dir = tempfile::tempdir().expect("receiver dir");
+    let sender_dir = tempfile::tempdir().expect("sender dir");
+    write_directed_pipe_receiver_plugin(receiver_dir.path());
+    write_directed_pipe_sender_plugin_with(sender_dir.path(), "[]");
+
+    let mut h = HostHarness::new();
+    let receiver_pane_id = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &receiver_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch receiver plugin")
+        .expect("receiver pane id");
+    let wait_for_title = |h: &mut HostHarness, pane: PaneId, title: &str| {
+        let start = std::time::Instant::now();
+        while python_pane_title(h, pane).as_deref() != Some(title) {
+            h.run_frames(1);
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "pane {pane} did not reach title {title:?} (last: {:?}, error: {:?})",
+                python_pane_title(h, pane),
+                python_pane_error(h, pane)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+    wait_for_title(&mut h, receiver_pane_id, "receiver:ready");
+
+    let sender_pane_id = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &sender_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[receiver_pane_id.to_string()],
+        )
+        .expect("launch sender plugin")
+        .expect("sender pane id");
+    // `init` returns SetTitle, PipeOpenDirected and PipeSend in one batch, so
+    // once the title shows, the two pipe effects have been handled too.
+    wait_for_title(&mut h, sender_pane_id, "sender:opened");
+    h.run_frames(5);
+
+    let ctx_id = h.app.windows[h.app.active_window].context_id;
+    assert!(
+        !h.app
+            .directed_pipes
+            .contains_key(&(ctx_id, "stint0742.duplex".to_string())),
+        "no directed pipe may open without pipe.open"
+    );
+    let sender_has_reader = h.app.windows[h.app.active_window]
+        .panes
+        .get(&sender_pane_id)
+        .and_then(Pane::as_view)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader("stint0742.duplex"));
+    assert!(!sender_has_reader, "the sender registered no pipe reader");
+    assert_eq!(
+        python_pane_title(&h, receiver_pane_id).as_deref(),
+        Some("receiver:ready"),
+        "the receiver got no message"
+    );
 }
 
 /// Stint 0742: two real CPython-in-WASM plugins (not `PipeTestView` stubs) open a

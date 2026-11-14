@@ -7458,9 +7458,17 @@ mod tests {
             required(serde_json::json!({"type": "show_notification", "title": "t", "body": "b"})),
             Some("notify")
         );
+        // Stint 1453: pipes reach other panes, so both pipe effects
+        // need the documented `pipe.open` grant.
         assert_eq!(
             required(serde_json::json!({"type": "pipe_send", "pipe_id": "p"})),
-            None
+            Some("pipe.open")
+        );
+        assert_eq!(
+            required(
+                serde_json::json!({"type": "pipe_open_directed", "pipe_id": "p", "target_pane_id": 7})
+            ),
+            Some("pipe.open")
         );
     }
 
