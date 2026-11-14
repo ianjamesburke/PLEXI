@@ -505,8 +505,8 @@ pub struct PlexiApp {
     /// key on regardless of which side (sender or target) later calls
     /// `pipe_send`.
     pub(crate) directed_pipes: HashMap<(u64, String), (u64, u64)>,
-    /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
-    /// opted-in via manifest `[plugin] watch = true` (workspace-local only).
+    /// Hot-reload watcher set (#83). Owns one notify watcher per launched
+    /// plugin pane; hot reload is always on.
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
     /// `reload_pane` call which relaunches the WASM runtime inside the
     /// existing `ViewPane` envelope.

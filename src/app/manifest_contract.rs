@@ -277,6 +277,9 @@ impl PluginManifest {
             .and_then(toml::Value::as_str)
             .unwrap_or("<unknown>")
             .to_owned();
+        if let Some(table) = value.as_table() {
+            reject_removed_keys(table)?;
+        }
         let legacy = value.get("app").is_some();
         // Name the schema the file declares; a schema 2 file can still carry
         // a leftover `[app]` table.

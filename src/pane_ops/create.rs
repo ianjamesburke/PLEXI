@@ -1265,9 +1265,8 @@ impl PlexiApp {
     }
 
     /// Detect crashes on watched panes and restart them after a brief delay
-    /// so the developer can read the crash overlay. Only applies to panes
-    /// that opted in via `[plugin] watch = true` — production installs are
-    /// unaffected. Called once per frame alongside `drain_hot_reload_requests`.
+    /// so the developer can read the crash overlay. Called once per frame
+    /// alongside `drain_hot_reload_requests`.
     pub(crate) fn drain_crash_restarts(&mut self) {}
 
     /// Force-reload the focused view pane (manual trigger via Cmd+Option+R).
