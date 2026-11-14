@@ -1457,7 +1457,9 @@ No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so queued work
 
 Request a clean host shutdown. Sent by `plexi host stop` over a direct `notify.sock` connection (never over `PLEXI_SO...
 
-*No additional fields.*
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string?` | no |
 
 ## Host → App Events
 

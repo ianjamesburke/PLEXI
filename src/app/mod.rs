@@ -4432,6 +4432,7 @@ impl eframe::App for PlexiApp {
                 .reason
                 .unwrap_or(quit::ExitReason::WindowClosed),
             self.quit_workspace_durability(),
+            self.quit_coordinator.stop_reply.take(),
         );
     }
 }

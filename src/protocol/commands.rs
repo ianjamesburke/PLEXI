@@ -1845,11 +1845,15 @@ pub enum HostRequest {
 
     /// Request a clean host shutdown. Sent by `plexi host stop` over a direct
     /// `notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs
-    /// outside a pane by definition). Fire-and-forget; the handler sets a
-    /// close-pending flag consumed at the top of the next frame, which sends
-    /// `egui::ViewportCommand::Close`. `host stop` falls back to `SIGTERM` if
-    /// this request goes unanswered within its short timeout.
-    Shutdown,
+    /// outside a pane by definition). The handler sets a close-pending flag
+    /// consumed at the top of the next frame. When `response_file` is set the
+    /// host answers just before the process exits with its real outcome
+    /// (`status`, `workspace`, `remaining_processes`, `socket_released`;
+    /// stint 1430). `host stop` falls back to `SIGTERM` if no answer comes.
+    Shutdown {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
 }
 
 /// Who caused a plugin state change (`HostRequest::EmitEvent`).

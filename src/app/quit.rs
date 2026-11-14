@@ -68,6 +68,9 @@ pub(crate) struct QuitCoordinator {
     save_failure: Option<String>,
     /// The user chose to quit without saving; the file on disk stays untouched.
     save_waived: bool,
+    /// `plexi host stop`'s reply token: answered by `exit_host` with the
+    /// process's real exit outcome (stint 1430).
+    pub(crate) stop_reply: Option<String>,
 }
 
 /// Failed final saves tolerated (one per second) before asking the user.
@@ -302,7 +305,11 @@ impl super::PlexiApp {
         self.flush_ui_scale_persist_now();
         self.flush_editor_positions_now();
         self.bank_final_focus_segment();
-        exit_host(reason, self.quit_workspace_durability());
+        exit_host(
+            reason,
+            self.quit_workspace_durability(),
+            self.quit_coordinator.stop_reply.take(),
+        );
     }
 
     pub(super) fn begin_quit_cleanup(&self) {
@@ -610,8 +617,33 @@ fn exit_status(remaining: usize, socket: &SocketRelease, workspace: WorkspaceDur
     )
 }
 
-/// Tear the host down and end the process. Never returns.
-pub(crate) fn exit_host(reason: ExitReason, workspace: WorkspaceDurability) -> ! {
+/// What `plexi host stop` is told just before the process exits (stint 1430).
+pub(crate) fn stop_reply(
+    status: i32,
+    remaining: usize,
+    socket: &SocketRelease,
+    workspace: WorkspaceDurability,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "status": status,
+        "workspace": match workspace {
+            WorkspaceDurability::Saved => "saved",
+            WorkspaceDurability::Unsaved => "unsaved",
+        },
+        "remaining_processes": remaining,
+        "socket_released": !matches!(socket, SocketRelease::Failed(_)),
+    })
+}
+
+/// Tear the host down and end the process. Never returns. `stop_reply` is
+/// `plexi host stop`'s reply token, answered with the real outcome before the
+/// process ends.
+pub(crate) fn exit_host(
+    reason: ExitReason,
+    workspace: WorkspaceDurability,
+    stop_reply_to: Option<String>,
+) -> ! {
     trace("cleanup_begin");
     let start = Instant::now();
     let reason_label = reason.label();
@@ -650,6 +682,13 @@ pub(crate) fn exit_host(reason: ExitReason, workspace: WorkspaceDurability) -> !
         log::error!("{message}; the workspace was not saved");
     } else {
         log::info!("{message}");
+    }
+    if let Some(reply) = stop_reply_to {
+        let delivered = crate::rpc::write_json_response(
+            &reply,
+            stop_reply(status, k.remaining, &socket, workspace),
+        );
+        log::info!("quit: host stop reply status={status} delivered={delivered}");
     }
     // The log file is the only record of a quit; flush before the fd dies.
     trace("exit_call");
@@ -1065,9 +1104,16 @@ mod tests {
         assert!(block.contains("invalid workspace"), "{block}");
         h.add_test_pane();
         h.app.mark_workspace_dirty();
-        h.inject_ipc(crate::protocol::HostRequest::Shutdown);
+        h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+            response_file: Some("host-stop-reply".to_string()),
+        });
         h.hidden_frame();
         assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert_eq!(
+            h.app.quit_coordinator.stop_reply.as_deref(),
+            Some("host-stop-reply"),
+            "the reply token reaches exit_host (stint 1430)"
+        );
         assert!(!h.app.pending_close, "host stop must not raise the dialog");
         assert!(h.app.quit_coordinator.save_failure().is_none());
         assert!(
@@ -1079,6 +1125,37 @@ mod tests {
             WorkspaceDurability::Unsaved
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    /// Stint 1430: the reply `exit_host` sends `plexi host stop` carries the
+    /// same status the process exits with, and why it is not clean.
+    #[test]
+    fn stop_reply_carries_the_exit_status_and_its_cause() {
+        let unsaved = stop_reply(
+            exit_status(0, &SocketRelease::Removed, WorkspaceDurability::Unsaved),
+            0,
+            &SocketRelease::Removed,
+            WorkspaceDurability::Unsaved,
+        );
+        assert_eq!(unsaved["status"], 1);
+        assert_eq!(unsaved["workspace"], "unsaved");
+        let clean = stop_reply(
+            exit_status(0, &SocketRelease::Removed, WorkspaceDurability::Saved),
+            0,
+            &SocketRelease::Removed,
+            WorkspaceDurability::Saved,
+        );
+        assert_eq!(clean["status"], 0);
+        assert_eq!(clean["workspace"], "saved");
+        assert_eq!(clean["socket_released"], true);
+        let leftovers = stop_reply(
+            exit_status(2, &SocketRelease::Removed, WorkspaceDurability::Saved),
+            2,
+            &SocketRelease::Removed,
+            WorkspaceDurability::Saved,
+        );
+        assert_eq!(leftovers["status"], 1);
+        assert_eq!(leftovers["remaining_processes"], 2);
     }
 
     #[test]
@@ -1197,7 +1274,9 @@ mod tests {
         h.add_test_pane();
         h.app.workspace_dirty = true;
         h.app.last_workspace_save = Instant::now() - Duration::from_secs(2);
-        h.inject_ipc(crate::protocol::HostRequest::Shutdown);
+        h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+            response_file: None,
+        });
         h.hidden_frame(); // coordinator saves and hides, but does not exit yet
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         assert!(path.exists());

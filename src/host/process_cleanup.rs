@@ -1066,7 +1066,11 @@ wait
             }
             let profile = h.profile_dir().to_path_buf();
             if mode == "host-stop" {
-                h.inject_ipc(crate::protocol::HostRequest::Shutdown);
+                // `exit_host` answers this token with its real exit outcome
+                // (stint 1430); with no socket stream it lands in this file.
+                h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+                    response_file: Some(evidence.join("stop-reply.json").display().to_string()),
+                });
                 h.run_hidden_frames(3);
                 panic!("host stop returned instead of exiting");
             } else if mode == "update" {
@@ -1110,6 +1114,23 @@ wait
                 .expect("run isolated host shutdown");
             if mode == "update" {
                 assert!(evidence.path().join("restart-scheduled").exists());
+            }
+            if mode == "host-stop" {
+                // The reply `exit_host` wrote matches how the process exited.
+                let reply: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(evidence.path().join("stop-reply.json"))
+                        .expect("exit_host wrote the host stop reply"),
+                )
+                .expect("the reply is JSON");
+                assert_eq!(reply["ok"], true, "{reply}");
+                assert_eq!(
+                    reply["status"],
+                    output.status.code().expect("exit code"),
+                    "{reply}"
+                );
+                assert_eq!(reply["workspace"], "saved", "{reply}");
+                assert_eq!(reply["remaining_processes"], 0, "{reply}");
+                assert_eq!(reply["socket_released"], true, "{reply}");
             }
             eprintln!(
                 "quit fixture mode={mode}: {}",
