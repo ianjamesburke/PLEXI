@@ -257,6 +257,44 @@ fn main() -> eframe::Result {
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    // One host per profile (stint 1459). Profile initialization (migration,
+    // core pack seeding, under its own lock), config load and logging have
+    // run by now; custody, retention, the rpc sweep, the window and the
+    // socket have not. A launch from any path (the install, a generation, the
+    // app icon) that finds a live host stops here. Held until the process
+    // exits.
+    let _host_instance = match app::host_instance::host_launch(
+        cli_mode,
+        std::env::var("PLEXI_RUNNING").ok().as_deref(),
+    ) {
+        app::host_instance::HostLaunch::Cli => None,
+        // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
+        // rather than starting a second GUI, and never claims the profile.
+        app::host_instance::HostLaunch::InsidePlexi => {
+            let _ = cli::help::gated_command().print_help();
+            println!();
+            cli::trace::exit(0);
+        }
+        app::host_instance::HostLaunch::Host => match app::host_instance::claim(
+            &config::config_dir(),
+            &crate::platform::ipc::endpoint_path(),
+        ) {
+            Ok(instance) => Some(instance),
+            Err(refusal) if refusal.is_another_host() => {
+                log::info!("host_startup: refused second host: {refusal}");
+                log::logger().flush();
+                eprintln!("{refusal}");
+                std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
+            }
+            Err(failure) => app::startup_error::exit_with_startup_error(
+                app::startup_error::StartupErrorView::host_lock_failure(
+                    &failure.to_string(),
+                    &crate::platform::logging::log_path(),
+                ),
+                app::startup_error::shows_window(true, boot_state.is_background()),
+            ),
+        },
+    };
     // Host start only (foreground, background and headless hosts all start
     // here). Every CLI command, `host start` included, stays without custody.
     if !cli_mode {
@@ -2081,14 +2119,6 @@ fn main() -> eframe::Result {
             }
             cli::trace::exit(code);
         }
-    }
-
-    // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
-    // show help rather than attempting to launch a second GUI.
-    if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let _ = cli::help::gated_command().print_help();
-        println!();
-        cli::trace::exit(0);
     }
 
     // When invoked with no arguments outside Plexi, print a brief launch
