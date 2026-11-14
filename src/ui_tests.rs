@@ -863,10 +863,7 @@ mod tests {
         }
     }
 
-    /// Stint 1498: the quit save-failure dialog's rows take no Tab focus, so
-    /// Tab then Space or Enter cannot quit without saving.
-    #[test]
-    fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
+    fn open_quit_save_failure() -> PlexiUiHarness {
         let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
         h.with_app_mut(|app| {
             let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
@@ -880,16 +877,48 @@ mod tests {
         });
         h.run_steps(4);
         assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
-        for key in [egui::Key::Space, egui::Key::Enter] {
-            h.harness().key_press(egui::Key::Tab);
-            h.run_steps(2);
-            h.harness().key_press(key);
-            h.run_steps(3);
-            assert!(
-                h.with_app(|app| app.quit_coordinator.save_failure().is_some()),
-                "Tab then {key:?} quit without saving"
-            );
-        }
+        h
+    }
+
+    /// Stints 1498 and 1505: the quit save-failure dialog's rows take no Tab
+    /// focus, so Tab then Space does nothing and Tab then Enter cancels (the
+    /// safe default); neither quits without saving.
+    #[test]
+    fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
+        let mut h = open_quit_save_failure();
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert!(
+            h.with_app(|app| app.quit_coordinator.save_failure().is_some()),
+            "Tab then Space decided the dialog"
+        );
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        // Quit without saving clears the failure and keeps quitting.
+        assert!(
+            h.with_app(|app| app.quit_coordinator.save_failure().is_some() || !app.quitting),
+            "Tab then Enter quit without saving"
+        );
+    }
+
+    /// Stint 1505: Cancel is the first action and the Enter default; "Quit
+    /// without saving" comes last and needs its own key.
+    #[test]
+    fn quit_save_failure_lists_cancel_first_and_enter_cancels() {
+        let mut h = open_quit_save_failure();
+        let cancel = h.harness().get_by_label("Cancel").rect();
+        let quit = h.harness().get_by_label("Quit without saving").rect();
+        assert!(cancel.top() < quit.top(), "Cancel is listed first");
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!(app.quit_coordinator.save_failure().is_none(), "Enter decided the dialog");
+            assert!(!app.quitting, "Enter must cancel, not quit");
+        });
     }
 
     /// Stint 1498: a consent prompt that has just appeared draws its approving
