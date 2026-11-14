@@ -598,9 +598,10 @@ mod tests {
     }
 
     #[test]
-    /// Stint 1498: the banner gives up its request the frame it loses the
-    /// keyboard, so it can only come back through an explicit (real) focus,
-    /// which re-arms it; an armed banner never decides on return.
+    /// Stint 1498: pins existing behaviour (this passes on alpha too). The
+    /// banner gives up its request the frame it loses the keyboard, so it can
+    /// only come back through an explicit (real) focus, which re-arms it; an
+    /// armed banner never decides on return.
     fn approval_keyboard_drops_its_request_when_it_loses_the_keyboard() {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().unwrap();

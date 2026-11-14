@@ -5425,4 +5425,24 @@ mod tests {
             "a real click on Grant once must still grant"
         );
     }
+
+    /// Stint 1498: a capability re-requested after a deny never inherits the
+    /// denied prompt's arm state, because it is not prompted again: a deny
+    /// (once or always) blocks the capability for the session.
+    #[test]
+    fn capability_re_request_after_a_deny_is_refused_without_a_prompt() {
+        let mut p = pane(0.0);
+        p.exec(request_capability("fs:read:/tmp"), 0);
+        assert!(p.has_pending_capability_prompt());
+        p.decide_next_capability_prompt(false);
+        p.queue.clear();
+        p.exec(request_capability("fs:read:/tmp"), 0);
+        assert!(
+            !p.has_pending_capability_prompt(),
+            "a denied capability prompted again"
+        );
+        assert!(
+            matches!(pop_event(&mut p), InputEvent::CapabilityDenied(id) if id == "fs:read:/tmp")
+        );
+    }
 }

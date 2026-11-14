@@ -92,9 +92,9 @@ fn inject_key(h: &mut HostHarness, pane: PaneId, k: Key) {
 }
 
 /// The topmost clickable action of the open consent modal: its first action
-/// row (the approving one), read from the last pass's widget rects. Rows
-/// sense clicks only and are row-sized; selectable body text also senses
-/// drags, and the modal frame itself is far taller.
+/// row (the approving one, disabled until armed), read from the last pass's
+/// widget rects. Rows sense clicks only and are row-sized; selectable body
+/// text also senses drags, and the modal frame itself is far taller.
 pub(crate) fn first_modal_action(h: &HostHarness) -> Pos2 {
     let full = screen().unwrap();
     h.app.ctx.viewport(|viewport| {
@@ -104,8 +104,7 @@ pub(crate) fn first_modal_action(h: &HostHarness) -> Pos2 {
             .filter(|layer| layer.order == egui::Order::Foreground)
             .flat_map(|layer| widgets.get_layer(layer))
             .filter(|w| {
-                w.enabled
-                    && w.sense.senses_click()
+                w.sense.senses_click()
                     && !w.sense.senses_drag()
                     && w.rect.height() <= 2.0 * crate::ui::style::BUTTON_H_MD
                     && w.rect.width() < full.width() / 2.0
@@ -303,26 +302,54 @@ fn event_consent_refusal_works_at_once_from_real_input_but_not_injected() {
 }
 
 #[test]
-fn an_identical_event_consent_after_a_grant_arms_on_its_own() {
+fn identical_event_consents_queued_together_each_arm_on_their_own() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
     h.focus_pane(pane);
     h.run_frames(1);
-    let first = open_event_consent(&mut h, pane);
-    h.run_frames(1);
+    // Two identical publish requests from the same pane: same actor id, verb
+    // and target, so a guard keyed on content could not tell them apart.
+    // Pumped with visible frames only, so the dialog is never off screen.
+    let declare = serde_json::json!({
+        "type": "events_declare",
+        "plugin_id": "guard-check",
+        "streams": [{"name": "probe.tick", "schema": {}}],
+        "from_pane_id": pane,
+    });
+    let pump = |h: &mut HostHarness, n: usize| {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while h.app.pending_event_consents.len() < n {
+            h.run_frames(1);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "consent {n} never queued"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let first = Connection::open(&mut h, declare.clone());
+    pump(&mut h, 1);
+    let second = Connection::open(&mut h, declare);
+    pump(&mut h, 2);
     h.app.event_consent_guard.backdate(ARM_DELAY);
-    tap(&mut h, Key::Enter);
-    assert!(
-        h.app.pending_event_consents.is_empty(),
-        "the armed request is granted"
-    );
 
-    let second = open_event_consent(&mut h, pane);
     tap(&mut h, Key::Enter);
     assert_eq!(
         h.app.pending_event_consents.len(),
         1,
-        "the identical next request inherited the granted one's arm state"
+        "the armed first request is granted"
+    );
+    tap(&mut h, Key::Enter);
+    assert_eq!(
+        h.app.pending_event_consents.len(),
+        1,
+        "the identical second request inherited the first one's arm state"
+    );
+    tap(&mut h, Key::Escape);
+    assert!(
+        h.app.pending_event_consents.is_empty(),
+        "a real Esc denies the second"
     );
     drop(first);
     drop(second);
@@ -405,5 +432,24 @@ fn raw_wasm_review_ignores_a_click_on_a_synthetic_frame() {
     assert!(
         h.app.pending_raw_wasm_launches.is_empty(),
         "a real click on Allow and remember must still allow"
+    );
+}
+
+#[test]
+fn raw_wasm_review_ignores_a_real_click_inside_the_arm_delay() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    queue_raw_wasm_review(&mut h);
+    h.run_frames(1);
+    let allow = first_modal_action(&h);
+
+    h.frame(pointer(allow, true));
+    h.frame(pointer(allow, false));
+    assert_eq!(
+        h.app.pending_raw_wasm_launches.len(),
+        1,
+        "a real click inside the arm delay allowed"
     );
 }
