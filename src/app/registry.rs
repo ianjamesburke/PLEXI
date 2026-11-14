@@ -618,6 +618,8 @@ pub struct InstalledPlugin {
 /// data so `plexi plugin list` can show it; it is never loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedPlugin {
+    /// The `[plugin] id` the manifest declares, when it can be read at all.
+    pub id: Option<String>,
     pub dir: PathBuf,
     pub source: RegistrySource,
     pub error: String,
@@ -718,6 +720,16 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// Why the plugin `plugin_id` was found but not loaded, if it was: the
+    /// entry whose manifest declares that id, or whose directory has that
+    /// name when the manifest's id cannot be read.
+    pub fn skipped_reason(&self, plugin_id: &str) -> Option<&SkippedPlugin> {
+        self.skipped.iter().find(|entry| match &entry.id {
+            Some(id) => id == plugin_id,
+            None => entry.dir.file_name().is_some_and(|name| name == plugin_id),
+        })
+    }
+
     /// Look up an installed entry by id (returns `None` if not discovered).
     pub fn get(&self, id: &str) -> Option<&InstalledPlugin> {
         self.plugins.get(id)
@@ -812,6 +824,7 @@ impl PluginRegistry {
                     });
                     if let Some(error) = collision {
                         skipped.push(SkippedPlugin {
+                            id: Some(id.clone()),
                             dir: entry_dir,
                             source,
                             error: error.to_string(),
@@ -844,6 +857,7 @@ impl PluginRegistry {
                         );
                     } else {
                         skipped.push(SkippedPlugin {
+                            id: declared_plugin_id(&entry_dir),
                             dir: entry_dir,
                             source,
                             error: e,
@@ -1018,6 +1032,18 @@ impl PluginRegistry {
         }
         missing
     }
+}
+
+/// The `[plugin] id` a plugin directory's manifest declares, read without
+/// validating the rest of the manifest; `None` when it cannot be read.
+fn declared_plugin_id(plugin_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(plugin_dir.join("manifest.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    value
+        .get("plugin")?
+        .get("id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Returns the path to the global plugins directory: `~/.plexi/plugins/`.

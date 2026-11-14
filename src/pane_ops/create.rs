@@ -2699,6 +2699,22 @@ impl PlexiApp {
 
         match installed {
             None => {
+                if let Some(skipped) = self
+                    .registries
+                    .view_for_context(context_id, &self.router)
+                    .skipped_reason(id)
+                {
+                    log::info!(
+                        "open_view_by_id: plugin '{id}' was skipped at registry load ({}): {}",
+                        skipped.dir.display(),
+                        skipped.error
+                    );
+                    return Err(format!(
+                        "plugin '{id}' is installed at {} but could not be loaded: {}",
+                        skipped.dir.display(),
+                        skipped.error
+                    ));
+                }
                 log::warn!(
                     "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry"
                 );
