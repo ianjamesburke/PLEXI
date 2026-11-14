@@ -20054,6 +20054,7 @@ mod shortcuts_sheet_escape_tests {
         open_then_escape(&mut h, "view focused");
     }
 
+    /// A guard: with no pane to take Esc first, this passes on alpha too.
     #[test]
     fn escape_closes_the_shortcuts_sheet_with_no_pane() {
         let mut h = HostHarness::new();

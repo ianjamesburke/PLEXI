@@ -348,6 +348,24 @@ impl PlexiApp {
     /// a path that skips it leaves the journal on disk, and the next startup
     /// reads that as a crash and emits a `crash_recovery` segment whose
     /// duration is really the time the host spent *not running*.
+    /// Quit-path flush of every live Python runtime's pending admission
+    /// counts (stint 1386); `exit_host` ends in `process::exit`, so `Drop`
+    /// never runs for them.
+    pub(crate) fn flush_admission_summaries(&self) {
+        let mut runtimes = 0;
+        for win in &self.windows {
+            for pane in win.panes.values() {
+                if let Some(view) = pane.as_view() {
+                    if let crate::host::pane::ViewRuntime::Python(python) = &view.runtime {
+                        python.flush_admission_summaries();
+                        runtimes += 1;
+                    }
+                }
+            }
+        }
+        log::info!("quit: flushed admission summaries for {runtimes} plugin runtimes");
+    }
+
     pub(crate) fn bank_final_focus_segment(&self) {
         let Some((window_id, tile_id)) = self.last_logged_focus else {
             // Nothing was focused, so there is no segment to close — but a

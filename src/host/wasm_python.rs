@@ -3446,6 +3446,16 @@ impl LivePythonPane {
             return;
         }
         self.drain_runtime();
+        // Runs in `App::logic` for every pane, occluded window or inactive
+        // context, so a plugin that stops polling still has its count written.
+        self.launch_admissions
+            .summarize_due(std::time::Instant::now());
+    }
+
+    /// Write every pending launch-set admission count now. The quit path
+    /// calls this before `exit_host`, whose `process::exit` skips `Drop`.
+    pub fn flush_admission_summaries(&self) {
+        self.launch_admissions.flush(std::time::Instant::now());
     }
 
     fn bind_repaint(&self, ctx: &egui::Context) {
@@ -5816,12 +5826,32 @@ impl AdmissionRun {
 #[derive(Default)]
 struct LaunchAdmissionMemo(std::cell::RefCell<HashMap<(String, String), AdmissionRun>>);
 
-impl Drop for LaunchAdmissionMemo {
-    fn drop(&mut self) {
-        let now = std::time::Instant::now();
-        for run in self.0.get_mut().values_mut() {
+impl LaunchAdmissionMemo {
+    /// Write the count of every run whose minute is up. Called from the
+    /// runtime's servicing tick, so a plugin that stops polling still has its
+    /// repeats counted.
+    fn summarize_due(&self, now: std::time::Instant) {
+        for run in self.0.borrow_mut().values_mut() {
+            if run.suppressed > 0
+                && now.saturating_duration_since(run.last_info) >= ADMISSION_REPEAT_SUMMARY_EVERY
+            {
+                run.summarize(now);
+            }
+        }
+    }
+
+    /// Write every pending count now. The quit path calls this explicitly:
+    /// `exit_host` ends in `process::exit`, which skips `Drop`.
+    fn flush(&self, now: std::time::Instant) {
+        for run in self.0.borrow_mut().values_mut() {
             run.summarize(now);
         }
+    }
+}
+
+impl Drop for LaunchAdmissionMemo {
+    fn drop(&mut self) {
+        self.flush(std::time::Instant::now());
     }
 }
 
@@ -5851,8 +5881,18 @@ fn launch_set_admits(
             .is_ok_and(|capability| !capability.is_sensitive());
     let mut runs = memo.0.borrow_mut();
     let key = (principal.to_string(), capability.to_string());
+    // Only a demotable allow may hold an entry, so the map is bounded by the
+    // non-sensitive capabilities in the launch set, whatever names a guest
+    // asks about.
+    if !demotable {
+        if let Some(mut run) = runs.remove(&key) {
+            run.summarize(now);
+        }
+        trace.emit();
+        return admitted;
+    }
     match runs.get_mut(&key) {
-        Some(run) if demotable && run.line == line => {
+        Some(run) if run.line == line => {
             run.suppressed += 1;
             if now.saturating_duration_since(run.last_info) >= ADMISSION_REPEAT_SUMMARY_EVERY {
                 run.summarize(now);
@@ -7528,7 +7568,8 @@ mod tests {
         assert_eq!(info_count(&logs), 3, "a new principal instance is traced");
     }
 
-    /// Denials are never demoted, whatever the capability.
+    /// Denials are never demoted, whatever the capability. A guard: it
+    /// passes on alpha too, where nothing is demoted.
     #[test]
     fn launch_set_denials_trace_at_info_every_time() {
         use crate::broker::principal::Principal;
@@ -7543,7 +7584,7 @@ mod tests {
     }
 
     /// Sensitive capabilities (the set withheld at launch) keep an info line
-    /// on every admission.
+    /// on every admission. A guard: it passes on alpha too.
     #[test]
     fn sensitive_launch_set_allows_trace_at_info_every_time() {
         use crate::broker::principal::Principal;
@@ -7556,6 +7597,86 @@ mod tests {
             assert!(launch_set_admits(&pane, &granted, "net.http", &memo, now));
         }
         assert_eq!(info_count(&logs), 5);
+    }
+
+    /// A guest naming a stream of made-up capabilities must not grow the memo:
+    /// only a demotable allow keeps an entry.
+    #[test]
+    fn unknown_or_denied_capabilities_leave_the_memo_empty() {
+        use crate::broker::principal::Principal;
+        let _logs = crate::testing::test_log::capture();
+        let memo = LaunchAdmissionMemo::default();
+        let now = std::time::Instant::now();
+        let pane = Principal::plugin_in_pane("probe", 913_006);
+        let granted: Vec<String> = (0..50).map(|i| format!("made.up.{i}")).collect();
+        for name in &granted {
+            launch_set_admits(&pane, &granted, name, &memo, now);
+            launch_set_admits(&pane, &[], name, &memo, now);
+        }
+        assert!(!launch_set_admits(&pane, &[], "logs.read", &memo, now));
+        assert_eq!(
+            memo.0.borrow().len(),
+            0,
+            "no entry for unknown or denied names"
+        );
+    }
+
+    /// A run whose plugin stops polling still reports its count once the
+    /// minute is up, from the runtime's own servicing tick.
+    #[test]
+    fn a_due_summary_is_written_without_another_request() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let memo = LaunchAdmissionMemo::default();
+        let pane = Principal::plugin_in_pane("logs", 913_007);
+        let granted = vec!["logs.read".to_string()];
+        let t0 = std::time::Instant::now();
+        for _ in 0..3 {
+            launch_set_admits(&pane, &granted, "logs.read", &memo, t0);
+        }
+        memo.summarize_due(t0 + std::time::Duration::from_secs(30));
+        assert!(!summary_lines(&logs).iter().any(|l| l.contains("repeated")));
+        memo.summarize_due(t0 + std::time::Duration::from_secs(61));
+        assert_eq!(
+            summary_lines(&logs),
+            [format!(
+                "admission: repeated 2 times since the last trace: {}",
+                admission_lines(&logs)[0].1
+            )]
+        );
+    }
+
+    /// The quit path cannot rely on Drop (exit_host ends in process::exit):
+    /// an explicit flush writes the pending count and leaves nothing pending.
+    #[test]
+    fn flush_writes_pending_counts_and_leaves_nothing_pending() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let memo = LaunchAdmissionMemo::default();
+        let pane = Principal::plugin_in_pane("logs", 913_008);
+        let granted = vec!["logs.read".to_string()];
+        let t0 = std::time::Instant::now();
+        for _ in 0..4 {
+            launch_set_admits(&pane, &granted, "logs.read", &memo, t0);
+        }
+        memo.flush(t0);
+        assert_eq!(summary_lines(&logs).len(), 1);
+        assert!(summary_lines(&logs)[0].starts_with("admission: repeated 3 times"));
+        memo.flush(t0);
+        drop(memo);
+        assert_eq!(
+            summary_lines(&logs).len(),
+            1,
+            "nothing left pending after a flush"
+        );
+    }
+
+    fn summary_lines(logs: &crate::testing::test_log::LogCapture) -> Vec<String> {
+        admission_lines(logs)
+            .into_iter()
+            .filter(|(level, line)| *level == log::Level::Info && line.contains(" repeated "))
+            .map(|(_, line)| line)
+            .collect()
     }
 
     /// The demoted repeats are counted at info when the run changes, once a

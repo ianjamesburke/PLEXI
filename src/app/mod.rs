@@ -4432,6 +4432,7 @@ impl eframe::App for PlexiApp {
         self.flush_ui_scale_persist_now();
         self.flush_editor_positions_now();
         self.bank_final_focus_segment();
+        self.flush_admission_summaries();
         log::info!("quit_phase: on_exit complete");
         // Backend teardown can call on_exit before destroying its window.
         // Normal quit never gets here: it hides, yields, and exits from logic.
