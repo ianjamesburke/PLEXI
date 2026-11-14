@@ -603,7 +603,7 @@ impl WorkspaceFile {
         }
         let mut ws: Self = serde_json::from_str(&data)
             .map_err(|error| unusable(format!("not valid workspace JSON: {error}")))?;
-        log_removed_hidden_panes(&data);
+        let once_hidden = once_hidden_panes(&data);
         if ws.version != CURRENT_VERSION {
             return Err(unusable(format!(
                 "unsupported workspace version {} (this build reads version {CURRENT_VERSION})",
@@ -611,6 +611,8 @@ impl WorkspaceFile {
             )));
         }
         ws.heal_stale_focus();
+        ws.restore_once_hidden_panes_to_strips(&once_hidden)
+            .map_err(|error| unusable(format!("invalid workspace: {error}")))?;
         ws.validate()
             .map_err(|error| unusable(format!("invalid workspace: {error}")))?;
         let mut migrated = false;
@@ -653,6 +655,77 @@ impl WorkspaceFile {
     /// such focus to the first visible pane, as `Window::reconcile_stale_tiles`
     /// does for a live window, so an invalid file on disk neither fails to load
     /// nor blocks every later save. `validate` is unchanged.
+    /// A build that hid a pane kept it in its window tree but out of its
+    /// context's strip. Put each such pane back into the strip at its tree
+    /// position, keeping every other column's width, shares and focus, so the
+    /// strip matches the tree again. Any other mismatch is left for
+    /// [`Self::validate`] to report.
+    fn restore_once_hidden_panes_to_strips(
+        &mut self,
+        once_hidden: &std::collections::HashSet<PaneId>,
+    ) -> io::Result<()> {
+        if once_hidden.is_empty() {
+            return Ok(());
+        }
+        let windows = &self.windows;
+        for (context, strip) in &mut self.strips {
+            let expected = saved_strip_columns(windows, *context)?;
+            let actual: Vec<Vec<PaneId>> = strip
+                .columns
+                .iter()
+                .map(|column| column.panes.clone())
+                .collect();
+            let without_once_hidden: Vec<Vec<PaneId>> = expected
+                .iter()
+                .map(|panes| {
+                    panes
+                        .iter()
+                        .copied()
+                        .filter(|pane| !once_hidden.contains(pane))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|panes| !panes.is_empty())
+                .collect();
+            if actual == expected || without_once_hidden != actual {
+                continue;
+            }
+            let mut next_id = strip
+                .columns
+                .iter()
+                .map(|column| column.id.0 + 1)
+                .max()
+                .unwrap_or(0)
+                .max(strip.next_column_id);
+            let mut kept = std::mem::take(&mut strip.columns).into_iter();
+            for panes in expected {
+                let column = if panes.iter().all(|pane| once_hidden.contains(pane)) {
+                    let id = crate::strip::ColumnId(next_id);
+                    next_id += 1;
+                    crate::strip::Column::new_stacked(id, panes, Default::default())
+                } else {
+                    let mut column = kept.next().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("strip {context} lost a column while restoring hidden panes"),
+                        )
+                    })?;
+                    if column.panes.len() != panes.len() {
+                        column.heights = vec![1.0; panes.len()];
+                    }
+                    column.panes = panes;
+                    column
+                };
+                strip.columns.push(column);
+            }
+            strip.next_column_id = next_id;
+            log::info!(
+                "workspace_restore: strip {context} takes back its once-hidden panes ({} columns)",
+                strip.columns.len()
+            );
+        }
+        Ok(())
+    }
+
     fn heal_stale_focus(&mut self) {
         for window in &mut self.windows {
             let Some(old) = window.focused_pane else { continue };
@@ -970,9 +1043,11 @@ fn collect_saved_strip_panes(
     })?;
     match tile {
         Tile::Pane(id) => {
-            if window.panes.iter().any(|pane| {
-                pane.id == *id && !matches!(pane.kind, SavedPaneKind::Portal { .. })
-            }) {
+            if window
+                .panes
+                .iter()
+                .any(|pane| pane.id == *id && !matches!(pane.kind, SavedPaneKind::Portal { .. }))
+            {
                 panes.push(*id);
             }
         }
@@ -1084,11 +1159,13 @@ struct SavedVersion {
 
 /// Pane hiding was removed (stint 1457). A workspace saved by an older build
 /// may still mark panes `"hidden": true`; serde ignores that unknown field and
-/// every pane restores visible. Name each such pane once in the log, and the
-/// next save drops the field because `SavedPane` no longer has it.
-fn log_removed_hidden_panes(data: &str) {
+/// every pane restores visible. Name each such pane once in the log and
+/// return them; the next save drops the field because `SavedPane` no longer
+/// has it.
+fn once_hidden_panes(data: &str) -> std::collections::HashSet<PaneId> {
+    let mut once_hidden = std::collections::HashSet::new();
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(data) else {
-        return;
+        return once_hidden;
     };
     let panes = doc["windows"]
         .as_array()
@@ -1102,8 +1179,12 @@ fn log_removed_hidden_panes(data: &str) {
                 "workspace_restore: pane {} was saved hidden; pane hiding was removed, restoring it visible",
                 pane["id"]
             );
+            if let Some(id) = pane["id"].as_u64() {
+                once_hidden.insert(id);
+            }
         }
     }
+    once_hidden
 }
 
 fn saved_version(bytes: &[u8]) -> Option<u32> {

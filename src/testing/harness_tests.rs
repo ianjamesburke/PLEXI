@@ -1438,6 +1438,31 @@ fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
         }
     }
     assert_eq!(marked, 1, "fixture marks exactly one saved pane hidden");
+    // A build that hid a pane kept it in the window tree but out of its
+    // context's strip; reproduce that saved shape.
+    let mut unstripped = 0;
+    for strip in doc["strips"].as_object_mut().expect("strips").values_mut() {
+        let columns = strip["columns"].as_array_mut().expect("strip columns");
+        for column in columns.iter_mut() {
+            let mut panes: Vec<serde_json::Value> =
+                column["panes"].as_array().expect("column panes").clone();
+            let before = panes.len();
+            panes.retain(|pane| pane.as_u64() != Some(was_hidden));
+            if panes.len() != before {
+                unstripped += 1;
+                column["heights"] = serde_json::json!(vec![1.0; panes.len()]);
+                if column["last_focused"].as_u64() == Some(was_hidden) {
+                    column["last_focused"] = panes.first().cloned().unwrap_or_default();
+                }
+                column["panes"] = serde_json::Value::Array(panes);
+            }
+        }
+        columns.retain(|column| column["panes"].as_array().is_some_and(|p| !p.is_empty()));
+    }
+    assert_eq!(
+        unstripped, 1,
+        "fixture takes the hidden pane out of its strip"
+    );
     std::fs::write(&path, doc.to_string()).expect("write workspace");
 
     let mut restored = HostHarness::from_profile_dir(&profile);
