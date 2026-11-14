@@ -319,7 +319,8 @@ impl ToolRegistry {
             }
             let panes: Vec<u64> = owners.iter().map(|(pane_id, _)| *pane_id).collect();
             log::info!(
-                "tool_dispatch: tool {name} is live on panes {panes:?}; address {name}@<pane>"
+                "tool_dispatch: tool {name} is live on panes {panes:?}; address {name}@<pane>",
+                name = crate::host::guest_text::shown(&name)
             );
             for (pane_id, tool) in owners {
                 let qualified = format!("{name}@{pane_id}");
@@ -381,7 +382,7 @@ impl ToolRegistry {
             }
             let panes: Vec<u64> = owners.iter().map(|(pane_id, _, _)| *pane_id).collect();
             log::info!(
-                "tool_dispatch: {external_name} is live on panes {panes:?}; address <plugin>:<pane>__<tool>"
+                "tool_dispatch: {external_name} is live on panes {panes:?}; address <plugin>:<pane>__<tool>", external_name = crate::host::guest_text::shown(&external_name)
             );
             let plugin_id = external_name
                 .split_once("__")
@@ -671,7 +672,10 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
             let _ = t.send(result);
         }
         None => {
-            log::warn!("tool_dispatch: ToolResult for unknown call_id={call_id:?} — dropped");
+            log::warn!(
+                "tool_dispatch: ToolResult for unknown call_id={call_id} — dropped",
+                call_id = crate::host::guest_text::shown(call_id)
+            );
         }
     }
 }
@@ -807,11 +811,14 @@ impl ToolDispatcher {
         let tools = registry.snapshot_for_caller(scope.context_id);
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
         log::info!(
-            "tool_dispatch: dispatcher for caller={} pane={} viewer_context={} — {} tool(s) visible: {visible:?}",
+            "tool_dispatch: dispatcher for caller={} pane={} viewer_context={} — {} tool(s) visible: {}",
             scope.caller_plugin_id,
             scope.caller_pane_id,
             scope.context_id,
             tools.len(),
+            crate::host::guest_text::shown_list(
+                &visible.iter().map(|name| name.to_string()).collect::<Vec<_>>()
+            ),
         );
         Self::from_parts(scope, monitor, tools, &registry)
     }
@@ -929,7 +936,8 @@ impl ToolDispatcher {
                 log::info!(
                     "tool_dispatch: caller={} pane={} — tool '{name}' removed by broker gate",
                     self.caller_plugin_id,
-                    self.caller_pane_id
+                    self.caller_pane_id,
+                    name = crate::host::guest_text::shown(&name)
                 );
             }
         }
@@ -942,7 +950,9 @@ impl ToolDispatcher {
         let context = Some(self.scope.context_id);
         log::info!(
             "tool_dispatch: requested call_id={call_id} caller={} tool={name}",
-            self.scope.caller_plugin_id
+            self.scope.caller_plugin_id,
+            name = crate::host::guest_text::shown(name),
+            call_id = crate::host::guest_text::shown(&call_id)
         );
         // The monitor's profile is the trace's address; an ephemeral monitor
         // has none and stays off disk. (Worker threads have no thread-local
@@ -1001,7 +1011,9 @@ impl ToolDispatcher {
         if !known {
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: tool_not_found caller={} tool={name} call_id={call_id}",
-                self.caller_plugin_id
+                self.caller_plugin_id,
+                name = crate::host::guest_text::shown(name),
+                call_id = crate::host::guest_text::shown(&call_id)
             ));
             return self.dispatch_inner(call_id, name, input_json, None);
         }
@@ -1012,7 +1024,7 @@ impl ToolDispatcher {
         ) else {
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: deny caller={} tool={name} call_id={call_id}: not a requesting principal",
-                self.caller_plugin_id
+                self.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
             ));
             return ToolCallResult::coded("permission_denied", &call_id, None);
         };
@@ -1052,7 +1064,7 @@ impl ToolDispatcher {
                     Err(message) => {
                         log::error!(
                             "tool_dispatch: permission was not saved caller={} tool={name} call_id={call_id}: {message}",
-                            self.caller_plugin_id
+                            self.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
                         );
                         return ToolCallResult::err(message);
                     }
@@ -1106,7 +1118,7 @@ impl ToolDispatcher {
             } else {
                 log::info!(
                     "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",
-                    self.caller_plugin_id
+                    self.caller_plugin_id, name = crate::host::guest_text::shown(name)
                 );
                 return ToolCallResult::coded(
                     "permission_required",
@@ -1145,7 +1157,9 @@ impl ToolDispatcher {
         {
             log::info!(
                 "tool_dispatch: blocked before execution caller={} tool={name} call_id={call_id}",
-                self.caller_plugin_id
+                self.caller_plugin_id,
+                name = crate::host::guest_text::shown(name),
+                call_id = crate::host::guest_text::shown(&call_id)
             );
             return ToolCallResult::coded("permission_denied", &call_id, None);
         }
@@ -1167,8 +1181,10 @@ impl ToolDispatcher {
                 ));
             };
             log::info!(
-                "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?} grant={grant_id}",
-                self.caller_plugin_id
+                "tool_dispatch: caller={} → host tool {name} call_id={call_id} grant={grant_id}",
+                self.caller_plugin_id,
+                name = crate::host::guest_text::shown(name),
+                call_id = crate::host::guest_text::shown(&call_id)
             );
             handler(name, &input_json)
         } else {
@@ -1179,7 +1195,7 @@ impl ToolDispatcher {
             let detail: String = error.chars().take(180).collect();
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: result code={code} caller={} tool={name} call_id={call_id} detail={detail}",
-                self.scope.caller_plugin_id
+                self.scope.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id), detail = crate::host::guest_text::shown(&detail)
             ));
         }
         let outcome = if result.error.is_none() {
@@ -1242,7 +1258,10 @@ impl ToolDispatcher {
         if let Some(pane) = target_pane {
             let qualified = format!("{plugin_id}:{pane}__{tool}");
             if self.tools.contains_key(&qualified) {
-                log::info!("tool_dispatch: routed {plain} to pane {pane}");
+                log::info!(
+                    "tool_dispatch: routed {plain} to pane {pane}",
+                    plain = crate::host::guest_text::shown(&plain)
+                );
                 return Ok(qualified);
             }
             if let Some((provider, _, _)) = self.tools.get(&plain) {
@@ -1250,7 +1269,10 @@ impl ToolDispatcher {
                     return Ok(plain);
                 }
             }
-            log::info!("tool_dispatch: pane {pane} does not expose {plain}");
+            log::info!(
+                "tool_dispatch: pane {pane} does not expose {plain}",
+                plain = crate::host::guest_text::shown(&plain)
+            );
             return Err(format!(
                 "tool_not_found: pane {pane} does not expose {tool}"
             ));
@@ -1272,7 +1294,8 @@ impl ToolDispatcher {
         }
         log::info!(
             "tool_dispatch: ambiguous {plain}; address one of {}",
-            matches.join(", ")
+            crate::host::guest_text::shown(&matches.join(", ")),
+            plain = crate::host::guest_text::shown(&plain)
         );
         Err(format!(
             "ambiguous_instance: {plain} is live on multiple panes; address {}",
@@ -1302,8 +1325,8 @@ impl ToolDispatcher {
             Some(entry) => entry,
             None => {
                 log::warn!(
-                    "tool_dispatch: caller={} pane={} requested unknown tool {name:?} call_id={call_id:?}",
-                    self.caller_plugin_id, self.caller_pane_id,
+                    "tool_dispatch: caller={} pane={} requested unknown tool {name} call_id={call_id}",
+                    self.caller_plugin_id, self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
                 );
                 return ToolCallResult::err(format!(
                     "tool_not_found: no tool named {name:?} in registry"
@@ -1314,8 +1337,8 @@ impl ToolDispatcher {
         let timeout_ms = tool.timeout_ms.unwrap_or(30_000);
 
         log::info!(
-            "tool_dispatch: caller={} caller_pane={} → tool={name:?} provider_pane={pane_id} call_id={call_id:?}",
-            self.caller_plugin_id, self.caller_pane_id,
+            "tool_dispatch: caller={} caller_pane={} → tool={name} provider_pane={pane_id} call_id={call_id}",
+            self.caller_plugin_id, self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
         );
 
         // Register the pending call before sending the event to avoid a race.
@@ -1339,7 +1362,7 @@ impl ToolDispatcher {
                         .any(|current| current.name == *provider_tool_name)
                 {
                     pending_calls().lock().unwrap().remove(&call_id);
-                    log::info!("tool_dispatch: target changed before send pane={pane_id} tool={name} call_id={call_id}");
+                    log::info!("tool_dispatch: target changed before send pane={pane_id} tool={name} call_id={call_id}", name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id));
                     return ToolCallResult::coded("tool_target_changed", &call_id, None);
                 }
                 entry
@@ -1361,7 +1384,9 @@ impl ToolDispatcher {
             // Pane went away after we built the snapshot — clean up and return error.
             pending_calls().lock().unwrap().remove(&call_id);
             log::warn!(
-                "tool_dispatch: provider pane {pane_id} gone for tool {name:?} call_id={call_id:?}"
+                "tool_dispatch: provider pane {pane_id} gone for tool {name} call_id={call_id}",
+                name = crate::host::guest_text::shown(name),
+                call_id = crate::host::guest_text::shown(&call_id)
             );
             return ToolCallResult::err(format!(
                 "tool_pane_gone: pane {pane_id} for tool {name:?} is no longer registered"
@@ -1372,12 +1397,14 @@ impl ToolDispatcher {
         match result_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(result) => {
                 log::info!(
-                    "tool_dispatch: tool={name:?} call_id={call_id:?} result={}",
+                    "tool_dispatch: tool={name} call_id={call_id} result={}",
                     if result.error.is_none() {
                         "ok"
                     } else {
                         "error"
-                    }
+                    },
+                    name = crate::host::guest_text::shown(name),
+                    call_id = crate::host::guest_text::shown(&call_id)
                 );
                 result
             }
@@ -1385,7 +1412,9 @@ impl ToolDispatcher {
                 // Clean up the stale pending entry.
                 pending_calls().lock().unwrap().remove(&call_id);
                 log::warn!(
-                    "tool_dispatch: tool {name:?} call_id={call_id:?} timed out after {timeout_ms}ms"
+                    "tool_dispatch: tool {name} call_id={call_id} timed out after {timeout_ms}ms",
+                    name = crate::host::guest_text::shown(name),
+                    call_id = crate::host::guest_text::shown(&call_id)
                 );
                 ToolCallResult::err(format!(
                     "tool_timeout: tool {name:?} did not respond within {timeout_ms}ms"

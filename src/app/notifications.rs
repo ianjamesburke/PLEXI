@@ -450,7 +450,7 @@ impl PlexiApp {
         host_action: Option<String>,
     ) -> NotifyDelivery {
         log::info!(
-            "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
+            "notify:action: pane_id={pane_id} notify_id={notify_id} value={value:?} host_action={host_action:?}", notify_id = crate::host::guest_text::shown(&notify_id)
         );
         let context_root = self
             .origin_for_pane(pane_id)
@@ -603,7 +603,7 @@ impl PlexiApp {
         self.sync_attention_queue();
         log::info!(
             "notify: dismissed id={} resolved_pane_id={}",
-            notify_id,
+            crate::host::guest_text::shown(notify_id),
             resolved_pane_id
         );
         Ok(())
@@ -647,9 +647,9 @@ impl PlexiApp {
         }
         if !self.notifications_enabled && source != NotifySource::HostIntegrity {
             log::info!(
-                "notify: dropped source={} title={:?} — notifications disabled",
+                "notify: dropped source={} title='{}' — notifications disabled",
                 source.as_str(),
-                notification.title
+                crate::host::guest_text::shown(&notification.title)
             );
             self.deliver_notify_action(
                 notification.sender_pane_id,
@@ -664,9 +664,9 @@ impl PlexiApp {
 
         if self.pending_notifications.len() >= MAX_PENDING_NOTIFICATIONS {
             log::info!(
-                "notify: rejected source={} title={:?} — live queue is full (limit={MAX_PENDING_NOTIFICATIONS})",
+                "notify: rejected source={} title='{}' — live queue is full (limit={MAX_PENDING_NOTIFICATIONS})",
                 source.as_str(),
-                notification.title
+                crate::host::guest_text::shown(&notification.title)
             );
             self.deliver_notify_action(
                 notification.sender_pane_id,
@@ -715,10 +715,10 @@ impl PlexiApp {
         self.sync_attention_queue();
 
         log::info!(
-            "notify: queued source={} id={} title={:?} visible={} interrupt={} cue={}",
+            "notify: queued source={} id={} title='{}' visible={} interrupt={} cue={}",
             source.as_str(),
-            notify_id,
-            title,
+            crate::host::guest_text::shown(&notify_id),
+            crate::host::guest_text::shown(&title),
             is_visible,
             may_interrupt,
             cue_played
@@ -992,7 +992,10 @@ impl PlexiApp {
                 if t > now {
                     continue; // still snoozed — skip timeout check too
                 }
-                log::info!("notify:snooze: woke notify_id={}", n.notify_id);
+                log::info!(
+                    "notify:snooze: woke notify_id={}",
+                    crate::host::guest_text::shown(&n.notify_id)
+                );
                 n.deliver_after = None;
                 n.enqueued_at = now;
                 woken_ids.push(n.notify_id.clone());
@@ -1032,9 +1035,9 @@ impl PlexiApp {
                 .unwrap_or_else(|| "timeout".to_string());
             log::info!(
                 "notification '{}' timed out after {}s — delivering on_dismiss='{}'",
-                n.title,
+                crate::host::guest_text::shown(&n.title),
                 n.timeout_secs.unwrap_or(0),
-                dismiss_value
+                crate::host::guest_text::shown(&dismiss_value)
             );
             if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
                 let cmds = vec![crate::app::view_trait::ViewCommand::DeliverNotifyAction {
@@ -1072,7 +1075,7 @@ impl PlexiApp {
                 }
                 log::info!(
                     "notification '{}' tombstoned (pane {pane_id} closed)",
-                    n.title
+                    crate::host::guest_text::shown(&n.title)
                 );
             }
         }
@@ -1190,9 +1193,9 @@ impl PlexiApp {
             };
             let n = self.pending_notifications.remove(pos);
             log::info!(
-                "notify:auto_dismiss: pane_id={focused_id} focused — dismissing notify_id={} title={:?}",
-                n.notify_id,
-                n.title
+                "notify:auto_dismiss: pane_id={focused_id} focused — dismissing notify_id={} title='{}'",
+                crate::host::guest_text::shown(&n.notify_id),
+                crate::host::guest_text::shown(&n.title)
             );
             if self.current_notify_id.as_deref() == Some(&n.notify_id) {
                 self.current_notify_id = None;
@@ -1279,9 +1282,57 @@ impl PlexiApp {
             }
 
             log::info!(
-                "notify:resurface: notify_id={notify_id} title={:?} origin_pane={sender_pane_id} window_id={active_window_id} context_id={active_context_id}",
-                self.pending_notifications[pos].title
+                "notify:resurface: notify_id={notify_id} title='{}' origin_pane={sender_pane_id} window_id={active_window_id} context_id={active_context_id}",
+                crate::host::guest_text::shown(&self.pending_notifications[pos].title), notify_id = crate::host::guest_text::shown(&notify_id)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod guest_id_tests {
+    use super::*;
+    use crate::testing::HostHarness;
+
+    /// Stint 1344: a notification id is a key the host hands back to whoever
+    /// raised it, so it stays exactly as sent (a tab and a length past the
+    /// identifier cap included) and is escaped only where it is logged.
+    #[test]
+    fn a_notification_id_round_trips_and_is_escaped_only_in_the_log() {
+        let capture = crate::testing::test_log::capture();
+        let mut h = HostHarness::new();
+        h.app.notifications_enabled = true;
+        let id = format!("id\tTAB\u{1b}[2J{}", "n".repeat(300));
+        h.app.enqueue_notification(
+            NotifySource::View,
+            PendingNotification {
+                notify_id: id.clone(),
+                title: "Saved".to_string(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            h.app
+                .pending_notifications
+                .iter()
+                .any(|n| n.notify_id == id),
+            "the id must be kept as sent"
+        );
+        for line in capture.lines() {
+            assert!(
+                !line
+                    .chars()
+                    .any(crate::host::guest_text::is_unsafe_to_print),
+                "raw text in a log line: {:?}",
+                line.chars().take(120).collect::<String>()
+            );
+        }
+        assert!(
+            capture
+                .lines()
+                .iter()
+                .any(|line| line.contains("id\\tTAB\\u{1b}[2J")),
+            "the queued line names the id, escaped"
+        );
     }
 }

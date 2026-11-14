@@ -8619,6 +8619,395 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     }
 }
 
+/// Stint 1344: a plugin is untrusted, and its title, `log` messages and
+/// stderr lines reach the pane label, `plexi.log` and terminals reading that
+/// log. Each must arrive with control and bidi characters escaped and its
+/// length capped; the raw bytes never land.
+#[test]
+fn guest_title_log_and_stderr_text_are_escaped_and_capped() {
+    let capture = crate::testing::test_log::capture();
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    std::fs::write(
+        tmp.path().join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"guest-text-probe\"\nname = \"Guest Text Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1344 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"guest-text-probe.main\"\ndefault = true\n",
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        tmp.path().join("main.py"),
+        "import sys\n\
+         from plexi_sdk._v3_runtime import _host_log\n\
+         from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.ui import Column\n\n\
+         HOSTILE = '\\x1b]0;forged\\x07\\x1b[31mred\\nplugin::other: forged line\\u202e' + 'A' * 5000\n\n\
+         def init(size, args):\n\
+         \x20   _host_log('info', 'LOGMARK' + HOSTILE)\n\
+         \x20   sys.stderr.write('ERRMARK' + HOSTILE.replace('\\n', ' ') + '\\n')\n\
+         \x20   sys.stderr.flush()\n\
+         \x20   return [SetTitle('TITLEMARK' + HOSTILE)]\n\n\
+         def update(event):\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write main.py");
+    let mut h = HostHarness::new();
+    h.app
+        .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .expect("launch guest-text-probe");
+    let pane_id = *h.state().open_panes.last().expect("pane appears");
+    let marked = |capture: &crate::testing::test_log::LogCapture, mark: &str| {
+        capture.lines().into_iter().find(|line| line.contains(mark))
+    };
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = python_pane_title(&h, pane_id).unwrap_or_default();
+        if title.starts_with("TITLEMARK")
+            && marked(&capture, "LOGMARK").is_some()
+            && marked(&capture, "ERRMARK").is_some()
+        {
+            break;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "guest title, log and stderr must all arrive (title: {title:.40?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let unsafe_char =
+        |c: char| c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let title = python_pane_title(&h, pane_id).unwrap();
+    let log_line = marked(&capture, "LOGMARK").unwrap();
+    let err_line = marked(&capture, "ERRMARK").unwrap();
+    for (sink, text) in [("title", &title), ("log", &log_line), ("stderr", &err_line)] {
+        let head: String = text.chars().take(80).collect();
+        assert!(
+            !text.chars().any(unsafe_char),
+            "{sink} carries a raw control character: {head:?}"
+        );
+        assert!(
+            text.contains("\\u{1b}]0;forged"),
+            "{sink} must show the escape visibly: {head:?}"
+        );
+        assert!(
+            text.ends_with("[truncated]"),
+            "{sink} must be capped and marked: {:?}",
+            &text[text.len().saturating_sub(40)..]
+        );
+        assert!(
+            text.chars().count() < 4000,
+            "{sink} is not capped: {} chars",
+            text.chars().count()
+        );
+    }
+    // The title keeps exactly the title cap: 128 characters, 5 of them escaped
+    // (ESC +5, BEL +4, ESC +5, newline +1, U+202E +7), then the marker.
+    assert_eq!(
+        title.chars().count(),
+        crate::host::guest_text::MAX_TITLE_CHARS + 22 + crate::host::guest_text::TRUNCATED.len()
+    );
+    // Not only the marked lines: no captured line at all carries a raw escape,
+    // a bidi override, or a forged line that starts with another plugin's prefix.
+    for line in capture.lines() {
+        let head: String = line.chars().take(80).collect();
+        assert!(
+            !line.contains('\u{1b}') && !line.contains('\u{202e}'),
+            "raw guest bytes in a log line: {head:?}"
+        );
+        assert!(
+            !line.contains("\nplugin::other"),
+            "a guest value started a new log line: {head:?}"
+        );
+    }
+    assert!(
+        capture
+            .lines()
+            .iter()
+            .any(|line| line.contains("guest-text-probe") && line.contains("truncated from")),
+        "truncation must leave an info trace"
+    );
+}
+
+/// Write a Python fixture plugin whose `init` runs `body` (indented code).
+fn write_guest_text_fixture(dir: &std::path::Path, id: &str, body: &str) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"Guest Text Fixture\"\nversion = \"0.1.0\"\ndescription = \"stint 1344 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+        ),
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        format!(
+            "import sys\n\
+             from plexi_sdk._v3_runtime import _emit\n\
+             from plexi_sdk.ui import Column\n\n\
+             def init(size, args):\n{body}\n\
+             \x20   return []\n\n\
+             def update(event):\n\
+             \x20   return []\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    )
+    .expect("write main.py");
+}
+
+fn launch_guest_text_fixture(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+    h.app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .expect("launch fixture");
+    *h.state().open_panes.last().expect("pane appears")
+}
+
+fn wait_for_pane_error(h: &mut HostHarness, pane_id: PaneId, needle: &str) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        if let Some(error) = python_pane_error(h, pane_id).filter(|e| e.contains(needle)) {
+            return error;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "pane error containing {needle:?} never arrived (last: {:?})",
+            python_pane_error(h, pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 1344: a decoder error that quotes the guest's own value (an unknown
+/// node type) reaches the pane and the log escaped and capped.
+#[test]
+fn guest_decode_error_is_escaped_before_it_reaches_the_pane() {
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "decode-error-probe",
+        "\x20   _emit({'type': 'component_tree', 'frame_id': 1, 'tree': {'root': 0, 'nodes': [{'id': 0, 'key': 'k', 'data': {'type': 'EVIL\\x1b[31m\\n' + 'B' * 5000}}]}})",
+    );
+    let mut h = HostHarness::new();
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let error = wait_for_pane_error(&mut h, pane_id, "unsupported CPython-WASM UINode type");
+    assert!(
+        !error
+            .chars()
+            .any(crate::host::guest_text::is_unsafe_to_print),
+        "{:?}",
+        error.chars().take(80).collect::<String>()
+    );
+    assert!(
+        error.contains("EVIL\\u{1b}[31m\\n"),
+        "{:?}",
+        error.chars().take(120).collect::<String>()
+    );
+    assert!(error.ends_with(crate::host::guest_text::TRUNCATED));
+}
+
+/// Stint 1344: the exception line read from a guest traceback on stderr is
+/// the pane's failure text, so it is escaped and capped too.
+#[test]
+fn guest_stderr_exception_is_escaped_before_it_reaches_the_pane() {
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "stderr-exception-probe",
+        "\x20   sys.stderr.write('Traceback (most recent call last):\\n  File \"main.py\", line 1, in init\\nRuntimeError: EXCMARK\\x1b]0;forged\\x07' + 'C' * 5000 + '\\n')\n\
+         \x20   sys.stderr.flush()",
+    );
+    let mut h = HostHarness::new();
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let error = wait_for_pane_error(&mut h, pane_id, "EXCMARK");
+    assert!(
+        !error
+            .chars()
+            .any(crate::host::guest_text::is_unsafe_to_print),
+        "{:?}",
+        error.chars().take(80).collect::<String>()
+    );
+    assert!(error.contains("EXCMARK\\u{1b}]0;forged\\u{7}"));
+    assert!(error.ends_with(crate::host::guest_text::TRUNCATED));
+}
+
+/// Every log line captured while a test ran, checked for raw guest bytes:
+/// control characters (a forged line, a terminal escape) and bidi or
+/// invisible characters (`guest_text::is_unsafe_to_print`).
+fn assert_no_raw_guest_text_in_logs(capture: &crate::testing::test_log::LogCapture) {
+    for line in capture.lines() {
+        if let Some(bad) = line
+            .chars()
+            .find(|c| *c != '\n' && crate::host::guest_text::is_unsafe_to_print(*c))
+        {
+            panic!(
+                "raw {bad:?} in a log line: {:?}",
+                line.chars().take(120).collect::<String>()
+            );
+        }
+        assert!(
+            !line.contains("\nFORGED"),
+            "a guest value started a new log line: {:?}",
+            line.chars().take(120).collect::<String>()
+        );
+    }
+}
+
+/// Stint 1344 guard: site-by-site review missed sites twice, so a hostile
+/// Python guest sends every message kind the runtime accepts, each string
+/// field hostile, with every declarable capability declared and the
+/// sensitive ones granted in the test's own profile store (a fixture write,
+/// never a prompt), plus one file read that succeeds on a hostile file name.
+/// No captured log line, debug included, may hold a raw control, bidi or
+/// invisible character. Lines logged on other threads (the runtime and
+/// decoder threads, HTTP and MCP workers) cannot be captured, so this guard
+/// does not see them.
+#[test]
+fn python_guest_cannot_put_raw_text_in_any_log_line() {
+    let capture = crate::testing::test_log::capture_with_debug();
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "hostile-messages-probe",
+        "\x20   H = '\\x1b]0;F\\x07\\u202e\\u200b\\nFORGED' + 'x' * 300\n\
+         \x20   for m in [\n\
+         \x20       {'type': 'pipe_send', 'pipe_id': H, 'payload': {}},\n\
+         \x20       {'type': 'pipe_open_directed', 'pipe_id': H, 'target_pane_id': 999999},\n\
+         \x20       {'type': 'spawn_view', 'plugin_id': H, 'layout': H},\n\
+         \x20       {'type': 'spawn_pane', 'plugin_id': H, 'layout': H},\n\
+         \x20       {'type': 'focus_pane', 'pane_id': 999999},\n\
+         \x20       {'type': 'file_read', 'path': H},\n\
+         \x20       {'type': 'file_read', 'path': 'evil\\x1b[31m.txt'},\n\
+         \x20       {'type': 'file_write', 'path': H, 'content': 'x'},\n\
+         \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H], 'mode': H},\n\
+         \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H]},\n\
+         \x20       {'type': 'mcp_connect', 'request_id': H, 'server_id': H},\n\
+         \x20       {'type': 'mcp_send', 'server_id': H, 'message': {}},\n\
+         \x20       {'type': 'mcp_disconnect', 'server_id': H},\n\
+         \x20       {'type': 'http_request', 'request_id': H, 'url': H, 'method': H},\n\
+         \x20       {'type': 'capability_request', 'capability': H, 'request_id': H},\n\
+         \x20       {'type': 'declare_event_streams', 'streams': [{'name': H, 'description': H}]},\n\
+         \x20       {'type': 'emit_event', 'event': H, 'summary': H, 'resource_id': H},\n\
+         \x20       {'type': 'subscribe_event_streams', 'request_id': H, 'plugin_id': H, 'event_names': [H]},\n\
+         \x20       {'type': 'unsubscribe_event_streams', 'request_id': H, 'subscription_id': H},\n\
+         \x20       {'type': 'tool_result', 'call_id': H, 'error': H},\n\
+         \x20       {'type': 'run_update', 'originator_type_id': H},\n\
+         \x20       {'type': 'show_notification', 'notify_id': H, 'title': H, 'body': H},\n\
+         \x20       {'type': 'show_notification', 'notify_id': H, 'title': H, 'body': H, H: H},\n\
+         \x20       {'type': 'insert_path_token', 'terminal_pane_id': 999999, 'path': H},\n\
+         \x20       {'type': 'command_preview', 'request_id': H, 'terminal_pane_id': 999999, 'command': H},\n\
+         \x20       {'type': 'save_plugin_state', 'scope': H, 'state': {}},\n\
+         \x20       {'type': 'cli_operation', 'name': H, 'request_id': H},\n\
+         \x20       {'type': 'set_title', 'title': H},\n\
+         \x20       {'type': 'log', 'level': H, 'message': H},\n\
+         \x20       {'type': H},\n\
+         \x20       {'type': 'spawn_view', 'plugin_id': 7},\n\
+         \x20   ]:\n\
+         \x20       _emit(m)\n\
+         \x20   sys.stderr.write('ERR' + H + '\\n')\n\
+         \x20   sys.stderr.flush()\n\
+         \x20   _emit({'type': 'set_title', 'title': 'DONE'})",
+    );
+    // Declare what a plugin may declare, so the messages get past their
+    // capability gates and reach the host's own handling and its log lines.
+    // Sensitive ones are withheld until a human grant exists; record that
+    // grant directly in this test's profile.
+    std::fs::write(tmp.path().join("evil\u{1b}[31m.txt"), "x").unwrap();
+    let declared = [
+        "pipe.open",
+        "spawn.plugin",
+        "panes.spawn",
+        "panes.control",
+        "panes.read",
+        "fs.read",
+        "fs.write",
+        "net.http",
+        "mcp.client",
+        "cli.operations",
+        "timer",
+    ];
+    let manifest = tmp.path().join("manifest.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace(
+            "[runtime]",
+            &format!("[plugin.capabilities]\ncapabilities = {declared:?}\n\n[runtime]"),
+        ),
+    )
+    .unwrap();
+    let mut h = HostHarness::new();
+    // The harness installs its own profile, so the grants go in after it.
+    {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .expect("test profile monitor");
+        let mut store = monitor.store();
+        for capability in declared {
+            store.record(crate::broker::GrantRecord::plugin_capability(
+                "hostile-messages-probe",
+                tmp.path(),
+                crate::app::permissions::Capability::try_from(capability).expect(capability),
+                crate::broker::Decision::Allow,
+            ));
+        }
+        store.save();
+    }
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, pane_id).as_deref() != Some("DONE") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the hostile messages never all arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // Let the host service the plugin commands those messages queued.
+    h.run_frames(10);
+    assert!(
+        capture
+            .lines()
+            .iter()
+            .any(|line| line.contains("hostile-messages-probe")),
+        "the probe's lines must be captured"
+    );
+    // Positive evidence that the handlers behind the sensitive grants ran,
+    // so this guard is not passing on refusals alone.
+    let lines = capture.lines();
+    for effect in [
+        "spawn.plugin",
+        "panes.spawn",
+        "panes.control",
+        "fs.write",
+        "net.http",
+    ] {
+        let allowed = format!(
+            "effect={effect} resource_class=capability decision=allow mechanism=python_launch_set"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(&allowed)),
+            "the {effect} grant must admit the plugin's request"
+        );
+    }
+    for trace in [
+        "SpawnView: launch of",
+        "SpawnPane:",
+        "pane_ipc: focus_pane",
+        "plugin::hostile-messages-probe: file_write ",
+        "plugin::hostile-messages-probe: file_read ",
+        "launch refused: requested id",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(trace)),
+            "no {trace:?} line: the handler never ran"
+        );
+    }
+    assert_no_raw_guest_text_in_logs(&capture);
+}
+
 // -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------
 
 /// Write a minimal manifest-backed CPython-in-WASM plugin to `dir`. `title`

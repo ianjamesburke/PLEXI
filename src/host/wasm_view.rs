@@ -11,6 +11,8 @@
 // persistence) gates against the sysmon POC, with no subprocess involved.
 
 use std::collections::HashMap;
+
+use crate::host::guest_text;
 use std::path::{Path, PathBuf};
 
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -251,18 +253,30 @@ impl WasiView for HostCtx {
     }
 }
 
+impl HostCtx {
+    /// A guest log message, escaped and capped where it arrives (stint 1344).
+    fn guest_log(&self, msg: &str) -> String {
+        crate::host::guest_text::guest_line(
+            &self.plugin_id,
+            "log message",
+            msg,
+            crate::host::guest_text::MAX_LINE_CHARS,
+        )
+    }
+}
+
 impl host_log::Host for HostCtx {
     fn debug(&mut self, msg: String) {
-        log::debug!("plugin::{}: {}", self.plugin_id, msg);
+        log::debug!("plugin::{}: {}", self.plugin_id, self.guest_log(&msg));
     }
     fn info(&mut self, msg: String) {
-        log::info!("plugin::{}: {}", self.plugin_id, msg);
+        log::info!("plugin::{}: {}", self.plugin_id, self.guest_log(&msg));
     }
     fn warn(&mut self, msg: String) {
-        log::warn!("plugin::{}: {}", self.plugin_id, msg);
+        log::warn!("plugin::{}: {}", self.plugin_id, self.guest_log(&msg));
     }
     fn error(&mut self, msg: String) {
-        log::error!("plugin::{}: {}", self.plugin_id, msg);
+        log::error!("plugin::{}: {}", self.plugin_id, self.guest_log(&msg));
     }
 }
 
@@ -300,7 +314,8 @@ impl HostCtx {
             Err(e) => {
                 log::warn!(
                     "plugin::{}: failed to register directed pipe '{pipe_id}': {e}",
-                    self.plugin_id
+                    self.plugin_id,
+                    pipe_id = guest_text::shown(pipe_id)
                 );
                 return false;
             }
@@ -319,7 +334,8 @@ impl HostCtx {
         }
         log::info!(
             "plugin::{}: registered directed pipe '{pipe_id}' on WASM runtime",
-            self.plugin_id
+            self.plugin_id,
+            pipe_id = guest_text::shown(pipe_id)
         );
         true
     }
@@ -358,7 +374,8 @@ impl pipes::Host for HostCtx {
                 binding.host_registered = false;
                 log::info!(
                     "plugin::{}: claimed host-registered json pipe '{id}' -> handle {handle}",
-                    self.plugin_id
+                    self.plugin_id,
+                    id = guest_text::shown(&id)
                 );
                 return Ok(handle);
             }
@@ -385,7 +402,8 @@ impl pipes::Host for HostCtx {
         log::info!(
             "plugin::{}: opened {} pipe '{id}' -> handle {handle}",
             self.plugin_id,
-            if binary { "binary" } else { "json" }
+            if binary { "binary" } else { "json" },
+            id = guest_text::shown(&id)
         );
         Ok(handle)
     }
@@ -944,6 +962,40 @@ mod tests {
 
     fn empty_snapshot() -> StateSnapshot {
         StateSnapshot { entries: vec![] }
+    }
+
+    /// Stint 1344: a WASM guest's `host-log` message is escaped and capped
+    /// where it arrives, so it cannot forge a host line or recolor a terminal
+    /// reading `plexi.log`.
+    #[test]
+    fn guest_log_messages_are_escaped_and_capped() {
+        let capture = crate::testing::test_log::capture();
+        let mut app =
+            WasmView::load_ephemeral_run("guest-log-probe", &fixture(), StateStore::ephemeral())
+                .expect("load");
+        let hostile = format!(
+            "LOGMARK\u{1b}]0;forged\u{7}\nplugin::other: forged\u{202e}{}",
+            "A".repeat(5000)
+        );
+        host_log::Host::info(app.store.data_mut(), hostile);
+        let line = capture
+            .lines()
+            .into_iter()
+            .find(|line| line.contains("LOGMARK"))
+            .expect("guest log line");
+        assert!(
+            !line
+                .chars()
+                .any(crate::host::guest_text::is_unsafe_to_print),
+            "{:?}",
+            line.chars().take(80).collect::<String>()
+        );
+        assert!(line.contains("\\u{1b}]0;forged\\u{7}\\nplugin::other"));
+        assert!(line.ends_with(crate::host::guest_text::TRUNCATED));
+        assert!(capture
+            .lines()
+            .iter()
+            .any(|line| line.contains("guest-log-probe: guest log message truncated from")));
     }
 
     #[test]

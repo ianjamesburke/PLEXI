@@ -16,6 +16,8 @@ use std::sync::Once;
 
 thread_local! {
     static CAPTURED: RefCell<Option<Vec<(log::Level, String)>>> = const { RefCell::new(None) };
+    /// Whether this thread's capture also takes debug records.
+    static DEBUG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 struct TestLogger;
@@ -23,6 +25,8 @@ struct TestLogger;
 impl log::Log for TestLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         metadata.level() <= log::Level::Info
+            || (metadata.level() == log::Level::Debug
+                && DEBUG.try_with(|d| d.get()).unwrap_or(false))
     }
 
     fn log(&self, record: &log::Record) {
@@ -52,7 +56,9 @@ pub(crate) fn install() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         if log::set_boxed_logger(Box::new(TestLogger)).is_ok() {
-            log::set_max_level(log::LevelFilter::Info);
+            // Debug reaches the logger so `capture_with_debug` can take it;
+            // `enabled` drops it on every other thread before formatting.
+            log::set_max_level(log::LevelFilter::Debug);
             INSTALLED.store(true, Ordering::SeqCst);
         }
     });
@@ -73,6 +79,13 @@ pub(crate) fn capture() -> LogCapture {
     LogCapture(())
 }
 
+/// Like [`capture`], but debug records are collected too.
+pub(crate) fn capture_with_debug() -> LogCapture {
+    let capture = capture();
+    DEBUG.with(|d| d.set(true));
+    capture
+}
+
 impl LogCapture {
     /// The records collected so far, oldest first.
     pub(crate) fn records(&self) -> Vec<(log::Level, String)> {
@@ -88,5 +101,6 @@ impl LogCapture {
 impl Drop for LogCapture {
     fn drop(&mut self) {
         let _ = CAPTURED.try_with(|slot| *slot.borrow_mut() = None);
+        let _ = DEBUG.try_with(|d| d.set(false));
     }
 }

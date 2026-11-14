@@ -9,6 +9,8 @@
 // same queue, so the loop converges within one tick. No async runtime.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::host::guest_text;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -683,7 +685,10 @@ impl WasmPane {
         now_ms: u64,
     ) -> wasmtime::Result<()> {
         let handler_id = handler_id.into();
-        log::info!("wasm ui: host action handler '{handler_id}'");
+        log::info!(
+            "wasm ui: host action handler '{handler_id}'",
+            handler_id = guest_text::shown(&handler_id)
+        );
         self.queue
             .push_back(InputEvent::UiAction(UiActionEvent { handler_id }));
         self.drain(now_ms)
@@ -753,7 +758,7 @@ impl WasmPane {
                 log::info!(
                     "wasm capability: remembered plugin_id={} capability={} granted={}",
                     self.app.plugin_id(),
-                    capability_id,
+                    guest_text::shown(&capability_id),
                     granted
                 );
             }
@@ -779,7 +784,7 @@ impl WasmPane {
         log::info!(
             "wasm capability: decision plugin_id={} capability={} granted={}",
             self.app.plugin_id(),
-            capability_id,
+            guest_text::shown(&capability_id),
             granted
         );
         // `permission_workspace_root` is the plugin's own workspace root — set at
@@ -974,13 +979,19 @@ impl WasmPane {
     ) -> wasmtime::Result<bool> {
         let mut queued = false;
         for handler_id in result.actions {
-            log::info!("wasm ui: action handler '{handler_id}'");
+            log::info!(
+                "wasm ui: action handler '{handler_id}'",
+                handler_id = guest_text::shown(&handler_id)
+            );
             self.queue
                 .push_back(InputEvent::UiAction(UiActionEvent { handler_id }));
             queued = true;
         }
         for (handler_id, value) in result.value_changes {
-            log::info!("wasm ui: value-change handler '{handler_id}'");
+            log::info!(
+                "wasm ui: value-change handler '{handler_id}'",
+                handler_id = guest_text::shown(&handler_id)
+            );
             self.queue
                 .push_back(InputEvent::UiValueChange(UiValueChangeEvent {
                     handler_id,
@@ -1129,7 +1140,12 @@ impl WasmPane {
                 self.timers.retain(|t| t.id != id);
             }
             Effect::SetTitle(title) => {
-                self.pending_title = Some(title);
+                self.pending_title = Some(guest_text::guest_line(
+                    self.app.plugin_id(),
+                    "title",
+                    &title,
+                    guest_text::MAX_TITLE_CHARS,
+                ));
             }
             Effect::SetStatus(status) => {
                 self.pending_status = Some(status);
@@ -1141,21 +1157,25 @@ impl WasmPane {
                 self.request_capability(cap);
             }
             Effect::FileRead(req) => {
-                log::info!("wasm fs: file-read {}", req.path);
+                log::info!("wasm fs: file-read {}", guest_text::shown(&req.path));
                 let result = self.read_file(req);
                 self.queue.push_back(InputEvent::FileReadResult(result));
             }
             Effect::FileWrite(req) => {
-                log::info!("wasm fs: file-write {}", req.path);
+                log::info!("wasm fs: file-write {}", guest_text::shown(&req.path));
                 let result = self.write_file(req);
                 self.queue.push_back(InputEvent::FileWriteResult(result));
             }
             Effect::HttpFetch(req) => {
-                log::info!("wasm net: {} {}", req.method, req.url);
+                log::info!(
+                    "wasm net: {} {}",
+                    guest_text::shown(&req.method),
+                    guest_text::shown(&req.url)
+                );
                 self.fetch_http(req);
             }
             Effect::AiQuery(req) => {
-                log::info!("wasm ai: ai-query {}", req.request_id);
+                log::info!("wasm ai: ai-query {}", guest_text::shown(&req.request_id));
                 self.handle_ai_query(req);
             }
             Effect::DeclareEventStreams(req) => {
@@ -1165,7 +1185,7 @@ impl WasmPane {
                     .push_back(InputEvent::DeclareEventStreamsResult(result));
             }
             Effect::EmitEvent(req) => {
-                log::info!("wasm events: emit '{}'", req.event);
+                log::info!("wasm events: emit '{}'", guest_text::shown(&req.event));
                 let result = self.emit_event(req);
                 self.queue.push_back(InputEvent::EmitEventResult(result));
             }
@@ -1186,8 +1206,18 @@ impl WasmPane {
             Effect::Notify(req) => self.queue_host_effect(
                 "notify",
                 WasmHostEffect::Notify {
-                    title: req.title,
-                    body: req.body,
+                    title: guest_text::guest_line(
+                        self.app.plugin_id(),
+                        "notification title",
+                        &req.title,
+                        guest_text::MAX_TITLE_CHARS,
+                    ),
+                    body: guest_text::guest_paragraph(
+                        self.app.plugin_id(),
+                        "notification body",
+                        &req.body,
+                        guest_text::MAX_LINE_CHARS,
+                    ),
                     icon: req.icon,
                 },
                 |err| InputEvent::NotifyResult(Err(err)),
@@ -1204,10 +1234,10 @@ impl WasmPane {
             Effect::OpenFilePicker(req) => {
                 log::info!(
                     "wasm picker: open-file-picker request_id={} mode={:?} multiple={} filter={:?}",
-                    req.request_id,
+                    guest_text::shown(&req.request_id),
                     req.mode,
                     req.multiple,
-                    req.filter
+                    guest_text::shown_list(&req.filter)
                 );
                 self.open_file_picker(req);
             }
@@ -1228,7 +1258,7 @@ impl WasmPane {
         if !granted {
             log::info!(
                 "wasm picker: request {} denied: missing capability fs.pick",
-                req.request_id
+                guest_text::shown(&req.request_id)
             );
             self.queue
                 .push_back(InputEvent::FilePickCancelled(req.request_id));
@@ -1279,7 +1309,7 @@ impl WasmPane {
                     }
                     if granted.is_empty() {
                         log::error!(
-                            "wasm picker: pick {request_id}: no picked path could be granted; cancelling"
+                            "wasm picker: pick {request_id}: no picked path could be granted; cancelling", request_id = guest_text::shown(&request_id)
                         );
                         self.queue
                             .push_back(InputEvent::FilePickCancelled(request_id));
@@ -1292,7 +1322,10 @@ impl WasmPane {
                     }
                 }
                 FilePickOutcome::Cancelled => {
-                    log::info!("wasm picker: pick {request_id} cancelled");
+                    log::info!(
+                        "wasm picker: pick {request_id} cancelled",
+                        request_id = guest_text::shown(&request_id)
+                    );
                     self.queue
                         .push_back(InputEvent::FilePickCancelled(request_id));
                 }
@@ -1314,15 +1347,16 @@ impl WasmPane {
         );
         if granted {
             log::info!(
-                "wasm effect: plugin_id={} capability={} effect={effect:?}",
+                "wasm effect: plugin_id={} capability={} queued",
                 self.app.plugin_id(),
-                capability_id
+                guest_text::shown(capability_id)
             );
             self.pending_host_effects.push_back(effect);
         } else {
             log::info!(
                 "wasm effect: denied plugin_id={} capability={capability_id}",
-                self.app.plugin_id()
+                self.app.plugin_id(),
+                capability_id = guest_text::shown(capability_id)
             );
             self.queue
                 .push_back(denied(format!("capability '{capability_id}' is required")));
@@ -1333,7 +1367,7 @@ impl WasmPane {
         log::info!(
             "wasm capability: request plugin_id={} capability={}",
             self.app.plugin_id(),
-            capability_id
+            guest_text::shown(&capability_id)
         );
         if self.session_grants.contains(&capability_id) {
             self.trace_capability(&capability_id, "allow", "wasm_session_set");
@@ -1373,10 +1407,13 @@ impl WasmPane {
             capability_id,
             "clipboard.read" | "clipboard.write" | "notify" | "spawn.plugin"
         ) {
-            log::info!("wasm capability: session grant enabled {capability_id}");
+            log::info!(
+                "wasm capability: session grant enabled {capability_id}",
+                capability_id = guest_text::shown(capability_id)
+            );
         } else {
             log::info!(
-                "wasm capability: session grant recorded without runtime access for unknown capability '{capability_id}'"
+                "wasm capability: session grant recorded without runtime access for unknown capability '{capability_id}'", capability_id = guest_text::shown(capability_id)
             );
         }
     }
@@ -1613,8 +1650,8 @@ impl WasmPane {
                 log::info!(
                     "wasm events: subscribe plugin_id={} publisher={} streams={:?}",
                     self.app.plugin_id(),
-                    req.plugin_id,
-                    req.event_names
+                    guest_text::shown(&req.plugin_id),
+                    guest_text::shown_list(&req.event_names)
                 );
                 self.pending_host_effects
                     .push_back(WasmHostEffect::SubscribeEvents {
@@ -1642,7 +1679,7 @@ impl WasmPane {
         log::info!(
             "wasm events: unsubscribe plugin_id={} subscription={}",
             self.app.plugin_id(),
-            req.subscription_id
+            guest_text::shown(&req.subscription_id)
         );
         self.pending_host_effects
             .push_back(WasmHostEffect::UnsubscribeEvents {
@@ -1694,7 +1731,7 @@ impl WasmPane {
         log::info!(
             "wasm tools: plugin_id={} completed call_id={}",
             self.app.plugin_id(),
-            req.call_id
+            guest_text::shown(&req.call_id)
         );
         self.pending_host_effects
             .push_back(WasmHostEffect::ToolResult {
@@ -1779,7 +1816,7 @@ impl WasmPane {
 
     fn fetch_http(&mut self, req: HttpFetchEffect) {
         if let Err(e) = self.access.allows_host(&req.url) {
-            log::warn!("wasm net: denied {}: {e}", req.url);
+            log::warn!("wasm net: denied {}: {e}", guest_text::shown(&req.url));
             self.queue_denied_http(e);
             return;
         }
@@ -2059,9 +2096,20 @@ impl LiveWasmPane {
     }
 
     fn fail(&mut self, ctx: &str, e: impl std::fmt::Display) {
-        let msg = format!("{ctx}: {e}");
-        log::error!("wasm pane error — {msg}");
-        self.error = Some(msg);
+        // A wasmtime error is host-written and multi-line, but can carry the
+        // guest's own text (a trap or panic message). The pane keeps its lines
+        // with every other unsafe character escaped; the log gets one line.
+        let raw = format!("{ctx}: {e}");
+        log::error!(
+            "wasm pane error — {}",
+            guest_text::bound_line(&raw, guest_text::MAX_LINE_CHARS).0
+        );
+        self.error = Some(guest_text::guest_paragraph(
+            &self.spawn_name,
+            "error",
+            &raw,
+            guest_text::MAX_LINE_CHARS,
+        ));
     }
 
     pub fn wants_close(&self) -> bool {
@@ -2175,7 +2223,8 @@ impl LiveWasmPane {
                 }
                 let Some(handle) = self.inner.json_pipe_handle(&pipe_id) else {
                     log::warn!(
-                        "wasm input: dropping PipeMessage for unregistered pipe '{pipe_id}'"
+                        "wasm input: dropping PipeMessage for unregistered pipe '{pipe_id}'",
+                        pipe_id = guest_text::shown(&pipe_id)
                     );
                     return;
                 };
@@ -2935,6 +2984,158 @@ mod tests {
 
     fn request_capability(capability_id: impl Into<String>) -> Effect {
         Effect::RequestCapability(capability_id.into())
+    }
+
+    /// Stint 1344 guard: a WASM guest names hostile text in every effect the
+    /// pane executes, before and after the WASM-form grants (`fs:read:<dir>`,
+    /// `fs:write:<dir>`, `net:fetch:<host>` and the session capabilities), with
+    /// one read that succeeds on a hostile file name. No captured log line,
+    /// debug included, may hold a raw control, bidi or invisible character.
+    /// This runs at pane level: the host's own handling of the effects it
+    /// queues (`dispatch.rs`) only runs in a live host, and lines logged on
+    /// other threads (HTTP and AI workers) cannot be captured.
+    #[test]
+    fn wasm_guest_cannot_put_raw_text_in_any_log_line() {
+        let capture = crate::testing::test_log::capture_with_debug();
+        let dir = tempfile::tempdir().unwrap();
+        let readable = dir.path().join("evil\u{1b}[31m.txt");
+        std::fs::write(&readable, "x").unwrap();
+        let h = format!("\u{1b}]0;F\u{7}\u{202e}\u{200b}\nFORGED{}", "x".repeat(300));
+        let effects = |h: &str| {
+            vec![
+                file_read(&readable.display().to_string()),
+                Effect::DeclareTools(DeclareToolsEffect {
+                    tools: vec![
+                        super::super::wasm_view::bindings::plexi::platform::types::ToolDecl {
+                            name: h.to_string(),
+                            description: h.to_string(),
+                            input_schema_json: h.to_string(),
+                            output_schema_json: r#"{"type":"object"}"#.to_string(),
+                            timeout_ms: None,
+                            read_only: true,
+                        },
+                    ],
+                }),
+                Effect::ToolResult(ToolResultEffect {
+                    call_id: h.to_string(),
+                    output_json: Some(h.to_string()),
+                    error: Some(h.to_string()),
+                }),
+                Effect::SetTitle(h.to_string()),
+                Effect::SetStatus(h.to_string()),
+                file_read(h),
+                file_write(h, b"x"),
+                http_fetch(h),
+                ai_query(h),
+                declare_stream(h),
+                emit_event(h),
+                open_picker(h, WitFilePickerMode::Open, false),
+                Effect::SubscribeEventStreams(SubscribeEventStreamsEffect {
+                    request_id: h.to_string(),
+                    plugin_id: h.to_string(),
+                    event_names: vec![h.to_string()],
+                    payload_mode: h.to_string(),
+                    trigger_mode: h.to_string(),
+                    resource_id: Some(h.to_string()),
+                }),
+                Effect::UnsubscribeEventStreams(UnsubscribeEventStreamsEffect {
+                    request_id: h.to_string(),
+                    subscription_id: h.to_string(),
+                }),
+                Effect::ClipboardWrite(h.to_string()),
+                Effect::Notify(NotificationEffect {
+                    title: h.to_string(),
+                    body: h.to_string(),
+                    icon: None,
+                }),
+                Effect::Spawn(SpawnEffect {
+                    plugin_id: h.to_string(),
+                    layout: Some(h.to_string()),
+                    args: vec![h.to_string()],
+                }),
+                request_capability(h),
+            ]
+        };
+        let mut p = pane(0.0);
+        for effect in effects(&h) {
+            p.exec(effect, 0);
+        }
+        let _ = p.dispatch_ui_action(h.clone(), 0);
+        let fs_read = format!("fs:read:{}", dir.path().display());
+        let fs_write = format!("fs:write:{}", dir.path().display());
+        for capability in [
+            fs_read.as_str(),
+            fs_write.as_str(),
+            "net:fetch:example.invalid",
+            "clipboard.write",
+            "notify",
+            "spawn.plugin",
+        ] {
+            p.exec(request_capability(capability), 0);
+            p.decide_next_capability_prompt(true);
+        }
+        for effect in effects(&h) {
+            p.exec(effect, 0);
+        }
+        assert!(
+            !capture.lines().is_empty(),
+            "the pane's lines must be captured"
+        );
+        for line in capture.lines() {
+            if let Some(bad) = line.chars().find(|c| guest_text::is_unsafe_to_print(*c)) {
+                panic!(
+                    "raw {bad:?} in a log line: {:?}",
+                    line.chars().take(120).collect::<String>()
+                );
+            }
+        }
+    }
+
+    /// Stint 1344: a WASM guest's title reaches the pane label, `pane list`,
+    /// `pane state` and the consent caption, so it is escaped and capped to
+    /// the title cap where it arrives.
+    #[test]
+    fn guest_title_is_escaped_and_capped_to_the_title_cap() {
+        let mut p = pane(0.0);
+        let hostile = format!("\u{1b}[31mred\nforged\u{202e}{}", "A".repeat(500));
+        p.exec(Effect::SetTitle(hostile), 0);
+        let title = p.take_title().expect("title");
+        assert!(
+            !title.chars().any(guest_text::is_unsafe_to_print),
+            "{title:?}"
+        );
+        assert!(
+            title.starts_with("\\u{1b}[31mred\\nforged\\u{202e}"),
+            "{title:?}"
+        );
+        assert!(title.ends_with(guest_text::TRUNCATED));
+        // 128 characters kept; 3 of them escaped (+5, +1, +7), then the marker.
+        assert_eq!(
+            title.chars().count(),
+            guest_text::MAX_TITLE_CHARS + 13 + guest_text::TRUNCATED.len()
+        );
+    }
+
+    /// Stint 1344: a WASM guest's notification title and body are made safe
+    /// before they reach the notification card and the log.
+    #[test]
+    fn guest_notification_text_is_escaped_where_it_arrives() {
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "notify");
+        p.exec(
+            Effect::Notify(NotificationEffect {
+                title: "T\u{1b}[2J".to_string(),
+                body: "line one\nline two\u{200b}".to_string(),
+                icon: None,
+            }),
+            0,
+        );
+        let effects = p.take_host_effects();
+        let Some(WasmHostEffect::Notify { title, body, .. }) = effects.first() else {
+            panic!("notify effect: {effects:?}");
+        };
+        assert_eq!(title, "T\\u{1b}[2J");
+        assert_eq!(body, "line one\nline two\\u{200b}");
     }
 
     #[test]

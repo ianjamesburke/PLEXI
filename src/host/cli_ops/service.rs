@@ -158,7 +158,7 @@ fn failure(
 ) -> Value {
     let message = message.into();
     log::info!(
-        "cli_ops: request={request_id} operation={operation_id} failed code={error_code}: {message}"
+        "cli_ops: request={request_id} operation={operation_id} failed code={error_code}: {message}", request_id = crate::host::guest_text::shown(request_id), operation_id = crate::host::guest_text::shown(operation_id), message = crate::host::guest_text::bound_line(&message, crate::host::guest_text::MAX_LINE_CHARS).0
     );
     json!({
         "type": "cli_operation_result",
@@ -171,7 +171,11 @@ fn failure(
 }
 
 fn success(request_id: &str, operation_id: &str, data: Value, bytes: usize) -> Value {
-    log::info!("cli_ops: request={request_id} operation={operation_id} ok bytes={bytes}");
+    log::info!(
+        "cli_ops: request={request_id} operation={operation_id} ok bytes={bytes}",
+        request_id = crate::host::guest_text::shown(request_id),
+        operation_id = crate::host::guest_text::shown(operation_id)
+    );
     json!({
         "type": "cli_operation_result",
         "request_id": request_id,
@@ -287,7 +291,9 @@ impl CliOpService {
         }
         log::info!(
             "cli_ops: submit plugin={} request={request_id} operation={operation_id}",
-            who.plugin_id
+            who.plugin_id,
+            request_id = crate::host::guest_text::shown(request_id),
+            operation_id = crate::host::guest_text::shown(operation_id)
         );
         let values = values.clone();
         match self.admit_and_launch(who, env, request_id, operation_id, &values) {
@@ -320,7 +326,10 @@ impl CliOpService {
     /// and replies `cancelled` from [`Self::poll`].
     pub fn cancel(&mut self, request_id: &str) -> Vec<Value> {
         let Some(index) = self.entries.iter().position(|e| e.request_id == request_id) else {
-            log::info!("cli_ops: cancel for unknown request={request_id} ignored");
+            log::info!(
+                "cli_ops: cancel for unknown request={request_id} ignored",
+                request_id = crate::host::guest_text::shown(request_id)
+            );
             return Vec::new();
         };
         match &self.entries[index].stage {
@@ -492,7 +501,7 @@ impl CliOpService {
             )),
             Admission::Required { pending_request_id } => {
                 log::info!(
-                    "cli_ops: request={request_id} operation={operation_id} awaiting approval pending={pending_request_id}"
+                    "cli_ops: request={request_id} operation={operation_id} awaiting approval pending={pending_request_id}", request_id = crate::host::guest_text::shown(request_id), operation_id = crate::host::guest_text::shown(operation_id)
                 );
                 Ok(Step::Park(pending_request_id))
             }
@@ -877,7 +886,10 @@ fn finish(
         "",
         "",
     ) {
-        log::error!("cli_ops: request={request_id} outcome audit failed: {error}");
+        log::error!(
+            "cli_ops: request={request_id} outcome audit failed: {error}",
+            request_id = crate::host::guest_text::shown(request_id)
+        );
     }
     reply
 }

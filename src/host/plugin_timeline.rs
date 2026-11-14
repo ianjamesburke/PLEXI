@@ -523,11 +523,12 @@ impl PluginTimeline {
         log::info!(
             "plugin_timeline: recorded '{}' event {} from '{plugin_id}' (resource={}, rev_after={}, \
              checkpoint={:?}, deliveries={deliveries_queued})",
-            record.event,
+            crate::host::guest_text::shown(&record.event),
             record.event_id,
-            record.resource_id,
-            record.revision_after,
+            crate::host::guest_text::shown(&record.resource_id),
+            crate::host::guest_text::shown(&record.revision_after),
             checkpoint_id,
+            plugin_id = crate::host::guest_text::shown(plugin_id),
         );
         let outcome = EventOutcome {
             event_id: record.event_id,

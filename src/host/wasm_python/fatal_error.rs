@@ -11,19 +11,15 @@ use std::path::{Component, Path};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::host::guest_text::{self, guest_block, guest_line};
+
 /// The entry functions the runtime can be serving when it reports, plus
 /// `runtime` for the SDK's own code between plugin calls.
 const PHASES: &[&str] = &["import", "init", "update", "view", "runtime"];
 const MAX_FILE_CHARS: usize = 256;
 const MAX_EXCEPTION_CHARS: usize = 128;
-const MAX_MESSAGE_CHARS: usize = 2048;
-/// The end of a traceback names the exception, so an oversized one keeps its tail.
-const MAX_TRACEBACK_BYTES: usize = 64 * 1024;
-/// One host log record is written per traceback line, so lines are capped too.
-const MAX_TRACEBACK_LINES: usize = 200;
+const MAX_MESSAGE_CHARS: usize = guest_text::MAX_LINE_CHARS;
 const MAX_DECODE_DETAIL_CHARS: usize = 200;
-const TRUNCATED: &str = " [truncated]";
-const TRACEBACK_TRUNCATED: &str = "[traceback truncated: earlier frames dropped]";
 /// Shown in place of a reported path that is not inside the plugin folder.
 const OUTSIDE_PLUGIN: &str = "<path outside the plugin>";
 
@@ -56,12 +52,15 @@ pub(super) struct GuestFatalError {
 }
 
 impl GuestFatalError {
-    pub(super) fn decode(message: &Value) -> Result<Self, String> {
+    /// `plugin_id` names the plugin in the truncation trace.
+    pub(super) fn decode(plugin_id: &str, message: &Value) -> Result<Self, String> {
         let wire = WireFatalError::deserialize(message).map_err(|error| {
             // serde quotes the offending value, and the guest chose that value.
-            let detail = escape_untrusted(
-                &keep_head(&error.to_string(), MAX_DECODE_DETAIL_CHARS),
-                false,
+            let detail = guest_line(
+                plugin_id,
+                "fatal_error decode detail",
+                &error.to_string(),
+                MAX_DECODE_DETAIL_CHARS,
             );
             format!(
                 "malformed fatal_error message from the SDK runtime ({detail}); \
@@ -85,16 +84,28 @@ impl GuestFatalError {
             // A line number means nothing without the file it counts into.
             line: file.as_ref().and(wire.line),
             file: match file {
-                Some(file) => Some(escape_untrusted(&file, false)),
+                Some(file) => Some(guest_line(
+                    plugin_id,
+                    "fatal_error file",
+                    &file,
+                    MAX_FILE_CHARS,
+                )),
                 None if reported_file => Some(OUTSIDE_PLUGIN.to_string()),
                 None => None,
             },
-            exception: escape_untrusted(&keep_head(&wire.exception, MAX_EXCEPTION_CHARS), false),
-            message: escape_untrusted(&keep_head(&wire.message, MAX_MESSAGE_CHARS), false),
-            traceback: escape_untrusted(
-                keep_tail(&wire.traceback, MAX_TRACEBACK_BYTES).trim_end(),
-                true,
+            exception: guest_line(
+                plugin_id,
+                "fatal_error exception",
+                &wire.exception,
+                MAX_EXCEPTION_CHARS,
             ),
+            message: guest_line(
+                plugin_id,
+                "fatal_error message",
+                &wire.message,
+                MAX_MESSAGE_CHARS,
+            ),
+            traceback: guest_block(plugin_id, "fatal_error traceback", &wire.traceback),
         })
     }
 
@@ -134,69 +145,10 @@ fn is_plugin_relative(file: &str) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
-/// Characters that move the cursor, start a new line, recolor a terminal or
-/// reorder the text around them.
-fn is_unsafe_to_print(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'
-                | '\u{200E}'
-                | '\u{200F}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2066}'..='\u{2069}'
-        )
-}
-
-/// Replace every unprintable character with its visible escape (`\n`,
-/// `\u{1b}`), so the text occupies exactly the lines the host gives it.
-fn escape_untrusted(text: &str, keep_newlines: bool) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if is_unsafe_to_print(c) && !(keep_newlines && c == '\n') {
-            out.extend(c.escape_default());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-fn keep_head(text: &str, max_chars: usize) -> String {
-    match text.char_indices().nth(max_chars) {
-        Some((cut, _)) => format!("{}{TRUNCATED}", &text[..cut]),
-        None => text.to_string(),
-    }
-}
-
-/// The end of `text`: at most `max_bytes`, cut forward to a whole line, and at
-/// most `MAX_TRACEBACK_LINES` lines. A cut is marked on its own first line.
-fn keep_tail(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
-    let text = text.trim_end();
-    let mut tail = text;
-    if tail.len() > max_bytes {
-        let mut cut = tail.len() - max_bytes;
-        while !tail.is_char_boundary(cut) {
-            cut += 1;
-        }
-        tail = &tail[cut..];
-        tail = tail.find('\n').map_or(tail, |newline| &tail[newline + 1..]);
-    }
-    if let Some((cut, _)) = tail.rmatch_indices('\n').nth(MAX_TRACEBACK_LINES - 1) {
-        tail = &tail[cut + 1..];
-    }
-    if tail.len() == text.len() {
-        text.into()
-    } else {
-        format!("{TRACEBACK_TRUNCATED}\n{tail}").into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::guest_text::{is_unsafe_to_print, MAX_BLOCK_LINES, TRUNCATED};
     use serde_json::json;
 
     fn fatal(file: Value, line: Value, message: &str) -> Value {
@@ -213,7 +165,7 @@ mod tests {
 
     #[test]
     fn headline_names_file_line_phase_type_and_message() {
-        let error = GuestFatalError::decode(&fatal(json!("main.py"), json!(54), "nope"))
+        let error = GuestFatalError::decode("probe", &fatal(json!("main.py"), json!(54), "nope"))
             .expect("well-formed message");
         assert_eq!(
             error.headline(),
@@ -226,15 +178,16 @@ mod tests {
 
     #[test]
     fn headline_without_a_plugin_location_or_message_stays_readable() {
-        let error = GuestFatalError::decode(&fatal(Value::Null, Value::Null, ""))
+        let error = GuestFatalError::decode("probe", &fatal(Value::Null, Value::Null, ""))
             .expect("well-formed message");
         assert_eq!(error.headline(), "plugin error (view): RuntimeError");
     }
 
     #[test]
     fn a_message_missing_a_field_is_refused_by_name() {
-        let error = GuestFatalError::decode(&json!({"type": "fatal_error", "phase": "view"}))
-            .expect_err("missing fields must not decode");
+        let error =
+            GuestFatalError::decode("probe", &json!({"type": "fatal_error", "phase": "view"}))
+                .expect_err("missing fields must not decode");
         assert!(error.contains("malformed fatal_error"), "{error}");
         assert!(error.contains("exception"), "{error}");
     }
@@ -249,10 +202,13 @@ mod tests {
 
     #[test]
     fn a_message_cannot_forge_a_host_line_or_recolor_the_terminal() {
-        let error = GuestFatalError::decode(&hostile(json!({
-            "message": "boom\n✓ render 320x240 — 12 node(s)\r\u{1b}[32mok\u{1b}[0m\u{202e}",
-            "exception": "Runtime\nError",
-        })))
+        let error = GuestFatalError::decode(
+            "probe",
+            &hostile(json!({
+                "message": "boom\n✓ render 320x240 — 12 node(s)\r\u{1b}[32mok\u{1b}[0m\u{202e}",
+                "exception": "Runtime\nError",
+            })),
+        )
         .expect("well-formed message");
         let headline = error.headline();
         assert_eq!(headline.lines().count(), 1, "{headline:?}");
@@ -264,20 +220,26 @@ mod tests {
 
     #[test]
     fn the_traceback_keeps_its_lines_but_no_other_control_characters() {
-        let error = GuestFatalError::decode(&hostile(json!({
-            "traceback": "line one\r\u{1b}[2J\nline two\u{7}\n",
-        })))
+        let error = GuestFatalError::decode(
+            "probe",
+            &hostile(json!({
+                "traceback": "line one\r\u{1b}[2J\nline two\u{7}\n",
+            })),
+        )
         .expect("well-formed message");
         assert_eq!(error.traceback(), "line one\\r\\u{1b}[2J\nline two\\u{7}");
     }
 
     #[test]
     fn oversized_fields_are_cut_and_marked() {
-        let error = GuestFatalError::decode(&hostile(json!({
-            "exception": "E".repeat(10_000),
-            "message": "m".repeat(10 * 1024 * 1024),
-            "traceback": format!("{}last line", "frame\n".repeat(100_000)),
-        })))
+        let error = GuestFatalError::decode(
+            "probe",
+            &hostile(json!({
+                "exception": "E".repeat(10_000),
+                "message": "m".repeat(10 * 1024 * 1024),
+                "traceback": format!("{}last line", "frame\n".repeat(100_000)),
+            })),
+        )
         .expect("well-formed message");
         assert!(
             error.headline().len() < MAX_EXCEPTION_CHARS + MAX_MESSAGE_CHARS + 200,
@@ -285,7 +247,7 @@ mod tests {
             error.headline().len()
         );
         assert_eq!(error.headline().matches(TRUNCATED).count(), 2);
-        assert!(error.traceback().len() <= MAX_TRACEBACK_BYTES + 64);
+        assert!(error.traceback().len() <= crate::host::guest_text::MAX_BLOCK_BYTES + 64);
         assert!(error
             .traceback()
             .starts_with("[traceback truncated: earlier frames dropped]\nframe\n"));
@@ -301,7 +263,7 @@ mod tests {
             "\\\\server\\share",
             "",
         ] {
-            let error = GuestFatalError::decode(&hostile(json!({ "file": file })))
+            let error = GuestFatalError::decode("probe", &hostile(json!({ "file": file })))
                 .expect("well-formed message");
             assert_eq!(
                 error.headline(),
@@ -309,7 +271,7 @@ mod tests {
                 "file {file:?} must not be reported"
             );
         }
-        let nested = GuestFatalError::decode(&hostile(json!({ "file": "plugin/ui.py" })))
+        let nested = GuestFatalError::decode("probe", &hostile(json!({ "file": "plugin/ui.py" })))
             .expect("well-formed message");
         assert_eq!(
             nested.headline(),
@@ -319,14 +281,17 @@ mod tests {
 
     #[test]
     fn a_traceback_of_many_short_lines_is_capped_by_line_count() {
-        let error = GuestFatalError::decode(&hostile(json!({
-            "traceback": format!("{}RuntimeError: last line", "x\n".repeat(20_000)),
-        })))
+        let error = GuestFatalError::decode(
+            "probe",
+            &hostile(json!({
+                "traceback": format!("{}RuntimeError: last line", "x\n".repeat(20_000)),
+            })),
+        )
         .expect("well-formed message");
         let lines: Vec<&str> = error.traceback().lines().collect();
         assert_eq!(
             lines.len(),
-            MAX_TRACEBACK_LINES + 1,
+            MAX_BLOCK_LINES + 1,
             "one marker line, then the tail"
         );
         assert_eq!(lines[0], "[traceback truncated: earlier frames dropped]");
@@ -340,7 +305,7 @@ mod tests {
             json!({ "exception": 5, "message": "m".repeat(10 * 1024 * 1024) }),
             json!({ "line": format!("x\n✓ render 320x240{}", "y".repeat(4096)) }),
         ] {
-            let error = GuestFatalError::decode(&hostile(overrides))
+            let error = GuestFatalError::decode("probe", &hostile(overrides))
                 .expect_err("a wrongly typed field must not decode");
             assert!(error.contains("malformed fatal_error"), "{error}");
             assert!(error.len() < 512, "error is {} bytes", error.len());
@@ -350,9 +315,12 @@ mod tests {
 
     #[test]
     fn weak_bidi_marks_are_escaped() {
-        let error = GuestFatalError::decode(&hostile(json!({
-            "message": "a\u{200e}b\u{200f}c\u{061c}d",
-        })))
+        let error = GuestFatalError::decode(
+            "probe",
+            &hostile(json!({
+                "message": "a\u{200e}b\u{200f}c\u{061c}d",
+            })),
+        )
         .expect("well-formed message");
         assert!(
             error.headline().ends_with("a\\u{200e}b\\u{200f}c\\u{61c}d"),
@@ -363,8 +331,9 @@ mod tests {
 
     #[test]
     fn an_unknown_phase_is_malformed_and_not_echoed() {
-        let error = GuestFatalError::decode(&hostile(json!({ "phase": "view\n✓ all good" })))
-            .expect_err("an unknown phase must not decode");
+        let error =
+            GuestFatalError::decode("probe", &hostile(json!({ "phase": "view\n✓ all good" })))
+                .expect_err("an unknown phase must not decode");
         assert!(error.contains("phase is not one of"), "{error}");
         assert!(!error.contains("all good"), "{error}");
     }

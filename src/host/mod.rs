@@ -20,6 +20,7 @@ pub mod editor_positions;
 pub mod event_log;
 pub mod event_subscriptions;
 pub mod flight_recorder;
+pub(crate) mod guest_text;
 pub mod hot_reload;
 pub mod keys;
 pub mod launch_failed;
