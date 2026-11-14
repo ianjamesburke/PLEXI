@@ -1439,6 +1439,44 @@ mod tests {
         format!("schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[contributes]\n{extra}")
     }
 
+    /// Stint 1454: keys that parsed and did nothing are removed. A manifest
+    /// that still sets one fails with an error naming the key, saying it was
+    /// removed, and what to do; the same manifest without it parses.
+    #[test]
+    fn removed_manifest_keys_fail_with_a_named_error() {
+        let base = |plugin: &str, runtime: &str, launch: &str| {
+            format!(
+                "schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n{plugin}\
+                 [runtime]\nkind = 'python'\nentry = 'main.py'\n{runtime}\
+                 [launch]\n{launch}\
+                 [[contributes.views]]\nid = 'sample.main'\ndefault = true\n"
+            )
+        };
+        toml::from_str::<PluginManifest>(&base("", "", ""))
+            .expect("a manifest without removed keys parses");
+        let cases = [
+            ("plugin.watch", base("watch = true\n", "", "")),
+            ("plugin.min_sdk_version", base("min_sdk_version = '0.1.13'\n", "", "")),
+            ("runtime.target", base("", "target = 'wasm32-wasip2'\n", "")),
+            ("runtime.world", base("", "world = 'plexi'\n", "")),
+            ("launch.startup_message", base("", "", "startup_message = 'hi'\n")),
+            ("launch.keyboard_capture", base("", "", "keyboard_capture = true\n")),
+            ("launch.background", base("", "", "background = true\n")),
+            ("launch.compact", base("", "", "compact = 280.0\n")),
+            ("launch.regular", base("", "", "regular = 480.0\n")),
+            ("launch.join_group", base("", "", "join_group = 'cwd'\n")),
+        ];
+        for (key, raw) in cases {
+            let error = toml::from_str::<PluginManifest>(&raw)
+                .expect_err(&format!("{key} must be rejected"))
+                .to_string();
+            assert!(
+                error.contains(key) && error.contains("was removed"),
+                "{key}: {error}"
+            );
+        }
+    }
+
     #[test]
     fn schema2_rejects_unknown_capability_before_activation() {
         let raw = schema2_fixture("[plugin.capabilities]\ncapabilities = ['fs.typo']\n");
