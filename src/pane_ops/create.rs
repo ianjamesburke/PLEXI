@@ -519,7 +519,8 @@ pub(crate) fn restore_view_pane_in_profile(
                 .map(String::from)
                 .unwrap_or_else(|| live.display_name());
             log::info!(
-                "workspace_restore: restored wasm plugin_id={manifest_id} pane_id={pane_id}"
+                "workspace_restore: restored wasm plugin_id={manifest_id} pane_id={pane_id}",
+                manifest_id = crate::host::guest_text::shown(manifest_id)
             );
             let pane = Pane::View(Box::new(crate::host::pane::ViewPane {
                 pip_status: None,
@@ -2449,13 +2450,13 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        // A plugin can ask for any id (SpawnView, SpawnPane). No plugin or
-        // view id holds a control, bidi or invisible character, so such a
+        // A plugin can ask for any id (SpawnView, SpawnPane). No real plugin
+        // or view id holds a control, bidi or invisible character, so such a
         // request is refused here, before any log or error repeats it raw
-        // (stint 1344).
-        if id.chars().any(crate::host::guest_text::is_unsafe_to_print)
-            || id.chars().count() > crate::host::guest_text::MAX_ID_CHARS
-        {
+        // (stint 1344). Length is not checked: manifests set no limit on view
+        // ids, and a display cap must not become an identity limit; logs
+        // cap the shown id instead.
+        if id.chars().any(crate::host::guest_text::is_unsafe_to_print) {
             let shown = crate::host::guest_text::shown(id);
             log::info!("launch refused: requested id {shown:?} is not a plugin or view id");
             return Err(format!("no plugin or view {shown:?}"));
@@ -2514,7 +2515,7 @@ impl PlexiApp {
                 Some(crate::host::shell::shell_join(args))
             };
             log::info!(
-                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first}"
+                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first}", layout_str = crate::host::guest_text::shown(layout_str)
             );
             self.split_focused(
                 vertical,

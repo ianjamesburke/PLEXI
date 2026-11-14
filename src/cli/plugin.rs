@@ -59,6 +59,21 @@ fn plugin_init_workspace_dir(cwd: &std::path::Path, name: &str) -> Option<std::p
     root.map(|root| root.join(&channel_dir).join("plugins").join(name))
 }
 
+/// The name becomes the scaffold's `[plugin] id`, which the manifest load
+/// check refuses unless it is a valid plugin id (stint 1344), so a bad name is
+/// refused before anything is written.
+fn plugin_init_name_error(name: &str) -> Option<String> {
+    crate::host::state_scope::validate_plugin_id(name)
+        .err()
+        .map(|_| {
+            format!(
+                "plugin name {:?} cannot be a plugin id: use only A-Z a-z 0-9 . _ - \
+             (no leading '.', no '..')",
+                crate::host::guest_text::shown(name)
+            )
+        })
+}
+
 /// `plexi plugin init [--lang python|rust] [--global] <name> [--open]`
 ///
 /// Without `--global`: walks up from CWD looking for the nearest workspace
@@ -79,6 +94,11 @@ pub fn plugin_init(
 ) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi plugin init [--lang python|rust] [--global] <name> [--open]");
+        return 1;
+    }
+    if let Some(error) = plugin_init_name_error(name) {
+        log::info!("plugin_init: rejected name: {error}");
+        eprintln!("error: {error}");
         return 1;
     }
 
@@ -3372,7 +3392,19 @@ mod scaffold_marketplace_tests {
 
 #[cfg(test)]
 mod plugin_init_workspace_walk_tests {
-    use super::{plugin_init_config_dir, plugin_init_workspace_dir};
+    use super::{plugin_init_config_dir, plugin_init_name_error, plugin_init_workspace_dir};
+
+    /// Stint 1344: the name becomes the `[plugin] id`, so a name the load
+    /// check would refuse is refused before anything is written.
+    #[test]
+    fn plugin_init_refuses_a_name_that_is_not_a_plugin_id() {
+        assert_eq!(plugin_init_name_error("my-plugin_2.x"), None);
+        for name in ["my plugin", ".hidden", "a..b", "a/b", "evil\u{1b}[31m"] {
+            let error = plugin_init_name_error(name).expect(name);
+            assert!(error.contains("cannot be a plugin id"), "{error}");
+            assert!(!error.contains('\u{1b}'), "{error:?}");
+        }
+    }
 
     /// Stint 1337: `$HOME` is not the login home (a sandbox or test profile
     /// redirected it), the cwd is under the login home, and the login home

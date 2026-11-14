@@ -8856,11 +8856,16 @@ fn assert_no_raw_guest_text_in_logs(capture: &crate::testing::test_log::LogCaptu
 
 /// Stint 1344 guard: site-by-site review missed sites twice, so a hostile
 /// Python guest sends every message kind the runtime accepts, each string
-/// field hostile, and no captured log line may hold a raw control, bidi or
-/// invisible character. A new log site that repeats guest text raw fails here.
+/// field hostile, with every declarable capability declared and the
+/// sensitive ones granted in the test's own profile store (a fixture write,
+/// never a prompt), plus one file read that succeeds on a hostile file name.
+/// No captured log line, debug included, may hold a raw control, bidi or
+/// invisible character. Lines logged on other threads (the runtime and
+/// decoder threads, HTTP and MCP workers) cannot be captured, so this guard
+/// does not see them.
 #[test]
 fn python_guest_cannot_put_raw_text_in_any_log_line() {
-    let capture = crate::testing::test_log::capture();
+    let capture = crate::testing::test_log::capture_with_debug();
     let tmp = tempfile::tempdir().expect("plugin dir");
     write_guest_text_fixture(
         tmp.path(),
@@ -8873,6 +8878,7 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
          \x20       {'type': 'spawn_pane', 'plugin_id': H, 'layout': H},\n\
          \x20       {'type': 'focus_pane', 'pane_id': 999999},\n\
          \x20       {'type': 'file_read', 'path': H},\n\
+         \x20       {'type': 'file_read', 'path': 'evil\\x1b[31m.txt'},\n\
          \x20       {'type': 'file_write', 'path': H, 'content': 'x'},\n\
          \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H], 'mode': H},\n\
          \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H]},\n\
@@ -8905,13 +8911,44 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
     );
     // Declare what a plugin may declare, so the messages get past their
     // capability gates and reach the host's own handling and its log lines.
+    // Sensitive ones are withheld until a human grant exists; record that
+    // grant directly in this test's profile.
+    std::fs::write(tmp.path().join("evil\u{1b}[31m.txt"), "x").unwrap();
+    let declared = [
+        "pipe.open",
+        "spawn.plugin",
+        "panes.spawn",
+        "panes.control",
+        "panes.read",
+        "fs.read",
+        "fs.write",
+        "net.http",
+        "mcp.client",
+        "cli.operations",
+        "timer",
+    ];
+    {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .expect("test profile monitor");
+        let mut store = monitor.store();
+        for capability in declared {
+            store.record(crate::broker::GrantRecord::plugin_capability(
+                "hostile-messages-probe",
+                tmp.path(),
+                crate::app::permissions::Capability::try_from(capability).expect(capability),
+                crate::broker::Decision::Allow,
+            ));
+        }
+        store.save();
+    }
     let manifest = tmp.path().join("manifest.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
     std::fs::write(
         &manifest,
         text.replace(
             "[runtime]",
-            "[plugin.capabilities]\ncapabilities = [\"pipe.open\", \"spawn.plugin\", \"panes.spawn\", \"panes.control\", \"panes.read\", \"fs.read\", \"fs.write\", \"mcp.client\", \"cli.operations\", \"timer\"]\n\n[runtime]",
+            &format!("[plugin.capabilities]\ncapabilities = {declared:?}\n\n[runtime]"),
         ),
     )
     .unwrap();

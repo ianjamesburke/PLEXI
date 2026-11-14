@@ -4056,7 +4056,7 @@ impl LivePythonPane {
         let response = match result {
             Ok(bytes) => {
                 log::info!(
-                    "plugin::{}: file_read {:?} -> {} bytes",
+                    "plugin::{}: file_read {} -> {} bytes",
                     self.plugin_id,
                     guest_text::shown(message.get("path").and_then(Value::as_str).unwrap_or("?")),
                     bytes.len()

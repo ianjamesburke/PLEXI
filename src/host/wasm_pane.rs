@@ -2102,13 +2102,13 @@ impl LiveWasmPane {
         let raw = format!("{ctx}: {e}");
         log::error!(
             "wasm pane error — {}",
-            guest_text::bound_line(&raw, guest_text::MAX_BLOCK_BYTES).0
+            guest_text::bound_line(&raw, guest_text::MAX_LINE_CHARS).0
         );
         self.error = Some(guest_text::guest_paragraph(
             &self.spawn_name,
             "error",
             &raw,
-            guest_text::MAX_BLOCK_BYTES,
+            guest_text::MAX_LINE_CHARS,
         ));
     }
 
@@ -2987,15 +2987,40 @@ mod tests {
     }
 
     /// Stint 1344 guard: a WASM guest names hostile text in every effect the
-    /// pane executes (before and after the matching capability is granted),
-    /// and no captured log line may hold a raw control, bidi or invisible
-    /// character. A new log site that repeats guest text raw fails here.
+    /// pane executes, before and after the WASM-form grants (`fs:read:<dir>`,
+    /// `fs:write:<dir>`, `net:fetch:<host>` and the session capabilities), with
+    /// one read that succeeds on a hostile file name. No captured log line,
+    /// debug included, may hold a raw control, bidi or invisible character.
+    /// This runs at pane level: the host's own handling of the effects it
+    /// queues (`dispatch.rs`) only runs in a live host, and lines logged on
+    /// other threads (HTTP and AI workers) cannot be captured.
     #[test]
     fn wasm_guest_cannot_put_raw_text_in_any_log_line() {
-        let capture = crate::testing::test_log::capture();
+        let capture = crate::testing::test_log::capture_with_debug();
+        let dir = tempfile::tempdir().unwrap();
+        let readable = dir.path().join("evil\u{1b}[31m.txt");
+        std::fs::write(&readable, "x").unwrap();
         let h = format!("\u{1b}]0;F\u{7}\u{202e}\u{200b}\nFORGED{}", "x".repeat(300));
         let effects = |h: &str| {
             vec![
+                file_read(&readable.display().to_string()),
+                Effect::DeclareTools(DeclareToolsEffect {
+                    tools: vec![
+                        super::super::wasm_view::bindings::plexi::platform::types::ToolDecl {
+                            name: h.to_string(),
+                            description: h.to_string(),
+                            input_schema_json: h.to_string(),
+                            output_schema_json: r#"{"type":"object"}"#.to_string(),
+                            timeout_ms: None,
+                            read_only: true,
+                        },
+                    ],
+                }),
+                Effect::ToolResult(ToolResultEffect {
+                    call_id: h.to_string(),
+                    output_json: Some(h.to_string()),
+                    error: Some(h.to_string()),
+                }),
                 Effect::SetTitle(h.to_string()),
                 Effect::SetStatus(h.to_string()),
                 file_read(h),
@@ -3036,10 +3061,12 @@ mod tests {
             p.exec(effect, 0);
         }
         let _ = p.dispatch_ui_action(h.clone(), 0);
+        let fs_read = format!("fs:read:{}", dir.path().display());
+        let fs_write = format!("fs:write:{}", dir.path().display());
         for capability in [
-            "fs.read",
-            "fs.write",
-            "net.http",
+            fs_read.as_str(),
+            fs_write.as_str(),
+            "net:fetch:example.invalid",
             "clipboard.write",
             "notify",
             "spawn.plugin",
