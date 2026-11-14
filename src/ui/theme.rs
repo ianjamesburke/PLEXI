@@ -144,15 +144,22 @@ impl Colors {
     /// (stint 0528), so themes whose `text_dim` already passes keep their
     /// look untouched.
     pub fn text_secondary(&self, bg: Color32) -> Color32 {
+        self.legible_on(self.text_dim, bg)
+    }
+
+    /// `color` blended toward `text_primary` just far enough to reach WCAG
+    /// 4.5:1 on `bg`, so a status tint (warning, danger) stays readable as
+    /// small text; a color that already passes is returned unchanged.
+    pub fn legible_on(&self, color: Color32, bg: Color32) -> Color32 {
         const TARGET: f32 = 4.5;
         let bg_lum = luminance(bg);
-        let mut result = self.text_dim;
+        let mut result = color;
         // Eight even blend steps toward text_primary; the first one meeting
         // the floor wins. If even text_primary misses the floor (a broken
         // custom theme), text_primary is still the best available answer.
         for step in 0..=8 {
             let t = step as f32 / 8.0;
-            let candidate = lerp_color(self.text_dim, self.text_primary, t);
+            let candidate = lerp_color(color, self.text_primary, t);
             if contrast(luminance(candidate), bg_lum) >= TARGET {
                 result = candidate;
                 break;
