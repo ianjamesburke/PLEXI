@@ -369,6 +369,33 @@ pub fn retired_ledger_error() -> Option<String> {
     })
 }
 
+/// Whether the ledger holds the row for agent run `run_id` (stint 1441). A
+/// run without its row was never charged, so it must not be handed back as
+/// an idempotent success. Errors when the ledger cannot be read, including an
+/// old-name ledger that blocks recording.
+pub fn has_agent_run_row(run_id: &str) -> Result<bool, String> {
+    let _guard = ledger_lock();
+    if let Some(error) = retired_ledger_error() {
+        return Err(error);
+    }
+    let path = ledger_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    Ok(text.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|row| {
+                row.get("run_id")
+                    .and_then(|v| v.as_str())
+                    .map(|id| id == run_id)
+            })
+            .unwrap_or(false)
+    }))
+}
+
 /// Fill `cost_usd` on the row whose `ts` matches, when that field is still
 /// null. Other lines are left byte-for-byte. Returns whether a row was
 /// patched. A row that already has a cost is left alone.
