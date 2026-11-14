@@ -2091,6 +2091,21 @@ fn main() -> eframe::Result {
         cli::trace::exit(0);
     }
 
+    // One host per profile (stint 1459): claim the profile before the window,
+    // the socket or any shared profile state. A launch from any path (the
+    // install, a generation, the app icon) that finds a live host stops here.
+    let _host_instance = match app::host_instance::claim(
+        &config::config_dir(),
+        &crate::platform::ipc::endpoint_path(),
+    ) {
+        Ok(instance) => instance,
+        Err(refusal) => {
+            log::info!("host_startup: refused second host: {refusal}");
+            eprintln!("{refusal}");
+            std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
+        }
+    };
+
     // When invoked with no arguments outside Plexi, print a brief launch
     // notice so the terminal isn't silent for first-time users (#1515).
     if !cli_mode && adopted_root.is_none() {

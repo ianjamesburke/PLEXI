@@ -302,7 +302,7 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
     }
 }
 
-enum RunningState {
+pub(crate) enum RunningState {
     Running,
     NotRunning,
 }
@@ -311,7 +311,7 @@ enum RunningState {
 /// stale-socket cleanup idiom as `src/cli/mod.rs`'s `send_to_socket`:
 /// `ConnectionRefused` means the socket file is stale (owning process died
 /// without cleanup) — remove it and treat as not-running.
-fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
+pub(crate) fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
     // An empty transport frame only probes the connection. It uses the same
     // bounded connect path as commands, including a saturated Unix backlog.
     match super::send_line_to_socket(socket_path, b"", timeout) {

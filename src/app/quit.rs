@@ -415,7 +415,8 @@ fn hide_native_window(frame: &eframe::Frame) -> Result<bool, &'static str> {
 }
 
 /// The notify socket this process bound, with the identity it had at bind
-/// time. Written once by the socket listener, read only by teardown.
+/// time. Written once by the socket listener; read by teardown and by the
+/// ownership check.
 static BOUND_NOTIFY_SOCKET: OnceLock<BoundSocket> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -468,6 +469,77 @@ pub(crate) fn record_notify_socket(path: &Path) {
             BOUND_NOTIFY_SOCKET.get().map(|b| &b.path)
         );
     }
+}
+
+/// Whether the socket file at the bound path is still the one this host bound.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SocketOwnership {
+    /// The file is the one this host bound.
+    Owned,
+    /// No file identity was recorded (Windows named pipes have none).
+    Untracked,
+    /// A different socket file sits at the path: another process took it.
+    Replaced,
+    /// The file is gone; the CLI can no longer reach this host.
+    Missing,
+}
+
+fn ownership(bound: &BoundSocket) -> SocketOwnership {
+    match (bound.identity, identity(&bound.path)) {
+        (None, _) => SocketOwnership::Untracked,
+        (Some(_), None) => SocketOwnership::Missing,
+        (Some(at_bind), Some(now)) if now != at_bind => SocketOwnership::Replaced,
+        (Some(_), Some(_)) => SocketOwnership::Owned,
+    }
+}
+
+/// How often the host re-checks that it still owns its socket.
+const SOCKET_OWNERSHIP_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Warn once, the first time `bound` is found replaced or missing, and return
+/// the message to surface. `reported` keeps it to one report per process.
+fn report_lost_socket(
+    bound: &BoundSocket,
+    reported: &std::sync::atomic::AtomicBool,
+) -> Option<String> {
+    let state = ownership(bound);
+    if !matches!(state, SocketOwnership::Replaced | SocketOwnership::Missing) {
+        return None;
+    }
+    if reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let message = match state {
+        SocketOwnership::Replaced => format!(
+            "another process replaced this host's socket {}; Plexi commands now reach that process, not this window",
+            bound.path.display()
+        ),
+        _ => format!(
+            "this host's socket {} was removed; Plexi commands can no longer reach this window",
+            bound.path.display()
+        ),
+    };
+    log::warn!("pane_ipc: {message}");
+    Some(message)
+}
+
+/// Called from `App::logic`: re-check the bound socket at most every
+/// [`SOCKET_OWNERSHIP_INTERVAL`] and return a message the first time it is
+/// lost (stint 1459).
+pub(crate) fn check_notify_socket_ownership() -> Option<String> {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static LAST_CHECK: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let bound = BOUND_NOTIFY_SOCKET.get()?;
+    {
+        let mut last = LAST_CHECK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last.is_some_and(|at| at.elapsed() < SOCKET_OWNERSHIP_INTERVAL) {
+            return None;
+        }
+        *last = Some(Instant::now());
+    }
+    report_lost_socket(bound, &REPORTED)
 }
 
 fn release(bound: &BoundSocket) -> SocketRelease {
@@ -591,6 +663,41 @@ pub(crate) fn exit_host(reason: ExitReason, workspace: WorkspaceDurability) -> !
 
 #[cfg(test)]
 mod tests {
+    /// Stint 1459: the first host notices, once, when another process
+    /// replaces or removes its socket file.
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_socket_is_reported_once_at_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notify.sock");
+        std::fs::write(&path, b"").unwrap();
+        let bound = BoundSocket {
+            path: path.clone(),
+            identity: identity(&path),
+        };
+        let reported = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(ownership(&bound), SocketOwnership::Owned);
+        assert_eq!(report_lost_socket(&bound, &reported), None);
+
+        // A newcomer puts its own socket at the path. It is created while the
+        // old file still exists, so its inode is necessarily a different one.
+        let newcomer = dir.path().join("newcomer.sock");
+        std::fs::write(&newcomer, b"new").unwrap();
+        std::fs::rename(&newcomer, &path).unwrap();
+        assert_eq!(ownership(&bound), SocketOwnership::Replaced);
+        let message = report_lost_socket(&bound, &reported).expect("first loss is reported");
+        assert!(message.contains("replaced"), "{message}");
+        assert_eq!(report_lost_socket(&bound, &reported), None, "reported once");
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(ownership(&bound), SocketOwnership::Missing);
+        let untracked = BoundSocket {
+            path,
+            identity: None,
+        };
+        assert_eq!(ownership(&untracked), SocketOwnership::Untracked);
+    }
+
     use super::*;
 
     #[test]

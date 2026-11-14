@@ -19,6 +19,7 @@ pub mod file_handlers;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
+pub(crate) mod host_instance;
 pub mod host_mcp;
 pub mod host_version;
 pub mod http;
@@ -3784,6 +3785,21 @@ impl eframe::App for PlexiApp {
         self.drain_notes_clip_jobs(ctx);
         self.drain_notes_preview_read();
         self.expire_notes_toasts();
+        // A second host that took this profile's socket leaves this window
+        // unreachable from the CLI: say so once (stint 1459).
+        if let Some(message) = quit::check_notify_socket_ownership() {
+            self.enqueue_notification(
+                notifications::NotifySource::HostIntegrity,
+                notifications::PendingNotification {
+                    notify_id: notifications::new_notify_id("socket-lost"),
+                    title: "Plexi lost its command socket".to_string(),
+                    body: message,
+                    scope: crate::protocol::NotifyScope::Global,
+                    required: true,
+                    ..Default::default()
+                },
+            );
+        }
         self.expire_plugin_notice();
 
         // Expired needs-you items auto-deny even while the window is hidden.
