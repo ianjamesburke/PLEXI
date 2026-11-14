@@ -9478,7 +9478,6 @@ open(out + ".done", "w").close()
         );
     }
 
-||||||| parent of e5bdbe6cd (fix(ui): Tab inside a dialog cycles its own actions, never the chrome behind it (stint 1493))
     /// Stint 1493: open "Close pane?" over two panes, pane `a` focused.
     fn open_close_dialog() -> (PlexiUiHarness, u64, u64) {
         let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
