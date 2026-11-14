@@ -114,7 +114,10 @@ impl PlexiApp {
                 format!("{count} agents are working. Quit Plexi and stop them?")
             }
         } else {
-            "Close pane?".to_string()
+            match &self.close_confirm_target {
+                Some(target) => format!("Close \u{201c}{}\u{201d}?", target.label),
+                None => "Close pane?".to_string(),
+            }
         };
         let response =
             crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
@@ -139,11 +142,12 @@ impl PlexiApp {
         } else if confirmed {
             self.pending_close = false;
             if !self.confirm_close_batch_pane() {
-                self.execute_close_pane();
-                self.mark_workspace_dirty();
+                self.confirm_single_close();
             }
+            self.close_confirm_target = None;
         } else if cancelled {
             self.pending_close = false;
+            self.close_confirm_target = None;
         }
     }
 

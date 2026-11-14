@@ -246,6 +246,14 @@ pub(crate) struct ContextCloseItem {
     pub name: String,
 }
 
+/// The pane a single-pane "Close pane?" dialog is about (stint 1491).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CloseConfirmTarget {
+    pub pane: u64,
+    /// The pane's name as the dialog shows it.
+    pub label: String,
+}
+
 /// State for the context-close confirmation dialog.
 #[derive(Clone, Debug)]
 pub(crate) struct ContextCloseState {
