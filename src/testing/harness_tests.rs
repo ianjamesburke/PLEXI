@@ -14553,6 +14553,142 @@ mod agent_state_restoration_tests {
 
 // -- Directed pipe registration across real runtimes (stint 0742) ---------
 
+/// Stint 1455: a real Python plugin that fetches `url` once at init and puts
+/// the outcome in its title: `http:<status>:<body>` or `http:error:<error>`.
+fn write_http_fetch_plugin(dir: &std::path::Path, allowed_hosts: &str, url: &str) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"http-fetch-probe\"\nname = \"HTTP Fetch Probe\"\nversion = \"0.1.0\"\n\n[plugin.capabilities]\ncapabilities = [\"net.http\"]\nallowed_hosts = {allowed_hosts}\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"http-fetch-probe.main\"\ndefault = true\n"
+        ),
+    )
+    .expect("write http probe manifest");
+    std::fs::write(
+        dir.join("main.py"),
+        format!(
+            "from plexi_sdk.effects import HttpFetch, SetTitle\n\
+             from plexi_sdk.events import HttpResponse\n\
+             from plexi_sdk.ui import Column\n\n\
+             def init(size, args):\n\
+             \x20   return [SetTitle(\"http:sent\"), HttpFetch(\"{url}\", tag=\"probe\")]\n\n\
+             def update(event):\n\
+             \x20   if isinstance(event, HttpResponse):\n\
+             \x20       if event.error:\n\
+             \x20           return [SetTitle(f\"http:error:{{event.error}}\")]\n\
+             \x20       return [SetTitle(f\"http:{{event.status}}:{{event.text()}}\")]\n\
+             \x20   return []\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    )
+    .expect("write http probe main.py");
+}
+
+/// A one-shot HTTP server on 127.0.0.1: answers the first request with
+/// `200 hello-from-loopback` and reports how many connections it accepted.
+fn loopback_http_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body = "hello-from-loopback";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (port, hits)
+}
+
+fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, grant: bool) -> PaneId {
+    if grant {
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .expect("permission monitor")
+            .grant_capability_id(
+                "http-fetch-probe",
+                dir,
+                "net.http",
+                crate::broker::Decision::Allow,
+                crate::broker::GrantSource::User,
+            );
+    }
+    h.app
+        .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
+        .expect("launch http probe")
+        .expect("http probe pane id")
+}
+
+fn wait_for_http_outcome(h: &mut HostHarness, pane: PaneId) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        if let Some(title) = python_pane_title(h, pane) {
+            if title != "http:sent" && title.starts_with("http:") {
+                return title;
+            }
+        }
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "http probe never reported (title {:?}, error {:?})",
+            python_pane_title(h, pane),
+            python_pane_error(h, pane)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 1455: `HttpFetch` end to end. A real Python plugin with `net.http`
+/// granted and the loopback host allowed reaches a local server and gets its
+/// status and body back as `HttpResponse`. No network beyond 127.0.0.1.
+#[test]
+fn python_http_fetch_reaches_an_allowed_loopback_server_and_returns_the_body() {
+    let (port, hits) = loopback_http_server();
+    let dir = tempfile::tempdir().expect("plugin dir");
+    write_http_fetch_plugin(
+        dir.path(),
+        "[\"127.0.0.1\"]",
+        &format!("http://127.0.0.1:{port}/hello"),
+    );
+    let mut h = HostHarness::new();
+    let pane = launch_http_probe(&mut h, dir.path(), true);
+    assert_eq!(wait_for_http_outcome(&mut h, pane), "http:200:hello-from-loopback");
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The denial half: a host outside `allowed_hosts` is refused before any
+/// request is made, and the plugin is told why.
+#[test]
+fn python_http_fetch_to_a_host_outside_allowed_hosts_is_refused_without_a_request() {
+    let (port, hits) = loopback_http_server();
+    let dir = tempfile::tempdir().expect("plugin dir");
+    write_http_fetch_plugin(
+        dir.path(),
+        "[\"api.example.invalid\"]",
+        &format!("http://127.0.0.1:{port}/hello"),
+    );
+    let mut h = HostHarness::new();
+    let pane = launch_http_probe(&mut h, dir.path(), true);
+    let outcome = wait_for_http_outcome(&mut h, pane);
+    assert!(
+        outcome.starts_with("http:error:") && outcome.contains("allowed_hosts"),
+        "{outcome}"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a refused fetch must not reach the server"
+    );
+}
+
 fn write_directed_pipe_receiver_plugin(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
