@@ -446,7 +446,8 @@ pub enum HostRequest {
         pipe_id: String,
         payload: serde_json::Value,
     },
-    /// Update the status text shown in the parent pane chrome.
+    /// Status text for the pane. The host accepts and discards it today;
+    /// nothing shows it.
     StatusSummary { text: String },
 
     /// Write one info-level marker line into the running host's channel log

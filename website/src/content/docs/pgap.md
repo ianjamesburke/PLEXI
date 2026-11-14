@@ -347,7 +347,7 @@ Send a JSON-mode pipe message (not for binary pipes).
 
 ### `status_summary`
 
-Update the status text shown in the parent pane chrome.
+Status text for the pane. The host accepts and discards it today; nothing shows it.
 
 | Field | Type | Required |
 |-------|------|----------|

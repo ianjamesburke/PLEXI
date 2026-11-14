@@ -97,8 +97,7 @@ The view opens in a split to the right of the pane you ran it from. Press `+`.
 
 ## 5. Change it while it runs
 
-New plugins set `watch = true` in their manifest. Edit `main.py`, save, and the
-same pane updates without reopening.
+Edit `main.py`, save, and the same pane updates without reopening.
 
 Run the scaffolded tests whenever you change behavior:
 

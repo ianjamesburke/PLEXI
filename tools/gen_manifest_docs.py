@@ -10,6 +10,23 @@ ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "website/src/content/docs/plugin-manifest.md"
 
 
+def plugin_availability(permissions: str) -> dict[str, str]:
+    """Variant -> text of its `/// Plugin availability:` doc line in `enum Capability`."""
+    body = permissions.split("pub enum Capability {", 1)[1].split("\n}\n", 1)[0]
+    found: dict[str, str] = {}
+    pending = None
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("/// Plugin availability:"):
+            pending = line.removeprefix("/// Plugin availability:").strip().removesuffix(".")
+        elif not line.startswith("///"):
+            variant = re.fullmatch(r"(\w+),", line)
+            if variant and pending:
+                found[variant.group(1)] = pending
+            pending = None
+    return found
+
+
 def generate() -> str:
     contract = (ROOT / "src/app/manifest_contract.rs").read_text()
     prose = "\n".join(line.removeprefix("//!").removeprefix(" ")
@@ -26,7 +43,12 @@ def generate() -> str:
     reserved = re.findall(r'"([^"]+)"', reserved_source)
     if not ids or not reserved:
         raise ValueError("manifest capability registry could not be extracted")
-    rows = [f"| `{wire}` | Available | {descriptions[variant]} |" for variant, wire in ids]
+    availability = plugin_availability(permissions)
+    unknown = set(availability) - set(wire_names)
+    if unknown:
+        raise ValueError(f"Plugin availability lines on unknown variants: {sorted(unknown)}")
+    rows = [f"| `{wire}` | {availability.get(variant, 'Available')} | {descriptions[variant]} |"
+            for variant, wire in ids]
     rows += [f"| `{wire}` | Reserved | No host projection serves this ID yet. |" for wire in reserved]
     fixture = (ROOT / "tests/fixtures/schema2/good.toml").read_text().rstrip()
     return ("---\ntitle: Plugin manifest\ndescription: Schema-2 capability and contribution contract.\n---\n\n"

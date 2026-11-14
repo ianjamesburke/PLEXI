@@ -162,11 +162,17 @@ Effects are dataclasses returned from `init()`/`update()`. The full list with
 fields is in `sdk.md` (Effects section). The common ones:
 
 <!-- drift-check:effects -->
-`SetState`, `PersistState`, `SetTitle`, `SetStatus`, `SetTimer`, `CancelTimer`,
+`SetState`, `PersistState`, `SetTitle`, `SetTimer`, `CancelTimer`,
 `SetSchedulerMode`, `FileRead`, `FileWrite`, `OpenFilePicker`, `HttpFetch`,
-`AiQuery`, `AiMessage`, `CloseSelf`, `RequestCapability`,
-`GetSystemStats`
+`CloseSelf`, `RequestCapability`
 <!-- /drift-check:effects -->
+
+`RequestCapability` never asks the user. It reports whether the capability was
+granted at launch, as `CapabilityGranted` or `CapabilityDenied`.
+
+`effects.py` also defines effects the host does not act on. `AiQuery` is not
+available yet, and `GetSystemStats` is not available; the runtime refuses both.
+The host accepts `SetStatus` and discards it, so the text shows nowhere.
 
 `SetState` is process-local runtime state — view/update data, caches, game
 state. `PersistState` writes the same snapshot **and** saves durable plugin state;
@@ -312,8 +318,8 @@ A focused pane is always visible, so `PaneShown` precedes `FocusGained` and
 pane opened in view receives `PaneShown` then `FocusGained` right after `init`.
 Modal overlays (command palette, approvals) do not count as focus changes.
 Refresh on `FocusGained`; do not poll while hidden. Delivery continues while
-the host window is hidden. `FocusChanged` is a separate host-level time-tracking
-event, not a substitute. Test handlers with `PluginHarness.set_focus(bool)` and
+the host window is hidden. `FocusChanged` is a host event-log record for time
+tracking; plugins never receive it. Test handlers with `PluginHarness.set_focus(bool)` and
 `PluginHarness.set_visible(bool)`.
 
 ## UI Components
@@ -640,8 +646,8 @@ Test-first. Define done by the test, not the code.
   before touching plugin code, then run `plexi plugin test .`.
 - Exercise behavior through actions and keys, not only by reading code:
   `plexi pane action <pane-id> <handler-id>` and `plexi pane key <pane-id> <key>`.
-- Hot reload is part of the loop. New plugins set `watch = true`; after
-  `plexi view open .`, edit source and confirm the same pane id updates without
+- Hot reload is part of the loop and always on; the manifest `watch` key has
+  no effect. After `plexi view open .`, edit source and confirm the same pane id updates without
   reopening (check `plexi pane state <pane-id>` and the host log's `hot_reload`
   lines).
 - Final gate: `plexi plugin check .` renders the size matrix and validates the SDK

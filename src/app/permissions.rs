@@ -19,6 +19,9 @@ const STORE_LABEL: &str = "permission_store";
 // ── Capability enum ───────────────────────────────────────────────────────────
 
 /// v3 capability set. Matches the strings in manifest.toml / Init handshake.
+/// A variant's `Plugin availability:` doc line says which plugin runtimes can
+/// use it; `tools/gen_manifest_docs.py` publishes it, and no line means every
+/// runtime can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -29,33 +32,41 @@ pub enum Capability {
     /// Outbound HTTP(S) requests.
     NetHttp,
     /// Call SecretGet (scoped to workspace_root).
+    /// Plugin availability: Not available to plugins yet.
     SecretsGet,
     /// Open typed pipes (JSON or binary mode).
     PipeOpen,
     /// Launch another plugin in a new pane.
+    /// Plugin availability: WebAssembly plugins only, not yet Python plugins.
     SpawnView,
     /// Capture microphone audio via host broker.
+    /// Plugin availability: Not available to plugins yet.
     AudioRecord,
     /// Play audio via host `rodio` broker.
     AudioPlayback,
     /// Render directly through the host WASM GPU surface.
     GpuRender,
     /// Decode and display video via host broker.
+    /// Plugin availability: Not available to plugins yet.
     VideoPlayback,
     /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
+    /// Plugin availability: Not available to plugins yet.
     Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
     /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
     /// The host owns the API key and the cost ledger; plugins never see the key.
+    /// Plugin availability: WebAssembly plugins only, not yet Python plugins.
     AiQuery,
     /// Receive MIDI 1.0 byte streams from a connected hardware controller via
     /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
     /// capability and the OpenMidiInput dispatch validates the gate.
+    /// Plugin availability: Not available to plugins yet.
     MidiIn,
     /// Send MIDI 1.0 byte streams to a connected hardware destination via the
     /// host CoreMIDI broker (#320). Per-port; the SendMidi dispatch validates
     /// the gate.
+    /// Plugin availability: Not available to plugins yet.
     MidiOut,
     /// Drive a linked terminal pane via the v3.5 Canvas Terminal Binding
     /// Primitives (`terminal.bindings`, #78). Covers all of:
@@ -63,27 +74,32 @@ pub enum Capability {
     /// `RequestCommandPreview`, `OpenArtifact`. Single capability across
     /// the surface so a plugin's manifest declares one intent ("I drive a
     /// terminal") rather than enumerating each verb.
+    /// Plugin availability: Not available to plugins yet.
     TerminalBindings,
     /// Show a native macOS file picker dialog (`fs.pick`, #514).
     /// Returns picked paths via `PlexiEvent::FilePicked`. Plugins without this
     /// capability receive `PlexiEvent::FilePickCancelled` immediately.
     FsPick,
     /// Spawn a new pane via DrawCommand::SpawnPane (#592).
+    /// Plugin availability: Not available to plugins yet.
     PanesSpawn,
     /// Read pane metadata and state across the workspace (stint 0013/0014).
     /// Gates the PGAP path for `ListPanes`, `GetPaneInfo`, `GetPreviousPaneInfo`,
     /// `GetPaneState`, `CapturePane`, and `ListContexts` — the same host
     /// handlers `plexi pane list` / `plexi pane info` use over PLEXI_SOCKET.
+    /// Plugin availability: Not available to plugins yet.
     PanesRead,
     /// Act on other panes (stint 0013/0014). Gates the PGAP path for
     /// `FocusPane`, `ClosePane`, `SendToPane`, `KeyPane`, `SetPaneTitle`,
     /// and `SendPaneAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
+    /// Plugin availability: Not available to plugins yet.
     PanesControl,
     /// Inspect and mutate other plugins' permission state (stint 0017). No
     /// host request checks it today: `SetPermission` was removed (stint 1272)
     /// and `ListPermissions` is ungated (removal tracked under stint 1285).
     /// Moving widening decisions to host-owned consent is stints 1264 and 1238.
+    /// Plugin availability: Not available to plugins yet.
     PermissionsManage,
     /// Read the Plexi host channel log via the host-mediated `read_host_log`
     /// effect (stint 0444). The host owns path resolution — it tails its own

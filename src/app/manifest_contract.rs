@@ -8,6 +8,8 @@
 //! below owns the accepted IDs. Unknown IDs fail before activation. Reserved IDs
 //! parse as known reservations but fail with "reserved, not yet available" while
 //! no host projection serves them. A declaration requests access; it grants none.
+//! An ID the registry marks as not available, or limited to one runtime, passes
+//! validation, but a plugin outside that runtime gets nothing from declaring it.
 //!
 //! ## Commands
 //!
