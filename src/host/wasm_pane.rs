@@ -2275,6 +2275,9 @@ impl LiveWasmPane {
             "Capability request",
             &actions,
         )
+        .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+            crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::CapabilityModal),
+        ))
         .width(crate::overlays::MODAL_WIDTH)
         .show(ctx, colors, |ui| {
             crate::ui::typography::caption(

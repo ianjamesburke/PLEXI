@@ -45,6 +45,11 @@ pub(crate) enum OverlaySurface {
     TreeAtlas,
 }
 
+/// Memory slot for the trap member that held focus at the end of last frame.
+const FOCUS_TRAP_LAST_ID: &str = "plexi_focus_trap_last";
+/// Memory slot for a Tab direction (`true` = backwards) seen last frame.
+const FOCUS_TRAP_TAB_ID: &str = "plexi_focus_trap_tab";
+
 impl PlexiApp {
     /// The overlay surface that owns input, if any: the top of the modal
     /// focus stack or other host overlays. This is the single
@@ -158,6 +163,59 @@ impl PlexiApp {
             InputOwner::Pane(pane_id) => Some(SurfaceKey::Pane(pane_id)),
             InputOwner::OsUnfocused | InputOwner::Nobody => None,
         };
+
+        // A modal that traps focus keeps it on its own controls (stint 1493).
+        // egui's Tab traversal walks every focusable widget in the frame, so
+        // Tab past the modal's last control lands on chrome behind it; that is
+        // turned back into the next (or previous) control here, in the one
+        // focus authority, rather than in the modal.
+        if let Some(trap) = owner_key.and_then(|key| registry.trap_for(key)) {
+            let last_id = egui::Id::new(FOCUS_TRAP_LAST_ID);
+            let pending_id = egui::Id::new(FOCUS_TRAP_TAB_ID);
+            let last: Option<egui::Id> = ctx.data(|d| d.get_temp(last_id));
+            // egui may apply a Tab's focus move in the frame after the key
+            // arrives, so the direction is carried one frame.
+            let pending: Option<bool> = ctx.data(|d| d.get_temp(pending_id));
+            let (tab_now, shift) =
+                ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+            let direction = if tab_now { Some(shift) } else { pending };
+            let focused = ctx.memory(|m| m.focused());
+            let outside = match focused {
+                Some(id) => !trap.contains(&id),
+                None => direction.is_some(),
+            };
+            if outside {
+                match direction
+                    .and_then(|backwards| crate::ui::focus::trap_step(trap, last, backwards))
+                {
+                    Some(target) => {
+                        log::info!("input_owner: focus trap moved Tab to {target:?}");
+                        ctx.memory_mut(|m| m.request_focus(target));
+                    }
+                    None => {
+                        if let Some(id) = focused {
+                            log::info!("input_owner: focus trap surrendered {id:?}");
+                            ctx.memory_mut(|m| m.surrender_focus(id));
+                        }
+                    }
+                }
+            }
+            let now = ctx.memory(|m| m.focused()).filter(|id| trap.contains(id));
+            ctx.data_mut(|d| {
+                match now {
+                    Some(id) => {
+                        d.insert_temp(last_id, id);
+                    }
+                    None => d.remove::<egui::Id>(last_id),
+                }
+                match tab_now.then_some(shift) {
+                    Some(backwards) => {
+                        d.insert_temp(pending_id, backwards);
+                    }
+                    None => d.remove::<bool>(pending_id),
+                }
+            });
+        }
 
         // Surrender a focused surface that does not belong to the owner.
         // Last frame's registrations cover surfaces whose overlay/pane just
