@@ -4,7 +4,7 @@
 //! reports [`UpdateEvent`]s; the host applies them here; the palette, toolbar
 //! and changelog view read [`UpdateStatus::line`] and [`UpdateStatus::ready`].
 //! A downloaded build stays ready until the host restarts into it, even if a
-//! later check fails.
+//! later check fails; a later UpToDate means it was discarded and clears it.
 
 /// Why a check was started. A manual check skips the update cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +97,11 @@ impl UpdateStatus {
                 self.ready = Some(version);
             }
             UpdateEvent::UpToDate { checked_at } => {
+                // The updater reports UpToDate only when the installed build is
+                // the running one, so a build offered earlier was discarded.
+                if let Some(version) = self.ready.take() {
+                    log::info!("update status: v{version} is no longer waiting for a restart");
+                }
                 self.in_flight = None;
                 self.last = Some(Outcome::UpToDate { checked_at });
             }
@@ -243,6 +248,19 @@ mod tests {
                 version: "0.5.1".into()
             }
         );
+    }
+
+    #[test]
+    fn update_status_up_to_date_after_ready_clears_a_discarded_build() {
+        let mut status = UpdateStatus::default();
+        status.begin_check();
+        status.apply(UpdateEvent::Ready {
+            version: "0.5.0-beta.1".into(),
+        });
+        status.begin_check();
+        status.apply(UpdateEvent::UpToDate { checked_at: 7 });
+        assert_eq!(status.ready(), None);
+        assert_eq!(status.line(), UpdateLine::UpToDate { checked_at: 7 });
     }
 
     #[test]

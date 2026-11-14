@@ -39,7 +39,22 @@ fn send_event(mailbox: &UiMailbox<UpdateEvent>, event: UpdateEvent) {
 
 fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>) -> UpdateEvent {
     if let Ok(Some(receipt)) = crate::distribution::installed() {
-        if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
+        if discards_active_generation(&receipt, env!("PLEXI_BUILD_ID")) {
+            log::info!(
+                "update check: discarding installed {} on channel {}: it leaves the alpha lane of the running {}; restoring the running build",
+                receipt.active.tag,
+                receipt.channel,
+                receipt.previous.as_ref().map_or("", |p| p.tag.as_str()),
+            );
+            if let Err(error) = plexi_distribution::transaction::rollback(&receipt.root) {
+                let reason = format!(
+                    "could not discard installed {}: {error}",
+                    receipt.active.tag
+                );
+                log::warn!("update check: {reason}");
+                return UpdateEvent::Failed { reason };
+            }
+        } else if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
             log::info!("update check: running and installed builds differ; restart available");
             return UpdateEvent::Ready {
                 version: receipt.active.tag.trim_start_matches('v').to_string(),
@@ -97,6 +112,26 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
     }
 }
 
+/// The active generation is waiting for a restart, but the channel policy no
+/// longer allows it as an update from the running build (an earlier updater
+/// moved an alpha to a same-series beta or stable). The running build is the
+/// retained previous generation, so a rollback returns the installation to it.
+/// A rollback the user made (an older alpha active) is not touched.
+fn discards_active_generation(
+    receipt: &plexi_distribution::transaction::Receipt,
+    running_build: &str,
+) -> bool {
+    receipt.active.build_id != running_build
+        && receipt.previous.as_ref().is_some_and(|previous| {
+            previous.build_id == running_build
+                && plexi_distribution::release::leaves_alpha_lane(
+                    &receipt.channel,
+                    &previous.tag,
+                    &receipt.active.tag,
+                )
+        })
+}
+
 pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
     update_cache_fresh_for_channel(
         &cache_dir.join("update_cache.json"),
@@ -109,7 +144,10 @@ fn installed_version() -> String {
     match crate::distribution::installed() {
         Ok(Some(receipt)) => receipt.active.tag,
         Ok(None) => crate::distribution::build_tag(),
-        Err(error) => { log::warn!("update check: read installation identity: {error}"); crate::distribution::build_tag() }
+        Err(error) => {
+            log::warn!("update check: read installation identity: {error}");
+            crate::distribution::build_tag()
+        }
     }
 }
 
@@ -211,7 +249,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn receipt(
+        channel: &str,
+        active: (&str, &str),
+        previous: (&str, &str),
+    ) -> plexi_distribution::transaction::Receipt {
+        let generation = |(build, tag): (&str, &str)| plexi_distribution::transaction::Generation {
+            path: Path::new("/generations").join(build),
+            build_id: build.into(),
+            tag: tag.into(),
+            executable: "plexi".into(),
+        };
+        plexi_distribution::transaction::Receipt {
+            schema: 1,
+            channel: channel.into(),
+            root: "/root".into(),
+            bin_dir: "/bin".into(),
+            applications_dir: "/Applications".into(),
+            active: generation(active),
+            previous: Some(generation(previous)),
+            integrations: vec![],
+            path_edits: vec![],
+            windows_path_added: false,
+        }
+    }
 
+    #[test]
+    fn update_check_discards_an_installed_same_series_beta_for_a_running_alpha() {
+        let staged = receipt("alpha", ("b1", "v0.5.0-beta.1"), ("a6", "v0.5.0-alpha.6"));
+        assert!(discards_active_generation(&staged, "a6"));
+        // After a restart into it there is nothing waiting to discard.
+        assert!(!discards_active_generation(&staged, "b1"));
+        let stable = receipt("alpha", ("s", "v0.5.0"), ("a6", "v0.5.0-alpha.6"));
+        assert!(discards_active_generation(&stable, "a6"));
+    }
+
+    #[test]
+    fn update_check_keeps_allowed_and_user_chosen_active_builds() {
+        let newer_alpha = receipt("alpha", ("a7", "v0.5.0-alpha.7"), ("a6", "v0.5.0-alpha.6"));
+        assert!(!discards_active_generation(&newer_alpha, "a6"));
+        let rolled_back = receipt("alpha", ("a6", "v0.5.0-alpha.6"), ("a7", "v0.5.0-alpha.7"));
+        assert!(!discards_active_generation(&rolled_back, "a7"));
+        let next_series = receipt("alpha", ("b", "v0.6.0-beta.1"), ("a6", "v0.5.0-alpha.6"));
+        assert!(!discards_active_generation(&next_series, "a6"));
+        let beta_promotion = receipt("beta", ("s", "v0.5.0"), ("b1", "v0.5.0-beta.1"));
+        assert!(!discards_active_generation(&beta_promotion, "b1"));
+    }
 }
 
 fn fetch_and_cache(
@@ -249,7 +332,11 @@ fn fetch_and_cache(
 fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     let channel = crate::config::build_channel().unwrap_or_else(|| "stable".into());
     let result = super::install::run_binary_asset_install(&channel, tag);
-    let text = match &result { Ok(()) => format!("Installed and verified {tag}\n"), Err(error) => format!("Update {tag} failed: {error}\n") };
-    std::fs::write(profile_dir.join("update.log"), text).map_err(|e| format!("write update log: {e}"))?;
+    let text = match &result {
+        Ok(()) => format!("Installed and verified {tag}\n"),
+        Err(error) => format!("Update {tag} failed: {error}\n"),
+    };
+    std::fs::write(profile_dir.join("update.log"), text)
+        .map_err(|e| format!("write update log: {e}"))?;
     result
 }

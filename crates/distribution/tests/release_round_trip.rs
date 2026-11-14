@@ -92,9 +92,9 @@ fn assert_policy(tags: &Tags) {
         Some(alpha.as_str())
     );
     assert_eq!(
-        picked(&after_stable, "alpha", Some(alpha)).as_deref(),
-        Some(beta.as_str()),
-        "an installed alpha moves up to the beta prerelease, never to stable"
+        picked(&after_stable, "alpha", Some(alpha)),
+        None,
+        "an installed alpha never moves to a same-series beta or stable"
     );
     assert_eq!(picked(&after_stable, "alpha", Some(beta)), None);
 
