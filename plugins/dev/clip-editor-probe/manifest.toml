@@ -15,7 +15,6 @@ id = "clip-editor-probe"
 name = "Clip Editor Probe"
 version = "0.1.0"
 description = "Deterministic editor-like fixture for clip inspection, revision-checked mutations, and clip events"
-watch = true
 
 [plugin.capabilities]
 capabilities = []

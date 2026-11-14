@@ -58,7 +58,6 @@ id = "cli-op-fixture"
 name = "Cli Op Fixture"
 version = "0.1.0"
 description = "POC: approved typed CLI operations against a fixture program"
-watch = true
 
 [plugin.capabilities]
 capabilities = ["cli.operations"]

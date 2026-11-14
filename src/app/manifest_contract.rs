@@ -72,6 +72,8 @@ pub enum ManifestErrorKind {
     CommandOwned { id: String, owner: String },
     #[error("{0}")]
     InvalidField(String),
+    #[error("was removed: {0}")]
+    RemovedKey(&'static str),
     #[error("manifest I/O failed: {0}")]
     Io(String),
 }
@@ -91,6 +93,66 @@ impl ManifestError {
         );
         error
     }
+}
+
+/// Manifest keys that parsed and did nothing, removed by stint 1454:
+/// `(section, key, what to do)`. A manifest that still sets one is rejected
+/// with that text rather than silently ignored.
+pub(crate) const REMOVED_KEYS: &[(&str, &str, &str)] = &[
+    ("plugin", "watch", "hot reload is always on; delete the line"),
+    (
+        "plugin",
+        "min_sdk_version",
+        "the host never enforced it; delete the line (use [requires] for host version compatibility)",
+    ),
+    ("runtime", "target", "the host never read it; delete the line"),
+    ("runtime", "world", "the host never read it; delete the line"),
+    (
+        "launch",
+        "startup_message",
+        "the host never wrote it anywhere; delete the line",
+    ),
+    (
+        "launch",
+        "keyboard_capture",
+        "Python and WASM panes never read it; delete the line",
+    ),
+    (
+        "launch",
+        "background",
+        "a plugin process always stops with its pane; delete the line",
+    ),
+    ("launch", "compact", "the host never read it; delete the line"),
+    ("launch", "regular", "the host never read it; delete the line"),
+    (
+        "launch",
+        "join_group",
+        "Python and WASM panes never join a pane group; delete the line",
+    ),
+];
+
+/// Reject the first removed key the manifest still sets, naming it as
+/// `section.key`.
+pub(super) fn reject_removed_keys(manifest: &toml::Table) -> Result<(), ManifestError> {
+    let plugin = manifest
+        .get("plugin")
+        .and_then(|plugin| plugin.get("id"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("<unknown>");
+    for (section, key, fix) in REMOVED_KEYS {
+        if manifest
+            .get(*section)
+            .and_then(toml::Value::as_table)
+            .is_some_and(|table| table.contains_key(*key))
+        {
+            return Err(ManifestError::reject(
+                plugin,
+                &format!("{section}.{key}"),
+                ManifestErrorKind::RemovedKey(fix),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_capabilities(plugin: &str, ids: &[String]) -> Result<(), ManifestError> {

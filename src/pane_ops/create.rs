@@ -2572,10 +2572,7 @@ impl PlexiApp {
             let group = if id == "file_browser" && !follow_file_browser_cwd {
                 None
             } else {
-                self.registries
-                    .view_for_context(context_id, &self.router)
-                    .group_for(id)
-                    .or_else(|| builtin_default_group(app.type_id()))
+                builtin_default_group(app.type_id())
             };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::PluginPermissions::builtin();
