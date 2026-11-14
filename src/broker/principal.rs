@@ -154,7 +154,8 @@ impl AdmissionTrace<'_> {
         log::debug!("{}", self.line());
     }
 
-    fn line(&self) -> String {
+    /// The escaped `admission:` line, every field printed.
+    pub fn line(&self) -> String {
         format!(
             "admission: principal={} effect={} resource_class={} decision={} mechanism={} call_id={} {}",
             escaped(&self.principal.to_string()),

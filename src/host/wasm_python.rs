@@ -3831,6 +3831,7 @@ impl LivePythonPane {
             &self.config.capabilities,
             capability,
             &self.launch_admissions,
+            std::time::Instant::now(),
         )
     }
 
@@ -5779,27 +5780,61 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
 
 /// Runtime capability check against the launch snapshot, traced with the
 /// requesting principal.
-/// The last launch-set decision traced at info for each (principal,
-/// capability) of one pane runtime. A plugin that re-checks the same
-/// capability on every poll (the Logs view, once a second) would otherwise
-/// write one identical `admission:` line per poll (stint 1386).
-#[derive(Default)]
-struct LaunchAdmissionMemo(std::cell::RefCell<HashMap<(String, String), bool>>);
+/// How often a run of demoted repeats reports its count while it continues.
+const ADMISSION_REPEAT_SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Launch-set admission. The first decision for a principal and capability,
-/// and every change of it, is traced at info; an identical repeat at debug.
+/// One (principal, capability) whose identical allows are being demoted.
+struct AdmissionRun {
+    /// The exact line last traced at info: every printed field.
+    line: String,
+    /// Identical repeats logged at debug since that info line.
+    suppressed: u64,
+    last_info: std::time::Instant,
+}
+
+impl AdmissionRun {
+    fn summarize(&mut self, now: std::time::Instant) {
+        if self.suppressed > 0 {
+            crate::broker::gate::trace_gate(format!(
+                "admission: repeated {} times since the last trace: {}",
+                self.suppressed, self.line
+            ));
+        }
+        self.suppressed = 0;
+        self.last_info = now;
+    }
+}
+
+/// Launch-set admissions traced for one pane runtime (stint 1386). A plugin
+/// that re-checks the same capability on every poll (the Logs view, once a
+/// second) would otherwise write one identical `admission:` line per poll,
+/// and that line is the only record of a launch-set admission. So only an
+/// identical allow of a non-sensitive capability drops to debug, and the
+/// count of what was dropped is traced at info when the run ends (the line
+/// changes, the pane closes or relaunches) and at most once a minute while it
+/// continues.
+#[derive(Default)]
+struct LaunchAdmissionMemo(std::cell::RefCell<HashMap<(String, String), AdmissionRun>>);
+
+impl Drop for LaunchAdmissionMemo {
+    fn drop(&mut self) {
+        let now = std::time::Instant::now();
+        for run in self.0.get_mut().values_mut() {
+            run.summarize(now);
+        }
+    }
+}
+
+/// Launch-set admission. Denials, sensitive capabilities and every changed
+/// line trace at info; an identical repeat of a non-sensitive allow at debug.
 fn launch_set_admits(
     principal: &crate::broker::principal::Principal,
     launch_set: &[String],
     capability: &str,
     memo: &LaunchAdmissionMemo,
+    now: std::time::Instant,
 ) -> bool {
     let admitted = manifest_declares(launch_set, capability);
-    let repeat = memo
-        .0
-        .borrow_mut()
-        .insert((principal.to_string(), capability.to_string()), admitted)
-        == Some(admitted);
     let trace = crate::broker::principal::AdmissionTrace {
         principal,
         effect: capability,
@@ -5809,10 +5844,36 @@ fn launch_set_admits(
         call_id: "",
         outcome_ref: "",
     };
-    if repeat {
-        trace.emit_repeat();
-    } else {
-        trace.emit();
+    let line = trace.line();
+    // An unknown capability name counts as sensitive: never demoted.
+    let demotable = admitted
+        && crate::app::permissions::Capability::try_from(capability)
+            .is_ok_and(|capability| !capability.is_sensitive());
+    let mut runs = memo.0.borrow_mut();
+    let key = (principal.to_string(), capability.to_string());
+    match runs.get_mut(&key) {
+        Some(run) if demotable && run.line == line => {
+            run.suppressed += 1;
+            if now.saturating_duration_since(run.last_info) >= ADMISSION_REPEAT_SUMMARY_EVERY {
+                run.summarize(now);
+            } else {
+                trace.emit_repeat();
+            }
+        }
+        previous => {
+            if let Some(run) = previous {
+                run.summarize(now);
+            }
+            trace.emit();
+            runs.insert(
+                key,
+                AdmissionRun {
+                    line,
+                    suppressed: 0,
+                    last_info: now,
+                },
+            );
+        }
     }
     admitted
 }
@@ -7431,34 +7492,115 @@ mod fatal_error_tests;
 mod tests {
     use super::*;
 
-    /// Stint 1386: a poll that re-checks the same capability writes one info
-    /// line, not one per poll; a changed decision or principal writes again.
+    /// Stint 1386: admission lines from `launch_set_admits`, as (level, line).
+    fn admission_lines(logs: &crate::testing::test_log::LogCapture) -> Vec<(log::Level, String)> {
+        logs.records()
+            .into_iter()
+            .filter(|(_, line)| line.starts_with("admission:"))
+            .collect()
+    }
+
+    fn info_count(logs: &crate::testing::test_log::LogCapture) -> usize {
+        admission_lines(logs)
+            .iter()
+            .filter(|(level, _)| *level == log::Level::Info)
+            .count()
+    }
+
+    /// A poll that re-allows the same non-sensitive capability writes one
+    /// info line; a changed decision, effect or principal writes again.
     #[test]
-    fn identical_launch_set_admissions_trace_at_info_once() {
+    fn identical_launch_set_allows_trace_at_info_once() {
         use crate::broker::principal::Principal;
         let logs = crate::testing::test_log::capture();
-        let admissions = |logs: &crate::testing::test_log::LogCapture| {
-            logs.records()
-                .into_iter()
-                .filter(|(level, line)| {
-                    *level == log::Level::Info && line.starts_with("admission:")
-                })
-                .count()
-        };
         let memo = LaunchAdmissionMemo::default();
+        let now = std::time::Instant::now();
         let pane = Principal::plugin_in_pane("logs", 913_001);
-        let granted = vec!["logs.read".to_string()];
+        let granted = vec!["logs.read".to_string(), "fs.read".to_string()];
         for _ in 0..5 {
-            assert!(launch_set_admits(&pane, &granted, "logs.read", &memo));
+            assert!(launch_set_admits(&pane, &granted, "logs.read", &memo, now));
         }
-        assert_eq!(admissions(&logs), 1, "five identical polls, one info line");
-        assert!(!launch_set_admits(&pane, &[], "logs.read", &memo));
-        assert_eq!(admissions(&logs), 2, "a deny after an allow is traced");
-        assert!(launch_set_admits(&pane, &granted, "logs.read", &memo));
-        assert_eq!(admissions(&logs), 3, "the flip back to allow is traced");
+        assert_eq!(info_count(&logs), 1, "five identical polls, one info line");
+        assert!(launch_set_admits(&pane, &granted, "fs.read", &memo, now));
+        assert_eq!(info_count(&logs), 2, "a different effect is traced");
         let other = Principal::plugin_in_pane("logs", 913_002);
-        assert!(launch_set_admits(&other, &granted, "logs.read", &memo));
-        assert_eq!(admissions(&logs), 4, "a new principal instance is traced");
+        assert!(launch_set_admits(&other, &granted, "logs.read", &memo, now));
+        assert_eq!(info_count(&logs), 3, "a new principal instance is traced");
+    }
+
+    /// Denials are never demoted, whatever the capability.
+    #[test]
+    fn launch_set_denials_trace_at_info_every_time() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let memo = LaunchAdmissionMemo::default();
+        let now = std::time::Instant::now();
+        let pane = Principal::plugin_in_pane("logs", 913_003);
+        for _ in 0..5 {
+            assert!(!launch_set_admits(&pane, &[], "logs.read", &memo, now));
+        }
+        assert_eq!(info_count(&logs), 5);
+    }
+
+    /// Sensitive capabilities (the set withheld at launch) keep an info line
+    /// on every admission.
+    #[test]
+    fn sensitive_launch_set_allows_trace_at_info_every_time() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let memo = LaunchAdmissionMemo::default();
+        let now = std::time::Instant::now();
+        let pane = Principal::plugin_in_pane("net", 913_004);
+        let granted = vec!["net.http".to_string()];
+        for _ in 0..5 {
+            assert!(launch_set_admits(&pane, &granted, "net.http", &memo, now));
+        }
+        assert_eq!(info_count(&logs), 5);
+    }
+
+    /// The demoted repeats are counted at info when the run changes, once a
+    /// minute while it continues, and when the pane's memo is dropped.
+    #[test]
+    fn demoted_repeats_are_summarized_with_their_count() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let summaries = |logs: &crate::testing::test_log::LogCapture| -> Vec<String> {
+            admission_lines(logs)
+                .into_iter()
+                .filter(|(level, line)| *level == log::Level::Info && line.contains(" repeated "))
+                .map(|(_, line)| line)
+                .collect()
+        };
+        let pane = Principal::plugin_in_pane("logs", 913_005);
+        let granted = vec!["logs.read".to_string()];
+        let t0 = std::time::Instant::now();
+        let memo = LaunchAdmissionMemo::default();
+        for _ in 0..4 {
+            launch_set_admits(&pane, &granted, "logs.read", &memo, t0);
+        }
+        assert!(!launch_set_admits(&pane, &[], "logs.read", &memo, t0));
+        assert_eq!(summaries(&logs).len(), 1, "a changed decision ends the run");
+        assert!(summaries(&logs)[0].starts_with("admission: repeated 3 times"));
+        for k in 1..=3u64 {
+            let at = t0 + std::time::Duration::from_secs(k);
+            launch_set_admits(&pane, &granted, "logs.read", &memo, at);
+        }
+        let later = t0 + std::time::Duration::from_secs(70);
+        launch_set_admits(&pane, &granted, "logs.read", &memo, later);
+        assert_eq!(
+            summaries(&logs).len(),
+            2,
+            "a continuing run reports once a minute"
+        );
+        assert!(summaries(&logs)[1].starts_with("admission: repeated 3 times"));
+        launch_set_admits(&pane, &granted, "logs.read", &memo, later);
+        drop(memo);
+        assert_eq!(
+            summaries(&logs).len(),
+            3,
+            "closing the pane reports the rest"
+        );
+        assert!(summaries(&logs)[2].starts_with("admission: repeated 1 times"));
     }
     use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_view::Modifiers;
