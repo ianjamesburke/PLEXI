@@ -814,38 +814,72 @@ mod tests {
 
     /// A child leading its own process group, carrying `marker`, that ignores
     /// HUP and TERM, forked by a perl parent this host does not own and that
-    /// never reaps it. Returns the
-    /// parent (kill it when done) and the child's pid.
-    fn unreaped_marked_child(marker: &str) -> (std::process::Child, u32) {
+    /// never reaps it. The parent leads its own group too, so dropping the
+    /// returned fixture kills it; the guard kills the child. Returns once the
+    /// child has installed its ignores.
+    #[cfg(target_os = "macos")]
+    fn unreaped_marked_child(marker: &str) -> (FixtureChild, KillOnDrop, u32) {
         use std::io::BufRead;
         let script = format!(
             "$|=1; my $c = fork(); if ($c == 0) {{ setpgrp(0, 0); $ENV{{{SESSION_ENV}}} = q({marker}); \
-             exec(q(/usr/bin/perl), q(-e), q($SIG{{HUP}}=$SIG{{TERM}}=q(IGNORE); sleep 60)) }} \
-             print \"$c\\n\"; sleep 60"
+             exec(q(/usr/bin/perl), q(-e), q($|=1; $SIG{{HUP}}=$SIG{{TERM}}=q(IGNORE); print qq(ready\n); sleep 60)) }} \
+             print \"pid $c\\n\"; sleep 60"
         );
-        let mut parent = std::process::Command::new("/usr/bin/perl")
+        let mut command = std::process::Command::new("/usr/bin/perl");
+        command
             .args(["-e", &script])
             .env_remove(SESSION_ENV)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(parent.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        // Let the child exec and install its signal dispositions.
-        std::thread::sleep(Duration::from_millis(300));
-        (parent, line.trim().parse().unwrap())
+            .stdout(std::process::Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut parent = FixtureChild(command.spawn().unwrap());
+        let lines = std::io::BufReader::new(parent.0.stdout.take().unwrap()).lines();
+        let (mut child, mut ready) = (None, false);
+        for line in lines {
+            let line = line.unwrap();
+            if let Some(pid) = line.strip_prefix("pid ") {
+                child = Some(pid.trim().parse().unwrap());
+            } else if line.trim() == "ready" {
+                ready = true;
+            }
+            if child.is_some() && ready {
+                break;
+            }
+        }
+        let child = child.expect("the fixture printed its child's pid");
+        (parent, KillOnDrop(child), child)
+    }
+
+    /// Kills a fixture process that is not our child when the test ends.
+    #[cfg(target_os = "macos")]
+    struct KillOnDrop(u32);
+    #[cfg(target_os = "macos")]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0 as i32, libc::SIGKILL);
+            }
+        }
     }
 
     /// Stint 1523, the stamp decision: a survivor killed by SIGKILL whose
     /// parent is alive and never reaps it is a zombie, not an owned process
     /// left running; the kill path reports nothing remaining and the clean
     /// shutdown is stamped.
+    /// macOS only: elsewhere `process_is_zombie` defers to sysinfo, which
+    /// reads the state fresh, so there is nothing to check.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_killed_survivor_left_unreaped_still_allows_the_clean_stamp() {
         let marker = uuid::Uuid::new_v4().to_string();
-        let (mut parent, child) = unreaped_marked_child(&marker);
+        let (_parent, _child_guard, child) = unreaped_marked_child(&marker);
         let _owned = PaneProcessGroup::record_for(child, &marker);
         let report = stop_marked_processes(
             &marker,
@@ -855,8 +889,10 @@ mod tests {
         let zombie = process_is_zombie(child);
         let profile = tempfile::tempdir().unwrap();
         let stamped = crate::app::quit::record_quit_integrity(report.remaining, profile.path());
-        let _ = parent.kill();
-        let _ = parent.wait();
+        assert!(
+            report.escalated >= 1,
+            "the survivor needed SIGKILL: {report:?}"
+        );
         assert!(zombie, "the survivor was killed and left unreaped");
         assert_eq!(
             report.remaining, 0,

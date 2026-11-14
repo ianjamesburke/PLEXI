@@ -638,9 +638,6 @@ pub(crate) fn stop_reply(
     })
 }
 
-/// Tear the host down and end the process. Never returns. `stop_reply` is
-/// `plexi host stop`'s reply token, answered with the real outcome before the
-/// process ends.
 /// Stamp a clean shutdown only when no owned process is left, so the next
 /// start can tell a clean quit from a death (stint 1523). Returns whether the
 /// stamp was written.
@@ -655,6 +652,9 @@ pub(crate) fn record_quit_integrity(remaining: usize, dir: &std::path::Path) -> 
     }
 }
 
+/// Tear the host down and end the process. Never returns. `stop_reply` is
+/// `plexi host stop`'s reply token, answered with the real outcome before the
+/// process ends.
 pub(crate) fn exit_host(
     reason: ExitReason,
     workspace: WorkspaceDurability,
