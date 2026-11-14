@@ -206,15 +206,21 @@ impl PluginManifest {
             ManifestError::reject(
                 "<unknown>",
                 "manifest",
-                ManifestErrorKind::InvalidField(e.to_string()),
+                ManifestErrorKind::InvalidField(crate::host::guest_text::escape_untrusted(
+                    &e.to_string(),
+                    true,
+                )),
             )
         })?;
-        let plugin = value
-            .get("plugin")
-            .and_then(|p| p.get("id"))
-            .and_then(toml::Value::as_str)
-            .unwrap_or("<unknown>")
-            .to_owned();
+        // A refusal names the plugin before its id is validated, so the id is
+        // shown escaped (stint 1344).
+        let plugin = crate::host::guest_text::shown(
+            value
+                .get("plugin")
+                .and_then(|p| p.get("id"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or("<unknown>"),
+        );
         let legacy = value.get("app").is_some();
         // Name the schema the file declares; a schema 2 file can still carry
         // a leftover `[app]` table.
@@ -233,6 +239,8 @@ impl PluginManifest {
             } else {
                 e.to_owned()
             };
+            // toml quotes the manifest's own text, which the plugin wrote.
+            let message = crate::host::guest_text::escape_untrusted(&message, true);
             ManifestError::reject(&plugin, "manifest", ManifestErrorKind::InvalidField(message))
         })?;
         Self::try_from(wire)

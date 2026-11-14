@@ -1193,6 +1193,21 @@ impl HeadlessPythonSession {
         Ok(session)
     }
 
+    /// A decoder error can quote the guest's own value (an unknown node
+    /// type) and reaches the `plugin check` / `view render` output: made safe
+    /// like the live pane's (stint 1344).
+    fn guest_decode_error(&self, error: WasmPythonError) -> WasmPythonError {
+        let WasmPythonError::BridgeJson(message) = error else {
+            return error;
+        };
+        WasmPythonError::BridgeJson(guest_text::guest_line(
+            &self.plugin_id,
+            "decode error",
+            &message,
+            guest_text::MAX_LINE_CHARS,
+        ))
+    }
+
     fn render_frame(&mut self, frame_id: u64) -> Result<UiTree, WasmPythonError> {
         self.runtime
             .send(&python_render_event(frame_id, Vec::new()))?;
@@ -1230,13 +1245,14 @@ impl HeadlessPythonSession {
                     changed,
                     message.get("added").and_then(Value::as_array),
                     message.get("removed").and_then(Value::as_array),
-                )?
+                )
+                .map_err(|error| self.guest_decode_error(error))?
             }
             _ => {
                 let raw = message.get("tree").ok_or_else(|| {
                     WasmPythonError::BridgeJson("component_tree message missing 'tree'".to_string())
                 })?;
-                decode_python_ui_tree_value(raw)?
+                decode_python_ui_tree_value(raw).map_err(|error| self.guest_decode_error(error))?
             }
         };
         self.last_tree = Some(tree.clone());
@@ -3834,7 +3850,6 @@ impl LivePythonPane {
             }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(mut command)) => {
-                    sanitize_guest_notification(&self.plugin_id, &mut command);
                     if let Some(capability) =
                         required_capability_for_python_plugin_command(&command)
                     {
@@ -3847,6 +3862,10 @@ impl LivePythonPane {
                             return;
                         }
                     }
+                    // Python notifications are denied for every plugin today
+                    // (admission matrix row Python/Notify); should that change,
+                    // the text is already made safe here.
+                    sanitize_guest_notification(&self.plugin_id, &mut command);
                     if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
                         ref pipe_id,
                         ..
@@ -3959,8 +3978,10 @@ impl LivePythonPane {
             },
         };
         log::info!(
-            "plugin::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
-            self.plugin_id, request_id = guest_text::shown(&request_id)
+            "plugin::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={}",
+            self.plugin_id,
+            guest_text::shown_list(&filter),
+            request_id = guest_text::shown(&request_id)
         );
         let picker = Arc::clone(&self.picker);
         let tx = self.picker_tx.clone();
@@ -4061,7 +4082,7 @@ impl LivePythonPane {
                         log::info!(
                             "plugin::{}: file_write {} ({} bytes, binary={})",
                             self.plugin_id,
-                            path.display(),
+                            guest_text::shown(&path.display().to_string()),
                             bytes.len(),
                             message.get("content_b64").is_some()
                         );
@@ -4270,7 +4291,9 @@ impl LivePythonPane {
             log::warn!(
                 "plugin::{}: mcp_connect failed server_id={server_id}: {error}",
                 pane.plugin_id,
-                server_id = guest_text::shown(&server_id)
+                server_id = guest_text::shown(&server_id),
+                // Resolve errors quote the requested server id.
+                error = guest_text::bound_line(&error, guest_text::MAX_LINE_CHARS).0
             );
             pane.send_to_runtime(&json!({
                 "type": "mcp_connected",
@@ -5986,19 +6009,12 @@ fn launch_set_admits(
     admitted
 }
 
-/// A plugin's notification title, body and id reach the notification card,
-/// the event log and `plexi.log`: made safe where they arrive (stint 1344).
-/// The id is a key the host echoes back to the plugin, so it is escaped and
-/// capped like any identifier; a plugin's own printable ids are unchanged.
+/// A plugin's notification title and body reach the notification card, the
+/// event log and `plexi.log`: made safe where they arrive (stint 1344). The id
+/// is a key the host echoes back to the plugin, so it stays as sent and is
+/// escaped only where it is logged.
 fn sanitize_guest_notification(plugin_id: &str, command: &mut crate::app::view_trait::ViewCommand) {
-    if let crate::app::view_trait::ViewCommand::ShowNotification {
-        notify_id,
-        title,
-        body,
-        ..
-    } = command
-    {
-        *notify_id = guest_text::shown(notify_id);
+    if let crate::app::view_trait::ViewCommand::ShowNotification { title, body, .. } = command {
         *title = guest_text::guest_line(
             plugin_id,
             "notification title",
@@ -7820,32 +7836,6 @@ mod tests {
         assert!(summaries(&logs)[2].starts_with("admission: repeated 1 times"));
     }
 
-    /// Stint 1344: a Python guest's notification id, title and body are
-    /// made safe where they arrive; line breaks in the body survive.
-    #[test]
-    fn guest_notification_text_is_escaped_where_it_arrives() {
-        let mut command = plugin_command_from_python_message(&json!({
-            "type": "show_notification",
-            "notify_id": "id\u{1b}[2J",
-            "title": "T\u{202e}itle",
-            "body": "line one\nline two\u{1b}]0;x\u{7}",
-        }))
-        .expect("decodes")
-        .expect("a command");
-        sanitize_guest_notification("probe", &mut command);
-        let crate::app::view_trait::ViewCommand::ShowNotification {
-            notify_id,
-            title,
-            body,
-            ..
-        } = command
-        else {
-            panic!("show_notification");
-        };
-        assert_eq!(notify_id, "id\\u{1b}[2J");
-        assert_eq!(title, "T\\u{202e}itle");
-        assert_eq!(body, "line one\nline two\\u{1b}]0;x\\u{7}");
-    }
     use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_view::Modifiers;
     use std::sync::Arc;

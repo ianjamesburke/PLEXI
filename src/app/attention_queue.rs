@@ -1761,7 +1761,7 @@ impl PlexiApp {
                             overlay.ask_id.clone(),
                             format!("Could not record this decision; no action was sent: {error}"),
                         ));
-                        log::warn!("decision_overlay: notification attempt not recorded id={notify_id}: {error}");
+                        log::warn!("decision_overlay: notification attempt not recorded id={notify_id}: {error}", notify_id = crate::host::guest_text::shown(notify_id));
                         return false;
                     }
                     let n = self.pending_notifications.remove(pos);
@@ -1792,7 +1792,7 @@ impl PlexiApp {
                                 self.pending_notifications[pos].delivery_unknown = false;
                                 if let Err(error) = self.try_save_notifications() {
                                     self.pending_notifications[pos].delivery_unknown = true;
-                                    log::warn!("decision_overlay: could not persist unavailable outcome id={notify_id}: {error}");
+                                    log::warn!("decision_overlay: could not persist unavailable outcome id={notify_id}: {error}", notify_id = crate::host::guest_text::shown(notify_id));
                                     "The outcome could not be saved. Check the recipient before taking further action."
                                 } else {
                                     "The recipient is no longer available."
@@ -1805,7 +1805,7 @@ impl PlexiApp {
                         };
                         self.approval_keyboard.last_error =
                             Some((overlay.ask_id.clone(), message.into()));
-                        log::warn!("decision_overlay: notification response failed id={notify_id}; outcome={delivered:?}");
+                        log::warn!("decision_overlay: notification response failed id={notify_id}; outcome={delivered:?}", notify_id = crate::host::guest_text::shown(notify_id));
                         return false;
                     }
                     self.save_notifications();
@@ -1817,7 +1817,10 @@ impl PlexiApp {
                         overlay.ask_id.clone(),
                         "This request is no longer available.".into(),
                     ));
-                    log::info!("decision_overlay: notification no longer available id={notify_id}");
+                    log::info!(
+                        "decision_overlay: notification no longer available id={notify_id}",
+                        notify_id = crate::host::guest_text::shown(notify_id)
+                    );
                     return false;
                 }
             }

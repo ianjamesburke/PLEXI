@@ -103,7 +103,7 @@ fn keep_tail(text: &str) -> (String, bool) {
 /// The one truncation trace, so every sink reports a cut the same way.
 pub(crate) fn trace_truncation(plugin_id: &str, sink: &str, from: usize, to: usize) {
     log::info!(
-        "plugin::{}: guest {sink} truncated from {from} to {to}",
+        "plugin::{}: guest {sink} truncated from {from} to {to} chars",
         escape_untrusted(plugin_id, false)
     );
 }
@@ -140,7 +140,13 @@ pub(crate) fn guest_paragraph(plugin_id: &str, sink: &str, text: &str, max_chars
 pub(crate) fn guest_block(plugin_id: &str, sink: &str, text: &str) -> String {
     let (tail, cut) = keep_tail(text);
     if cut {
-        trace_truncation(plugin_id, sink, text.len(), MAX_BLOCK_BYTES);
+        // Characters, like every other trace; the cut may be by bytes or lines.
+        trace_truncation(
+            plugin_id,
+            sink,
+            text.chars().count(),
+            tail.chars().count() - BLOCK_TRUNCATED.chars().count() - 1,
+        );
     }
     escape_untrusted(tail.trim_end(), true)
 }
@@ -150,6 +156,12 @@ pub(crate) fn guest_block(plugin_id: &str, sink: &str, text: &str) -> String {
 /// travels back to the guest; only what is printed is made safe.
 pub(crate) fn shown(text: &str) -> String {
     bound_line(text, MAX_ID_CHARS).0
+}
+
+/// A guest-named list (event names, file filters) for a log line: each item
+/// escaped, the whole capped like one line.
+pub(crate) fn shown_list(items: &[String]) -> String {
+    format!("[{}]", bound_line(&items.join(", "), MAX_LINE_CHARS).0)
 }
 
 #[cfg(test)]

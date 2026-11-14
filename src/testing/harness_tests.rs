@@ -8832,6 +8832,113 @@ fn guest_stderr_exception_is_escaped_before_it_reaches_the_pane() {
     assert!(error.ends_with(crate::host::guest_text::TRUNCATED));
 }
 
+/// Every log line captured while a test ran, checked for raw guest bytes:
+/// control characters (a forged line, a terminal escape) and bidi or
+/// invisible characters (`guest_text::is_unsafe_to_print`).
+fn assert_no_raw_guest_text_in_logs(capture: &crate::testing::test_log::LogCapture) {
+    for line in capture.lines() {
+        if let Some(bad) = line
+            .chars()
+            .find(|c| *c != '\n' && crate::host::guest_text::is_unsafe_to_print(*c))
+        {
+            panic!(
+                "raw {bad:?} in a log line: {:?}",
+                line.chars().take(120).collect::<String>()
+            );
+        }
+        assert!(
+            !line.contains("\nFORGED"),
+            "a guest value started a new log line: {:?}",
+            line.chars().take(120).collect::<String>()
+        );
+    }
+}
+
+/// Stint 1344 guard: site-by-site review missed sites twice, so a hostile
+/// Python guest sends every message kind the runtime accepts, each string
+/// field hostile, and no captured log line may hold a raw control, bidi or
+/// invisible character. A new log site that repeats guest text raw fails here.
+#[test]
+fn python_guest_cannot_put_raw_text_in_any_log_line() {
+    let capture = crate::testing::test_log::capture();
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "hostile-messages-probe",
+        "\x20   H = '\\x1b]0;F\\x07\\u202e\\u200b\\nFORGED' + 'x' * 300\n\
+         \x20   for m in [\n\
+         \x20       {'type': 'pipe_send', 'pipe_id': H, 'payload': {}},\n\
+         \x20       {'type': 'pipe_open_directed', 'pipe_id': H, 'target_pane_id': 999999},\n\
+         \x20       {'type': 'spawn_view', 'plugin_id': H, 'layout': H},\n\
+         \x20       {'type': 'spawn_pane', 'plugin_id': H, 'layout': H},\n\
+         \x20       {'type': 'focus_pane', 'pane_id': 999999},\n\
+         \x20       {'type': 'file_read', 'path': H},\n\
+         \x20       {'type': 'file_write', 'path': H, 'content': 'x'},\n\
+         \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H], 'mode': H},\n\
+         \x20       {'type': 'open_file_picker', 'request_id': H, 'filter': [H]},\n\
+         \x20       {'type': 'mcp_connect', 'request_id': H, 'server_id': H},\n\
+         \x20       {'type': 'mcp_send', 'server_id': H, 'message': {}},\n\
+         \x20       {'type': 'mcp_disconnect', 'server_id': H},\n\
+         \x20       {'type': 'http_request', 'request_id': H, 'url': H, 'method': H},\n\
+         \x20       {'type': 'capability_request', 'capability': H, 'request_id': H},\n\
+         \x20       {'type': 'declare_event_streams', 'streams': [{'name': H, 'description': H}]},\n\
+         \x20       {'type': 'emit_event', 'event': H, 'summary': H, 'resource_id': H},\n\
+         \x20       {'type': 'subscribe_event_streams', 'request_id': H, 'plugin_id': H, 'event_names': [H]},\n\
+         \x20       {'type': 'unsubscribe_event_streams', 'request_id': H, 'subscription_id': H},\n\
+         \x20       {'type': 'tool_result', 'call_id': H, 'error': H},\n\
+         \x20       {'type': 'run_update', 'originator_type_id': H},\n\
+         \x20       {'type': 'show_notification', 'notify_id': H, 'title': H, 'body': H},\n\
+         \x20       {'type': 'show_notification', 'notify_id': H, 'title': H, 'body': H, H: H},\n\
+         \x20       {'type': 'insert_path_token', 'terminal_pane_id': 999999, 'path': H},\n\
+         \x20       {'type': 'command_preview', 'request_id': H, 'terminal_pane_id': 999999, 'command': H},\n\
+         \x20       {'type': 'save_plugin_state', 'scope': H, 'state': {}},\n\
+         \x20       {'type': 'cli_operation', 'name': H, 'request_id': H},\n\
+         \x20       {'type': 'set_title', 'title': H},\n\
+         \x20       {'type': 'log', 'level': H, 'message': H},\n\
+         \x20       {'type': H},\n\
+         \x20       {'type': 'spawn_view', 'plugin_id': 7},\n\
+         \x20   ]:\n\
+         \x20       _emit(m)\n\
+         \x20   sys.stderr.write('ERR' + H + '\\n')\n\
+         \x20   sys.stderr.flush()\n\
+         \x20   _emit({'type': 'set_title', 'title': 'DONE'})",
+    );
+    // Declare what a plugin may declare, so the messages get past their
+    // capability gates and reach the host's own handling and its log lines.
+    let manifest = tmp.path().join("manifest.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace(
+            "[runtime]",
+            "[plugin.capabilities]\ncapabilities = [\"pipe.open\", \"spawn.plugin\", \"panes.spawn\", \"panes.control\", \"panes.read\", \"fs.read\", \"fs.write\", \"mcp.client\", \"cli.operations\", \"timer\"]\n\n[runtime]",
+        ),
+    )
+    .unwrap();
+    let mut h = HostHarness::new();
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, pane_id).as_deref() != Some("DONE") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the hostile messages never all arrived"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // Let the host service the plugin commands those messages queued.
+    h.run_frames(10);
+    assert!(
+        capture
+            .lines()
+            .iter()
+            .any(|line| line.contains("hostile-messages-probe")),
+        "the probe's lines must be captured"
+    );
+    assert_no_raw_guest_text_in_logs(&capture);
+}
+
 // -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------
 
 /// Write a minimal manifest-backed CPython-in-WASM plugin to `dir`. `title`

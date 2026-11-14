@@ -447,7 +447,8 @@ impl PlexiApp {
                                 .map_err(|error| error.to_string());
                             log::info!(
                                 "wasm effect: spawn pane_id={pane_id} plugin_id={plugin_id} ok={}",
-                                result.is_ok()
+                                result.is_ok(),
+                                plugin_id = crate::host::guest_text::shown(&plugin_id)
                             );
                             Some(InputEvent::SpawnResult(result))
                         }
@@ -836,7 +837,7 @@ impl PlexiApp {
                             // Fail loud: never swallow a launch failure or confirm
                             // a spawn that did not happen (#2283).
                             log::warn!(
-                                "SpawnView: launch of '{type_id}' failed — {e}; not confirming ViewOpened"
+                                "SpawnView: launch of '{type_id}' failed — {e}; not confirming ViewOpened", type_id = crate::host::guest_text::shown(&type_id)
                             );
                             continue;
                         }
@@ -1030,7 +1031,7 @@ impl PlexiApp {
                             (active, tile)
                         };
                         log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} target_win={target_win}"
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} target_win={target_win}", layout = crate::host::guest_text::shown(&layout)
                         );
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
@@ -1084,7 +1085,10 @@ impl PlexiApp {
                             // Dedup focused a live instance; report its real id.
                             new_pane_id = existing_id;
                         }
-                        log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
+                        log::info!(
+                            "SpawnPane: launched '{type_id}' pane_id={new_pane_id}",
+                            type_id = crate::host::guest_text::shown(&type_id)
+                        );
                     }
 
                     // Restore active_window if we switched for target_context or from_pane_id.
@@ -1272,7 +1276,7 @@ impl PlexiApp {
                     // a different context's directed pipe.
                     let Some(sender_origin) = self.origin_for_pane(sender_pane_id) else {
                         log::warn!(
-                            "DeliverPipeMessage: sender pane {sender_pane_id} not found; '{pipe_id}' dropped"
+                            "DeliverPipeMessage: sender pane {sender_pane_id} not found; '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         continue;
                     };
@@ -1280,7 +1284,7 @@ impl PlexiApp {
                     let Some(&(a, b)) = self.directed_pipes.get(&key) else {
                         log::warn!(
                             "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} (context {}) is not a directed pipe; dropping (non-directed JSON pipes were removed in 0327)",
-                            sender_origin.context_id
+                            sender_origin.context_id, pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         continue;
                     };
@@ -1292,7 +1296,8 @@ impl PlexiApp {
                         // Neither side — wire mismatch. Log + drop.
                         log::warn!(
                             "DeliverPipeMessage: directed pipe '{pipe_id}' \
-                             sender {sender_pane_id} not in pair ({a}, {b}); dropping"
+                             sender {sender_pane_id} not in pair ({a}, {b}); dropping",
+                            pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         None
                     };
@@ -1324,13 +1329,13 @@ impl PlexiApp {
                     // claim or ambient focus state (stint 0724 Phase D 2/2).
                     let Some(sender_origin) = self.origin_for_pane(sender_pane_id) else {
                         log::warn!(
-                            "OpenDirectedPipe: sender pane {sender_pane_id} not found; pipe '{pipe_id}' dropped"
+                            "OpenDirectedPipe: sender pane {sender_pane_id} not found; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         continue;
                     };
                     let Some(target_origin) = self.origin_for_pane(target_pane_id) else {
                         log::warn!(
-                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped"
+                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         continue;
                     };
@@ -1366,7 +1371,7 @@ impl PlexiApp {
                         // Origin resolved above but the pane vanished between
                         // the two lookups (closed this same frame) — drop.
                         log::warn!(
-                            "OpenDirectedPipe: target pane {target_pane_id} closed before registration; pipe '{pipe_id}' dropped"
+                            "OpenDirectedPipe: target pane {target_pane_id} closed before registration; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         );
                         continue;
                     };
@@ -1407,7 +1412,7 @@ impl PlexiApp {
                             };
                             if !registered {
                                 log::info!(
-                                    "OpenDirectedPipe: '{pipe_id}' target {target_pane_id} has no local pipe registry hookup for its runtime — host-side routing still proceeds"
+                                    "OpenDirectedPipe: '{pipe_id}' target {target_pane_id} has no local pipe registry hookup for its runtime — host-side routing still proceeds", pipe_id = crate::host::guest_text::shown(&pipe_id)
                                 );
                             }
                             self.directed_pipes.insert(
@@ -1416,14 +1421,14 @@ impl PlexiApp {
                             );
                             log::info!(
                                 "OpenDirectedPipe: '{pipe_id}' subscribed pane {sender_pane_id} ↔ pane {target_pane_id} (context {})",
-                                sender_origin.context_id
+                                sender_origin.context_id, pipe_id = crate::host::guest_text::shown(&pipe_id)
                             );
                         }
                         Some(other) => log::warn!(
-                            "OpenDirectedPipe: target {target_pane_id} is a {other}; expected plugin — pipe '{pipe_id}' not subscribed"
+                            "OpenDirectedPipe: target {target_pane_id} is a {other}; expected plugin — pipe '{pipe_id}' not subscribed", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         ),
                         None => log::warn!(
-                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped"
+                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
                         ),
                     }
                 }
@@ -1565,7 +1570,9 @@ impl PlexiApp {
                     }
                     if !delivered {
                         log::warn!(
-                            "DeliverRunUpdate: no pane found for type_id='{originator_type_id}'"
+                            "DeliverRunUpdate: no pane found for type_id='{originator_type_id}'",
+                            originator_type_id =
+                                crate::host::guest_text::shown(&originator_type_id)
                         );
                     }
                 }
@@ -1654,7 +1661,10 @@ impl PlexiApp {
                 // plugin has pending background work (#2021). Already-queued
                 // pending_commands are still taken unconditionally.
                 if app.needs_background_tick() {
-                    log::debug!("parked background plugin '{type_id}': pending work — ticking");
+                    log::debug!(
+                        "parked background plugin '{type_id}': pending work — ticking",
+                        type_id = crate::host::guest_text::shown(type_id)
+                    );
                     app.background_tick();
                 }
                 let cmds = app.take_pending_commands();

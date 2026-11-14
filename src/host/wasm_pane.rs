@@ -1237,7 +1237,7 @@ impl WasmPane {
                     guest_text::shown(&req.request_id),
                     req.mode,
                     req.multiple,
-                    req.filter
+                    guest_text::shown_list(&req.filter)
                 );
                 self.open_file_picker(req);
             }
@@ -1347,7 +1347,7 @@ impl WasmPane {
         );
         if granted {
             log::info!(
-                "wasm effect: plugin_id={} capability={} effect={effect:?}",
+                "wasm effect: plugin_id={} capability={} queued",
                 self.app.plugin_id(),
                 guest_text::shown(capability_id)
             );
@@ -1651,7 +1651,7 @@ impl WasmPane {
                     "wasm events: subscribe plugin_id={} publisher={} streams={:?}",
                     self.app.plugin_id(),
                     guest_text::shown(&req.plugin_id),
-                    req.event_names
+                    guest_text::shown_list(&req.event_names)
                 );
                 self.pending_host_effects
                     .push_back(WasmHostEffect::SubscribeEvents {
@@ -2096,15 +2096,20 @@ impl LiveWasmPane {
     }
 
     fn fail(&mut self, ctx: &str, e: impl std::fmt::Display) {
-        // A guest error string reaches the pane and the log: made safe here.
-        let msg = guest_text::guest_line(
+        // A wasmtime error is host-written and multi-line, but can carry the
+        // guest's own text (a trap or panic message). The pane keeps its lines
+        // with every other unsafe character escaped; the log gets one line.
+        let raw = format!("{ctx}: {e}");
+        log::error!(
+            "wasm pane error — {}",
+            guest_text::bound_line(&raw, guest_text::MAX_BLOCK_BYTES).0
+        );
+        self.error = Some(guest_text::guest_paragraph(
             &self.spawn_name,
             "error",
-            &format!("{ctx}: {e}"),
-            guest_text::MAX_LINE_CHARS,
-        );
-        log::error!("wasm pane error — {msg}");
-        self.error = Some(msg);
+            &raw,
+            guest_text::MAX_BLOCK_BYTES,
+        ));
     }
 
     pub fn wants_close(&self) -> bool {
@@ -2979,6 +2984,84 @@ mod tests {
 
     fn request_capability(capability_id: impl Into<String>) -> Effect {
         Effect::RequestCapability(capability_id.into())
+    }
+
+    /// Stint 1344 guard: a WASM guest names hostile text in every effect the
+    /// pane executes (before and after the matching capability is granted),
+    /// and no captured log line may hold a raw control, bidi or invisible
+    /// character. A new log site that repeats guest text raw fails here.
+    #[test]
+    fn wasm_guest_cannot_put_raw_text_in_any_log_line() {
+        let capture = crate::testing::test_log::capture();
+        let h = format!("\u{1b}]0;F\u{7}\u{202e}\u{200b}\nFORGED{}", "x".repeat(300));
+        let effects = |h: &str| {
+            vec![
+                Effect::SetTitle(h.to_string()),
+                Effect::SetStatus(h.to_string()),
+                file_read(h),
+                file_write(h, b"x"),
+                http_fetch(h),
+                ai_query(h),
+                declare_stream(h),
+                emit_event(h),
+                open_picker(h, WitFilePickerMode::Open, false),
+                Effect::SubscribeEventStreams(SubscribeEventStreamsEffect {
+                    request_id: h.to_string(),
+                    plugin_id: h.to_string(),
+                    event_names: vec![h.to_string()],
+                    payload_mode: h.to_string(),
+                    trigger_mode: h.to_string(),
+                    resource_id: Some(h.to_string()),
+                }),
+                Effect::UnsubscribeEventStreams(UnsubscribeEventStreamsEffect {
+                    request_id: h.to_string(),
+                    subscription_id: h.to_string(),
+                }),
+                Effect::ClipboardWrite(h.to_string()),
+                Effect::Notify(NotificationEffect {
+                    title: h.to_string(),
+                    body: h.to_string(),
+                    icon: None,
+                }),
+                Effect::Spawn(SpawnEffect {
+                    plugin_id: h.to_string(),
+                    layout: Some(h.to_string()),
+                    args: vec![h.to_string()],
+                }),
+                request_capability(h),
+            ]
+        };
+        let mut p = pane(0.0);
+        for effect in effects(&h) {
+            p.exec(effect, 0);
+        }
+        let _ = p.dispatch_ui_action(h.clone(), 0);
+        for capability in [
+            "fs.read",
+            "fs.write",
+            "net.http",
+            "clipboard.write",
+            "notify",
+            "spawn.plugin",
+        ] {
+            p.exec(request_capability(capability), 0);
+            p.decide_next_capability_prompt(true);
+        }
+        for effect in effects(&h) {
+            p.exec(effect, 0);
+        }
+        assert!(
+            !capture.lines().is_empty(),
+            "the pane's lines must be captured"
+        );
+        for line in capture.lines() {
+            if let Some(bad) = line.chars().find(|c| guest_text::is_unsafe_to_print(*c)) {
+                panic!(
+                    "raw {bad:?} in a log line: {:?}",
+                    line.chars().take(120).collect::<String>()
+                );
+            }
+        }
     }
 
     /// Stint 1344: a WASM guest's title reaches the pane label, `pane list`,

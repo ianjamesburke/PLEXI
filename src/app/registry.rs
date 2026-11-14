@@ -1483,6 +1483,14 @@ mod tests {
             toml::from_str::<PluginManifest>(&schema2_fixture("")).is_ok(),
             "a plain id still loads"
         );
+        // A malformed field fails before the id is validated; the refusal
+        // still shows the id escaped.
+        let raw = schema2_fixture("")
+            .replace("id = 'sample'", "id = \"evil\\u001b[31m\"")
+            .replace("version = '1.0.0'", "version = 7");
+        let error = PluginManifest::parse(&raw).unwrap_err().to_string();
+        assert!(!error.contains('\u{1b}'), "{error:?}");
+        assert!(error.contains("evil\\u{1b}"), "{error:?}");
     }
 
     #[test]
