@@ -29,15 +29,23 @@ pub(crate) fn session_marker() -> &'static str {
 }
 
 const SESSION_RECORD: &str = "pane-session";
-/// Ceiling on all quit cleanup of pane processes and tmux sessions together.
+/// Cap on the shared quit cleanup deadline `D` for pane processes and tmux
+/// sessions together. Cleanup ends at `D` unless the two floors below push
+/// it later: `end = max(D, kill_start + POST_KILL_MIN + TMUX_MIN_BUDGET)`,
+/// where the grace ends no later than `D - TMUX_MIN_BUDGET` (so `end` is at
+/// most `D + POST_KILL_MIN` after a full grace) and a slow scan can push
+/// `kill_start` later still (see `cleanup_end`).
 const QUIT_CLEANUP_CAP: Duration = Duration::from_millis(2500);
 /// What tmux cleanup is always left, however long the pane processes took
-/// (stint 1526): enough for discovery plus a kill of a few marked sessions.
+/// (stint 1526). Cleanup asks every session on the default server for its
+/// marker, one spawn per session, so a user with many unmarked sessions can
+/// still use this up before the host's marked ones are reached.
 const TMUX_MIN_BUDGET: Duration = Duration::from_millis(150);
 /// Longest wait to observe SIGKILLed processes gone.
 const POST_KILL_WAIT: Duration = Duration::from_millis(250);
 /// What that observation is always left after the grace: SIGKILL death is
 /// near instant, and a zombie already counts as gone (stint 1523).
+#[cfg(unix)]
 const POST_KILL_MIN: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const ROOTS_RECORD: &str = "pane-roots";
@@ -280,9 +288,10 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
         Err(_) => default_grace,
     };
     let start = Instant::now();
-    // One shared budget, unchanged in total: min(grace + POST_KILL_WAIT,
-    // QUIT_CLEANUP_CAP). Pane processes must finish TMUX_MIN_BUDGET before
-    // its end, so a grace that runs to the cap no longer starves tmux.
+    // The shared deadline D = min(grace + POST_KILL_WAIT, QUIT_CLEANUP_CAP).
+    // The tmux reserve comes out of the post-kill wait, not the grace: pane
+    // processes are signaled, given their grace and killed by D minus the
+    // tmux minimum, so a grace that runs to the cap no longer starves tmux.
     let deadline = start + (grace + POST_KILL_WAIT).min(QUIT_CLEANUP_CAP);
     let process_deadline = deadline
         .checked_sub(TMUX_MIN_BUDGET)
@@ -290,21 +299,42 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     crate::app::quit::trace("children_begin");
     let mut report = stop_marked_processes(marker, grace, process_deadline);
     // Pane HUP/TERM must never wait on a stuck tmux server. Tmux gets the rest
-    // of the shared budget, and never less than TMUX_MIN_BUDGET: if scanning
-    // or signaling overran, the whole cleanup can end that much later.
+    // of the shared budget, and never less than TMUX_MIN_BUDGET.
     crate::app::quit::trace("tmux_begin");
     let tmux_start = Instant::now();
-    let tmux_deadline = deadline.max(tmux_start + TMUX_MIN_BUDGET);
+    let tmux_deadline = cleanup_end(deadline, tmux_start);
     log::info!(
         "quit: tmux cleanup budget {}ms",
         tmux_deadline
             .saturating_duration_since(tmux_start)
             .as_millis()
     );
+    if tmux_deadline > deadline {
+        log::info!(
+            "quit: cleanup runs {}ms past its shared deadline: the post-kill observation \
+             floor or a slow process scan used the tmux share",
+            (tmux_deadline - deadline).as_millis()
+        );
+    }
     stop_marked_tmux_sessions(tmux, marker, tmux_deadline);
     report.tmux = tmux_start.elapsed();
     crate::app::quit::trace("tmux_end");
     KillReport { grace, ..report }
+}
+
+/// When quit cleanup ends: the shared deadline, unless tmux would get less
+/// than its minimum from `tmux_start`. The only way past the deadline is the
+/// two floors, `POST_KILL_MIN` and `TMUX_MIN_BUDGET` (stint 1526).
+fn cleanup_end(deadline: Instant, tmux_start: Instant) -> Instant {
+    deadline.max(tmux_start + TMUX_MIN_BUDGET)
+}
+
+/// How long to watch SIGKILLed processes go: at most `POST_KILL_WAIT`, never
+/// past `process_deadline`, but never less than `POST_KILL_MIN` either, so a
+/// process killed a moment ago is not counted as surviving (stint 1523).
+#[cfg(unix)]
+fn post_kill_deadline(killed: Instant, process_deadline: Instant) -> Instant {
+    (killed + POST_KILL_WAIT).min(process_deadline.max(killed + POST_KILL_MIN))
 }
 
 // Shutdown helpers must not let an unresponsive tmux server stall host exit.
@@ -515,12 +545,9 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         }
     }
     let signaled = Instant::now();
-    // The grace ends early enough to leave the post-kill observation its
-    // minimum inside `total_deadline`.
-    let grace_end = total_deadline
-        .checked_sub(POST_KILL_MIN)
-        .map_or(signaled, |end| end.max(signaled));
-    let deadline = (signaled + grace).min(grace_end);
+    // The grace runs to `total_deadline` at most (the shared deadline minus
+    // the tmux minimum); it is never shortened by more than that.
+    let deadline = (signaled + grace).min(total_deadline);
     // Pids already reported as zombies, so each is logged once (stint 1523).
     let mut zombies = BTreeSet::new();
     let tracked: Vec<_> = identities
@@ -557,11 +584,9 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     for group in &escalated {
         signal(-*group, libc::SIGKILL);
     }
-    // SIGKILL delivery is not process death. Observe/reap owned identities
-    // before reporting cleanup complete, bounded independently of the grace.
-    // Capped by the shared deadline (stint 1526), never less than its minimum.
-    let killed = Instant::now();
-    let reap_deadline = (killed + POST_KILL_WAIT).min(total_deadline.max(killed + POST_KILL_MIN));
+    // SIGKILL delivery is not process death. Observe owned identities gone
+    // before reporting cleanup complete (`post_kill_deadline`).
+    let reap_deadline = post_kill_deadline(Instant::now(), total_deadline);
     let remaining = loop {
         let live = refresh_owned_alive(&mut system, &tracked, &identities, &mut zombies);
         if live.is_empty() || Instant::now() >= reap_deadline {
@@ -785,7 +810,8 @@ mod tests {
     /// Stint 1526: when the grace runs to the shared cap and a SIGKILL is
     /// needed, tmux cleanup still gets `TMUX_MIN_BUDGET` and leaves no marked
     /// session. The fake `tmux` keeps its sessions in a file (no tmux server)
-    /// and takes a few milliseconds per call, like a real one.
+    /// and takes 5 ms per call, so three calls fit the minimum on a loaded
+    /// runner.
     #[test]
     fn tmux_cleanup_keeps_its_minimum_budget_after_a_sigkill() {
         use std::os::unix::fs::PermissionsExt;
@@ -797,7 +823,7 @@ mod tests {
         std::fs::write(
             &tmux,
             format!(
-                "#!/bin/sh\nsleep 0.02\ncase \"$1\" in\n\
+                "#!/bin/sh\nsleep 0.005\ncase \"$1\" in\n\
                  list-sessions) cat \"{s}\" ;;\n\
                  show-environment) echo \"{env}={marker}\" ;;\n\
                  kill-session) grep -vx -- \"$3\" \"{s}\" > \"{s}.new\"; mv \"{s}.new\" \"{s}\" ;;\n\
@@ -859,6 +885,33 @@ mod tests {
             Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
         }
         drop(registration);
+    }
+
+    /// Stint 1526, with chosen instants: the post-kill observation stops at
+    /// the process deadline when that comes first, keeps its floor when the
+    /// deadline has already passed, and never runs past its own maximum.
+    #[test]
+    fn post_kill_wait_is_capped_by_the_process_deadline_with_a_floor() {
+        let killed = Instant::now();
+        let deadline = killed + Duration::from_millis(120);
+        assert_eq!(post_kill_deadline(killed, deadline), deadline);
+        let passed = killed
+            .checked_sub(Duration::from_millis(30))
+            .unwrap_or(killed);
+        assert_eq!(post_kill_deadline(killed, passed), killed + POST_KILL_MIN);
+        let far = killed + Duration::from_secs(5);
+        assert_eq!(post_kill_deadline(killed, far), killed + POST_KILL_WAIT);
+    }
+
+    /// Stint 1526: cleanup ends at the shared deadline unless tmux would get
+    /// less than its minimum; that floor is the only way past it.
+    #[test]
+    fn cleanup_ends_at_the_deadline_unless_the_tmux_floor_needs_more() {
+        let tmux_start = Instant::now();
+        let roomy = tmux_start + Duration::from_millis(400);
+        assert_eq!(cleanup_end(roomy, tmux_start), roomy);
+        let tight = tmux_start + Duration::from_millis(20);
+        assert_eq!(cleanup_end(tight, tmux_start), tmux_start + TMUX_MIN_BUDGET);
     }
 
     struct FixtureChild(std::process::Child);
