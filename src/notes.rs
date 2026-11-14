@@ -352,6 +352,12 @@ fn walk_stats() -> WalkStats {
     WALK_STATS.with(|stats| stats.get())
 }
 
+/// The directory budget when this thread's last rollup walk stopped early, so
+/// the CLI can say some nested tiers were not scanned (stint 1525).
+pub(crate) fn rollup_walk_budget_hit() -> Option<usize> {
+    walk_stats().budget_hit.then_some(WALK_DIR_BUDGET)
+}
+
 /// Directories visited and whether the budget tripped during the most recent
 /// index build on this thread. The background worker reads this after
 /// [`build_notes_index`]; it is not a signal the UI thread can use.
@@ -469,6 +475,26 @@ pub(crate) fn notes_scopes_for_root(root: Option<&Path>) -> Vec<NotesScope> {
     })
 }
 
+/// The Cache Directory Tagging marker that build tools (cargo's `target/`
+/// among them) write into their output directories.
+const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
+
+/// A linked git worktree checkout: its `.git` is a file whose `gitdir:` points
+/// into a repository's `worktrees/` directory. A submodule's points into
+/// `modules/`, and a repository's own `.git` is a directory; both are walked.
+fn is_linked_worktree(dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join(".git")) else {
+        return false;
+    };
+    text.lines()
+        .next()
+        .and_then(|line| line.strip_prefix("gitdir:"))
+        .map(|gitdir| Path::new(gitdir.trim()))
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "worktrees")
+}
+
 /// Bounded breadth-first walk for `*/.plexi/notes` directories below `root`.
 ///
 /// Directories only, never following symlinks (a symlinked subtree could point
@@ -494,6 +520,10 @@ fn nested_tiers_below(root: &Path) -> Vec<PathBuf> {
                 if tier.is_dir() && comparable_scope_path(&tier) != root_notes_cmp {
                     found.push(tier);
                 }
+                crate::search::DirVisit::SkipChildren
+            } else if is_linked_worktree(path) || path.join(CACHEDIR_TAG).is_file() {
+                // Another checkout of a repository, or build output: neither
+                // holds a notes tier worth scanning (stint 1525).
                 crate::search::DirVisit::SkipChildren
             } else {
                 crate::search::DirVisit::Descend
@@ -1489,6 +1519,53 @@ mod tests {
         assert!(
             !dirs.iter().any(|d| d.starts_with(&outside)),
             "a symlinked subtree must not be walked: {dirs:?}"
+        );
+    }
+
+    /// Stint 1525: a linked git worktree checkout (its `.git` is a file
+    /// pointing into another repository's `worktrees/`) and a tagged build
+    /// output directory (`CACHEDIR.TAG`) are not walked; a nested repository
+    /// with its own `.git` directory still is.
+    #[test]
+    fn rollup_walk_skips_linked_worktrees_and_tagged_build_output() {
+        let env = tier_env("walk-worktrees");
+        seed(&context_notes_dir(&env.root).join("own.md"), "own");
+        let checkout = env.root.join("checkouts").join("feature-x");
+        seed(&context_notes_dir(&checkout).join("copy.md"), "copy");
+        std::fs::write(
+            checkout.join(".git"),
+            format!("gitdir: {}/.git/worktrees/feature-x\n", env.root.display()),
+        )
+        .unwrap();
+        let output = env.root.join("out-cache");
+        seed(
+            &context_notes_dir(&output.join("deep")).join("built.md"),
+            "built",
+        );
+        std::fs::write(
+            output.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        let project = env.root.join("projects").join("other");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        seed(&context_notes_dir(&project).join("real.md"), "real");
+
+        let dirs: Vec<PathBuf> = notes_scopes_for_root(Some(&env.root))
+            .into_iter()
+            .map(|s| s.dir)
+            .collect();
+        assert!(
+            !dirs.iter().any(|d| d.starts_with(&checkout)),
+            "a linked worktree checkout was walked: {dirs:?}"
+        );
+        assert!(
+            !dirs.iter().any(|d| d.starts_with(&output)),
+            "tagged build output was walked: {dirs:?}"
+        );
+        assert!(
+            dirs.contains(&context_notes_dir(&project)),
+            "a nested repository's tier must still be found: {dirs:?}"
         );
     }
 
