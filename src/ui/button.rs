@@ -386,11 +386,30 @@ impl egui::Widget for KitButton<'_> {
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
             })
             .inner;
+        // Keyboard focus: an accent ring just outside the frame, so it reads on
+        // every fill (an accent Primary included) and never moves the frame.
+        if response.has_focus() {
+            log_first_focus_ring();
+            ui.painter().rect_stroke(
+                response.rect,
+                self.class().radius(),
+                egui::Stroke::new(FOCUS_RING_WIDTH, self.colors.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), self.label)
         });
         response
     }
+}
+
+/// Width of the keyboard-focus ring painted outside a focused kit button.
+const FOCUS_RING_WIDTH: f32 = 2.0;
+
+fn log_first_focus_ring() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| log::info!("ui: kit button painted its keyboard-focus ring"));
 }
 
 /// One info trace per kind/size/geometry combination: enough to see in
