@@ -611,7 +611,6 @@ fn overlay_view_on(h: &mut HostHarness, pane_id: u64, manifest_id: &str) {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: Some(Box::new(covered)),
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),

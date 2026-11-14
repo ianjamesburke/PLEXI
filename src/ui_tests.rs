@@ -7311,7 +7311,6 @@ open(out + ".done", "w").close()
                 target_context_id: 42,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             }))));
         });
         let bar_height = crate::render::view_pane::chrome_height(true, false);
