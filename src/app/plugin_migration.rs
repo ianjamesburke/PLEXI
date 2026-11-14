@@ -470,7 +470,10 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     format!("bundled CPython is unusable for the source migration: {detail}"),
                 )
                 .plain("Plexi's bundled Python is missing or damaged, so it cannot convert plugin source code.")
-                .hint("reinstall Plexi, then relaunch."),
+                .hint(format!(
+                    "{}, then relaunch.",
+                    crate::host::wasm_python::BuildKind::current().bundle_fix()
+                )),
                 ScriptError::Sandbox(detail) => MigrationFailure::new(
                     OPERATION_TREE,
                     root,
@@ -1074,10 +1077,12 @@ mod tests {
         }
     }
 
-    /// A missing or damaged interpreter names the fix and leaves the profile
-    /// exactly as it was.
+    /// A missing or damaged interpreter names the fix for this build kind and
+    /// leaves the profile exactly as it was. The test binary is a source
+    /// build, so the fix is the just recipe, not "reinstall Plexi" (stint
+    /// 1417); the packaged wording is pinned in `wasm_python`.
     #[test]
-    fn plugin_rename_unusable_bundle_says_reinstall_and_restores_profile() {
+    fn plugin_rename_unusable_bundle_names_the_build_fix_and_restores_profile() {
         // The message names these paths; "uv" in a path must not read as the
         // message naming uv.
         let corrupt = tempfile::Builder::new()
@@ -1101,9 +1106,10 @@ mod tests {
             assert!(!output.status.success(), "{stderr}");
             assert!(stderr.contains("bundled CPython is unusable"), "{stderr}");
             assert!(
-                stderr.contains("fix: reinstall Plexi, then relaunch."),
+                stderr.contains("fix: run just fetch-cpython-bundle, then relaunch."),
                 "{stderr}"
             );
+            assert!(!stderr.contains("reinstall Plexi"), "{stderr}");
             let prose = stderr
                 .replace(&bundle_dir.display().to_string(), "<bundle>")
                 .replace(&root.path().display().to_string(), "<profile>");
