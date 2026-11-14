@@ -101,3 +101,17 @@ mod tests {
         );
     }
 }
+
+/// Undo egui's `multiply_opacity` on an emitted colour: the same colour at the
+/// alpha it had before the ui's `opacity` was applied. Post-paint passes that
+/// resolve text against emitted shapes must resolve undimmed colours and dim
+/// the result, or an unfocused (dimmed) pane picks a different text colour
+/// than a focused one (stint 1404).
+pub(crate) fn undim(color: Color32, opacity: f32) -> Color32 {
+    if opacity <= 0.0 || opacity >= 1.0 {
+        return color;
+    }
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    let alpha = (f32::from(a) / opacity).round().min(255.0) as u8;
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
