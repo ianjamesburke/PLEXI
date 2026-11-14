@@ -3582,6 +3582,42 @@ fn write_registry_wasm_view(root: &std::path::Path, id: &str) {
     std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).expect("copy fixture");
 }
 
+/// Stint 1454: a plugin the registry skipped for an invalid manifest is not
+/// "not found". Launching it by id says why it was skipped: for a removed key,
+/// the key, that it was removed, and the fix.
+#[test]
+fn launching_a_plugin_skipped_for_a_removed_key_names_the_key_and_the_fix() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = tempfile::tempdir().expect("root");
+    h.app.set_context_root(root.path().to_path_buf(), None);
+    let plugin_id = "stale-template-plugin";
+    let plugin_dir = root
+        .path()
+        .join(crate::config::workspace_channel_dir())
+        .join("plugins")
+        .join(plugin_id);
+    std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    std::fs::write(
+        plugin_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"Stale\"\nversion = \"0.1.0\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
+        ),
+    )
+    .expect("write manifest");
+    std::fs::write(plugin_dir.join("main.py"), "").expect("write entry");
+
+    let error = h
+        .app
+        .launch_view_by_id_with_layout(plugin_id, None, &[], None)
+        .expect_err("a plugin with a removed manifest key must not launch");
+    assert!(
+        error.contains("plugin.watch")
+            && error.contains("was removed")
+            && error.contains("delete the line"),
+        "the launch error must carry the skip reason, got {error:?}"
+    );
+}
+
 /// A launch into an inactive context must resolve its own registry without
 /// changing active state or depending on a context transition.
 #[test]
