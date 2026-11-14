@@ -324,6 +324,9 @@ pub enum RunOutcome {
     RetryRequired,
     /// A host-owned operation was denied and cannot be retried under this ID.
     Canceled,
+    /// The permission change named an ask or entry that no longer exists:
+    /// nothing was changed (stint 1383).
+    AskGone,
 }
 
 impl RunOutcome {
@@ -333,6 +336,7 @@ impl RunOutcome {
             Self::OutcomeUnknown => "outcome_unknown",
             Self::RetryRequired => "retry_required",
             Self::Canceled => "canceled",
+            Self::AskGone => "ask_gone",
         }
     }
 }
@@ -1243,6 +1247,7 @@ impl PermissionMonitor {
                 close_decision,
                 &grant_id,
             );
+            self.retire_stale_permission_changes("ask denied");
             return Ok(());
         }
         let (duration, session_id, expires_at) = match choice {
@@ -1353,6 +1358,7 @@ impl PermissionMonitor {
             "approved",
             &grant_id,
         );
+        self.retire_stale_permission_changes("ask approved");
         Ok(())
     }
 
@@ -1733,6 +1739,7 @@ impl PermissionMonitor {
     /// Open items, after expired ones have been auto-denied.
     pub fn list_needs_you(&self) -> Vec<NeedsYouRecord> {
         self.expire_needs_you();
+        self.retire_stale_permission_changes("list");
         let rows = self.open_needs_you();
         log::info!("needs_you: list open count={}", rows.len());
         rows
@@ -1826,32 +1833,46 @@ impl PermissionMonitor {
                 }
             }
             NeedsYouKind::PermissionChange => {
-                let resolution = final_resolution;
-                let decision = if approve { "approved" } else { "denied" };
                 let widen = self
                     .widens
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(id);
-                if approve {
-                    let (entry_id, action) = if let Some(pending) = widen {
-                        (pending.entry_id, pending.action)
-                    } else {
-                        split_widen_tag(row.run_tag.as_deref())
-                    };
-                    if !entry_id.is_empty() && !action.is_empty() {
-                        let outcome = self.apply_mutation(&entry_id, &action);
-                        log::info!(
-                            "needs_you: permission change {id} applied action={action} entry={entry_id} outcome={}",
-                            mutation_label(&outcome)
-                        );
-                    }
-                }
+                let (entry_id, action) = if let Some(pending) = widen {
+                    (pending.entry_id, pending.action)
+                } else {
+                    split_widen_tag(row.run_tag.as_deref())
+                };
+                // An approval for an ask or entry that is gone changes nothing
+                // and closes with its own outcome (stint 1383).
+                let gone = entry_id.is_empty()
+                    || action.is_empty()
+                    || self.entry_by_id(&entry_id).is_none();
+                let (resolution, decision) = if approve && gone {
+                    outcome = RunOutcome::AskGone;
+                    log::info!(
+                        "needs_you: permission change {id} approved but entry {entry_id:?} no longer exists; nothing changed"
+                    );
+                    (NeedsYouResolution::Denied, "ask_gone")
+                } else if approve {
+                    (final_resolution, "approved")
+                } else {
+                    (final_resolution, "denied")
+                };
+                // Close before applying: applying resolves the ask, which
+                // retires every item naming it, this one included.
                 if !self.close_needs_you(id, resolution, decision, "") {
                     if let Some(existing) = self.resolved_receipt(id, true) {
                         return Ok(existing);
                     }
                     return Err(format!("needs-you item {id} could not be audited"));
+                }
+                if approve && !gone {
+                    let applied = self.apply_mutation(&entry_id, &action);
+                    log::info!(
+                        "needs_you: permission change {id} applied action={action} entry={entry_id} outcome={}",
+                        mutation_label(&applied)
+                    );
                 }
             }
             NeedsYouKind::PermissionRequest => {
@@ -2145,6 +2166,46 @@ impl PermissionMonitor {
 
     /// Mark an open item resolved and audit it. Returns false when it was already resolved
     /// or the audit write failed (the item stays open in that case).
+    /// Retire every open `PermissionChange` item whose ask or entry no longer
+    /// exists (stint 1383). Runs where an ask or entry is resolved or removed,
+    /// on load, and on every list, so a stale item is never offered for
+    /// approval and its retirement is persisted with the queue.
+    fn retire_stale_permission_changes(&self, why: &str) {
+        let candidates: Vec<(String, Option<String>)> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| row.kind == NeedsYouKind::PermissionChange && row.resolution.is_none())
+            .map(|row| (row.id.clone(), row.run_tag.clone()))
+            .collect();
+        for (id, run_tag) in candidates {
+            let entry_id = self
+                .widens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .map(|widen| widen.entry_id.clone())
+                .unwrap_or_else(|| split_widen_tag(run_tag.as_deref()).0);
+            if !entry_id.is_empty() && self.entry_by_id(&entry_id).is_some() {
+                continue;
+            }
+            self.widens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            self.run_outcomes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(id.clone(), RunOutcome::AskGone);
+            if self.close_needs_you(&id, NeedsYouResolution::Denied, "ask_gone", "") {
+                log::info!(
+                    "needs_you: retired permission change {id}: entry {entry_id:?} no longer exists ({why})"
+                );
+            }
+        }
+    }
+
     fn close_needs_you(
         &self,
         id: &str,
@@ -2600,6 +2661,7 @@ impl PermissionMonitor {
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
                 self.install_restored(items);
+                self.retire_stale_permission_changes("load");
                 log::info!(
                     "needs_you: restored {count} open items from {}",
                     profile.display()
@@ -3552,6 +3614,7 @@ impl PermissionMonitor {
             };
         }
         if self.revoke_grant_id(id) {
+            self.retire_stale_permission_changes("entry removed");
             PermissionMutation::Applied {
                 entry_id: id.to_string(),
             }
@@ -3575,6 +3638,7 @@ impl PermissionMonitor {
             };
         }
         if self.revoke_grant_id(id) {
+            self.retire_stale_permission_changes("entry removed");
             PermissionMutation::Applied {
                 entry_id: id.to_string(),
             }
@@ -4918,6 +4982,114 @@ mod tests {
             instance_id: binding.instance_id.unwrap_or(0),
             target_type: binding.target_type,
         })
+    }
+
+    fn agent_caller() -> PermissionCaller {
+        PermissionCaller {
+            human: false,
+            actor_id: "agent:test".to_string(),
+        }
+    }
+
+    fn human_caller() -> PermissionCaller {
+        PermissionCaller {
+            human: true,
+            actor_id: "human".to_string(),
+        }
+    }
+
+    fn open_permission_changes(monitor: &PermissionMonitor) -> Vec<NeedsYouRecord> {
+        monitor
+            .list_needs_you()
+            .into_iter()
+            .filter(|row| row.kind == NeedsYouKind::PermissionChange)
+            .collect()
+    }
+
+    /// File an agent's "allow" widen for a fresh pending ask. Returns the
+    /// pending ask id and the widen item id.
+    fn widen_for_pending_ask(monitor: &PermissionMonitor) -> (String, String) {
+        let Admission::Required { pending_request_id } =
+            admit_of(monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("first call asks");
+        };
+        let PermissionMutation::NeedsYou { needs_you_id, .. } =
+            monitor.mutate_entry(&pending_request_id, "allow", &agent_caller())
+        else {
+            panic!("an agent's allow files a widen item");
+        };
+        assert_eq!(open_permission_changes(monitor).len(), 1, "precondition");
+        (pending_request_id, needs_you_id)
+    }
+
+    /// Stint 1383: revoking the ask retires the widen item that names it, and
+    /// it stays retired across a restart.
+    #[test]
+    fn revoking_an_ask_retires_its_permission_change_through_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let (ask, _) = widen_for_pending_ask(&monitor);
+        let revoked = monitor.mutate_entry(&ask, "revoke", &human_caller());
+        assert!(
+            matches!(revoked, PermissionMutation::Applied { .. }),
+            "{revoked:?}"
+        );
+        assert!(
+            open_permission_changes(&monitor).is_empty(),
+            "the ask is gone, so is its widen item: {:?}",
+            open_permission_changes(&monitor)
+        );
+        drop(monitor);
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(open_permission_changes(&restored).is_empty());
+    }
+
+    /// Approving a widen item whose ask is gone changes nothing and says so.
+    #[test]
+    fn approving_a_permission_change_for_a_gone_ask_is_a_no_op() {
+        let monitor = PermissionMonitor::ephemeral();
+        let (ask, widen) = widen_for_pending_ask(&monitor);
+        // Resolve the ask behind the item's back, without the retire hooks a
+        // revoke runs: a desktop answer racing the widen click.
+        monitor.pending.lock().unwrap().retain(|row| row.id != ask);
+        let before = monitor.list_entries();
+        let receipt = monitor
+            .resolve_needs_you_from(&widen, true, ResolveSurface::Desktop)
+            .expect("the item closes");
+        assert_eq!(
+            monitor.list_entries().len(),
+            before.len(),
+            "entry set unchanged"
+        );
+        assert_eq!(receipt.run_outcome, RunOutcome::AskGone);
+        assert_ne!(receipt.resolution, NeedsYouResolution::Approved);
+    }
+
+    /// An item left open by an older build whose entry is gone is retired on
+    /// load, before any list, so it is never offered for approval.
+    #[test]
+    fn a_stale_permission_change_from_disk_is_retired_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::PermissionChange,
+                actor: "agent:test".to_string(),
+                resource: "chess.play".to_string(),
+                summary: "Approve allow for an entry an older build revoked".to_string(),
+                expires_at: None,
+                run_tag: Some("allow:grant_gone".to_string()),
+            })
+            .unwrap();
+        drop(monitor);
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let open: Vec<_> = restored
+            .open_needs_you()
+            .into_iter()
+            .filter(|row| row.kind == NeedsYouKind::PermissionChange)
+            .collect();
+        assert!(open.is_empty(), "retired on load: {open:?}");
     }
 
     #[test]
