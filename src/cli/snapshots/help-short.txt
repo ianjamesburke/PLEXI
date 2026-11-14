@@ -10,40 +10,40 @@ Options:
   -V, --version          Print version
 
 Workspace:
-  run           Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
+  run           Run a named command from commands.toml or a global script
   workspace     Set up a .plexi/ workspace in your project folder
   secret        Store and retrieve secrets (API keys, passwords, tokens)
-  agent         Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
-  context       Manage the active context (the folder and project scope tied to the current pane)
+  agent         Report agent status and install status hooks
+  context       Manage the active context (folder and project scope)
 
 Plugins:
-  plugin        Manage your Plexi plugins — open, install, list, scaffold, and inspect
+  plugin        Open, install, list, scaffold and inspect plugins
   view          Discover, open, and render plugin views
-  registry      Watch installed CLI tools for changes to their available commands and options
-  events        Subscribe to a Plexi plugin's event streams and receive brokered deliveries
+  registry      Watch installed CLI tools for command and option changes
+  events        Subscribe to plugin event streams
 
 Panes:
-  pane          Control panes — list, focus, send input, capture output, and more
+  pane          List, focus, send input to and capture panes
   notify        Send a notification to the Plexi UI
 
 AI:
-  ai            AI configuration and diagnostics — scan hardware, check integrations, recommend models
+  ai            AI diagnostics: hardware scan, integrations, model picks
   needs-you     List everything waiting on you
   permissions   List and change decisions stored by the permission monitor
 
 System:
-  experiments   List, enable, or disable experiments (features outside the stable v1 surface)
+  experiments   List, enable or disable experiments
   skill         Install the agent skill compiled into this binary
   completions   Print a shell completion script to stdout
-  cli           Install the Plexi CLI launcher, drop-in completions, and shell PATH registration
-  host          Launch, stop, or check a headless-friendly Plexi host from the CLI
-  lease         Acquire process-lifetime capacity before starting work. Pauses exit with code 2
+  cli           Install the CLI launcher, completions and PATH entry
+  host          Start, stop or check a Plexi host from the CLI
+  lease         Acquire capacity before starting work (paused: exit 2)
   config        Check your Plexi config file for errors
   note          Capture, list, read, open, and delete notes
   doctor        Audit all installed plugins for capability and config gaps
   debug         Inspect what the host recorded: per-session flight traces
-  demo          Interactive keybinding tutorial — learn split and navigate in real time
-  update        Update this channel's managed package, or restore its previous generation
+  demo          Interactive keybinding tutorial
+  update        Update this channel's package or restore the previous one
   uninstall     Remove this channel's recorded package and launchers
 
 Get started: plexi host start | Docs: https://plexiapp.com/docs
