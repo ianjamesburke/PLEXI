@@ -2130,6 +2130,65 @@ mod tests {
         );
     }
 
+    /// Stint 1501 (tests only; behaviour unchanged): a host that takes the
+    /// shutdown request and never answers is signalled once the reply timeout
+    /// passes, and `host stop` reports the termination. The "host" is a child
+    /// process this test spawns, bound to a temp profile's socket; no real
+    /// host runs and no other process is signalled.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_never_replies_is_terminated_and_reported() {
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let socket = crate::platform::ipc::endpoint_in(profile.path());
+        // Binds the socket, takes every connection and reads it, never answers.
+        let script = "import socket,sys,time\n\
+s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1]);s.listen(4)\n\
+print('ready',flush=True)\n\
+held=[]\n\
+while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
+        let mut child = std::process::Command::new("python3")
+            .args(["-c", script])
+            .arg(&socket)
+            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the silent stand-in host");
+        let child_pid = child.id();
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut ready,
+        )
+        .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let mut stand_in = KillOnDrop(child);
+
+        let started = Instant::now();
+        let outcome = host_stop_in(profile.path(), None);
+
+        assert_eq!(outcome, StopOutcome::TerminationRequested(child_pid));
+        assert_eq!(
+            outcome.message(),
+            format!("Termination requested for Plexi host (pid {child_pid}).")
+        );
+        assert_eq!(outcome.exit_code(), 0);
+        assert!(
+            started.elapsed() >= HOST_STOP_REPLY_TIMEOUT,
+            "signalled only after the reply timeout, took {:?}",
+            started.elapsed()
+        );
+        let status = stand_in.0.wait().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    }
+
     /// The hint printed when an older host is running must not leave the user
     /// with no host when `host stop` reports an unclean exit.
     #[test]
