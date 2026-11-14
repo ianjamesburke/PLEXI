@@ -113,6 +113,11 @@ impl PlexiApp {
             if let Some(wait) = waiting {
                 let pane = wait.pane();
                 if let Some(reason) = self.close_batch_focus_left(win_idx, pane) {
+                    // The "Close pane?" dialog acts on whatever is focused, so
+                    // it must not outlive the batch that asked for this pane.
+                    if matches!(wait, CloseBatchWait::ConfirmClose { .. }) {
+                        self.pending_close = false;
+                    }
                     let batch = self.host.take_pane_close_batch();
                     log::info!(
                         "close_batch: end, {reason}; left open {:?}",

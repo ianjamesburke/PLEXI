@@ -9440,6 +9440,101 @@ open(out + ".done", "w").close()
         assert_eq!(open, vec![c], "exactly the selected panes closed");
     }
 
+    /// Stint 1439: a pointer click on the palette row "Wrap selection or
+    /// enter pane" wraps the selection; the press does not reach the pane
+    /// under the palette and clear it first. Keyboard activation of the same
+    /// row is pinned by `wrap_tests`.
+    #[test]
+    fn palette_wrap_row_by_pointer_wraps_the_selection() {
+        let (mut h, [a, b, _c]) = three_column_fixture();
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| app.extend_pane_selection(crate::host::keys::Direction::Right));
+        h.run_steps(1);
+        let parent = h.with_app(|app| app.router.active().context_id);
+        h.with_app_mut(|app| {
+            app.show_command_palette = true;
+            app.palette_query = "wrap selection".into();
+            app.palette_selected = 0;
+            app.palette_selected_key = None;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        let row = h.harness().get_by_label("Wrap selection or enter pane").rect();
+        assert!(
+            h.with_app(|app| [a, b, _c]
+                .into_iter()
+                .any(|p| app.visible_pane_rect(p).is_some_and(|r| r.contains(row.center())))),
+            "the row sits over a pane"
+        );
+        press_at(&mut h, row.center());
+        h.run_steps(2);
+        let child = h.with_app(|app| app.router.active().context_id);
+        assert_ne!(child, parent, "the click wrapped the selection and entered the child");
+        let wrapped: Vec<u64> = h.with_app(|app| {
+            let mut v: Vec<u64> = app.windows[app.active_window].panes.keys().copied().collect();
+            v.sort_unstable();
+            v
+        });
+        assert_eq!(wrapped, vec![a, b]);
+    }
+
+    fn press_at(h: &mut PlexiUiHarness, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+        }
+        h.run_steps(2);
+    }
+
+    /// Stint 1458 critic: the pane-click layer rule must not cost a pane its
+    /// own popups. A click on a control in pane B focuses B; a click inside
+    /// B's own popup (the file browser's View menu, an egui Area) keeps B
+    /// focused, so keyboard input stays with the pane the user is working in.
+    #[test]
+    fn click_in_a_panes_own_popup_keeps_that_pane_focused() {
+        let (mut h, [a, b, _c]) = three_column_fixture();
+        h.focus_pane(a).unwrap();
+        h.run_steps(2);
+        let b_rect = h.with_app(|app| app.visible_pane_rect(b)).unwrap();
+        let view = h
+            .harness()
+            .get_all_by_label("View \u{2304}")
+            .map(|node| node.rect())
+            .find(|rect| b_rect.contains_rect(*rect))
+            .expect("B's View menu button");
+        press_at(&mut h, view.center());
+        assert_eq!(
+            h.with_app(|app| app.active_focused_pane_id()),
+            Some(b),
+            "(a) a click on a control in B focuses B"
+        );
+        // The popup is wider than B's column, so its item sits over pane C.
+        let item = h.harness().get_by_label("Show hidden files").rect();
+        let c_rect = h.with_app(|app| app.visible_pane_rect(_c)).unwrap();
+        let pos = egui::pos2(c_rect.left() + 8.0, item.center().y);
+        assert!(item.contains(pos) && c_rect.contains(pos), "the press lands over C");
+        press_at(&mut h, pos);
+        assert_eq!(
+            h.with_app(|app| app.active_focused_pane_id()),
+            Some(b),
+            "(b) a click in B's popup keeps B focused; it does not reach C under it"
+        );
+        assert_eq!(
+            h.with_app(|app| app.host_input_owner()),
+            crate::app::input_owner::InputOwner::Pane(b),
+            "keyboard input stays with B"
+        );
+    }
+
     #[test]
     fn pane_chrome_selected_view_keeps_its_state_ring() {
         let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);

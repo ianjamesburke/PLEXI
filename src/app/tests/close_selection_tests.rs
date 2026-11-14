@@ -422,3 +422,23 @@ fn a_selected_pane_in_an_inactive_tab_clears_the_selection() {
     close_shortcut(&mut h);
     assert!(open(&h).contains(&a), "the hidden pane is never closed");
 }
+
+/// Critic follow-up: a batch paused on "Close pane?" that ends because focus
+/// moved (CLI, agent, plugin) takes its dialog with it, so a later confirm
+/// cannot close whichever pane is focused now.
+#[test]
+fn focus_leaving_a_confirm_close_pause_dismisses_the_dialog() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    h.app.config.confirm_close = Some(true);
+    select(&mut h, &[a, b]);
+    close_shortcut(&mut h);
+    assert!(h.app.pending_close, "a asks first");
+    h.app.focus_pane_in_strip(c);
+    h.run_frames(2);
+    assert!(h.app.host.pane_close_batch().is_none());
+    assert!(!h.app.pending_close, "the batch's dialog went with it");
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert_eq!(open(&h), vec![a, b, c, d], "nothing closed");
+}
