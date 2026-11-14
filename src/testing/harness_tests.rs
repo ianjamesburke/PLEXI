@@ -19394,6 +19394,13 @@ mod host_induced_terminal_output_tests {
             .expect("a committed resize opens the host-induced window")
             - crate::host::pane::HOST_INDUCED_QUIET;
         assert!(t.host_induced_quiet(opened));
+        // The terminal runs a real shell. On a slow runner its own output (a
+        // late prompt) can be drained in a commit frame before that frame
+        // opens the window, which stamps real activity next to the burst.
+        // Restate the idle agent at the commit instant, keeping the window
+        // the commit opened (stint 1484, hosted run 43594508813).
+        t.last_agent_activity_at = Some(opened - Duration::from_secs(5));
+        t.last_pty_output_at = Some(opened - Duration::from_secs(5));
         burst_then_observe(t, opened);
 
         assert_eq!(t.effective_agent_state().0, AgentState::Idle);
