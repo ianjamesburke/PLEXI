@@ -386,6 +386,22 @@ pub(crate) fn notification_counts_toward_context(
 }
 
 impl PlexiApp {
+    /// Tell the user a saved command was refused before anything ran, with
+    /// the reason and the fix. Used by palette and key-bound command runs,
+    /// whose step reports are otherwise only logged.
+    pub(crate) fn notify_command_refused(&mut self, name: &str, reason: &str) {
+        self.enqueue_notification(
+            NotifySource::HostInternal,
+            PendingNotification {
+                notify_id: new_notify_id("command-refused"),
+                title: format!("Command '{name}' not run"),
+                body: reason.to_string(),
+                scope: crate::protocol::NotifyScope::Global,
+                ..Default::default()
+            },
+        );
+    }
+
     /// Execute a `DeliverNotifyAction`: record the event, run the host-side
     /// action, unblock any waiting CLI through its response file, then hand
     /// the action to the sender plugin. Both drain paths — `dispatch.rs`'s

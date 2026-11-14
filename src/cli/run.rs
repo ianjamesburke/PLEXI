@@ -293,7 +293,10 @@ const RETIRED_STEP_COMMANDS: &[(&str, Option<&str>)] = &[
 ];
 
 /// The refusal for a step whose first word is a retired short form, or `None`.
-fn retired_step_error(step: &str) -> Option<String> {
+/// The one check for every way a saved command runs: stepped commands (via
+/// `run_steps_with`) and single-line `run =` commands from the CLI and the
+/// palette.
+pub(crate) fn retired_step_error(step: &str) -> Option<String> {
     let first = step.split_whitespace().next()?;
     let (word, replacement) = RETIRED_STEP_COMMANDS
         .iter()
@@ -973,6 +976,20 @@ pub fn run_command_for_root_from_pane(
         steps.len(),
         on_load.len()
     );
+    if steps.is_empty() {
+        if let Some(reason) = retired_step_error(&run_snippet) {
+            log::warn!("cli: refused retired single-line command '{command_name}'");
+            eprintln!("error: {reason}");
+            return StepRunReport {
+                exit_code: 2,
+                total_steps: 1,
+                completed_steps: 0,
+                failed_step_index: Some(1),
+                failed_step: Some(run_snippet),
+                error_message: Some(reason),
+            };
+        }
+    }
 
     // Resolve secrets via workspace-routed v3 resolver.
     let mut resolved: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
