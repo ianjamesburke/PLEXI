@@ -958,8 +958,8 @@ impl PlexiApp {
                 let extend = ui.input(|i| i.modifiers.command && i.modifiers.shift);
                 let same_window = ctx.window_id == canvas_old_window_id;
                 if let (true, true, Some(start), Some(next)) = (extend, same_window, pane_at(canvas_old_focus), pane_at(clicked_tile)) {
-                    log::info!("pane_selection: extended by cmd+shift click window={} pane={next}", ctx.window_id);
-                    self.host.extend_pane_selection(ctx.window_id, start, next);
+                    log::info!("pane_selection: toggled by cmd+shift click window={} pane={next}", ctx.window_id);
+                    self.host.toggle_pane_selection(ctx.window_id, start, next);
                     ui.ctx().request_repaint();
                 } else if pane_clicked {
                     let window_id = ctx.window_id;
@@ -994,6 +994,11 @@ impl PlexiApp {
                 }
 
                 if let Some(pid) = clicked_pane_id {
+                    // A file drag hovering a pane moves focus but keeps the
+                    // selection (stint 1340), so its cursor follows.
+                    if !pane_clicked {
+                        self.host.set_pane_selection_cursor(ctx.window_id, pid);
+                    }
                     self.focus_pane_in_strip(pid);
                 }
                 if resized {

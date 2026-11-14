@@ -168,15 +168,18 @@ Enter confirms after a fresh arm delay, and Escape leaves it pending. Session
 approval has no default decision key. See `ApprovalKeyboard` in
 `src/app/approval_keyboard.rs` for the delay and focus contract.
 
-Pane selection uses Cmd+Shift+H/J/K/L, or Cmd+Shift+click on a pane, to extend
-from the focused pane. The first pane remains the anchor. Cmd+Enter wraps two or
+Pane selection uses Cmd+Shift+H/J/K/L, or Cmd+Shift+click on a pane (again to
+take it out), to extend from the focused pane. The first pane remains the anchor. Cmd+Enter wraps two or
 more selected panes into a child context and enters it; with fewer selected, it
 keeps the usual zoom or portal behavior. `close_pane` (Cmd+W) with two or more
 selected closes them all, one at a time in selection order; a pane with unsaved
 work, a `confirm_close` prompt or a non-empty portal shows its usual dialog, and
 Cancel stops there, leaving the rest open and selected. The palette lists "Close
-selected panes" while a selection exists. Escape, plain Cmd+H/J/K/L, a plain
-click, or closing a selected pane clears selection.
+selected panes" while two or more are selected. Escape, plain Cmd+H/J/K/L, a
+plain click, closing a selected pane, zooming, a tab switch that hides a
+selected pane, or any other focus move (split, new pane, palette or CLI jump)
+clears selection, so the close shortcut never acts on panes not drawn as
+selected. A paused close ends when focus leaves the pane that asked.
 Portals cannot be wrapped, and at least one pane must remain outside the child.
 Cmd+D on a zoomed pane wraps it and creates a second pane beside it in the child.
 

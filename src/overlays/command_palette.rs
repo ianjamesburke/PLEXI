@@ -1086,10 +1086,11 @@ impl PlexiApp {
     fn palette_command_listed(&self, command: &PaletteCommand) -> bool {
         match command {
             PaletteCommand::OpenWorkspaceConfig => self.palette_config_workspace_root.is_some(),
+            // A selection of one is just the focused pane: "Close pane" covers it.
             PaletteCommand::CloseSelectedPanes => self
                 .host
                 .pane_selection(self.windows[self.active_window].window_id)
-                .is_some(),
+                .is_some_and(|selection| selection.panes.len() >= 2),
             _ => true,
         }
     }
@@ -2121,9 +2122,13 @@ impl PlexiApp {
                 }
             }
             PaletteCommand::RestartToUpdate => self.offer_update_restart("palette"),
+            // No selection means nothing to close: never fall back to the
+            // focused pane, which may be the pane under the pointer.
             PaletteCommand::CloseSelectedPanes => {
                 if !self.start_close_selected_panes("palette_close_selected") {
-                    self.run_palette_host_binding(crate::host::keys::Action::ClosePane);
+                    log::info!("palette: close selected panes found no selection");
+                    self.attention_queue.transient_hint =
+                        Some(("No panes are selected.".into(), std::time::Instant::now()));
                 }
             }
             PaletteCommand::SetupCli => match crate::cli::setup::setup_external_shell(true) {
@@ -4587,7 +4592,8 @@ mod tests {
                 .palette_command_listed(&PaletteCommand::CloseSelectedPanes)
         };
         assert!(!listed(&mut h), "hidden without a selection");
-        h.app.run_palette_command(PaletteCommand::CloseSelectedPanes);
+        h.app
+            .run_palette_command(PaletteCommand::CloseSelectedPanes);
         h.run_frames(2);
         assert_eq!(
             h.app.windows[h.app.active_window].panes.len(),
@@ -4596,9 +4602,13 @@ mod tests {
         );
         let window = h.app.windows[h.app.active_window].window_id;
         h.app.host.extend_pane_selection(window, a, a);
-        assert!(!listed(&mut h), "a selection of one is the focused pane, not listed");
+        assert!(
+            !listed(&mut h),
+            "a selection of one is the focused pane, not listed"
+        );
         h.app.host.clear_pane_selection(window);
         h.app.host.extend_pane_selection(window, a, b);
+        h.focus_pane(b);
         assert!(listed(&mut h), "listed with a selection");
         h.app
             .run_palette_command(PaletteCommand::CloseSelectedPanes);

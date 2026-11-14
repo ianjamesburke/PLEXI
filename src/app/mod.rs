@@ -3936,6 +3936,8 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_view_commands", || {
             self.service_plugin_commands(ctx)
         });
+        // A zoom, tab switch or focus move this pass ends a selection it hid.
+        self.reconcile_pane_selections();
         self.resolve_auto_context_names();
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,

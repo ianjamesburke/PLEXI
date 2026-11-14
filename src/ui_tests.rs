@@ -9386,6 +9386,60 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_closed")).unwrap();
     }
 
+    /// Stint 1458 critic blocker 4: a pointer press on the palette row
+    /// "Close selected panes" must not reach the pane under the palette (which
+    /// would clear the selection as a pane click), and closes exactly the
+    /// selected panes.
+    #[test]
+    fn palette_close_selected_row_by_pointer_closes_the_selection() {
+        let (mut h, [a, b, c]) = three_column_fixture();
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| app.extend_pane_selection(crate::host::keys::Direction::Right));
+        h.run_steps(1);
+        let window = h.with_app(|app| app.windows[app.active_window].window_id);
+        h.with_app_mut(|app| {
+            app.show_command_palette = true;
+            app.palette_query = "close selected".into();
+            app.palette_selected = 0;
+            app.palette_selected_key = None;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        let row = h.harness().get_by_label("Close selected panes").rect();
+        let under = h.with_app(|app| {
+            [a, b, c]
+                .into_iter()
+                .find(|p| app.visible_pane_rect(*p).is_some_and(|r| r.contains(row.center())))
+        });
+        assert!(under.is_some(), "the row sits over a pane, so a leaked press would hit it");
+        let pos = row.center();
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(pos));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(
+            h.with_app(|app| app.host.pane_selection(window).map(|s| s.panes.clone())),
+            Some(vec![a, b]),
+            "the press on the palette row did not reach the pane under it"
+        );
+        h.harness().input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(3);
+        let open: Vec<u64> =
+            h.with_app(|app| app.windows[app.active_window].panes.keys().copied().collect());
+        assert_eq!(open, vec![c], "exactly the selected panes closed");
+    }
+
     #[test]
     fn pane_chrome_selected_view_keeps_its_state_ring() {
         let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);
@@ -9402,7 +9456,9 @@ open(out + ".done", "w").close()
                     session_id: None,
                 }));
             let window = app.windows[app.active_window].window_id;
-            app.host.extend_pane_selection(window, terminal, view_pane);
+            // Selected from the view to the terminal, which keeps focus: a
+            // selection only lasts while focus is where its last step left it.
+            app.host.extend_pane_selection(window, view_pane, terminal);
         });
         h.focus_pane(terminal).unwrap();
         h.run_steps(3);

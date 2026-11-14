@@ -1,7 +1,17 @@
 //! Close every selected pane (stint 1458). The batch lives in
 //! [`crate::host::model::PaneCloseBatch`]; this file drives it: each pane goes
-//! through its own close veto and dialog, in selection order, and closes
-//! through `close_pane_by_id`, the same route as a single close.
+//! through the steps a single Cmd+W runs on the focused pane, in selection
+//! order: the view's close veto and unsaved-changes dialog, `confirm_close`,
+//! the context-close dialog for a portal, then overlay restore or
+//! `close_pane_by_id`. Two single-close steps do not apply: a conjoined parent
+//! pane is not in the window's pane map, so it is never selected (a focused
+//! conjoined parent makes Cmd+W a single close), and nav-back is Cmd+W's
+//! "step back one screen" for the one focused view, while a selection asks to
+//! close the panes.
+//!
+//! The selection a batch acts on is only the one drawn on screen:
+//! [`PlexiApp::reconcile_pane_selections`] ends a selection the moment a zoom,
+//! a tab switch or any non-selection focus move hides or leaves it.
 
 use std::collections::HashSet;
 
@@ -22,7 +32,8 @@ enum WaitOutcome {
 impl PlexiApp {
     /// The panes `action` applies to in the active window: the selection, else
     /// the focused pane. See [`crate::host::model::HostModel::resolve_pane_targets`].
-    pub(crate) fn resolve_pane_targets(&self, action: &str) -> Option<PaneTargets> {
+    pub(crate) fn resolve_pane_targets(&mut self, action: &str) -> Option<PaneTargets> {
+        self.reconcile_pane_selections();
         let window = &self.windows[self.active_window];
         self.host
             .resolve_pane_targets(action, window.window_id, self.focused_pane_id(), |id| {
@@ -34,9 +45,17 @@ impl PlexiApp {
     /// panes. Returns false, changing nothing, when the close shortcut should
     /// act on the focused pane as before.
     pub(crate) fn start_close_selected_panes(&mut self, action: &str) -> bool {
+        // A batch whose asking pane lost focus ends here, so Cmd+W elsewhere
+        // works normally. One still waiting owns the dialog on screen.
+        self.service_pane_close_batch();
         if self.host.pane_close_batch().is_some() {
-            log::info!("close_batch: {action} ignored, a batch is already waiting on a dialog");
+            log::info!("close_batch: {action} ignored, a batch is waiting on its dialog");
             return true;
+        }
+        if self.conjoined_parent_focus.is_some()
+            && self.conjoined_parent_focus == self.conjoined_parent()
+        {
+            return false;
         }
         let Some(targets) = self
             .resolve_pane_targets(action)
@@ -93,6 +112,14 @@ impl PlexiApp {
             };
             if let Some(wait) = waiting {
                 let pane = wait.pane();
+                if let Some(reason) = self.close_batch_focus_left(win_idx, pane) {
+                    let batch = self.host.take_pane_close_batch();
+                    log::info!(
+                        "close_batch: end, {reason}; left open {:?}",
+                        batch.map(|b| b.remaining()).unwrap_or_default()
+                    );
+                    return;
+                }
                 match self.close_batch_wait_outcome(win_idx, wait) {
                     WaitOutcome::Pending => return,
                     WaitOutcome::Cancelled => {
@@ -103,8 +130,8 @@ impl PlexiApp {
                         log::info!("close_batch: pane {pane} closed by its dialog");
                     }
                     WaitOutcome::Close => {
-                        log::info!("close_batch: pane {pane} closed after its dialog");
-                        self.close_pane_by_id(pane);
+                        log::info!("close_batch: pane {pane} closing after its dialog");
+                        self.close_batch_close(win_idx, pane);
                     }
                 }
                 if let Some(batch) = self.host.pane_close_batch_mut() {
@@ -121,9 +148,15 @@ impl PlexiApp {
                 return;
             };
             if let Some(wait) = self.close_batch_ask(win_idx, pane) {
-                if let Some(batch) = self.host.pane_close_batch_mut() {
-                    batch.waiting = Some(wait);
-                }
+                let Some(batch) = self.host.pane_close_batch_mut() else {
+                    return;
+                };
+                batch.waiting = Some(wait);
+                // The panes still to close stay drawn as the selection, with
+                // the asking pane as its cursor.
+                let (window, anchor, remaining) = (batch.window, batch.anchor, batch.remaining());
+                self.host
+                    .set_pane_selection(window, anchor, remaining, pane);
                 log::info!("close_batch: pane {pane} asks first ({wait:?})");
                 return;
             }
@@ -154,6 +187,7 @@ impl PlexiApp {
                 }
                 return None;
             }
+            self.focus_close_batch_pane(win_idx, tile);
             self.pending_context_close = Some(state);
             return Some(CloseBatchWait::ContextClose(pane));
         }
@@ -174,10 +208,89 @@ impl PlexiApp {
                 confirmed: false,
             });
         }
-        log::info!("close_batch: pane {pane} closed");
-        self.close_pane_by_id(pane);
-        self.mark_workspace_dirty();
+        self.close_batch_close(win_idx, pane);
         None
+    }
+
+    /// The last step of a single close, for one batch pane: a view opened over
+    /// another pane hands that pane back; anything else closes.
+    fn close_batch_close(&mut self, win_idx: usize, pane: PaneId) {
+        if super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, pane) {
+            log::info!("close_batch: pane {pane} overlay closed, covered pane restored");
+        } else {
+            log::info!("close_batch: pane {pane} closed");
+            self.close_pane_by_id(pane);
+        }
+        self.mark_workspace_dirty();
+    }
+
+    /// Why a paused batch must end without closing more: focus left the
+    /// asking pane or its window, or the selection it draws was cleared.
+    fn close_batch_focus_left(&self, win_idx: usize, pane: PaneId) -> Option<&'static str> {
+        let window = &self.windows[win_idx];
+        if win_idx != self.active_window {
+            return Some("focus left the window");
+        }
+        let focused = window
+            .focused_pane
+            .and_then(|tile| window.tree.tiles.get(tile))
+            .and_then(|tile| match tile {
+                egui_tiles::Tile::Pane(id) => Some(*id),
+                _ => None,
+            });
+        if focused != Some(pane) && window.panes.contains_key(&pane) {
+            return Some("focus left the asking pane");
+        }
+        if self.host.pane_selection(window.window_id).is_none() && window.panes.contains_key(&pane)
+        {
+            return Some("selection cleared");
+        }
+        None
+    }
+
+    /// End every selection that is no longer drawn as it was made: its window
+    /// is gone or zoomed, a selected pane sits in an inactive tab, or focus
+    /// moved by anything other than a selection step. Runs every logic pass
+    /// and before any action resolves a selection.
+    pub(crate) fn reconcile_pane_selections(&mut self) {
+        for window_id in self.host.pane_selection_windows() {
+            let Some(selection) = self.host.pane_selection(window_id) else {
+                continue;
+            };
+            let reason = match self.windows.iter().find(|w| w.window_id == window_id) {
+                None => Some("window gone"),
+                Some(window) => {
+                    let active = window.tree.active_tiles();
+                    let focused = window
+                        .focused_pane
+                        .and_then(|tile| window.tree.tiles.get(tile))
+                        .and_then(|tile| match tile {
+                            egui_tiles::Tile::Pane(id) => Some(*id),
+                            _ => None,
+                        });
+                    if window.zoomed_pane.is_some() {
+                        Some("a pane is zoomed")
+                    } else if focused != Some(selection.cursor) {
+                        Some("focus moved")
+                    } else if selection.panes.iter().any(|id| {
+                        window.panes.contains_key(id)
+                            && !window
+                                .tree
+                                .tiles
+                                .find_pane(id)
+                                .is_some_and(|tile| active.contains(&tile))
+                    }) {
+                        Some("a selected pane is hidden")
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(reason) = reason {
+                log::info!("pane_selection: window={window_id} ended, {reason}");
+                self.host.clear_pane_selection(window_id);
+            }
+        }
     }
 
     /// A pane's dialog renders for the focused pane, so the asking pane takes focus.
@@ -247,7 +360,7 @@ impl PlexiApp {
         let remaining = batch.remaining();
         log::info!("close_batch: pane {pane} cancelled; end, left open and selected {remaining:?}");
         self.host
-            .set_pane_selection(batch.window, batch.anchor, remaining);
+            .set_pane_selection(batch.window, batch.anchor, remaining, pane);
     }
 
     fn finish_pane_close_batch(&mut self) {

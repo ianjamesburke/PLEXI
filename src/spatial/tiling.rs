@@ -585,7 +585,17 @@ impl PlexiBehavior<'_> {
             });
 
         // Detect clicks or file drags for focus inside the visible hit_rect only.
-        let is_click = ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect;
+        // A press over an overlay above the pane (the palette, a modal, a
+        // popup) belongs to that overlay, not to the pane under it.
+        let pointer_on_this_layer = || {
+            ui.input(|i| i.pointer.interact_pos()).is_none_or(|pos| {
+                ui.ctx()
+                    .layer_id_at(pos)
+                    .is_none_or(|layer| layer == ui.layer_id())
+            })
+        };
+        let is_click =
+            ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect && pointer_on_this_layer();
         let is_drag_hovering = if sole_drop_target {
             ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
         } else {

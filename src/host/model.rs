@@ -14,6 +14,10 @@ pub struct HostContext {
 pub(crate) struct PaneSelection {
     pub anchor: PaneId,
     pub panes: Vec<PaneId>,
+    /// The pane the last selection step focused. Focus anywhere else means a
+    /// non-selection focus move (split, new pane, palette or CLI jump,
+    /// history), which ends the selection.
+    pub cursor: PaneId,
 }
 
 /// Where a [`PaneTargets`] set came from.
@@ -117,10 +121,12 @@ impl HostModel {
             .or_insert_with(|| PaneSelection {
                 anchor: start,
                 panes: vec![start],
+                cursor: start,
             });
         if !selection.panes.contains(&next) {
             selection.panes.push(next);
         }
+        selection.cursor = next;
         log::info!(
             "pane_selection: window={window} anchor={} panes={:?}",
             selection.anchor,
@@ -143,12 +149,29 @@ impl HostModel {
             return;
         };
         selection.panes.retain(|id| *id != pane);
-        log::info!("pane_selection: window={window} removed={pane} panes={:?}", selection.panes);
+        selection.cursor = pane;
+        log::info!(
+            "pane_selection: window={window} removed={pane} panes={:?}",
+            selection.panes
+        );
         if selection.panes.is_empty() {
             self.clear_pane_selection(window);
         } else if selection.anchor == pane {
             selection.anchor = selection.panes[0];
         }
+    }
+
+    /// A focus move that keeps the selection (a file drag hovering a pane)
+    /// moves its cursor along.
+    pub(crate) fn set_pane_selection_cursor(&mut self, window: u64, pane: PaneId) {
+        if let Some(selection) = self.pane_selections.get_mut(&window) {
+            selection.cursor = pane;
+        }
+    }
+
+    /// Windows that currently hold a selection.
+    pub(crate) fn pane_selection_windows(&self) -> Vec<u64> {
+        self.pane_selections.keys().copied().collect()
     }
 
     pub(crate) fn clear_pane_selection(&mut self, window: u64) -> Option<PaneSelection> {
@@ -161,7 +184,13 @@ impl HostModel {
 
     /// Replace a window's selection, e.g. with the panes a cancelled close
     /// batch left open. An empty set clears it.
-    pub(crate) fn set_pane_selection(&mut self, window: u64, anchor: PaneId, panes: Vec<PaneId>) {
+    pub(crate) fn set_pane_selection(
+        &mut self,
+        window: u64,
+        anchor: PaneId,
+        panes: Vec<PaneId>,
+        cursor: PaneId,
+    ) {
         if panes.is_empty() {
             self.clear_pane_selection(window);
             return;
@@ -172,8 +201,14 @@ impl HostModel {
             panes[0]
         };
         log::info!("pane_selection: set window={window} anchor={anchor} panes={panes:?}");
-        self.pane_selections
-            .insert(window, PaneSelection { anchor, panes });
+        self.pane_selections.insert(
+            window,
+            PaneSelection {
+                anchor,
+                panes,
+                cursor,
+            },
+        );
     }
 
     /// Which panes `action` applies to in `window`: the selection when it

@@ -31,11 +31,20 @@ fn grid(h: &mut HostHarness) -> [u64; 4] {
     panes
 }
 
+/// Select `panes` in order, leaving focus on the last one as a selection
+/// step does.
 fn select(h: &mut HostHarness, panes: &[u64]) {
     let window = h.app.windows[h.app.active_window].window_id;
     for pair in panes.windows(2) {
         h.app.host.extend_pane_selection(window, pair[0], pair[1]);
     }
+    let last = *panes.last().unwrap();
+    let tile = h.app.windows[h.app.active_window]
+        .tree
+        .tiles
+        .find_pane(&last)
+        .unwrap();
+    h.app.windows[h.app.active_window].navigate_to(tile);
 }
 
 fn open(h: &HostHarness) -> Vec<u64> {
@@ -278,9 +287,15 @@ fn close_selected_restores_the_pane_under_a_selected_overlay() {
     h.app.windows[0].panes.insert(a, overlay);
     select(&mut h, &[a, b]);
     close_shortcut(&mut h);
-    assert_eq!(open(&h), vec![a, c, d], "the covered pane survives on its id");
     assert_eq!(
-        h.app.windows[0].panes[&a].as_view().map(|v| v.manifest_id.as_str()),
+        open(&h),
+        vec![a, c, d],
+        "the covered pane survives on its id"
+    );
+    assert_eq!(
+        h.app.windows[0].panes[&a]
+            .as_view()
+            .map(|v| v.manifest_id.as_str()),
         Some("test"),
         "the overlay closed and uncovered the original pane"
     );
@@ -296,7 +311,11 @@ fn zoom_clears_the_selection_and_close_acts_on_the_focused_pane() {
     h.press_key(egui::Key::J, select_key);
     assert_eq!(selection(&h), Some(vec![a, b]));
     dispatch(&mut h, crate::host::keys::Action::ToggleZoom);
-    assert_eq!(selection(&h), None, "zoom hides the selection, so it clears");
+    assert_eq!(
+        selection(&h),
+        None,
+        "zoom hides the selection, so it clears"
+    );
     dispatch(&mut h, crate::host::keys::Action::ToggleZoom);
     close_shortcut(&mut h);
     assert_eq!(open(&h), vec![a, c, d], "only the focused pane closes");
@@ -317,14 +336,17 @@ fn a_focus_jump_clears_the_selection() {
     assert_eq!(open(&h), vec![a, b, c]);
 }
 
-/// Blocker 2: a new split moves focus to the new pane and ends the selection.
+/// Blocker 2: a new pane that takes focus (split, new tab, new pane all do)
+/// ends the selection.
 #[test]
-fn a_split_clears_the_selection() {
+fn a_new_focused_pane_clears_the_selection() {
     let mut h = HostHarness::new();
     let [a, b, ..] = grid(&mut h);
     h.press_key(egui::Key::J, command() | egui::Modifiers::SHIFT);
     assert_eq!(selection(&h), Some(vec![a, b]));
-    dispatch(&mut h, crate::host::keys::Action::SplitRight);
+    let new = h.add_test_pane();
+    h.focus_pane(new);
+    h.run_frames(2);
     assert_eq!(selection(&h), None);
 }
 
@@ -347,7 +369,7 @@ fn focus_leaving_the_asking_pane_cancels_the_batch() {
     h.run_frames(2);
     assert!(h.app.host.pane_close_batch().is_none(), "the batch ended");
     assert_eq!(selection(&h), None);
-    close_shortcut(&mut h);
+    dispatch(&mut h, crate::host::keys::Action::ClosePane);
     assert!(!open(&h).contains(&keep), "Cmd+W works on the focused pane");
     assert!(open(&h).contains(&y), "y was never closed");
     assert!(open(&h).contains(&editor));
@@ -362,6 +384,41 @@ fn reselecting_a_selected_pane_removes_it() {
     let window = h.app.windows[0].window_id;
     h.app.host.extend_pane_selection(window, a, b);
     h.app.host.extend_pane_selection(window, b, c);
-    h.app.host.toggle_pane_selection(window, a, b);
+    h.app.host.toggle_pane_selection(window, c, b);
     assert_eq!(selection(&h), Some(vec![a, c]));
+}
+
+/// Blocker 2: a selected pane whose tab is switched away is no longer drawn,
+/// so the selection ends even when focus stayed put.
+#[test]
+fn a_selected_pane_in_an_inactive_tab_clears_the_selection() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let c = h.add_test_pane();
+    let tabs = {
+        let tree = &mut h.app.windows[0].tree;
+        let ta = tree.tiles.find_pane(&a).unwrap();
+        let tb = tree.tiles.find_pane(&b).unwrap();
+        let tc = tree.tiles.find_pane(&c).unwrap();
+        let tabs = tree.tiles.insert_tab_tile(vec![ta, tb]);
+        tree.root = Some(tree.tiles.insert_horizontal_tile(vec![tabs, tc]));
+        tabs
+    };
+    let ta = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+    h.app.windows[0].navigate_to(ta);
+    h.run_frames(2);
+    select(&mut h, &[a, c]);
+    h.run_frames(1);
+    assert_eq!(selection(&h), Some(vec![a, c]), "both drawn");
+    let tb = h.app.windows[0].tree.tiles.find_pane(&b).unwrap();
+    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t))) =
+        h.app.windows[0].tree.tiles.get_mut(tabs)
+    {
+        t.set_active(tb);
+    }
+    h.run_frames(2);
+    assert_eq!(selection(&h), None, "a is hidden behind b's tab");
+    close_shortcut(&mut h);
+    assert!(open(&h).contains(&a), "the hidden pane is never closed");
 }
