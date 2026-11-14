@@ -2984,7 +2984,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -3020,7 +3019,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         target_context_id: child_ctx_id,
                         context_state: None,
                         reveal_after_close: false,
-                        hidden: false,
                     })),
                 );
                 tiles.push(win.tree.tiles.insert_pane(portal));
