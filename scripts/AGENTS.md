@@ -32,7 +32,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - `default-config.toml` is the config template seeded on install. Keep in sync with `docs/CONFIG.md`.
 - **Bump at release boundaries, not after every PR.** Run `just bump` once at end of a batch or before promoting.
 - **CHANGELOG is self-building.** `just bump` runs **git-cliff** (`cliff.toml`) to prepend unreleased conventional commits into `CHANGELOG.md`. Preview with `just changelog`. Do not hand-write release notes into CHANGELOG for a cut — fix commit messages if the cliff output is wrong. Full tag/promote flow: `RELEASE_CHANNELS.md`.
-- **App seeding is channel-gated.** `packs/core.toml` is the single source of truth for the maintained/core app set (owned by `apps/AGENTS.md`). `package.py` includes maintained top-level app dirs on `alpha`/`pr-*`, discovered by `manifest.toml`; it must not flatten `apps/dev/` into the user-visible app registry. On `beta`/`main` it seeds exactly the canonical set through the host's own pack applier (refresh keyed by compiled build identity; examples on a fresh profile) so no app list is duplicated here. Never enumerate app names in this script.
+- **App seeding is channel-gated.** `packs/core.toml` is the single source of truth for the maintained/core app set (owned by `plugins/AGENTS.md`). `package.py` includes maintained top-level app dirs on `alpha`/`pr-*`, discovered by `manifest.toml`; it must not flatten `plugins/dev/` into the user-visible app registry. On `beta`/`main` it seeds exactly the canonical set through the host's own pack applier (refresh keyed by compiled build identity; examples on a fresh profile) so no app list is duplicated here. Never enumerate app names in this script.
 
 ## Traps
 
