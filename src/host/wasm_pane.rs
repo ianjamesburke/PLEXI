@@ -2228,55 +2228,8 @@ impl LiveWasmPane {
             return;
         };
         let capability_id = prompt.capability_id().to_string();
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "grant_once",
-                "Grant once",
-                crate::ui::button::ButtonKind::Primary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Enter"],
-                egui::Modifiers::NONE,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "grant_always",
-                "Always allow",
-                crate::ui::button::ButtonKind::Primary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Shift", "Enter"],
-                egui::Modifiers::SHIFT,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "deny_once",
-                "Deny once",
-                crate::ui::button::ButtonKind::Secondary,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Esc"],
-                egui::Modifiers::NONE,
-                egui::Key::Escape,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "deny_always",
-                "Always deny",
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Shift", "Esc"],
-                egui::Modifiers::SHIFT,
-                egui::Key::Escape,
-            )),
-        ];
-        let response = crate::ui::dialog::ActionModal::new(
-            "wasm_capability_prompt_overlay",
-            "Capability request",
-            &actions,
-        )
-        .width(crate::overlays::MODAL_WIDTH)
-        .show(ctx, colors, |ui| {
+        let actions = capability_prompt_actions();
+        let response = capability_prompt_modal(&actions).show(ctx, colors, |ui| {
             crate::ui::typography::caption(
                 ui,
                 format!("{} requests:", self.display_name()),
@@ -2743,6 +2696,65 @@ pub(crate) fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
         },
         pressed: *pressed,
     })
+}
+
+/// The capability prompt's actions, shared with its keyboard test.
+pub(crate) fn capability_prompt_actions() -> [crate::ui::dialog::DialogAction<'static>; 4] {
+    [
+        crate::ui::dialog::DialogAction::new(
+            "grant_once",
+            "Grant once",
+            crate::ui::button::ButtonKind::Primary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "grant_always",
+            "Always allow",
+            crate::ui::button::ButtonKind::Primary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Shift", "Enter"],
+            egui::Modifiers::SHIFT,
+            egui::Key::Enter,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "deny_once",
+            "Deny once",
+            crate::ui::button::ButtonKind::Secondary,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Esc"],
+            egui::Modifiers::NONE,
+            egui::Key::Escape,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "deny_always",
+            "Always deny",
+            crate::ui::button::ButtonKind::Danger,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Shift", "Esc"],
+            egui::Modifiers::SHIFT,
+            egui::Key::Escape,
+        )),
+    ]
+}
+
+/// The capability prompt does not trap Tab or route Enter to a focused action
+/// (stint 1493 critic): "Always allow" must never be Tab, Tab, Enter away.
+pub(crate) fn capability_prompt_modal<'a>(
+    actions: &'a [crate::ui::dialog::DialogAction<'a>],
+) -> crate::ui::dialog::ActionModal<'a> {
+    crate::ui::dialog::ActionModal::new(
+        "wasm_capability_prompt_overlay",
+        "Capability request",
+        actions,
+    )
+    .width(crate::overlays::MODAL_WIDTH)
 }
 
 #[cfg(test)]

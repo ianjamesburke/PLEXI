@@ -9478,6 +9478,138 @@ open(out + ".done", "w").close()
         );
     }
 
+    /// Stint 1493: open "Close pane?" over two panes, pane `a` focused.
+    fn open_close_dialog() -> (PlexiUiHarness, u64, u64) {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        let a = add_focused_pane(&mut h);
+        let b = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, vec![vec![a], vec![b]]);
+        });
+        h.run_steps(3);
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| {
+            // Set here: the frames above reload config from the harness profile.
+            app.config.confirm_close = Some(true);
+            let ctx = app.ctx.clone();
+            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
+        });
+        h.run_steps(3);
+        assert!(h.with_app(|app| app.pending_close), "the dialog is open");
+        (h, a, b)
+    }
+
+    /// The label of the widget holding keyboard focus, matched by rect
+    /// against the labels a modal can show.
+    fn focused_label(h: &mut PlexiUiHarness, labels: &[&str]) -> Option<String> {
+        let focused = h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.focused())
+                .and_then(|id| app.ctx.read_response(id))
+                .map(|r| r.rect)
+        })?;
+        labels
+            .iter()
+            .find(|label| {
+                h.harness()
+                    .query_by_label(label)
+                    .is_some_and(|node| node.rect().intersects(focused))
+            })
+            .map(|label| label.to_string())
+    }
+
+    fn tab(h: &mut PlexiUiHarness, shift: bool) {
+        let modifiers = if shift {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        h.harness().key_press_modifiers(modifiers, egui::Key::Tab);
+        h.run_steps(2);
+    }
+
+    /// Stint 1493: Tab and Shift+Tab cycle the dialog's own actions and never
+    /// reach the toolbar behind it; Enter on a Tab-focused Cancel cancels.
+    #[test]
+    fn tab_in_close_dialog_cycles_its_actions_and_enter_activates_cancel() {
+        let (mut h, a, b) = open_close_dialog();
+        let labels = ["Close", "Cancel", "UI"];
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            tab(&mut h, false);
+            seen.push(focused_label(&mut h, &labels));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                Some("Close".to_string()),
+                Some("Cancel".to_string()),
+                Some("Close".to_string()),
+                Some("Cancel".to_string()),
+            ],
+            "Tab cycles Close and Cancel and wraps"
+        );
+        h.save_screenshot(&evidence_png!("_cancel_focused"))
+            .unwrap();
+        tab(&mut h, true);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Close"));
+        tab(&mut h, true);
+        assert_eq!(
+            focused_label(&mut h, &labels).as_deref(),
+            Some("Cancel"),
+            "Shift+Tab wraps backwards"
+        );
+
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(
+            !h.with_app(|app| app.pending_close),
+            "Cancel closed the dialog"
+        );
+        let open: Vec<u64> = h.with_app(|app| {
+            let mut v: Vec<u64> = app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect();
+            v.sort_unstable();
+            v
+        });
+        let mut both = vec![a, b];
+        both.sort_unstable();
+        assert_eq!(open, both, "Enter on Cancel closes nothing");
+    }
+
+    /// Stint 1493: Enter on a Tab-focused Close closes the pane, and Esc still
+    /// dismisses an untouched dialog.
+    #[test]
+    fn enter_on_tab_focused_close_closes_and_esc_still_cancels() {
+        let (mut h, a, b) = open_close_dialog();
+        tab(&mut h, false);
+        assert_eq!(
+            focused_label(&mut h, &["Close", "Cancel", "UI"]).as_deref(),
+            Some("Close")
+        );
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let open: Vec<u64> = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect()
+        });
+        assert_eq!(open, vec![b], "Close closed pane {a}");
+
+        let (mut h, _, _) = open_close_dialog();
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(!h.with_app(|app| app.pending_close), "Esc cancels");
+    }
+
     /// Stint 1458 critic blocker 4: a pointer press on the palette row
     /// "Close selected panes" must not reach the pane under the palette (which
     /// would clear the selection as a pane click), and closes exactly the

@@ -415,7 +415,7 @@ impl egui::Widget for KitButton<'_> {
 }
 
 /// Width of the keyboard-focus ring painted outside a focused kit button.
-const FOCUS_RING_WIDTH: f32 = 2.0;
+pub(crate) const FOCUS_RING_WIDTH: f32 = 2.0;
 
 fn log_first_focus_ring() {
     static ONCE: std::sync::Once = std::sync::Once::new();

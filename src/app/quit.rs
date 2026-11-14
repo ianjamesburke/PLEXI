@@ -898,6 +898,28 @@ mod tests {
         (h, path)
     }
 
+    /// Stint 1493 critic blocker 2: in "Workspace could not be saved", Tab then
+    /// Enter (or Space) does not quit without saving; Enter did nothing there
+    /// before.
+    #[test]
+    fn quit_save_failure_tab_then_enter_does_not_quit() {
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            let (mut h, path) = quit_with_unsaveable_workspace();
+            h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+            h.press_key(key, egui::Modifiers::NONE);
+            h.hidden_frame();
+            assert!(
+                h.app.quit_coordinator.save_failure().is_some(),
+                "Tab then {key:?} must not answer the dialog"
+            );
+            assert!(
+                !h.app.quit_coordinator.save_waived,
+                "nothing quit without saving"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+        }
+    }
+
     #[test]
     fn quit_save_retry_is_bounded_and_surfaces_the_cause_once() {
         let (mut h, path) = quit_with_unsaveable_workspace();
