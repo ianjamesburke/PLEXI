@@ -5554,7 +5554,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     #[test]
-    #[ignore = "known bug: stint 1461 Hint groups stair-step 1 to 2 pt down the shared hint row"]
     fn screenshot_ui_gallery_hint_bar_stays_centered_at_wide_width() {
         let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
         h.step();
@@ -5581,7 +5580,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     #[test]
-    #[ignore = "known bug: stint 1462 Hint row runs off the left edge instead of wrapping at narrow width"]
     fn screenshot_ui_gallery_hint_bar_wraps_at_narrow_width() {
         let mut h = PlexiUiHarness::new_sized(290.0, 640.0);
         h.step();
@@ -11297,7 +11295,6 @@ open(out + ".done", "w").close()
     /// Writes /tmp/plexi_screenshot_button_states_<theme>_<state>.png.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "known bug: stint 1460 Kit buttons paint no keyboard-focus ring"]
     fn screenshot_button_states() {
         for theme in ["plexi-dusk", "plexi-dawn"] {
             let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
