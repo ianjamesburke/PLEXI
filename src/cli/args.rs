@@ -3142,6 +3142,21 @@ pub enum AgentCmd {
         #[arg(long)]
         cwd: Option<String>,
     },
+    /// Open a named agent: focus it if a pane is running it, else resume its last chat, else start a new one.
+    ///
+    /// "Running" is any pane in any context, restored standby panes included. The last chat is the
+    /// newest closed, non-ephemeral run of this agent in the same workspace, on the agent's current
+    /// harness, whose session the harness can still resume. Prints `<outcome> <pane-id>` where outcome
+    /// is `focused`, `resumed` or `started`.
+    ///
+    /// Example: plexi agent open researcher
+    Open {
+        /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
+        name: String,
+        /// Working directory for workspace lookup
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     /// Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without

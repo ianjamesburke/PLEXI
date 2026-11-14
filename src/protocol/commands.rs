@@ -884,6 +884,22 @@ pub enum HostRequest {
 
     /// Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`
     /// (`plexi agent reopen <run-id|session-id>`, stint 0803).
+    /// Open a named agent (`plexi agent open <name>`, stint 1396): focus it when a
+    /// pane is running it, else resume its last chat, else start a new chat.
+    AgentOpen {
+        /// Agent name, resolved through `AgentRegistry` like `agent start`.
+        name: String,
+        /// Working directory for workspace lookup.
+        cwd: String,
+        /// Calling pane (`PLEXI_PANE_ID`), parent of a resumed or started pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
+        response_file: String,
+        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        #[serde(skip)]
+        peer_ancestry: Option<Vec<u32>>,
+    },
+
     AgentReopen {
         /// Run ID (`run-...`) or harness session ID to reopen.
         query: String,

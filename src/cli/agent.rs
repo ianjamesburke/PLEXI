@@ -2947,6 +2947,62 @@ pub fn agent_history_cli(limit: usize, json: bool) -> i32 {
     0
 }
 
+/// `plexi agent open <name> [--cwd <DIR>] [--json]` (stint 1396). The host owns the resolver,
+/// because only it sees running panes and closed runs.
+pub fn agent_open_cli(agent_name: &str, cwd: Option<&str>, json: bool) -> i32 {
+    let Some(name) = non_empty_string(agent_name) else {
+        eprintln!("error: agent name cannot be empty");
+        return 1;
+    };
+    let effective_cwd = match resolve_effective_cwd(cwd) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let caller_pane_id: Option<u64> = std::env::var("PLEXI_PANE_ID")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    log::info!(
+        "agent_open:cli: name={name} cwd={} caller={caller_pane_id:?}",
+        effective_cwd.display()
+    );
+    let payload = serde_json::json!({
+        "type": "agent_open",
+        "name": name,
+        "cwd": effective_cwd.to_string_lossy(),
+        "caller_pane_id": caller_pane_id,
+    });
+    let content = match super::request(payload, "agent-open-response", "agent open") {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    if let Err(code) = super::check_reply_error(&content) {
+        return code;
+    }
+    if json {
+        println!("{content}");
+        return 0;
+    }
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) => match (
+            v.get("outcome").and_then(|o| o.as_str()),
+            v.get("pane_id").and_then(|p| p.as_u64()),
+        ) {
+            (Some(outcome), Some(pane_id)) => {
+                println!("{outcome} {pane_id}");
+                0
+            }
+            _ => {
+                eprintln!("error: agent open: reply has no outcome and pane_id: {content}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("error: agent open: reply is not JSON ({e}): {content}");
+            1
+        }
+    }
+}
+
 /// `plexi agent reopen <run-id|session-id> [--subcontext <name>] [--json]` — reopen a closed agent run.
 pub fn agent_reopen_cli(target: &str, subcontext: Option<&str>, json: bool) -> i32 {
     let Some(query) = non_empty_string(target) else {
