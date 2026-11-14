@@ -25,7 +25,7 @@ use crate::host::services::{
     NetService, PickerService, UreqNetService,
 };
 use crate::media::audio::{start_output_stream, OutputSession};
-use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
+use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
 use crate::protocol::{
     parse_enum, AiMessage as ProtocolAiMessage, EventStreamDecl as ProtocolEventStreamDecl,
     ModelTier, PluginEventActor, TriggerMode,
@@ -2743,6 +2743,7 @@ mod tests {
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
     use crate::host::wasm_view::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView};
+    use crate::plexi_ai::broker::AiBrokerRequest;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
