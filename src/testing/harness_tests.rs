@@ -1477,6 +1477,15 @@ fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
         restored.app.pane_qualifies_for_input(was_hidden),
         "the once-hidden pane takes the keyboard like any other pane"
     );
+    assert!(
+        restored.app.save_workspace_now(),
+        "the restored workspace saves again (strip and tree agree)"
+    );
+    let resaved = std::fs::read_to_string(&path).expect("read resaved workspace");
+    assert!(
+        !resaved.contains("\"hidden\""),
+        "the next save drops the removed field"
+    );
 }
 
 #[test]

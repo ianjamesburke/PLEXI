@@ -531,6 +531,11 @@ impl WorkspaceFile {
                         ));
                     }
                     existing.heal_stale_focus();
+                    // The file being replaced may predate the removal of pane
+                    // hiding; read it the way `load_from` does.
+                    existing.restore_once_hidden_panes_to_strips(&once_hidden_panes(
+                        &String::from_utf8_lossy(&data),
+                    ))?;
                     existing.validate()?;
                 }
                 Err(error)
@@ -604,6 +609,11 @@ impl WorkspaceFile {
         let mut ws: Self = serde_json::from_str(&data)
             .map_err(|error| unusable(format!("not valid workspace JSON: {error}")))?;
         let once_hidden = once_hidden_panes(&data);
+        for pane in &once_hidden {
+            log::info!(
+                "workspace_restore: pane {pane} was saved hidden; pane hiding was removed, restoring it visible"
+            );
+        }
         if ws.version != CURRENT_VERSION {
             return Err(unusable(format!(
                 "unsupported workspace version {} (this build reads version {CURRENT_VERSION})",
@@ -1159,9 +1169,8 @@ struct SavedVersion {
 
 /// Pane hiding was removed (stint 1457). A workspace saved by an older build
 /// may still mark panes `"hidden": true`; serde ignores that unknown field and
-/// every pane restores visible. Name each such pane once in the log and
-/// return them; the next save drops the field because `SavedPane` no longer
-/// has it.
+/// every pane restores visible. Returns those panes; the next save drops the
+/// field because `SavedPane` no longer has it.
 fn once_hidden_panes(data: &str) -> std::collections::HashSet<PaneId> {
     let mut once_hidden = std::collections::HashSet::new();
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(data) else {
@@ -1175,10 +1184,6 @@ fn once_hidden_panes(data: &str) -> std::collections::HashSet<PaneId> {
         .flatten();
     for pane in panes {
         if pane["hidden"].as_bool() == Some(true) {
-            log::info!(
-                "workspace_restore: pane {} was saved hidden; pane hiding was removed, restoring it visible",
-                pane["id"]
-            );
             if let Some(id) = pane["id"].as_u64() {
                 once_hidden.insert(id);
             }
