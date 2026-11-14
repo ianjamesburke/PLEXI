@@ -190,43 +190,11 @@ impl<'a> ModalShell<'a> {
                         // width(0.0) = auto-size to content (toasts, pills).
                         if self.width > 0.0 {
                             ui.set_width(content_width);
-                        }
-                        let fit_height = self.width > 0.0 && self.fit_height;
-                        if fit_height {
-                            // The Area's Ui is only as tall as last frame's
-                            // content, seeded from egui's default area size, so
-                            // a scroll area sized from the available height
-                            // never grows past that seed and clips rows the
-                            // window has room for. Give the frame its real
-                            // budget before anything is painted: `set_max_height`
-                            // moves the cursor to the top of the new max rect,
-                            // so after the title it would paint the body over it.
-                            ui.set_max_height(max_frame_content_height);
-                        }
-                        if let Some(title) = self.title {
-                            crate::ui::typography::modal_title(ui, title, colors);
-                            ui.add_space(style::SPACE_MD);
-                        }
-                        if fit_height {
-                            // A body taller than the window scrolls.
-                            let title_height = ui.cursor().min.y - ui.min_rect().min.y;
-                            let max_body_height = (max_frame_content_height - title_height)
-                                .max(style::MODAL_BODY_MIN_H);
-                            if ui.is_sizing_pass() {
-                                log::info!(
-                                    "modal {:?}: body height budget {max_body_height:.1} (screen {:.1})",
-                                    self.title.unwrap_or("untitled"),
-                                    screen.height()
-                                );
-                            }
-                            egui::ScrollArea::vertical()
-                                .id_salt("modal_body")
-                                .max_height(max_body_height)
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| add_body(ui))
-                                .inner
+                            within_width(ui, content_width, |ui| {
+                                self.show_content(ui, colors, max_frame_content_height, add_body)
+                            })
                         } else {
-                            add_body(ui)
+                            self.show_content(ui, colors, max_frame_content_height, add_body)
                         }
                     })
                     .inner
@@ -234,6 +202,89 @@ impl<'a> ModalShell<'a> {
 
         ModalResponse { dismissed }
     }
+
+    fn show_content<R>(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        max_frame_content_height: f32,
+        add_body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let fit_height = self.width > 0.0 && self.fit_height;
+        if fit_height {
+            // The Area's Ui is only as tall as last frame's
+            // content, seeded from egui's default area size, so
+            // a scroll area sized from the available height
+            // never grows past that seed and clips rows the
+            // window has room for. Give the frame its real
+            // budget before anything is painted: `set_max_height`
+            // moves the cursor to the top of the new max rect,
+            // so after the title it would paint the body over it.
+            ui.set_max_height(max_frame_content_height);
+        }
+        if let Some(title) = self.title {
+            crate::ui::typography::modal_title(ui, title, colors);
+            ui.add_space(style::SPACE_MD);
+        }
+        if fit_height {
+            // A body taller than the window scrolls.
+            let title_height = ui.cursor().min.y - ui.min_rect().min.y;
+            let max_body_height =
+                (max_frame_content_height - title_height).max(style::MODAL_BODY_MIN_H);
+            if ui.is_sizing_pass() {
+                log::info!(
+                    "modal {:?}: body height budget {max_body_height:.1} (screen {:.1})",
+                    self.title.unwrap_or("untitled"),
+                    ui.ctx().content_rect().height()
+                );
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("modal_body")
+                .max_height(max_body_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| add_body(ui))
+                .inner
+        } else {
+            add_body(ui)
+        }
+    }
+}
+
+/// Lay `add` out in `width`, clipping anything wider instead of letting it
+/// grow the modal: a centred modal wider than the window runs off both
+/// edges, footer hints included (stint 1462).
+fn within_width<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, ui.available_height()));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("modal_content")
+            .max_rect(rect)
+            .layout(*ui.layout()),
+    );
+    // Layout stays at `width`; the clip reaches into the frame's side
+    // padding so a focus ring outside an edge button is drawn whole.
+    let clip = ui.clip_rect();
+    let pad = f32::from(style::MODAL_PADDING_H);
+    child.set_clip_rect(egui::Rect::from_x_y_ranges(
+        rect.x_range().expand(pad).intersection(clip.x_range()),
+        clip.y_range(),
+    ));
+    let result = add(&mut child);
+    let used = child.min_rect();
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    if used.width() > width + 0.5 {
+        LOGGED.call_once(|| {
+            log::info!(
+            "modal: content {:.1}pt wide clipped to {width:.1}pt so the modal stays in the window",
+            used.width()
+        )
+        });
+    }
+    ui.advance_cursor_after_rect(egui::Rect::from_min_max(
+        used.min,
+        egui::pos2(used.min.x + width, used.max.y),
+    ));
+    result
 }
 
 pub(crate) struct ModalResponse {

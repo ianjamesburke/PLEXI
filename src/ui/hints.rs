@@ -53,16 +53,6 @@ impl<'a> HintGroup<'a> {
         }
     }
 
-    fn show(&self, ui: &mut egui::Ui, colors: &Colors) -> (Vec<egui::Rect>, Option<egui::Rect>) {
-        let row_h = shortcuts::chip_row_height(ui);
-        ui.horizontal(|ui| {
-            ui.set_min_height(row_h);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            self.show_inline(ui, colors)
-        })
-        .inner
-    }
-
     fn show_inline(
         &self,
         ui: &mut egui::Ui,
@@ -153,7 +143,12 @@ impl<'a> HintBar<'a> {
     }
 
     fn show_modal_footer(self, ui: &mut egui::Ui, colors: &Colors) -> HintBarResponse {
-        let full = ui.available_width();
+        // Rows fit the part of the line that is visible, not a parent that
+        // grew past its clip, so they wrap instead of running off (stint 1462).
+        let full = ui
+            .available_width()
+            .min(ui.clip_rect().right() - ui.cursor().min.x)
+            .max(0.0);
 
         // No divider above the hints — a hairline here splits a small modal
         // into a fake "footer zone" and makes the bottom read as dead space.
@@ -175,10 +170,18 @@ impl<'a> HintBar<'a> {
                 .ctx()
                 .graphics(|g| g.get(layer).map_or(0, |list| list.all_entries().len()));
             let row_resp = ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+                // Every group paints straight into this one row, which has its
+                // full height before the first group: a nested row per group
+                // let each group grow the row and centred later groups lower
+                // (stint 1461).
+                ui.set_min_height(shortcuts::chip_row_height(ui));
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(((full - total) / 2.0).max(0.0));
-                for group in &self.groups[row] {
-                    let (chips, label) = group.show(ui, colors);
+                for (index, group) in self.groups[row].iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(style::SPACE_MD);
+                    }
+                    let (chips, label) = group.show_inline(ui, colors);
                     resp.chip_rects.extend(chips);
                     if let Some(l) = label {
                         resp.label_rects.push(l);

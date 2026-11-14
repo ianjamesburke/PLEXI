@@ -5554,7 +5554,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     #[test]
-    #[ignore = "known bug: stint 1461 Hint groups stair-step 1 to 2 pt down the shared hint row"]
     fn screenshot_ui_gallery_hint_bar_stays_centered_at_wide_width() {
         let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
         h.step();
@@ -5581,7 +5580,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     #[test]
-    #[ignore = "known bug: stint 1462 Hint row runs off the left edge instead of wrapping at narrow width"]
     fn screenshot_ui_gallery_hint_bar_wraps_at_narrow_width() {
         let mut h = PlexiUiHarness::new_sized(290.0, 640.0);
         h.step();
@@ -11297,7 +11295,6 @@ open(out + ".done", "w").close()
     /// Writes /tmp/plexi_screenshot_button_states_<theme>_<state>.png.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "known bug: stint 1460 Kit buttons paint no keyboard-focus ring"]
     fn screenshot_button_states() {
         for theme in ["plexi-dusk", "plexi-dawn"] {
             let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
@@ -11376,6 +11373,113 @@ open(out + ".done", "w").close()
                 focus.as_raw() != rest.as_raw(),
                 "{theme}: keyboard focus must paint a visible ring"
             );
+            // The ring is whole even where the focused button touches the
+            // window edge (Tab lands on the toolbar "UI" button first).
+            let (focused, accent) = h.with_app(|app| {
+                (
+                    app.ctx
+                        .memory(|m| m.focused())
+                        .and_then(|id| app.ctx.read_response(id))
+                        .map(|r| r.rect)
+                        .expect("Tab focused a widget"),
+                    app.colors.accent,
+                )
+            });
+            let rings: Vec<(egui::Rect, egui::Rect)> = h
+                .harness()
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == accent
+                            && (r.rect.min - focused.min).length() < 0.5
+                            && (r.rect.max - focused.max).length() < 0.5 =>
+                    {
+                        let painted = match r.stroke_kind {
+                            egui::StrokeKind::Outside => r.rect.expand(r.stroke.width),
+                            egui::StrokeKind::Middle => r.rect.expand(r.stroke.width / 2.0),
+                            egui::StrokeKind::Inside => r.rect,
+                        };
+                        Some((painted, clipped.clip_rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rings.len(), 1, "{theme}: one ring on the focused button {focused:?}");
+            for (ring, clip) in rings {
+                assert!(
+                    clip.contains_rect(ring),
+                    "{theme}: focus ring {ring:?} is cut by its clip {clip:?}"
+                );
+            }
+        }
+    }
+
+    /// Stint 1460/1462 critic: a dialog's edge buttons keep their whole
+    /// keyboard-focus ring. The modal's width clamp clips at the content
+    /// edge, so the 2pt outside ring of a button touching that edge (a
+    /// left-aligned Cancel, a right-aligned button row, a full-width button)
+    /// must still fall inside the clip.
+    #[test]
+    fn screenshot_dialog_edge_button_focus_ring_is_not_clipped() {
+        use crate::ui::button::{ButtonKind, KitButton};
+        let colors = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+        for (layout, name) in [
+            (egui::Layout::left_to_right(egui::Align::Center), "left"),
+            (egui::Layout::right_to_left(egui::Align::Center), "right"),
+            (
+                egui::Layout::top_down_justified(egui::Align::Center),
+                "full",
+            ),
+        ] {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(640.0, 400.0))
+                .build_ui(move |ui| {
+                    crate::ui::theme::setup_fonts(ui.ctx());
+                    // Fonts installed this pass bind from the next one.
+                    if ui.ctx().cumulative_pass_nr() == 0 {
+                        return;
+                    }
+                    crate::ui::overlay::ModalShell::centered("focus_ring_dialog")
+                        .title("Rename")
+                        .width(320.0)
+                        .show(ui.ctx(), &colors, |ui| {
+                            ui.with_layout(layout, |ui| {
+                                let response = ui.add(
+                                    KitButton::new("Cancel", &colors).kind(ButtonKind::Secondary),
+                                );
+                                response.request_focus();
+                            });
+                        });
+                });
+            harness.run_steps(4);
+            let rings: Vec<(egui::Rect, egui::Rect)> = harness
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == colors.accent
+                            && r.stroke_kind == egui::StrokeKind::Outside =>
+                    {
+                        Some((r.rect.expand(r.stroke.width), clipped.clip_rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rings.len(), 1, "{name}: the focused button paints one ring");
+            for (ring, clip) in rings {
+                assert!(
+                    clip.contains_rect(ring),
+                    "{name}: focus ring {ring:?} is clipped by {clip:?}"
+                );
+            }
+            harness
+                .render()
+                .expect("render")
+                .save(evidence_png!(format!("_{name}")))
+                .expect("save");
         }
     }
 

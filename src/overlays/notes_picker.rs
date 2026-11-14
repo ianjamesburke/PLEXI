@@ -1459,6 +1459,7 @@ mod tests {
         let id = egui::Id::new("notes_picker")
             .with("overlay")
             .with(egui::Id::from("child"))
+            .with(egui::Id::new("modal_content"))
             .with(egui::Id::new("notes_picker_halves"))
             .with(egui::Id::new("notes_picker_list_half"))
             .with(egui::Id::new("notes_picker_list"));
@@ -1472,6 +1473,7 @@ mod tests {
         let id = egui::Id::new("notes_picker")
             .with("overlay")
             .with(egui::Id::from("child"))
+            .with(egui::Id::new("modal_content"))
             .with(egui::Id::new("notes_picker_halves"))
             .with(egui::Id::new("notes_picker_list_half"))
             .with(egui::Id::new("notes_picker_list"));
