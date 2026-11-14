@@ -67,7 +67,10 @@ fn core_only_restore_save_normal_restart_preserves_plugin_state() {
         assert!(!pane.runtime.needs_background_tick());
         h.app.force_reload_focused_view();
         assert_eq!(
-            h.app.plugin_notice.as_deref(),
+            h.app
+                .plugin_notice
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
             Some(crate::app::core_only::unavailable("agents").as_str())
         );
         assert!(h.app.save_workspace_now());
@@ -138,6 +141,7 @@ fn core_only_shortcuts_refuse_before_creating_files_and_report_even_without_noti
         .plugin_notice
         .as_ref()
         .unwrap()
+        .0
         .contains("core-only mode"));
     assert!(!h
         .app
@@ -367,4 +371,35 @@ fn core_only_refusal_notice_never_moves_keyboard_focus_and_dismisses_by_click() 
         owner_before_click,
         "dismissing the notice must not move keyboard focus"
     );
+}
+
+/// Stint 1210 ruling: the refusal notice cannot be a mouse-only, permanent
+/// overlay in a keyboard-first app. It expires after the kit notice dwell,
+/// and expiring it leaves keyboard focus where it was.
+#[test]
+fn core_only_refusal_notice_expires_after_the_notice_dwell_without_moving_focus() {
+    use crate::app::input_owner::InputOwner;
+    let profile = self::profile(true);
+    let mut h = HostHarness::from_profile_dir(profile.path());
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    let ctx = h.app.ctx.clone();
+    h.app.open_notes_picker();
+    h.run_frames(2);
+    let owner = h.app.input_owner(&ctx);
+    assert_eq!(owner, InputOwner::Pane(pane));
+    h.run_frames(1);
+    assert!(h.app.plugin_notice.is_some(), "still inside the dwell");
+
+    let (_, at) = h.app.plugin_notice.as_mut().expect("refusal notice");
+    *at = at
+        .checked_sub(crate::ui::style::TOAST_DWELL_NOTICE + std::time::Duration::from_millis(50))
+        .expect("clock has room to backdate");
+    h.run_frames(1);
+    assert!(
+        h.app.plugin_notice.is_none(),
+        "the notice expires after the kit notice dwell"
+    );
+    assert_eq!(h.app.input_owner(&ctx), owner, "expiry must not move focus");
 }

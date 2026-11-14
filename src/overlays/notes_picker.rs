@@ -859,51 +859,50 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
-        // A notice reports an outcome the user must see (a restore, or a
-        // background copy or cut that failed after the picker closed), so it
-        // shows ahead of a pending undo, which stays reachable until it expires.
-        if let Some((message, at)) = &self.notes_picker_notice {
-            let remaining = style::TOAST_DWELL_NOTICE.saturating_sub(at.elapsed());
+        // A pending undo stays visible and clickable for its whole dwell. A
+        // notice (a restore, or a background copy or cut that failed after the
+        // picker closed) stacks above it rather than hiding it.
+        let mut undo_height = None;
+        if let Some(deleted) = self.notes_picker_undo.as_ref() {
+            let remaining = style::TOAST_DWELL_UNDO.saturating_sub(deleted.at.elapsed());
             if !remaining.is_zero() {
-                crate::ui::toast::ToastShell::bottom("notes_delete_notice").show(
-                    ctx,
-                    &self.colors,
-                    |ui| {
-                        crate::ui::toast::toast_caption(ui, message, &self.colors);
-                    },
-                );
+                let caption = format!("Deleted {}", deleted.entry.title);
+                let undo_error = self
+                    .notes_picker_status
+                    .as_deref()
+                    .filter(|status| status.starts_with("Can't undo"));
+                let colors = self.colors;
+                let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
+                    .offset(egui::vec2(0.0, -style::SPACE_SM))
+                    .action(ctx, &colors, &caption, "Undo", undo_error);
+                #[cfg(test)]
+                ctx.data_mut(|data| {
+                    data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
+                });
+                undo_height = Some(response.rect.height());
+                if response.clicked() {
+                    self.notes_picker_undo_delete();
+                }
                 ctx.request_repaint_after(
                     remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
                 );
-                return;
             }
         }
-        let Some(deleted) = self.notes_picker_undo.as_ref() else {
-            return;
-        };
-        let remaining = style::TOAST_DWELL_UNDO.saturating_sub(deleted.at.elapsed());
-        if remaining.is_zero() {
-            return;
+        if let Some((message, at)) = &self.notes_picker_notice {
+            let remaining = style::TOAST_DWELL_NOTICE.saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                let mut shell = crate::ui::toast::ToastShell::bottom("notes_delete_notice");
+                if let Some(height) = undo_height {
+                    shell = shell.offset(egui::vec2(0.0, -(height + 2.0 * style::SPACE_SM)));
+                }
+                shell.show(ctx, &self.colors, |ui| {
+                    crate::ui::toast::toast_caption(ui, message, &self.colors);
+                });
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
         }
-        let caption = format!("Deleted {}", deleted.entry.title);
-        let undo_error = self
-            .notes_picker_status
-            .as_deref()
-            .filter(|status| status.starts_with("Can't undo"));
-        let colors = self.colors;
-        let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
-            .offset(egui::vec2(0.0, -style::SPACE_SM))
-            .action(ctx, &colors, &caption, "Undo", undo_error);
-        #[cfg(test)]
-        ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
-        });
-        if response.clicked() {
-            self.notes_picker_undo_delete();
-        }
-        ctx.request_repaint_after(
-            remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
-        );
     }
 
     pub(crate) fn notes_picker_handle_key(
@@ -2302,6 +2301,24 @@ mod tests {
         assert!(
             h.app.notes_picker_notice.is_none(),
             "the restored notice clears after its dwell"
+        );
+    }
+
+    /// A notice raised during the undo dwell stacks above the undo toast;
+    /// it never hides the only way back for a deleted note.
+    #[test]
+    fn notes_undo_toast_stays_painted_while_a_notice_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, path) = harness_with_note(dir.path());
+        h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+        assert!(!path.exists());
+        h.app.notes_picker_notice = Some((
+            "Couldn't copy another note".to_string(),
+            std::time::Instant::now(),
+        ));
+        assert!(
+            undo_toast_painted(&mut h),
+            "the undo toast is drawn while a notice is up"
         );
     }
 

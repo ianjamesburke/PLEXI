@@ -14,17 +14,38 @@ impl super::PlexiApp {
         }
         let message = unavailable(plugin);
         log::info!("plugins: launch refused plugin={plugin}: core-only mode is on");
-        self.plugin_notice = Some(message.clone());
+        self.plugin_notice = Some((message.clone(), std::time::Instant::now()));
         Err(message)
     }
 
-    /// The refusal notice never takes keyboard focus: the refused launch may
-    /// be an agent's or script's request, and nothing an agent does may move
-    /// the user's focus. It is dismissed with its own Dismiss action.
+    /// The refusal notice expires after the kit notice dwell. Runs from
+    /// `App::logic`, so a hidden window still clears it.
+    pub(crate) fn expire_plugin_notice(&mut self) {
+        if self
+            .plugin_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= crate::ui::style::TOAST_DWELL_NOTICE)
+        {
+            self.plugin_notice = None;
+            log::info!(
+                "plugins: core-only notice expired after {:?}",
+                crate::ui::style::TOAST_DWELL_NOTICE
+            );
+        }
+    }
+
+    /// The refusal notice never takes keyboard focus and never claims Esc:
+    /// the refused launch may be an agent's or script's request, and nothing
+    /// an agent does may move the user's focus. It expires on its own after
+    /// the kit notice dwell, or sooner with its Dismiss action.
     pub(crate) fn draw_plugin_notice(&mut self, ctx: &egui::Context) {
-        let Some(message) = self.plugin_notice.clone() else {
+        let Some((message, at)) = self.plugin_notice.clone() else {
             return;
         };
+        let remaining = crate::ui::style::TOAST_DWELL_NOTICE.saturating_sub(at.elapsed());
+        if remaining.is_zero() {
+            return;
+        }
         let colors = self.colors;
         let response = crate::ui::toast::ToastShell::bottom("plugin_unavailable")
             .notice_action(ctx, &colors, &message, "Dismiss");
@@ -36,6 +57,9 @@ impl super::PlexiApp {
             self.plugin_notice = None;
             log::info!("plugins: core-only notice dismissed");
         }
+        ctx.request_repaint_after(
+            remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+        );
     }
 
     pub(crate) fn plugin_blocked(&mut self, plugin: &str) -> bool {

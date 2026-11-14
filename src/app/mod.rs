@@ -217,7 +217,9 @@ pub struct PlexiApp {
     pub(crate) show_shortcuts: bool,
     pub(crate) show_changelog: bool,
     pub(crate) show_ui_gallery: bool,
-    pub(crate) plugin_notice: Option<String>,
+    /// The core-only refusal notice and when it was raised. It expires after
+    /// the kit notice dwell (`expire_plugin_notice`) or by its Dismiss action.
+    pub(crate) plugin_notice: Option<(String, std::time::Instant)>,
     pub(crate) ui_gallery_normal_buf: String,
     pub(crate) ui_gallery_focused_buf: String,
     pub(crate) ui_gallery_show_text_modal: bool,
@@ -3794,6 +3796,7 @@ impl eframe::App for PlexiApp {
         self.drain_notes_clip_jobs(ctx);
         self.drain_notes_preview_read();
         self.expire_notes_toasts();
+        self.expire_plugin_notice();
 
         // Expired needs-you items auto-deny even while the window is hidden.
         // A queue file left by the previous process is opened once. A frame
