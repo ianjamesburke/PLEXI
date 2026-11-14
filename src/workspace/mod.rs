@@ -23,13 +23,27 @@ pub struct WorkspaceFile {
     pub next_pane_id: u64,
     pub contexts: Vec<Context>,
     pub windows: Vec<SavedWindow>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "sorted_map")]
     pub strips: HashMap<u64, crate::strip::Strip>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "sorted_map")]
     pub conjoined_contexts: HashMap<u64, PaneId>,
     /// context_id → last active window_id for that context.
-    #[serde(default)]
+    #[serde(default, serialize_with = "sorted_map")]
     pub context_active_window: HashMap<u64, u64>,
+}
+
+/// Writes a map in key order. A `HashMap`'s own order changes between
+/// instances, so the same workspace would serialize to different bytes and
+/// the unchanged-save check could never match (stint 1517).
+fn sorted_map<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    K: Ord + Serialize,
+    V: Serialize,
+    S: serde::Serializer,
+{
+    map.iter()
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .serialize(serializer)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,7 +90,11 @@ pub struct SavedPane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<SavedViewLaunch>,
     /// Named file-backed pane slots (`slot_name -> path`) persisted across restarts.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "sorted_map"
+    )]
     pub slots: HashMap<String, PathBuf>,
     /// Saved agent session state for agent terminal panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,7 +193,11 @@ pub struct AgentHistoryRecord {
     pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail_preview: Option<String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "sorted_map"
+    )]
     pub slots: HashMap<String, PathBuf>,
     pub closed_at: u64,
 }
@@ -500,6 +522,9 @@ impl WorkspaceFile {
             })?;
             std::fs::create_dir_all(parent)
                 .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
+            let json = serde_json::to_string_pretty(self).map_err(|error| {
+                save_error("serialize workspace", &temp_path, io::Error::other(error))
+            })?;
             match std::fs::read(&path) {
                 Ok(data) => {
                     if migration_source.is_some_and(|source| source != data) {
@@ -537,21 +562,32 @@ impl WorkspaceFile {
                         &String::from_utf8_lossy(&data),
                     ))?;
                     existing.validate()?;
+                    // One comparison at the one write point covers every save
+                    // trigger (stint 1517): identical bytes are not rewritten.
+                    if data == json.as_bytes() {
+                        return Ok(None);
+                    }
                 }
                 Err(error)
                     if error.kind() == io::ErrorKind::NotFound && migration_source.is_none() => {}
                 Err(error) => return Err(error),
             }
-            let json = serde_json::to_string_pretty(self).map_err(|error| {
-                save_error("serialize workspace", &temp_path, io::Error::other(error))
-            })?;
             atomic_save(&path, &temp_path, json.as_bytes(), |file, bytes| {
                 file.write_all(bytes)
             })?;
-            Ok(json.len())
+            Ok(Some(json.len()))
         })();
         match result {
-            Ok(byte_count) => {
+            Ok(None) => {
+                // Debug: a host that marks dirty often would otherwise log
+                // this on every flush (stint 1508).
+                log::debug!(
+                    "workspace_save: unchanged, not rewritten elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                Ok(())
+            }
+            Ok(Some(byte_count)) => {
                 let pane_count: usize = self.windows.iter().map(|window| window.panes.len()).sum();
                 log::info!(
                     "workspace_save: saved bytes={} windows={} panes={} elapsed_ms={}",
