@@ -199,9 +199,11 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     assert!(!root_node.rect.intersects(child_a_node.rect));
     assert!(!root_node.rect.intersects(child_b_node.rect));
     assert!(!child_a_node.rect.intersects(child_b_node.rect));
+    // An edge's target is the node whose top-center it ends at.
+    let child_a_top = Pos2::new(child_a_node.rect.center().x, child_a_node.rect.min.y);
     assert!(edges
         .iter()
-        .any(|e| e.from_context_id == root_ctx_id && e.to_context_id == child_a_id));
+        .any(|e| e.from_context_id == root_ctx_id && e.to_pos == child_a_top));
     assert!(
         !edges.iter().any(|e| e.from_context_id == 0),
         "single root must not have virtual hub edges"
@@ -302,7 +304,10 @@ fn tree_atlas_layout_multi_root_hub_top_down() {
     for root in [r1, r2] {
         let edge = edges
             .iter()
-            .find(|e| e.from_context_id == 0 && e.to_context_id == root.context_id)
+            .find(|e| {
+                e.from_context_id == 0
+                    && e.to_pos == Pos2::new(root.rect.center().x, root.rect.min.y)
+            })
             .expect("hub edge to root");
         assert_eq!(edge.from_pos, hub_bottom);
         assert_eq!(

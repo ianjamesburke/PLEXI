@@ -105,7 +105,6 @@ pub(crate) fn peek_strip_rects(
 
 /// A positioned context node in the Tree Atlas.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AtlasNode {
     pub context_id: u64,
     pub parent_id: Option<u64>,
@@ -117,7 +116,6 @@ pub struct AtlasNode {
     pub ask_rollup: usize,
     pub direct_asks: usize,
     pub failed_count: usize,
-    pub pane_count: usize,
     pub is_ghost: bool,
     pub preview_lines: Vec<String>,
 }
@@ -133,10 +131,8 @@ pub enum AtlasEdgeKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AtlasEdge {
     pub from_context_id: u64,
-    pub to_context_id: u64,
     pub from_pos: Pos2,
     pub to_pos: Pos2,
     pub kind: AtlasEdgeKind,
@@ -145,7 +141,6 @@ pub struct AtlasEdge {
 /// Complete pane zoom and tree atlas state on `PlexiApp`.
 /// Authoritative column-strip state (`Strip` and `StripLayout`) lives in `HostModel`.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct ZoomState {
     pub level: ZoomLevel,
     /// Recorded origin when zooming out from `Columns`.
@@ -164,8 +159,6 @@ pub struct ZoomState {
     pub edge_bump_count: u64,
     /// Retargetable zoom transition state (`(from_progress, target_progress, started_at)`).
     pub transition: Option<(f32, f32, Instant)>,
-    /// Buffered text/key events typed during a zoom-in flight to `Columns`.
-    pub flight_key_buffer: Vec<egui::Event>,
 }
 
 impl ZoomState {
@@ -259,7 +252,7 @@ impl PlexiApp {
     /// Create a context and backing window without spawning a PTY (for fast, deterministic tests
     /// and headless graph construction), and switch to it while recording the outgoing context's
     /// last focused pane.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn create_context_without_pty(&mut self, name: &str, parent_id: Option<u64>) -> u64 {
         if let Some(old_pane) = self.active_focused_pane_id() {
             let old_ctx = self.router.active().context_id;
@@ -309,7 +302,7 @@ impl PlexiApp {
 
     /// Configure explicit columns for a context (`each inner Vec<PaneId>` is a vertical stack of panes).
     /// Also arranges the context's `window.tree` to match (`Horizontal` root of `Vertical` stacks).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_context_columns(&mut self, context_id: u64, columns: Vec<Vec<PaneId>>) {
         let mut strip = crate::strip::Strip::new(context_id);
         for (index, panes) in columns.iter().enumerate() {
@@ -1110,12 +1103,6 @@ impl PlexiApp {
                 .iter()
                 .filter(|b| b.category == QueueCategory::Failed && b.context_id == ctx_id)
                 .count();
-            let pane_count: usize = self
-                .windows
-                .iter()
-                .filter(|w| w.context_id == ctx_id)
-                .map(|w| w.panes.len())
-                .sum();
             let is_ghost = self
                 .zoom
                 .ghost
@@ -1133,7 +1120,6 @@ impl PlexiApp {
                 ask_rollup,
                 direct_asks,
                 failed_count,
-                pane_count,
                 is_ghost,
                 preview_lines,
             });
@@ -1174,7 +1160,6 @@ impl PlexiApp {
                     };
                     edges_out.push(AtlasEdge {
                         from_context_id: pid,
-                        to_context_id: node.context_id,
                         from_pos: Pos2::new(parent_node.rect.center().x, parent_node.rect.max.y),
                         to_pos: Pos2::new(node.rect.center().x, node.rect.min.y),
                         kind,
@@ -1188,7 +1173,6 @@ impl PlexiApp {
             for node in nodes_out.iter().filter(|n| n.parent_id.is_none()) {
                 edges_out.push(AtlasEdge {
                     from_context_id: 0,
-                    to_context_id: node.context_id,
                     from_pos: hub_bottom,
                     to_pos: Pos2::new(node.rect.center().x, node.rect.min.y),
                     kind: AtlasEdgeKind::TreeRoad,
@@ -1219,7 +1203,6 @@ impl PlexiApp {
             ) {
                 edges_out.push(AtlasEdge {
                     from_context_id: from_ctx,
-                    to_context_id: to_ctx,
                     from_pos: a.rect.center(),
                     to_pos: b.rect.center(),
                     kind: AtlasEdgeKind::Spawn,
@@ -1240,7 +1223,6 @@ impl PlexiApp {
                 ) {
                     edges_out.push(AtlasEdge {
                         from_context_id: from_ctx,
-                        to_context_id: to_ctx,
                         from_pos: a.rect.center(),
                         to_pos: b.rect.center(),
                         kind: AtlasEdgeKind::PipeLink,

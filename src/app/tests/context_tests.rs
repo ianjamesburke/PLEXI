@@ -393,8 +393,8 @@ fn new_child_context_anchor_pane_overrides_focused() {
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-    let (tile_a, _pane_a) = app.add_test_pane();
-    let (tile_b, pane_b) = app.add_test_pane();
+    let (tile_a, pane_a) = app.add_test_pane();
+    let (_tile_b, pane_b) = app.add_test_pane();
     app.windows[0].focused_pane = Some(tile_a);
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
@@ -420,26 +420,13 @@ fn new_child_context_anchor_pane_overrides_focused() {
         .find(|(_, p)| p.portal_target().is_some())
         .map(|(id, _)| *id)
         .expect("parent must contain a Portal tile");
-    let portal_tile = parent_win
-        .tree
-        .tiles
-        .find_pane(&portal_pane_id)
-        .expect("portal tile in tree");
-    let container = parent_win
-        .tree
-        .tiles
-        .parent_of(portal_tile)
-        .expect("portal tile has a parent container");
-    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
-        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
-        other => panic!("portal parent is not a container: {other:?}"),
-    };
+    let children = panes_beside_portal(parent_win, portal_pane_id);
     assert!(
-        children.contains(&tile_b),
+        children.contains(&pane_b),
         "portal must split against the anchor pane's tile"
     );
     assert!(
-        !children.contains(&tile_a),
+        !children.contains(&pane_a),
         "portal must NOT split against the focused pane when an anchor is given"
     );
 }
@@ -453,7 +440,6 @@ fn create_context_ipc_anchor_pane_places_portal() {
     let pane_a = h.add_test_pane();
     let pane_b = h.add_test_pane();
     let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
-    let tile_b = h.app.windows[0].tree.tiles.find_pane(&pane_b).unwrap();
     h.app.windows[0].focused_pane = Some(tile_a);
     let parent_id = h.app.router.active().context_id;
     let parent_name = h.app.router.active().name.to_string();
@@ -482,22 +468,13 @@ fn create_context_ipc_anchor_pane_places_portal() {
         .find(|(_, p)| p.portal_target().is_some())
         .map(|(id, _)| *id)
         .expect("handler must insert a Portal tile");
-    let portal_tile = parent_win.tree.tiles.find_pane(&portal_pane_id).unwrap();
-    let container = parent_win
-        .tree
-        .tiles
-        .parent_of(portal_tile)
-        .expect("portal tile has a parent container");
-    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
-        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
-        other => panic!("portal parent is not a container: {other:?}"),
-    };
+    let children = panes_beside_portal(parent_win, portal_pane_id);
     assert!(
-        children.contains(&tile_b),
+        children.contains(&pane_b),
         "portal must split against the anchor pane sent over IPC"
     );
     assert!(
-        !children.contains(&tile_a),
+        !children.contains(&pane_a),
         "portal must NOT split against the focused pane"
     );
 }
@@ -510,7 +487,7 @@ fn new_child_context_unknown_anchor_falls_back_to_focused() {
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
-    let (tile_a, _pane_a) = app.add_test_pane();
+    let (tile_a, pane_a) = app.add_test_pane();
     app.windows[0].focused_pane = Some(tile_a);
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
@@ -536,22 +513,9 @@ fn new_child_context_unknown_anchor_falls_back_to_focused() {
         .find(|(_, p)| p.portal_target().is_some())
         .map(|(id, _)| *id)
         .expect("parent must contain a Portal tile");
-    let portal_tile = parent_win
-        .tree
-        .tiles
-        .find_pane(&portal_pane_id)
-        .expect("portal tile in tree");
-    let container = parent_win
-        .tree
-        .tiles
-        .parent_of(portal_tile)
-        .expect("portal tile has a parent container");
-    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
-        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
-        other => panic!("portal parent is not a container: {other:?}"),
-    };
+    let children = panes_beside_portal(parent_win, portal_pane_id);
     assert!(
-        children.contains(&tile_a),
+        children.contains(&pane_a),
         "unknown anchor must fall back to the focused pane"
     );
 }
@@ -4618,4 +4582,34 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
     assert_eq!(h.app.windows[0].panes.len(), count);
     assert!(reply["error"].as_str().unwrap().contains("not found"));
+}
+
+/// The panes split beside `portal`: its nearest Linear ancestor's other
+/// children, through the Tabs wrappers a settled tree gives every pane
+/// (stint 1440). Pane ids, since settling may re-id tiles.
+fn panes_beside_portal(
+    window: &crate::host::context::Window,
+    portal: crate::spatial::tiling::PaneId,
+) -> Vec<crate::spatial::tiling::PaneId> {
+    let tiles = &window.tree.tiles;
+    let mut child = tiles.find_pane(&portal).expect("portal tile in tree");
+    let linear = loop {
+        let parent = tiles.parent_of(child).expect("portal sits in a container");
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+            tiles.get(parent)
+        {
+            break linear;
+        }
+        child = parent;
+    };
+    linear
+        .children
+        .iter()
+        .filter(|tile| **tile != child)
+        .filter_map(|tile| window.find_first_pane_in(*tile))
+        .filter_map(|tile| match tiles.get(tile) {
+            Some(egui_tiles::Tile::Pane(id)) => Some(*id),
+            _ => None,
+        })
+        .collect()
 }

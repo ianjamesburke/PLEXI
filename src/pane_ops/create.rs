@@ -1812,6 +1812,8 @@ impl PlexiApp {
                             reveal_after_close: false,
                         })),
                     );
+                    // The parent window is saved settled (stint 1440).
+                    self.windows[parent_win_idx].simplify_and_reconcile();
                 }
                 self.router.push(crate::host::context::Context {
                     name: crate::host::context::ContextName::custom(sub_name.to_string()),
@@ -3767,6 +3769,27 @@ mod tests {
     use crate::app::registry::PluginRegistry;
     use crate::host::wasm_view::{StateSnapshot, StateStore, WasmView};
     use crate::testing::HostHarness;
+
+    /// Stint 1440: a launch-failed tile beside a focused pane splits through
+    /// `split_with_new_pane_at` and leaves the window settled.
+    #[test]
+    fn launch_failed_tile_beside_a_pane_leaves_window_settled() {
+        let mut h = HostHarness::new();
+        let a = h.add_test_pane();
+        let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+        h.app.windows[0].focused_pane = Some(tile);
+        h.app.windows[0].simplify_and_reconcile();
+        h.assert_window_settled(0, "fixture");
+        let cwd = h.workspace_root();
+        h.app.open_launch_failed_pane(
+            0,
+            "needs-ai",
+            None,
+            vec!["ai.query requires [ai] config".to_string()],
+            cwd,
+        );
+        h.assert_window_settled(0, "launch-failed tile beside a pane");
+    }
 
     fn counter_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/counter.wasm")
