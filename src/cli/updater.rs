@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use crate::app::ui_mailbox::UiMailbox;
-use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
+use crate::cli::release_resolver::{self, GithubRelease, ReleaseTag, UpdateChannel};
 use crate::host::update_status::{CheckMode, UpdateEvent};
 
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
@@ -68,10 +68,56 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
             reason: format!("{build_channel} builds do not check for updates"),
         };
     }
-    let channel = detect_channel();
     let cache_path = cache_dir.join("update_cache.json");
     let current_raw = installed_version();
-    let (latest, checked_at) = match latest_release(&cache_path, channel, &current_raw, mode) {
+    let check = Check {
+        cache_path: &cache_path,
+        channel: detect_channel(),
+        current_raw: &current_raw,
+        build_id: env!("PLEXI_BUILD_ID"),
+        now: crate::platform::clock::now_secs(),
+    };
+    let fetch = || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(5))
+            .build();
+        release_resolver::fetch_releases(&agent)
+    };
+    check_and_install(
+        &check,
+        mode,
+        fetch,
+        |tag| background_build(tag, cache_dir),
+        mailbox,
+    )
+}
+
+/// One check's inputs from the running build and installation, passed in so the
+/// whole decision (cache, policy, install) runs under test without a network.
+struct Check<'a> {
+    cache_path: &'a Path,
+    channel: UpdateChannel,
+    current_raw: &'a str,
+    build_id: &'a str,
+    now: u64,
+}
+
+/// Find the release `release::select` allows from the current version and, if
+/// there is one, install and activate it. The new generation is what every
+/// later launch runs; "ready" means this process is still the old build.
+fn check_and_install(
+    check: &Check,
+    mode: CheckMode,
+    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
+    install: impl FnOnce(&str) -> Result<(), String>,
+    mailbox: &UiMailbox<UpdateEvent>,
+) -> UpdateEvent {
+    let Check {
+        channel,
+        current_raw,
+        ..
+    } = *check;
+    let (latest, checked_at) = match latest_release(check, mode, fetch) {
         Ok(found) => found,
         Err(reason) => {
             log::warn!("update check: {reason}");
@@ -98,7 +144,7 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
             version: version.clone(),
         },
     );
-    match background_build(&latest, cache_dir) {
+    match install(&latest) {
         Ok(()) => {
             log::info!("update check: background build complete for {latest}");
             UpdateEvent::Ready { version }
@@ -131,9 +177,10 @@ fn discards_active_generation(
 }
 
 pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
-    update_cache_fresh_for_channel(
+    update_cache_fresh_for(
         &cache_dir.join("update_cache.json"),
         detect_channel(),
+        env!("PLEXI_BUILD_ID"),
         crate::platform::clock::now_secs(),
     )
 }
@@ -157,16 +204,14 @@ fn detect_channel() -> UpdateChannel {
 /// `None` when there is none, with the time of the check that found it. A
 /// scheduled check answers from a fresh cache; a manual one always fetches.
 fn latest_release(
-    cache_path: &Path,
-    channel: UpdateChannel,
-    current_raw: &str,
+    check: &Check,
     mode: CheckMode,
+    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
 ) -> Result<(Option<String>, u64), String> {
     if mode == CheckMode::Scheduled {
-        if let Ok(bytes) = std::fs::read(cache_path) {
+        if let Ok(bytes) = std::fs::read(check.cache_path) {
             if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if cached_json_fresh_for_channel(&json, channel, crate::platform::clock::now_secs())
-                {
+                if cached_json_fresh_for(&json, check.channel, check.build_id, check.now) {
                     return Ok((
                         json["latest"].as_str().map(|s| s.to_string()),
                         json["checked_at"].as_u64().unwrap_or(0),
@@ -175,25 +220,34 @@ fn latest_release(
             }
         }
     }
-    fetch_and_cache(cache_path, channel, current_raw)
+    fetch_and_cache(check, fetch)
 }
 
-fn update_cache_fresh_for_channel(cache_path: &Path, channel: UpdateChannel, now: u64) -> bool {
+fn update_cache_fresh_for(
+    cache_path: &Path,
+    channel: UpdateChannel,
+    build_id: &str,
+    now: u64,
+) -> bool {
     std::fs::read(cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|json| cached_json_fresh_for_channel(&json, channel, now))
+        .is_some_and(|json| cached_json_fresh_for(&json, channel, build_id, now))
 }
 
-fn cached_json_fresh_for_channel(
+/// A cached answer is only reused by the build that computed it: another build
+/// (an older updater, or the build before an install) chose under its own
+/// version and policy, and its answer may be a release this build refuses.
+fn cached_json_fresh_for(
     json: &serde_json::Value,
     channel: UpdateChannel,
+    build_id: &str,
     now: u64,
 ) -> bool {
     let checked_at = json["checked_at"].as_u64().unwrap_or(0);
     let cached_channel = json["channel"].as_str().unwrap_or("");
     let fresh = Duration::from_secs(now.saturating_sub(checked_at)) < CHECK_INTERVAL;
-    fresh && cached_channel == channel_key(channel)
+    fresh && cached_channel == channel_key(channel) && json["build_id"].as_str() == Some(build_id)
 }
 
 fn channel_key(channel: UpdateChannel) -> &'static str {
@@ -208,43 +262,154 @@ fn channel_key(channel: UpdateChannel) -> &'static str {
 mod tests {
     use super::*;
 
-    fn write_cache(dir: &Path, checked_at: u64, channel: &str) {
+    fn write_cache(dir: &Path, checked_at: u64, channel: &str, build_id: &str, latest: &str) {
         std::fs::create_dir_all(dir).expect("create temp cache dir");
         let cache = serde_json::json!({
             "checked_at": checked_at,
             "channel": channel,
-            "latest": serde_json::Value::Null,
+            "build_id": build_id,
+            "latest": latest,
         });
         std::fs::write(dir.join("update_cache.json"), cache.to_string())
             .expect("write update cache");
     }
 
     #[test]
-    fn update_check_cache_fresh_requires_matching_channel_and_interval() {
+    fn update_check_cache_fresh_requires_matching_channel_build_and_interval() {
         let dir =
             std::env::temp_dir().join(format!("plexi-update-cache-test-{}", uuid::Uuid::new_v4()));
         let now = CHECK_INTERVAL.as_secs() * 2;
+        let path = dir.join("update_cache.json");
 
-        write_cache(&dir, now - CHECK_INTERVAL.as_secs() + 1, "alpha");
-        assert!(update_cache_fresh_for_channel(
-            &dir.join("update_cache.json"),
+        write_cache(
+            &dir,
+            now - CHECK_INTERVAL.as_secs() + 1,
+            "alpha",
+            "a6",
+            "v1",
+        );
+        assert!(update_cache_fresh_for(
+            &path,
             UpdateChannel::Alpha,
-            now,
+            "a6",
+            now
         ));
-        assert!(!update_cache_fresh_for_channel(
-            &dir.join("update_cache.json"),
+        assert!(!update_cache_fresh_for(
+            &path,
             UpdateChannel::Beta,
-            now,
+            "a6",
+            now
+        ));
+        assert!(!update_cache_fresh_for(
+            &path,
+            UpdateChannel::Alpha,
+            "a7",
+            now
         ));
 
-        write_cache(&dir, now - CHECK_INTERVAL.as_secs(), "alpha");
-        assert!(!update_cache_fresh_for_channel(
-            &dir.join("update_cache.json"),
+        write_cache(&dir, now - CHECK_INTERVAL.as_secs(), "alpha", "a6", "v1");
+        assert!(!update_cache_fresh_for(
+            &path,
             UpdateChannel::Alpha,
-            now,
+            "a6",
+            now
         ));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn published(tag: &str) -> GithubRelease {
+        let platform = plexi_distribution::release::platform().expect("supported test platform");
+        let asset = plexi_distribution::release::archive_name(&platform, "alpha");
+        serde_json::from_value(serde_json::json!({
+            "tag_name": tag,
+            "prerelease": tag.contains('-'),
+            "assets": [{ "name": asset }, { "name": format!("{asset}.sha256") }],
+        }))
+        .expect("release fixture")
+    }
+
+    /// Runs the check thread's whole decision as a scheduled launch check on
+    /// the alpha channel, with a cache an older build left behind that names
+    /// v0.5.0-beta.1. Returns the outcome, every event sent before it, and the
+    /// tags handed to the installer.
+    fn launch_check(current: &str, tags: &[&str]) -> (UpdateEvent, Vec<UpdateEvent>, Vec<String>) {
+        let dir =
+            std::env::temp_dir().join(format!("plexi-update-check-test-{}", uuid::Uuid::new_v4()));
+        let now = 1_000_000;
+        write_cache(&dir, now - 60, "alpha", "older-build", "v0.5.0-beta.1");
+        let cache_path = dir.join("update_cache.json");
+        let check = Check {
+            cache_path: &cache_path,
+            channel: UpdateChannel::Alpha,
+            current_raw: current,
+            build_id: "this-build",
+            now,
+        };
+        let releases: Vec<_> = tags.iter().map(|tag| published(tag)).collect();
+        let (mailbox, rx) = UiMailbox::channel(
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+            "update_check",
+        );
+        let mut installed = Vec::new();
+        let outcome = check_and_install(
+            &check,
+            CheckMode::Scheduled,
+            || Ok(releases),
+            |tag| {
+                installed.push(tag.to_string());
+                Ok(())
+            },
+            &mailbox,
+        );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let _ = std::fs::remove_dir_all(dir);
+        (outcome, events, installed)
+    }
+
+    #[test]
+    fn update_check_launch_on_alpha_ignores_a_same_series_beta() {
+        let (outcome, events, installed) =
+            launch_check("v0.5.0-alpha.6", &["v0.5.0-alpha.6", "v0.5.0-beta.1"]);
+        assert_eq!(
+            outcome,
+            UpdateEvent::UpToDate {
+                checked_at: 1_000_000
+            }
+        );
+        assert!(events.is_empty(), "no Downloading event: {events:?}");
+        assert!(installed.is_empty());
+    }
+
+    #[test]
+    fn update_check_launch_on_alpha_installs_the_next_alpha() {
+        let (outcome, events, installed) = launch_check(
+            "v0.5.0-alpha.6",
+            &["v0.5.0-alpha.6", "v0.5.0-alpha.7", "v0.5.0-beta.1"],
+        );
+        assert_eq!(
+            events,
+            vec![UpdateEvent::Downloading {
+                version: "0.5.0-alpha.7".into()
+            }]
+        );
+        assert_eq!(installed, vec!["v0.5.0-alpha.7".to_string()]);
+        assert_eq!(
+            outcome,
+            UpdateEvent::Ready {
+                version: "0.5.0-alpha.7".into()
+            }
+        );
+    }
+
+    #[test]
+    fn update_check_launch_on_a_stuck_beta_returns_to_the_newest_alpha() {
+        let (outcome, _, installed) = launch_check(
+            "v0.5.0-beta.1",
+            &["v0.5.0-alpha.6", "v0.5.0-alpha.7", "v0.5.0-beta.1"],
+        );
+        assert_eq!(installed, vec!["v0.5.0-alpha.7".to_string()]);
+        assert!(matches!(outcome, UpdateEvent::Ready { .. }));
     }
 
     fn receipt(
@@ -296,34 +461,28 @@ mod tests {
 }
 
 fn fetch_and_cache(
-    cache_path: &Path,
-    channel: UpdateChannel,
-    current_raw: &str,
+    check: &Check,
+    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
 ) -> Result<(Option<String>, u64), String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(5))
-        .build();
-    let releases = release_resolver::fetch_releases(&agent)
-        .map_err(|e| format!("could not fetch releases: {e}"))?;
+    let releases = fetch().map_err(|e| format!("could not fetch releases: {e}"))?;
+    let current = ReleaseTag::parse(check.current_raw)
+        .ok_or_else(|| format!("could not read the running version {}", check.current_raw))?;
+    let best = release_resolver::resolve_best(&releases, check.channel, &current);
 
-    let current = ReleaseTag::parse(current_raw)
-        .ok_or_else(|| format!("could not read the running version {current_raw}"))?;
-    let best = release_resolver::resolve_best(&releases, channel, &current);
-
-    let now = crate::platform::clock::now_secs();
     let latest_raw = best.as_ref().map(|t| t.raw.clone());
     let cache = serde_json::json!({
-        "checked_at": now,
-        "channel": channel_key(channel),
+        "checked_at": check.now,
+        "channel": channel_key(check.channel),
+        "build_id": check.build_id,
         "latest": latest_raw,
     });
-    if let Err(e) = std::fs::write(cache_path, cache.to_string()) {
+    if let Err(e) = std::fs::write(check.cache_path, cache.to_string()) {
         log::warn!(
             "update check: failed to write cache to {}: {e}",
-            cache_path.display()
+            check.cache_path.display()
         );
     }
-    Ok((latest_raw, now))
+    Ok((latest_raw, check.now))
 }
 
 /// Foreground and background updates run the same native transaction.
