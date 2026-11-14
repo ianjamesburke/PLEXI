@@ -1591,6 +1591,8 @@ impl PlexiApp {
         if !keep_focus {
             self.set_window_focused_pane(win_idx, new_tile);
         }
+        // Saved settled like every other split caller (stints 1440, 1511).
+        self.windows[win_idx].simplify_and_reconcile();
         new_id
     }
 
@@ -3789,6 +3791,52 @@ mod tests {
             cwd,
         );
         h.assert_window_settled(0, "launch-failed tile beside a pane");
+    }
+
+    /// Stint 1511: spawning a terminal beside a pane, with or without taking
+    /// focus, leaves the window settled like the other split callers.
+    #[test]
+    fn spawn_terminal_pane_at_leaves_window_settled() {
+        for keep_focus in [false, true] {
+            let mut h = HostHarness::new();
+            let a = h.add_test_pane();
+            let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+            h.app.windows[0].focused_pane = Some(tile);
+            h.app.windows[0].simplify_and_reconcile();
+            h.assert_window_settled(0, "fixture");
+            let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+            let new_id = h.app.spawn_terminal_pane_at(SpawnTerminalAtSpec {
+                win_idx: 0,
+                target_tile: tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus,
+                options: TerminalSpawnOptions {
+                    initial_cmd: None,
+                    close_on_exit: false,
+                    cwd_override: None,
+                    agent_pane: false,
+                    inject_folder_secrets: false,
+                },
+            });
+            assert!(
+                h.app.windows[0].panes.contains_key(&new_id),
+                "terminal spawned"
+            );
+            h.assert_window_settled(
+                0,
+                &format!("terminal spawned beside a pane, keep_focus={keep_focus}"),
+            );
+            let focused = h.app.windows[0].focused_pane.and_then(|tile| {
+                crate::app::PlexiApp::find_pane_in_tile(&h.app.windows[0].tree, tile)
+            });
+            let expected = if keep_focus { a } else { new_id };
+            assert_eq!(
+                focused,
+                Some(expected),
+                "focus after the settle, keep_focus={keep_focus}"
+            );
+        }
     }
 
     fn counter_fixture() -> PathBuf {
