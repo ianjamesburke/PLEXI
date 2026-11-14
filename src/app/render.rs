@@ -191,6 +191,7 @@ impl PlexiApp {
         self.sync_context_close_focus();
         self.sync_command_palette_focus();
         self.sync_rename_pane_focus();
+        self.sync_shortcuts_focus();
         self.sync_context_rename_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
@@ -1115,9 +1116,6 @@ impl PlexiApp {
                     self.push_focus_history(canvas_old_window_id, canvas_old_focus);
                 }
             });
-
-        // Shortcuts overlay
-        self.draw_shortcuts_overlay(&ctx);
 
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);

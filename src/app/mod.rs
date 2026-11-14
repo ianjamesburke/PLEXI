@@ -4111,6 +4111,7 @@ impl eframe::App for PlexiApp {
                 self.sync_context_close_focus();
                 self.sync_command_palette_focus();
                 self.sync_rename_pane_focus();
+                self.sync_shortcuts_focus();
                 self.sync_context_rename_focus();
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
@@ -4688,7 +4689,10 @@ impl PlexiApp {
                 }
             }
             Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-            Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Action::ToggleShortcuts => {
+                self.show_shortcuts = !self.show_shortcuts;
+                self.sync_shortcuts_focus();
+            }
             Action::OpenChangelog => {
                 if !self.show_changelog {
                     self.toggle_changelog();

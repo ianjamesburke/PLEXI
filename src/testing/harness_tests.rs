@@ -20024,3 +20024,40 @@ mod screen_change_activity_tests {
         }
     }
 }
+
+/// Stint 1261: Esc closes the shortcuts sheet, whatever pane holds focus.
+mod shortcuts_sheet_escape_tests {
+    use super::*;
+
+    fn open_then_escape(h: &mut HostHarness, label: &str) {
+        h.press_key(egui::Key::Slash, egui::Modifiers::COMMAND);
+        h.run_frames(1);
+        assert!(h.app.show_shortcuts, "{label}: Cmd+/ must open the sheet");
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        h.run_frames(1);
+        assert!(!h.app.show_shortcuts, "{label}: Esc must close the sheet");
+    }
+
+    #[test]
+    fn escape_closes_the_shortcuts_sheet_over_a_terminal() {
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        open_then_escape(&mut h, "terminal focused");
+    }
+
+    #[test]
+    fn escape_closes_the_shortcuts_sheet_over_a_view() {
+        let mut h = HostHarness::new();
+        let view = h.add_test_pane();
+        h.focus_pane(view);
+        h.run_frames(1);
+        open_then_escape(&mut h, "view focused");
+    }
+
+    #[test]
+    fn escape_closes_the_shortcuts_sheet_with_no_pane() {
+        let mut h = HostHarness::new();
+        h.run_frames(1);
+        open_then_escape(&mut h, "empty context");
+    }
+}

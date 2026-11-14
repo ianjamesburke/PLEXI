@@ -84,6 +84,9 @@ pub(crate) enum FocusKind {
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     Changelog,
+    /// Keyboard shortcuts sheet (Cmd+/). A focus layer so Esc reaches it
+    /// before the focused pane can consume the key (stint 1261).
+    Shortcuts,
 }
 
 impl FocusKind {
@@ -105,6 +108,7 @@ impl FocusKind {
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
             Self::Changelog => "Changelog",
+            Self::Shortcuts => "Shortcuts",
         }
     }
 
@@ -128,6 +132,7 @@ impl FocusKind {
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
             Self::Changelog => &ChangelogOwner,
+            Self::Shortcuts => &ShortcutsOwner,
         }
     }
 }
@@ -201,6 +206,7 @@ macro_rules! focus_owner_tokens {
 focus_owner_tokens! {
     UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
     Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
+    Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
@@ -1448,6 +1454,10 @@ impl PlexiApp {
     }
 
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
+    pub(crate) fn sync_shortcuts_focus(&mut self) {
+        self.reconcile_focus_layer(FocusKind::Shortcuts, self.show_shortcuts);
+    }
+
     pub(crate) fn sync_rename_pane_focus(&mut self) {
         self.reconcile_focus_layer(FocusKind::RenamePane, self.renaming_pane.is_some());
     }

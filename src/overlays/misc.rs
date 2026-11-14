@@ -292,6 +292,23 @@ impl PlexiApp {
         }
     }
 
+    /// The sheet owns the keyboard while open: Esc or its own toggle chord
+    /// closes it; every other key stays with the sheet (stint 1261).
+    pub(crate) fn shortcuts_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        let (modifiers, key) = self.key_bindings.toggle_shortcuts;
+        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            || input.consume_key(modifiers, key)
+        {
+            self.show_shortcuts = false;
+            self.sync_shortcuts_focus();
+            log::info!("shortcuts: closed from the keyboard");
+        }
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
     pub(crate) fn toggle_changelog(&mut self) {
         if self.show_changelog {
             self.close_changelog();
