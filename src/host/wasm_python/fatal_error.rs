@@ -11,18 +11,19 @@ use std::path::{Component, Path};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::guest_text::{escape_untrusted, keep_head};
+
 /// The entry functions the runtime can be serving when it reports, plus
 /// `runtime` for the SDK's own code between plugin calls.
 const PHASES: &[&str] = &["import", "init", "update", "view", "runtime"];
 const MAX_FILE_CHARS: usize = 256;
 const MAX_EXCEPTION_CHARS: usize = 128;
-const MAX_MESSAGE_CHARS: usize = 2048;
+const MAX_MESSAGE_CHARS: usize = super::guest_text::MAX_LINE_CHARS;
 /// The end of a traceback names the exception, so an oversized one keeps its tail.
 const MAX_TRACEBACK_BYTES: usize = 64 * 1024;
 /// One host log record is written per traceback line, so lines are capped too.
 const MAX_TRACEBACK_LINES: usize = 200;
 const MAX_DECODE_DETAIL_CHARS: usize = 200;
-const TRUNCATED: &str = " [truncated]";
 const TRACEBACK_TRUNCATED: &str = "[traceback truncated: earlier frames dropped]";
 /// Shown in place of a reported path that is not inside the plugin folder.
 const OUTSIDE_PLUGIN: &str = "<path outside the plugin>";
@@ -134,43 +135,6 @@ fn is_plugin_relative(file: &str) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
-/// Characters that move the cursor, start a new line, recolor a terminal or
-/// reorder the text around them.
-fn is_unsafe_to_print(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'
-                | '\u{200E}'
-                | '\u{200F}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2066}'..='\u{2069}'
-        )
-}
-
-/// Replace every unprintable character with its visible escape (`\n`,
-/// `\u{1b}`), so the text occupies exactly the lines the host gives it.
-fn escape_untrusted(text: &str, keep_newlines: bool) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if is_unsafe_to_print(c) && !(keep_newlines && c == '\n') {
-            out.extend(c.escape_default());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-fn keep_head(text: &str, max_chars: usize) -> String {
-    match text.char_indices().nth(max_chars) {
-        Some((cut, _)) => format!("{}{TRUNCATED}", &text[..cut]),
-        None => text.to_string(),
-    }
-}
-
 /// The end of `text`: at most `max_bytes`, cut forward to a whole line, and at
 /// most `MAX_TRACEBACK_LINES` lines. A cut is marked on its own first line.
 fn keep_tail(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
@@ -196,6 +160,7 @@ fn keep_tail(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::guest_text::{is_unsafe_to_print, TRUNCATED};
     use super::*;
     use serde_json::json;
 

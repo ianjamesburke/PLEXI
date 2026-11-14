@@ -3614,31 +3614,33 @@ impl LivePythonPane {
     /// One host record per guest stderr line, each carrying the `plugin::<id>`
     /// prefix so the whole traceback is greppable by plugin (stint 0643).
     fn log_guest_stderr(&self, record: &GuestStderrRecord) {
+        let line = guest_text::guest_line(
+            &self.plugin_id,
+            "stderr line",
+            &record.line,
+            guest_text::MAX_LINE_CHARS,
+        );
         match record.kind {
             GuestStderrKind::BenignWasiStartup => log::debug!(
                 "plugin::{} CPython WASM stderr (benign WASI startup noise): {}",
                 self.plugin_id,
-                record.line
+                line
             ),
             GuestStderrKind::TracebackException => log::error!(
                 "plugin::{} CPython WASM stderr exception: {}",
                 self.plugin_id,
-                record.line
+                line
             ),
             GuestStderrKind::TracebackExceptionDetail => log::error!(
                 "plugin::{} CPython WASM stderr exception (cont): {}",
                 self.plugin_id,
-                record.line
+                line
             ),
             GuestStderrKind::Payload
             | GuestStderrKind::TracebackHeader
             | GuestStderrKind::TracebackFrame
             | GuestStderrKind::TracebackChainSeparator => {
-                log::error!(
-                    "plugin::{} CPython WASM stderr: {}",
-                    self.plugin_id,
-                    record.line
-                )
+                log::error!("plugin::{} CPython WASM stderr: {}", self.plugin_id, line)
             }
         }
     }
@@ -3686,10 +3688,14 @@ impl LivePythonPane {
                 log::info!("plugin::{}: CPython WASM bridge ready", self.plugin_id);
             }
             Some("set_title") => {
-                self.title = message
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                self.title = message.get("title").and_then(Value::as_str).map(|title| {
+                    guest_text::guest_line(
+                        &self.plugin_id,
+                        "title",
+                        title,
+                        guest_text::MAX_TITLE_CHARS,
+                    )
+                })
             }
             Some("set_timer") => {
                 if let (Some(id), Some(after_ms)) = (
@@ -3775,6 +3781,12 @@ impl LivePythonPane {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                let text = guest_text::guest_line(
+                    &self.plugin_id,
+                    "log message",
+                    text,
+                    guest_text::MAX_LINE_CHARS,
+                );
                 log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
@@ -5165,8 +5177,13 @@ impl LivePythonPane {
         else {
             return;
         };
-        if self.error.as_deref() != Some(exception) {
-            let exception = exception.to_string();
+        let exception = guest_text::guest_line(
+            &self.plugin_id,
+            "exception line",
+            exception,
+            guest_text::MAX_LINE_CHARS,
+        );
+        if self.error.as_deref() != Some(exception.as_str()) {
             log::info!(
                 "plugin::{}: guest entered failed state: {exception}",
                 self.plugin_id
@@ -7523,6 +7540,8 @@ mod wire_contract_tests;
 
 #[path = "wasm_python/fatal_error.rs"]
 mod fatal_error;
+#[path = "wasm_python/guest_text.rs"]
+mod guest_text;
 
 #[cfg(test)]
 #[path = "wasm_python/fatal_error_tests.rs"]

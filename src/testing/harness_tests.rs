@@ -8619,6 +8619,97 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     }
 }
 
+/// Stint 1344: a plugin is untrusted, and its title, `log` messages and
+/// stderr lines reach the pane label, `plexi.log` and terminals reading that
+/// log. Each must arrive with control and bidi characters escaped and its
+/// length capped; the raw bytes never land.
+#[test]
+fn guest_title_log_and_stderr_text_are_escaped_and_capped() {
+    let capture = crate::testing::test_log::capture();
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    std::fs::write(
+        tmp.path().join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"guest-text-probe\"\nname = \"Guest Text Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1344 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"guest-text-probe.main\"\ndefault = true\n",
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        tmp.path().join("main.py"),
+        "import sys\n\
+         from plexi_sdk._v3_runtime import _host_log\n\
+         from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.ui import Column\n\n\
+         HOSTILE = '\\x1b]0;forged\\x07\\x1b[31mred\\nplugin::other: forged line\\u202e' + 'A' * 5000\n\n\
+         def init(size, args):\n\
+         \x20   _host_log('info', 'LOGMARK' + HOSTILE)\n\
+         \x20   sys.stderr.write('ERRMARK' + HOSTILE.replace('\\n', ' ') + '\\n')\n\
+         \x20   sys.stderr.flush()\n\
+         \x20   return [SetTitle('TITLEMARK' + HOSTILE)]\n\n\
+         def update(event):\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write main.py");
+    let mut h = HostHarness::new();
+    h.app
+        .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .expect("launch guest-text-probe");
+    let pane_id = *h.state().open_panes.last().expect("pane appears");
+    let marked = |capture: &crate::testing::test_log::LogCapture, mark: &str| {
+        capture.lines().into_iter().find(|line| line.contains(mark))
+    };
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = python_pane_title(&h, pane_id).unwrap_or_default();
+        if title.starts_with("TITLEMARK")
+            && marked(&capture, "LOGMARK").is_some()
+            && marked(&capture, "ERRMARK").is_some()
+        {
+            break;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "guest title, log and stderr must all arrive (title: {title:.40?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let unsafe_char =
+        |c: char| c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let title = python_pane_title(&h, pane_id).unwrap();
+    let log_line = marked(&capture, "LOGMARK").unwrap();
+    let err_line = marked(&capture, "ERRMARK").unwrap();
+    for (sink, text) in [("title", &title), ("log", &log_line), ("stderr", &err_line)] {
+        let head: String = text.chars().take(80).collect();
+        assert!(
+            !text.chars().any(unsafe_char),
+            "{sink} carries a raw control character: {head:?}"
+        );
+        assert!(
+            text.contains("\\u{1b}]0;forged"),
+            "{sink} must show the escape visibly: {head:?}"
+        );
+        assert!(
+            text.ends_with("[truncated]"),
+            "{sink} must be capped and marked: {:?}",
+            &text[text.len().saturating_sub(40)..]
+        );
+        assert!(
+            text.chars().count() < 4000,
+            "{sink} is not capped: {} chars",
+            text.chars().count()
+        );
+    }
+    assert!(
+        capture
+            .lines()
+            .iter()
+            .any(|line| line.contains("guest-text-probe") && line.contains("truncated from")),
+        "truncation must leave an info trace"
+    );
+}
+
 // -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------
 
 /// Write a minimal manifest-backed CPython-in-WASM plugin to `dir`. `title`
