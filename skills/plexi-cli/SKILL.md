@@ -301,7 +301,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
   - `plexi view open --mcp` (experiment option; see command help).
 <!-- /experiment -->
 - `plexi view render`: Render a plugin headlessly (JSON frame tree by default, or PNG with --png)
-- `plexi lease`: Acquire process-lifetime capacity before starting work
+- `plexi lease`: Acquire capacity before starting work (paused: exit 2)
 - `plexi lease acquire`: Acquire one slot
 - `plexi lease release`: Release this holder's leases (or just the named pool)
 <!-- experiment: assistant -->
@@ -340,12 +340,12 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 <!-- experiment: command_view -->
 - `plexi agents-dashboard allow`: Record an allow
 <!-- /experiment -->
-- `plexi run`: Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
+- `plexi run`: Run a named command from commands.toml or a global script
 - `plexi workspace`: Set up a .plexi/ workspace in your project folder
 - `plexi workspace init`: Set up a .plexi/ workspace in the current directory
 - `plexi workspace clean`: Remove pane slot files for panes that are no longer open
 <!-- experiment: change_sets -->
-- `plexi changes`: Preview and accept an agent's file edit before it is written
+- `plexi changes`: Review an agent's file edit before it is written
 <!-- /experiment -->
 <!-- experiment: change_sets -->
 - `plexi changes allow`: Refused: a terminal cannot allow an edit
@@ -409,7 +409,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 <!-- experiment: routines -->
 - `plexi routine disable`: Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled)
 <!-- /experiment -->
-- `plexi agent`: Report agent status and completion, and install status hooks
+- `plexi agent`: Report agent status and install status hooks
 <!-- experiment: agent_mesh -->
 - `plexi agent team`: Inspect or run a stored team of independent ranking agents.
 <!-- /experiment -->
@@ -464,7 +464,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi agent hook`: Install or uninstall agent hook integrations
 - `plexi agent hook install`: Install PLEXI agent-state hook integrations
 - `plexi agent hook uninstall`: Remove PLEXI agent-state hook integrations
-- `plexi context`: Manage the active context (the folder and project scope tied to the current pane)
+- `plexi context`: Manage the active context (folder and project scope)
 - `plexi context rename`: Rename a context (defaults to the calling pane's context)
 - `plexi context close`: Close a context, requesting desktop confirmation when configured
 - `plexi context park`: Park a context and move focus to an unparked neighbor
@@ -479,7 +479,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi context zoom-out`: Zoom out of the current sub-context to the parent
 - `plexi context push`: Push a pane into a new sub-context
 - `plexi context list`: List all open contexts as a JSON array
-- `plexi plugin`: Manage your Plexi plugins — open, install, list, scaffold, and inspect
+- `plexi plugin`: Open, install, list, scaffold and inspect plugins
 - `plexi plugin install`: Install a plugin from a local path, a remote source, or a pack file
 - `plexi plugin uninstall`: Remove an installed plugin by id
 - `plexi plugin list`: Show all installed plugins with their versions
@@ -519,9 +519,9 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 <!-- experiment: cloud_account -->
 - `plexi account logout`: Log out and clear the local session
 <!-- /experiment -->
-- `plexi registry`: Watch installed CLI tools for changes to their available commands and options
+- `plexi registry`: Watch installed CLI tools for command and option changes
 - `plexi registry watch`: Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
-- `plexi pane`: Control panes — list, focus, send input, capture output, and more
+- `plexi pane`: List, focus, send input to and capture panes
 - `plexi pane action`: Send a semantic action to a running view pane
 - `plexi pane layout`: Show active workspace strip membership and geometry
 - `plexi pane zoom`: Focus a pane and toggle fullscreen zoom, or enter its sub-context
@@ -558,7 +558,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi pane result`: Read a pane's validated structured result
 - `plexi pane result read`: Read a pane's validated structured result as JSON
 - `plexi pane result wait`: Block host-side until a pane commits a valid structured result, then print it
-- `plexi events`: Subscribe to a Plexi plugin's event streams and receive brokered deliveries
+- `plexi events`: Subscribe to plugin event streams
 - `plexi events subscribe`: Subscribe to a plugin's event stream and print delivered events as NDJSON
 - `plexi events declare`: Declare an event stream so it can be emitted on and subscribed to
 - `plexi events emit`: Emit an event onto a declared stream
@@ -581,7 +581,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi permissions allow`: Ask to allow a denial or pending ask (does not grant): files a Needs you item to approve in Plexi
 - `plexi notify`: Send a notification to the Plexi UI
 - `plexi notify dismiss`: Remove a notification previously posted by this pane
-- `plexi ai`: AI configuration and diagnostics — scan hardware, check integrations, recommend models
+- `plexi ai`: AI diagnostics: hardware scan, integrations, model picks
 <!-- experiment: ai_setup -->
 - `plexi ai onboard`: Guide first-run AI setup and the next plugin install step
 <!-- /experiment -->
@@ -599,7 +599,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi debug session`: Inspect recorded host sessions
 - `plexi debug session list`: List recorded host sessions with start/last time, contexts, panes, and attached external agent session ids
 - `plexi debug session show`: Show one session as a single chronological timeline
-- `plexi experiments`: List, enable, or disable experiments (features outside the stable v1 surface)
+- `plexi experiments`: List, enable or disable experiments
 - `plexi experiments list`: Show every experiment: name, on/off, whether a host restart is needed
 - `plexi experiments enable`: Turn an experiment on in the global config.toml
 - `plexi experiments disable`: Turn an experiment off by removing its switch from the global config.toml
@@ -607,7 +607,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi skill draft`: Draft a reusable skill or commands.toml snippet from captured CLI calls
 - `plexi skill install`: Write this binary's skill for one agent CLI, or all supported agents
 - `plexi completions`: Print a shell completion script to stdout
-- `plexi cli`: Install the Plexi CLI launcher, drop-in completions, and shell PATH registration
+- `plexi cli`: Install the CLI launcher, completions and PATH entry
 - `plexi cli setup`: Install the `~/.local/bin` launcher, drop-in completions, and shell PATH registration
 - `plexi config`: Check your Plexi config file for errors
 - `plexi config reload`: Reload configuration in the running host
@@ -624,10 +624,10 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi note show`: Print one note's contents by the path `plexi note list` printed
 - `plexi note rm`: Delete one note by the path `plexi note list` printed
 - `plexi doctor`: Audit all installed plugins for capability and config gaps
-- `plexi demo`: Interactive keybinding tutorial — learn split and navigate in real time
-- `plexi update`: Update this channel's managed package, or restore its previous generation
+- `plexi demo`: Interactive keybinding tutorial
+- `plexi update`: Update this channel's package or restore the previous one
 - `plexi uninstall`: Remove this channel's recorded package and launchers
-- `plexi host`: Launch, stop, or check a headless-friendly Plexi host from the CLI
+- `plexi host`: Start, stop or check a Plexi host from the CLI
 - `plexi host restart`: Restart this channel, restoring the saved workspace
 - `plexi host start`: Launch this channel's plugin bundle detached and wait for readiness
 - `plexi host stop`: Stop the running host and every pane agent for this channel

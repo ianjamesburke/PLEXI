@@ -701,6 +701,52 @@ mod tests {
         assert!(Cli::from_arg_matches_mut(&mut m).is_ok());
     }
 
+    /// Stint 1520: every row of `plexi --help` fits one 80-column line, so the
+    /// command list never wraps. The full text belongs in `plexi <cmd> --help`.
+    #[test]
+    fn every_top_level_help_row_fits_80_columns() {
+        for cmd in [all_off(), all_on()] {
+            let long: Vec<String> = grouped_help(&cmd, true)
+                .lines()
+                .filter(|line| line.chars().count() > 80)
+                .map(|line| format!("{} cols: {line}", line.chars().count()))
+                .collect();
+            assert!(
+                long.is_empty(),
+                "help rows over 80 columns:\n{}",
+                long.join("\n")
+            );
+        }
+    }
+
+    /// The short `about` is only the list row: `plexi <cmd> --help` still
+    /// carries the full description.
+    #[test]
+    fn shortened_commands_keep_their_full_text_in_long_help() {
+        let mut cmd = all_on();
+        for (name, full) in [
+            (
+                "run",
+                "~/.plexi-<channel>/commands.toml` (or global scripts)",
+            ),
+            (
+                "agent",
+                "spawning and teams need the `agent_mesh` experiment",
+            ),
+            ("ai", "scan hardware, check integrations, recommend models"),
+        ] {
+            let help = cmd
+                .find_subcommand_mut(name)
+                .expect("command")
+                .render_long_help()
+                .to_string();
+            assert!(
+                help.contains(full),
+                "`{name} --help` lost its text:\n{help}"
+            );
+        }
+    }
+
     #[test]
     fn every_visible_top_level_command_is_in_exactly_one_help_group() {
         for cmd in [all_off(), all_on()] {

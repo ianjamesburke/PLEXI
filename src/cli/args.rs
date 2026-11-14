@@ -315,6 +315,8 @@ pub enum Commands {
         cmd: ViewCmd,
     },
 
+    /// Acquire capacity before starting work (paused: exit 2)
+    ///
     /// Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
     Lease {
         #[command(subcommand)]
@@ -325,6 +327,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
+    /// Show every registered agent and its runs
+    ///
     /// Show every registered agent and its runs. Cancel finishes an active run.
     ///
     /// The rows come from the agents API agent records and runs. `open` shows
@@ -344,6 +348,8 @@ pub enum Commands {
         follow: bool,
     },
     // ── Workspace ─────────────────────────────────────────────────────────────
+    /// Run a named command from commands.toml or a global script
+    ///
     /// Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts).
     ///
     /// Resolution and precedence rules:
@@ -400,6 +406,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: WorkspaceCmd,
     },
+    /// Review an agent's file edit before it is written
+    ///
     /// Preview and accept an agent's file edit before it is written.
     ///
     /// `propose` stores a change set and does not modify the file. `preview`
@@ -444,6 +452,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
+    /// Report agent status and install status hooks
+    ///
     /// Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
     ///
     /// With `agent_mesh` on, an agent is a directory containing `AGENT.md` (persona / system prompt) and
@@ -474,6 +484,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
+    /// Manage the active context (folder and project scope)
+    ///
     /// Manage the active context (the folder and project scope tied to the current pane).
     Context {
         #[command(subcommand)]
@@ -481,6 +493,8 @@ pub enum Commands {
     },
 
     // ── Plugins ──────────────────────────────────────────────────────────────────
+    /// Open, install, list, scaffold and inspect plugins
+    ///
     /// Manage your Plexi plugins — open, install, list, scaffold, and inspect.
     #[command(next_help_heading = "Plugins")]
     Plugin {
@@ -497,6 +511,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AccountCmd,
     },
+    /// Watch installed CLI tools for command and option changes
+    ///
     /// Watch installed CLI tools for changes to their available commands and options.
     Registry {
         #[command(subcommand)]
@@ -504,6 +520,8 @@ pub enum Commands {
     },
 
     // ── Panes ─────────────────────────────────────────────────────────────────
+    /// List, focus, send input to and capture panes
+    ///
     /// Control panes — list, focus, send input, capture output, and more.
     ///
     /// Driving an agent in another pane (two commands, no sleeps, no capture polling):
@@ -522,6 +540,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
+    /// Subscribe to plugin event streams
+    ///
     /// Subscribe to a Plexi plugin's event streams and receive brokered deliveries.
     ///
     /// Plugins declare named event streams (e.g. `probe.tick`) and emit events on them.
@@ -563,6 +583,8 @@ pub enum Commands {
     },
 
     // ── AI ────────────────────────────────────────────────────────────────────
+    /// AI diagnostics: hardware scan, integrations, model picks
+    ///
     /// AI configuration and diagnostics — scan hardware, check integrations, recommend models.
     #[command(next_help_heading = "AI")]
     Ai {
@@ -592,6 +614,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: DebugCmd,
     },
+    /// List, enable or disable experiments
+    ///
     /// List, enable, or disable experiments (features outside the stable v1 surface).
     ///
     /// Every experiment is off by default on every channel. Switches live in the
@@ -623,6 +647,8 @@ pub enum Commands {
         /// Shell name: zsh, bash, or fish
         shell: Option<String>,
     },
+    /// Install the CLI launcher, completions and PATH entry
+    ///
     /// Install the Plexi CLI launcher, drop-in completions, and shell PATH registration.
     ///
     /// Inside Plexi panes, `plexi` and tab completions are injected automatically
@@ -681,11 +707,15 @@ pub enum Commands {
     /// Checks every installed plugin's declared capabilities against your current config.toml
     /// and reports what's working and what needs to be configured. Use --json for scripting.
     Doctor,
+    /// Interactive keybinding tutorial
+    ///
     /// Interactive keybinding tutorial — learn split and navigate in real time.
     ///
     /// Walk through macOS pane controls inside a live pane.
     /// Requires macOS and a Plexi pane (PLEXI_PANE_ID must be set).
     Demo,
+    /// Update this channel's package or restore the previous one
+    ///
     /// Update this channel's managed package, or restore its previous generation.
     Update {
         /// Restore the retained previous package through the installation transaction
@@ -707,6 +737,8 @@ pub enum Commands {
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
+    /// Start, stop or check a Plexi host from the CLI
+    ///
     /// Launch, stop, or check a headless-friendly Plexi host from the CLI.
     ///
     /// `host start` launches this channel's plugin bundle detached from the

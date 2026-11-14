@@ -63,7 +63,9 @@ The JSON output lists, under "layout", the rect each node painted at this size, 
 
 ## `plexi lease`
 
-Acquire process-lifetime capacity before starting work. Pauses exit with code 2
+Acquire capacity before starting work (paused: exit 2)
+
+Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
 
 | Subcommand | Description |
 |---|---|
@@ -159,6 +161,8 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 
 ## `plexi agents-dashboard`
 
+Show every registered agent and its runs
+
 Show every registered agent and its runs. Cancel finishes an active run.
 
 The rows come from the agents API agent records and runs. `open` shows the same projection in a pane. `cancel` stops that run. `resolve` and `allow` never grant, and an agent pane is refused.
@@ -207,6 +211,8 @@ Example: plexi agents-dashboard allow --tool assistant.turn
 | `--tool` | string | no | Tool name. Ignored. The command does not write a grant |
 
 ## `plexi run`
+
+Run a named command from commands.toml or a global script
 
 Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts).
 
@@ -257,6 +263,8 @@ Remove pane slot files for panes that are no longer open
 | `--dry-run` | flag | no | Print slot directories that would be removed without deleting them |
 
 ## `plexi changes`
+
+Review an agent's file edit before it is written
 
 Preview and accept an agent's file edit before it is written.
 
@@ -552,6 +560,8 @@ Disable a routine without deleting it (sets `enabled = false`; it never fires un
 | `<name>` | string | yes | Name of the routine to disable |
 
 ## `plexi agent`
+
+Report agent status and install status hooks
 
 Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
 
@@ -953,7 +963,9 @@ Remove PLEXI agent-state hook integrations
 
 ## `plexi context`
 
-Manage the active context (the folder and project scope tied to the current pane)
+Manage the active context (folder and project scope)
+
+Manage the active context (the folder and project scope tied to the current pane).
 
 | Subcommand | Description |
 |---|---|
@@ -1099,7 +1111,9 @@ List all open contexts as a JSON array
 
 ## `plexi plugin`
 
-Manage your Plexi plugins — open, install, list, scaffold, and inspect
+Open, install, list, scaffold and inspect plugins
+
+Manage your Plexi plugins — open, install, list, scaffold, and inspect.
 
 | Subcommand | Description |
 |---|---|
@@ -1393,7 +1407,9 @@ Log out and clear the local session
 
 ## `plexi registry`
 
-Watch installed CLI tools for changes to their available commands and options
+Watch installed CLI tools for command and option changes
+
+Watch installed CLI tools for changes to their available commands and options.
 
 | Subcommand | Description |
 |---|---|
@@ -1408,6 +1424,8 @@ Check installed CLI tools for changes to their help output and update Plexi's kn
 | `<cli>` | string | no | Only check this one CLI tool instead of all of them |
 
 ## `plexi pane`
+
+List, focus, send input to and capture panes
 
 Control panes — list, focus, send input, capture output, and more.
 
@@ -1909,6 +1927,8 @@ Agent spawn returns immediately. Wait in bounded slices with `plexi pane result 
 
 ## `plexi events`
 
+Subscribe to plugin event streams
+
 Subscribe to a Plexi plugin's event streams and receive brokered deliveries.
 
 Plugins declare named event streams (e.g. `probe.tick`) and emit events on them. `plexi events subscribe <plugin_id> <stream>` opens a long-lived connection and prints one JSON line per delivered event to stdout (NDJSON) until interrupted. Subscriptions are brokered: the host stamps your identity from the pane you run in and checks permission before any event is delivered.
@@ -2136,7 +2156,9 @@ Remove a notification previously posted by this pane
 
 ## `plexi ai`
 
-AI configuration and diagnostics — scan hardware, check integrations, recommend models
+AI diagnostics: hardware scan, integrations, model picks
+
+AI configuration and diagnostics — scan hardware, check integrations, recommend models.
 
 | Subcommand | Description |
 |---|---|
@@ -2228,6 +2250,8 @@ With `--join-agents`, recorded agent session ids are resolved to their transcrip
 
 ## `plexi experiments`
 
+List, enable or disable experiments
+
 List, enable, or disable experiments (features outside the stable v1 surface).
 
 Every experiment is off by default on every channel. Switches live in the `[experiments]` table of the global config.toml.
@@ -2308,6 +2332,8 @@ Example: plexi completions zsh >> ~/.zshrc
 | `<shell>` | string | no | Shell name: zsh, bash, or fish |
 
 ## `plexi cli`
+
+Install the CLI launcher, completions and PATH entry
 
 Install the Plexi CLI launcher, drop-in completions, and shell PATH registration.
 
@@ -2488,13 +2514,17 @@ Checks every installed plugin's declared capabilities against your current confi
 
 ## `plexi demo`
 
+Interactive keybinding tutorial
+
 Interactive keybinding tutorial — learn split and navigate in real time.
 
 Walk through macOS pane controls inside a live pane. Requires macOS and a Plexi pane (PLEXI_PANE_ID must be set).
 
 ## `plexi update`
 
-Update this channel's managed package, or restore its previous generation
+Update this channel's package or restore the previous one
+
+Update this channel's managed package, or restore its previous generation.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2513,6 +2543,8 @@ Files outside the installation receipt, including development binaries and other
 | `--yes` / `-y` | flag | no | Remove this channel without a confirmation prompt |
 
 ## `plexi host`
+
+Start, stop or check a Plexi host from the CLI
 
 Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
