@@ -389,6 +389,55 @@ impl Scene {
             (None, None) => Ok(vec![DEFAULT_SCENE_SIZE]),
         }
     }
+
+    /// Reject a builtin `cwd` that resolves to the repository root. A scanning
+    /// view rooted there walks every worktree checkout and `target/`, which
+    /// costs scene time and memory and makes screenshots depend on the
+    /// developer's machine. Paths are compared after resolution, so `.` and
+    /// `tests/..` are caught alike.
+    fn reject_repository_root_cwd(&self) -> Result<(), SceneError> {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = std::fs::canonicalize(repo_root).map_err(|error| {
+            SceneError::new(
+                "scene_parse",
+                format!("resolve repository root {}: {error}", repo_root.display()),
+            )
+        })?;
+        for step in &self.steps {
+            let Step::Open {
+                open:
+                    OpenSpec::Builtin {
+                        cwd: Some(cwd),
+                        handle,
+                        ..
+                    },
+            } = step
+            else {
+                continue;
+            };
+            let resolved = std::fs::canonicalize(resolve(cwd)).map_err(|error| {
+                SceneError::new(
+                    "scene_parse",
+                    format!(
+                        "builtin `{handle}` cwd `{cwd}` does not resolve to a directory: {error}; \
+                         point it at an existing directory such as tests/fixtures/<name>"
+                    ),
+                )
+            })?;
+            if resolved == repo_root {
+                log::info!("scene: rejected builtin `{handle}` cwd `{cwd}` at the repository root");
+                return Err(SceneError::new(
+                    "scene_parse",
+                    format!(
+                        "builtin `{handle}` cwd `{cwd}` resolves to the repository root, which \
+                         scans every worktree and target/; drop `cwd` to use the harness-owned \
+                         directory or point it at a tests/fixtures/ directory"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_true() -> bool {
@@ -1143,6 +1192,9 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             );
         }
     };
+    if let Err(e) = scene.reject_repository_root_cwd() {
+        return failed_report(scene_name, e);
+    }
 
     let mut enabled = Vec::new();
     for key in &scene.experiments {
@@ -2591,6 +2643,9 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             )
         }
     };
+    if let Err(error) = scene.reject_repository_root_cwd() {
+        return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), error);
+    }
     if !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty() {
         return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "layout matrices require the headless backend; installed zoom/theme must be validated independently"));
     }
@@ -4653,11 +4708,49 @@ run_steps = 100
     }
 
     #[test]
+    fn builtin_cwd_at_repository_root_fails_before_any_view_opens() {
+        let temp = tempfile::tempdir().unwrap();
+        let scene = temp.path().join("repo-root-cwd.toml");
+        // `./tests/..` spells the repository root without being literally ".",
+        // so the check must compare resolved paths, not the raw string.
+        std::fs::write(
+            &scene,
+            "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"./tests/..\", as = \"files\" }\n",
+        )
+        .unwrap();
+        let report = run_scene(&scene, temp.path(), true);
+        assert!(!report.passed, "a repository-root cwd must fail the scene");
+        assert_eq!(report.steps.len(), 1, "no step may run: {report:?}");
+        let error = report.steps[0]
+            .error
+            .as_ref()
+            .expect("load step carries the rejection");
+        assert_eq!(error.code, "scene_parse");
+        assert!(
+            error.message.contains("repository root") && error.message.contains("tests/fixtures/"),
+            "the message names the problem and the fix: {}",
+            error.message
+        );
+        assert!(report.handles.is_empty(), "no pane may open: {report:?}");
+    }
+
+    #[test]
+    fn builtin_cwd_below_repository_root_is_accepted_by_validation() {
+        let scene: Scene = toml::from_str(
+            "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"tests/fixtures/file-browser-tree\", as = \"files\" }\n",
+        )
+        .unwrap();
+        scene
+            .reject_repository_root_cwd()
+            .expect("a fixture directory is a valid builtin cwd");
+    }
+
+    #[test]
     fn reveal_scene_fails_if_an_extra_parent_pane_prevents_transition() {
         let temp = tempfile::tempdir().unwrap();
         let scene = temp.path().join("extra-parent.toml");
         let source = include_str!("../tests/scenes/reveal-sole-subcontext.toml");
-        let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \".\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
+        let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"tests/fixtures/file-browser-tree\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
         let modified = source.replacen("[[steps]]\nfocus = \"child_files\"", extra, 1);
         assert_ne!(modified, source);
         std::fs::write(&scene, modified).unwrap();

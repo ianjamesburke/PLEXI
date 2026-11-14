@@ -1994,15 +1994,20 @@ fn paint_editor_header(
         egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
     );
     ui.advance_cursor_after_rect(bar_rect);
+    // The editor header is a pane header: record it for the layout report
+    // the same way the terminal header does.
+    let capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
     ui.painter()
         .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
     let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
     let name_color = colors.text_secondary(colors.pane_header_bg());
+    let header_bg = colors.pane_header_bg();
     let save_color = match chrome.save_indicator {
-        "Save failed" | "Deleted on disk" => colors.danger,
-        "Unsaved" | "Changed on disk" => colors.warning,
+        "Save failed" | "Deleted on disk" => colors.legible_on(colors.danger, header_bg),
+        "Unsaved" | "Changed on disk" => colors.legible_on(colors.warning, header_bg),
         _ => colors.text_dim,
     };
+    let dirty_color = colors.legible_on(colors.warning, header_bg);
     bar_ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = crate::ui::style::SPACE_SM;
         ui.add_space(crate::ui::style::SPACE_SM);
@@ -2022,7 +2027,7 @@ fn paint_editor_header(
             ui.label(
                 egui::RichText::new("\u{25CF}")
                     .size(crate::ui::style::TEXT_HINT)
-                    .color(colors.warning),
+                    .color(dirty_color),
             );
         }
         if let Some(badge) = chrome.commands_scope_badge {
@@ -2080,6 +2085,13 @@ fn paint_editor_header(
         });
     });
     ui.add_space(crate::ui::style::SPACE_XS);
+    capture.finish(
+        ui.painter(),
+        bar_rect,
+        colors.pane_header_bg(),
+        vec![],
+        vec![],
+    );
     switched_scope
 }
 
