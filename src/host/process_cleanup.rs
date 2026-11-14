@@ -536,6 +536,15 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    for pid in &remaining {
+        let process = system.process(sysinfo::Pid::from_u32(*pid));
+        log::info!(
+            "quit_survivor_remaining: pid={pid} status={:?} parent={:?} zombie={}",
+            process.map(|p| p.status()),
+            process.and_then(|p| p.parent()),
+            process_is_zombie(*pid)
+        );
+    }
     if !remaining.is_empty() {
         log::error!("quit: owned processes remain after SIGKILL pids={remaining:?}");
     }
@@ -571,7 +580,7 @@ fn refresh_owned_alive(
             // reaper, and consuming the status here made its `try_wait` fail
             // with ECHILD on every clean host stop (stint 1509). A zombie
             // descendant has also already stopped running.
-            if root_has_exited(*pid) {
+            if root_has_exited(*pid) || process_is_zombie(*pid) {
                 return None;
             }
             system
@@ -582,6 +591,37 @@ fn refresh_owned_alive(
                 .map(|_| *pid)
         })
         .collect()
+}
+
+/// Whether `pid` has died and only waits to be reaped by its parent. sysinfo
+/// cannot say on macOS: a zombie has no task left, so `proc_pidinfo` fails
+/// with ESRCH, and sysinfo then falls back to `kill(pid, 0)`, which still
+/// succeeds, and reports the zombie as running. A process killed at quit
+/// stayed "alive" until the deadline and the quit was stamped unclean.
+#[cfg(target_os = "macos")]
+fn process_is_zombie(pid: u32) -> bool {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a correctly sized, writable proc_bsdinfo buffer.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written == size {
+        return info.pbi_status == libc::SZOMB;
+    }
+    written == 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Elsewhere sysinfo reads the process state fresh on every refresh.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_is_zombie(_pid: u32) -> bool {
+    false
 }
 
 /// Whether our child `pid` has exited, leaving it waitable for its owner.
@@ -716,6 +756,106 @@ mod tests {
     /// when the kill path reaped first, that owner's `try_wait` failed with
     /// ECHILD and logged "Error checking child process termination" on every
     /// clean host stop.
+    /// The pane's shell starts a grandchild in its own process group that
+    /// ignores HUP and TERM (as an agent CLI's worker can), and the shell
+    /// itself ignores TERM like an interactive shell: both need SIGKILL.
+    /// Once killed they must count as gone, so a normal quit is stamped
+    /// clean (Ian's quit: "owned processes remain after SIGKILL").
+    #[test]
+    #[ignore = "requires-pty"]
+    fn processes_dead_after_sigkill_count_as_gone() {
+        use std::io::BufRead;
+        let marker = uuid::Uuid::new_v4().to_string();
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "trap '' HUP TERM; \
+                 perl -e 'setpgrp(0,0); $SIG{HUP}=$SIG{TERM}=q(IGNORE); sleep 60' & \
+                 echo ready; while :; do sleep 1; done",
+            ])
+            .env(SESSION_ENV, &marker)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = FixtureChild(command.spawn().unwrap());
+        let mut ready = String::new();
+        std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        std::thread::sleep(Duration::from_millis(200));
+        let _root = PaneProcessGroup::record_for(child.0.id(), &marker);
+        let report = stop_marked_processes(
+            &marker,
+            Duration::from_millis(50),
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert!(
+            report.escalated >= 1,
+            "the fixture needed SIGKILL: {report:?}"
+        );
+        assert_eq!(
+            report.remaining, 0,
+            "killed processes still counted: {report:?}"
+        );
+    }
+
+    /// A process that died but is not yet reaped by its parent (a zombie that
+    /// is not our child, so `waitid` cannot see it) is gone, not alive.
+    /// sysinfo reports such a zombie as running on macOS after a refresh,
+    /// which left Ian's quit "owned processes remain after SIGKILL".
+    #[test]
+    #[ignore = "requires-pty"]
+    fn an_unreaped_zombie_that_is_not_our_child_counts_as_gone() {
+        use std::io::BufRead;
+        // perl forks a child that lives one second, prints its pid, and never
+        // reaps it: the child then stays a zombie of perl, not of this process.
+        let mut parent = std::process::Command::new("/usr/bin/perl")
+            .args([
+                "-e",
+                "$|=1; my $c = fork(); if ($c == 0) { sleep 1; exit 0 } print \"$c\\n\"; sleep 30",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(parent.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let zombie: u32 = line.trim().parse().unwrap();
+        // Snapshot while it runs, as the quit path does before SIGKILL.
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        let started = system
+            .process(sysinfo::Pid::from_u32(zombie))
+            .map(|p| p.start_time())
+            .expect("the child is listed while it runs");
+        std::thread::sleep(Duration::from_millis(1500));
+        let identities = BTreeMap::from([(zombie, started)]);
+        let tracked = [sysinfo::Pid::from_u32(zombie)];
+        let live = refresh_owned_alive(&mut system, &tracked, &identities);
+        let _ = parent.kill();
+        let _ = parent.wait();
+        assert!(
+            live.is_empty(),
+            "an unreaped zombie counted as alive: {live:?}"
+        );
+    }
+
     #[test]
     #[ignore = "requires-pty"]
     fn kill_path_leaves_the_roots_exit_status_to_its_owner() {
