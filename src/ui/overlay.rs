@@ -255,7 +255,12 @@ impl<'a> ModalShell<'a> {
 /// edges, footer hints included (stint 1462).
 fn within_width<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, ui.available_height()));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("modal_content")
+            .max_rect(rect)
+            .layout(*ui.layout()),
+    );
     let clip = ui.clip_rect();
     child.set_clip_rect(egui::Rect::from_x_y_ranges(
         rect.x_range().intersection(clip.x_range()),

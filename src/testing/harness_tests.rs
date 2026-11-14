@@ -18705,6 +18705,7 @@ fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
     let id = egui::Id::new("notes_picker")
         .with("overlay")
         .with(egui::Id::from("child"))
+        .with(egui::Id::new("modal_content"))
         .with(egui::Id::new("notes_picker_halves"))
         .with(egui::Id::new("notes_picker_list_half"))
         .with(egui::Id::new("notes_picker_list"));
