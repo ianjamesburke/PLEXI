@@ -1,7 +1,7 @@
 """Chess engine legality tests — the app is the move-legality authority
 (docs/prm/chess-agent-poc.md), so the engine must be provably correct.
 
-Run: `uv run pytest apps/chess/tests/` from sdk/python, or pytest directly.
+Run: `uv run pytest plugins/chess/tests/` from sdk/python, or pytest directly.
 """
 
 from __future__ import annotations

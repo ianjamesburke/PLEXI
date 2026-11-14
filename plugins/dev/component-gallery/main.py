@@ -4,7 +4,7 @@
 Renders the full placeholder vocabulary settled in stint 0328 (buttons, form
 controls, data/display primitives) in one scrollable view.
 
-This is a dev POC (``apps/dev/`` — throwaway), not a maintained Core app: it is
+This is a dev POC (``plugins/dev/`` — throwaway), not a maintained Core app: it is
 the manual smoke surface and the copy-paste reference for app authors.
 """
 

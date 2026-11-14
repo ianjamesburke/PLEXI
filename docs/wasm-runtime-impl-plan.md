@@ -84,7 +84,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   work.
 - **Lane B — UI interaction: DONE.** `ui-action` / `ui-value-change` are WIT
   input events; `LiveWasmPane` routes renderer actions/value changes through the
-  existing queue/drain path; `apps/wasm-poc/counter` + `counter.wasm` cover the
+  existing queue/drain path; `plugins/wasm-poc/counter` + `counter.wasm` cover the
   typed-node button path.
 - **Lane C — real fs / net effects: DONE.** `file-read` / `file-write` now
   return scoped result events; `http-fetch` runs through `NetService` on a

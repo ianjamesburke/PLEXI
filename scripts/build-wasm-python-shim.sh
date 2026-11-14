@@ -4,7 +4,7 @@ export LC_ALL=C
 export LANG=C
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CRATE_DIR="${ROOT}/apps/wasm-poc/python-shim"
+CRATE_DIR="${ROOT}/plugins/wasm-poc/python-shim"
 WASM_OUT="${ROOT}/target/wasm32-wasip1/release/python_shim.wasm"
 FIXTURE_OUT="${ROOT}/tests/wasm-fixtures/python-shim.wasm"
 

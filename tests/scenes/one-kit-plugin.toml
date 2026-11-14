@@ -3,7 +3,7 @@ themes = ["plexi-dusk", "plexi-dawn"]
 suite = false
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/component-gallery", as = "plugin" }
+open = { kind = "process", path = "plugins/dev/component-gallery", as = "plugin" }
 [[steps]]
 wait_view_frame = { target = "plugin", timeout_s = 30.0 }
 [[steps]]

@@ -130,7 +130,7 @@ SOCK="$(python3 -c 'import json; print(json.load(open("'"$EVID/logs/host-status.
 [[ -n "$SOCK" ]] || { record FAIL boot "host status has no socket"; exit 1; }
 "$BIN" context set-root "$WS" >"$EVID/logs/set-root.out" 2>"$EVID/logs/set-root.err" || true
 
-"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
+"$BIN" plugin install "$REPO/plugins/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
   record FAIL chess-install "$(tail -20 "$EVID/logs/app-install.err")"
   exit 1
 }

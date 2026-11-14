@@ -38,7 +38,7 @@ LINK_CHECKED_DOCS = [
     REPO_ROOT / "sdk" / "python" / "AUTHORING.md",
     REPO_ROOT / "sdk" / "python" / "README.md",
     REPO_ROOT / "sdk" / "python" / "AGENTS.md",
-    REPO_ROOT / "apps" / "AGENTS.md",
+    REPO_ROOT / "plugins" / "AGENTS.md",
 ]
 
 IDENT = re.compile(r"^[A-Z][A-Za-z0-9]+$")

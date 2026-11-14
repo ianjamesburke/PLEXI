@@ -52,7 +52,7 @@ const plugins = entries.map((entry) => {
     name: required(plugin.name, 'plugin.name', manifestPath),
     description: required(plugin.description, 'plugin.description', manifestPath),
     capabilities: plugin.capabilities?.capabilities ?? [],
-    source: `apps/${dir}`,
+    source: `plugins/${dir}`,
   };
 });
 

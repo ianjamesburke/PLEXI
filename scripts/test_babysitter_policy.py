@@ -456,8 +456,8 @@ class PolicyTests(unittest.TestCase):
     BASE_TREE = {
         "Cargo.toml": "[package]\n",
         "src/lib.rs": ('pub const G: &str = include_str!("../docs/EMBEDDED.md");\n'
-                       'static APPS: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");\n'),
-        "docs/EMBEDDED.md": "old", "apps/notes/README.md": "old", "notes/guide.md": "old",
+                       'static APPS: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/plugins");\n'),
+        "docs/EMBEDDED.md": "old", "plugins/notes/README.md": "old", "notes/guide.md": "old",
     }
 
     def test_docs_only_proof_passes_for_provably_non_embedded_markdown(self):
@@ -467,7 +467,7 @@ class PolicyTests(unittest.TestCase):
         policy.verify_changed_paths(record, root)
 
     def test_docs_only_proof_rejects_embedded_markdown(self):
-        for path in ("docs/EMBEDDED.md", "apps/notes/README.md"):
+        for path in ("docs/EMBEDDED.md", "plugins/notes/README.md"):
             with self.subTest(path=path):
                 root, base, head = self.git_fixture(self.BASE_TREE, {path: "new"})
                 record = self.proven_record(root, base, head, [path])

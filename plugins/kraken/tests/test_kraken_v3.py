@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "apps" / "kraken" / "main.py"
+APP = ROOT / "plugins" / "kraken" / "main.py"
 
 
 def _load_app_module():

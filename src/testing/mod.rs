@@ -711,13 +711,13 @@ impl HostHarness {
         self
     }
 
-    /// Launch a real process plugin from `apps/dev/<name>` and return its pane
+    /// Launch a real process plugin from `plugins/dev/<name>` and return its pane
     /// id, without waiting for the guest's first render. Use this when the
     /// test drives startup itself (a title-phase poll, a scheduler-wake
     /// probe); otherwise prefer `launch_dev_view`, which also waits.
     pub fn launch_dev_view_without_render(&mut self, name: &str) -> PaneId {
         let plugin_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("apps/dev/{name}"));
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("plugins/dev/{name}"));
         let before = self.state().open_panes;
         let focused = self
             .app
@@ -731,7 +731,7 @@ impl HostHarness {
             .unwrap_or_else(|| panic!("a pane appears after launching {name}"))
     }
 
-    /// Launch a real process plugin from `apps/dev/<name>` and poll frames until
+    /// Launch a real process plugin from `plugins/dev/<name>` and poll frames until
     /// its guest has committed a first rendered tree. Returns the pane id.
     /// Anything layout-dependent (pane rect resolution, clicking, reading the
     /// semantic tree) needs that first commit, so this is the default launch.

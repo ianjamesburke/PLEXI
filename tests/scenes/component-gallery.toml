@@ -1,6 +1,6 @@
 # Component Gallery through the production CPython-in-WASM launch path
 # (stint 0407). Regression guard for decode_node_data drift: every widget in
-# apps/dev/component-gallery/main.py must render without the app crashing on
+# plugins/dev/component-gallery/main.py must render without the app crashing on
 # "unsupported CPython-WASM UINode type". A single unsupported node fails the
 # whole tree decode, so this scene fails loudly the moment any widget's
 # to_node() emits a type the decoder doesn't understand.
@@ -8,7 +8,7 @@ size = [1000.0, 900.0]
 suite = true
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/component-gallery", as = "gallery" }
+open = { kind = "process", path = "plugins/dev/component-gallery", as = "gallery" }
 
 [[steps]]
 wait_view_frame = { target = "gallery", timeout_s = 15.0 }

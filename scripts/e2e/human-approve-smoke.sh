@@ -126,7 +126,7 @@ fi
 note "host ready: $(tr '\n' ' ' < "$EVID/host-status.json")"
 "$BIN" context set-root "$WS" >"$EVID/set-root.out" 2>"$EVID/set-root.err" || fail "context set-root failed: $(cat "$EVID/set-root.err")"
 
-"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
+"$BIN" plugin install "$REPO/plugins/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
 "$BIN" view open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
 mkdir -p "$EVID/jobs"
 "$BIN" pane list >"$EVID/panes-boot.json" 2>/dev/null || true

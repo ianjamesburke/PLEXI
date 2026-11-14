@@ -12,7 +12,7 @@ picker_script = [
 ]
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/file-picker-poc", as = "picker", args = ["--auto"] }
+open = { kind = "process", path = "plugins/dev/file-picker-poc", as = "picker", args = ["--auto"] }
 
 [[steps]]
 

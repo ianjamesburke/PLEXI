@@ -4,7 +4,7 @@ from pathlib import Path
 from plexi_sdk import tools
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "apps" / "logs" / "logs.py"
+APP = ROOT / "plugins" / "logs" / "logs.py"
 
 
 def _load_app_module():

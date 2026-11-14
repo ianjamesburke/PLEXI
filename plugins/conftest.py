@@ -6,8 +6,8 @@ each suite needs two things on `sys.path`: the worktree's `sdk/python` (the
 entry module). This conftest is the single place that arranges both — test
 modules import `plexi_sdk` and their app module directly.
 
-The app directory is derived per collected test file (`apps/<app>/tests/…` ->
-`apps/<app>`) rather than added for every app at once, so one app's entry module
+The app directory is derived per collected test file (`plugins/<app>/tests/…` ->
+`plugins/<app>`) rather than added for every app at once, so one app's entry module
 can never shadow another's.
 """
 

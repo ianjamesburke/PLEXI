@@ -160,5 +160,5 @@ The renderer consumes snapshots. It does not own rollback, prediction, or networ
 - `src/host/wasm_python.rs` for the CPython bridge, decoder, scheduler, and Python telemetry
 - `src/host/wasm_frame.rs` for the native frame clock and telemetry
 - `src/host/wasm_pane.rs` for native lifecycle and surface presentation
-- `apps/wasm-poc/pong` for direct GPU surface rendering
+- `plugins/wasm-poc/pong` for direct GPU surface rendering
 - [Bytecode Alliance componentize-py](https://github.com/bytecodealliance/componentize-py) for the direct Python component experiment

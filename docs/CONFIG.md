@@ -276,7 +276,7 @@ disconnected after a deadline with a visible error rather than left running.
 A plugin never supplies a command: it names a server id and the host resolves the
 rest here, so the `mcp.client` capability means "talk to a server you
 configured", not "run this command". Servers reach the assistant through the
-bridge plugin (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
+bridge plugin (`plugins/dev/mcp-bridge`), which re-exposes their tools as ordinary
 connector tools. Format and process contract: `src/host/mcp_client.rs`.
 
 ## Default config.toml
