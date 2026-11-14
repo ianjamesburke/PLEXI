@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -15,8 +16,25 @@ GIB = 1024**3
 # Defaults; both overridable (stint 1495). Documented in src/testing/TESTING.md.
 DEFAULT_MIN_FREE_BYTES = 12 * GIB
 DEFAULT_TOTAL_MAX_BYTES = 64 * GIB  # two warm lanes plus headroom
-# The release binary a stamped candidate hands to its install (stints 1443, 0637).
+# The release binary a stamped candidate hands to its install (stints 1443,
+# 0637), and the stamp `build-evidence.py` writes beside it.
 ARTIFACT = Path("release") / "plexi"
+KEPT = {"plexi", ".plexi-candidate.json"}
+
+
+def positive_bytes(name, default):
+    """A byte-count override: unset means `default`; anything not a positive
+    whole number is refused by name, never read as "off"."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive whole number of bytes, got {raw!r}")
+    return value
 
 
 class DiskFloorError(OSError):
@@ -24,7 +42,10 @@ class DiskFloorError(OSError):
 
 
 def free_bytes(path):
-    return shutil.disk_usage(path).free
+    try:
+        return shutil.disk_usage(path).free
+    except OSError as error:
+        raise DiskFloorError(f"floor check failed: could not read free space on {path}: {error}") from error
 
 
 def require_free_space(path, floor, free=None):
@@ -32,7 +53,7 @@ def require_free_space(path, floor, free=None):
     free = free_bytes(path) if free is None else free
     if free < floor:
         raise DiskFloorError(
-            f"refusing to build: {free / GIB:.1f} GiB free on the volume holding {path}, "
+            f"floor check failed: {free / GIB:.1f} GiB free on the volume holding {path}, "
             f"floor {floor / GIB:.1f} GiB (PLEXI_BUILD_MIN_FREE_BYTES). Reclaim space with "
             f"`just clean-stale-targets` (merged worktrees' target dirs), `just trim-targets` "
             f"(debug and incremental output), or a lower PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES.")
@@ -40,9 +61,18 @@ def require_free_space(path, floor, free=None):
 
 
 def tree_bytes(path):
-    if not path.exists():
-        return 0
-    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file() and not p.is_symlink())
+    """Bytes in regular files under `path`. Another lane's cargo may be writing
+    there: a file or directory that vanishes mid-walk counts as nothing."""
+    total = 0
+    for directory, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                info = os.lstat(os.path.join(directory, name))
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+    return total
 
 
 def prune_slot(slot):
@@ -57,7 +87,7 @@ def prune_slot(slot):
             child.unlink()
         elif child.name == ARTIFACT.parts[0] and keep.is_file():
             for inner in child.iterdir():
-                if inner == keep:
+                if inner.name in KEPT and inner.is_file() and not inner.is_symlink():
                     continue
                 if inner.is_dir() and not inner.is_symlink():
                     shutil.rmtree(inner)
@@ -72,9 +102,19 @@ def prune_slot(slot):
 
 
 def owned_slots(root):
-    return [slot for slot in sorted(root.glob("*/slot-*"))
-            if slot.is_dir() and not slot.is_symlink()
-            and (slot / "owner").is_file() and (slot / "owner").read_text() == MARKER]
+    """Marked slots that really sit inside `root`: a symlinked namespace or slot
+    that leads elsewhere is skipped, never pruned."""
+    real_root = root.resolve()
+    slots = []
+    for slot in sorted(root.glob("*/slot-*")):
+        if slot.parent.is_symlink() or slot.is_symlink() or not slot.is_dir():
+            continue
+        if not slot.resolve().is_relative_to(real_root):
+            print(f"build-cache: skip slot outside the cache root slot={slot}", flush=True)
+            continue
+        if (slot / "owner").is_file() and (slot / "owner").read_text() == MARKER:
+            slots.append(slot)
+    return slots
 
 
 def prune_to_cap(root, cap, keep):
@@ -120,6 +160,9 @@ def prune_to_cap(root, cap, keep):
 def run(channel, command):
     if not any(channel.startswith(prefix) and channel[len(prefix):].isascii() and channel[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
         raise ValueError("expected pr-<number> or task-<number>")
+    # Read both overrides first so a bad value stops before anything changes.
+    floor = positive_bytes("PLEXI_BUILD_MIN_FREE_BYTES", DEFAULT_MIN_FREE_BYTES)
+    total_cap = positive_bytes("PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES", DEFAULT_TOTAL_MAX_BYTES)
     owner = os.environ.get("PLEXI_BUILD_CACHE_OWNER", channel)
     if not any(owner.startswith(prefix) and owner[len(prefix):].isascii() and owner[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
         raise ValueError("invalid cache owner")
@@ -190,10 +233,8 @@ def run(channel, command):
                         print(f"build-cache: prune owned oversized slot bytes={total}", flush=True)
                         total -= prune_slot(slot)
                     target.mkdir(exist_ok=True)
-                    prune_to_cap(base.parent, int(os.environ.get(
-                        "PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES", str(DEFAULT_TOTAL_MAX_BYTES))), keep=slot)
-                    require_free_space(base, int(os.environ.get(
-                        "PLEXI_BUILD_MIN_FREE_BYTES", str(DEFAULT_MIN_FREE_BYTES))))
+                    prune_to_cap(base.parent, total_cap, keep=slot)
+                    require_free_space(base, floor)
                     (slot / "last-channel").write_text(owner)
                     env = {**os.environ, "CARGO_TARGET_DIR": str(target),
                            "PLEXI_BUILD_TELEMETRY": str(slot / "telemetry.jsonl")}
