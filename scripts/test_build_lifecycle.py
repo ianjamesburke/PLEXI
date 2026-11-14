@@ -21,6 +21,7 @@ def module(name):
     return result
 
 EVIDENCE = module('build-evidence')
+CACHE = module('build-cache')
 
 class Lifecycle(unittest.TestCase):
     def setUp(self):
@@ -301,6 +302,64 @@ class Lifecycle(unittest.TestCase):
             for lock in locks:
                 lock.close()
         self.call(*command, env={**self.env, 'PLEXI_BUILD_CACHE_MAX_BYTES': '0'})
+
+    def test_free_space_floor_refuses_before_the_build_command(self):
+        # A floor above any real disk forces the refusal without filling one.
+        marker = self.root / 'built'
+        command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1',
+                   'python3', '-c', f'import pathlib; pathlib.Path({str(marker)!r}).touch()']
+        result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True,
+                                env={**self.env, 'PLEXI_BUILD_MIN_FREE_BYTES': str(10**18)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists(), 'the build command must not start')
+        self.assertIn('free', result.stderr)
+        self.assertIn('floor', result.stderr)
+        self.assertIn('just clean-stale-targets', result.stderr)
+
+    def test_free_space_floor_names_volume_free_and_floor(self):
+        with self.assertRaises(CACHE.DiskFloorError) as raised:
+            CACHE.require_free_space(self.root, floor=12 * 1024**3, free=3 * 1024**3)
+        message = str(raised.exception)
+        self.assertIn(str(self.root), message)
+        self.assertIn('3.0 GiB free', message)
+        self.assertIn('floor 12.0 GiB', message)
+        CACHE.require_free_space(self.root, floor=12 * 1024**3, free=13 * 1024**3)
+
+    def _slot(self, namespace, index, payload, age, artifact=True):
+        slot = self.root / 'cache' / namespace / f'slot-{index}'
+        (slot / 'target' / 'debug').mkdir(parents=True)
+        (slot / 'owner').write_text(CACHE.MARKER)
+        (slot / 'target' / 'debug' / 'deps.bin').write_bytes(b'x' * payload)
+        if artifact:
+            (slot / 'target' / 'release').mkdir()
+            (slot / 'target' / 'release' / 'plexi').write_bytes(b'b' * 10)
+        record = slot / 'last-channel'
+        record.write_text(f'pr-{index}')
+        os.utime(record, (age, age))
+        return slot
+
+    def test_total_cap_prunes_oldest_unleased_slots_and_keeps_artifacts(self):
+        import fcntl
+        oldest = self._slot('ns-a', 0, 1000, 100)
+        leased = self._slot('ns-a', 1, 1000, 50)
+        newer = self._slot('ns-b', 0, 1000, 200)
+        current = self._slot('ns-b', 1, 1000, 300)
+        lock = (leased / 'lock').open('a+')
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        CACHE.prune_to_cap(self.root / 'cache', cap=2100, keep=current)
+        self.assertFalse((oldest / 'target' / 'debug').exists(), 'oldest unleased slot pruned first')
+        self.assertTrue((leased / 'target' / 'debug' / 'deps.bin').exists(), 'a live lease is never pruned')
+        self.assertTrue((newer / 'target' / 'debug' / 'deps.bin').exists(), 'stops once under the cap')
+        self.assertTrue((current / 'target' / 'debug' / 'deps.bin').exists())
+        for slot in (oldest, leased, newer, current):
+            self.assertTrue((slot / 'target' / 'release' / 'plexi').exists(), 'stamped artifacts survive')
+
+    def test_oversized_slot_keeps_its_release_artifact(self):
+        slot = self._slot('ns-a', 0, 1000, 100)
+        CACHE.prune_slot(slot)
+        self.assertFalse((slot / 'target' / 'debug').exists())
+        self.assertEqual((slot / 'target' / 'release' / 'plexi').read_bytes(), b'b' * 10)
 
     def test_lease_records_queue_execution_and_failure(self):
         env = {**self.env, 'PLEXI_CARGO_LOCK': str(self.root / 'lease'),
