@@ -4748,8 +4748,14 @@
         },
         {
           "additionalProperties": false,
-          "description": "Request a clean host shutdown. Sent by `plexi host stop` over a direct\n`notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs\noutside a pane by definition). Fire-and-forget; the handler sets a\nclose-pending flag consumed at the top of the next frame, which sends\n`egui::ViewportCommand::Close`. `host stop` falls back to `SIGTERM` if\nthis request goes unanswered within its short timeout.",
+          "description": "Request a clean host shutdown. Sent by `plexi host stop` over a direct\n`notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs\noutside a pane by definition). The handler sets a close-pending flag\nconsumed at the top of the next frame. When `response_file` is set the\nhost answers just before the process exits with its real outcome\n(`status`, `workspace`, `remaining_processes`, `socket_released`;\nstint 1430). `host stop` falls back to `SIGTERM` if no answer comes.",
           "properties": {
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "shutdown",
               "type": "string"

@@ -1043,40 +1043,35 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
         .or_else(|| detect_pid(&socket_path));
     log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
-    match IpcStream::connect(&socket_path) {
-        Ok(mut stream) => {
-            let payload = serde_json::to_string(&crate::protocol::HostRequest::Shutdown)
-                .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
-            match stream.write_all(format!("{payload}\n").as_bytes()) {
-                Ok(()) => {
-                    log::info!("host_stop: shutdown request sent, waiting for process exit");
-                    let deadline = Instant::now() + Duration::from_secs(5);
-                    loop {
-                        if shutdown_complete(pid, &socket_path) {
-                            log::info!("host_stop: original pid={pid:?} stopped");
-                            host_stop_stdout("Plexi host stopped (clean shutdown).");
-                            return 0;
-                        }
-                        if Instant::now() >= deadline {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                    log::warn!(
-                        "host_stop: clean shutdown did not complete within timeout — requesting termination"
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "host_stop: could not send shutdown request: {e} — requesting termination"
-                    );
-                }
-            }
+    // The host answers just before it exits, with its real outcome
+    // (stint 1430). A host from before that change never answers; it is then
+    // judged only by whether it went away.
+    match crate::rpc::request_json_with_prefix(
+        &socket_path,
+        serde_json::json!({ "type": "shutdown" }),
+        "host-stop",
+        HOST_STOP_REPLY_TIMEOUT,
+    ) {
+        Ok(reply) => {
+            log::info!("host_stop: host replied {reply}");
+            wait_for_shutdown(pid, &socket_path, Duration::from_secs(5));
+            let report = host_stop_report(&reply);
+            report.emit();
+            return report.code;
         }
         Err(e) => {
-            log::warn!(
-                "host_stop: could not connect to {socket_path:?}: {e} — requesting termination"
-            );
+            log::warn!("host_stop: no shutdown reply from {socket_path:?}: {e}");
+            // The reply window already covered a clean exit; only a stream
+            // closed early (a host from before the reply) gets more time.
+            let grace = match e {
+                crate::rpc::PollError::TimedOut => Duration::ZERO,
+                crate::rpc::PollError::Unreadable(_) => Duration::from_secs(5),
+            };
+            if pid.is_some() && wait_for_shutdown(pid, &socket_path, grace) {
+                log::info!("host_stop: original pid={pid:?} stopped without a reply");
+                host_stop_stdout("Plexi host stopped (exit status unknown).");
+                return 0;
+            }
         }
     }
 
@@ -1103,6 +1098,82 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
             eprintln!("error: could not terminate process {pid}: {e}");
             1
         }
+    }
+}
+
+/// How long `host stop` waits for the host's exit reply: the quit flow's
+/// final save plus the pane grace (`ExitReason::HostStop`, 2s).
+const HOST_STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll until the host process and its socket are gone, up to `limit`.
+fn wait_for_shutdown(pid: Option<u32>, socket_path: &Path, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        if shutdown_complete(pid, socket_path) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// What `host stop` prints and returns for the host's exit reply.
+#[derive(Debug, PartialEq, Eq)]
+struct HostStopReport {
+    code: i32,
+    message: String,
+}
+
+impl HostStopReport {
+    fn emit(&self) {
+        if self.code == 0 {
+            host_stop_stdout(&self.message);
+        } else {
+            log::error!("host_stop: {}", self.message);
+            eprintln!("error: {}", self.message);
+        }
+    }
+}
+
+/// Read the host's exit reply (`stop_reply` in `src/app/quit.rs`). Status 0
+/// is a clean shutdown; anything else names what was not clean.
+fn host_stop_report(reply: &serde_json::Value) -> HostStopReport {
+    let status = reply
+        .get("status")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(-1);
+    if status == 0 {
+        return HostStopReport {
+            code: 0,
+            message: "Plexi host stopped (clean shutdown).".to_string(),
+        };
+    }
+    let mut problems = Vec::new();
+    if reply.get("workspace").and_then(serde_json::Value::as_str) == Some("unsaved") {
+        problems.push("the workspace was not saved".to_string());
+    }
+    match reply
+        .get("remaining_processes")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(0) | None => {}
+        Some(n) => problems.push(format!("{n} pane process(es) were still running")),
+    }
+    if reply
+        .get("socket_released")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        problems.push("its command socket could not be released".to_string());
+    }
+    if problems.is_empty() {
+        problems.push(format!("it exited with status {status}"));
+    }
+    HostStopReport {
+        code: 1,
+        message: format!("Plexi host stopped, but {}.", problems.join("; ")),
     }
 }
 
@@ -1775,6 +1846,43 @@ mod tests {
     }
 
     use super::*;
+
+    /// Stint 1430: `host stop` against a blocked host (its workspace never
+    /// restored) reports the unsaved exit and fails; a clean stop still says
+    /// clean shutdown and succeeds. The reply is built by the host's own
+    /// `stop_reply` from the durability a blocked session ends with.
+    #[test]
+    fn host_stop_reports_an_unsaved_exit_and_fails() {
+        use crate::app::quit::{exit_host_reply_for_test, WorkspaceDurability};
+        let unsaved = host_stop_report(&exit_host_reply_for_test(WorkspaceDurability::Unsaved));
+        assert_eq!(unsaved.code, 1);
+        assert!(
+            unsaved.message.contains("the workspace was not saved"),
+            "{}",
+            unsaved.message
+        );
+        assert!(!unsaved.message.contains("clean shutdown"));
+
+        let clean = host_stop_report(&exit_host_reply_for_test(WorkspaceDurability::Saved));
+        assert_eq!(
+            clean,
+            HostStopReport {
+                code: 0,
+                message: "Plexi host stopped (clean shutdown).".to_string(),
+            }
+        );
+
+        let leftovers = host_stop_report(&serde_json::json!({
+            "ok": true, "status": 1, "workspace": "saved",
+            "remaining_processes": 3, "socket_released": true,
+        }));
+        assert_eq!(leftovers.code, 1);
+        assert!(
+            leftovers.message.contains("3 pane process(es)"),
+            "{}",
+            leftovers.message
+        );
+    }
 
     #[cfg(windows)]
     #[test]

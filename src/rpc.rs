@@ -392,7 +392,6 @@ pub(crate) fn request_json(
 }
 
 /// [`request_json`] with an explicit correlation-token prefix.
-#[allow(dead_code)]
 pub(crate) fn request_json_with_prefix(
     socket_path: &Path,
     mut payload: serde_json::Value,
