@@ -1415,11 +1415,6 @@ fn main() -> eframe::Result {
                                 ),
                             })
                         }
-                        PaneCmd::Hide { ref pane_id } | PaneCmd::Reveal { ref pane_id } => {
-                            let hidden = matches!(cmd, PaneCmd::Hide { .. });
-                            let pane_id = current_pane(pane_id.as_ref(), if hidden { "pane hide" } else { "pane reveal" });
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden, "pane_id":pane_id}), None))
-                        }
                         PaneCmd::Zoom { pane_id } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane zoom");
                             cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom", "pane_id":pane_id}), None))

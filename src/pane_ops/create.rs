@@ -256,7 +256,6 @@ pub(crate) fn restore_builtin_view_pane(
         pane_group: builtin_default_group(&runtime_id),
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -299,7 +298,6 @@ pub(crate) fn restore_assistant_pane(
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -448,7 +446,6 @@ pub(crate) fn restore_view_pane_in_profile(
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -535,7 +532,6 @@ pub(crate) fn restore_view_pane_in_profile(
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -579,7 +575,6 @@ pub(crate) fn restore_launch_failed_pane(
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -786,7 +781,6 @@ impl PlexiApp {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -925,7 +919,6 @@ impl PlexiApp {
                         pane_group: None,
                         linked_pane_id,
                         overlay_replaced,
-                        hidden: false,
                         agent: None,
                         slots: std::collections::HashMap::new(),
                         semantic_state: Default::default(),
@@ -1067,7 +1060,6 @@ impl PlexiApp {
                         pane_group: None,
                         linked_pane_id,
                         overlay_replaced,
-                        hidden: false,
                         agent: None,
                         slots: std::collections::HashMap::new(),
                         semantic_state: Default::default(),
@@ -1363,7 +1355,6 @@ impl PlexiApp {
                     pane_group: group,
                     linked_pane_id,
                     overlay_replaced,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -1809,7 +1800,6 @@ impl PlexiApp {
                             target_context_id: ctx_id,
                             context_state: None,
                             reveal_after_close: false,
-                            hidden: false,
                         })),
                     );
                 }
@@ -2294,8 +2284,7 @@ impl PlexiApp {
     }
 
     /// Reveal a located plugin instance and focus it: pop any overlays covering
-    /// it, unhide it (it may have been hidden rather than overlaid), and jump
-    /// to its window via the sanctioned
+    /// it and jump to its window via the sanctioned
     /// [`jump_to_context`](Self::jump_to_context) path — never by mutating
     /// `active_window`/`router.active` directly. Popping overlays closes every
     /// plugin overlay stacked above the instance, exactly as pressing Esc that
@@ -2304,9 +2293,6 @@ impl PlexiApp {
         let win_id = self.windows[win_idx].window_id;
         for _ in 0..overlay_depth {
             super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, slot);
-        }
-        if let Some(pane) = self.windows[win_idx].panes.get_mut(&slot) {
-            pane.set_hidden(false);
         }
         self.jump_to_context(win_idx, win_id, Some(slot));
     }
@@ -3137,7 +3123,7 @@ impl PlexiApp {
         ));
         let id = self.host.alloc_pane_id();
         log::info!(
-            "assistant: created hidden pane {id} for a headless send in context {caller_context_id} workspace {}",
+            "assistant: created headless pane {id} (not in the tile tree) for a headless send in context {caller_context_id} workspace {}",
             workspace_root.display()
         );
         self.windows[win_idx].panes.insert(
@@ -3153,7 +3139,6 @@ impl PlexiApp {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: true,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),

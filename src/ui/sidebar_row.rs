@@ -123,8 +123,6 @@ pub struct PaneDots {
     pub route_idx: Option<usize>,
     pub count: usize,
     pub focused_idx: Option<usize>,
-    /// Set of dot indices that are hidden (rendered as stroke-only outlines).
-    pub hidden_set: std::collections::HashSet<usize>,
     /// Per-dot agent state (parallel to dot index). `None` means no agent.
     pub activities: Vec<Option<crate::protocol::AgentState>>,
     pub static_health_pips: std::collections::HashSet<usize>,
@@ -603,7 +601,6 @@ fn paint_pips(
                 PANE_DOT_RADIUS,
                 glyph_state,
                 color,
-                dots.hidden_set.contains(&dot_i),
             );
         }
 
@@ -991,7 +988,6 @@ mod tests {
             route_idx: None,
             count: pane_count,
             focused_idx: Some(0),
-            hidden_set: std::collections::HashSet::new(),
             activities: vec![None; pane_count],
             static_health_pips: Default::default(),
             windows,

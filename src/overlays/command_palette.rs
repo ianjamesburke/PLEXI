@@ -436,7 +436,6 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and view back-stacks first)", search_text: "close pane tab" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane (dives into an agent's children first)", search_text: "zoom restore pane fullscreen" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NextTab), name: "Next tab", description: "Focus the next tab", search_text: "next tab forward" },
@@ -705,19 +704,6 @@ fn palette_pips_for_context(
                 })
         });
     let focused_idx = focused_pane_id.and_then(|pid| pane_ids.iter().position(|&p| p == pid));
-    let hidden_indices = pane_ids
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, pane_id)| {
-            windows
-                .iter()
-                .filter(|w| w.context_id == ctx_id)
-                .find_map(|w| w.panes.get(pane_id))
-                .is_some_and(|pane| pane.is_hidden())
-                .then_some(idx)
-        })
-        .collect();
-
     let activities = pane_ids
         .iter()
         .map(|pane_id| {
@@ -733,7 +719,6 @@ fn palette_pips_for_context(
     Some(ListRowPips {
         count: pane_ids.len(),
         focused_idx,
-        hidden_indices,
         activities,
         static_health_pips: pane_ids
             .iter()
@@ -846,11 +831,6 @@ fn palette_pane_rows_for_context(
                 pips: ListRowPips {
                     count: 1,
                     focused_idx: (Some(pane_id) == focused_pane_id).then_some(0),
-                    hidden_indices: if pane.is_hidden() {
-                        vec![0]
-                    } else {
-                        Vec::new()
-                    },
                     activities: vec![pane.effective_activity().cloned()],
                     static_health_pips: if pane.static_health_pip() {
                         vec![0]
@@ -1049,7 +1029,6 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::NewPageRight) => bindings.new_page_right,
         PaletteCommand::Host(Action::RenamePane) => bindings.rename_pane,
         PaletteCommand::Host(Action::ClosePane) => bindings.close_pane,
-        PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
         PaletteCommand::Host(Action::NavBackView) => return bindings.nav_back,
         PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
@@ -1774,7 +1753,6 @@ impl PlexiApp {
                                     .pane_pips(ListRowPips {
                                         count: 1,
                                         focused_idx: focused.then_some(0),
-                                        hidden_indices: Vec::new(),
                                         activities: vec![Some(state.clone())],
                                         static_health_pips: Vec::new(),
                                     })
@@ -3829,8 +3807,8 @@ mod tests {
     }
 
     #[test]
-    fn palette_pips_include_hidden_and_focused_panes() {
-        let win = test_window(1, 1, 0, 0, &[(10, false), (20, false), (30, true)], 1);
+    fn palette_pips_include_the_focused_pane() {
+        let win = test_window(1, 1, 0, 0, &[10, 20, 30], 1);
         let context_active_window = std::collections::HashMap::from([(1, 1)]);
         let windows = vec![win];
         let pips = palette_pips_for_context(&windows, &context_active_window, 1, None);
@@ -3840,7 +3818,6 @@ mod tests {
             Some(ListRowPips {
                 count: 3,
                 focused_idx: Some(1),
-                hidden_indices: vec![2],
                 activities: vec![None, None, None],
                 static_health_pips: Vec::new(),
             })
@@ -3849,8 +3826,8 @@ mod tests {
 
     #[test]
     fn palette_pips_cover_every_window_in_the_context() {
-        let first = test_window(1, 1, 0, 0, &[(10, false), (20, true), (30, false)], 0);
-        let second = test_window(1, 2, 1, 0, &[(40, false), (50, true), (60, false)], 2);
+        let first = test_window(1, 1, 0, 0, &[10, 20, 30], 0);
+        let second = test_window(1, 2, 1, 0, &[40, 50, 60], 2);
         let context_active_window = std::collections::HashMap::from([(1, 2)]);
         let windows = vec![first, second];
         let pips = palette_pips_for_context(&windows, &context_active_window, 1, None);
@@ -3860,7 +3837,6 @@ mod tests {
             Some(ListRowPips {
                 count: 6,
                 focused_idx: Some(5),
-                hidden_indices: vec![1, 4],
                 activities: vec![None, None, None, None, None, None],
                 static_health_pips: Vec::new(),
             })
@@ -3872,14 +3848,14 @@ mod tests {
         window_id: u64,
         grid_x: u32,
         grid_y: u32,
-        panes_spec: &[(u64, bool)],
+        panes_spec: &[u64],
         focused_idx: usize,
     ) -> crate::host::context::Window {
         let mut panes = std::collections::HashMap::new();
         let mut tiles = egui_tiles::Tiles::default();
         let mut tile_ids = Vec::new();
-        for &(pane_id, hidden) in panes_spec {
-            panes.insert(pane_id, test_pane(pane_id, hidden));
+        for &pane_id in panes_spec {
+            panes.insert(pane_id, test_pane(pane_id));
             tile_ids.push(tiles.insert_pane(pane_id));
         }
         let focused_pane = tile_ids.get(focused_idx).copied();
@@ -3926,7 +3902,6 @@ mod tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: Some(crate::protocol::PaneAgentState {
                 pane_id: id,
                 state,
@@ -3989,7 +3964,7 @@ mod tests {
                     11,
                     test_agent_pane(11, "claude", "tester", AgentState::Blocked, None),
                 ),
-                (12, test_pane(12, false)),
+                (12, test_pane(12)),
             ],
             1,
         );
@@ -4270,7 +4245,7 @@ mod tests {
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();
-        let target = test_window(7, 70, 1, 0, &[(10, false), (11, false)], 0);
+        let target = test_window(7, 70, 1, 0, &[10, 11], 0);
         h.app.windows.push(target);
         h.app.router.push(crate::host::context::Context {
             name: "parked-alpha".to_string().into(),
@@ -4307,7 +4282,7 @@ mod tests {
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();
-        let mut target = test_window(7, 70, 1, 0, &[(10, false), (11, false)], 0);
+        let mut target = test_window(7, 70, 1, 0, &[10, 11], 0);
         let old_root = target.tree.root.expect("test window root");
         target.tree.tiles.remove(old_root);
         let ten = target.tree.tiles.find_pane(&10).expect("pane 10 tile");
@@ -4636,9 +4611,7 @@ mod tests {
         let mut h = HostHarness::new();
         let first_idx = h.app.router.active_idx();
         h.app.router.get_mut(first_idx).parked = true;
-        h.app
-            .windows
-            .push(test_window(7, 70, 1, 0, &[(10, false)], 0));
+        h.app.windows.push(test_window(7, 70, 1, 0, &[10], 0));
         h.app.router.push(crate::host::context::Context {
             name: "second-parked".to_string().into(),
             root: std::env::temp_dir(),
@@ -4679,19 +4652,18 @@ mod tests {
         assert_eq!(h.app.router.active().context_id, active_context);
     }
 
-    fn test_pane(id: u64, hidden: bool) -> Pane {
+    fn test_pane(id: u64) -> Pane {
         Pane::Portal(Box::new(PortalPane {
             pane_id: id,
             target_context_id: id + 1000,
             context_state: None,
             reveal_after_close: false,
-            hidden,
         }))
     }
 
     #[test]
     fn pane_rows_unpack_each_pane_with_a_single_pip() {
-        let win = test_window(1, 1, 0, 0, &[(10, false), (20, false), (30, true)], 1);
+        let win = test_window(1, 1, 0, 0, &[10, 20, 30], 1);
         let context_active_window = std::collections::HashMap::from([(1, 1)]);
         let windows = vec![win];
         let names = vec![(1010, "child-a".to_string())];
@@ -4714,19 +4686,17 @@ mod tests {
         // Portal target 1010 resolves to its context name; unknown targets fall back.
         assert_eq!(rows[0].name, "child-a");
         assert_eq!(rows[1].name, "sub-context");
-        // Focused pane (idx 1) carries the focus pip; hidden pane (idx 2) the hidden pip.
+        // Focused pane (idx 1) carries the focus pip.
         assert_eq!(rows[0].pips.focused_idx, None);
         assert_eq!(rows[1].pips.focused_idx, Some(0));
-        assert!(rows[0].pips.hidden_indices.is_empty());
-        assert_eq!(rows[2].pips.hidden_indices, vec![0]);
     }
 
     #[test]
     fn pane_rows_cover_every_window_in_the_context() {
         // Regression: panes must unpack from ALL windows of a context, not
         // just the first one.
-        let first = test_window(1, 1, 0, 0, &[(10, false)], 0);
-        let second = test_window(1, 2, 1, 0, &[(40, false), (50, false)], 1);
+        let first = test_window(1, 1, 0, 0, &[10], 0);
+        let second = test_window(1, 2, 1, 0, &[40, 50], 1);
         let context_active_window = std::collections::HashMap::from([(1, 2)]);
         let windows = vec![first, second];
 
@@ -4749,7 +4719,7 @@ mod tests {
 
     #[test]
     fn pane_rows_sort_current_focus_then_reverse_history_before_spatial_fallback() {
-        let win = test_window(1, 1, 0, 0, &[(10, false), (20, false), (30, false)], 0);
+        let win = test_window(1, 1, 0, 0, &[10, 20, 30], 0);
         let current_tile = win.focused_pane.expect("focused tile");
         let older_tile = win.tree.tiles.find_pane(&20).expect("older tile");
         let newer_tile = win.tree.tiles.find_pane(&30).expect("newer tile");
@@ -4791,7 +4761,6 @@ mod tests {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),

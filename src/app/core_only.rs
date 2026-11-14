@@ -143,7 +143,6 @@ pub(crate) fn disabled_plugin_pane(saved: &SavedPane) -> Pane {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: saved.hidden,
         agent: None,
         slots: saved.slots.clone(),
         semantic_state: Default::default(),

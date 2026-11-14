@@ -253,7 +253,6 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `push_to_subcontext` | push to subcontext |
 | `new_child_context` | new child context |
 | `set_context_root_from_cwd` | set context root from cwd |
-| `hide_pane` | hide pane |
 | `park_context` | park context |
 | `open_notes_picker` | open notes picker |
 | `close_context` | close context |

@@ -470,9 +470,6 @@ pub struct PlexiApp {
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
-    /// Focus hand-off made by the last hide of a focused pane, so the next
-    /// Cmd+U can bring that pane back (`toggle_focused_pane_hidden`).
-    pub(crate) last_hide_handoff: Option<cli_actions::HideHandoff>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -1892,7 +1889,6 @@ impl PlexiApp {
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
-                    last_hide_handoff: None,
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2181,7 +2177,6 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
-            last_hide_handoff: None,
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3168,7 +3163,6 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
-            last_hide_handoff: None,
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
@@ -3255,7 +3249,6 @@ impl PlexiApp {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
@@ -3307,7 +3300,6 @@ impl PlexiApp {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
@@ -4689,9 +4681,6 @@ impl PlexiApp {
             Action::RenamePane => {
                 self.open_rename_for_focused();
             }
-            Action::HidePane => {
-                self.toggle_focused_pane_hidden();
-            }
             Action::SwitchContext(n) => {
                 // Map display position n (0-indexed) to the actual router
                 // index through the same top-level order the sidebar
@@ -6009,7 +5998,6 @@ pub(crate) fn restore_workspace(
                         target_context_id: *context_id,
                         context_state: None,
                         reveal_after_close: *reveal_after_close,
-                        hidden: false,
                     })));
                 }
             }
@@ -6251,9 +6239,6 @@ pub(crate) fn restore_workspace(
                     if slots.is_empty() && !saved_pane.slots.is_empty() {
                         *slots = saved_pane.slots.clone();
                     }
-                }
-                if saved_pane.hidden {
-                    pane.set_hidden(true);
                 }
                 panes.insert(saved_pane.id, pane);
             }

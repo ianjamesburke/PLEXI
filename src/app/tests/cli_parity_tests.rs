@@ -30,35 +30,47 @@ fn cli_and_watcher_reload_report_workspace_shadow() {
     assert!(h.app.config_notice.as_ref().is_some_and(|(text, _)| text.contains("theme.preset") && text.contains("plexi-night")));
 }
 
+/// Stint 1457: pane hiding was removed. A CLI that still sends the old
+/// `pane_visibility` request is told so, and Cmd+U does nothing.
+#[cfg(unix)]
 #[test]
-fn cli_parity_hide_reveal_and_zoom_use_keyboard_handlers() {
+fn removed_pane_visibility_request_is_answered_and_cmd_u_does_nothing() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
     let other = h.add_test_pane();
     tile_pair(&mut h, pane, other);
     h.focus_pane(pane).run_frames(1);
-    for hidden in [true, false] {
-        let reply = request(
-            &mut h,
-            serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":hidden}),
-        );
-        assert_eq!(reply["ok"], true);
-        assert_eq!(reply["pane_id"], pane);
-        assert_eq!(reply["hidden"], hidden);
-        assert_eq!(h.app.windows[0].panes[&pane].is_hidden(), hidden);
-    }
-    // Hiding the focused pane handed focus to `other`; the shortcut acts on focus.
-    h.focus_pane(pane).run_frames(1);
+
+    let token = crate::rpc::response_file("pane-visibility-removed", "json");
+    let line = serde_json::json!({
+        "type": "pane_visibility",
+        "pane_id": pane,
+        "hidden": true,
+        "response_file": token,
+    })
+    .to_string();
+    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::rpc::register_client_stream(token.clone(), client_stream);
+    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut server_stream);
+    drop(server_stream);
+    h.run_frames(1);
+    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["error_code"], "request_removed", "{reply}");
+
     h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    assert!(h.app.windows[0].panes[&pane].is_hidden());
-    let reveal_reply = request(
-        &mut h,
-        serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":false}),
-    );
-    assert_eq!(reveal_reply["ok"], true);
-    assert_eq!(reveal_reply["pane_id"], pane);
-    assert_eq!(reveal_reply["hidden"], false);
-    assert!(!h.app.windows[0].panes[&pane].is_hidden());
+    h.run_frames(1);
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
+    assert!(h.app.pane_qualifies_for_input(pane));
+}
+
+#[test]
+fn cli_parity_zoom_uses_keyboard_handlers() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let other = h.add_test_pane();
+    tile_pair(&mut h, pane, other);
+    h.focus_pane(pane).run_frames(1);
     let reply = request(
         &mut h,
         serde_json::json!({"type":"pane_zoom", "pane_id":pane}),
@@ -389,109 +401,4 @@ fn workspace_snapshot_marks_other_windows_outside_active_view() {
         .expect("active-window pane");
     assert_eq!(active["window_id"], window_id);
     assert!(active["bounds"].is_object());
-}
-
-/// Cmd+U marks the focused pane hidden but leaves
-/// focus on it, and a hidden pane never qualifies for input, so the keyboard
-/// has no owner until the user moves focus by hand.
-#[test]
-fn cmd_u_on_the_focused_pane_leaves_a_pane_that_owns_the_keyboard() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    let other = h.add_test_pane();
-    tile_pair(&mut h, pane, other);
-    h.focus_pane(pane).run_frames(1);
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
-
-    let focused = h.app.active_focused_pane_id();
-    assert_ne!(
-        focused,
-        Some(pane),
-        "focus must leave the pane that Cmd+U sent away"
-    );
-    assert_eq!(
-        focused,
-        Some(other),
-        "focus must land on the pane that is still in the workspace"
-    );
-    assert!(
-        h.app.pane_qualifies_for_input(other),
-        "the pane that took focus must be able to receive typing"
-    );
-}
-
-/// Owner ruling 2026-11-12 (ledger row 49): Cmd+U stays a hide-and-peek
-/// toggle. After the first press hands focus to the neighbour, a second press
-/// brings back the pane hidden last instead of hiding the neighbour.
-#[test]
-fn second_cmd_u_reveals_the_pane_hidden_last_instead_of_hiding_the_neighbour() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    let other = h.add_test_pane();
-    tile_pair(&mut h, pane, other);
-    h.focus_pane(pane).run_frames(1);
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
-    assert!(h.app.windows[0].panes[&pane].is_hidden());
-    assert_eq!(h.app.active_focused_pane_id(), Some(other));
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
-    assert!(
-        !h.app.windows[0].panes[&other].is_hidden(),
-        "the second Cmd+U must not hide the neighbour that took focus"
-    );
-    assert!(
-        !h.app.windows[0].panes[&pane].is_hidden(),
-        "the second Cmd+U brings back the pane hidden last"
-    );
-    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
-    assert!(h.app.pane_qualifies_for_input(pane));
-}
-
-/// The toggle only answers the hide it follows: once the hidden pane is back
-/// by another route, Cmd+U on the neighbour hides the neighbour.
-#[test]
-fn cmd_u_hides_the_neighbour_once_the_hidden_pane_was_revealed_another_way() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    let other = h.add_test_pane();
-    tile_pair(&mut h, pane, other);
-    h.focus_pane(pane).run_frames(1);
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
-    assert_eq!(h.app.active_focused_pane_id(), Some(other));
-    let reply = request(
-        &mut h,
-        serde_json::json!({"type":"pane_visibility", "pane_id":pane, "hidden":false}),
-    );
-    assert_eq!(reply["ok"], true);
-    assert_eq!(h.app.active_focused_pane_id(), Some(other));
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    h.run_frames(1);
-    assert!(h.app.windows[0].panes[&other].is_hidden());
-    assert!(!h.app.windows[0].panes[&pane].is_hidden());
-    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
-}
-
-/// With no other visible pane to take focus, the hidden pane keeps it, so a
-/// second Cmd+U reveals the pane instead of leaving it unreachable.
-#[test]
-fn cmd_u_on_the_only_pane_keeps_focus_so_the_shortcut_reveals_it_again() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    h.focus_pane(pane).run_frames(1);
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    assert!(h.app.windows[0].panes[&pane].is_hidden());
-    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
-
-    h.press_key(egui::Key::U, egui::Modifiers::COMMAND);
-    assert!(!h.app.windows[0].panes[&pane].is_hidden());
-    assert_eq!(h.app.active_focused_pane_id(), Some(pane));
 }

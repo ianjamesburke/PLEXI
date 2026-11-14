@@ -63,7 +63,6 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `NewChildContext` | `plexi context new name --parent --focus` |  |
 | `ContextZoomOut` | `plexi context zoom-out` |  |
 | `SetContextRootFromCwd` | `plexi context set-root .` |  |
-| `HidePane` | `plexi pane hide 42` | Use pane reveal to restore visibility; the shortcut toggles. |
 | `ParkContext` | `plexi context park 42` | Use context unpark to restore and focus; the shortcut toggles. |
 | `OpenNotesPicker` | `plexi note open` | CLI opens its terminal picker instead of the desktop overlay. |
 | `CloseContext` | `plexi context close 42` | Honors desktop confirmation; response reports pending_confirmation. |

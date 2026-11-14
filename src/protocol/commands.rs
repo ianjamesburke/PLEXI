@@ -129,6 +129,10 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
             "set_permission was removed: it changed grants with no caller \
              identity. Use `plexi permissions` or the Permissions view instead.",
         ),
+        "pane_visibility" => Some(
+            "pane_visibility was removed with pane hiding; every pane stays \
+             visible. There is no replacement yet.",
+        ),
         _ => None,
     }
 }
@@ -152,12 +156,6 @@ pub enum HostRequest {
     ContextPark {
         context_id: u64,
         parked: bool,
-        response_file: String,
-    },
-    /// Set pane visibility without changing its identity or focus.
-    PaneVisibility {
-        pane_id: u64,
-        hidden: bool,
         response_file: String,
     },
     /// Focus a pane and toggle its zoom, including portal navigation.

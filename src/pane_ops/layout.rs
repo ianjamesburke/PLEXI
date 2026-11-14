@@ -1098,7 +1098,7 @@ impl PlexiApp {
         let is_visible_pane = |tile_id: TileId| {
             tile_id != closing_tile
                 && window.tree.active_tiles().contains(&tile_id)
-                && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id)) if window.panes.get(pane_id).is_some_and(|pane| !pane.is_hidden()))
+                && matches!(window.tree.tiles.get(tile_id), Some(Tile::Pane(pane_id)) if window.panes.contains_key(pane_id))
         };
         let newest_in_history = |candidates: &[TileId]| {
             self.pane_focus_history

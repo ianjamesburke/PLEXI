@@ -161,7 +161,6 @@ impl PlexiApp {
                 target_context_id: context_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
         let keep = parent.panes.keys().copied().collect();

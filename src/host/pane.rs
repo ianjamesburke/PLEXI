@@ -501,8 +501,6 @@ pub struct PortalPane {
     pub context_state: Option<crate::host::context_state::ContextState>,
     /// True when a close made this the sole portal in its parent.
     pub reveal_after_close: bool,
-    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
-    pub hidden: bool,
 }
 
 impl Pane {
@@ -511,22 +509,6 @@ impl Pane {
             Pane::Terminal(t) => t.id,
             Pane::View(a) => a.id,
             Pane::Portal(p) => p.pane_id,
-        }
-    }
-
-    pub fn is_hidden(&self) -> bool {
-        match self {
-            Pane::Terminal(t) => t.hidden,
-            Pane::View(a) => a.hidden,
-            Pane::Portal(p) => p.hidden,
-        }
-    }
-
-    pub fn set_hidden(&mut self, val: bool) {
-        match self {
-            Pane::Terminal(t) => t.hidden = val,
-            Pane::View(a) => a.hidden = val,
-            Pane::Portal(p) => p.hidden = val,
         }
     }
 
@@ -879,8 +861,6 @@ pub struct TerminalPane {
     pub(crate) outside_workspace_cached: bool,
     pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
     pub(crate) outside_workspace_root: Option<PathBuf>,
-    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
-    pub hidden: bool,
     pub agent: Option<crate::protocol::PaneAgentState>,
     /// Receipt time of the latest lifecycle hook report. Used only to bound
     /// how long hook Idle suppresses contradictory host-observed Working.
@@ -1032,7 +1012,6 @@ impl TerminalPane {
             outside_workspace_cached: false,
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
-            hidden: false,
             fleet_result: None,
             fleet_seen: false,
             fleet_dismissed: false,
@@ -2322,8 +2301,6 @@ pub struct ViewPane {
     /// Pane hidden by an overlay plugin. Closing the plugin restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
-    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
-    pub hidden: bool,
     pub agent: Option<crate::protocol::PaneAgentState>,
     /// App-reported pip status (red/yellow/green). Takes priority over derived
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.

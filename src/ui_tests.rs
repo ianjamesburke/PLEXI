@@ -1348,7 +1348,6 @@ mod tests {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -2985,7 +2984,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -3021,7 +3019,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         target_context_id: child_ctx_id,
                         context_state: None,
                         reveal_after_close: false,
-                        hidden: false,
                     })),
                 );
                 tiles.push(win.tree.tiles.insert_pane(portal));
@@ -4029,7 +4026,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -4802,7 +4798,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -4837,7 +4832,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     target_context_id: child_ctx_id,
                     context_state: None,
                     reveal_after_close: false,
-                    hidden: false,
                 })),
             );
             let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
@@ -5362,7 +5356,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -5417,7 +5410,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -5464,7 +5456,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -5566,7 +5557,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -5902,7 +5892,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                             pane_id,
                             target_context_id: target,
                             context_state: None,
-                            hidden: false,
                             reveal_after_close: false,
                         })),
                     );
@@ -5927,7 +5916,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                                 detail: None,
                                 session_id: None,
                             });
-                            pane.hidden = index % 5 == 3;
                         }
                     }
                     win.focused_pane = panes.last().and_then(|id| win.tree.tiles.find_pane(id));
@@ -6265,7 +6253,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -7256,7 +7243,6 @@ open(out + ".done", "w").close()
                     target_context_id: 42,
                     context_state: None,
                     reveal_after_close: false,
-                    hidden: false,
                 }))));
             }
             let tile_id = win
@@ -7323,7 +7309,6 @@ open(out + ".done", "w").close()
                 target_context_id: 42,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             }))));
         });
         let bar_height = crate::render::view_pane::chrome_height(true, false);
@@ -8390,7 +8375,6 @@ open(out + ".done", "w").close()
                         target_context_id: child_ctx_id,
                         context_state: None,
                         reveal_after_close: false,
-                        hidden: false,
                     })),
                 );
                 child_ctx_id
@@ -8574,7 +8558,6 @@ open(out + ".done", "w").close()
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: true,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -8604,7 +8587,6 @@ open(out + ".done", "w").close()
                     target_context_id: extra_a + 10_000,
                     context_state: None,
                     reveal_after_close: false,
-                    hidden: false,
                 })),
             );
             extra_panes.insert(
@@ -8614,7 +8596,6 @@ open(out + ".done", "w").close()
                     target_context_id: extra_b + 10_000,
                     context_state: None,
                     reveal_after_close: false,
-                    hidden: true,
                 })),
             );
             let mut extra_tiles = egui_tiles::Tiles::default();
@@ -9598,42 +9579,6 @@ open(out + ".done", "w").close()
         );
         assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(c));
         h.save_screenshot(&evidence_png!("_cleared")).unwrap();
-    }
-
-    /// Stint 1342 and ledger row 49: Cmd+U on the focused pane dims it and
-    /// hands the keyboard to its neighbour; a second Cmd+U brings it back.
-    #[test]
-    fn screenshot_cmd_u_hands_focus_on_and_second_press_reveals() {
-        let (mut h, [a, b, _c]) = three_column_fixture();
-        let press_cmd_u = |h: &mut PlexiUiHarness| {
-            for pressed in [true, false] {
-                h.harness().input_mut().events.push(egui::Event::Key {
-                    key: egui::Key::U,
-                    physical_key: None,
-                    pressed,
-                    repeat: false,
-                    modifiers: egui::Modifiers::COMMAND,
-                });
-            }
-            h.run_steps(3);
-        };
-        let hidden = |h: &PlexiUiHarness, pane: u64| {
-            h.with_app(|app| app.windows[app.active_window].panes[&pane].is_hidden())
-        };
-        h.focus_pane(a).unwrap();
-        h.run_steps(2);
-
-        press_cmd_u(&mut h);
-        assert!(hidden(&h, a), "Cmd+U hides the focused pane");
-        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(b));
-        assert!(h.with_app(|app| app.pane_qualifies_for_input(b)));
-        h.save_screenshot(&evidence_png!("_hidden")).unwrap();
-
-        press_cmd_u(&mut h);
-        assert!(!hidden(&h, a), "a second Cmd+U brings the pane back");
-        assert!(!hidden(&h, b), "the neighbour stays visible");
-        assert_eq!(h.with_app(|app| app.active_focused_pane_id()), Some(a));
-        h.save_screenshot(&evidence_png!("_revealed")).unwrap();
     }
 
     #[test]
@@ -10819,7 +10764,6 @@ open(out + ".done", "w").close()
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: Some(crate::protocol::PaneAgentState {
                         pane_id,
                         state,
@@ -10899,7 +10843,6 @@ open(out + ".done", "w").close()
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -11449,7 +11392,6 @@ open(out + ".done", "w").close()
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -11728,7 +11670,6 @@ open(out + ".done", "w").close()
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -11999,7 +11940,6 @@ open(out + ".done", "w").close()
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
                 semantic_state: Default::default(),
@@ -12204,7 +12144,6 @@ open(out + ".done", "w").close()
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),
@@ -12251,7 +12190,6 @@ open(out + ".done", "w").close()
                     pane_group: None,
                     linked_pane_id: None,
                     overlay_replaced: None,
-                    hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
                     semantic_state: Default::default(),

@@ -524,8 +524,6 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi pane`: Control panes — list, focus, send input, capture output, and more
 - `plexi pane action`: Send a semantic action to a running view pane
 - `plexi pane layout`: Show active workspace strip membership and geometry
-- `plexi pane hide`: Hide a pane (defaults to the calling pane)
-- `plexi pane reveal`: Reveal a hidden pane (defaults to the calling pane)
 - `plexi pane zoom`: Focus a pane and toggle fullscreen zoom, or enter its sub-context
 - `plexi pane swap`: Focus a pane and swap it with a directional neighbor
 - `plexi pane wait`: Wait for current idle, blocked, or exited state; print its lifecycle record

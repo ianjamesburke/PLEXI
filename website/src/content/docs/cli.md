@@ -1419,8 +1419,6 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 |---|---|
 | `action` | Send a semantic action to a running view pane |
 | `layout` | Show active workspace strip membership and geometry |
-| `hide` | Hide a pane (defaults to the calling pane) |
-| `reveal` | Reveal a hidden pane (defaults to the calling pane) |
 | `zoom` | Focus a pane and toggle fullscreen zoom, or enter its sub-context |
 | `swap` | Focus a pane and swap it with a directional neighbor |
 | `wait` | Wait for current idle, blocked, or exited state; print its lifecycle record. Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure |
@@ -1464,22 +1462,6 @@ Example: plexi pane action 42 refresh Example: plexi pane action 42 navigate-to 
 ### `plexi pane layout`
 
 Show active workspace strip membership and geometry
-
-### `plexi pane hide`
-
-Hide a pane (defaults to the calling pane)
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<pane_id>` | string | no | Target pane id or name (defaults to the calling pane) |
-
-### `plexi pane reveal`
-
-Reveal a hidden pane (defaults to the calling pane)
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<pane_id>` | string | no | Target pane id or name (defaults to the calling pane) |
 
 ### `plexi pane zoom`
 

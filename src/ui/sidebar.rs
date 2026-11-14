@@ -152,7 +152,6 @@ impl PlexiApp {
                 Some(Tile::Pane(pane_id)) => pane_ids.iter().position(|&id| id == *pane_id),
                 _ => None,
             });
-        let mut hidden_set = std::collections::HashSet::new();
         let mut static_health_pips = std::collections::HashSet::new();
         let mut activities = Vec::with_capacity(pane_ids.len());
         for (dot_idx, &pane_id) in pane_ids.iter().enumerate() {
@@ -161,9 +160,6 @@ impl PlexiApp {
                 .iter()
                 .filter(|window| window.context_id == ctx_id)
                 .find_map(|window| window.panes.get(&pane_id));
-            if pane.is_some_and(|pane| pane.is_hidden()) {
-                hidden_set.insert(dot_idx);
-            }
             if pane.is_some_and(|pane| pane.static_health_pip()) {
                 static_health_pips.insert(dot_idx);
             }
@@ -239,7 +235,6 @@ impl PlexiApp {
             route_idx,
             count: pane_ids.len(),
             focused_idx,
-            hidden_set,
             activities,
             static_health_pips,
             windows,

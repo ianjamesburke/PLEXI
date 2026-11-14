@@ -1901,17 +1901,6 @@ pub enum PaneCmd {
     },
     /// Show active workspace strip membership and geometry.
     Layout,
-    /// Hide a pane (defaults to the calling pane).
-    Hide {
-        /// Target pane id or name (defaults to the calling pane).
-        pane_id: Option<PaneTarget>,
-    },
-    /// Reveal a hidden pane (defaults to the calling pane).
-    #[command(visible_alias = "unhide")]
-    Reveal {
-        /// Target pane id or name (defaults to the calling pane).
-        pane_id: Option<PaneTarget>,
-    },
     /// Focus a pane and toggle fullscreen zoom, or enter its sub-context.
     Zoom {
         /// Target pane id or name (defaults to the calling pane).
@@ -4482,37 +4471,5 @@ mod tests {
                 path
             );
         }
-    }
-
-    #[test]
-    fn pane_unhide_alias_parses_to_reveal() {
-        use super::PaneCmd;
-        use clap::CommandFactory;
-
-        let cli = Cli::try_parse_from(["plexi", "pane", "unhide"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pane {
-                cmd: PaneCmd::Reveal { pane_id: None }
-            })
-        ));
-
-        let cli_with_target = Cli::try_parse_from(["plexi", "pane", "unhide", "42"]).unwrap();
-        assert!(matches!(
-            cli_with_target.command,
-            Some(Commands::Pane {
-                cmd: PaneCmd::Reveal {
-                    pane_id: Some(ref t)
-                }
-            }) if *t == 42
-        ));
-
-        let mut root = Cli::command();
-        let pane_sub = root.find_subcommand_mut("pane").unwrap();
-        let help = pane_sub.render_long_help().to_string();
-        assert!(
-            help.contains("unhide"),
-            "expected `pane --help` to show visible alias `unhide`, got:\n{help}"
-        );
     }
 }

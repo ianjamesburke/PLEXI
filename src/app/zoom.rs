@@ -201,7 +201,7 @@ pub(crate) fn collect_leaf_panes_in_tile(
     match tile {
         Tile::Pane(pid) => {
             if let Some(p) = panes_map.get(pid) {
-                if !p.is_hidden() && !matches!(p, crate::host::pane::Pane::Portal(_)) {
+                if !matches!(p, crate::host::pane::Pane::Portal(_)) {
                     out.push(*pid);
                 }
             }
@@ -551,9 +551,7 @@ impl PlexiApp {
                 let Tile::Pane(pane) = window.tree.tiles.get(tile)? else {
                     return None;
                 };
-                if window.panes.get(pane)?.is_hidden() {
-                    return None;
-                }
+                window.panes.get(pane)?;
                 let rect = window.tree.tiles.rect(tile)?;
                 let clip = rect.intersect(canvas);
                 let visible = clip.width() > 0.5 && clip.height() > 0.5;
@@ -646,10 +644,7 @@ impl PlexiApp {
             return true;
         }
         self.windows.get(self.active_window).is_some_and(|window| {
-            window
-                .panes
-                .get(&pane_id)
-                .is_some_and(|pane| !pane.is_hidden())
+            window.panes.contains_key(&pane_id)
                 && window
                     .tree
                     .tiles

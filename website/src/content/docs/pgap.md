@@ -85,16 +85,6 @@ Set a context's parked state.
 | `parked` | `boolean` | yes |
 | `response_file` | `string` | yes |
 
-### `pane_visibility`
-
-Set pane visibility without changing its identity or focus.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `hidden` | `boolean` | yes |
-| `pane_id` | `integer` | yes |
-| `response_file` | `string` | yes |
-
 ### `pane_zoom`
 
 Focus a pane and toggle its zoom, including portal navigation.

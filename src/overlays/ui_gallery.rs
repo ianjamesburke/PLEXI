@@ -168,7 +168,6 @@ fn gallery_row(
             .pane_pips(ListRowPips {
                 count: data.pips,
                 focused_idx: Some(0),
-                hidden_indices: vec![],
                 activities: vec![],
                 static_health_pips: vec![],
             })
@@ -200,7 +199,6 @@ fn gallery_sidebar_row(
             route_idx: None,
             count: data.pips,
             focused_idx: Some(0),
-            hidden_set: Default::default(),
             activities: vec![],
             static_health_pips: Default::default(),
             windows: vec![],

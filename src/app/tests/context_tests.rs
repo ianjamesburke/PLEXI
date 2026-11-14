@@ -816,7 +816,6 @@ fn delete_context_portal_resets_stale_focused_pane() {
                 target_context_id: child_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
     }
@@ -1559,7 +1558,6 @@ fn delete_context_collapses_empty_portal_window() {
                 target_context_id: child_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
         win2.focused_pane = Some(portal_tile);
@@ -1677,7 +1675,6 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
                 target_context_id: child_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
     }
@@ -1729,7 +1726,6 @@ fn test_view_pane(pane_id: u64) -> crate::host::pane::Pane {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
-        hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
@@ -1787,7 +1783,6 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
             target_context_id: child_ctx_id,
             context_state: None,
             reveal_after_close: false,
-            hidden: false,
         })),
     );
     app.windows[0].tree =
@@ -1973,7 +1968,6 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
             target_context_id: child_ctx_id,
             context_state: None,
             reveal_after_close: false,
-            hidden: false,
         })),
     );
     app.windows[0].tree = egui_tiles::Tree::new("dissolve_multi_parent", parent_root, parent_tiles);
@@ -2263,7 +2257,6 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
                 target_context_id: child_id,
                 context_state: None,
                 reveal_after_close: false,
-                hidden: false,
             })),
         );
         win.focused_pane = Some(portal_tile);
@@ -2874,7 +2867,6 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
             target_context_id: child_ctx_id,
             context_state: None,
             reveal_after_close: false,
-            hidden: false,
         })),
     );
 
