@@ -452,15 +452,18 @@ impl PlexiApp {
             );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
-        let Some(mut pane) = TerminalPane::new(
+        let mut pane = match TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        ) else {
-            log::error!("Failed to create new terminal pane");
-            return None;
+        ) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("Failed to create new terminal pane: {error}");
+                return None;
+            }
         };
         let direction = if vertical { "vertical" } else { "horizontal" }.to_string();
         log::info!("split_focused: emitting PaneSplit pane_id={new_id} direction={direction}");
@@ -556,15 +559,18 @@ impl PlexiApp {
                 settings.working_directory.as_deref(),
                 inject_folder_secrets,
             );
-            let Some(mut pane) = TerminalPane::new(
+            let mut pane = match TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
                 self.pty_event_tx.clone(),
                 settings,
                 self.default_font_size,
-            ) else {
-                log::error!("Failed to create first terminal pane in empty context");
-                return;
+            ) {
+                Ok(pane) => pane,
+                Err(error) => {
+                    log::error!("Failed to create first terminal pane in empty context: {error}");
+                    return;
+                }
             };
             pane.ephemeral = close_on_exit;
             let ctx = &mut self.windows[target_win_idx];
@@ -628,15 +634,18 @@ impl PlexiApp {
             settings.working_directory.as_deref(),
             inject_folder_secrets,
         );
-        let Some(mut pane) = TerminalPane::new(
+        let mut pane = match TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        ) else {
-            log::error!("Failed to create new terminal pane");
-            return;
+        ) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("Failed to create new terminal pane: {error}");
+                return;
+            }
         };
         pane.ephemeral = close_on_exit;
         self.windows[target_win_idx]

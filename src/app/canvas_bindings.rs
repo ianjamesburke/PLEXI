@@ -67,22 +67,25 @@ impl PlexiApp {
         let context_env = self.pane_context_env_for_window(active);
         let (settings, pending_credential) =
             Self::make_backend_settings(new_id, resolved_cwd, &self.colors, &context_env, false);
-        let Some(term) = TerminalPane::new(
+        let term = match TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        ) else {
-            log::error!("RequestLinkedTerminal: failed to create TerminalPane for pane {new_id}");
-            self.queue_event_to_pane(
-                sender_pane_id,
-                PlexiEvent::LinkedTerminalReady {
-                    request_id,
-                    terminal_pane_id: 0,
-                },
-            );
-            return;
+        ) {
+            Ok(term) => term,
+            Err(error) => {
+                log::error!("RequestLinkedTerminal: failed to create TerminalPane for pane {new_id}: {error}");
+                self.queue_event_to_pane(
+                    sender_pane_id,
+                    PlexiEvent::LinkedTerminalReady {
+                        request_id,
+                        terminal_pane_id: 0,
+                    },
+                );
+                return;
+            }
         };
         self.windows[active]
             .panes

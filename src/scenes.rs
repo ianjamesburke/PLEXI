@@ -3349,9 +3349,12 @@ impl HeadlessBackend {
                         },
                         14.0,
                     )
-                    .ok_or_else(|| {
-                        log::error!("scene: could not create dashboard terminal");
-                        SceneError::new("seed_failed", "could not create dashboard terminal")
+                    .map_err(|error| {
+                        log::error!("scene: could not create dashboard terminal: {error}");
+                        SceneError::new(
+                            "seed_failed",
+                            format!("could not create dashboard terminal: {error}"),
+                        )
                     })?;
                     terminal.agent_role = Some("Reviewer".into());
                     terminal.agent_harness = Some("scene-agent".into());

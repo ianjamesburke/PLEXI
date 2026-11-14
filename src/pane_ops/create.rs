@@ -1420,26 +1420,29 @@ impl PlexiApp {
             if let Some(cmd) = initial_cmd {
                 super::apply_initial_cmd(&mut settings, cmd, false);
             }
-            let Some(mut pane) = TerminalPane::new(
+            let mut pane = match TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
                 self.pty_event_tx.clone(),
                 settings,
                 self.default_font_size,
-            ) else {
-                // The 2am case: a squad that half-spawned. Name which pane of
-                // how many died, on what command, and what is being torn down —
-                // the caller only ever sees "failed to create terminals".
-                log::error!(
-                    "create_context_pane_set: TerminalPane::new failed for pane {} of {total} \
+            ) {
+                Ok(pane) => pane,
+                Err(error) => {
+                    // The 2am case: a squad that half-spawned. Name which pane of
+                    // how many died, on what command, and what is being torn down —
+                    // the caller only ever sees "failed to create terminals".
+                    log::error!(
+                        "create_context_pane_set: TerminalPane::new failed for pane {} of {total} \
                      (pane_id={new_id} context_id={}) — discarding \
-                     {} already-created pane(s) {:?}, no partial squad is installed",
-                    idx + 1,
-                    context.context_id,
-                    pane_ids.len(),
-                    pane_ids
-                );
-                return None;
+                     {} already-created pane(s) {:?}, no partial squad is installed: {error}",
+                        idx + 1,
+                        context.context_id,
+                        pane_ids.len(),
+                        pane_ids
+                    );
+                    return None;
+                }
             };
             let pane_name = super::layout::default_squad_pane_name(&context.name, idx);
             pane.name = Some(pane_name.clone());
@@ -1491,13 +1494,16 @@ impl PlexiApp {
             settings.working_directory.as_deref(),
             inject_folder_secrets,
         );
+        // The spawn error is logged where it happened; this caller's contract
+        // is an Option, so a failed spawn still yields None.
         let mut pane = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        )?;
+        )
+        .ok()?;
         pane.ephemeral = close_on_exit;
 
         let mut panes = HashMap::new();
@@ -1551,15 +1557,18 @@ impl PlexiApp {
             settings.working_directory.as_deref(),
             inject_folder_secrets,
         );
-        let Some(mut pane) = TerminalPane::new(
+        let mut pane = match TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        ) else {
-            log::error!("spawn_terminal_pane_at: TerminalPane::new failed for pane_id={new_id}");
-            return new_id;
+        ) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("spawn_terminal_pane_at: TerminalPane::new failed for pane_id={new_id}: {error}");
+                return new_id;
+            }
         };
         pane.ephemeral = close_on_exit;
         self.windows[win_idx]
@@ -1935,16 +1944,20 @@ impl PlexiApp {
         // retain the shell and its output for inspection.
         super::apply_initial_cmd(&mut settings, worker_command, false);
 
-        let Some(mut pane) = TerminalPane::new(
+        let mut pane = match TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
-        ) else {
-            return Err(format!(
-                "failed to create terminal pane for agent role '{role}'"
-            ));
+        ) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("{error}");
+                return Err(format!(
+                    "failed to create terminal pane for agent role '{role}': {error}"
+                ));
+            }
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;

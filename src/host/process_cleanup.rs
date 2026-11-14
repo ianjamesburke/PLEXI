@@ -1050,7 +1050,7 @@ wait
                     settings,
                     14.0,
                 )
-                .unwrap();
+                .expect("spawn test terminal");
                 h.app.windows[0]
                     .panes
                     .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)));
