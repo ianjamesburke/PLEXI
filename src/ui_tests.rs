@@ -11376,6 +11376,73 @@ open(out + ".done", "w").close()
         }
     }
 
+    /// Stint 1460/1462 critic: a dialog's edge buttons keep their whole
+    /// keyboard-focus ring. The modal's width clamp clips at the content
+    /// edge, so the 2pt outside ring of a button touching that edge (a
+    /// left-aligned Cancel, a right-aligned button row, a full-width button)
+    /// must still fall inside the clip.
+    #[test]
+    fn screenshot_dialog_edge_button_focus_ring_is_not_clipped() {
+        use crate::ui::button::{ButtonKind, KitButton};
+        let colors = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+        for (layout, name) in [
+            (egui::Layout::left_to_right(egui::Align::Center), "left"),
+            (egui::Layout::right_to_left(egui::Align::Center), "right"),
+            (
+                egui::Layout::top_down_justified(egui::Align::Center),
+                "full",
+            ),
+        ] {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(640.0, 400.0))
+                .build_ui(move |ui| {
+                    crate::ui::theme::setup_fonts(ui.ctx());
+                    // Fonts installed this pass bind from the next one.
+                    if ui.ctx().cumulative_pass_nr() == 0 {
+                        return;
+                    }
+                    crate::ui::overlay::ModalShell::centered("focus_ring_dialog")
+                        .title("Rename")
+                        .width(320.0)
+                        .show(ui.ctx(), &colors, |ui| {
+                            ui.with_layout(layout, |ui| {
+                                let response = ui.add(
+                                    KitButton::new("Cancel", &colors).kind(ButtonKind::Secondary),
+                                );
+                                response.request_focus();
+                            });
+                        });
+                });
+            harness.run_steps(4);
+            let rings: Vec<(egui::Rect, egui::Rect)> = harness
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r)
+                        if r.stroke.color == colors.accent
+                            && r.stroke_kind == egui::StrokeKind::Outside =>
+                    {
+                        Some((r.rect.expand(r.stroke.width), clipped.clip_rect))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rings.len(), 1, "{name}: the focused button paints one ring");
+            for (ring, clip) in rings {
+                assert!(
+                    clip.contains_rect(ring),
+                    "{name}: focus ring {ring:?} is clipped by {clip:?}"
+                );
+            }
+            harness
+                .render()
+                .expect("render")
+                .save(evidence_png!(format!("_{name}")))
+                .expect("save");
+        }
+    }
+
     // ── Text-crispness gate (stint 0531) ────────────────────────────────────
     //
     // Freezes the pixel-grid and typography work (stints 0527–0530) as

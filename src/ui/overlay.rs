@@ -261,9 +261,12 @@ fn within_width<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui
             .max_rect(rect)
             .layout(*ui.layout()),
     );
+    // Layout stays at `width`; the clip reaches into the frame's side
+    // padding so a focus ring outside an edge button is drawn whole.
     let clip = ui.clip_rect();
+    let pad = f32::from(style::MODAL_PADDING_H);
     child.set_clip_rect(egui::Rect::from_x_y_ranges(
-        rect.x_range().intersection(clip.x_range()),
+        rect.x_range().expand(pad).intersection(clip.x_range()),
         clip.y_range(),
     ));
     let result = add(&mut child);
