@@ -1432,7 +1432,12 @@ impl PlexiApp {
         let old_window_id = self.windows[self.active_window].window_id;
         // Clear any stale zoom on the destination window — a programmatic focus
         // redirect must not leave zoomed_pane pointing at a pane that is no longer focused.
-        if self.windows[idx].zoomed_pane.is_some() {
+        // Navigating to the zoomed pane itself (a drop or click on it) keeps
+        // the zoom (stint 1481).
+        if self.windows[idx]
+            .zoomed_pane
+            .is_some_and(|zoomed| zoomed != tile_id)
+        {
             self.windows[idx].clear_zoom();
             log::info!("notify:action: pane_navigate cleared stale zoom on window={idx}");
         }

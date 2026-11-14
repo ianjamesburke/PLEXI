@@ -576,10 +576,9 @@ impl PlexiApp {
                     }
                 });
 
-                // Detached before `ctx` aliases `self.windows` so both the
-                // tiling behavior below and the zoomed-pane overlay branch
-                // (further down, after `ctx`'s borrow ends) can each remove
-                // this frame's pending click for whichever pane they render.
+                // Detached before `ctx` aliases `self.windows` so the tiling
+                // behavior below can remove this frame's pending click for
+                // whichever pane it presents, tiled or zoomed.
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
                 let child_agent_strips = self.child_agent_strips();

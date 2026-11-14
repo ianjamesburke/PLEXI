@@ -20075,3 +20075,127 @@ fn close_context_dialog_lists_a_plugin_view_as_plugin() {
     assert!(kinds.contains(&"Plugin"), "dialog kinds: {kinds:?}");
     assert!(!kinds.contains(&"App"), "dialog kinds: {kinds:?}");
 }
+
+/// Stint 1481 (d): drops, clicks and tab actions reach a zoomed pane through
+/// the shared presentation, and leave the zoom consistent.
+mod zoomed_pane_input_tests {
+    use super::*;
+
+    /// A notes pane beside a view pane, zoomed. Returns the notes pane.
+    fn zoomed_notes(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+        let note = dir.join("note.md");
+        let body: String = (0..40).map(|i| format!("line number {i}\n")).collect();
+        std::fs::write(&note, &body).expect("seed note");
+        let other = h.add_test_pane();
+        h.focus_pane(other);
+        h.run_frames(1);
+        h.app.open_builtin_view_pane(
+            Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(note)),
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        h.run_frames(2);
+        let notes = *h
+            .state()
+            .open_panes
+            .iter()
+            .find(|id| **id != other)
+            .expect("notes pane");
+        let tile = h.app.windows[0].tree.tiles.find_pane(&notes).expect("tile");
+        h.app.windows[0].zoom_to(tile);
+        h.run_frames(2);
+        assert_eq!(h.app.windows[0].zoomed_pane, Some(tile), "precondition");
+        notes
+    }
+
+    fn notes_state(h: &HostHarness, pane: PaneId) -> serde_json::Value {
+        h.app.windows[0]
+            .panes
+            .get(&pane)
+            .and_then(Pane::as_view)
+            .and_then(|view| view.runtime.semantic_details())
+            .expect("notes semantics")
+    }
+
+    #[test]
+    fn a_drop_reaches_the_zoomed_pane() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let notes = zoomed_notes(&mut h, tmp.path());
+        let image = tmp.path().join("image.png");
+        std::fs::write(&image, b"png fixture").expect("seed image");
+        let response = temp_response(tmp.path(), "zoomed-drop");
+        h.inject_ipc(HostRequest::DropFile {
+            pane_id: notes,
+            path_or_url: image.to_string_lossy().into_owned(),
+            response_file: response.clone(),
+        });
+        h.run_frames(2);
+        assert!(read_json_response(&response)["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a decodable image")));
+        assert_eq!(
+            notes_state(&h, notes)["last_drop_result"]["result"],
+            "rejected"
+        );
+        assert!(
+            h.app.windows[0].zoomed_pane.is_some(),
+            "the drop keeps the zoom"
+        );
+    }
+
+    #[test]
+    fn a_click_reaches_the_zoomed_pane() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let notes = zoomed_notes(&mut h, tmp.path());
+        let response = temp_response(tmp.path(), "zoomed-click");
+        h.inject_click(notes, 60.0, 120.0, "left", Some(response.clone()));
+        h.run_frames(3);
+        assert_eq!(read_json_response(&response)["ok"], true);
+        assert!(
+            !h.app.pending_pane_inputs.contains_key(&notes),
+            "the zoomed presentation consumed the queued click"
+        );
+        let state = notes_state(&h, notes);
+        assert_ne!(
+            state["cursor"]["offset"]
+                .as_u64()
+                .or(state["caret"].as_u64()),
+            Some(0),
+            "the click moved the caret: {state}"
+        );
+        assert!(
+            h.app.windows[0].zoomed_pane.is_some(),
+            "the click keeps the zoom"
+        );
+    }
+
+    /// Cycling tabs while zoomed must not leave the zoom on a tile that is
+    /// no longer focused.
+    #[test]
+    fn a_tab_switch_while_zoomed_leaves_no_stale_zoom() {
+        let mut h = HostHarness::new();
+        let first = h.add_test_pane();
+        h.focus_pane(first);
+        h.run_frames(1);
+        h.app.new_tab(0, None, false, None, false, false);
+        h.run_frames(2);
+        let focused = h.app.windows[0].focused_pane.expect("focused tab");
+        h.app.windows[0].zoom_to(focused);
+        h.run_frames(1);
+        h.press_key(egui::Key::CloseBracket, egui::Modifiers::COMMAND);
+        h.run_frames(2);
+        let window = &h.app.windows[0];
+        if let Some(zoomed) = window.zoomed_pane {
+            assert_eq!(
+                Some(zoomed),
+                window.focused_pane,
+                "a zoom that survives a tab switch is on the focused tile"
+            );
+        }
+    }
+}
