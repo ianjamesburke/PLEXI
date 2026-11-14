@@ -39,6 +39,15 @@ pub(crate) struct ConsentInput {
 }
 
 impl ConsentInput {
+    /// The same check with no arm delay (stint 1513): a destructive dialog
+    /// action takes a fresh, real press at once, never an injected one.
+    pub(crate) fn without_arm_delay(synthetic: bool) -> Self {
+        Self {
+            armed: true,
+            synthetic,
+        }
+    }
+
     /// Whether an action decides this frame: nothing on a synthetic frame;
     /// a refusal (deny, dismiss) any time; an approval only once armed.
     pub(crate) fn admits(self, refuses: bool) -> bool {

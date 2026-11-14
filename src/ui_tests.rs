@@ -865,6 +865,11 @@ mod tests {
 
     fn open_quit_save_failure() -> PlexiUiHarness {
         let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        seed_quit_save_failure(&mut h);
+        h
+    }
+
+    fn seed_quit_save_failure(h: &mut PlexiUiHarness) {
         h.with_app_mut(|app| {
             let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -877,7 +882,42 @@ mod tests {
         });
         h.run_steps(4);
         assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
-        h
+    }
+
+    /// Run `act` on frames flagged synthetic, as pane-IPC injected input is.
+    fn injected(h: &mut PlexiUiHarness, act: impl FnOnce(&mut PlexiUiHarness)) {
+        h.with_app_mut(|app| app.synthetic_input_frame = true);
+        act(h);
+        h.run_steps(3);
+        h.with_app_mut(|app| app.synthetic_input_frame = false);
+    }
+
+    /// Stint 1513: "Quit without saving" takes only a fresh, real Q: not a Q
+    /// held from before the dialog, an injected Q or click, or Shift+Q.
+    #[test]
+    fn quit_without_saving_takes_only_a_fresh_real_q() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.harness().key_down(egui::Key::Q);
+        h.run_steps(1);
+        seed_quit_save_failure(&mut h);
+        let open = |h: &mut PlexiUiHarness| {
+            h.with_app(|app| app.quit_coordinator.save_failure().is_some())
+        };
+        h.harness().key_down(egui::Key::Q);
+        h.run_steps(3);
+        assert!(open(&mut h), "a held Q quit without saving");
+        h.harness().key_up(egui::Key::Q);
+        h.run_steps(1);
+        injected(&mut h, |h| h.harness().key_press(egui::Key::Q));
+        assert!(open(&mut h), "an injected Q quit without saving");
+        injected(&mut h, |h| {
+            h.harness().get_by_label("Quit without saving").click()
+        });
+        assert!(open(&mut h), "an injected click quit without saving");
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Q);
+        h.run_steps(3);
+        assert!(open(&mut h), "Shift+Q quit without saving");
     }
 
     /// Stints 1498 and 1505: the quit save-failure dialog's rows take no Tab
@@ -9661,6 +9701,112 @@ open(out + ".done", "w").close()
         h.run_steps(3);
         assert!(h.with_app(|app| app.pending_close), "the dialog is open");
         (h, a, b)
+    }
+
+    /// Stint 1513: Close pane closes only on a fresh, real Enter: not an
+    /// Enter held from before the dialog, an injected Enter or click, or
+    /// Shift+Enter.
+    #[test]
+    fn close_pane_takes_only_a_fresh_real_enter() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        let a = add_focused_pane(&mut h);
+        let b = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, vec![vec![a], vec![b]]);
+        });
+        h.run_steps(3);
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(1);
+        h.with_app_mut(|app| {
+            app.config.confirm_close = Some(true);
+            let ctx = app.ctx.clone();
+            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
+        });
+        h.run_steps(3);
+        let open = |h: &mut PlexiUiHarness| {
+            h.with_app(|app| app.pending_close && app.windows[app.active_window].panes.len() == 2)
+        };
+        assert!(open(&mut h), "the dialog is open");
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(open(&mut h), "a held Enter closed the pane");
+        h.harness().key_up(egui::Key::Enter);
+        h.run_steps(1);
+        injected(&mut h, |h| h.harness().key_press(egui::Key::Enter));
+        assert!(open(&mut h), "an injected Enter closed the pane");
+        injected(&mut h, |h| h.harness().get_by_label("Close").click());
+        assert!(open(&mut h), "an injected click closed the pane");
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
+        h.run_steps(3);
+        assert!(open(&mut h), "Shift+Enter closed the pane");
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(
+            h.with_app(
+                |app| !app.pending_close && !app.windows[app.active_window].panes.contains_key(&a)
+            ),
+            "a fresh real Enter closes the pane"
+        );
+    }
+
+    /// Stint 1513: context close runs Close all and Dissolve only on a fresh,
+    /// real press: not a held Enter, an injected key or click, or a Shift
+    /// variant.
+    #[test]
+    fn context_close_destructive_actions_take_only_a_fresh_real_press() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(1);
+        seed_context_close_confirm(&mut h, true);
+        let open = |h: &mut PlexiUiHarness| h.with_app(|app| app.pending_context_close.is_some());
+        assert!(open(&mut h));
+        h.harness().key_down(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(open(&mut h), "a held Enter ran Close all");
+        h.harness().key_up(egui::Key::Enter);
+        h.run_steps(1);
+        for k in [egui::Key::Enter, egui::Key::D] {
+            injected(&mut h, |h| h.harness().key_press(k));
+            assert!(open(&mut h), "an injected {k:?} decided the dialog");
+            h.harness().key_press_modifiers(egui::Modifiers::SHIFT, k);
+            h.run_steps(3);
+            assert!(open(&mut h), "Shift+{k:?} decided the dialog");
+        }
+        for label in ["Close all", "Dissolve"] {
+            injected(&mut h, |h| h.harness().get_by_label(label).click());
+            assert!(
+                open(&mut h),
+                "an injected click on {label} decided the dialog"
+            );
+        }
+        h.harness().key_press(egui::Key::D);
+        h.run_steps(3);
+        assert!(!open(&mut h), "a fresh real D dissolves");
+    }
+
+    /// Stint 1513: Discard in "Unsaved changes" takes only a fresh, real D:
+    /// not an injected D or click, or Shift+D. (Held keys and the reload and
+    /// conflicted variants: `ui::dialog` adoption tests.)
+    #[test]
+    fn unsaved_changes_discard_takes_only_a_fresh_real_d() {
+        let (mut h, _dir) = open_unsaved_prompt();
+        let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Unsaved changes").is_some();
+        injected(&mut h, |h| h.harness().key_press(egui::Key::D));
+        assert!(open(&mut h), "an injected D discarded");
+        injected(&mut h, |h| h.harness().get_by_label("Discard").click());
+        assert!(open(&mut h), "an injected click discarded");
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+        h.run_steps(3);
+        assert!(open(&mut h), "Shift+D discarded");
+        h.harness().key_press(egui::Key::D);
+        h.run_steps(3);
+        assert!(!open(&mut h), "a fresh real D discards");
     }
 
     /// The label of the widget holding keyboard focus, matched by rect
