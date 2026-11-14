@@ -84,6 +84,9 @@ pub(crate) enum FocusKind {
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     Changelog,
+    /// Keyboard shortcuts sheet (Cmd+/). A focus layer so Esc reaches it
+    /// before the focused pane can consume the key (stint 1261).
+    Shortcuts,
 }
 
 impl FocusKind {
@@ -105,6 +108,7 @@ impl FocusKind {
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
             Self::Changelog => "Changelog",
+            Self::Shortcuts => "Shortcuts",
         }
     }
 
@@ -128,6 +132,7 @@ impl FocusKind {
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
             Self::Changelog => &ChangelogOwner,
+            Self::Shortcuts => &ShortcutsOwner,
         }
     }
 }
@@ -201,6 +206,7 @@ macro_rules! focus_owner_tokens {
 focus_owner_tokens! {
     UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
     Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
+    Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
@@ -342,6 +348,24 @@ impl PlexiApp {
     /// a path that skips it leaves the journal on disk, and the next startup
     /// reads that as a crash and emits a `crash_recovery` segment whose
     /// duration is really the time the host spent *not running*.
+    /// Quit-path flush of every live Python runtime's pending admission
+    /// counts (stint 1386); `exit_host` ends in `process::exit`, so `Drop`
+    /// never runs for them.
+    pub(crate) fn flush_admission_summaries(&self) {
+        let mut runtimes = 0;
+        for win in &self.windows {
+            for pane in win.panes.values() {
+                if let Some(view) = pane.as_view() {
+                    if let crate::host::pane::ViewRuntime::Python(python) = &view.runtime {
+                        python.flush_admission_summaries();
+                        runtimes += 1;
+                    }
+                }
+            }
+        }
+        log::info!("quit: flushed admission summaries for {runtimes} plugin runtimes");
+    }
+
     pub(crate) fn bank_final_focus_segment(&self) {
         let Some((window_id, tile_id)) = self.last_logged_focus else {
             // Nothing was focused, so there is no segment to close — but a
@@ -1294,7 +1318,7 @@ impl PlexiApp {
                     }
                     crate::host::pane::Pane::View(a) => {
                         items.push(ContextCloseItem {
-                            kind: "App",
+                            kind: "Plugin",
                             name: a.name.clone(),
                         });
                     }
@@ -1448,6 +1472,10 @@ impl PlexiApp {
     }
 
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
+    pub(crate) fn sync_shortcuts_focus(&mut self) {
+        self.reconcile_focus_layer(FocusKind::Shortcuts, self.show_shortcuts);
+    }
+
     pub(crate) fn sync_rename_pane_focus(&mut self) {
         self.reconcile_focus_layer(FocusKind::RenamePane, self.renaming_pane.is_some());
     }

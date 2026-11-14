@@ -4111,6 +4111,7 @@ impl eframe::App for PlexiApp {
                 self.sync_context_close_focus();
                 self.sync_command_palette_focus();
                 self.sync_rename_pane_focus();
+                self.sync_shortcuts_focus();
                 self.sync_context_rename_focus();
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
@@ -4431,6 +4432,7 @@ impl eframe::App for PlexiApp {
         self.flush_ui_scale_persist_now();
         self.flush_editor_positions_now();
         self.bank_final_focus_segment();
+        self.flush_admission_summaries();
         log::info!("quit_phase: on_exit complete");
         // Backend teardown can call on_exit before destroying its window.
         // Normal quit never gets here: it hides, yields, and exits from logic.
@@ -4688,7 +4690,10 @@ impl PlexiApp {
                 }
             }
             Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-            Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Action::ToggleShortcuts => {
+                self.show_shortcuts = !self.show_shortcuts;
+                self.sync_shortcuts_focus();
+            }
             Action::OpenChangelog => {
                 if !self.show_changelog {
                     self.toggle_changelog();

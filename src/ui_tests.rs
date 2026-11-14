@@ -8444,7 +8444,7 @@ open(out + ".done", "w").close()
                     name: "psql plexi_dev".to_string(),
                 },
                 crate::app::ContextCloseItem {
-                    kind: "App",
+                    kind: "Plugin",
                     name: "File Browser".to_string(),
                 },
             ];
