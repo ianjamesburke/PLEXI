@@ -1768,3 +1768,64 @@ fn horizontal_move_at_a_row_edge_never_changes_row() {
         "Down from top-right reaches a pane under it"
     );
 }
+
+/// A real pointer press and release at `pos`, one frame each.
+fn pointer_click(h: &mut HostHarness, pos: egui::Pos2) {
+    let screen = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(1280.0, 800.0),
+    ));
+    for pressed in [true, false] {
+        h.frame(egui::RawInput {
+            screen_rect: screen,
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    h.run_frames(1);
+}
+
+/// Stint 1481 (a): with the conjoined parent holding focus, a click inside
+/// the zoomed child pane moves focus to it and keeps the zoom.
+#[test]
+fn click_in_a_zoomed_child_while_the_conjoined_parent_has_focus_keeps_the_zoom() {
+    let mut h = HostHarness::new();
+    let (parent, _, child) = conjoined_navigation_fixture(&mut h);
+    h.app.add_view_pane_in_window(1, "second");
+    h.run_frames(2);
+    let child_tile = h.app.windows[1]
+        .tree
+        .tiles
+        .find_pane(&child)
+        .expect("child tile");
+    h.app.windows[1].zoom_to(child_tile);
+    h.app.conjoined_parent_focus = Some(parent);
+    h.run_frames(2);
+    assert_eq!(h.app.visual_owner_pane(), Some(parent), "precondition");
+    let (_, parent_rect) = h.app.conjoined_parent_rect.expect("parent column painted");
+    // The child side starts right of the parent column.
+    let pos = egui::pos2(parent_rect.right() + 200.0, 400.0);
+    pointer_click(&mut h, pos);
+    assert_eq!(
+        h.app.visual_owner_pane(),
+        Some(child),
+        "the click focuses the child"
+    );
+    assert_eq!(
+        h.app.windows[1].zoomed_pane,
+        h.app.windows[1].tree.tiles.find_pane(&child),
+        "the click keeps the zoom on the child"
+    );
+    assert!(
+        h.app.windows[1].zoomed_pane.is_some(),
+        "the click keeps the zoom"
+    );
+}

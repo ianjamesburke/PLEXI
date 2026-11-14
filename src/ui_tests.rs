@@ -1229,6 +1229,27 @@ mod tests {
         }
     }
 
+    /// Stint 1481 (b): in a window too short for it, the shortcuts sheet keeps
+    /// its body floor (`MODAL_BODY_MIN_H`) instead of collapsing. The floor
+    /// came with PR #3094; this pins it.
+    #[test]
+    fn screenshot_shortcuts_overlay_keeps_its_minimum_height_in_a_tiny_window() {
+        let mut h = PlexiUiHarness::new_sized(480.0, 200.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| app.show_shortcuts = true);
+        h.run_steps(4);
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        let ppp = h.with_app(|app| app.ctx.pixels_per_point());
+        let area = ui_scale_area_rect(&h, "shortcuts");
+        let title = h.harness().get_by_label("Keyboard Shortcuts").rect() / ppp;
+        let body = area.max.y - title.max.y;
+        assert!(
+            body >= crate::ui::style::MODAL_BODY_MIN_H,
+            "shortcuts body {body:.1} under its floor {} in a 200 pt window: {area:?}",
+            crate::ui::style::MODAL_BODY_MIN_H
+        );
+    }
+
     /// Stint 1067: the shortcuts body must not stay capped at egui's seeded
     /// default area height. When the window has room, every row is inside the
     /// modal's scroll viewport without scrolling; when it does not, the modal

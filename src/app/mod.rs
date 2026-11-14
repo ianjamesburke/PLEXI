@@ -660,9 +660,9 @@ pub struct PlexiApp {
     /// `update()` to consume agent event deliveries and finished turns.
     pub(crate) agent_host: crate::agent::AgentHost,
     /// Pending `HostRequest::ClickPane` injections (stint 0398), keyed by
-    /// target pane. Taken and consumed once per frame by whichever render
-    /// path actually paints that pane (tiled or zoomed) — see
-    /// `crate::host::pane::PendingPaneClick`.
+    /// target pane. Taken once per frame and consumed by the shared pane
+    /// presentation (`present_pane`), which paints a tiled pane and the
+    /// zoomed pane alike (PR #3094) — see `crate::host::pane::PendingPaneClick`.
     pub(crate) pending_pane_clicks:
         HashMap<crate::spatial::tiling::PaneId, crate::host::pane::PendingPaneClick>,
     /// Synthetic key/text input queued by pane IPC until the target pane's next
