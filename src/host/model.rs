@@ -128,6 +128,29 @@ impl HostModel {
         );
     }
 
+    /// Cmd+Shift+click: add `pane`, or take it out when it is already
+    /// selected. A selection left empty ends.
+    pub(crate) fn toggle_pane_selection(&mut self, window: u64, start: PaneId, pane: PaneId) {
+        let selected = self
+            .pane_selections
+            .get(&window)
+            .is_some_and(|s| s.panes.contains(&pane));
+        if !selected {
+            self.extend_pane_selection(window, start, pane);
+            return;
+        }
+        let Some(selection) = self.pane_selections.get_mut(&window) else {
+            return;
+        };
+        selection.panes.retain(|id| *id != pane);
+        log::info!("pane_selection: window={window} removed={pane} panes={:?}", selection.panes);
+        if selection.panes.is_empty() {
+            self.clear_pane_selection(window);
+        } else if selection.anchor == pane {
+            selection.anchor = selection.panes[0];
+        }
+    }
+
     pub(crate) fn clear_pane_selection(&mut self, window: u64) -> Option<PaneSelection> {
         let selection = self.pane_selections.remove(&window);
         if selection.is_some() {

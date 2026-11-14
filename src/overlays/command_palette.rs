@@ -4587,7 +4587,17 @@ mod tests {
                 .palette_command_listed(&PaletteCommand::CloseSelectedPanes)
         };
         assert!(!listed(&mut h), "hidden without a selection");
+        h.app.run_palette_command(PaletteCommand::CloseSelectedPanes);
+        h.run_frames(2);
+        assert_eq!(
+            h.app.windows[h.app.active_window].panes.len(),
+            3,
+            "with no selection the row closes nothing, not the focused pane"
+        );
         let window = h.app.windows[h.app.active_window].window_id;
+        h.app.host.extend_pane_selection(window, a, a);
+        assert!(!listed(&mut h), "a selection of one is the focused pane, not listed");
+        h.app.host.clear_pane_selection(window);
         h.app.host.extend_pane_selection(window, a, b);
         assert!(listed(&mut h), "listed with a selection");
         h.app

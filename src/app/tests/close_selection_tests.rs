@@ -236,3 +236,132 @@ fn close_selected_asks_confirm_close_once_per_pane() {
         Some(vec![b])
     );
 }
+
+// ── Critic blockers on PR #3136 ─────────────────────────────────────────────
+
+fn dispatch(h: &mut HostHarness, action: crate::host::keys::Action) {
+    let ctx = h.app.ctx.clone();
+    h.app.dispatch_host_action(action, &ctx);
+    h.run_frames(2);
+}
+
+fn selection(h: &HostHarness) -> Option<Vec<u64>> {
+    let window = h.app.windows[h.app.active_window].window_id;
+    h.app.host.pane_selection(window).map(|s| s.panes.clone())
+}
+
+/// Blocker 1: a selected view opened as an overlay over another pane closes
+/// the way a single close does: the covered pane comes back on the same id.
+#[test]
+fn close_selected_restores_the_pane_under_a_selected_overlay() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    let covered = h.app.windows[0].panes.remove(&a).unwrap();
+    let cwd = h.workspace_root();
+    let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        pip_status: None,
+        id: a,
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::file_browser::FileBrowserView::new(cwd.clone()),
+        )),
+        workspace_root: cwd,
+        manifest_id: "overlay".to_string(),
+        name: "overlay".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: Some(Box::new(covered)),
+        agent: None,
+        slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
+    }));
+    h.app.windows[0].panes.insert(a, overlay);
+    select(&mut h, &[a, b]);
+    close_shortcut(&mut h);
+    assert_eq!(open(&h), vec![a, c, d], "the covered pane survives on its id");
+    assert_eq!(
+        h.app.windows[0].panes[&a].as_view().map(|v| v.manifest_id.as_str()),
+        Some("test"),
+        "the overlay closed and uncovered the original pane"
+    );
+}
+
+/// Blocker 2: a selection that is not drawn (a pane is zoomed) is not acted
+/// on: zoom clears it, and Cmd+W closes the focused pane as before.
+#[test]
+fn zoom_clears_the_selection_and_close_acts_on_the_focused_pane() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    let select_key = command() | egui::Modifiers::SHIFT;
+    h.press_key(egui::Key::J, select_key);
+    assert_eq!(selection(&h), Some(vec![a, b]));
+    dispatch(&mut h, crate::host::keys::Action::ToggleZoom);
+    assert_eq!(selection(&h), None, "zoom hides the selection, so it clears");
+    dispatch(&mut h, crate::host::keys::Action::ToggleZoom);
+    close_shortcut(&mut h);
+    assert_eq!(open(&h), vec![a, c, d], "only the focused pane closes");
+}
+
+/// Blocker 2: a focus jump that is not a selection step (palette, CLI,
+/// history) ends the selection.
+#[test]
+fn a_focus_jump_clears_the_selection() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    h.press_key(egui::Key::J, command() | egui::Modifiers::SHIFT);
+    assert_eq!(selection(&h), Some(vec![a, b]));
+    h.app.focus_pane_in_strip(d);
+    h.run_frames(2);
+    assert_eq!(selection(&h), None);
+    close_shortcut(&mut h);
+    assert_eq!(open(&h), vec![a, b, c]);
+}
+
+/// Blocker 2: a new split moves focus to the new pane and ends the selection.
+#[test]
+fn a_split_clears_the_selection() {
+    let mut h = HostHarness::new();
+    let [a, b, ..] = grid(&mut h);
+    h.press_key(egui::Key::J, command() | egui::Modifiers::SHIFT);
+    assert_eq!(selection(&h), Some(vec![a, b]));
+    dispatch(&mut h, crate::host::keys::Action::SplitRight);
+    assert_eq!(selection(&h), None);
+}
+
+/// Blocker 3: while paused on a dialog, the panes still to close stay drawn
+/// as the selection.
+#[test]
+fn a_paused_batch_keeps_the_remaining_panes_selected() {
+    let (_dir, _path, mut h, [_, editor, y], _) = editor_batch();
+    assert_eq!(selection(&h), Some(vec![editor, y]));
+    h.text_editor_mut(editor).test_discard_unsaved();
+}
+
+/// Blocker 3: when focus leaves the asking pane the batch ends; a later
+/// answer to the editor's dialog closes only the editor, and Cmd+W elsewhere
+/// closes the focused pane.
+#[test]
+fn focus_leaving_the_asking_pane_cancels_the_batch() {
+    let (_dir, _path, mut h, [_, editor, y], keep) = editor_batch();
+    h.app.focus_pane_in_strip(keep);
+    h.run_frames(2);
+    assert!(h.app.host.pane_close_batch().is_none(), "the batch ended");
+    assert_eq!(selection(&h), None);
+    close_shortcut(&mut h);
+    assert!(!open(&h).contains(&keep), "Cmd+W works on the focused pane");
+    assert!(open(&h).contains(&y), "y was never closed");
+    assert!(open(&h).contains(&editor));
+    h.text_editor_mut(editor).test_discard_unsaved();
+}
+
+/// Follow-up: Cmd+Shift+click on a pane already selected takes it out.
+#[test]
+fn reselecting_a_selected_pane_removes_it() {
+    let mut h = HostHarness::new();
+    let [a, b, c, _] = grid(&mut h);
+    let window = h.app.windows[0].window_id;
+    h.app.host.extend_pane_selection(window, a, b);
+    h.app.host.extend_pane_selection(window, b, c);
+    h.app.host.toggle_pane_selection(window, a, b);
+    assert_eq!(selection(&h), Some(vec![a, c]));
+}
