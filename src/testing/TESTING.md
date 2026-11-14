@@ -104,9 +104,17 @@ docs-only), which is advisory and never replaces the local gates, the
 persistent, exclusively locked Cargo slots per repository under
 `~/.cache/plexi-build`. The lock covers the entire candidate/install operation;
 the global Cargo memory lease remains active. Slots survive feature cleanup.
-Before reuse, an owned slot exceeding the default retained-data threshold is
-reset; `PLEXI_BUILD_CACHE_MAX_BYTES` configures that threshold. This bounds retained
-slots, not peak temporary build space. `PLEXI_BUILD_CACHE_ROOT` relocates the pool.
+Before reuse, an owned slot exceeding `PLEXI_BUILD_CACHE_MAX_BYTES` (default
+40 GiB) has its build output pruned. All slots together are then pruned to
+`PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES` (default 64 GiB, sized for two concurrent
+lanes' warm slots plus headroom), least recently used first,
+skipping any slot another build holds and the slot about to be used until last.
+Pruning always keeps a slot's `release/plexi`, so a stamped candidate survives to
+its install. Finally the build refuses to start, before any compile, when the
+volume holding the pool has less than `PLEXI_BUILD_MIN_FREE_BYTES` (default
+12 GiB) free; the message names the free space, the floor and the cleanup
+recipes. These bound retained slots, not peak temporary build space.
+`PLEXI_BUILD_CACHE_ROOT` relocates the pool.
 Never copy or share another lane's mutable target. For additional cache-backed
 checks use `python3 scripts/build-cache.py pr-<PR> just <check>`.
 Before a PR exists, use `python3 scripts/build-cache.py task-<stint> just
