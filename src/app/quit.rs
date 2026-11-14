@@ -636,18 +636,6 @@ pub(crate) fn stop_reply(
     })
 }
 
-/// The reply `exit_host` sends for a session that ends with `workspace`,
-/// with every pane process stopped and the socket released.
-#[cfg(test)]
-pub(crate) fn exit_host_reply_for_test(workspace: WorkspaceDurability) -> serde_json::Value {
-    stop_reply(
-        exit_status(0, &SocketRelease::Removed, workspace),
-        0,
-        &SocketRelease::Removed,
-        workspace,
-    )
-}
-
 /// Tear the host down and end the process. Never returns. `stop_reply` is
 /// `plexi host stop`'s reply token, answered with the real outcome before the
 /// process ends.

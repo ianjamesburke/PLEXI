@@ -392,6 +392,7 @@ pub(crate) fn request_json(
 }
 
 /// [`request_json`] with an explicit correlation-token prefix.
+#[allow(dead_code)]
 pub(crate) fn request_json_with_prefix(
     socket_path: &Path,
     mut payload: serde_json::Value,
@@ -419,6 +420,50 @@ pub(crate) fn request_json_with_prefix(
     let body = poll_string(&rf, Some(timeout))?;
     serde_json::from_str(&body)
         .map_err(|e| PollError::Unreadable(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+/// A request answered only on its own connection (stint 1430).
+#[derive(Debug)]
+pub(crate) enum StreamReply {
+    /// The peer wrote a JSON reply before closing.
+    Json(serde_json::Value),
+    /// The peer closed the connection without writing anything, as a host
+    /// that does not answer this request does when it exits.
+    Closed,
+}
+
+/// Send `payload` to `socket_path` and read the reply from the same
+/// connection, never a fallback file: a peer that closes without answering
+/// returns [`StreamReply::Closed`] at once instead of waiting out `timeout`.
+pub(crate) fn request_on_stream(
+    socket_path: &Path,
+    mut payload: serde_json::Value,
+    prefix: &str,
+    timeout: Duration,
+) -> Result<StreamReply, PollError> {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "response_file".to_string(),
+            serde_json::Value::String(response_file(prefix, "json")),
+        );
+    }
+    #[cfg(unix)]
+    let mut stream = IpcStream::connect(socket_path).map_err(PollError::Unreadable)?;
+    #[cfg(windows)]
+    let mut stream = crate::platform::ipc::connect_timeout(socket_path, timeout)
+        .map_err(PollError::Unreadable)?;
+    stream
+        .write_all(format!("{payload}\n").as_bytes())
+        .and_then(|()| stream.flush())
+        .map_err(PollError::Unreadable)?;
+    match read_stream_to_end(stream, Some(timeout))? {
+        None => Ok(StreamReply::Closed),
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(StreamReply::Json)
+            .map_err(|e| {
+                PollError::Unreadable(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            }),
+    }
 }
 
 /// Startup sweep: delete `rpc/` entries older than `SWEEP_MAX_AGE`. Catches
