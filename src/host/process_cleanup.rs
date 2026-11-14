@@ -589,7 +589,9 @@ fn refresh_owned_alive(
             if process_is_zombie(*pid) {
                 let process = system.process(sysinfo::Pid::from_u32(*pid));
                 let reported = process.map(|p| p.status());
-                if reported != Some(sysinfo::ProcessStatus::Zombie) && zombies.insert(*pid) {
+                if reported.is_some_and(|status| status != sysinfo::ProcessStatus::Zombie)
+                    && zombies.insert(*pid)
+                {
                     log::info!(
                         "quit: pid={pid} executable={:?} is a zombie (sysinfo reports {reported:?}); counted gone",
                         process.map(|p| p.name().to_string_lossy().into_owned())
