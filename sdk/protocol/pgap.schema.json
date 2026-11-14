@@ -1285,7 +1285,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Update the status text shown in the parent pane chrome.",
+          "description": "Status text for the pane. The host accepts and discards it today;\nnothing shows it.",
           "properties": {
             "text": {
               "type": "string"

@@ -65,8 +65,8 @@ plexi plugin test ./my-plugin                            # run its PluginHarness
 without importing your code, and renders the view at small and normal pane
 sizes. There is no build step.
 
-With `watch = true` under `[plugin]` in the manifest, saving a source file
-reloads the view in the same pane. New scaffolds set it.
+Saving a source file reloads the view in the same pane. This is always on; the
+manifest `watch` key has no effect.
 
 `plexi view render ./my-plugin --png --output shot.png` renders a view without
 a host window, which is how an agent looks at its own work.

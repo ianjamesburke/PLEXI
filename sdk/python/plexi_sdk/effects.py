@@ -354,7 +354,8 @@ class UnsubscribeEventStreams:
 class PipeOpenDirected:
     """Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
 
-    Requires the ``pipe.open`` capability. Once subscribed, either endpoint may
+    The host does not check the ``pipe.open`` capability for Python plugins
+    yet; declare it anyway. Once subscribed, either endpoint may
     send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
     peer as :class:`events.PipeMessage`.
     """
@@ -366,7 +367,8 @@ class PipeOpenDirected:
 class PipeSend:
     """Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
 
-    Requires the ``pipe.open`` capability. Delivered to the paired endpoint as
+    The host does not check the ``pipe.open`` capability for Python plugins
+    yet; declare it anyway. Delivered to the paired endpoint as
     :class:`events.PipeMessage`.
     """
     pipe_id: str

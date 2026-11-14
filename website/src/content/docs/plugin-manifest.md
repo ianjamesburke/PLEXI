@@ -15,6 +15,8 @@ A rejection names the plugin, field and reason, and emits an info log.
 below owns the accepted IDs. Unknown IDs fail before activation. Reserved IDs
 parse as known reservations but fail with "reserved, not yet available" while
 no host projection serves them. A declaration requests access; it grants none.
+An ID the registry marks as not available, or limited to one runtime, passes
+validation, but a plugin outside that runtime gets nothing from declaring it.
 
 ## Commands
 
@@ -47,24 +49,24 @@ view or command declaration also fail validation.
 | `fs.read` | Available | Read files in this workspace |
 | `fs.write` | Available | Write files in this workspace |
 | `net.http` | Available | Make outbound HTTP requests |
-| `secrets.get` | Available | Read secrets scoped to this workspace |
+| `secrets.get` | Not available to plugins yet | Read secrets scoped to this workspace |
 | `pipe.open` | Available | Open data pipes to other panes |
-| `spawn.plugin` | Available | Launch another plugin in a new pane |
-| `audio.record` | Available | Capture microphone audio |
+| `spawn.plugin` | WebAssembly plugins only, not yet Python plugins | Launch another plugin in a new pane |
+| `audio.record` | Not available to plugins yet | Capture microphone audio |
 | `audio.playback` | Available | Play audio |
 | `gpu.render` | Available | Render through the WASM GPU surface |
-| `video.playback` | Available | Decode and display video |
-| `llm` | Available | Make LLM API calls using your API key |
+| `video.playback` | Not available to plugins yet | Decode and display video |
+| `llm` | Not available to plugins yet | Make LLM API calls using your API key |
 | `timer` | Available | Schedule timers |
-| `ai.query` | Available | Make AI calls through the Plexi broker |
-| `midi.in` | Available | Receive input from MIDI devices |
-| `midi.out` | Available | Send output to MIDI devices |
-| `terminal.bindings` | Available | Drive a linked terminal pane |
+| `ai.query` | WebAssembly plugins only, not yet Python plugins | Make AI calls through the Plexi broker |
+| `midi.in` | Not available to plugins yet | Receive input from MIDI devices |
+| `midi.out` | Not available to plugins yet | Send output to MIDI devices |
+| `terminal.bindings` | Not available to plugins yet | Drive a linked terminal pane |
 | `fs.pick` | Available | Show a native file picker |
-| `panes.spawn` | Available | Open new panes in your workspace |
-| `panes.read` | Available | See your open panes and read plugin or terminal pane state |
-| `panes.control` | Available | Control your panes: focus, close, send input, and drive plugins |
-| `permissions.manage` | Available | See and change what other plugins are allowed to do |
+| `panes.spawn` | Not available to plugins yet | Open new panes in your workspace |
+| `panes.read` | Not available to plugins yet | See your open panes and read plugin or terminal pane state |
+| `panes.control` | Not available to plugins yet | Control your panes: focus, close, send input, and drive plugins |
+| `permissions.manage` | Not available to plugins yet | See and change what other plugins are allowed to do |
 | `logs.read` | Available | Read the Plexi host log |
 | `mcp.client` | Available | Talk to the MCP servers you have configured |
 | `cli.operations` | Available | Ask to run the approved command-line operations it declares |
