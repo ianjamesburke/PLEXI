@@ -145,7 +145,17 @@ pub struct AdmissionTrace<'a> {
 
 impl AdmissionTrace<'_> {
     pub fn emit(&self) {
-        super::gate::trace_gate(format!(
+        super::gate::trace_gate(self.line());
+    }
+
+    /// The same line at debug: for a caller that already traced this exact
+    /// decision at info and is only repeating it (a poll).
+    pub fn emit_repeat(&self) {
+        log::debug!("{}", self.line());
+    }
+
+    fn line(&self) -> String {
+        format!(
             "admission: principal={} effect={} resource_class={} decision={} mechanism={} call_id={} {}",
             escaped(&self.principal.to_string()),
             escaped(self.effect),
@@ -154,7 +164,7 @@ impl AdmissionTrace<'_> {
             escaped(self.mechanism),
             escaped(self.call_id),
             escaped(self.outcome_ref)
-        ));
+        )
     }
 }
 

@@ -1477,6 +1477,8 @@ pub struct LivePythonPane {
     /// One info line the first time this pane serves
     /// `read_permission_decisions`. Later polls stay quiet at info.
     announced_permission_read: bool,
+    /// Last launch-set decision traced at info per (principal, capability).
+    launch_admissions: LaunchAdmissionMemo,
     /// Host-derived authority over the permission bridge, set at launch and
     /// re-derived on relaunch because a hot reload can change the files.
     permission_ui: PermissionUiTrust,
@@ -3097,6 +3099,7 @@ impl LivePythonPane {
             stderr_classifier: GuestStderrClassifier::new(),
             unhandled_warned_at: HashMap::new(),
             announced_permission_read: false,
+            launch_admissions: LaunchAdmissionMemo::default(),
             permission_ui,
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
@@ -3827,6 +3830,7 @@ impl LivePythonPane {
             ),
             &self.config.capabilities,
             capability,
+            &self.launch_admissions,
         )
     }
 
@@ -5233,6 +5237,7 @@ impl LivePythonPane {
         self.stderr_classifier = GuestStderrClassifier::new();
         self.unhandled_warned_at.clear();
         self.announced_permission_read = false;
+        self.launch_admissions = LaunchAdmissionMemo::default();
         self.permission_ui = permission_ui;
         if let Some(dropped) = self.pending_click_carry.take() {
             // A node-targeted click's arena id belongs to the tree it was
@@ -5774,13 +5779,28 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
 
 /// Runtime capability check against the launch snapshot, traced with the
 /// requesting principal.
+/// The last launch-set decision traced at info for each (principal,
+/// capability) of one pane runtime. A plugin that re-checks the same
+/// capability on every poll (the Logs view, once a second) would otherwise
+/// write one identical `admission:` line per poll (stint 1386).
+#[derive(Default)]
+struct LaunchAdmissionMemo(std::cell::RefCell<HashMap<(String, String), bool>>);
+
+/// Launch-set admission. The first decision for a principal and capability,
+/// and every change of it, is traced at info; an identical repeat at debug.
 fn launch_set_admits(
     principal: &crate::broker::principal::Principal,
     launch_set: &[String],
     capability: &str,
+    memo: &LaunchAdmissionMemo,
 ) -> bool {
     let admitted = manifest_declares(launch_set, capability);
-    crate::broker::principal::AdmissionTrace {
+    let repeat = memo
+        .0
+        .borrow_mut()
+        .insert((principal.to_string(), capability.to_string()), admitted)
+        == Some(admitted);
+    let trace = crate::broker::principal::AdmissionTrace {
         principal,
         effect: capability,
         resource_class: "capability",
@@ -5788,8 +5808,12 @@ fn launch_set_admits(
         mechanism: "python_launch_set",
         call_id: "",
         outcome_ref: "",
+    };
+    if repeat {
+        trace.emit_repeat();
+    } else {
+        trace.emit();
     }
-    .emit();
     admitted
 }
 
@@ -7406,6 +7430,36 @@ mod fatal_error_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1386: a poll that re-checks the same capability writes one info
+    /// line, not one per poll; a changed decision or principal writes again.
+    #[test]
+    fn identical_launch_set_admissions_trace_at_info_once() {
+        use crate::broker::principal::Principal;
+        let logs = crate::testing::test_log::capture();
+        let admissions = |logs: &crate::testing::test_log::LogCapture| {
+            logs.records()
+                .into_iter()
+                .filter(|(level, line)| {
+                    *level == log::Level::Info && line.starts_with("admission:")
+                })
+                .count()
+        };
+        let memo = LaunchAdmissionMemo::default();
+        let pane = Principal::plugin_in_pane("logs", 913_001);
+        let granted = vec!["logs.read".to_string()];
+        for _ in 0..5 {
+            assert!(launch_set_admits(&pane, &granted, "logs.read", &memo));
+        }
+        assert_eq!(admissions(&logs), 1, "five identical polls, one info line");
+        assert!(!launch_set_admits(&pane, &[], "logs.read", &memo));
+        assert_eq!(admissions(&logs), 2, "a deny after an allow is traced");
+        assert!(launch_set_admits(&pane, &granted, "logs.read", &memo));
+        assert_eq!(admissions(&logs), 3, "the flip back to allow is traced");
+        let other = Principal::plugin_in_pane("logs", 913_002);
+        assert!(launch_set_admits(&other, &granted, "logs.read", &memo));
+        assert_eq!(admissions(&logs), 4, "a new principal instance is traced");
+    }
     use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_view::Modifiers;
     use std::sync::Arc;
