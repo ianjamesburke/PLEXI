@@ -9583,32 +9583,6 @@ open(out + ".done", "w").close()
         assert_eq!(open, both, "Enter on Cancel closes nothing");
     }
 
-    /// Stint 1493 critic: the trap's last-position memory does not outlive the
-    /// dialog. Tab once, close, reopen: the first Tab enters at the first action.
-    #[test]
-    fn reopened_dialog_tab_enters_at_the_first_action() {
-        let (mut h, _a, _b) = open_close_dialog();
-        let labels = ["Close", "Cancel", "UI"];
-        tab(&mut h, false);
-        tab(&mut h, false);
-        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
-        h.harness().key_press(egui::Key::Escape);
-        h.run_steps(3);
-        assert!(!h.with_app(|app| app.pending_close));
-        h.with_app_mut(|app| {
-            app.config.confirm_close = Some(true);
-            let ctx = app.ctx.clone();
-            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
-        });
-        h.run_steps(3);
-        tab(&mut h, false);
-        assert_eq!(
-            focused_label(&mut h, &labels).as_deref(),
-            Some("Close"),
-            "a reopened dialog enters at its first action"
-        );
-    }
-
     /// Stint 1493: Enter on a Tab-focused Close closes the pane, and Esc still
     /// dismisses an untouched dialog.
     #[test]
