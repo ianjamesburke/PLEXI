@@ -804,6 +804,133 @@ mod tests {
         h.save_screenshot(&evidence_png!()).unwrap();
     }
 
+    /// Stint 1498: dialog action rows take no Tab focus, so egui's keyboard
+    /// click on a focused row cannot press a consent action. Even with the
+    /// review armed, Tab then Space allows nothing and writes no grant.
+    #[test]
+    fn raw_wasm_review_tab_then_space_allows_nothing() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        let (plugin, root, caps) = h.with_app(|app| {
+            let review = app
+                .pending_raw_wasm_launches
+                .front()
+                .expect("review queued");
+            (
+                review.plugin_id.clone(),
+                review.workspace_root.clone(),
+                review.missing_capabilities.clone(),
+            )
+        });
+        assert!(!caps.is_empty());
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Space);
+        h.run_steps(3);
+
+        assert_eq!(
+            h.with_app(|app| app.pending_raw_wasm_launches.len()),
+            1,
+            "Tab then Space allowed the raw WASM review"
+        );
+        let store =
+            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir())
+                .expect("profile permission store");
+        for cap in &caps {
+            assert_eq!(
+                store.get_wasm(&plugin, &root, cap),
+                None,
+                "a grant was written for {cap}"
+            );
+        }
+    }
+
+    /// Stint 1498: the quit save-failure dialog's rows take no Tab focus, so
+    /// Tab then Space or Enter cannot quit without saving.
+    #[test]
+    fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.with_app_mut(|app| {
+            let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"invalid workspace").unwrap();
+            app.request_quit(crate::app::quit::ExitReason::HostStop);
+            for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
+                assert!(!app.persist_quit_state());
+            }
+            app.pending_close = true;
+        });
+        h.run_steps(4);
+        assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
+        for key in [egui::Key::Space, egui::Key::Enter] {
+            h.harness().key_press(egui::Key::Tab);
+            h.run_steps(2);
+            h.harness().key_press(key);
+            h.run_steps(3);
+            assert!(
+                h.with_app(|app| app.quit_coordinator.save_failure().is_some()),
+                "Tab then {key:?} quit without saving"
+            );
+        }
+    }
+
+    /// Stint 1498: a consent prompt that has just appeared draws its approving
+    /// action disabled and its refusal enabled; once armed, both are enabled.
+    #[test]
+    fn screenshot_raw_wasm_review_arming_then_armed() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        use egui_kittest::kittest::NodeT;
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        apply_fixture_theme(&mut h, "plexi-dusk");
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        assert!(h.harness().get_by_label("Allow and remember").accesskit_node().is_disabled());
+        assert!(!h.harness().get_by_label("Deny").accesskit_node().is_disabled());
+        h.save_screenshot(&evidence_png!("_arming")).unwrap();
+
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+        h.run_steps(2);
+        assert!(!h.harness().get_by_label("Allow and remember").accesskit_node().is_disabled());
+        h.with_app(|app| {
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+        h.save_screenshot(&evidence_png!("_armed")).unwrap();
+    }
+
     fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
         h.with_app_mut(|app| {
             let cfg = crate::ui::theme::preset_colors(theme).unwrap();
@@ -4616,6 +4743,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             "unreviewed .wasm path launch must not spawn a WASM pane"
         );
 
+        // A deliberate approval comes after the consent arm delay (stint 1498).
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
         h.harness().key_press(egui::Key::Enter);
         h.step();
         let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());

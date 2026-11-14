@@ -690,6 +690,10 @@ pub struct PlexiApp {
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
     approval_keyboard: approval_keyboard::ApprovalKeyboard,
+    /// Consent input guards for the event-consent and raw WASM review dialogs
+    /// (stint 1498); the capability prompt keeps its own on its pane.
+    pub(crate) event_consent_guard: approval_keyboard::ConsentGuard,
+    pub(crate) raw_wasm_review_guard: approval_keyboard::ConsentGuard,
     // Drop after the host resources that may still refer to these test paths.
     #[cfg(test)]
     _test_scratch: Option<tempfile::TempDir>,
@@ -1955,6 +1959,8 @@ impl PlexiApp {
                     zoom: zoom::ZoomState::default(),
                     attention_queue: attention_queue::AttentionQueueState::default(),
                     approval_keyboard: Default::default(),
+                    event_consent_guard: Default::default(),
+                    raw_wasm_review_guard: Default::default(),
                     last_new_context_timing: None,
                 };
                 app.apply_context_transition_effects();
@@ -2242,6 +2248,8 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            event_consent_guard: Default::default(),
+            raw_wasm_review_guard: Default::default(),
             last_new_context_timing: None,
         };
         // Seed the base root terminal so a fresh profile boots straight into a
@@ -3227,6 +3235,8 @@ impl PlexiApp {
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
             approval_keyboard: Default::default(),
+            event_consent_guard: Default::default(),
+            raw_wasm_review_guard: Default::default(),
             last_new_context_timing: None,
         };
         // Launch paths allocate through HostModel, which otherwise starts at 1
@@ -6526,7 +6536,7 @@ pub(crate) fn restore_workspace(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod hidden_drain_tests {

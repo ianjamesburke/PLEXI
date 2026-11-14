@@ -144,7 +144,7 @@ impl PlexiApp {
                 .and_then(|pane| pane.as_view_mut())
             {
                 if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
-                    runtime.draw_capability_modal(ctx, &self.colors);
+                    runtime.draw_capability_modal(ctx, &self.colors, self.synthetic_input_frame);
                 }
             }
         }
@@ -311,16 +311,37 @@ impl PlexiApp {
     /// Esc/Deny refuses. Resolving the consent fires the transport's reply.
     pub(crate) fn draw_event_consent_modal(&mut self, ctx: &egui::Context) {
         use crate::host::event_subscriptions::ConsentChoice;
-        let (subscriber, verb, target) = match self.pending_event_consents.front() {
-            Some(c) => (c.subscriber_id.clone(), c.action_verb(), c.target_label()),
+        let (request, subscriber, verb, target) = match self.pending_event_consents.front() {
+            Some(c) => (
+                c.request_id,
+                c.subscriber_id.clone(),
+                c.action_verb(),
+                c.target_label(),
+            ),
             None => return,
         };
+        let now = std::time::Instant::now();
+        self.event_consent_guard
+            .present(request, ctx.cumulative_pass_nr(), now);
+        let input = self
+            .event_consent_guard
+            .input(now, self.synthetic_input_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.event_consent_guard.remaining(now));
+        }
         let colors = self.colors;
         let actions = event_consent_actions();
-        let response = event_consent_modal(&actions).show(ctx, &colors, |ui| {
-            crate::ui::typography::caption(ui, format!("{subscriber} wants to {verb}:"), &colors);
-            crate::ui::typography::caption(ui, target, &colors);
-        });
+        let response =
+            event_consent_modal(&actions)
+                .consent_input(input)
+                .show(ctx, &colors, |ui| {
+                    crate::ui::typography::caption(
+                        ui,
+                        format!("{subscriber} wants to {verb}:"),
+                        &colors,
+                    );
+                    crate::ui::typography::caption(ui, target, &colors);
+                });
 
         let choice = if response.selected == Some("allow_once") {
             Some(ConsentChoice::AllowOnce)
@@ -352,23 +373,35 @@ impl PlexiApp {
         let Some(review) = self.pending_raw_wasm_launches.front().cloned() else {
             return;
         };
+        let now = std::time::Instant::now();
+        self.raw_wasm_review_guard
+            .present(review.request_id, ctx.cumulative_pass_nr(), now);
+        let input = self
+            .raw_wasm_review_guard
+            .input(now, self.synthetic_input_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.raw_wasm_review_guard.remaining(now));
+        }
         let colors = self.colors;
         let actions = raw_wasm_review_actions();
-        let response = raw_wasm_review_modal(&actions).show(ctx, &colors, |ui| {
-            crate::ui::typography::caption(
-                ui,
-                format!("{} requests host imports:", review.plugin_id),
-                &colors,
-            );
-            for capability in &review.missing_capabilities {
-                crate::ui::typography::caption(ui, format!("- {capability}"), &colors);
-            }
-            crate::ui::typography::caption(
-                ui,
-                format!("Path: {}", review.wasm_path.display()),
-                &colors,
-            );
-        });
+        let response =
+            raw_wasm_review_modal(&actions)
+                .consent_input(input)
+                .show(ctx, &colors, |ui| {
+                    crate::ui::typography::caption(
+                        ui,
+                        format!("{} requests host imports:", review.plugin_id),
+                        &colors,
+                    );
+                    for capability in &review.missing_capabilities {
+                        crate::ui::typography::caption(ui, format!("- {capability}"), &colors);
+                    }
+                    crate::ui::typography::caption(
+                        ui,
+                        format!("Path: {}", review.wasm_path.display()),
+                        &colors,
+                    );
+                });
 
         if response.selected == Some("allow") {
             let Some(review) = self.pending_raw_wasm_launches.pop_front() else {
@@ -491,6 +524,7 @@ pub(crate) fn event_consent_actions() -> [crate::ui::dialog::DialogAction<'stati
             egui::Key::A,
         )),
         crate::ui::dialog::DialogAction::new("deny", "Deny", crate::ui::button::ButtonKind::Danger)
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,
@@ -513,6 +547,7 @@ pub(crate) fn raw_wasm_review_actions() -> [crate::ui::dialog::DialogAction<'sta
             egui::Key::Enter,
         )),
         crate::ui::dialog::DialogAction::new("deny", "Deny", crate::ui::button::ButtonKind::Danger)
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,

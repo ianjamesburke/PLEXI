@@ -269,6 +269,8 @@ pub(crate) struct ContextCloseState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRawWasmLaunch {
+    /// Fresh per review (stint 1498); the consent guard arms on it.
+    pub request_id: u64,
     pub plugin_id: String,
     pub wasm_path: PathBuf,
     pub workspace_root: PathBuf,

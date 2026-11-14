@@ -17,3 +17,5 @@ mod close_confirm_target_tests;
 mod close_selection_tests;
 
 mod core_only_tests;
+
+pub(crate) mod consent_input_guard_tests;

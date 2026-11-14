@@ -29,6 +29,27 @@ impl<'a> DialogShortcut<'a> {
         self
     }
 
+    /// A guarded consent dialog (stint 1498) takes only a fresh press: an OS
+    /// key repeat is consumed without counting.
+    fn pressed_fresh(&self, ctx: &egui::Context) -> bool {
+        let repeat_only = ctx.input(|i| {
+            let mut matching = i.events.iter().filter(|event| {
+                matches!(event,
+                    egui::Event::Key { key, pressed: true, modifiers, .. }
+                        if *key == self.key && modifiers.matches_logically(self.modifiers)
+                )
+            });
+            let mut any = false;
+            let all_repeat = matching.all(|event| {
+                any = true;
+                matches!(event, egui::Event::Key { repeat: true, .. })
+            });
+            any && all_repeat
+        });
+        let pressed = self.pressed(ctx);
+        pressed && !repeat_only
+    }
+
     fn pressed(&self, ctx: &egui::Context) -> bool {
         ctx.input_mut(|i| {
             if self.exact
@@ -52,9 +73,18 @@ pub(crate) struct DialogAction<'a> {
     pub(crate) kind: ButtonKind,
     pub(crate) shortcut: Option<DialogShortcut<'a>>,
     alternate: Option<DialogShortcut<'a>>,
+    /// A refusal (deny, cancel): in a consent dialog it works from real input
+    /// even before the dialog arms (stint 1498).
+    refuses: bool,
 }
 
 impl<'a> DialogAction<'a> {
+    /// Mark this action as a refusal; see [`ActionModal::consent_input`].
+    pub(crate) fn refuses(mut self) -> Self {
+        self.refuses = true;
+        self
+    }
+
     pub(crate) fn new(id: &'a str, label: &'a str, kind: ButtonKind) -> Self {
         Self {
             id,
@@ -62,6 +92,7 @@ impl<'a> DialogAction<'a> {
             kind,
             shortcut: None,
             alternate: None,
+            refuses: false,
         }
     }
 
@@ -89,6 +120,8 @@ pub(crate) struct ActionModal<'a> {
     default_action: Option<&'a str>,
     button_row: bool,
     focus_surface: Option<crate::ui::focus::SurfaceKey>,
+    /// Set for a consent dialog (stint 1498); see [`Self::consent_input`].
+    consent_input: Option<crate::app::approval_keyboard::ConsentInput>,
 }
 
 /// Memory slot holding the egui ids of a modal's actions from last frame, so
@@ -107,6 +140,7 @@ impl<'a> ActionModal<'a> {
             default_action: None,
             button_row: false,
             focus_surface: None,
+            consent_input: None,
         }
     }
 
@@ -121,6 +155,18 @@ impl<'a> ActionModal<'a> {
     #[cfg(test)]
     pub(crate) fn traps_focus(&self) -> bool {
         self.focus_surface.is_some()
+    }
+
+    /// Guard this dialog's decisions with the consent input guard (stint
+    /// 1498): keys must be fresh presses; nothing counts on a synthetic frame;
+    /// a refusal or dismiss counts from real input at once; an approving
+    /// action counts only once armed, and is drawn disabled until then.
+    pub(crate) fn consent_input(
+        mut self,
+        input: crate::app::approval_keyboard::ConsentInput,
+    ) -> Self {
+        self.consent_input = Some(input);
+        self
     }
 
     /// Conventional confirm layout: one right-aligned row of kit buttons in
@@ -147,6 +193,14 @@ impl<'a> ActionModal<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
+        let guarded = self.consent_input.is_some();
+        let press = |shortcut: &DialogShortcut<'_>| {
+            if guarded {
+                shortcut.pressed_fresh(ctx)
+            } else {
+                shortcut.pressed(ctx)
+            }
+        };
         // A Tab-focused action takes Enter and Space before any shortcut, so
         // Enter on a focused Cancel cancels instead of firing Close's Enter.
         let previous_ids: Vec<(String, egui::Id)> = ctx
@@ -183,14 +237,8 @@ impl<'a> ActionModal<'a> {
                 .actions
                 .iter()
                 .find(|action| {
-                    action
-                        .shortcut
-                        .as_ref()
-                        .is_some_and(|shortcut| shortcut.pressed(ctx))
-                        || action
-                            .alternate
-                            .as_ref()
-                            .is_some_and(|shortcut| shortcut.pressed(ctx))
+                    action.shortcut.as_ref().is_some_and(&press)
+                        || action.alternate.as_ref().is_some_and(&press)
                 })
                 .map(|action| action.id);
         }
@@ -234,8 +282,19 @@ impl<'a> ActionModal<'a> {
                 })
                 .fold(0.0_f32, f32::max);
 
+            // Rows take Tab focus only inside a focus trap (stint 1493);
+            // elsewhere a focused row would take egui's Space/Enter click,
+            // which no consent guard sees (stint 1498).
+            let focusable = self.focus_surface.is_some();
             for action in self.actions {
-                let response = action_row(ui, action, chip_col_w, colors);
+                let enabled = self
+                    .consent_input
+                    .is_none_or(|input| action.refuses || input.armed);
+                let response = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        action_row(ui, action, chip_col_w, colors, focusable)
+                    })
+                    .inner;
                 action_ids.push((action.id.to_string(), response.id));
                 if response.clicked() {
                     selected = Some(action.id);
@@ -248,9 +307,33 @@ impl<'a> ActionModal<'a> {
         }
         ctx.data_mut(|d| d.insert_temp(action_ids_slot(self.id), action_ids));
 
+        let mut dismissed = response.dismissed;
+        if let Some(input) = self.consent_input {
+            let refuses = |id: &str| self.actions.iter().any(|a| a.id == id && a.refuses);
+            if selected.is_some_and(|id| !input.admits(refuses(id))) {
+                log::info!(
+                    "consent_guard: modal {} ignored {:?} ({})",
+                    self.id,
+                    selected,
+                    if input.synthetic {
+                        "synthetic input"
+                    } else {
+                        "not armed"
+                    }
+                );
+                selected = None;
+            }
+            if dismissed && !input.admits(true) {
+                log::info!(
+                    "consent_guard: modal {} ignored dismiss (synthetic input)",
+                    self.id
+                );
+                dismissed = false;
+            }
+        }
         DialogResponse {
             selected,
-            dismissed: response.dismissed,
+            dismissed,
         }
     }
 }
@@ -360,6 +443,7 @@ fn action_row(
     action: &DialogAction<'_>,
     chip_col_w: f32,
     colors: &Colors,
+    focusable: bool,
 ) -> egui::Response {
     let keys = action
         .shortcut
@@ -438,7 +522,11 @@ fn action_row(
                 .max(style::MODAL_ACTION_ROW_H)
                 .max(style::BUTTON_H_MD),
         ),
-        egui::Sense::click(),
+        if focusable {
+            egui::Sense::click()
+        } else {
+            egui::Sense::CLICK
+        },
     );
 
     let mut capture = super::layout_report::Capture::begin(ui.painter(), "modal_action");
@@ -514,7 +602,7 @@ fn action_row(
             painted_label: action.label.into(),
             hit: response.rect,
             minimum: egui::Vec2::splat(style::BUTTON_H_MD),
-            inactive: false,
+            inactive: !ui.is_enabled(),
         }],
         vec![],
     );
@@ -712,7 +800,7 @@ mod adoption_tests {
                 egui::Key::Enter,
             ));
             let width = shortcuts::key_combo_width(ui, action.shortcut.as_ref().unwrap().keys);
-            let rect = action_row(ui, &action, width, &colors).rect;
+            let rect = action_row(ui, &action, width, &colors, false).rect;
             capture.finish(ui.painter(), rect, colors.bg_sidebar, vec![], vec![]);
         });
         let reports = crate::ui::layout_report::snapshot(&ctx);

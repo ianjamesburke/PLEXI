@@ -1000,6 +1000,7 @@ impl PlexiApp {
             );
             self.pending_raw_wasm_launches
                 .push_back(crate::app::PendingRawWasmLaunch {
+                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
                     plugin_id: plugin_id.to_string(),
                     wasm_path: wasm_path.to_path_buf(),
                     workspace_root,
