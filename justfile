@@ -590,6 +590,7 @@ test-infra-scripts: test-build-inputs
     python3 scripts/test_release_evidence.py
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
+    uv run --no-project python scripts/test_nightly_alpha_tag.py
     uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_run_logged.py

@@ -27,21 +27,28 @@ jobs:
       contents: write
       actions: write
     steps:
+      # The host job tested github.sha (rust-host.yml checks out the caller's
+      # sha). Tag exactly that commit, never the alpha tip at this later
+      # moment, which may hold commits the run never tested (stint 1480).
       - uses: actions/checkout@v6
         with:
-          ref: alpha
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
-      - name: Tag and dispatch release when alpha has new commits
+      - name: Tag the tested commit and dispatch release
         env:
           GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.sha }}
         run: |
-          tag=$(bash scripts/nightly-alpha-tag.sh)
+          git fetch -q origin alpha
+          echo "tested sha: $TESTED_SHA; alpha now: $(git rev-parse origin/alpha)"
+          tag=$(bash scripts/nightly-alpha-tag.sh "$TESTED_SHA" origin/alpha)
           if [[ -z "$tag" ]]; then
-            echo "alpha has no commits since the last alpha tag; nothing to release"
+            echo "the tested commit has no commits since the last alpha tag; nothing to release"
             exit 0
           fi
-          git tag "$tag" HEAD
+          git tag "$tag" "$TESTED_SHA"
           git push origin "refs/tags/$tag"
           # Tag pushes made with GITHUB_TOKEN do not trigger release.yml.
+          # release.yml checks out inputs.tag, so it builds the tested sha.
           gh workflow run release.yml --ref alpha -f tag="$tag"
