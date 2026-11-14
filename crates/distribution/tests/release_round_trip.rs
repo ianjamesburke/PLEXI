@@ -96,7 +96,11 @@ fn assert_policy(tags: &Tags) {
         None,
         "an installed alpha never moves to a same-series beta or stable"
     );
-    assert_eq!(picked(&after_stable, "alpha", Some(beta)), None);
+    assert_eq!(
+        picked(&after_stable, "alpha", Some(beta)).as_deref(),
+        Some(alpha.as_str()),
+        "an alpha install left on a same-series beta returns to the series' alpha"
+    );
 
     // A draft (a release whose asset gates have not all passed) is invisible.
     let mut draft = published(stable);

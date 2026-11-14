@@ -188,6 +188,23 @@ pub fn leaves_alpha_lane(channel: &str, from: &str, to: &str) -> bool {
     }
 }
 
+/// An alpha installation that an earlier updater moved onto a beta returns to
+/// its series' alpha builds. SemVer ranks those alphas below the beta, but the
+/// beta was cut from one of them, so the newest alpha is never older code. A
+/// same-series stable is excluded: it is cut after the series' alphas.
+fn returns_to_alpha_lane(channel: &str, from: &str, to: &str) -> bool {
+    match (version(from), version(to)) {
+        (Some(from), Some(to)) => {
+            normalized_channel(channel) == "alpha"
+                && !from.pre.is_empty()
+                && !is_alpha_build(&from)
+                && is_alpha_build(&to)
+                && same_release_series(&from, &to)
+        }
+        _ => false,
+    }
+}
+
 pub fn select<'a>(
     releases: &'a [Release],
     channel: &str,
@@ -205,8 +222,10 @@ pub fn select<'a>(
         })
         .filter(|r| {
             current.as_ref().is_none_or(|(tag, v)| {
-                version(&r.tag_name)
-                    .is_some_and(|next| &next > v && !leaves_alpha_lane(channel, tag, &r.tag_name))
+                version(&r.tag_name).is_some_and(|next| {
+                    (&next > v && !leaves_alpha_lane(channel, tag, &r.tag_name))
+                        || returns_to_alpha_lane(channel, tag, &r.tag_name)
+                })
             })
         })
         .max_by_key(|r| {
@@ -460,6 +479,33 @@ mod tests {
                 .tag_name,
             "v0.5.0-alpha.7"
         );
+    }
+
+    #[test]
+    fn alpha_install_on_a_same_series_beta_returns_to_the_newest_alpha() {
+        let releases = vec![
+            release("v0.5.0-alpha.6", true),
+            release("v0.5.0-alpha.7", true),
+            release("v0.5.0-beta.1", true),
+        ];
+        assert_eq!(
+            select(&releases, "alpha", "macos-arm64", Some("v0.5.0-beta.1"))
+                .unwrap()
+                .tag_name,
+            "v0.5.0-alpha.7"
+        );
+        // Only the alpha channel corrects; a beta install stays on beta.
+        assert!(
+            select(
+                &[release_for("v0.5.0-alpha.7", "beta")],
+                "beta",
+                "macos-arm64",
+                Some("v0.5.0-beta.1")
+            )
+            .is_none()
+        );
+        // A same-series stable is never moved back to that series' alphas.
+        assert!(select(&releases, "alpha", "macos-arm64", Some("v0.5.0")).is_none());
     }
 
     #[test]

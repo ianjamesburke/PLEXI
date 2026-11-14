@@ -82,12 +82,10 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
         log::info!("update check: no newer release for channel {channel:?}");
         return UpdateEvent::UpToDate { checked_at };
     };
-    let newer = match (ReleaseTag::parse(&latest), ReleaseTag::parse(&current_raw)) {
-        (Some(l), Some(c)) => l > c,
-        _ => false,
-    };
-    if !newer {
-        log::info!("update check: already on latest or ahead ({current_raw}, channel {channel:?})");
+    // `release::select` is the update policy; a channel-correcting move (a beta
+    // back to its series' alpha) is an update even though SemVer ranks it lower.
+    if latest == current_raw {
+        log::info!("update check: already on latest ({current_raw}, channel {channel:?})");
         return UpdateEvent::UpToDate { checked_at };
     }
     log::info!(
