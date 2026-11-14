@@ -1361,9 +1361,7 @@ impl PlexiApp {
         }
         let (pane_id, pane) = page.panes.iter().next()?;
         let portal = pane.as_portal()?;
-        if !portal.reveal_after_close
-            || page.tree.tiles.find_pane(pane_id).is_none()
-        {
+        if !portal.reveal_after_close || page.tree.tiles.find_pane(pane_id).is_none() {
             return None;
         }
         let child = self

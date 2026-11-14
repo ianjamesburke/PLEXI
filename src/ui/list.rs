@@ -961,13 +961,7 @@ fn draw_pips(
             dot_i,
         );
         let glyph_state = agent_state.filter(|_| !pips.static_health_pips.contains(&dot_i));
-        crate::ui::activity::paint_pip(
-            ui.painter(),
-            center,
-            PANE_PIP_RADIUS,
-            glyph_state,
-            color,
-        );
+        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, glyph_state, color);
     }
     if pips.count > capped {
         let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;

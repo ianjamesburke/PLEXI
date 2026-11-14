@@ -4611,9 +4611,7 @@ mod tests {
         let mut h = HostHarness::new();
         let first_idx = h.app.router.active_idx();
         h.app.router.get_mut(first_idx).parked = true;
-        h.app
-            .windows
-            .push(test_window(7, 70, 1, 0, &[10], 0));
+        h.app.windows.push(test_window(7, 70, 1, 0, &[10], 0));
         h.app.router.push(crate::host::context::Context {
             name: "second-parked".to_string().into(),
             root: std::env::temp_dir(),
