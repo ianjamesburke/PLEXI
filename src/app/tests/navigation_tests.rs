@@ -1713,3 +1713,58 @@ fn conjoined_parent_reference_survives_workspace_restart() {
         parent_context
     );
 }
+
+/// Two panes on top, four below, built with the real split keys.
+/// Returns (window tile tree's pane ids: top-left, top-right, bottom ×4).
+fn two_over_four(h: &mut HostHarness) -> (u64, u64, Vec<u64>) {
+    let top_left = h.add_focused_terminal();
+    let split = |h: &mut HostHarness, modifiers: egui::Modifiers| {
+        h.press_key(egui::Key::D, modifiers);
+        h.run_frames(3);
+        h.app.active_focused_pane_id().expect("split pane focused")
+    };
+    let bottom0 = split(h, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+    h.focus_pane(top_left);
+    h.run_frames(2);
+    let top_right = split(h, egui::Modifiers::COMMAND);
+    h.focus_pane(bottom0);
+    h.run_frames(2);
+    let mut bottom = vec![bottom0];
+    for _ in 0..3 {
+        bottom.push(split(h, egui::Modifiers::COMMAND));
+    }
+    (top_left, top_right, bottom)
+}
+
+/// Stint 1519: at the edge of a row, Left or Right never jumps to a pane in
+/// another row (Cmd+J/K own row changes); inside the row and between rows,
+/// moves still reach the overlapping neighbour.
+#[test]
+fn horizontal_move_at_a_row_edge_never_changes_row() {
+    use crate::host::keys::Direction;
+    let mut h = HostHarness::new();
+    let (top_left, top_right, bottom) = two_over_four(&mut h);
+    let from = |h: &mut HostHarness, pane: u64, dir: Direction| {
+        h.focus_pane(pane);
+        h.run_frames(2);
+        h.app.navigate(dir);
+        h.app.active_focused_pane_id()
+    };
+    assert_eq!(
+        from(&mut h, top_right, Direction::Right),
+        Some(top_right),
+        "Right at the top row's right edge jumped to another row"
+    );
+    assert_eq!(
+        from(&mut h, top_left, Direction::Left),
+        Some(top_left),
+        "Left at the top row's left edge jumped to another row"
+    );
+    assert_eq!(from(&mut h, top_left, Direction::Right), Some(top_right));
+    assert_eq!(from(&mut h, bottom[1], Direction::Right), Some(bottom[2]));
+    let below = from(&mut h, top_right, Direction::Down).expect("a pane below");
+    assert!(
+        bottom[2..].contains(&below),
+        "Down from top-right reaches a pane under it"
+    );
+}

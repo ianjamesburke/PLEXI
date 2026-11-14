@@ -447,14 +447,14 @@ impl Window {
 /// Pure-geometry direction-finder. Picks the geometrically-nearest neighbor
 /// of `from_rect` in the requested direction.
 ///
-/// Two-tier scoring (matches the v3.2 lateral-focus spec):
+/// Scoring (the v3.2 lateral-focus spec, narrowed by stint 1519):
 ///
-/// 1. **Overlap tier**: candidates whose bounding rect overlaps the source's
-///    perpendicular axis range (top-to-bottom for L/R, left-to-right for U/D)
-///    are preferred over non-overlapping ones.
-/// 2. **Distance**: among the preferred tier, pick the candidate with the
-///    smallest distance from the source's center to the candidate's nearest
-///    edge along the requested axis.
+/// 1. **Overlap only**: a candidate counts only if its bounding rect overlaps
+///    the source's perpendicular axis range (top-to-bottom for L/R,
+///    left-to-right for U/D). Left/Right never jump rows and Up/Down never
+///    jump columns; v3.2 fell back to non-overlapping candidates.
+/// 2. **Distance**: the candidate with the smallest distance from the
+///    source's center to its nearest edge along the requested axis.
 /// 3. **Tie-break**: smallest perpendicular-axis center distance.
 ///
 /// Returns `None` if no candidate lies in the requested direction (no
@@ -471,7 +471,7 @@ where
     let center = from_rect.center();
     let is_horizontal = matches!(dir, Direction::Left | Direction::Right);
 
-    let mut best: Option<(T, (u8, f32, f32))> = None;
+    let mut best: Option<(T, (f32, f32))> = None;
 
     for (id, rect) in candidates {
         // "In the requested direction" — strict half-plane test using nearest
@@ -509,8 +509,13 @@ where
             (overlap, primary, secondary)
         };
 
-        let tier = if has_overlap { 0 } else { 1 };
-        let score = (tier, primary_dist, secondary_dist);
+        // Only a pane that overlaps the source's row (for Left/Right) or
+        // column (for Up/Down) is a neighbour: a horizontal move never
+        // jumps rows, and a vertical one never jumps columns (stint 1519).
+        if !has_overlap {
+            continue;
+        }
+        let score = (primary_dist, secondary_dist);
         if best.is_none_or(|(_, s)| score_lt(score, s)) {
             best = Some((id, score));
         }
@@ -519,16 +524,13 @@ where
     best.map(|(id, _)| id)
 }
 
-/// Lexicographic comparison on `(tier, primary, secondary)` — `f32` doesn't
+/// Lexicographic comparison on `(primary, secondary)` — `f32` doesn't
 /// implement `Ord`, so wrap with explicit total-order checks.
-fn score_lt(a: (u8, f32, f32), b: (u8, f32, f32)) -> bool {
+fn score_lt(a: (f32, f32), b: (f32, f32)) -> bool {
     if a.0 != b.0 {
         return a.0 < b.0;
     }
-    if a.1 != b.1 {
-        return a.1 < b.1;
-    }
-    a.2 < b.2
+    a.1 < b.1
 }
 
 pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId) {
@@ -668,8 +670,8 @@ mod tests {
     fn lateral_focus_prefers_overlapping_perpendicular_range() {
         // Source pane on the left, two candidates to the right:
         //   A: same vertical band as source (overlap → tier 0)
-        //   B: strictly above source (no overlap → tier 1), even though
-        //      its left edge is closer.
+        //   B: strictly above source (no overlap, so never a neighbour,
+        //      stint 1519), even though its left edge is closer.
         let from = Rect::from_min_max(Pos2::new(0.0, 100.0), Pos2::new(100.0, 200.0));
         let a = (
             "overlap",
@@ -680,11 +682,26 @@ mod tests {
             Rect::from_min_max(Pos2::new(150.0, 0.0), Pos2::new(250.0, 50.0)),
         );
 
-        // Despite `b` having a smaller x-distance, `a` wins because it overlaps
-        // the source's vertical range (tier 0 beats tier 1).
+        // Despite `b` having a smaller x-distance, `a` wins because only a
+        // pane overlapping the source's vertical range counts.
         assert_eq!(
             find_in_direction_geometric(from, vec![a, b].into_iter(), Direction::Right),
             Some("overlap")
+        );
+    }
+
+    /// Stint 1519: a pane in another row is never a horizontal neighbour,
+    /// even when it is the only candidate in that direction.
+    #[test]
+    fn lateral_focus_ignores_a_pane_in_another_row() {
+        let from = Rect::from_min_max(Pos2::new(500.0, 0.0), Pos2::new(1000.0, 100.0));
+        let below_right = (
+            "below_right",
+            Rect::from_min_max(Pos2::new(750.0, 110.0), Pos2::new(1000.0, 200.0)),
+        );
+        assert_eq!(
+            find_in_direction_geometric(from, vec![below_right].into_iter(), Direction::Right),
+            None
         );
     }
 
