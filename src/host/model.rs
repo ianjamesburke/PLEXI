@@ -371,27 +371,42 @@ mod tests {
         model.extend_pane_selection(7, 1, 2);
         model.extend_pane_selection(7, 2, 3);
         let live = |id: PaneId| id != 2;
-        let targets = model.resolve_pane_targets("test", 7, Some(9), live).unwrap();
+        let targets = model
+            .resolve_pane_targets("test", 7, Some(9), live)
+            .unwrap();
         assert_eq!(targets.source, PaneTargetSource::Selection);
         assert_eq!(targets.anchor, 1);
-        assert_eq!(targets.panes, vec![1, 3], "stale id 2 is dropped, order kept");
+        assert_eq!(
+            targets.panes,
+            vec![1, 3],
+            "stale id 2 is dropped, order kept"
+        );
 
         let anchor_gone = model
             .resolve_pane_targets("test", 7, None, |id| id == 3)
             .unwrap();
-        assert_eq!(anchor_gone.anchor, 3, "a stale anchor yields to the first live pane");
+        assert_eq!(
+            anchor_gone.anchor, 3,
+            "a stale anchor yields to the first live pane"
+        );
     }
 
     #[test]
     fn pane_targets_fall_back_to_the_focused_pane() {
         let mut model = HostModel::new();
-        let focused = model.resolve_pane_targets("test", 7, Some(4), |_| true).unwrap();
+        let focused = model
+            .resolve_pane_targets("test", 7, Some(4), |_| true)
+            .unwrap();
         assert_eq!(focused.source, PaneTargetSource::Focused);
         assert_eq!(focused.panes, vec![4]);
-        assert!(model.resolve_pane_targets("test", 7, None, |_| true).is_none());
+        assert!(model
+            .resolve_pane_targets("test", 7, None, |_| true)
+            .is_none());
 
         model.extend_pane_selection(7, 1, 2);
-        let all_stale = model.resolve_pane_targets("test", 7, Some(4), |id| id == 4).unwrap();
+        let all_stale = model
+            .resolve_pane_targets("test", 7, Some(4), |id| id == 4)
+            .unwrap();
         assert_eq!(
             all_stale.source,
             PaneTargetSource::Focused,
@@ -406,7 +421,9 @@ mod tests {
     fn pane_targets_return_a_selection_of_one_unchanged() {
         let mut model = HostModel::new();
         model.extend_pane_selection(7, 5, 5);
-        let one = model.resolve_pane_targets("test", 7, Some(5), |_| true).unwrap();
+        let one = model
+            .resolve_pane_targets("test", 7, Some(5), |_| true)
+            .unwrap();
         assert_eq!(one.source, PaneTargetSource::Selection);
         assert_eq!(one.panes, vec![5]);
     }

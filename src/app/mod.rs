@@ -4231,6 +4231,10 @@ impl eframe::App for PlexiApp {
         // produced. Routes back to the originating pane as NotifyAction events.
         self.dispatch_notify_action_cmds(early_modal_cmds);
 
+        // A close batch paused on a pane's dialog resumes here, before the
+        // self-close poll below would close that pane outside the batch.
+        self.service_pane_close_batch();
+
         // Check if the focused plugin wants to close itself (e.g. after saving).
         {
             let ctx_ref = &self.windows[self.active_window];
@@ -4575,6 +4579,10 @@ impl PlexiApp {
                     || self.zoom.level != zoom::ZoomLevel::Columns
                 {
                     self.zoom_out_or_close_surface();
+                    return;
+                }
+                // Two or more selected panes close together (stint 1458).
+                if self.start_close_selected_panes("close_pane") {
                     return;
                 }
                 // If the focused view pane has a non-empty nav stack

@@ -138,8 +138,10 @@ impl PlexiApp {
             self.resolve_quit_confirmation(confirmed);
         } else if confirmed {
             self.pending_close = false;
-            self.execute_close_pane();
-            self.mark_workspace_dirty();
+            if !self.confirm_close_batch_pane() {
+                self.execute_close_pane();
+                self.mark_workspace_dirty();
+            }
         } else if cancelled {
             self.pending_close = false;
         }

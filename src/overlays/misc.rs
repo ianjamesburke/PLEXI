@@ -80,7 +80,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
                                         (&["\u{2318}", "\\"], "Split right (mirror)"),
                                         (&["\u{2318}", "\u{21E7}", "\\"], "Split below (mirror)"),
-                                        (&["\u{2318}", "W"], "Close pane"),
+                                        (&["\u{2318}", "W"], "Close pane / selected panes"),
                                         (&["\u{2318}", "\u{21E7}", "W"], "Close context"),
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
@@ -121,7 +121,7 @@ impl PlexiApp {
                                     crate::ui::shortcuts::key_combo_list(
                                         ui, &[&["cmd", "shift", "H", "J", "K", "L"]], None, colors,
                                     );
-                                    shortcut_description(ui, "Extend pane selection", colors);
+                                    shortcut_description(ui, "Extend pane selection (or cmd+shift+click)", colors);
                                     ui.end_row();
                                     crate::ui::shortcuts::key_combo_list(
                                         ui, &[&["cmd", "enter"]], None, colors,

@@ -144,7 +144,12 @@ fn editor_batch() -> (
         Some("split_h"),
         None,
     );
-    let editor = *h.state().open_panes.last().unwrap();
+    let editor = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| *id != x)
+        .expect("editor opened");
     let y = h.add_test_pane();
     let keep = h.add_test_pane();
     let context = h.app.router.active().context_id;
