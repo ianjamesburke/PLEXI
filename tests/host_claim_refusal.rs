@@ -4,7 +4,10 @@
 //! Removing the claim block, or moving it after the socket bind, fails this
 //! test: the launch then starts a second host, which this test kills at the
 //! deadline. The launch is a background (accessory) host so a failure never
-//! raises a window.
+//! raises a window, and it carries the `PLEXI_KEYCHAIN_PATH` /
+//! `PLEXI_KEYCHAIN_PASSWORD` test hook (src/broker/host_key.rs,
+//! src/workspace/secrets/store.rs) pointed at a throwaway file in the temp
+//! home, so even a host that boots never reaches the login keychain.
 #![cfg(unix)]
 
 use std::process::{Command, Stdio};
@@ -34,10 +37,33 @@ fn host_launch_on_a_held_profile_refuses_before_the_socket() {
             command.env_remove(key);
         }
     }
-    let mut child = command
+    let keychain = home.join("throwaway.keychain-db");
+    command
         .current_dir(home)
         .env("HOME", home)
         .env("PLEXI_BACKGROUND_HOST", "1")
+        .env("PLEXI_KEYCHAIN_PATH", &keychain)
+        .env("PLEXI_KEYCHAIN_PASSWORD", "host-claim-refusal-test");
+    // The keychain isolation must be on the child before it can run at all.
+    let envs: Vec<(String, Option<String>)> = command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert!(
+        envs.iter().any(|(key, value)| key == "PLEXI_KEYCHAIN_PATH"
+            && value.as_deref() == Some(keychain.to_str().unwrap())),
+        "the child must use a throwaway keychain inside the temp home"
+    );
+    assert!(envs
+        .iter()
+        .any(|(key, value)| key == "PLEXI_KEYCHAIN_PASSWORD"
+            && value.as_deref().is_some_and(|v| !v.is_empty())));
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
