@@ -4423,7 +4423,7 @@ run_steps = 100
     fn generic_open_rejects_fields_from_another_target_kind() {
         let raw = r#"
             [[steps]]
-            open = { kind = "builtin", id = "assistant", path = "apps/dev/balls", as = "assistant" }
+            open = { kind = "builtin", id = "assistant", path = "plugins/dev/balls", as = "assistant" }
         "#;
 
         assert!(toml::from_str::<Scene>(raw).is_err());

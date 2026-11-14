@@ -10,7 +10,7 @@
 #     conventional help text the host can recursively crawl into a descriptor
 #     when a CLI has no `--plexi` support.
 #
-# Open it in Plexi:   plexi app open --cli ./apps/examples/cli-demo/cli-demo
+# Open it in Plexi:   plexi view open --cli ./plugins/examples/cli-demo/cli-demo
 set -euo pipefail
 
 VERSION="1.4.2"

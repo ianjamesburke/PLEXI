@@ -152,12 +152,12 @@ class DecisionTests(unittest.TestCase):
     def test_include_dir_binds_every_markdown_file_it_embeds(self):
         root = make_root({
             "Cargo.toml": "[package]\n",
-            "src/lib.rs": 'static APPS: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");\n',
-            "apps/notes/README.md": "x",
-            "apps/notes/main.py": "x",
+            "src/lib.rs": 'static APPS: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/plugins");\n',
+            "plugins/notes/README.md": "x",
+            "plugins/notes/main.py": "x",
         })
-        self.assert_required(["apps/notes/README.md"], root, "apps/ is bound by include_dir")
-        self.assert_required(["apps/brand-new/AGENTS.md"], root, "include_dir")
+        self.assert_required(["plugins/notes/README.md"], root, "plugins/ is bound by include_dir")
+        self.assert_required(["plugins/brand-new/AGENTS.md"], root, "include_dir")
 
     def test_include_dir_resolves_against_its_own_crate(self):
         root = make_root({
@@ -207,8 +207,8 @@ class DecisionTests(unittest.TestCase):
 
     def test_include_dir_binds_even_when_its_directory_is_empty(self):
         root = make_root({"Cargo.toml": "[package]\n",
-                          "src/lib.rs": 'static D: Dir = include_dir!("$CARGO_MANIFEST_DIR/apps");\n'})
-        self.assert_required(["apps/README.md"], root, "apps/ is bound by include_dir")
+                          "src/lib.rs": 'static D: Dir = include_dir!("$CARGO_MANIFEST_DIR/plugins");\n'})
+        self.assert_required(["plugins/README.md"], root, "plugins/ is bound by include_dir")
 
     def test_raw_strings_do_not_desync_the_scanner(self):
         root = make_root({
@@ -368,7 +368,7 @@ class RealRepoSanityTests(unittest.TestCase):
         for path in ("src/assistant/AGENT.md", "docs/CONFIG.md", "README.md"):
             self.assertIn(path, bindings)
         for path in ("src/assistant/AGENT.md", "docs/CONFIG.md", "README.md",
-                     "apps/AGENTS.md", "apps/brand-new-app/README.md",
+                     "plugins/AGENTS.md", "plugins/brand-new-app/README.md",
                      "sdk/python/plexi_sdk/templates/plugin-contract.md",
                      "sdk/python/plexi_sdk/NEW.md", "registry/NEW.md",
                      "skills/plexi-cli/SKILL.md", "docs/cli/PARITY.md",

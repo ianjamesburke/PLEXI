@@ -1391,12 +1391,12 @@ pub(crate) fn resolve_entry(
     Ok(path)
 }
 
-/// Walk up from `start` looking for an `apps/dev/` directory (the PLEXI repo's
+/// Walk up from `start` looking for a `plugins/dev/` directory (the PLEXI repo's
 /// dev-pack POCs, per `plugins/AGENTS.md`) and, if found, scan its immediate
 /// subdirectories for a manifest whose `[plugin].id` matches `id`.
 ///
 /// Dev-pack plugins are intentionally excluded from the id-addressable registry
-/// (`install.sh` never syncs `apps/dev/*` into a profile) — this is used only
+/// (`install.sh` never syncs `plugins/dev/*` into a profile) — this is used only
 /// to turn a bare "no WASM runtime" miss into an actionable message pointing
 /// the developer at the path-open form.
 pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
@@ -1406,7 +1406,7 @@ pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
         if is_walk_stop(&current, &stops) {
             return None;
         }
-        let dev_dir = current.join("apps").join("dev");
+        let dev_dir = current.join("plugins").join("dev");
         if dev_dir.is_dir() {
             let entries = std::fs::read_dir(&dev_dir).ok()?;
             for entry in entries.flatten() {
@@ -1862,7 +1862,7 @@ mod tests {
                 "audio-synth",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/apps/wasm-poc/audio-synth/manifest.toml"
+                    "/plugins/wasm-poc/audio-synth/manifest.toml"
                 )),
                 "../../../target/wasm32-wasip1/release/audio_synth.wasm",
             ),
@@ -1870,7 +1870,7 @@ mod tests {
                 "counter",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/apps/wasm-poc/counter/manifest.toml"
+                    "/plugins/wasm-poc/counter/manifest.toml"
                 )),
                 "../../../target/wasm32-wasip1/release/counter.wasm",
             ),
@@ -1878,7 +1878,7 @@ mod tests {
                 "pong",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/apps/wasm-poc/pong/manifest.toml"
+                    "/plugins/wasm-poc/pong/manifest.toml"
                 )),
                 "../../../target/wasm32-wasip1/release/pong.wasm",
             ),
@@ -1886,7 +1886,7 @@ mod tests {
                 "python-shim",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/apps/wasm-poc/python-shim/manifest.toml"
+                    "/plugins/wasm-poc/python-shim/manifest.toml"
                 )),
                 "../../../target/wasm32-wasip1/release/python_shim.wasm",
             ),
@@ -1894,7 +1894,7 @@ mod tests {
                 "sysmon",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/apps/wasm-poc/sysmon/manifest.toml"
+                    "/plugins/wasm-poc/sysmon/manifest.toml"
                 )),
                 "../../../target/wasm32-wasip1/release/sysmon.wasm",
             ),
@@ -1917,10 +1917,10 @@ mod tests {
         }
     }
 
-    /// Read every top-level plugin manifest (the exemplar set — `apps/dev/` and
+    /// Read every top-level plugin manifest (the exemplar set — `plugins/dev/` and
     /// `plugins/examples/` hold no manifest at that level and are skipped).
     fn shipped_plugin_manifests() -> Vec<(PathBuf, PluginManifest)> {
-        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps");
+        let plugins_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins");
         let mut found = Vec::new();
         for entry in fs::read_dir(&plugins_dir).expect("plugins/ must be readable") {
             let path = entry
@@ -1983,7 +1983,7 @@ mod tests {
             let id = entry["id"]
                 .as_str()
                 .expect("every registry entry must carry an id");
-            let manifest_path = repo_root.join("apps").join(id).join("manifest.toml");
+            let manifest_path = repo_root.join("plugins").join(id).join("manifest.toml");
             if !manifest_path.is_file() {
                 continue;
             }
@@ -2040,7 +2040,7 @@ mod tests {
     fn todo_manifest_declares_no_pane_group() {
         let manifest: PluginManifest = toml::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/apps/todo/manifest.toml"
+            "/plugins/todo/manifest.toml"
         )))
         .expect("todo manifest must parse");
         assert!(
@@ -2745,7 +2745,7 @@ default = true
     #[test]
     fn find_dev_pack_plugin_matches_id_from_nested_start_dir() {
         let repo = tempfile::tempdir().unwrap();
-        let dev_dir = repo.path().join("apps").join("dev");
+        let dev_dir = repo.path().join("plugins").join("dev");
         fs::create_dir_all(&dev_dir).unwrap();
         write_plugin(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
 
@@ -2755,14 +2755,14 @@ default = true
         fs::create_dir_all(&start).unwrap();
 
         let found = find_dev_pack_plugin("com.plexi.canvas-grid", &start)
-            .expect("dev-pack plugin should be found by walking up to apps/dev");
+            .expect("dev-pack plugin should be found by walking up to plugins/dev");
         assert_eq!(found, dev_dir.join("com.plexi.canvas-grid"));
     }
 
     #[test]
     fn find_dev_pack_plugin_returns_none_for_unknown_id() {
         let repo = tempfile::tempdir().unwrap();
-        let dev_dir = repo.path().join("apps").join("dev");
+        let dev_dir = repo.path().join("plugins").join("dev");
         fs::create_dir_all(&dev_dir).unwrap();
         write_plugin(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
 
@@ -2792,10 +2792,10 @@ default = true
         let repo_root = std::env::var_os("PLEXI_PLUGIN_IMPORT_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        let apps_root = repo_root.join("apps");
+        let plugins_root = repo_root.join("plugins");
         let sdk_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
         let mut manifests = Vec::new();
-        manifests_under(&apps_root, &mut manifests);
+        manifests_under(&plugins_root, &mut manifests);
         manifests.sort();
 
         let mut import_targets = Vec::new();

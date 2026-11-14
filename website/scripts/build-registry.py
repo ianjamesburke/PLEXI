@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Package the public apps and regenerate the hosted registry index.
 
-Single source of truth for `website/public/registry/v1/`: it walks the `apps/`
+Single source of truth for `website/public/registry/v1/`: it walks the `plugins/`
 tree, packages every app that opts into the marketplace (its `manifest.toml`
 declares `[marketplace] visibility = "public"`), checksum-addresses each
 `.plexipkg`, and writes a deterministic `index.json`. The browse pages under
-`website/src/pages/apps/` import that same index, so the catalog a first user
+`website/src/pages/plugins/` import that same index, so the catalog a first user
 sees and the artifacts the host installs never drift.
 
 Republishing after an app fix is one command: `just website-registry`.
@@ -30,7 +30,7 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PLUGINS_SOURCE_DIR = REPO_ROOT / "apps"
+PLUGINS_SOURCE_DIR = REPO_ROOT / "plugins"
 REGISTRY_DIR = REPO_ROOT / "website" / "public" / "registry" / "v1"
 PACKAGES_DIR = REGISTRY_DIR / "packages"
 INDEX_PATH = REGISTRY_DIR / "index.json"

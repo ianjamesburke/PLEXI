@@ -108,7 +108,7 @@ group SIGKILL teardown, wake callback.
 - **Launch.** Executable identity and the sealed private copy are specified in
   `src/host/cli_ops/exec.rs`. Scripts, setuid and group- or world-writable
   programs are refused. The native program is not confined.
-- **Install.** Updates stage outside `apps/`, write a completion marker last and
+- **Install.** Updates stage outside `plugins/`, write a completion marker last and
   swap in place; operation admission refuses a registry install without the
   marker. Changed bytes are a new package digest and ask again.
 - **Gate.** The `cli_operations` experiment, independent of `mcp_client`, plus

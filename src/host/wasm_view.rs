@@ -991,7 +991,7 @@ mod tests {
         use crate::app::registry::PluginManifest;
 
         let manifest_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/wasm-poc/pong/manifest.toml");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/wasm-poc/pong/manifest.toml");
         let manifest_text = std::fs::read_to_string(&manifest_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
         let manifest: PluginManifest =

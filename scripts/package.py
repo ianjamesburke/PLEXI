@@ -170,13 +170,13 @@ def assemble(args):
     shutil.copytree(REPO / "sdk/python/plexi_sdk", resources / "sdk/plexi_sdk", ignore=ignore)
     shutil.copy2(REPO / "sdk/python/pyproject.toml", resources / "sdk/pyproject.toml")
     shutil.copytree(runtime(args.runtime_cache), resources / "wasm-bundles" / f"cpython-{WASI_VERSION}", ignore=ignore)
-    shutil.copytree(REPO / "apps/calc", resources / "smoke-app", ignore=ignore)
+    shutil.copytree(REPO / "plugins/calc", resources / "smoke-app", ignore=ignore)
     shutil.copy2(REPO / "assets/app-icon.png", resources)
     shutil.copy2(REPO / "scripts/default-config.toml", resources / "default-config.toml")
     for source, destination in [("agents", "agents"), ("skills", "skills"), ("scripts/default-scripts", "scripts")]:
         shutil.copytree(REPO / source, resources / destination, ignore=ignore)
     if channel == "alpha" or channel.startswith("pr-"):
-        for manifest in (REPO / "apps").glob("*/manifest.toml"):
+        for manifest in (REPO / "plugins").glob("*/manifest.toml"):
             shutil.copytree(manifest.parent, resources / "maintained-plugins" / manifest.parent.name, ignore=ignore)
 
     signing = None

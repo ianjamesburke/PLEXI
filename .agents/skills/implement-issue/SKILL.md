@@ -164,7 +164,7 @@ grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md
 ```
 Surface every match under **Gotchas found:**. Each requires disposition: **NOTED** or **N/A**.
 
-**If any changed file is a Python app under `apps/` or `apps/dev/`:** invoke `create-plexi-app` skill before writing code.
+**If any changed file is a Python app under `plugins/` or `plugins/dev/`:** invoke `create-plexi-app` skill before writing code.
 
 **If issue involves a third-party library:** invoke `coding-conventions` skill.
 
@@ -312,7 +312,7 @@ pipeline_slots_set implement <n> "" pushed "" ""
 - No `todo!()` or `unimplemented!()` outside `#[cfg(test)]`
 - No `#[allow(dead_code)]` or `#[allow(unused)]`
 - `just build` (release, `-D warnings`) must pass after all changes; bare `cargo build` is not a substitute (root `AGENTS.md` Traps)
-- `/testing` is mandatory before pushing when any `src/` host logic or `apps/` Python app code was touched. For `src/` changes, use the relevant scoped host filters and phase-aware evidence from `src/testing/TESTING.md`; for `apps/` changes, this means the PGAP-layer evidence (real-process headless screenshot). The `**Test evidence:**` block must be in the Ship Log before `/open-pr` is invoked. For docs-only, skills-only, or config-only changes, write `"docs-only — no test evidence required"` in place of the block.
+- `/testing` is mandatory before pushing when any `src/` host logic or `plugins/` Python app code was touched. For `src/` changes, use the relevant scoped host filters and phase-aware evidence from `src/testing/TESTING.md`; for `plugins/` changes, this means the PGAP-layer evidence (real-process headless screenshot). The `**Test evidence:**` block must be in the Ship Log before `/open-pr` is invoked. For docs-only, skills-only, or config-only changes, write `"docs-only — no test evidence required"` in place of the block.
 - Subagents stage only — orchestrator owns the commit
 - Never dispatch subagent without the Phase 3 spec
 - Every implementation needs a logging plan

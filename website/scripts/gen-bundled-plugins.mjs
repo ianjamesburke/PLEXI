@@ -44,7 +44,7 @@ const plugins = entries.map((entry) => {
     throw new Error(`gen-bundled-plugins: ${packPath} plugin ${id} has source "${source}"; only local: sources are bundled`);
   }
   const dir = source.slice('local:'.length);
-  const manifestPath = join(repo, 'apps', dir, 'manifest.toml');
+  const manifestPath = join(repo, 'plugins', dir, 'manifest.toml');
   const manifest = readToml(manifestPath);
   const plugin = required(manifest.plugin, '[plugin]', manifestPath);
   return {
@@ -52,7 +52,7 @@ const plugins = entries.map((entry) => {
     name: required(plugin.name, 'plugin.name', manifestPath),
     description: required(plugin.description, 'plugin.description', manifestPath),
     capabilities: plugin.capabilities?.capabilities ?? [],
-    source: `apps/${dir}`,
+    source: `plugins/${dir}`,
   };
 });
 

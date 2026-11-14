@@ -2688,7 +2688,7 @@ impl PlexiApp {
             }
         }
 
-        // Dev-pack plugins (apps/dev/*) are intentionally excluded from the
+        // Dev-pack plugins (plugins/dev/*) are intentionally excluded from the
         // id-addressable registry (plugins/AGENTS.md) — install.sh never syncs
         // them into a profile. When the caller passed an explicit cwd, `cwd`
         // already is that value; otherwise prefer the focused pane's actual

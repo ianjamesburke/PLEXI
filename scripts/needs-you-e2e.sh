@@ -172,7 +172,7 @@ fi
 export PLEXI_SOCKET="$SOCKET"
 
 echo "opening chess"
-"$BIN" view open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
+"$BIN" view open "$ROOT/plugins/chess" >"$WORK/open.log" 2>&1 || {
   echo "error: view open failed" >&2
   cat "$WORK/open.log" >&2
   exit 1

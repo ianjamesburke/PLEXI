@@ -396,7 +396,7 @@ PY
     cat "$WORK/set-root.err" >&2
     exit 1
   }
-  "$BIN" plugin install "$ROOT/apps/permissions" --yes >"$WORK/perm-install.out" 2>"$WORK/perm-install.err" || {
+  "$BIN" plugin install "$ROOT/plugins/permissions" --yes >"$WORK/perm-install.out" 2>"$WORK/perm-install.err" || {
     echo "error: Permissions plugin install failed" >&2
     cat "$WORK/perm-install.err" >&2
     exit 1

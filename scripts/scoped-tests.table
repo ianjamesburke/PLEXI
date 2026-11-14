@@ -15,5 +15,5 @@ src/app/text_editor_view.rs	editor:: editor_gate ui_tests:: app::text_editor_vie
 src/editor/*	editor:: editor_gate ui_tests::
 src/config/*|src/workspace/*	config:: workspace:: testing::
 src/*	::
-apps/*|sdk/python/*	
+plugins/*|sdk/python/*	
 scripts/*	

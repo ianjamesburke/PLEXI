@@ -1,4 +1,4 @@
-# Scaffold output renders + handles input (stint 0012). apps/dev/counter is the
+# Scaffold output renders + handles input (stint 0012). plugins/dev/counter is the
 # exact output of `plexi app init` (manifest with the [marketplace] placeholder,
 # view()-based counter, justfile). This proves a freshly generated app renders on
 # its first frame and survives a keystroke without crashing — the baseline an
@@ -7,7 +7,7 @@ size = [1280.0, 800.0]
 suite = false
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/counter", as = "counter" }
+open = { kind = "process", path = "plugins/dev/counter", as = "counter" }
 
 [[steps]]
 wait_view_frame = { target = "counter", timeout_s = 15.0 }

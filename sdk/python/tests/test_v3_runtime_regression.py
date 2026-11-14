@@ -976,7 +976,7 @@ class TestFrameTiming:
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
         from plexi_sdk.testing import PluginHarness
-        balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
+        balls_path = REPO_ROOT / "plugins" / "dev" / "balls" / "balls.py"
         with PluginHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
@@ -1053,18 +1053,18 @@ class TestTimers:
 
 
 @pytest.mark.parametrize("relative_path", [
-    "apps/balls/balls.py",
-    "apps/snake/snake.py",
-    "apps/tetris/tetris.py",
-    "apps/chess/chess.py",
-    "apps/calc/calc.py",
-    "apps/todo/todo.py",
-    "apps/stats/stats.py",
-    "apps/logs/logs.py",
-    "apps/kraken/main.py",
-    "apps/github-issues/main.py",
-    "apps/permissions/main.py",
-    "apps/wikipedia/wikipedia.py",
+    "plugins/balls/balls.py",
+    "plugins/snake/snake.py",
+    "plugins/tetris/tetris.py",
+    "plugins/chess/chess.py",
+    "plugins/calc/calc.py",
+    "plugins/todo/todo.py",
+    "plugins/stats/stats.py",
+    "plugins/logs/logs.py",
+    "plugins/kraken/main.py",
+    "plugins/github-issues/main.py",
+    "plugins/permissions/main.py",
+    "plugins/wikipedia/wikipedia.py",
 ])
 def test_core_app_boots_and_renders(relative_path: str) -> None:
     """Every Core app must satisfy Init -> Ready -> Render -> FrameDone."""
@@ -1080,12 +1080,12 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 
 
 @pytest.mark.parametrize("relative_path,expected_effect", [
-    ("apps/balls/balls.py", "set_scheduler_mode"),
-    ("apps/snake/snake.py", "set_timer"),
-    ("apps/tetris/tetris.py", "set_scheduler_mode"),
-    ("apps/kraken/main.py", "set_timer"),
-    ("apps/logs/logs.py", "set_timer"),
-    ("apps/stats/stats.py", "set_timer"),
+    ("plugins/balls/balls.py", "set_scheduler_mode"),
+    ("plugins/snake/snake.py", "set_timer"),
+    ("plugins/tetris/tetris.py", "set_scheduler_mode"),
+    ("plugins/kraken/main.py", "set_timer"),
+    ("plugins/logs/logs.py", "set_timer"),
+    ("plugins/stats/stats.py", "set_timer"),
 ])
 def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str) -> None:
     """Apps that need timers/schedulers must emit them during boot."""
@@ -1101,8 +1101,8 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 
 
 @pytest.mark.parametrize("relative_path,key", [
-    ("apps/calc/calc.py", "1"),
-    ("apps/tetris/tetris.py", "left"),
+    ("plugins/calc/calc.py", "1"),
+    ("plugins/tetris/tetris.py", "left"),
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""

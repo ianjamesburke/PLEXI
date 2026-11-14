@@ -147,7 +147,7 @@ wire node types. Inspect `to_node()` in `plexi_sdk.ui` or the node variants in
 `Canvas` sends drawing commands instead of individual interactive widgets. Use
 `CanvasRect`, `CanvasCircle`, `CanvasLine`, and `CanvasText` for custom drawing;
 handle interaction in the app. A canvas can also be a child in a tree. See
-`apps/dev/component-gallery` for examples of tree components and their use.
+`plugins/dev/component-gallery` for examples of tree components and their use.
 
 `plexi_sdk.ui` exports the types for annotations: `Component` (any tree
 component), `CanvasCommand` (any canvas command) and `BadgeColor` (the roles
@@ -205,7 +205,7 @@ existing files (`multiple=True` for several), `"folder"` picks a directory,
 pane, so pass them verbatim to `FileRead`/`FileWrite` (a folder grant covers
 the subtree) — or `FilePickCancelled` (dismissed or capability denied; no
 grant is created). Grants last for the pane's lifetime and are never
-persisted. `apps/dev/file-picker-poc` is the working example.
+persisted. `plugins/dev/file-picker-poc` is the working example.
 
 Production shows a native dialog, which no test can click. Headless drivers
 script the picker instead: launch the host with `PLEXI_PICKER_SCRIPT`
@@ -358,7 +358,7 @@ Widget selection rules:
 - **Long content:** `Scrollable(child)` takes one child, so wrap a list in a
   `Column`: `Column([SurfaceHeader(...), Scrollable(Column(rows)),
   FooterKeys(...)], grow=True)`. A body taller than the pane then scrolls
-  between the header and the footer. `apps/logs` is a working example.
+  between the header and the footer. `plugins/logs` is a working example.
 - **Size-aware views:** store the size from `init` and `Resize` in state and
   branch on it in `view()`, as the scaffolded `main.py` does.
 - **Forms:** a labeled field is a `FormField`; a Save/Cancel pair is an

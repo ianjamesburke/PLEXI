@@ -373,7 +373,7 @@ def module_filter(relative):
 
 
 NO_HOST_TESTS = (("scripts/", "run `just test-infra-scripts`"),
-                 ("apps/", "run `just sdk-smoke` and the app's own checks"),
+                 ("plugins/", "run `just sdk-smoke` and the app's own checks"),
                  ("sdk/python/", "run `just sdk-smoke`"))
 
 

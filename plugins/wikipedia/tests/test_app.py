@@ -15,7 +15,7 @@ from plexi_sdk.testing import PluginHarness
 AppTestHarness = PluginHarness
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "apps" / "wikipedia" / "wikipedia.py"
+APP = ROOT / "plugins" / "wikipedia" / "wikipedia.py"
 
 
 def _load_app_module():

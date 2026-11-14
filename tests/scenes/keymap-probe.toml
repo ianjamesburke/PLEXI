@@ -7,7 +7,7 @@ size = [640.0, 480.0]
 suite = false
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/keymap-probe", as = "probe" }
+open = { kind = "process", path = "plugins/dev/keymap-probe", as = "probe" }
 
 [[steps]]
 wait_view_frame = { target = "probe", timeout_s = 15.0 }

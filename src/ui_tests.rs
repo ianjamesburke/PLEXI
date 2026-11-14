@@ -6622,7 +6622,7 @@ open(out + ".done", "w").close()
     #[test]
     fn screenshot_python_plugin_delta_frames_paint() {
         let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
-        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/breakout");
         let pane_id = h.open_view_at(&plugin_dir, &[]).expect("open breakout");
         h.wait_for_view_frame(pane_id, Duration::from_secs(30))
             .expect("breakout first frame");
@@ -11816,7 +11816,7 @@ open(out + ".done", "w").close()
     /// The assertion is the gate; the PNG is for a human/agent to look at.
     #[test]
     fn screenshot_todo_add_form_autofocused_draft() {
-        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         let pane_id = h.open_view_at(&plugin_dir, &[]).expect("launch todo");
         h.wait_for_view_frame(pane_id, Duration::from_secs(30))

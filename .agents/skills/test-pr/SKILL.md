@@ -93,7 +93,7 @@ Report any errors or warnings before proceeding.
 
 **Spec gate:** Pass criteria map 1:1 to Done When checklist. No extra criteria.
 
-Check for existing POC app in `apps/` or `apps/dev/`. Use it if present.
+Check for existing POC app in `plugins/` or `plugins/dev/`. Use it if present.
 
 **To exercise the change in a live headed host yourself** (PTY/terminal flows, menus, real multi-pane orchestration), use the `drive-host` skill — it owns the boot/drive/observe/teardown loop against the PR binary. Do not hand-roll a launch here.
 

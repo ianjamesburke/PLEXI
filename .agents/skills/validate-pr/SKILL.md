@@ -117,7 +117,7 @@ Record the exact head, selected and skipped checks with reasons, screenshot
 origin and durable link when applicable. A required missing capture is a failure.
 
 The testing skill owns non-aggregate install-skip criteria; aggregate records
-always require an installed-head record. `apps/`, installed runtime, packaging,
+always require an installed-head record. `plugins/`, installed runtime, packaging,
 PTY, and explicit installed acceptance can require installation regardless of
 size. An independent tester must verify affected behavior; the worker's tests
 are evidence, not an independent verdict. Avoid rerunning unrelated suites;
@@ -464,7 +464,7 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 
 ## Rules
 
-- Select install or source-level validation by the actual behavior, phase, and `/testing` conclusion. Where the conclusion is missing or stale, obtain current evidence or use the applicable installed path. Preserve aggregate, installed-boundary, `apps/`, and Done-When requirements.
+- Select install or source-level validation by the actual behavior, phase, and `/testing` conclusion. Where the conclusion is missing or stale, obtain current evidence or use the applicable installed path. Preserve aggregate, installed-boundary, `plugins/`, and Done-When requirements.
 - Independent validation checks the affected behavior and may run focused tests; do not rerun unrelated suites. Treat visible UI as visual evidence under TESTING.md, regardless of whether a change is called cosmetic.
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block

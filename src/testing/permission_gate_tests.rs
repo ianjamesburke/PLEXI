@@ -272,7 +272,7 @@ fn permission_gate_real_chess_all_ingresses() {
 fn run_ingress(ingress: Ingress) {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let assistant = h.add_assistant_pane();
@@ -945,7 +945,7 @@ fn all_dispatchers_require_monitor() {
 fn plugin_call_rejects_forged_or_missing_identity() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let start = event_len();
@@ -997,7 +997,7 @@ fn plugin_call_rejects_forged_or_missing_identity() {
 fn chess_receipt_survives_lost_reply() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
@@ -1057,7 +1057,7 @@ fn chess_receipt_survives_lost_reply() {
 fn plugin_call_and_mcp_are_gated_and_audited() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
@@ -1104,12 +1104,12 @@ fn plugin_call_and_mcp_are_gated_and_audited() {
 fn second_chess_pane_routes_by_instance() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let first = h.launch_repo_view("apps/chess", &[]);
-    let again = h.launch_repo_view("apps/chess", &[]);
+    let first = h.launch_repo_view("plugins/chess", &[]);
+    let again = h.launch_repo_view("plugins/chess", &[]);
     assert_eq!(again, first, "view open chess focuses the open board");
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/chess");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/chess");
     let second = h
         .app
         .launch_view_by_path_forced(&path.to_string_lossy(), Some(h.workspace_root()), &[])
@@ -1207,7 +1207,7 @@ fn chess_panes(h: &HostHarness) -> Vec<u64> {
 fn gate_denial_reaches_the_host_log() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let start = event_len();
     let denied = socket_call(
         &mut h,
@@ -1358,7 +1358,7 @@ fn agents_chess_approval_scene() {
 fn list_plugin_tools_snapshots_live_registry_for_context() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("apps/chess", &[]);
+    let pane = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     pump_until(&mut h, |_| {
         crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)

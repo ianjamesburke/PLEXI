@@ -26,11 +26,11 @@ class LandingSafety(unittest.TestCase):
         (self.root / 'b').write_text('base\n')
         (self.root / 'Cargo.toml').write_text('version = \"1.0.0\"\n')
         (self.root / '.gitignore').write_text('ignored-data/\ntarget/\nassets/python/\n.venv/\n.pytest_cache/\n__pycache__/\n')
-        for name in ('assets/keep', 'sdk/python/tests/keep', 'apps/todo/keep', 'scripts/keep'):
+        for name in ('assets/keep', 'sdk/python/tests/keep', 'plugins/todo/keep', 'scripts/keep'):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('tracked')
-        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore', 'assets', 'sdk', 'apps', 'scripts')
+        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore', 'assets', 'sdk', 'plugins', 'scripts')
         self.run_cmd('git', 'commit', '-m', 'base')
         self.run_cmd('git', 'remote', 'add', 'origin', str(self.remote))
         self.run_cmd('git', 'push', '-u', 'origin', 'alpha')
@@ -159,7 +159,7 @@ class LandingSafety(unittest.TestCase):
         (lane / 'target').unlink()
         for name in ('target', 'assets/python', 'scripts/__pycache__', 'sdk/python/.venv',
                      'sdk/python/.pytest_cache', 'sdk/python/tests/__pycache__',
-                     'apps/todo/__pycache__'):
+                     'plugins/todo/__pycache__'):
             path = lane / name
             path.mkdir(parents=True, exist_ok=True)
             (path / 'generated').write_text('cache')

@@ -58,7 +58,7 @@ when implementation is still uncommitted.
 |---|---|---|
 | `src/` host logic (commands, effects, pane ops, CLI) | host | scoped `cargo test --bin plexi` |
 | `src/` egui layer (overlays, widgets, render, style) | host-ui | PlexiUiHarness test + screenshot |
-| `apps/`, `sdk/python/` | pgap | relevant app/SDK checks; inspected render for visible changes |
+| `plugins/`, `sdk/python/` | pgap | relevant app/SDK checks; inspected render for visible changes |
 | docs or skills | docs | path-specific gate classification and relevant documentation checks |
 | scripts or config | infrastructure | focused checks and other gates required by TESTING.md |
 
@@ -109,7 +109,7 @@ For a new or changed overlay/widget/pane type: **add a committed scene file** un
 size = [1280.0, 800.0]
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/balls", as = "balls" }
+open = { kind = "process", path = "plugins/dev/balls", as = "balls" }
 [[steps]]
 wait_app_frame = { target = "balls", timeout_s = 15.0 }
 [[steps]]
@@ -123,13 +123,13 @@ format, see `src/testing/TESTING.md`.
 
 ### Python PGAP apps — AppHarness PNG renders
 
-**For visible `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
+**For visible `plugins/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
 
 ```python
 from plexi_sdk.testing import AppHarness, render_draw_commands
 
 # Full app test — spawns the app subprocess, drives it over PGAP protocol
-with AppHarness("apps/my_app/app.py", width=800, height=600) as h:
+with AppHarness("plugins/my_app/app.py", width=800, height=600) as h:
     h.run(1)                             # step one render frame
     h.key("enter")                       # inject a key event
     h.run(1)                             # re-render
@@ -178,7 +178,7 @@ Conclusion rules:
 - A `LiveBackend` change always requires `just scene-live` against the installed
   PR channel. Headless parity proves schema semantics, not CLI execution or
   eventual polling against a real host.
-- `apps/` changes always require binary install regardless of conclusion — the app registry and bundle layout are only exercised by a real install.
+- `plugins/` changes always require binary install regardless of conclusion — the app registry and bundle layout are only exercised by a real install.
 
 ## Guards
 

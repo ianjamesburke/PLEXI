@@ -6,7 +6,7 @@ size = [1280.0, 800.0]
 suite = true
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/event-probe", as = "probe" }
+open = { kind = "process", path = "plugins/dev/event-probe", as = "probe" }
 
 [[steps]]
 wait_view_frame = { target = "probe", timeout_s = 15.0 }

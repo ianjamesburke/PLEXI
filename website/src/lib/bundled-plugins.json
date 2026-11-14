@@ -6,7 +6,7 @@
     "capabilities": [
       "timer"
     ],
-    "source": "apps/sudoku"
+    "source": "plugins/sudoku"
   },
   {
     "id": "logs",
@@ -16,28 +16,28 @@
       "logs.read",
       "timer"
     ],
-    "source": "apps/logs"
+    "source": "plugins/logs"
   },
   {
     "id": "todo",
     "name": "Todo",
     "description": "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly.",
     "capabilities": [],
-    "source": "apps/todo"
+    "source": "plugins/todo"
   },
   {
     "id": "calc",
     "name": "Calculator",
     "description": "Four-function calculator with connector tools for the Assistant.",
     "capabilities": [],
-    "source": "apps/calc"
+    "source": "plugins/calc"
   },
   {
     "id": "balls",
     "name": "Balls",
     "description": "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle.",
     "capabilities": [],
-    "source": "apps/balls"
+    "source": "plugins/balls"
   },
   {
     "id": "snake",
@@ -46,21 +46,21 @@
     "capabilities": [
       "timer"
     ],
-    "source": "apps/snake"
+    "source": "plugins/snake"
   },
   {
     "id": "breakout",
     "name": "Breakout",
     "description": "Classic brick-breaking arcade game with paddle, ball, and colorful brick grid.",
     "capabilities": [],
-    "source": "apps/breakout"
+    "source": "plugins/breakout"
   },
   {
     "id": "tetris",
     "name": "Tetris",
     "description": "Classic Tetris driven by the continuous WASM frame clock.",
     "capabilities": [],
-    "source": "apps/tetris"
+    "source": "plugins/tetris"
   },
   {
     "id": "github-issues",
@@ -69,6 +69,6 @@
     "capabilities": [
       "net.http"
     ],
-    "source": "apps/github-issues"
+    "source": "plugins/github-issues"
   }
 ]
