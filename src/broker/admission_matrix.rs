@@ -59,13 +59,15 @@ pub(crate) enum Family {
     Clipboard,
     Events,
     Panes,
+    /// Directed data pipes to other panes (`pipe.open`).
+    Pipes,
     Notify,
     HostRead,
     PluginTools,
 }
 
 impl Family {
-    pub(crate) const ALL: [Family; 12] = [
+    pub(crate) const ALL: [Family; 13] = [
         Family::FsRead,
         Family::FsWrite,
         Family::Network,
@@ -75,6 +77,7 @@ impl Family {
         Family::Clipboard,
         Family::Events,
         Family::Panes,
+        Family::Pipes,
         Family::Notify,
         Family::HostRead,
         Family::PluginTools,
@@ -318,7 +321,7 @@ const fn na(runtime: Runtime, family: Family, reason: &'static str) -> Line {
 use Family as F;
 use Runtime as R;
 
-/// The matrix. 3 runtimes x 12 families x 10 grant states.
+/// The matrix. 3 runtimes x 13 families x 10 grant states.
 pub(crate) const TABLE: &[Line] = &[
     // ── Python plugin (LivePythonPane) ───────────────────────────────────────
     line(R::Python, F::FsRead, &["fs.read", "fs.pick"], PY_NON_SENSITIVE),
@@ -335,6 +338,7 @@ pub(crate) const TABLE: &[Line] = &[
         &["panes.read", "panes.control", "panes.spawn", "spawn.plugin", "terminal.bindings", "permissions.manage"],
         PY_SENSITIVE,
     ),
+    line(R::Python, F::Pipes, &["pipe.open"], PY_NON_SENSITIVE),
     line(R::Python, F::Notify, &["notify"], PY_NOTIFY),
     line(R::Python, F::HostRead, &["logs.read", "mcp.client"], PY_NON_SENSITIVE),
     na(R::Python, F::PluginTools, "plugins publish connector tools; no plugin-to-plugin tool call reaches the broker"),
@@ -348,6 +352,7 @@ pub(crate) const TABLE: &[Line] = &[
     line(R::Wasm, F::Clipboard, &["clipboard.read", "clipboard.write"], WASM_CONSENT),
     line(R::Wasm, F::Events, &["publisher.plugin::changed"], EVENTS),
     line(R::Wasm, F::Panes, &["open-pane", "spawn.plugin"], WASM_CONSENT),
+    na(R::Wasm, F::Pipes, "pipe.open is granted at load through Grants (manifest pipe.open), not request-capability"),
     line(R::Wasm, F::Notify, &["notify"], WASM_CONSENT),
     na(R::Wasm, F::HostRead, "the WIT surface has no host log or MCP effect"),
     na(R::Wasm, F::PluginTools, "plugins publish connector tools; no plugin-to-plugin tool call reaches the broker"),
@@ -361,6 +366,7 @@ pub(crate) const TABLE: &[Line] = &[
     na(R::Agent, F::Clipboard, "no brokered clipboard tool for agents"),
     line(R::Agent, F::Events, &["publisher.plugin::changed"], EVENTS),
     line(R::Agent, F::Panes, &["pane.send"], EXACT),
+    na(R::Agent, F::Pipes, "agents have no directed-pipe effect; pipes are plugin-to-plugin"),
     na(R::Agent, F::Notify, "plexi notify has no admission call site"),
     na(R::Agent, F::HostRead, "plexi log reads have no admission call site"),
     line(R::Agent, F::PluginTools, &["probe.add"], EXACT),
@@ -399,10 +405,6 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
     ),
     ("ai.query", "no Python effect (Ai line is not-applicable)"),
     ("llm", "no Python effect (Ai line is not-applicable)"),
-    (
-        "pipe.open",
-        "not consulted through LivePythonPane::has_capability",
-    ),
     (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
@@ -468,6 +470,7 @@ pub(crate) const DRIVEN: &[(Runtime, Family, &str)] = &[
     (R::Python, F::Network, "python_runtime_admission_matrix"),
     (R::Python, F::CliExec, "python_runtime_admission_matrix"),
     (R::Python, F::Panes, "python_runtime_admission_matrix"),
+    (R::Python, F::Pipes, "python_runtime_admission_matrix"),
     (R::Python, F::Notify, "python_runtime_admission_matrix"),
     (R::Python, F::HostRead, "python_runtime_admission_matrix"),
     (R::Wasm, F::FsRead, "wasm_runtime_admission_matrix"),
@@ -711,7 +714,7 @@ fn matrix_has_one_line_per_runtime_and_family_and_every_line_is_driven() {
             }
         }
     }
-    assert_eq!(TABLE.len(), 36);
+    assert_eq!(TABLE.len(), 39);
 }
 
 #[test]
@@ -1061,8 +1064,8 @@ fn cutover_cells_are_enumerated() {
     for row in &rows {
         println!("{row}");
     }
-    // 76 matrix cells plus the two `InstallYes` probes (stint 1291).
-    assert_eq!(rows.len(), 78);
+    // 81 matrix cells plus the two `InstallYes` probes (stint 1291).
+    assert_eq!(rows.len(), 83);
 }
 
 /// Stint 1291 `InstallYes` probe: install each package with `--yes` through
