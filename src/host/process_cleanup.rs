@@ -274,10 +274,18 @@ pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
 /// Stop pane groups belonging to `marker`, bounded across process and tmux
 /// cleanup. This is also the socket-failure fallback used by `host stop`.
 pub(crate) fn stop_pane_processes_for_marker(marker: &str, default_grace: Duration) -> KillReport {
-    stop_pane_processes_with_tmux(marker, default_grace, "tmux")
+    stop_pane_processes_with_tmux(marker, default_grace, "tmux", TMUX_MIN_BUDGET)
 }
 
-fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &str) -> KillReport {
+/// `tmux_min` is the tmux minimum: `TMUX_MIN_BUDGET` in production. Tests
+/// pass their own so that what they prove does not depend on how fast a
+/// process spawns on the machine running them.
+fn stop_pane_processes_with_tmux(
+    marker: &str,
+    default_grace: Duration,
+    tmux: &str,
+    tmux_min: Duration,
+) -> KillReport {
     let grace = match std::env::var("PLEXI_QUIT_GRACE_MS") {
         Ok(value) => match value.parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms.min(30_000)),
@@ -295,7 +303,7 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     // tmux minimum, so a grace that runs to the cap no longer starves tmux.
     let deadline = start + (grace + POST_KILL_WAIT).min(QUIT_CLEANUP_CAP);
     let process_deadline = deadline
-        .checked_sub(TMUX_MIN_BUDGET)
+        .checked_sub(tmux_min)
         .map_or(start, |end| end.max(start));
     crate::app::quit::trace("children_begin");
     let mut report = stop_marked_processes(marker, grace, process_deadline);
@@ -303,7 +311,7 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     // of the shared budget, and never less than TMUX_MIN_BUDGET.
     crate::app::quit::trace("tmux_begin");
     let tmux_start = Instant::now();
-    let tmux_deadline = cleanup_end(deadline, tmux_start);
+    let tmux_deadline = cleanup_end(deadline, tmux_start, tmux_min);
     log::info!(
         "quit: tmux cleanup budget {}ms",
         tmux_deadline
@@ -326,8 +334,8 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
 /// The deadline tmux cleanup is allocated: the shared deadline, unless tmux
 /// would get less than its minimum from `tmux_start` (stint 1526). This is an
 /// allocation, not a guarantee the cleanup has finished by then.
-fn cleanup_end(deadline: Instant, tmux_start: Instant) -> Instant {
-    deadline.max(tmux_start + TMUX_MIN_BUDGET)
+fn cleanup_end(deadline: Instant, tmux_start: Instant, tmux_min: Duration) -> Instant {
+    deadline.max(tmux_start + tmux_min)
 }
 
 /// How long to watch SIGKILLed processes go: at most `POST_KILL_WAIT`, never
@@ -786,6 +794,7 @@ mod tests {
             &marker,
             Duration::from_millis(30),
             tmux.to_str().unwrap(),
+            TMUX_MIN_BUDGET,
         );
         assert!(
             start.elapsed() < crate::testing::load_aware_timeout(Duration::from_millis(450)),
@@ -809,10 +818,12 @@ mod tests {
     }
 
     /// Stint 1526: when the grace runs to the shared cap and a SIGKILL is
-    /// needed, tmux cleanup still gets `TMUX_MIN_BUDGET` and leaves no marked
-    /// session. The fake `tmux` keeps its sessions in a file (no tmux server)
-    /// and takes 5 ms per call, so three calls fit the minimum on a loaded
-    /// runner.
+    /// needed, tmux cleanup is still allocated its minimum and leaves no
+    /// marked session. Without the reserve it is allocated nothing, so the
+    /// session survives whatever the minimum is. The test passes a generous,
+    /// load-scaled minimum so it never depends on how fast three process
+    /// spawns are on the runner. The fake `tmux` keeps its sessions in a
+    /// file (no tmux server).
     #[test]
     fn tmux_cleanup_keeps_its_minimum_budget_after_a_sigkill() {
         use std::os::unix::fs::PermissionsExt;
@@ -867,8 +878,13 @@ mod tests {
         let start = Instant::now();
         // A grace at the shared cap: before stint 1526 it consumed the whole
         // budget and tmux cleanup got none.
-        let report =
-            stop_pane_processes_with_tmux(&marker, QUIT_CLEANUP_CAP, tmux.to_str().unwrap());
+        let tmux_min = crate::testing::load_aware_timeout(Duration::from_secs(2));
+        let report = stop_pane_processes_with_tmux(
+            &marker,
+            QUIT_CLEANUP_CAP,
+            tmux.to_str().unwrap(),
+            tmux_min,
+        );
         let elapsed = start.elapsed();
         assert_eq!(report.escalated, 1, "the pane needed a SIGKILL");
         assert_eq!(
@@ -878,7 +894,7 @@ mod tests {
             report.tmux
         );
         assert!(
-            elapsed < crate::testing::load_aware_timeout(QUIT_CLEANUP_CAP + TMUX_MIN_BUDGET),
+            elapsed < crate::testing::load_aware_timeout(QUIT_CLEANUP_CAP) + tmux_min,
             "cleanup took {elapsed:?}"
         );
         match child.0.wait() {
@@ -910,9 +926,12 @@ mod tests {
     fn cleanup_ends_at_the_deadline_unless_the_tmux_floor_needs_more() {
         let tmux_start = Instant::now();
         let roomy = tmux_start + Duration::from_millis(400);
-        assert_eq!(cleanup_end(roomy, tmux_start), roomy);
+        assert_eq!(cleanup_end(roomy, tmux_start, TMUX_MIN_BUDGET), roomy);
         let tight = tmux_start + Duration::from_millis(20);
-        assert_eq!(cleanup_end(tight, tmux_start), tmux_start + TMUX_MIN_BUDGET);
+        assert_eq!(
+            cleanup_end(tight, tmux_start, TMUX_MIN_BUDGET),
+            tmux_start + TMUX_MIN_BUDGET
+        );
     }
 
     struct FixtureChild(std::process::Child);
