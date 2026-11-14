@@ -1582,6 +1582,37 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
 }
 
 #[cfg(test)]
+mod spawn_error_tests {
+    use super::*;
+
+    /// Stint 1499: a terminal that cannot start says why, naming the program
+    /// and the original cause, instead of returning a bare None.
+    #[test]
+    fn terminal_spawn_failure_names_the_program_and_the_cause() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let error = match TerminalPane::new(
+            7,
+            egui::Context::default(),
+            tx,
+            BackendSettings {
+                shell: "/nonexistent/plexi-test-shell".into(),
+                ..Default::default()
+            },
+            14.0,
+        ) {
+            Ok(_) => panic!("a missing shell must not start a terminal"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("/nonexistent/plexi-test-shell"), "{error}");
+        assert!(error.contains("PTY spawn"), "{error}");
+        assert!(
+            error.to_lowercase().contains("no such file"),
+            "names the original cause: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod agent_source_tests {
     use super::*;
     use crate::protocol::{AgentState, PaneAgentState};
