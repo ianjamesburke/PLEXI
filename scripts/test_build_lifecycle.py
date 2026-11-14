@@ -333,6 +333,7 @@ class Lifecycle(unittest.TestCase):
         if artifact:
             (slot / 'target' / 'release').mkdir()
             (slot / 'target' / 'release' / 'plexi').write_bytes(b'b' * 10)
+            (slot / 'target' / 'release' / '.plexi-candidate.json').write_text('{}')
         record = slot / 'last-channel'
         record.write_text(f'pr-{index}')
         os.utime(record, (age, age))
@@ -354,6 +355,8 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue((current / 'target' / 'debug' / 'deps.bin').exists())
         for slot in (oldest, leased, newer, current):
             self.assertTrue((slot / 'target' / 'release' / 'plexi').exists(), 'stamped artifacts survive')
+            self.assertTrue((slot / 'target' / 'release' / '.plexi-candidate.json').exists(),
+                            'the stamp build-evidence reads survives with its binary')
 
     def test_default_cap_fits_two_warm_lanes_and_floor_stays_12_gib(self):
         self.assertEqual(CACHE.DEFAULT_TOTAL_MAX_BYTES, 64 * 1024**3)
@@ -364,6 +367,51 @@ class Lifecycle(unittest.TestCase):
         CACHE.prune_slot(slot)
         self.assertFalse((slot / 'target' / 'debug').exists())
         self.assertEqual((slot / 'target' / 'release' / 'plexi').read_bytes(), b'b' * 10)
+        self.assertEqual((slot / 'target' / 'release' / '.plexi-candidate.json').read_text(), '{}')
+
+    def test_prune_skips_a_slot_reached_through_a_symlinked_namespace(self):
+        outside = self.root / 'outside'
+        foreign = outside / 'slot-0'
+        (foreign / 'target' / 'debug').mkdir(parents=True)
+        (foreign / 'owner').write_text(CACHE.MARKER)
+        (foreign / 'target' / 'debug' / 'deps.bin').write_bytes(b'x' * 1000)
+        (self.root / 'cache').mkdir(exist_ok=True)
+        (self.root / 'cache' / 'ns-link').symlink_to(outside)
+        current = self._slot('ns-a', 0, 10, 300)
+        CACHE.prune_to_cap(self.root / 'cache', cap=1, keep=current)
+        self.assertTrue((foreign / 'target' / 'debug' / 'deps.bin').exists(),
+                        'nothing outside the cache root is pruned')
+
+    def test_invalid_overrides_are_rejected_by_name_before_the_command(self):
+        marker = self.root / 'built'
+        command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1',
+                   'python3', '-c', f'import pathlib; pathlib.Path({str(marker)!r}).touch()']
+        for name in ('PLEXI_BUILD_MIN_FREE_BYTES', 'PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES'):
+            for value in ('abc', '0', '-5'):
+                result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True,
+                                        env={**self.env, name: value})
+                self.assertNotEqual(result.returncode, 0, f'{name}={value}')
+                self.assertIn(name, result.stderr, f'{name}={value}')
+                self.assertFalse(marker.exists(), f'{name}={value} must not start the build')
+
+    def test_sizing_tolerates_a_file_another_build_removes(self):
+        from unittest import mock
+        slot = self._slot('ns-a', 0, 1000, 100)
+        (slot / 'target' / 'debug' / 'gone.bin').write_bytes(b'y' * 500)
+        real = os.lstat
+        def vanishing(path, *args, **kwargs):
+            if str(path).endswith('gone.bin'):
+                raise FileNotFoundError(path)
+            return real(path, *args, **kwargs)
+        with mock.patch.object(CACHE.os, 'lstat', side_effect=vanishing):
+            self.assertEqual(CACHE.tree_bytes(slot / 'target'), 1000 + 10 + 2)
+
+    def test_floor_check_failure_is_named(self):
+        from unittest import mock
+        with mock.patch.object(CACHE.shutil, 'disk_usage', side_effect=OSError(5, 'Input/output error')):
+            with self.assertRaises(CACHE.DiskFloorError) as raised:
+                CACHE.require_free_space(self.root, floor=1)
+        self.assertIn('floor check failed', str(raised.exception))
 
     def test_lease_records_queue_execution_and_failure(self):
         env = {**self.env, 'PLEXI_CARGO_LOCK': str(self.root / 'lease'),
