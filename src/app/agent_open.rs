@@ -68,9 +68,8 @@ impl PlexiApp {
         peer_ancestry: Option<&[u32]>,
     ) -> Result<AgentOpenOutcome, String> {
         if let Some(pane_id) = self.running_named_agent_pane(name) {
-            if self.resume_standby_pane(pane_id) {
-                log::info!("agent_open: name={name} woke standby pane {pane_id}");
-            }
+            // A standby pane is focused and left in Standby: it resumes only
+            // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
             if !self.pane_navigate(pane_id) {
                 return Err(format!(
                     "agent open: pane {pane_id} running '{name}' could not be focused"
@@ -134,7 +133,7 @@ impl PlexiApp {
     }
 
     /// Owner call 1: which pane counts as running `name`. Any context; a pane
-    /// restored into standby counts. Ephemeral workers of the definition are
+    /// restored into standby counts (focused, not woken). Ephemeral workers of the definition are
     /// task runs, not the named agent's chat, and never count. Several match:
     /// the most recently focused, else the newest pane.
     pub(crate) fn running_named_agent_pane(&self, name: &str) -> Option<PaneId> {
