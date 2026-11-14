@@ -7,6 +7,12 @@ pub(crate) fn unavailable(plugin: &str) -> String {
     format!("Plugin '{plugin}' is unavailable because core-only mode is on. Set core_only = false in the profile config and restart Plexi.")
 }
 
+/// Why routines do not run in core-only mode. Shared by the scheduler's
+/// suspension trace and the `plexi routine run` refusal (stint 1242).
+pub(crate) fn routines_suspended() -> String {
+    "Routines are suspended because core-only mode is on. Set core_only = false in the profile config and restart Plexi.".to_string()
+}
+
 impl super::PlexiApp {
     pub(crate) fn require_plugin(&mut self, plugin: &str) -> Result<(), String> {
         if !self.config.core_only.unwrap_or(false) {

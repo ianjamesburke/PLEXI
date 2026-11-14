@@ -998,6 +998,7 @@ mod tests {
         };
         tool_dispatch::register(
             provider_a_pane,
+            tool_dispatch::ViewInstanceKey::detached(),
             "workspace-a-app".to_string(),
             vec![tool("echo")],
             PluginEventSender::Channel(provider_tx),
@@ -1005,6 +1006,7 @@ mod tests {
         );
         tool_dispatch::register(
             provider_b_pane,
+            tool_dispatch::ViewInstanceKey::detached(),
             "workspace-b-app".to_string(),
             vec![tool("secret")],
             PluginEventSender::Channel(other_tx),

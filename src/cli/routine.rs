@@ -138,6 +138,13 @@ pub fn routine_list() -> i32 {
 /// `plexi routine run <name>` — manually fire a routine
 pub fn routine_run(name: &str, force: bool) -> i32 {
     log::info!("cli: routine run '{name}' force={force}");
+    // Core-only mode promises nothing but the core runs; a manual run is a
+    // routine firing too, so it gets the same refusal as the scheduler.
+    if super::host::plugin_mode_core_only() {
+        log::info!("cli: routine run '{name}' refused: core-only mode is on");
+        eprintln!("error: {}", crate::app::core_only::routines_suspended());
+        return 1;
+    }
     let rf = routines_file();
     let Some(root) = workspace_root() else {
         print_no_workspace_error();

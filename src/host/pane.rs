@@ -2345,16 +2345,24 @@ impl ViewPane {
 
 impl Drop for ViewPane {
     fn drop(&mut self) {
-        // Overlay plugins reuse the replaced pane's id. Restoring the boxed pane
-        // must preserve that pane's connector and subscription registrations.
+        // Overlay views reuse the covered pane's id, so connector tools are
+        // released by view identity: only this view's tools go, and a covered
+        // view's tools come back (stint 1324). This runs for every view,
+        // including one still covering another pane when its tile closes.
+        crate::plexi_ai::tool_dispatch::release_view(
+            self.id,
+            crate::plexi_ai::tool_dispatch::ViewInstanceKey::of(self),
+            &self.manifest_id,
+        );
+        // Event subscriptions are still keyed by pane id alone, so an overlay
+        // leaves them to the pane it covered.
         if self.overlay_replaced.is_some() {
             log::info!(
-                "view pane: dropped overlay pane={} without clearing restored pane registrations",
+                "view pane: dropped overlay pane={} without clearing restored pane subscriptions",
                 self.id
             );
             return;
         }
-        crate::plexi_ai::tool_dispatch::unregister(self.id);
         let (subscriptions, deliveries) = crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
@@ -2363,7 +2371,7 @@ impl Drop for ViewPane {
                 &crate::host::event_subscriptions::plugin_subscriber_id(self.id),
             );
         log::info!(
-            "view pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
+            "view pane: dropped pane={} and cleared {} event subscription(s), {} queued delivery(ies)",
             self.id,
             subscriptions,
             deliveries

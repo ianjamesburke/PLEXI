@@ -718,6 +718,7 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     let (tx, rx) = std::sync::mpsc::channel();
     tool_dispatch::register(
         target,
+        tool_dispatch::ViewInstanceKey::detached(),
         "wait-probe".into(),
         vec![AiTool {
             name: "probe.add".into(),
@@ -829,6 +830,7 @@ fn all_dispatchers_require_monitor() {
     let (tx, _rx) = std::sync::mpsc::channel();
     tool_dispatch::register(
         910_101,
+        tool_dispatch::ViewInstanceKey::detached(),
         "probe".to_string(),
         vec![AiTool {
             name: "probe.ping".to_string(),

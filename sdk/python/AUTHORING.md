@@ -93,6 +93,22 @@ def view():
 - `view()` must be **pure**. Calling `state.set()` inside `view()` raises
   `RuntimeError`. All mutation flows through effects returned from `update()`.
 
+### Your own header and footer are optional
+
+`SurfaceHeader` and `FooterKeys` are bands you draw inside your own tree. The
+host never requires them, and its own pane chrome (pane header, tab bar,
+Esc-to-return bar) stays regardless of what your tree contains. Leave them out when the
+plugin is the content: games, visualizers, full-bleed canvases. Then:
+
+- Still report the title and status to the host with `SetTitle` and
+  `SetStatus`; they are not a substitute for showing the player what matters.
+- Draw what the user must see (a score) and one short key hint inside the
+  content. For a canvas, use small `CanvasText` in its margins in `theme.fg`;
+  the key hint is the only discoverability left.
+
+`plugins/snake` is the reference: its `view()` returns a single grow `Canvas`.
+Tools, lists and forms keep `SurfaceHeader` and `FooterKeys` as above.
+
 ## Keyed Component State
 
 Reusable components own state through an explicit, stable key. Declare it once

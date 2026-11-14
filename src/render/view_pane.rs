@@ -49,11 +49,17 @@ pub fn render(
         String::new()
     };
 
-    if has_overtake || nav_title.is_some() {
-        log::debug!(
-            "view_pane::render: chrome_h={:.0} (overtake={has_overtake} nav={})",
-            chrome_height(has_overtake, nav_title.is_some()),
-            nav_title.is_some(),
+    let bands = (has_overtake, nav_title.is_some());
+    let bands_id = egui::Id::new(("view_pane_chrome_bands", view_pane.id));
+    if ui.ctx().data(|d| d.get_temp::<(bool, bool)>(bands_id)) != Some(bands) {
+        ui.ctx().data_mut(|d| d.insert_temp(bands_id, bands));
+        log::info!(
+            "view_pane::render: pane={} view={} chrome bands overtake={} nav={} chrome_h={:.0}",
+            view_pane.id,
+            view_pane.manifest_id,
+            bands.0,
+            bands.1,
+            chrome_height(bands.0, bands.1),
         );
     }
 
@@ -134,15 +140,18 @@ pub fn render(
     }
 
     // -- App content in constrained content viewport --
-    // ui.available_height() == pane_height - chrome_height(has_overtake, nav_title.is_some())
-    // guaranteed by the allocate_exact_size calls above. Plugins read ui.available_height() /
-    // available_size() and always see the post-chrome budget with no guesswork.
+    // The plugin gets a child Ui whose max rect and clip are the area below the
+    // chrome bands, so `ui.max_rect()`, `ui.available_size()` and every paint
+    // stay out of host chrome. Handing it the pane's own Ui let a full-rect
+    // backdrop cover the overtake bar (stint 1267).
     let ctx = ViewRenderContext {
         colors,
         pane_id: view_pane.id,
     };
     let content_rect = ui.available_rect_before_wrap();
-    view_pane.runtime.ui(ui, &ctx, pending_click);
+    let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
+    content_ui.set_clip_rect(content_rect.intersect(ui.clip_rect()));
+    view_pane.runtime.ui(&mut content_ui, &ctx, pending_click);
     if matches!(
         view_pane.runtime,
         crate::host::pane::ViewRuntime::Builtin(_)

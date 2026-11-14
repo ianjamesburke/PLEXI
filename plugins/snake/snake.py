@@ -8,15 +8,7 @@ import random
 from plexi_sdk import dim, log, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, TimerFired
-from plexi_sdk.ui import (
-    SurfaceHeader,
-    Canvas,
-    CanvasRect,
-    CanvasText,
-    Column,
-    FooterKeys,
-    Spacer,
-)
+from plexi_sdk.ui import Canvas, CanvasRect, CanvasText
 
 COLS = 26
 ROWS = 20
@@ -154,24 +146,9 @@ def _next_food(snake: list[list[int]]) -> list[int]:
 
 
 def view():
-    data = _game()
-    commands = _draw(data)
-    subtitle = _status(data)
-    keys = (
-        [("h/j/k/l", "move"), ("r", "restart")]
-        if not data["alive"]
-        else [("h/j/k/l", "move")]
-    )
-    return Column(
-        [
-            SurfaceHeader("Snake", subtitle),
-            Canvas(commands, width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
-            Spacer(8.0),
-            FooterKeys(keys),
-        ],
-        gap=0,
-        grow=True,
-    )
+    # A game shows only the game: no SurfaceHeader or FooterKeys band. The
+    # score and the key hint are drawn in the canvas margins.
+    return Canvas(_draw(_game()), width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain")
 
 
 def _draw(data: dict) -> list:
@@ -207,6 +184,28 @@ def _draw(data: dict) -> list:
                 radius=2.0,
             )
         )
+    hint = "h/j/k/l move" if data["alive"] else "h/j/k/l move  ·  r restart"
+    commands.append(
+        CanvasText(
+            CANVAS_W / 2,
+            oy / 2,
+            _status(data),
+            size=12.0,
+            color=theme.fg,
+            bold=True,
+            align="center_center",
+        )
+    )
+    commands.append(
+        CanvasText(
+            CANVAS_W / 2,
+            oy + ROWS * CELL + 12.0,
+            hint,
+            size=11.0,
+            color=theme.fg,
+            align="center_center",
+        )
+    )
     if not data["alive"]:
         cx = CANVAS_W / 2
         cy = CANVAS_H / 2

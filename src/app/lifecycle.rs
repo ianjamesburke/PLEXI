@@ -6149,6 +6149,10 @@ impl PlexiApp {
 
     pub(crate) fn tick_scheduler(&mut self) {
         if self.config.core_only.unwrap_or(false) {
+            if !self.scheduler.core_only_logged {
+                log::info!("scheduler: {}", crate::app::core_only::routines_suspended());
+                self.scheduler.core_only_logged = true;
+            }
             return;
         }
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Routines) {

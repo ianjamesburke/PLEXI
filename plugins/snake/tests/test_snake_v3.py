@@ -41,9 +41,7 @@ def test_key_changes_direction_and_view_has_canvas() -> None:
     _with_state(changed)
 
     assert changed["next_direction"] == [0, 1]
-    view_node = snake.view().to_node()
-    assert view_node.get("padding") is None
-    canvas = snake.view().children[1].to_node()
+    canvas = snake.view().to_node()
     assert canvas["type"] == "canvas"
     assert any(cmd["type"] == "rect" and cmd["fill"] == theme.bg_darkest for cmd in canvas["commands"])
     assert any(cmd["type"] == "rect" and cmd["fill"] == theme.danger for cmd in canvas["commands"])
@@ -69,3 +67,30 @@ def test_next_food_is_random_and_lands_on_free_cell() -> None:
 def test_next_food_full_board_returns_sentinel() -> None:
     full = [[c, r] for r in range(snake.ROWS) for c in range(snake.COLS)]
     assert snake._next_food(full) == [-1, -1]
+
+
+def _node_types(node: dict) -> list[str]:
+    types = [node["type"]]
+    for child in node.get("children", []):
+        types.extend(_node_types(child))
+    return types
+
+
+def test_view_is_canvas_only_with_in_canvas_key_hint() -> None:
+    """Stint 1266: a game shows the game, not its own name band. The score and
+    the key hint are drawn inside the canvas."""
+    _with_state(snake._initial())
+    node = snake.view().to_node()
+    types = _node_types(node)
+    assert "surface_header" not in types
+    assert "footer_keys" not in types
+    assert node["type"] == "canvas"
+    texts = [cmd["text"] for cmd in node["commands"] if cmd["type"] == "text"]
+    assert any("move" in text for text in texts), texts
+    assert "Score: 0" in texts, texts
+
+    dead = snake._initial()
+    dead["alive"] = False
+    _with_state(dead)
+    texts = [cmd["text"] for cmd in snake.view().to_node()["commands"] if cmd["type"] == "text"]
+    assert any("restart" in text for text in texts), texts

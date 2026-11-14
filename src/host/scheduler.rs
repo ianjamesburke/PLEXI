@@ -104,6 +104,9 @@ pub(crate) struct RoutineLoadFailure {
 
 pub(crate) struct Scheduler {
     pub(crate) disabled_file_logged: bool,
+    /// The core-only suspension was logged once; scheduled routines stay
+    /// suspended for the life of the process.
+    pub(crate) core_only_logged: bool,
     pub entries: Vec<SchedulerEntry>,
     /// Per-workspace-root → last loaded entries (avoid re-parsing every tick)
     loaded_roots: HashMap<PathBuf, std::time::Instant>,
@@ -121,6 +124,7 @@ impl Scheduler {
     pub fn new() -> Self {
         Self {
             disabled_file_logged: false,
+            core_only_logged: false,
             entries: Vec::new(),
             loaded_roots: HashMap::new(),
             live_runs: HashMap::new(),
