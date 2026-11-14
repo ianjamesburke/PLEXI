@@ -1439,6 +1439,21 @@ mod tests {
         format!("schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[contributes]\n{extra}")
     }
 
+    /// Stint 1375: `llm` was a capability id nothing consulted; `ai.query`
+    /// is the AI grant. A manifest declaring `llm` gets the unknown-capability
+    /// error.
+    #[test]
+    fn schema2_rejects_the_removed_llm_capability() {
+        let raw = schema2_fixture("[plugin.capabilities]\ncapabilities = ['llm']\n");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("sample") && error.contains("unknown capability ID 'llm'"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn schema2_rejects_unknown_capability_before_activation() {
         let raw = schema2_fixture("[plugin.capabilities]\ncapabilities = ['fs.typo']\n");

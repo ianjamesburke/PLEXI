@@ -49,9 +49,6 @@ pub enum Capability {
     /// Decode and display video via host broker.
     /// Plugin availability: Not available to plugins yet.
     VideoPlayback,
-    /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
-    /// Plugin availability: Not available to plugins yet.
-    Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
     /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
@@ -160,7 +157,6 @@ impl Capability {
             Self::AudioPlayback => "Play audio",
             Self::GpuRender => "Render through the WASM GPU surface",
             Self::VideoPlayback => "Decode and display video",
-            Self::Llm => "Make LLM API calls using your API key",
             Self::Timer => "Schedule timers",
             Self::AiQuery => "Make AI calls through the Plexi broker",
             Self::MidiIn => "Receive input from MIDI devices",
@@ -189,7 +185,6 @@ impl Capability {
             Self::AudioPlayback => "audio.playback",
             Self::GpuRender => "gpu.render",
             Self::VideoPlayback => "video.playback",
-            Self::Llm => "llm",
             Self::Timer => "timer",
             Self::AiQuery => "ai.query",
             Self::MidiIn => "midi.in",
@@ -221,7 +216,6 @@ impl Capability {
         Self::AudioPlayback,
         Self::GpuRender,
         Self::VideoPlayback,
-        Self::Llm,
         Self::Timer,
         Self::AiQuery,
         Self::MidiIn,
@@ -272,7 +266,6 @@ impl Capability {
             | Self::PermissionsManage
             | Self::SpawnView
             | Self::AiQuery
-            | Self::Llm
             | Self::AudioRecord
             | Self::TerminalBindings
             | Self::FsWrite
@@ -1096,7 +1089,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            24,
+            23,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
@@ -1406,7 +1399,6 @@ mod tests {
             Capability::PanesSpawn,
             Capability::SpawnView,
             Capability::AiQuery,
-            Capability::Llm,
             Capability::AudioRecord,
             Capability::TerminalBindings,
             Capability::FsWrite,

@@ -1013,7 +1013,7 @@ class PluginRuntime:
                     "pipe_id": str(effect.pipe_id),
                     "payload": effect.payload,
                 })
-            elif isinstance(effect, (effects.AiQuery, effects.GetSystemStats)):
+            elif isinstance(effect, effects.AiQuery):
                 raise TypeError(
                     f"plugin {self._plugin_id!r}: effect {type(effect).__name__} is not "
                     "available in this runtime (the host has no handler for it)"

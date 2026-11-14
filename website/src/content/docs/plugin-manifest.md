@@ -56,7 +56,6 @@ view or command declaration also fail validation.
 | `audio.playback` | Available | Play audio |
 | `gpu.render` | Available | Render through the WASM GPU surface |
 | `video.playback` | Not available to plugins yet | Decode and display video |
-| `llm` | Not available to plugins yet | Make LLM API calls using your API key |
 | `timer` | Available | Schedule timers |
 | `ai.query` | WebAssembly plugins only, not yet Python plugins | Make AI calls through the Plexi broker |
 | `midi.in` | Not available to plugins yet | Receive input from MIDI devices |

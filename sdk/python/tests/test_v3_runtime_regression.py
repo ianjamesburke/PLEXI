@@ -1243,10 +1243,6 @@ class TestUnsupportedEffectsFailLoudly:
         err = self._run(tmp_path, "AiQuery('r', 'fast', '', [])")
         assert "fail-loud" in err and "AiQuery" in err and "not available" in err
 
-    def test_get_system_stats_is_refused_with_a_named_error(self, tmp_path):
-        err = self._run(tmp_path, "GetSystemStats()")
-        assert "GetSystemStats" in err and "not available" in err
-
     def test_unknown_effect_type_is_refused(self, tmp_path):
         err = self._run(tmp_path, "object()")
         assert "fail-loud" in err and "object" in err and "not a supported effect" in err

@@ -265,12 +265,6 @@ SetTimer(id: int, delay_ms: int, repeat: bool = False)
 CancelTimer(id: int)
 ```
 
-### `GetSystemStats`
-
-```python
-GetSystemStats()
-```
-
 ### `SetTitle`
 
 ```python
@@ -443,18 +437,6 @@ TimerFired(id: int)
 RenderFrame(frame_id: int, elapsed: float)
 ```
 
-### `SystemStats`
-
-```python
-SystemStats(cpu_usage_pct: float, memory_used_bytes: int, memory_total_bytes: int, disk_read_bps: int, disk_write_bps: int, net_rx_bps: int, net_tx_bps: int, uptime_secs: int, load_avg_one_min: float)
-```
-
-### `SystemStatsResult`
-
-```python
-SystemStatsResult(stats: SystemStats)
-```
-
 ### `FileReadResult`
 
 ```python
@@ -573,12 +555,6 @@ a ``json`` operation, a string for ``text``); ``data_available`` says whether
 it did, and unparseable output is never put in ``data``. A failure other than a nonzero exit, timeout or
 cancellation means the program did not run.
 
-### `AiStreamChunk`
-
-```python
-AiStreamChunk(request_id: str, delta: str, reasoning: Optional[str], done: bool)
-```
-
 ### `AiResponse`
 
 ```python
@@ -645,24 +621,6 @@ PipePayload(binary: Optional[bytes] = None, json: Optional[str] = None)
 PipeMessage(handle: int = 0, payload: PipePayload = PipePayload(), pipe_id: str = '', data: Optional[object] = None)
 ```
 
-### `PipePeerConnected`
-
-```python
-PipePeerConnected(handle: int)
-```
-
-### `PipeClosed`
-
-```python
-PipeClosed(handle: int)
-```
-
-### `PipeError`
-
-```python
-PipeError(handle: int, error: str)
-```
-
 ### `StateChanged`
 
 ```python
@@ -691,18 +649,6 @@ CapabilityGranted(name: str)
 
 ```python
 CapabilityDenied(name: str)
-```
-
-### `PaymentComplete`
-
-```python
-PaymentComplete()
-```
-
-### `PaymentFailed`
-
-```python
-PaymentFailed(reason: str)
 ```
 
 ## State and Logging

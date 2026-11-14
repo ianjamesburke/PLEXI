@@ -404,7 +404,6 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
         "no Python effect (Secrets line is not-applicable)",
     ),
     ("ai.query", "no Python effect (Ai line is not-applicable)"),
-    ("llm", "no Python effect (Ai line is not-applicable)"),
     (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
