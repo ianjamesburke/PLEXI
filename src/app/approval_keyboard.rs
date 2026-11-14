@@ -8,6 +8,64 @@ use std::time::{Duration, Instant};
 
 pub(crate) const ARM_DELAY: Duration = Duration::from_secs(1);
 
+/// The one consent input guard (stint 1498), shared by the permission banner
+/// and every consent dialog: a decision input counts only on a real
+/// (non-synthetic) frame, once the surface has been on screen for
+/// [`ARM_DELAY`]. Stint 1283 replaces this function with the human-input
+/// witness.
+pub(crate) fn consent_input_admitted(
+    shown_since: Option<Instant>,
+    now: Instant,
+    synthetic_frame: bool,
+) -> bool {
+    !synthetic_frame
+        && shown_since.is_some_and(|since| now.saturating_duration_since(since) >= ARM_DELAY)
+}
+
+/// When one consent dialog's current request appeared, so its decisions can
+/// go through [`consent_input_admitted`]. A new request re-arms the delay.
+#[derive(Default, Debug)]
+pub(crate) struct ConsentGuard {
+    subject: Option<String>,
+    since: Option<Instant>,
+}
+
+impl ConsentGuard {
+    /// The dialog is showing `subject` at `now`; a different subject arms anew.
+    pub(crate) fn present(&mut self, subject: &str, now: Instant) {
+        if self.subject.as_deref() != Some(subject) {
+            log::info!("consent_guard: arming for {subject}");
+            self.subject = Some(subject.to_string());
+            self.since = Some(now);
+        }
+    }
+
+    /// The dialog has nothing to show.
+    pub(crate) fn clear(&mut self) {
+        self.subject = None;
+        self.since = None;
+    }
+
+    pub(crate) fn admits(&self, now: Instant, synthetic_frame: bool) -> bool {
+        consent_input_admitted(self.since, now, synthetic_frame)
+    }
+
+    /// Time left before decisions count, for scheduling the repaint that arms.
+    pub(crate) fn remaining(&self, now: Instant) -> Duration {
+        self.since
+            .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
+            .unwrap_or_default()
+    }
+
+    /// Test hook: the request appeared `ago` before now.
+    #[cfg(test)]
+    pub(crate) fn backdate(&mut self, ago: Duration) {
+        if let Some(since) = self.since.as_mut() {
+            *since -= ago;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ApprovalKeyboard {
     pub id: Option<String>,
@@ -48,10 +106,7 @@ impl ApprovalKeyboard {
     }
 
     pub fn armed(&self, now: Instant) -> bool {
-        self.id.is_some()
-            && self
-                .since
-                .is_some_and(|since| now.saturating_duration_since(since) >= ARM_DELAY)
+        self.id.is_some() && consent_input_admitted(self.since, now, false)
     }
 }
 

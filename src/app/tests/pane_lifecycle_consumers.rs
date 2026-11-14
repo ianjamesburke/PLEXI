@@ -7,14 +7,14 @@ use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-struct Connection {
+pub(super) struct Connection {
     socket: UnixStream,
     lines: mpsc::Receiver<String>,
     server: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Connection {
-    fn open(h: &mut HostHarness, request: Value) -> Self {
+    pub(super) fn open(h: &mut HostHarness, request: Value) -> Self {
         let wake = Arc::new(EguiWake::new(h.app.ctx.clone()));
         let (subscribe, rx) = UiMailbox::channel(wake.clone(), "consumer-test");
         h.app.event_subscribe_rx = rx;
@@ -142,7 +142,7 @@ fn pane_consumer_cli_surfaces_parse() {
     }
 }
 
-fn wait_request(pane: u64, caller: u64, predicate: &str, timeout: f64) -> Value {
+pub(super) fn wait_request(pane: u64, caller: u64, predicate: &str, timeout: f64) -> Value {
     json!({"type":"pane_lifecycle_wait", "pane_id":pane, "from_pane_id":caller,
         "until":predicate, "timeout":timeout})
 }
@@ -152,7 +152,7 @@ fn close(h: &mut HostHarness, pane: u64) {
     h.app.close_tile(window, tile);
 }
 
-fn subscriptions(pane: u64) -> usize {
+pub(super) fn subscriptions(pane: u64) -> usize {
     crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
@@ -162,7 +162,7 @@ fn subscriptions(pane: u64) -> usize {
         .count()
 }
 
-fn pump_until(h: &mut HostHarness, mut condition: impl FnMut(&HostHarness) -> bool) {
+pub(super) fn pump_until(h: &mut HostHarness, mut condition: impl FnMut(&HostHarness) -> bool) {
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
     while !condition(h) {
         h.hidden_frame();

@@ -29,6 +29,27 @@ impl<'a> DialogShortcut<'a> {
         self
     }
 
+    /// A guarded consent dialog (stint 1498) takes only a fresh press: an OS
+    /// key repeat is consumed without counting.
+    fn pressed_fresh(&self, ctx: &egui::Context) -> bool {
+        let repeat_only = ctx.input(|i| {
+            let mut matching = i.events.iter().filter(|event| {
+                matches!(event,
+                    egui::Event::Key { key, pressed: true, modifiers, .. }
+                        if *key == self.key && modifiers.matches_logically(self.modifiers)
+                )
+            });
+            let mut any = false;
+            let all_repeat = matching.all(|event| {
+                any = true;
+                matches!(event, egui::Event::Key { repeat: true, .. })
+            });
+            any && all_repeat
+        });
+        let pressed = self.pressed(ctx);
+        pressed && !repeat_only
+    }
+
     fn pressed(&self, ctx: &egui::Context) -> bool {
         ctx.input_mut(|i| {
             if self.exact
@@ -88,6 +109,9 @@ pub(crate) struct ActionModal<'a> {
     actions: &'a [DialogAction<'a>],
     default_action: Option<&'a str>,
     button_row: bool,
+    /// `Some(admitted)` for a consent dialog (stint 1498): while not
+    /// admitted, its shortcuts and clicks are consumed and decide nothing.
+    consent_input: Option<bool>,
 }
 
 impl<'a> ActionModal<'a> {
@@ -99,7 +123,16 @@ impl<'a> ActionModal<'a> {
             actions,
             default_action: None,
             button_row: false,
+            consent_input: None,
         }
+    }
+
+    /// Guard this dialog's decisions with the consent input guard
+    /// (`consent_input_admitted`): keys must be fresh presses, and nothing
+    /// counts until `admitted` (armed, real input).
+    pub(crate) fn consent_input(mut self, admitted: bool) -> Self {
+        self.consent_input = Some(admitted);
+        self
     }
 
     /// Conventional confirm layout: one right-aligned row of kit buttons in
@@ -126,18 +159,20 @@ impl<'a> ActionModal<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
+        let guarded = self.consent_input.is_some();
+        let press = |shortcut: &DialogShortcut<'_>| {
+            if guarded {
+                shortcut.pressed_fresh(ctx)
+            } else {
+                shortcut.pressed(ctx)
+            }
+        };
         let mut selected = self
             .actions
             .iter()
             .find(|action| {
-                action
-                    .shortcut
-                    .as_ref()
-                    .is_some_and(|shortcut| shortcut.pressed(ctx))
-                    || action
-                        .alternate
-                        .as_ref()
-                        .is_some_and(|shortcut| shortcut.pressed(ctx))
+                action.shortcut.as_ref().is_some_and(&press)
+                    || action.alternate.as_ref().is_some_and(&press)
             })
             .map(|action| action.id);
 
@@ -186,6 +221,17 @@ impl<'a> ActionModal<'a> {
             }
         });
 
+        if self.consent_input == Some(false) && (selected.is_some() || response.dismissed) {
+            log::info!(
+                "consent_guard: modal {} ignored {:?} (not armed or synthetic input)",
+                self.id,
+                selected.unwrap_or("dismiss")
+            );
+            return DialogResponse {
+                selected: None,
+                dismissed: false,
+            };
+        }
         DialogResponse {
             selected,
             dismissed: response.dismissed,

@@ -166,7 +166,7 @@ impl PlexiApp {
                 .and_then(|pane| pane.as_view_mut())
             {
                 if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
-                    runtime.draw_capability_modal(ctx, &self.colors);
+                    runtime.draw_capability_modal(ctx, &self.colors, self.synthetic_input_frame);
                 }
             }
         }
@@ -330,8 +330,20 @@ impl PlexiApp {
         use crate::host::event_subscriptions::ConsentChoice;
         let (subscriber, verb, target) = match self.pending_event_consents.front() {
             Some(c) => (c.subscriber_id.clone(), c.action_verb(), c.target_label()),
-            None => return,
+            None => {
+                self.event_consent_guard.clear();
+                return;
+            }
         };
+        let now = std::time::Instant::now();
+        self.event_consent_guard
+            .present(&format!("{subscriber}|{verb}|{target}"), now);
+        let admitted = self
+            .event_consent_guard
+            .admits(now, self.synthetic_input_frame);
+        if !admitted {
+            ctx.request_repaint_after(self.event_consent_guard.remaining(now));
+        }
         let colors = self.colors;
         let actions = [
             crate::ui::dialog::DialogAction::new(
@@ -370,6 +382,7 @@ impl PlexiApp {
             "Event subscription request",
             &actions,
         )
+        .consent_input(admitted)
         .width(super::MODAL_WIDTH)
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(ui, format!("{subscriber} wants to {verb}:"), &colors);
@@ -404,8 +417,20 @@ impl PlexiApp {
 
     pub(crate) fn draw_raw_wasm_review_modal(&mut self, ctx: &egui::Context) {
         let Some(review) = self.pending_raw_wasm_launches.front().cloned() else {
+            self.raw_wasm_review_guard.clear();
             return;
         };
+        let now = std::time::Instant::now();
+        self.raw_wasm_review_guard.present(
+            &format!("{}|{}", review.plugin_id, review.wasm_path.display()),
+            now,
+        );
+        let admitted = self
+            .raw_wasm_review_guard
+            .admits(now, self.synthetic_input_frame);
+        if !admitted {
+            ctx.request_repaint_after(self.raw_wasm_review_guard.remaining(now));
+        }
         let colors = self.colors;
         let actions = [
             crate::ui::dialog::DialogAction::new(
@@ -434,6 +459,7 @@ impl PlexiApp {
             "Raw WASM import review",
             &actions,
         )
+        .consent_input(admitted)
         .width(super::MODAL_WIDTH)
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(

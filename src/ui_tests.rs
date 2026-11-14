@@ -4616,6 +4616,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             "unreviewed .wasm path launch must not spawn a WASM pane"
         );
 
+        // A deliberate approval comes after the consent arm delay (stint 1498).
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
         h.harness().key_press(egui::Key::Enter);
         h.step();
         let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
