@@ -6194,79 +6194,85 @@ pub(crate) fn restore_workspace(
                             })
                         })
                         .flatten();
-                    if let Some(mut pane) = TerminalPane::new(
+                    match TerminalPane::new(
                         saved_pane.id,
                         egui_ctx.clone(),
                         pty_event_tx.clone(),
                         settings,
                         default_font_size,
                     ) {
-                        pane.name = saved_pane.name.clone().or_else(|| {
-                            effective_session
-                                .as_ref()
-                                .and_then(|s| s.config_name.clone())
-                        });
-                        pane.name_locked = saved_pane
-                            .name
-                            .as_deref()
-                            .is_some_and(|n| !n.is_empty() && n != "terminal")
-                            || effective_session.is_some();
-                        pane.slots = saved_pane.slots.clone();
-                        if let Some(session) = effective_session {
-                            pane.fleet_result = session.fleet_result.clone();
-                            pane.fleet_seen = session.fleet_seen;
-                            pane.fleet_dismissed = session.fleet_dismissed;
-                            pane.fleet_done_unseen = session.fleet_done_unseen;
-                            pane.fleet_since = session.fleet_since;
-                            pane.ephemeral = session.ephemeral;
-                            pane.parent_pane_id = session.parent_pane_id;
-                            pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);
-                            pane.pending_child_results = session.pending_child_results.clone();
-                            pane.agent_harness = Some(session.harness.clone());
-                            pane.agent_session_id = session.session_id.clone();
-                            pane.agent_role = session.config_name.clone();
-                            pane.agent_permission_posture = session
-                                .permission_posture
-                                .clone()
-                                .or_else(|| {
-                                    let role = session.config_name.as_deref()?;
-                                    let lookup_root = cwd
-                                        .as_deref()
-                                        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
-                                        .or_else(|| ctx_root.cloned());
-                                    crate::cli::agent::resolve_agent_definition_in(
-                                        role,
-                                        collaborators.profile_dir,
-                                        lookup_root.as_deref(),
-                                    )
-                                    .ok()
-                                    .map(|(def, _)| def.posture)
-                                });
-                            pane.last_blocked_reason = session.last_blocked_reason;
-                            pane.tail_preview = session.tail_preview.clone();
-                            pane.agent_completed = session.last_state
-                                == crate::protocol::AgentState::Completed
-                                || saved_pane.slots.contains_key("completed");
-                            pane.agent = Some(crate::protocol::PaneAgentState {
-                                pane_id: saved_pane.id,
-                                state: session.last_state.clone(),
-                                agent: session.harness.clone(),
-                                detail: session.last_detail.clone(),
-                                session_id: session.session_id.clone(),
+                        Ok(mut pane) => {
+                            pane.name = saved_pane.name.clone().or_else(|| {
+                                effective_session
+                                    .as_ref()
+                                    .and_then(|s| s.config_name.clone())
                             });
-                            if !should_auto_resume {
-                                pane.standby_session = Some(session);
-                                pane.standby_resume_command = standby_resume_command;
-                                pane.standby_cwd = cwd.clone();
-                                log::info!(
-                                    "workspace_restore: restored agent pane {} into standby ({})",
-                                    saved_pane.id,
-                                    pane.standby_banner().unwrap_or_default()
-                                );
+                            pane.name_locked = saved_pane
+                                .name
+                                .as_deref()
+                                .is_some_and(|n| !n.is_empty() && n != "terminal")
+                                || effective_session.is_some();
+                            pane.slots = saved_pane.slots.clone();
+                            if let Some(session) = effective_session {
+                                pane.fleet_result = session.fleet_result.clone();
+                                pane.fleet_seen = session.fleet_seen;
+                                pane.fleet_dismissed = session.fleet_dismissed;
+                                pane.fleet_done_unseen = session.fleet_done_unseen;
+                                pane.fleet_since = session.fleet_since;
+                                pane.ephemeral = session.ephemeral;
+                                pane.parent_pane_id = session.parent_pane_id;
+                                pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);
+                                pane.pending_child_results = session.pending_child_results.clone();
+                                pane.agent_harness = Some(session.harness.clone());
+                                pane.agent_session_id = session.session_id.clone();
+                                pane.agent_role = session.config_name.clone();
+                                pane.agent_permission_posture = session
+                                    .permission_posture
+                                    .clone()
+                                    .or_else(|| {
+                                        let role = session.config_name.as_deref()?;
+                                        let lookup_root = cwd
+                                            .as_deref()
+                                            .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
+                                            .or_else(|| ctx_root.cloned());
+                                        crate::cli::agent::resolve_agent_definition_in(
+                                            role,
+                                            collaborators.profile_dir,
+                                            lookup_root.as_deref(),
+                                        )
+                                        .ok()
+                                        .map(|(def, _)| def.posture)
+                                    });
+                                pane.last_blocked_reason = session.last_blocked_reason;
+                                pane.tail_preview = session.tail_preview.clone();
+                                pane.agent_completed = session.last_state
+                                    == crate::protocol::AgentState::Completed
+                                    || saved_pane.slots.contains_key("completed");
+                                pane.agent = Some(crate::protocol::PaneAgentState {
+                                    pane_id: saved_pane.id,
+                                    state: session.last_state.clone(),
+                                    agent: session.harness.clone(),
+                                    detail: session.last_detail.clone(),
+                                    session_id: session.session_id.clone(),
+                                });
+                                if !should_auto_resume {
+                                    pane.standby_session = Some(session);
+                                    pane.standby_resume_command = standby_resume_command;
+                                    pane.standby_cwd = cwd.clone();
+                                    log::info!(
+                                        "workspace_restore: restored agent pane {} into standby ({})",
+                                        saved_pane.id,
+                                        pane.standby_banner().unwrap_or_default()
+                                    );
+                                }
                             }
+                            pane_entry = Some(Pane::Terminal(Box::new(pane)));
+                            pending_credential.mark_live();
                         }
-                        pane_entry = Some(Pane::Terminal(Box::new(pane)));
-                        pending_credential.mark_live();
+                        Err(error) => log::error!(
+                            "workspace_restore: terminal pane {} not restored: {error}",
+                            saved_pane.id
+                        ),
                     }
                 } else {
                     log::info!(

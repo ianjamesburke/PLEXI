@@ -8440,7 +8440,7 @@ open(out + ".done", "w").close()
                 },
                 14.0,
             )
-            .unwrap();
+            .expect("spawn test terminal");
             let win = &mut app.windows[app.active_window];
             win.panes.insert(first, Pane::Terminal(Box::new(term)));
             let a = win.tree.tiles.find_pane(&first).unwrap();
@@ -8457,7 +8457,7 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             let script = "i=0; while [ $i -lt 120 ]; do printf '%0300d\\n' 0 | tr 0 W; i=$((i+1)); done; while IFS= read -r line; do eval \"$line\"; done";
             let mut term = crate::host::pane::TerminalPane::new(pane, app.ctx.clone(), app.pty_event_tx.clone(),
-                egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), script.into()], working_directory: Some(root), ..Default::default() }, 14.0).unwrap();
+                egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), script.into()], working_directory: Some(root), ..Default::default() }, 14.0).expect("spawn test terminal");
             term.outside_workspace_cached = false;
             term.outside_workspace_checked_at = Some(Instant::now());
             term.outside_workspace_root = Some(app.router.active().root.clone());
@@ -8786,7 +8786,7 @@ open(out + ".done", "w").close()
                 },
                 14.0,
             )
-            .unwrap();
+            .expect("spawn test terminal");
             app.windows[app.active_window]
                 .panes
                 .insert(second, Pane::Terminal(Box::new(term)));
@@ -8968,7 +8968,7 @@ open(out + ".done", "w").close()
                         },
                         14.0,
                     )
-                    .unwrap();
+                    .expect("spawn test terminal");
                     term.name = Some("Claude Code".into());
                     term.spawned_by = Some("human".into());
                     term.outside_workspace_root = Some(app.router.active().root.clone());
@@ -9970,7 +9970,7 @@ open(out + ".done", "w").close()
                         ids.push(id);
                         h.with_app_mut(|app| {
                         let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
-                            egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                            egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).expect("spawn test terminal");
                         term.name = Some(format!("{name}: review implementation"));
                         term.outside_workspace_cached = false;
                         term.outside_workspace_checked_at = Some(Instant::now());
@@ -10537,7 +10537,7 @@ open(out + ".done", "w").close()
                     },
                     14.0,
                 )
-                .unwrap();
+                .expect("spawn test terminal");
                 term.agent_role = Some(role.into());
                 term.agent_harness = Some("pi".into());
                 term.agent_completed = state == AgentState::Completed;

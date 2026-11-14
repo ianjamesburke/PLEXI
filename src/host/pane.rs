@@ -908,6 +908,33 @@ pub struct TerminalPane {
     pub spawn_env: HashMap<String, String>,
 }
 
+/// Why a terminal pane could not start: its PTY spawn failed (stint 1499).
+#[derive(Debug)]
+pub struct TerminalSpawnError {
+    pub pane_id: u64,
+    pub program: String,
+    pub working_directory: Option<PathBuf>,
+    pub cause: String,
+}
+
+impl std::fmt::Display for TerminalSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "terminal {}: PTY spawn of {} in {} failed: {}",
+            self.pane_id,
+            self.program,
+            self.working_directory.as_deref().map_or_else(
+                || "the default directory".to_string(),
+                |dir| dir.display().to_string()
+            ),
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for TerminalSpawnError {}
+
 impl TerminalPane {
     pub fn new(
         id: u64,
@@ -915,7 +942,7 @@ impl TerminalPane {
         tx: Sender<(u64, PtyEvent)>,
         mut settings: BackendSettings,
         default_font_size: f32,
-    ) -> Option<Self> {
+    ) -> Result<Self, TerminalSpawnError> {
         settings.env.insert(
             super::process_cleanup::SESSION_ENV.into(),
             super::process_cleanup::session_marker().into(),
@@ -973,15 +1000,23 @@ impl TerminalPane {
         settings.byte_tap = Some(egui_term::ByteTapHandle::new(
             crate::program_status::ProgramStatusTap::new(id, program_status.clone()),
         ));
+        let program = settings.shell.clone();
+        let working_directory = settings.working_directory.clone();
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
             Ok(b) => b,
             Err(e) => {
-                log::error!("Failed to create terminal backend {id}: {e}");
-                return None;
+                let error = TerminalSpawnError {
+                    pane_id: id,
+                    program,
+                    working_directory,
+                    cause: e.to_string(),
+                };
+                log::error!("{error}");
+                return Err(error);
             }
         };
         let process_group = super::process_cleanup::PaneProcessGroup::record(backend.child_pid());
-        Some(Self {
+        Ok(Self {
             _process_group: process_group,
             id,
             backend,
@@ -1579,6 +1614,37 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
         return Some("spawned by system".to_string());
     }
     Some(format!("spawned by {s}"))
+}
+
+#[cfg(test)]
+mod spawn_error_tests {
+    use super::*;
+
+    /// Stint 1499: a terminal that cannot start says why, naming the program
+    /// and the original cause, instead of returning a bare None.
+    #[test]
+    fn terminal_spawn_failure_names_the_program_and_the_cause() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let error = match TerminalPane::new(
+            7,
+            egui::Context::default(),
+            tx,
+            BackendSettings {
+                shell: "/nonexistent/plexi-test-shell".into(),
+                ..Default::default()
+            },
+            14.0,
+        ) {
+            Ok(_) => panic!("a missing shell must not start a terminal"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("/nonexistent/plexi-test-shell"), "{error}");
+        assert!(error.contains("PTY spawn"), "{error}");
+        assert!(
+            error.to_lowercase().contains("no such file"),
+            "names the original cause: {error}"
+        );
+    }
 }
 
 #[cfg(test)]
