@@ -397,9 +397,6 @@ pub(crate) struct StatusBarLayout {
     pub(crate) label_rects: Vec<egui::Rect>,
 }
 
-/// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
-/// Trash see them. `NSFileManager` is chosen over the crate's Finder default
-/// because it needs no Automation permission prompt.
 /// How many taken names a paste skips before it gives up (stint 1496).
 const PASTE_NAME_ATTEMPTS: usize = 100;
 
@@ -525,6 +522,9 @@ fn same_entry(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Moves `paths` to the user's real Trash, so Finder's Put Back and Empty
+/// Trash see them. `NSFileManager` is chosen over the crate's Finder default
+/// because it needs no Automation permission prompt.
 fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let context = {
@@ -1683,7 +1683,68 @@ impl FileBrowserView {
     /// so nothing already at `target` (a file, or a symlink to one) is ever
     /// opened. `created` is set as soon as `target` exists.
     fn copy_file_new(source: &Path, target: &Path, created: &mut bool) -> Result<(), CopyError> {
+        #[cfg(target_os = "macos")]
+        match Self::clone_file_new(source, target) {
+            Ok(()) => {
+                *created = true;
+                return Ok(());
+            }
+            Err(error) if error.kind == std::io::ErrorKind::AlreadyExists => return Err(error),
+            // Not clonable here (another volume, not APFS, not a regular
+            // file): copy into an exclusively created file instead. Never
+            // `fs::copy`, whose fallback opens an existing target and
+            // truncates it.
+            Err(error) => log::debug!(
+                "file_browser: clone unavailable, copying: {}",
+                error.message
+            ),
+        }
         Self::copy_file_new_with(source, target, created, Self::copy_file_contents)
+    }
+
+    /// An APFS clone of `source` at `target`, as `fs::copy` makes one. Like
+    /// every create here it is exclusive: `fclonefileat` fails with `EEXIST`
+    /// when anything (a symlink included) is at `target`.
+    #[cfg(target_os = "macos")]
+    fn clone_file_new(source: &Path, target: &Path) -> Result<(), CopyError> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        let clone_error = |err| {
+            CopyError::new(
+                format!(
+                    "Unable to clone '{}' to '{}'",
+                    source.display(),
+                    target.display()
+                ),
+                err,
+            )
+        };
+        let input = Self::open_regular_file(source).map_err(clone_error)?;
+        let to = std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(|err| {
+            clone_error(std::io::Error::new(std::io::ErrorKind::InvalidInput, err))
+        })?;
+        // SAFETY: the descriptor is open for the call and `to` is a valid
+        // NUL-terminated path; flags 0 asks for a plain clone.
+        let status =
+            unsafe { libc::fclonefileat(input.as_raw_fd(), libc::AT_FDCWD, to.as_ptr(), 0) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(clone_error(std::io::Error::last_os_error()))
+        }
+    }
+
+    /// Open `source` for reading, refusing anything but a regular file, as
+    /// `fs::copy` does.
+    fn open_regular_file(source: &Path) -> std::io::Result<fs::File> {
+        let input = fs::File::open(source)?;
+        if !input.metadata()?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the source is not a regular file",
+            ));
+        }
+        Ok(input)
     }
 
     /// `copy_file_new` with the byte copy supplied, so a test can fail it
@@ -1704,12 +1765,18 @@ impl FileBrowserView {
                 err,
             )
         };
-        let mut input = fs::File::open(source).map_err(copy_error)?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)
-            .map_err(copy_error)?;
+        let mut input = Self::open_regular_file(source).map_err(copy_error)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Created with the source's mode from the start, so a private file is
+        // never readable by others while it copies (the umask still applies).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mode = input.metadata().map_err(copy_error)?.permissions().mode();
+            options.mode(mode & 0o7777);
+        }
+        let mut output = options.open(target).map_err(copy_error)?;
         *created = true;
         copy_contents(&mut input, &mut output).map_err(copy_error)
     }
@@ -6534,6 +6601,134 @@ mod tests {
             assert_eq!(names, vec!["Note.txt".to_string()]);
         }
         assert_eq!(std::fs::read(dir.path().join("Note.txt")).unwrap(), b"mine");
+    }
+
+    /// A cut onto an empty folder that appears at the chosen name does not
+    /// replace it: a plain rename would, for a folder source.
+    #[test]
+    fn cut_never_replaces_an_empty_folder_that_appears_at_the_chosen_name() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::create_dir(src.path().join("proj")).expect("mkdir source");
+        std::fs::write(src.path().join("proj").join("a.txt"), b"mine").expect("write");
+        paste_racing(
+            dst.path(),
+            src.path().join("proj"),
+            FileOperation::Cut,
+            |target| {
+                std::fs::create_dir(target).expect("racer makes an empty folder");
+            },
+        )
+        .expect("cut lands under the next name");
+        assert!(dst.path().join("proj").is_dir());
+        assert!(
+            names_in(&dst.path().join("proj")).is_empty(),
+            "the racer's folder is untouched"
+        );
+        assert_eq!(
+            std::fs::read(dst.path().join("proj 1").join("a.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    /// A folder copy whose top name is taken in the window lands under the
+    /// next name and leaves the other folder as it was.
+    #[test]
+    fn folder_copy_never_writes_into_a_folder_that_appears_at_the_chosen_name() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::create_dir(src.path().join("proj")).expect("mkdir source");
+        std::fs::write(src.path().join("proj").join("a.txt"), b"mine").expect("write");
+        paste_racing(
+            dst.path(),
+            src.path().join("proj"),
+            FileOperation::Copy,
+            |target| {
+                std::fs::create_dir(target).expect("racer makes a folder");
+                std::fs::write(target.join("theirs.txt"), b"theirs").expect("racer writes");
+            },
+        )
+        .expect("copy lands under the next name");
+        assert_eq!(names_in(&dst.path().join("proj")), vec!["theirs.txt"]);
+        assert_eq!(
+            std::fs::read(dst.path().join("proj 1").join("a.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    /// When every candidate name is taken in turn, the paste stops after the
+    /// bound, says so, and has overwritten nothing.
+    #[test]
+    fn paste_gives_up_after_every_name_is_taken_and_overwrites_nothing() {
+        let src = tempfile::tempdir().expect("src");
+        let dst = tempfile::tempdir().expect("dst");
+        std::fs::write(src.path().join("doc.txt"), b"mine").expect("write source");
+        let mut app = FileBrowserView::new(dst.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![src.path().join("doc.txt")],
+        });
+        let err = app
+            .paste_into_current_dir_with(&mut |target: &Path| {
+                std::fs::write(target, b"theirs").expect("racer writes");
+            })
+            .expect_err("every name was taken");
+        assert!(err.contains("nothing was overwritten"), "{err}");
+        let taken = names_in(dst.path());
+        assert_eq!(taken.len(), PASTE_NAME_ATTEMPTS);
+        for name in taken {
+            assert_eq!(
+                std::fs::read(dst.path().join(&name)).unwrap(),
+                b"theirs",
+                "{name}"
+            );
+        }
+    }
+
+    /// The new file has the source's mode from the moment it exists, so a
+    /// private file is never readable by others while it copies.
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_copy_creates_the_file_with_the_source_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        fn check_mode_then_copy(
+            input: &mut fs::File,
+            output: &mut fs::File,
+        ) -> std::io::Result<()> {
+            let mode = output.metadata()?.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                return Err(std::io::Error::other(format!("created with mode {mode:o}")));
+            }
+            FileBrowserView::copy_file_contents(input, output)
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("secret.txt");
+        std::fs::write(&source, b"private").expect("write");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let target = dir.path().join("copy.txt");
+        FileBrowserView::copy_file_to_new_path(&source, &target, check_mode_then_copy)
+            .expect("copy with the mode checked at create");
+        assert_eq!(std::fs::read(&target).unwrap(), b"private");
+    }
+
+    /// Like `fs::copy`, a source that is not a regular file is refused before
+    /// anything is created.
+    #[cfg(unix)]
+    #[test]
+    fn copy_refuses_a_source_that_is_not_a_regular_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("copy");
+        let mut created = false;
+        let err = FileBrowserView::copy_file_new(Path::new("/dev/null"), &target, &mut created)
+            .err()
+            .expect("a device is not a regular file");
+        assert!(
+            err.message.contains("not a regular file"),
+            "{}",
+            err.message
+        );
+        assert!(!created);
+        assert!(!target.exists());
     }
 
     /// The exclusive copy keeps what `fs::copy` kept: the file mode.
