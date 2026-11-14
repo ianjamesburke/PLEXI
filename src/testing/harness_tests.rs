@@ -19748,3 +19748,61 @@ fn cli_agent_open_matches_palette() {
     assert_eq!(palette.to_json(), cli, "CLI and palette agree");
     assert_eq!(pane_total(&h), before, "neither path launched a pane");
 }
+
+/// A restored standby pane counts as running: `agent open` focuses it and
+/// leaves it in Standby. Standby resumes only on Enter or `pane send`
+/// (src/cli/AGENTS.md).
+#[test]
+fn named_agent_focuses_standby_pane_without_waking_it() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let standby = h.add_focused_terminal();
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&standby)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal pane");
+    terminal.standby_cwd = Some(fx.proj_dir.clone());
+    terminal.standby_session = Some(crate::workspace::SavedAgentSession {
+        fleet_result: None,
+        fleet_seen: false,
+        fleet_done_unseen: false,
+        fleet_dismissed: false,
+        fleet_since: 0,
+        harness: "pi".to_string(),
+        config_name: Some("researcher".to_string()),
+        permission_posture: None,
+        session_id: Some("sess-standby".to_string()),
+        last_state: crate::protocol::AgentState::Idle,
+        last_blocked_reason: None,
+        last_detail: None,
+        parent_pane_id: None,
+        spawned_by: None,
+        pending_child_results: Vec::new(),
+        ephemeral: false,
+        tail_preview: None,
+        standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+    });
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: standby }
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(standby));
+    let t = h.app.windows[0].panes[&standby]
+        .as_terminal()
+        .expect("terminal");
+    assert!(t.is_standby(), "focus must not wake a standby pane");
+    assert_eq!(t.last_resumed_command, None, "nothing was resumed");
+    assert_eq!(pane_total(&h), before, "focus opens nothing");
+}
