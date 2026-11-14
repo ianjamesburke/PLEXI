@@ -1174,8 +1174,30 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
+        self.dismiss_close_dialog_for_gone_pane();
         let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
         self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
+    }
+
+    /// A single "Close pane?" whose pane was closed another way closes too,
+    /// and says so (stint 1500). The multi-select close owns its own dialog.
+    fn dismiss_close_dialog_for_gone_pane(&mut self) {
+        if !self.pending_close || self.pending_quit || self.host.pane_close_batch().is_some() {
+            return;
+        }
+        let Some(target) = self.close_confirm_target.clone() else {
+            return;
+        };
+        if self.find_pane_in_any_window(target.pane).is_some() {
+            return;
+        }
+        log::info!(
+            "close_confirm: pane={} closed another way; dialog dismissed",
+            target.pane
+        );
+        self.pending_close = false;
+        self.close_confirm_target = None;
+        self.notify_close_target_gone(&target.label);
     }
 
     pub(crate) fn sync_unsaved_changes_focus(&mut self) {

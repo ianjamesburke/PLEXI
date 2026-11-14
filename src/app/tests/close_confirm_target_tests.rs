@@ -175,3 +175,90 @@ fn quit_dialog_resolution_clears_the_close_target() {
         assert!(h.app.close_confirm_target.is_none());
     }
 }
+
+/// Stint 1500: the asking pane is closed another way while its dialog is up.
+/// The dialog closes at once, a notice names the pane, and nothing else
+/// closes.
+#[test]
+fn pane_gone_while_its_dialog_is_up_closes_the_dialog_and_says_so() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_panes(&mut h);
+    ask_to_close(&mut h);
+    let label = h.app.close_confirm_target.clone().unwrap().label;
+    h.app.notifications_enabled = true;
+    h.inject_ipc(HostRequest::ClosePane {
+        pane_id: a,
+        response_file: None,
+    });
+    h.run_frames(3);
+    assert!(!h.app.pending_close, "the dialog closed with its pane");
+    assert!(h.app.close_confirm_target.is_none());
+    assert_eq!(open(&h), vec![b], "nothing else closed");
+    assert!(
+        notice_titles(&h)
+            .iter()
+            .any(|t| t.contains(&label) && t.contains("already closed")),
+        "the user is told: {:?}",
+        notice_titles(&h)
+    );
+}
+
+/// Stint 1500: an unnamed terminal's dialog names it with the title its
+/// header paints.
+#[test]
+fn unnamed_terminal_dialog_label_matches_its_header_title() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    h.run_frames(2);
+    let terminal = h.app.windows[0].panes[&term].as_terminal().unwrap();
+    assert!(terminal.name.is_none(), "the terminal is unnamed");
+    let label = h.app.close_confirm_target_for(term).label;
+    let header_titles: Vec<String> = crate::ui::layout_report::snapshot(&h.app.ctx)
+        .into_iter()
+        .filter(|r| r.surface == "pane_header")
+        .flat_map(|r| {
+            r.texts
+                .into_iter()
+                .filter(|t| t.id == "title")
+                .map(|t| t.text)
+        })
+        .collect();
+    assert!(
+        header_titles.contains(&label),
+        "dialog label {label:?} is not a header title {header_titles:?}"
+    );
+}
+
+/// Stint 1500: two terminals in one folder share a title; their dialogs
+/// still say which one closes.
+#[test]
+fn same_folder_terminals_get_distinct_dialog_titles() {
+    let mut h = HostHarness::new();
+    let a = h.add_focused_terminal();
+    h.run_frames(2);
+    let b = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("a second terminal");
+    h.run_frames(3);
+    let title = |p: u64| {
+        h.app.windows[0].panes[&p]
+            .as_terminal()
+            .unwrap()
+            .display_name()
+            .map(str::to_string)
+    };
+    assert_eq!(title(a), title(b), "fixture: both terminals share a title");
+    let la = h.app.close_confirm_target_for(a).label;
+    let lb = h.app.close_confirm_target_for(b).label;
+    assert_ne!(la, lb, "both dialogs would read the same");
+
+    h.app.config.confirm_close = Some(true);
+    h.focus_pane(b);
+    h.run_frames(2);
+    h.press_key(egui::Key::W, command());
+    h.run_frames(3);
+    assert!(h.app.pending_close);
+    let png = std::env::temp_dir().join("plexi_same_folder_terminals_close_dialog.png");
+    h.render_png(&png).expect("render the dialog");
+}
