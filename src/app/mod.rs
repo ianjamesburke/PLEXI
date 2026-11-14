@@ -3936,6 +3936,8 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_view_commands", || {
             self.service_plugin_commands(ctx)
         });
+        // A zoom, tab switch or focus move this pass ends a selection it hid.
+        self.reconcile_pane_selections();
         self.resolve_auto_context_names();
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -4230,6 +4232,10 @@ impl eframe::App for PlexiApp {
         // Dispatch any DeliverNotifyAction commands the early modal render
         // produced. Routes back to the originating pane as NotifyAction events.
         self.dispatch_notify_action_cmds(early_modal_cmds);
+
+        // A close batch paused on a pane's dialog resumes here, before the
+        // self-close poll below would close that pane outside the batch.
+        self.service_pane_close_batch();
 
         // Check if the focused plugin wants to close itself (e.g. after saving).
         {
@@ -4575,6 +4581,10 @@ impl PlexiApp {
                     || self.zoom.level != zoom::ZoomLevel::Columns
                 {
                     self.zoom_out_or_close_surface();
+                    return;
+                }
+                // Two or more selected panes close together (stint 1458).
+                if self.start_close_selected_panes("close_pane") {
                     return;
                 }
                 // If the focused view pane has a non-empty nav stack

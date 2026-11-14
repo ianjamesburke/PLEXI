@@ -351,12 +351,16 @@ fn wrap_selection_stays_window_local_and_does_not_cross_boundaries() {
         h.app.host.pane_selection(first_window).unwrap().panes,
         vec![a, b]
     );
+    // A focus jump is not a selection step: it ends the selection (stint
+    // 1458), and the next step starts a new one from the jumped-to pane.
     h.app.focus_pane_in_strip(c);
+    h.run_frames(1);
+    assert!(h.app.host.pane_selection(first_window).is_none());
     h.press_key(egui::Key::J, command() | egui::Modifiers::SHIFT);
-    assert_eq!(h.app.host.pane_selection(first_window).unwrap().anchor, a);
+    assert_eq!(h.app.host.pane_selection(first_window).unwrap().anchor, c);
     assert_eq!(
         h.app.host.pane_selection(first_window).unwrap().panes,
-        vec![a, b, d]
+        vec![c, d]
     );
     assert_eq!(
         h.app

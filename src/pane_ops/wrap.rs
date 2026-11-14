@@ -241,12 +241,13 @@ impl PlexiApp {
 
     pub(crate) fn wrap_selection_or_zoom_in(&mut self) {
         let window_id = self.windows[self.active_window].window_id;
-        if let Some(selection) = self
-            .host
-            .clear_pane_selection(window_id)
-            .filter(|s| s.panes.len() >= 2)
-        {
-            self.wrap_panes_to_subcontext(&selection.panes, selection.anchor, None);
+        // Wrap's own rule: it needs a selection of two or more panes.
+        let targets = self.resolve_pane_targets("wrap").filter(|t| {
+            t.source == crate::host::model::PaneTargetSource::Selection && t.panes.len() >= 2
+        });
+        self.host.clear_pane_selection(window_id);
+        if let Some(targets) = targets {
+            self.wrap_panes_to_subcontext(&targets.panes, targets.anchor, None);
         } else {
             self.zoom_in_level();
         }

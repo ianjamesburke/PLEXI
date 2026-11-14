@@ -932,7 +932,8 @@ impl PlexiApp {
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
-                let pane_clicked = behavior.clicked.is_some();
+                let clicked_tile = behavior.clicked;
+                let pane_clicked = clicked_tile.is_some();
                 if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
@@ -946,9 +947,21 @@ impl PlexiApp {
                 ctx.reconcile_stale_tiles();
 
                 // A pointer click on a pane replaces any multi-pane selection
-                // with that pane alone (stint 1340). File-drag hover also moves
-                // focus but leaves the selection.
-                if pane_clicked {
+                // with that pane alone (stint 1340); Cmd+Shift+click adds the
+                // clicked pane to it instead, like Cmd+Shift+H/J/K/L (stint
+                // 1458). File-drag hover also moves focus but leaves the
+                // selection.
+                let pane_at = |tile: Option<egui_tiles::TileId>| match tile.and_then(|t| ctx.tree.tiles.get(t)) {
+                    Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
+                    _ => None,
+                };
+                let extend = ui.input(|i| i.modifiers.command && i.modifiers.shift);
+                let same_window = ctx.window_id == canvas_old_window_id;
+                if let (true, true, Some(start), Some(next)) = (extend, same_window, pane_at(canvas_old_focus), pane_at(clicked_tile)) {
+                    log::info!("pane_selection: toggled by cmd+shift click window={} pane={next}", ctx.window_id);
+                    self.host.toggle_pane_selection(ctx.window_id, start, next);
+                    ui.ctx().request_repaint();
+                } else if pane_clicked {
                     let window_id = ctx.window_id;
                     if self.host.clear_pane_selection(window_id).is_some() {
                         log::info!("pane_selection: cleared by pane click window={window_id}");
@@ -981,6 +994,11 @@ impl PlexiApp {
                 }
 
                 if let Some(pid) = clicked_pane_id {
+                    // A file drag hovering a pane moves focus but keeps the
+                    // selection (stint 1340), so its cursor follows.
+                    if !pane_clicked {
+                        self.host.set_pane_selection_cursor(ctx.window_id, pid);
+                    }
                     self.focus_pane_in_strip(pid);
                 }
                 if resized {

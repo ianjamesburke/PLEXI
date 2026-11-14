@@ -752,7 +752,11 @@ impl<'a> EditorWidget<'a> {
         let mut pointer_visual_row: Option<usize> = None;
         if let Some(pos) = response.interact_pointer_pos() {
             let (cursor, hit_row) = self.hit_test(ui, rect, gutter_width, pos, &line_galleys);
-            if response.clicked() && ui.input(|i| i.modifiers.command) && self.mode.is_markdown() {
+            // Cmd+Shift+click selects panes (stint 1458); only Cmd+click opens.
+            if response.clicked()
+                && ui.input(|i| i.modifiers.command && !i.modifiers.shift)
+                && self.mode.is_markdown()
+            {
                 if let Some(cache) = self.md_cache.as_deref_mut() {
                     let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
                     let text = line_text(self.doc.buffer(), cursor.line);
