@@ -402,6 +402,23 @@ impl PlexiApp {
         );
     }
 
+    /// A confirmed "Close pane?" closed nothing because focus moved off the
+    /// pane it asked about (stint 1491).
+    pub(crate) fn notify_close_not_run(&mut self, label: &str) {
+        self.enqueue_notification(
+            NotifySource::HostInternal,
+            PendingNotification {
+                notify_id: new_notify_id("close-not-run"),
+                title: format!("\u{201c}{label}\u{201d} was not closed"),
+                body: "Focus moved to another pane before you confirmed, so nothing was \
+                       closed. Close it again from that pane."
+                    .to_string(),
+                scope: crate::protocol::NotifyScope::Global,
+                ..Default::default()
+            },
+        );
+    }
+
     /// Execute a `DeliverNotifyAction`: record the event, run the host-side
     /// action, unblock any waiting CLI through its response file, then hand
     /// the action to the sender plugin. Both drain paths — `dispatch.rs`'s

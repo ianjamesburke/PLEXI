@@ -9437,6 +9437,47 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!("_closed")).unwrap();
     }
 
+    /// Stint 1491: the single-pane "Close pane?" dialog names the pane it
+    /// will close. The PNG is the dialog for review.
+    #[test]
+    fn close_confirm_dialog_names_the_pane() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        let a = add_focused_pane(&mut h);
+        let b = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let context_id = app.windows[app.active_window].context_id;
+            app.set_context_columns(context_id, vec![vec![a], vec![b]]);
+            if let Some(view) = app.windows[app.active_window]
+                .panes
+                .get_mut(&a)
+                .and_then(Pane::as_view_mut)
+            {
+                view.name = "Build log".to_string();
+            }
+        });
+        h.run_steps(3);
+        h.focus_pane(a).unwrap();
+        h.run_steps(1);
+        h.with_app_mut(|app| {
+            // Set here: the frames above reload config from the harness profile.
+            app.config.confirm_close = Some(true);
+            let ctx = app.ctx.clone();
+            app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("")).unwrap();
+        assert_eq!(
+            h.with_app(|app| app.close_confirm_target.clone().map(|t| (t.pane, t.label))),
+            Some((a, "Build log".to_string())),
+            "the dialog records the pane it asked about"
+        );
+        assert!(
+            h.host_has_label("Close \u{201c}Build log\u{201d}?"),
+            "the dialog names the pane it will close"
+        );
+    }
+
     /// Stint 1458 critic blocker 4: a pointer press on the palette row
     /// "Close selected panes" must not reach the pane under the palette (which
     /// would clear the selection as a pane click), and closes exactly the

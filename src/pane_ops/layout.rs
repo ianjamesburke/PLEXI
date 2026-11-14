@@ -2042,6 +2042,62 @@ impl PlexiApp {
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
+    /// The "Close pane?" target for the focused pane (stint 1491).
+    pub(crate) fn close_confirm_target_for_focused(
+        &self,
+    ) -> Option<crate::app::CloseConfirmTarget> {
+        self.active_focused_pane_id()
+            .map(|pane| self.close_confirm_target_for(pane))
+    }
+
+    /// `pane` with the name the dialog shows: a terminal's title, a view's
+    /// name, a portal's context.
+    pub(crate) fn close_confirm_target_for(&self, pane: u64) -> crate::app::CloseConfirmTarget {
+        let label = self
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane))
+            .map(|p| match p {
+                crate::host::pane::Pane::Terminal(t) => {
+                    t.display_name().unwrap_or("Terminal").to_string()
+                }
+                crate::host::pane::Pane::View(v) => v.name.clone(),
+                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+            })
+            .unwrap_or_else(|| format!("pane {pane}"));
+        crate::app::CloseConfirmTarget { pane, label }
+    }
+
+    /// Confirm of a single-pane "Close pane?" dialog: close the pane it asked
+    /// about, and only while that pane is still the focused one. Focus that
+    /// moved (CLI `pane focus`, an agent, a plugin) or a pane closed another
+    /// way cancels instead of closing a different pane, and says so.
+    pub(crate) fn confirm_single_close(&mut self) {
+        let Some(target) = self.close_confirm_target.clone() else {
+            log::warn!("close_confirm: confirm with no recorded pane; nothing closed");
+            return;
+        };
+        if self.find_pane_in_any_window(target.pane).is_none() {
+            log::info!(
+                "close_confirm: cancel, pane={} is already gone; nothing closed",
+                target.pane
+            );
+            return;
+        }
+        if self.active_focused_pane_id() != Some(target.pane) {
+            log::info!(
+                "close_confirm: cancel, focus moved from pane={} to {:?}; nothing closed",
+                target.pane,
+                self.active_focused_pane_id()
+            );
+            self.notify_close_not_run(&target.label);
+            return;
+        }
+        log::info!("close_confirm: confirm pane={}", target.pane);
+        self.execute_close_pane();
+        self.mark_workspace_dirty();
+    }
+
     pub(crate) fn execute_close_pane(&mut self) {
         let ctx_id = self.windows[self.active_window].context_id;
         let closed_window_id = self.windows[self.active_window].window_id;
