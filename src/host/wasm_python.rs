@@ -1379,6 +1379,15 @@ pub struct LivePythonPane {
     context_root: PathBuf,
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
+    /// Broker for `ai_query` (stint 1450). Live config broker in production;
+    /// tests swap in a recording broker or a live broker with a test backend.
+    ai_broker: Arc<dyn crate::plexi_ai::broker::AiBroker>,
+    /// Finished `ai_query` calls from worker threads, keyed by request id.
+    ai_tx: std::sync::mpsc::Sender<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
+    ai_rx: std::sync::mpsc::Receiver<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
+    /// Calls dispatched and not yet delivered; keeps the pane serviced from
+    /// `background_tick` while it is in an inactive context.
+    ai_inflight: usize,
     /// Live MCP server processes this pane opened (stint 0382), keyed by the
     /// configured server id. Dropped with the pane, which kills every child.
     mcp_connections: HashMap<String, crate::host::mcp_client::McpConnection>,
@@ -2988,6 +2997,7 @@ impl LivePythonPane {
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
+        let (ai_tx, ai_rx) = std::sync::mpsc::channel();
         let (mcp_tx, mcp_rx) = crate::host::mcp_client::inbound_channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
@@ -3049,6 +3059,10 @@ impl LivePythonPane {
             context_root,
             http_tx,
             http_rx,
+            ai_broker: Arc::new(crate::plexi_ai::broker::LiveAiBroker::from_current_config()),
+            ai_tx,
+            ai_rx,
+            ai_inflight: 0,
             mcp_connections: HashMap::new(),
             mcp_registry: None,
             mcp_tx,
@@ -3448,6 +3462,10 @@ impl LivePythonPane {
 
     fn drain_runtime(&mut self) {
         self.poll_cli_operations();
+        while let Ok((request_id, response)) = self.ai_rx.try_recv() {
+            self.ai_inflight = self.ai_inflight.saturating_sub(1);
+            self.send_ai_response(&request_id, response);
+        }
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
@@ -3719,6 +3737,7 @@ impl LivePythonPane {
             Some("open_file_picker") => self.handle_open_file_picker(&message),
             Some("read_host_log") => self.handle_read_host_log(&message),
             Some("http_request") => self.handle_http_request(&message),
+            Some("ai_query") => self.handle_ai_query(&message),
             Some("mcp_connect") => self.handle_mcp_connect(&message),
             Some("mcp_send") => self.handle_mcp_send(&message),
             Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
@@ -4148,6 +4167,111 @@ impl LivePythonPane {
                 }
             },
         );
+    }
+
+    /// `ai_query` (stint 1450): a granted plugin's call goes to the shared
+    /// broker path off the UI thread; config, budget and ledger are applied by
+    /// the broker. Every refusal answers with an `ai_response` error and no
+    /// broker call. Python has no runtime consent path yet (stint 1238 step 2),
+    /// so the grant is the launch-time set, as for every Python capability.
+    fn handle_ai_query(&mut self, message: &Value) {
+        let text = |key: &str| {
+            message
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let request_id = text("request_id");
+        let raw_mode = text("mode");
+        let refuse = |pane: &mut Self, error: String| {
+            let response = crate::plexi_ai::broker::AiBrokerResponse::err(error);
+            super::plugin_ai_query::trace_outcome(
+                &pane.plugin_id,
+                &request_id,
+                &raw_mode,
+                &response,
+            );
+            pane.send_ai_response(&request_id, response);
+        };
+        if !self.has_capability("ai.query") {
+            refuse(self, python_ai_query_not_granted(&self.plugin_id));
+            return;
+        }
+        let mode = match crate::plexi_ai::broker::ModelMode::parse(&raw_mode) {
+            Ok(mode) => mode,
+            Err(error) => {
+                refuse(self, error);
+                return;
+            }
+        };
+        let messages = match python_ai_messages(message.get("messages")) {
+            Ok(messages) => messages,
+            Err(error) => {
+                refuse(self, error);
+                return;
+            }
+        };
+        let tx = self.ai_tx.clone();
+        let repaint = Arc::clone(&self.repaint);
+        let delivered_id = request_id.clone();
+        let deliver: super::plugin_ai_query::Deliver = Box::new(move |response| {
+            if tx.send((delivered_id, response)).is_err() {
+                log::debug!("CPython WASM ai_response dropped after pane closed");
+                return;
+            }
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        });
+        let query = super::plugin_ai_query::PluginAiQuery {
+            plugin_id: self.plugin_id.clone(),
+            request_id: request_id.clone(),
+            mode,
+            system: text("system"),
+            messages,
+        };
+        // Streaming is out of scope for Python (stint 1450): deltas are dropped.
+        match super::plugin_ai_query::spawn(
+            Arc::clone(&self.ai_broker),
+            query,
+            Box::new(|_| {}),
+            deliver,
+        ) {
+            Ok(()) => self.ai_inflight += 1,
+            Err(error) => {
+                log::error!(
+                    "plugin::{}: ai_query {request_id}: worker thread spawn failed: {error}",
+                    self.plugin_id
+                );
+                refuse(
+                    self,
+                    format!("ai.query: worker thread spawn failed: {error}"),
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn set_ai_broker(&mut self, broker: Arc<dyn crate::plexi_ai::broker::AiBroker>) {
+        self.ai_broker = broker;
+    }
+
+    fn send_ai_response(
+        &self,
+        request_id: &str,
+        response: crate::plexi_ai::broker::AiBrokerResponse,
+    ) {
+        self.send_to_runtime(&json!({
+            "type": "ai_response",
+            "request_id": request_id,
+            "content": response.content,
+            "tokens_in": response.tokens_in,
+            "tokens_out": response.tokens_out,
+            "error": response.error,
+        }));
     }
 
     /// Open a connection to a server the *user* configured. `server_id` is
@@ -5075,6 +5199,7 @@ impl LivePythonPane {
     pub fn needs_background_tick(&self) -> bool {
         self.decoder.has_queued_output()
             || self.cli_ops.has_work()
+            || self.ai_inflight > 0
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
                 && !self.runtime.is_finished()
@@ -5743,6 +5868,35 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
 
 /// Runtime capability check against the launch snapshot, traced with the
 /// requesting principal.
+/// The refusal a Python plugin gets for `ai_query` without the `ai.query`
+/// grant. Names the capability and the only way it is granted today.
+fn python_ai_query_not_granted(plugin_id: &str) -> String {
+    format!(
+        "capability withheld: ai.query is not granted to plugin '{plugin_id}'. \
+         Declare \"ai.query\" under [plugin.capabilities] in manifest.toml and allow it \
+         for this plugin; Python plugins cannot ask for it at runtime yet"
+    )
+}
+
+/// `messages` of an `ai_query`: a list of `{role, content}` string pairs.
+fn python_ai_messages(raw: Option<&Value>) -> Result<Vec<crate::protocol::AiMessage>, String> {
+    let Some(items) = raw.and_then(Value::as_array) else {
+        return Err("ai.query: messages must be a list of {role, content}".to_string());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let field = |key: &str| item.get(key).and_then(Value::as_str).map(str::to_string);
+            match (field("role"), field("content")) {
+                (Some(role), Some(content)) => Ok(crate::protocol::AiMessage { role, content }),
+                _ => Err(format!(
+                    "ai.query: each message needs string role and content, got {item}"
+                )),
+            }
+        })
+        .collect()
+}
+
 fn launch_set_admits(
     principal: &crate::broker::principal::Principal,
     launch_set: &[String],
@@ -7367,6 +7521,10 @@ mod fatal_error;
 #[cfg(test)]
 #[path = "wasm_python/fatal_error_tests.rs"]
 mod fatal_error_tests;
+
+#[cfg(test)]
+#[path = "wasm_python/ai_query_tests.rs"]
+mod ai_query_tests;
 
 #[cfg(test)]
 mod tests {

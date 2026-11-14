@@ -1159,6 +1159,52 @@ def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
         proc.kill()
 
 
+def test_ai_query_effect_wire_and_ai_response_event(tmp_path):
+    """Stint 1450: AiQuery goes out as `ai_query` with the mode the plugin
+    chose; the host's `ai_response` comes back as an AiResponse event."""
+    app = tmp_path / "ai_asker.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk import state
+        from plexi_sdk.effects import AiMessage, AiQuery, SetState
+        from plexi_sdk.events import AiResponse
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return [AiQuery("q1", "slow", "be brief", [
+                AiMessage("user", "hi"), {"role": "assistant", "content": "yo"},
+            ])]
+
+        def update(event):
+            if isinstance(event, AiResponse):
+                return [SetState({"reply": f"{event.request_id}:{event.content}:"
+                                  f"{event.tokens_in}:{event.tokens_out}:{event.error}"})]
+            return []
+
+        def view():
+            return Text(state.get("reply", "none"))
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        events = _init_and_render(proc)
+        assert _find_events(events, "ai_query") == [{
+            "type": "ai_query",
+            "request_id": "q1",
+            "mode": "slow",
+            "system": "be brief",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "yo"},
+            ],
+        }]
+        _send_event(proc, {
+            "type": "ai_response", "request_id": "q1", "content": "hello",
+            "tokens_in": 5, "tokens_out": 2, "error": None,
+        })
+        assert "q1:hello:5:2:None" in json.dumps(_render(proc, frame_id=2))
+    finally:
+        proc.kill()
+
+
 def test_pipe_message_event_dispatched_and_replies(tmp_path):
     app = tmp_path / "pipe_receiver.py"
     app.write_text(textwrap.dedent("""
@@ -1239,9 +1285,9 @@ class TestUnsupportedEffectsFailLoudly:
             if proc.poll() is None:
                 proc.kill()
 
-    def test_ai_query_is_refused_with_a_named_error(self, tmp_path):
-        err = self._run(tmp_path, "AiQuery('r', 'fast', '', [])")
-        assert "fail-loud" in err and "AiQuery" in err and "not available" in err
+    def test_ai_query_with_a_malformed_message_is_refused(self, tmp_path):
+        err = self._run(tmp_path, "AiQuery('r', 'fast', '', ['hi'])")
+        assert "AiQuery messages must be" in err
 
     def test_unknown_effect_type_is_refused(self, tmp_path):
         err = self._run(tmp_path, "object()")

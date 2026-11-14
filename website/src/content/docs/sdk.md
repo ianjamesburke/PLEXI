@@ -232,8 +232,15 @@ AiMessage(role: str, content: str)
 ### `AiQuery`
 
 ```python
-AiQuery(request_id: str, model_tier: str, system: str, messages: list)
+AiQuery(request_id: str, mode: str, system: str, messages: list)
 ```
+
+Ask the Plexi AI broker for one reply. Needs the ``ai.query``
+capability. ``mode`` is ``"fast"`` or ``"slow"``: the host routes it to the
+user's ``[models.fast]`` or ``[models.slow]`` model, so plugins never name
+a model. ``messages`` is a list of :class:`AiMessage`. The reply, or the
+reason it was refused, arrives as an ``AiResponse`` event carrying the
+same ``request_id``.
 
 ### `AiTool`
 

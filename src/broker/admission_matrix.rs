@@ -329,7 +329,7 @@ pub(crate) const TABLE: &[Line] = &[
     line(R::Python, F::Network, &["net.http"], PY_SENSITIVE),
     na(R::Python, F::Secrets, "secrets.get is declarable but LivePythonPane has no secret effect; nothing reaches admission"),
     line(R::Python, F::CliExec, &["cli.operations"], PY_CLI_OPERATION),
-    na(R::Python, F::Ai, "LivePythonPane has no ai.query or llm effect handler"),
+    line(R::Python, F::Ai, &["ai.query"], PY_SENSITIVE),
     na(R::Python, F::Clipboard, "the Python bridge has no clipboard effect"),
     line(R::Python, F::Events, &["publisher.plugin::changed"], EVENTS),
     line(
@@ -403,7 +403,6 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
         "secrets.get",
         "no Python effect (Secrets line is not-applicable)",
     ),
-    ("ai.query", "no Python effect (Ai line is not-applicable)"),
     (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
@@ -467,6 +466,7 @@ pub(crate) const DRIVEN: &[(Runtime, Family, &str)] = &[
     (R::Python, F::FsRead, "python_runtime_admission_matrix"),
     (R::Python, F::FsWrite, "python_runtime_admission_matrix"),
     (R::Python, F::Network, "python_runtime_admission_matrix"),
+    (R::Python, F::Ai, "python_runtime_admission_matrix"),
     (R::Python, F::CliExec, "python_runtime_admission_matrix"),
     (R::Python, F::Panes, "python_runtime_admission_matrix"),
     (R::Python, F::Pipes, "python_runtime_admission_matrix"),
@@ -1063,8 +1063,9 @@ fn cutover_cells_are_enumerated() {
     for row in &rows {
         println!("{row}");
     }
-    // 81 matrix cells plus the two `InstallYes` probes (stint 1291).
-    assert_eq!(rows.len(), 83);
+    // 86 matrix cells (the Python Ai line, stint 1450, adds the five
+    // `PY_SENSITIVE` cutovers) plus the two `InstallYes` probes (stint 1291).
+    assert_eq!(rows.len(), 88);
 }
 
 /// Stint 1291 `InstallYes` probe: install each package with `--yes` through

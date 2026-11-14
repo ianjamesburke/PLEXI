@@ -83,6 +83,19 @@ def _finish_emit_batch() -> None:
         sys.stdout.flush()
 
 
+def _ai_message_wire(message) -> dict:
+    """One ``AiQuery`` message on the wire. Accepts an ``AiMessage`` or a
+    ``{"role", "content"}`` dict; anything else is a plugin bug, raised here."""
+    if isinstance(message, effects.AiMessage):
+        return {"role": message.role, "content": message.content}
+    if isinstance(message, dict) and isinstance(message.get("role"), str) \
+            and isinstance(message.get("content"), str):
+        return {"role": message["role"], "content": message["content"]}
+    raise TypeError(
+        f"AiQuery messages must be AiMessage or {{'role', 'content'}} dicts, got {message!r}"
+    )
+
+
 def _load_module(plugin_path: Path):
     parent = str(plugin_path.parent)
     if parent not in sys.path:
@@ -175,6 +188,14 @@ class PluginRuntime:
             self._handle_text_submitted(ev)
         elif t == "http_response":
             self._handle_http_response(ev)
+        elif t == "ai_response":
+            self._dispatch(events.AiResponse(
+                request_id=str(ev.get("request_id", "")),
+                content=ev.get("content"),
+                tokens_in=int(ev.get("tokens_in") or 0),
+                tokens_out=int(ev.get("tokens_out") or 0),
+                error=ev.get("error"),
+            ))
         elif t == "mcp_connected":
             self._dispatch(events.McpConnected(
                 request_id=ev.get("request_id", ""),
@@ -1014,10 +1035,13 @@ class PluginRuntime:
                     "payload": effect.payload,
                 })
             elif isinstance(effect, effects.AiQuery):
-                raise TypeError(
-                    f"plugin {self._plugin_id!r}: effect {type(effect).__name__} is not "
-                    "available in this runtime (the host has no handler for it)"
-                )
+                _emit({
+                    "type": "ai_query",
+                    "request_id": str(effect.request_id),
+                    "mode": effect.mode,
+                    "system": effect.system,
+                    "messages": [_ai_message_wire(m) for m in effect.messages],
+                })
             else:
                 raise TypeError(
                     f"plugin {self._plugin_id!r}: update() returned "

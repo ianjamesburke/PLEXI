@@ -25,7 +25,7 @@ use crate::host::services::{
     NetService, PickerService, UreqNetService,
 };
 use crate::media::audio::{start_output_stream, OutputSession};
-use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
+use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
 use crate::protocol::{
     parse_enum, AiMessage as ProtocolAiMessage, EventStreamDecl as ProtocolEventStreamDecl,
     ModelTier, PluginEventActor, TriggerMode,
@@ -500,7 +500,7 @@ impl WasmPane {
             permission_workspace_root: PathBuf::new(),
             deferred_ai_queries: VecDeque::new(),
             net: Arc::new(UreqNetService::new()),
-            ai_broker: Arc::new(default_live_broker()),
+            ai_broker: Arc::new(LiveAiBroker::from_current_config()),
             plugin_timeline: crate::host::plugin_timeline::global(),
             pane_id: 0,
             context_id: 0,
@@ -1455,84 +1455,79 @@ impl WasmPane {
                 return;
             }
         };
-        let broker = Arc::clone(&self.ai_broker);
-        let tx = self.http_tx.clone();
-        let plugin_id = self.app.plugin_id().to_string();
         let request_id = req.request_id.clone();
-        let messages = req
-            .messages
-            .into_iter()
-            .map(|msg| ProtocolAiMessage {
-                role: msg.role,
-                content: msg.content,
-            })
-            .collect::<Vec<_>>();
-        std::thread::Builder::new()
-            .name(format!("wasm-ai-query-{plugin_id}-{request_id}"))
-            .spawn(move || {
-                let chunk_tx = tx.clone();
-                let chunk_request_id = request_id.clone();
-                let mut on_delta = move |d: crate::plexi_ai::turn_loop::TurnDelta<'_>| {
-                    let event = match d {
-                        crate::plexi_ai::turn_loop::TurnDelta::Text(text) => {
-                            InputEvent::AiStreamChunk(AiStreamChunkEvent {
-                                request_id: chunk_request_id.clone(),
-                                delta: text.to_string(),
-                                reasoning: None,
-                                done: false,
-                            })
-                        }
-                        crate::plexi_ai::turn_loop::TurnDelta::Reasoning(reasoning) => {
-                            InputEvent::AiStreamChunk(AiStreamChunkEvent {
-                                request_id: chunk_request_id.clone(),
-                                delta: String::new(),
-                                reasoning: Some(reasoning.to_string()),
-                                done: false,
-                            })
-                        }
-                        // App-facing `ai.query` streams carry only text and
-                        // reasoning; tool-call generation progress drives the
-                        // assistant transcript, not plugin protocol events.
-                        crate::plexi_ai::turn_loop::TurnDelta::ToolCallProgress { .. } => return,
-                    };
-                    if let Err(e) = chunk_tx.send(event) {
-                        log::warn!("wasm ai: stream receiver dropped: {e}");
-                    }
-                };
-                let response = broker.dispatch(
-                    AiBrokerRequest {
-                        plugin_id,
-                        model_mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
-                        concrete_model: None,
-                        reasoning_effort: None,
-                        system: req.system,
-                        messages,
-                        tools: Vec::new(),
-                        workspace_root: None,
-                        open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
-                        tool_dispatcher: None,
-                        cancel: crate::plexi_ai::CancelToken::new(),
-                        max_tool_iterations: None,
-                        client: None,
-                        kind: None,
-                    },
-                    &mut on_delta,
-                );
-                let _ = tx.send(InputEvent::AiStreamChunk(AiStreamChunkEvent {
-                    request_id: request_id.clone(),
-                    delta: String::new(),
-                    reasoning: None,
-                    done: true,
-                }));
-                let _ = tx.send(InputEvent::AiResponse(AiResponseEvent {
-                    request_id,
-                    content: response.content,
-                    tokens_in: response.tokens_in,
-                    tokens_out: response.tokens_out,
-                    error: response.error,
-                }));
-            })
-            .expect("failed to spawn wasm ai-query thread");
+        let query = super::plugin_ai_query::PluginAiQuery {
+            plugin_id: self.app.plugin_id().to_string(),
+            request_id: req.request_id,
+            mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
+            system: req.system,
+            messages: req
+                .messages
+                .into_iter()
+                .map(|msg| ProtocolAiMessage {
+                    role: msg.role,
+                    content: msg.content,
+                })
+                .collect(),
+        };
+        let chunk_tx = self.http_tx.clone();
+        let chunk_request_id = request_id.clone();
+        let on_delta: super::plugin_ai_query::OnDelta = Box::new(move |d| {
+            let event = match d {
+                crate::plexi_ai::turn_loop::TurnDelta::Text(text) => {
+                    InputEvent::AiStreamChunk(AiStreamChunkEvent {
+                        request_id: chunk_request_id.clone(),
+                        delta: text.to_string(),
+                        reasoning: None,
+                        done: false,
+                    })
+                }
+                crate::plexi_ai::turn_loop::TurnDelta::Reasoning(reasoning) => {
+                    InputEvent::AiStreamChunk(AiStreamChunkEvent {
+                        request_id: chunk_request_id.clone(),
+                        delta: String::new(),
+                        reasoning: Some(reasoning.to_string()),
+                        done: false,
+                    })
+                }
+                // App-facing `ai.query` streams carry only text and
+                // reasoning; tool-call generation progress drives the
+                // assistant transcript, not plugin protocol events.
+                crate::plexi_ai::turn_loop::TurnDelta::ToolCallProgress { .. } => return,
+            };
+            if let Err(e) = chunk_tx.send(event) {
+                log::warn!("wasm ai: stream receiver dropped: {e}");
+            }
+        });
+        let tx = self.http_tx.clone();
+        let done_request_id = request_id.clone();
+        let deliver: super::plugin_ai_query::Deliver = Box::new(move |response| {
+            let _ = tx.send(InputEvent::AiStreamChunk(AiStreamChunkEvent {
+                request_id: done_request_id.clone(),
+                delta: String::new(),
+                reasoning: None,
+                done: true,
+            }));
+            let _ = tx.send(InputEvent::AiResponse(AiResponseEvent {
+                request_id: done_request_id,
+                content: response.content,
+                tokens_in: response.tokens_in,
+                tokens_out: response.tokens_out,
+                error: response.error,
+            }));
+        });
+        if let Err(error) =
+            super::plugin_ai_query::spawn(Arc::clone(&self.ai_broker), query, on_delta, deliver)
+        {
+            log::error!(
+                "wasm ai: plugin {} request {request_id}: worker thread spawn failed: {error}",
+                self.app.plugin_id()
+            );
+            self.queue_ai_denied(
+                request_id,
+                &format!("ai.query: worker thread spawn failed: {error}"),
+            );
+        }
     }
 
     fn declare_event_streams(
@@ -1838,12 +1833,6 @@ fn host_http_to_wit(response: HostHttpResponse) -> WitHttpResponse {
         headers,
         body,
     }
-}
-
-fn default_live_broker() -> LiveAiBroker {
-    let config = crate::config::PlexiConfig::load();
-    let modes = config.resolved_model_modes();
-    LiveAiBroker::with_model_modes(config.ai, modes)
 }
 
 // ─── Live adapter ───────────────────────────────────────────────────────────
@@ -2754,6 +2743,7 @@ mod tests {
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
     use crate::host::wasm_view::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView};
+    use crate::plexi_ai::broker::AiBrokerRequest;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
