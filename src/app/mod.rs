@@ -61,11 +61,12 @@ pub mod video_player_view;
 pub mod view_trait;
 pub mod zoom;
 
+pub(crate) use focus::{
+    CloseConfirmTarget, ContextCloseState, FocusKind, PendingRawWasmLaunch,
+    FOCUS_HEARTBEAT_INTERVAL,
+};
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
-pub(crate) use focus::{
-    ContextCloseState, FocusKind, PendingRawWasmLaunch, FOCUS_HEARTBEAT_INTERVAL,
-};
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
@@ -230,6 +231,9 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
+    /// The pane a single-pane "Close pane?" dialog asked about (stint 1491).
+    /// Confirm closes this pane only, and only while it is still focused.
+    pub(crate) close_confirm_target: Option<CloseConfirmTarget>,
     pub(crate) pending_quit: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
@@ -1787,6 +1791,7 @@ impl PlexiApp {
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     claimed_host_key_releases: HashSet::new(),
                     pending_close: false,
+                    close_confirm_target: None,
                     pending_quit: false,
                     pending_context_close: None,
                     frame_tick,
@@ -2075,6 +2080,7 @@ impl PlexiApp {
             claimed_host_key_releases: HashSet::new(),
             key_bindings,
             pending_close: false,
+            close_confirm_target: None,
             pending_quit: false,
             pending_context_close: None,
             frame_tick,
@@ -3057,6 +3063,7 @@ impl PlexiApp {
             claimed_host_key_releases: HashSet::new(),
             key_bindings,
             pending_close: false,
+            close_confirm_target: None,
             pending_quit: false,
             pending_context_close: None,
             frame_tick,
@@ -4614,7 +4621,15 @@ impl PlexiApp {
                             );
                             self.pending_context_close = Some(state);
                         }
-                    } else if self.confirm_close() {
+                    } else if let Some(target) = self
+                        .confirm_close()
+                        .then(|| self.close_confirm_target_for_focused())
+                        .flatten()
+                    {
+                        // No focused pane (an empty page) has nothing to name
+                        // or terminate: it takes the no-pane cleanup below.
+                        log::info!("close_confirm: asking pane={}", target.pane);
+                        self.close_confirm_target = Some(target);
                         self.pending_close = true;
                     } else {
                         self.execute_close_pane();

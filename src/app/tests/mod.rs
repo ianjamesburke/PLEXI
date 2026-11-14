@@ -13,6 +13,7 @@ mod zoom_tests;
 
 mod wrap_tests;
 
+mod close_confirm_target_tests;
 mod close_selection_tests;
 
 mod core_only_tests;
