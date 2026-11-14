@@ -1342,6 +1342,9 @@ mod cli_operation_tests;
 mod custody_guard_tests;
 
 #[cfg(test)]
+mod claim_order_guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

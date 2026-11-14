@@ -367,15 +367,110 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         .map(|v| v.len())
 }
 
+/// The host process `host start` launched, watched for an early exit while
+/// the readiness poll runs (stint 1487). Unix keeps the child handle; Windows
+/// launches through `windows_launch` and has only the pid, so there the poll
+/// still ends at the deadline.
+pub(crate) struct LaunchedHost {
+    pid: u32,
+    #[cfg(unix)]
+    child: std::process::Child,
+}
+
+impl LaunchedHost {
+    #[cfg(unix)]
+    fn from_child(child: std::process::Child) -> Self {
+        Self {
+            pid: child.id(),
+            child,
+        }
+    }
+
+    /// The host's exit status once it has exited, else `None`.
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        #[cfg(unix)]
+        {
+            match self.child.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    log::warn!("host_start: could not poll host pid={}: {error}", self.pid);
+                    None
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+}
+
+/// A stand-in for a launched host that is still running, for readiness tests.
+/// Unix: a sleeping child, killed when the test drops it.
+#[cfg(test)]
+impl LaunchedHost {
+    fn running_for_test() -> Self {
+        #[cfg(unix)]
+        {
+            Self::from_child(
+                std::process::Command::new("/bin/sleep")
+                    .arg("60")
+                    .spawn()
+                    .expect("spawn stand-in host"),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                pid: std::process::id(),
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for LaunchedHost {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Why a host exited before it was ready. Exit `ALREADY_RUNNING_EXIT` is the
+/// one-host guard refusing because another host holds this profile.
+fn early_exit_message(status: std::process::ExitStatus, profile_dir: &Path) -> String {
+    if status.code() == Some(crate::app::host_instance::ALREADY_RUNNING_EXIT) {
+        format!(
+            "a Plexi host is already running on this profile ({}); the new host refused to start. \
+             Use the running host, or stop it first with `plexi host stop`.",
+            profile_dir.display()
+        )
+    } else {
+        format!(
+            "the Plexi host exited ({status}) before it became ready; see {}",
+            crate::platform::logging::log_path().display()
+        )
+    }
+}
+
 fn wait_for_ready(
     socket_path: &Path,
     timeout: Duration,
     profile_dir: &Path,
+    host: &mut LaunchedHost,
 ) -> Result<usize, String> {
     let start = Instant::now();
     let deadline = start + timeout;
     log::info!("host_start: readiness poll start socket={socket_path:?} timeout={timeout:?}");
     while Instant::now() < deadline {
+        if let Some(status) = host.exited() {
+            log::info!(
+                "host_start: host pid={} exited {status} after {:?} before ready",
+                host.pid,
+                start.elapsed()
+            );
+            return Err(early_exit_message(status, profile_dir));
+        }
         let probe_deadline = deadline.min(Instant::now() + crate::rpc::DEFAULT_TIMEOUT);
         if let Some(count) = query_ready_status(socket_path, profile_dir, probe_deadline) {
             log::info!(
@@ -656,19 +751,27 @@ pub fn host_start_cli(
         eprintln!("error: host start deadline expired before launch");
         return 1;
     }
-    let pid = match spawn_detached_host(&binary_path, &child_env) {
-        Ok(pid) => pid,
+    let mut host = match spawn_detached_host(&binary_path, &child_env) {
+        Ok(host) => host,
         Err(e) => {
             log::error!("host_start: spawn failed for {binary_path:?}: {e}");
             eprintln!("error: could not launch Plexi: {e}");
             return 1;
         }
     };
-    log::info!("host_start: process spawned pid={pid} detached=true");
+    log::info!("host_start: process spawned pid={} detached=true", host.pid);
     let timeout = deadline.saturating_duration_since(Instant::now());
-    match wait_for_ready(&socket_path, timeout, &host_config_dir(channel.as_deref())) {
+    match wait_for_ready(
+        &socket_path,
+        timeout,
+        &host_config_dir(channel.as_deref()),
+        &mut host,
+    ) {
         Ok(count) => {
-            println!("Plexi host started (pid {}), {count} pane(s) ready.", pid);
+            println!(
+                "Plexi host started (pid {}), {count} pane(s) ready.",
+                host.pid
+            );
             0
         }
         Err(e) => {
@@ -795,7 +898,10 @@ pub(crate) fn spawn_restart_coordinator(
 }
 
 #[cfg(unix)]
-fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
+fn spawn_detached_host(
+    binary: &Path,
+    child_env: &[(String, String)],
+) -> std::io::Result<LaunchedHost> {
     let mut cmd = std::process::Command::new(binary);
     cmd.env_clear()
         .envs(child_env.iter().cloned())
@@ -803,12 +909,15 @@ fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     detach_from_terminal(&mut cmd);
-    cmd.spawn().map(|child| child.id())
+    cmd.spawn().map(LaunchedHost::from_child)
 }
 
 #[cfg(windows)]
-fn spawn_detached_host(binary: &Path, child_env: &[(String, String)]) -> std::io::Result<u32> {
-    windows_launch::spawn(binary, child_env)
+fn spawn_detached_host(
+    binary: &Path,
+    child_env: &[(String, String)],
+) -> std::io::Result<LaunchedHost> {
+    windows_launch::spawn(binary, child_env).map(|pid| LaunchedHost { pid })
 }
 
 fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
@@ -1749,6 +1858,33 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// Stint 1487 (d): a host the one-host guard refused exits with
+    /// `ALREADY_RUNNING_EXIT` within moments; `host start` must report that at
+    /// once, not wait out its deadline for a socket that never comes.
+    #[cfg(unix)]
+    #[test]
+    fn host_start_reports_a_refused_host_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("notify.sock");
+        let refused = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!("exit {}", crate::app::host_instance::ALREADY_RUNNING_EXIT),
+            ])
+            .spawn()
+            .unwrap();
+        let mut host = LaunchedHost::from_child(refused);
+        let started = Instant::now();
+        let error =
+            wait_for_ready(&socket, Duration::from_secs(3), dir.path(), &mut host).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "waited {:?} for a host that had already refused",
+            started.elapsed()
+        );
+        assert!(error.contains("already running on this profile"), "{error}");
+    }
     #[cfg(unix)]
     #[test]
     fn fallback_cleanup_guard_keeps_the_calling_cli_alive() {
@@ -1938,7 +2074,12 @@ mod tests {
             let response = request["response_file"].as_str().unwrap();
             crate::rpc::write_json_response(response, serde_json::json!([{"id": 1}]));
         });
-        let result = wait_for_ready(&endpoint, Duration::from_millis(40), dir.path());
+        let result = wait_for_ready(
+            &endpoint,
+            Duration::from_millis(40),
+            dir.path(),
+            &mut LaunchedHost::running_for_test(),
+        );
         server.join().unwrap();
         assert!(
             result.is_err(),
@@ -2085,7 +2226,13 @@ mod tests {
     #[test]
     fn readiness_zero_budget_does_not_connect() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(wait_for_ready(&dir.path().join("absent"), Duration::ZERO, dir.path()).is_err());
+        assert!(wait_for_ready(
+            &dir.path().join("absent"),
+            Duration::ZERO,
+            dir.path(),
+            &mut LaunchedHost::running_for_test()
+        )
+        .is_err());
         assert!(!dir.path().join("rpc").exists());
     }
 
@@ -2117,7 +2264,13 @@ mod tests {
             }
         });
         let timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
-        wait_for_ready(&endpoint, timeout, dir.path()).expect("application ready");
+        wait_for_ready(
+            &endpoint,
+            timeout,
+            dir.path(),
+            &mut LaunchedHost::running_for_test(),
+        )
+        .expect("application ready");
         let send = |request: serde_json::Value| {
             super::super::send_line_to_socket(
                 &endpoint,
