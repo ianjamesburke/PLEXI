@@ -1300,7 +1300,7 @@ impl PlexiApp {
                     }
                     crate::host::pane::Pane::View(a) => {
                         items.push(ContextCloseItem {
-                            kind: "App",
+                            kind: "Plugin",
                             name: a.name.clone(),
                         });
                     }

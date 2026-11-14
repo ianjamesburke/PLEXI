@@ -20061,3 +20061,16 @@ mod shortcuts_sheet_escape_tests {
         open_then_escape(&mut h, "empty context");
     }
 }
+
+/// Stint 1521: the Close context dialog names a plugin view pane "Plugin",
+/// the vocabulary after the apps-to-plugins rename.
+#[test]
+fn close_context_dialog_lists_a_plugin_view_as_plugin() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+    let context_id = h.app.router.active().context_id;
+    let state = h.app.build_context_close_state(context_id);
+    let kinds: Vec<&str> = state.items.iter().map(|item| item.kind).collect();
+    assert!(kinds.contains(&"Plugin"), "dialog kinds: {kinds:?}");
+    assert!(!kinds.contains(&"App"), "dialog kinds: {kinds:?}");
+}
