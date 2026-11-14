@@ -738,7 +738,6 @@ name = "{Name}"
 entry = "main.py"
 version = "0.1.0"
 description = "A Plexi plugin"
-watch = true
 
 [plugin.capabilities]
 capabilities = []

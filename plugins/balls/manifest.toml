@@ -12,7 +12,6 @@ id = "balls"
 name = "Balls"
 version = "0.1.0"
 description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
-watch = true
 
 [plugin.capabilities]
 capabilities = []

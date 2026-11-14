@@ -187,6 +187,7 @@ mod tests {
     #[test]
     fn skipped_plugins_are_listed_with_their_error_and_the_check_command() {
         let skipped = [crate::app::registry::SkippedPlugin {
+            id: None,
             dir: std::path::PathBuf::from("/profile/plugins/broken-app"),
             source: crate::app::registry::RegistrySource::Global,
             error: "invalid manifest: missing field `runtime`".into(),

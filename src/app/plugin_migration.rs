@@ -813,10 +813,8 @@ const LEGACY_APP_KEYS: &[&str] = &[
     "entry",
     "type",
     "version",
-    "min_sdk_version",
     "description",
     "capabilities",
-    "watch",
     "author",
     "tags",
     "repo",
@@ -890,6 +888,15 @@ fn migrate_manifest(raw: &str) -> Result<(String, Vec<String>), ManifestFault> {
     runtime.insert("kind".into(), toml::Value::String(kind.into()));
     runtime.insert("entry".into(), entry);
     table.insert("plugin".into(), plugin);
+    // Keys removed from the manifest contract (stint 1454) are dropped, not
+    // carried into a manifest the host would then reject.
+    for (section, key, _) in super::registry::REMOVED_KEYS {
+        if let Some(table) = table.get_mut(*section).and_then(toml::Value::as_table_mut) {
+            if table.remove(*key).is_some() {
+                dropped.push(format!("{section}.{key}"));
+            }
+        }
+    }
     table.insert("schema_version".into(), toml::Value::Integer(2));
     let mut view = toml::Table::new();
     view.insert("id".into(), toml::Value::String(format!("{id}.main")));

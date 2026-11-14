@@ -13,7 +13,6 @@ id = "file-picker-poc"
 name = "File Picker Poc"
 version = "0.1.0"
 description = "POC: OpenFilePicker round trip with picker-granted fs scopes (stint 0508)"
-watch = true
 
 [plugin.capabilities]
 capabilities = ["fs.pick", "fs.read", "fs.write"]

@@ -40,6 +40,7 @@
 #[path = "manifest_contract.rs"]
 mod manifest_contract;
 pub use manifest_contract::{ManifestError, ManifestErrorKind};
+pub(crate) use manifest_contract::REMOVED_KEYS;
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ use std::path::{Path, PathBuf};
 pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(try_from = "PluginManifestWire")]
+#[serde(try_from = "toml::Table")]
 pub struct PluginManifest {
     /// Required schema version — refuses to load if greater than
     /// `MANIFEST_SCHEMA_VERSION`. No serde-default: a manifest that omits
@@ -138,6 +139,30 @@ pub struct ViewDeclaration {
     pub id: String,
     #[serde(default)]
     pub default: bool,
+}
+
+/// The one manifest entry point: a removed key is a named error before the
+/// typed parse, which would otherwise ignore it in `[launch]` and `[runtime]`.
+impl TryFrom<toml::Table> for PluginManifest {
+    type Error = ManifestError;
+
+    fn try_from(table: toml::Table) -> Result<Self, Self::Error> {
+        manifest_contract::reject_removed_keys(&table)?;
+        let plugin = table
+            .get("plugin")
+            .and_then(|plugin| plugin.get("id"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("<unknown>")
+            .to_string();
+        let wire = PluginManifestWire::deserialize(toml::Value::Table(table)).map_err(|error| {
+            ManifestError::reject(
+                &plugin,
+                "manifest",
+                ManifestErrorKind::InvalidField(error.to_string()),
+            )
+        })?;
+        Self::try_from(wire)
+    }
 }
 
 impl TryFrom<PluginManifestWire> for PluginManifest {
@@ -244,7 +269,7 @@ impl Contributions {
 /// this plugin addresses; the first entry is the plugin's default. Validated at
 /// install and launch via [`PluginManifest::state_scopes`] — an unknown scope,
 /// an empty list, or a duplicate fails loudly, never a silent fallback
-/// (`join_group` is the cautionary unvalidated-key precedent).
+/// (an unvalidated key is the cautionary precedent).
 #[derive(Deserialize, Debug, Clone)]
 pub struct StateSection {
     /// Required within the section: a present-but-empty `[state]` table is a
@@ -282,10 +307,6 @@ impl PluginManifest {
 pub struct PluginRuntime {
     pub kind: ManifestType,
     pub entry: String,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(default)]
-    pub world: Option<String>,
     #[serde(default)]
     pub execution: RuntimeExecution,
     #[serde(default)]
@@ -354,28 +375,10 @@ pub struct PluginIdentity {
     pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
-    /// Optional minimum SDK version this plugin requires, as a `major.minor.patch`
-    /// string (e.g. `"0.1.13"`). When set, the host compares it against the SDK
-    /// version reported in the ready handshake and rejects the plugin with a
-    /// user-visible fatal error if the running SDK is older. Absent → no gate;
-    /// the plugin launches on any SDK version (preserves every existing plugin).
-    #[serde(default)]
-    pub min_sdk_version: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub capabilities: PluginCapabilities,
-    /// Hot-reload opt-in (#83). When true AND the plugin was discovered from a
-    /// workspace-local `.plexi/plugins/`, the host watches the plugin dir and
-    /// reloads the subprocess on save. Off by default — global installs
-    /// never auto-reload regardless of this field.
-    ///
-    /// Modelled as `Option<bool>` (no `serde(default)`): missing → `None`,
-    /// which the host treats as `false`. Standard pattern for an explicitly
-    /// optional field whose absence has a meaningful default. Distinct from
-    /// `serde(default)`, which would conflate "absent" with "false" at the
-    /// type level and lose the diagnostic that the field was never set.
-    pub watch: Option<bool>,
     /// App author name or org.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
@@ -467,27 +470,6 @@ pub struct WasmCapabilityReview {
 /// and keyboard capture when the host spawns this plugin. All fields optional.
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct LaunchSection {
-    /// Pane group this plugin joins at spawn. Convention: "cwd" for generic
-    /// directory-synced plugins.
-    ///
-    /// **Builtin plugins only.** `group_for` is consulted on the builtin branch of
-    /// `open_view_by_id_with_layout`; Python and WASM panes are constructed
-    /// with `pane_group: None` and never read this key. Group members are
-    /// synchronized by `sync_plugin_cwd` reassigning `workspace_root` and calling
-    /// `ViewRuntime::sync_cwd`, which is a no-op for every non-builtin arm.
-    /// Declaring it on a Python or WASM plugin is inert.
-    #[serde(default)]
-    pub join_group: Option<String>,
-    /// If true, this plugin captures all keyboard input when focused. Host
-    /// shortcuts (Cmd+HJKL, Cmd+Enter, etc.) are suppressed; only Cmd+Q and
-    /// Cmd+W remain.
-    #[serde(default)]
-    pub keyboard_capture: bool,
-    /// If true, this plugin's process survives pane close and can be re-attached.
-    /// The host will not kill the subprocess when the pane is closed;
-    /// instead it parks the process in a background registry keyed by plugin_id.
-    #[serde(default)]
-    pub background: bool,
     /// Where this plugin's notifications surface. `"window"` (default) shows
     /// notifications only when the plugin's window is active. `"context"` shows
     /// them whenever the user is in the same sidebar context. `"global"` always
@@ -503,16 +485,6 @@ pub struct LaunchSection {
     /// None = use host default (80).
     #[serde(default)]
     pub min_height: Option<f32>,
-    /// compact/regular size-class threshold (logical px). None = use SDK default (280).
-    #[serde(default)]
-    pub compact: Option<f32>,
-    /// regular/full size-class threshold (logical px). None = use SDK default (480).
-    #[serde(default)]
-    pub regular: Option<f32>,
-    /// Message written into the companion terminal's PTY on launch. Gives the
-    /// user immediate feedback that the plugin started. Omit to launch silently.
-    #[serde(default)]
-    pub startup_message: Option<String>,
     /// The plugin's natural launch placement — the spatial disposition the host
     /// uses when a caller does not specify one (#2283). Uses the host's layout-
     /// hint vocabulary verbatim: `overlay` (default), `split_right`/`split_h`,
@@ -646,6 +618,8 @@ pub struct InstalledPlugin {
 /// data so `plexi plugin list` can show it; it is never loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedPlugin {
+    /// The `[plugin] id` the manifest declares, when it can be read at all.
+    pub id: Option<String>,
     pub dir: PathBuf,
     pub source: RegistrySource,
     pub error: String,
@@ -746,6 +720,16 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// Why the plugin `plugin_id` was found but not loaded, if it was: the
+    /// entry whose manifest declares that id, or whose directory has that
+    /// name when the manifest's id cannot be read.
+    pub fn skipped_reason(&self, plugin_id: &str) -> Option<&SkippedPlugin> {
+        self.skipped.iter().find(|entry| match &entry.id {
+            Some(id) => id == plugin_id,
+            None => entry.dir.file_name().is_some_and(|name| name == plugin_id),
+        })
+    }
+
     /// Look up an installed entry by id (returns `None` if not discovered).
     pub fn get(&self, id: &str) -> Option<&InstalledPlugin> {
         self.plugins.get(id)
@@ -794,20 +778,11 @@ impl PluginRegistry {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     log::debug!(
-                        "PluginRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
+                        "PluginRegistry: contract id={} python_compat={:?} min_size={:?}x{:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
                         id,
-                        installed.runtime.target,
-                        installed.runtime.world,
                         installed.runtime.python_compat,
-                        installed.manifest.min_sdk_version,
-                        installed.manifest.watch,
-                        installed.launch.background,
-                        installed.launch.keyboard_capture,
                         installed.launch.min_width,
                         installed.launch.min_height,
-                        installed.launch.compact,
-                        installed.launch.regular,
-                        installed.launch.startup_message,
                         installed.secrets.len(),
                         installed.state_scopes,
                         installed.state_format.as_str(),
@@ -849,6 +824,7 @@ impl PluginRegistry {
                     });
                     if let Some(error) = collision {
                         skipped.push(SkippedPlugin {
+                            id: Some(id.clone()),
                             dir: entry_dir,
                             source,
                             error: error.to_string(),
@@ -867,12 +843,6 @@ impl PluginRegistry {
                             ..installed
                         },
                     );
-                    let _ = (
-                        self.is_background(&id),
-                        self.watch_eligible(&id),
-                        self.plugin_dir_for(&id),
-                        self.startup_message_for(&id),
-                    );
                 }
                 Err(e) => {
                     // Runtime agents (AGENT.md + settings.toml, no manifest)
@@ -887,6 +857,7 @@ impl PluginRegistry {
                         );
                     } else {
                         skipped.push(SkippedPlugin {
+                            id: declared_plugin_id(&entry_dir),
                             dir: entry_dir,
                             source,
                             error: e,
@@ -989,21 +960,6 @@ impl PluginRegistry {
         plugins
     }
 
-    /// Returns true if the plugin's process should survive pane close (`[launch].background`).
-    pub fn is_background(&self, plugin_id: &str) -> bool {
-        self.plugins
-            .get(plugin_id)
-            .map(|a| a.launch.background)
-            .unwrap_or(false)
-    }
-
-    /// Get the manifest-declared pane group (`[launch].join_group`).
-    pub fn group_for(&self, plugin_id: &str) -> Option<String> {
-        self.plugins
-            .get(plugin_id)
-            .and_then(|a| a.launch.join_group.clone())
-    }
-
     /// The plugin's natural launch placement (`[launch].placement`), validated
     /// against [`VALID_PLACEMENTS`]. Returns `None` when unset, unknown, or the
     /// plugin is not installed — callers then fall back to the host default
@@ -1045,22 +1001,6 @@ impl PluginRegistry {
             .map(|s| s.as_str())
     }
 
-    /// Returns true when the plugin's manifest sets `[plugin] watch = true`.
-    /// The file watcher only needs the resolved plugin directory — discovery
-    /// location is irrelevant.
-    pub fn watch_eligible(&self, plugin_id: &str) -> bool {
-        self.plugins
-            .get(plugin_id)
-            .map(|a| a.manifest.watch.unwrap_or(false))
-            .unwrap_or(false)
-    }
-
-    /// Path to the plugin's installation directory (contains `manifest.toml`).
-    /// Used by the file watcher; returns `None` when the plugin id is unknown.
-    pub fn plugin_dir_for(&self, plugin_id: &str) -> Option<PathBuf> {
-        self.plugins.get(plugin_id).map(|a| a.plugin_dir.clone())
-    }
-
     /// Return the manifest-declared notification scope for a plugin.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
     pub fn default_notification_scope_for(&self, plugin_id: &str) -> crate::protocol::NotifyScope {
@@ -1068,13 +1008,6 @@ impl PluginRegistry {
             .get(plugin_id)
             .map(|a| a.launch.notification_scope.clone().into())
             .unwrap_or(crate::protocol::NotifyScope::Window)
-    }
-
-    /// Return the manifest-declared startup message, if any.
-    pub fn startup_message_for(&self, plugin_id: &str) -> Option<String> {
-        self.plugins
-            .get(plugin_id)
-            .and_then(|a| a.launch.startup_message.clone())
     }
 
     /// Check whether a plugin's declared capabilities are satisfiable by the
@@ -1099,6 +1032,18 @@ impl PluginRegistry {
         }
         missing
     }
+}
+
+/// The `[plugin] id` a plugin directory's manifest declares, read without
+/// validating the rest of the manifest; `None` when it cannot be read.
+fn declared_plugin_id(plugin_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(plugin_dir.join("manifest.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    value
+        .get("plugin")?
+        .get("id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Returns the path to the global plugins directory: `~/.plexi/plugins/`.
@@ -1437,6 +1382,44 @@ pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
 mod tests {
     fn schema2_fixture(extra: &str) -> String {
         format!("schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n[runtime]\nkind = 'python'\nentry = 'main.py'\n[contributes]\n{extra}")
+    }
+
+    /// Stint 1454: keys that parsed and did nothing are removed. A manifest
+    /// that still sets one fails with an error naming the key, saying it was
+    /// removed, and what to do; the same manifest without it parses.
+    #[test]
+    fn removed_manifest_keys_fail_with_a_named_error() {
+        let base = |plugin: &str, runtime: &str, launch: &str| {
+            format!(
+                "schema_version = 2\n[plugin]\nid = 'sample'\nname = 'Sample'\nversion = '1.0.0'\n{plugin}\
+                 [runtime]\nkind = 'python'\nentry = 'main.py'\n{runtime}\
+                 [launch]\n{launch}\
+                 [[contributes.views]]\nid = 'sample.main'\ndefault = true\n"
+            )
+        };
+        toml::from_str::<PluginManifest>(&base("", "", ""))
+            .expect("a manifest without removed keys parses");
+        let cases = [
+            ("plugin.watch", base("watch = true\n", "", "")),
+            ("plugin.min_sdk_version", base("min_sdk_version = '0.1.13'\n", "", "")),
+            ("runtime.target", base("", "target = 'wasm32-wasip2'\n", "")),
+            ("runtime.world", base("", "world = 'plexi'\n", "")),
+            ("launch.startup_message", base("", "", "startup_message = 'hi'\n")),
+            ("launch.keyboard_capture", base("", "", "keyboard_capture = true\n")),
+            ("launch.background", base("", "", "background = true\n")),
+            ("launch.compact", base("", "", "compact = 280.0\n")),
+            ("launch.regular", base("", "", "regular = 480.0\n")),
+            ("launch.join_group", base("", "", "join_group = 'cwd'\n")),
+        ];
+        for (key, raw) in cases {
+            let error = toml::from_str::<PluginManifest>(&raw)
+                .expect_err(&format!("{key} must be rejected"))
+                .to_string();
+            assert!(
+                error.contains(key) && error.contains("was removed"),
+                "{key}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -2032,24 +2015,6 @@ mod tests {
         );
     }
 
-    /// `[launch] join_group` is read only on the builtin branch of
-    /// `open_view_by_id_with_layout`, and `ViewRuntime::sync_cwd` is a no-op
-    /// for the Python arm. Todo is a Python plugin, so the key it shipped was
-    /// inert — a declaration of behaviour it never had (stint 0646).
-    #[test]
-    fn todo_manifest_declares_no_pane_group() {
-        let manifest: PluginManifest = toml::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/plugins/todo/manifest.toml"
-        )))
-        .expect("todo manifest must parse");
-        assert!(
-            manifest.launch.join_group.is_none(),
-            "todo is a Python plugin; `[launch] join_group` is never read for one, \
-             so declaring it documents behaviour the plugin does not have"
-        );
-    }
-
     #[test]
     fn manifest_with_future_schema_version_refuses() {
         let global = tempfile::tempdir().unwrap();
@@ -2409,79 +2374,6 @@ default = true
         );
     }
 
-    // ── #83 hot reload — manifest `[plugin] watch` field ────────────────────
-
-    #[test]
-    fn manifest_with_watch_true_loads() {
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        let plugin_dir = global.path().join("watching-app");
-        fs::create_dir_all(&plugin_dir).unwrap();
-        let manifest = "schema_version = 2\n\n[plugin]\nid = \"watching-app\"\nname = \"Watching\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"watching-app.main\"\ndefault = true\n";
-        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
-        let entry = plugin_dir.join("run.sh");
-        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
-        let app = registry
-            .get("watching-app")
-            .expect("manifest with watch=true should load");
-        assert_eq!(app.manifest.watch, Some(true));
-    }
-
-    #[test]
-    fn manifest_with_watch_field_absent_treats_as_false() {
-        // The default `write_plugin` helper omits `watch` — exercise that path.
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        write_plugin(global.path(), "no-watch", "No Watch");
-
-        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
-        let app = registry
-            .get("no-watch")
-            .expect("default manifest should load");
-        assert_eq!(app.manifest.watch, None);
-        // And `watch_eligible` returns false (also exercises the absent
-        // path on the public API).
-        assert!(!registry.watch_eligible("no-watch"));
-    }
-
-    #[test]
-    fn watch_field_engages_for_any_source_when_opted_in() {
-        // Any plugin with `watch = true` in the manifest is eligible for hot reload
-        // regardless of whether it was discovered globally or workspace-locally.
-        let global = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let channel_dir = crate::config::workspace_channel_dir();
-        let local_apps = workspace.path().join(&channel_dir).join("plugins");
-        fs::create_dir_all(&local_apps).unwrap();
-
-        // Global copy with watch=true.
-        let g_dir = global.path().join("dual-install");
-        fs::create_dir_all(&g_dir).unwrap();
-        let manifest_g = "schema_version = 2\n\n[plugin]\nid = \"global-watcher\"\nname = \"Global Watcher\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"global-watcher.main\"\ndefault = true\n";
-        fs::write(g_dir.join("manifest.toml"), manifest_g).unwrap();
-        let entry_g = g_dir.join("run.sh");
-        fs::write(&entry_g, "#!/bin/sh\nexit 0\n").unwrap();
-
-        // Local copy with watch=true (different id so they don't shadow).
-        let l_dir = local_apps.join("local-watcher");
-        fs::create_dir_all(&l_dir).unwrap();
-        let manifest_l = "schema_version = 2\n\n[plugin]\nid = \"local-watcher\"\nname = \"Local Watcher\"\nversion = \"0.0.1\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"local-watcher.main\"\ndefault = true\n";
-        fs::write(l_dir.join("manifest.toml"), manifest_l).unwrap();
-        let entry_l = l_dir.join("run.sh");
-        fs::write(&entry_l, "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = PluginRegistry::load_with_global(workspace.path(), global.path());
-        assert!(
-            registry.watch_eligible("global-watcher"),
-            "global install with watch=true must be eligible"
-        );
-        assert!(
-            registry.watch_eligible("local-watcher"),
-            "workspace-local install with watch=true must be eligible"
-        );
-    }
 
     #[test]
     fn no_workspace_means_only_global_apps_load() {
@@ -2563,33 +2455,6 @@ default = true
         let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
         assert_eq!(scope, crate::protocol::NotifyScope::Context);
-    }
-
-    #[test]
-    fn startup_message_round_trips_from_manifest() {
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        let plugin_dir = global.path().join("greeter");
-        fs::create_dir_all(&plugin_dir).unwrap();
-        let manifest = "schema_version = 2\n\n[launch]\nstartup_message = \"Starting Greeter…\"\n\n[plugin]\nid = \"greeter\"\nname = \"Greeter\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"greeter.main\"\ndefault = true\n";
-        fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
-        assert_eq!(
-            registry.startup_message_for("greeter"),
-            Some("Starting Greeter…".to_string())
-        );
-        assert_eq!(registry.startup_message_for("unknown"), None);
-    }
-
-    #[test]
-    fn startup_message_absent_returns_none() {
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        write_plugin(global.path(), "silent-app", "Silent App");
-        let registry = PluginRegistry::load_with_global(bare.path(), global.path());
-        assert_eq!(registry.startup_message_for("silent-app"), None);
     }
 
     #[test]

@@ -12,7 +12,6 @@ id = "canvas-grid"
 name = "Canvas Grid"
 version = "0.1.0"
 description = "POC: canvas coordinate hit-testing — click a cell in a fit-scaled grid, logs and highlights the canvas-space cell (stint 0397)."
-watch = true
 
 [plugin.capabilities]
 capabilities = []

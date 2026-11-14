@@ -1265,9 +1265,8 @@ impl PlexiApp {
     }
 
     /// Detect crashes on watched panes and restart them after a brief delay
-    /// so the developer can read the crash overlay. Only applies to panes
-    /// that opted in via `[plugin] watch = true` — production installs are
-    /// unaffected. Called once per frame alongside `drain_hot_reload_requests`.
+    /// so the developer can read the crash overlay. Called once per frame
+    /// alongside `drain_hot_reload_requests`.
     pub(crate) fn drain_crash_restarts(&mut self) {}
 
     /// Force-reload the focused view pane (manual trigger via Cmd+Option+R).
@@ -2572,10 +2571,7 @@ impl PlexiApp {
             let group = if id == "file_browser" && !follow_file_browser_cwd {
                 None
             } else {
-                self.registries
-                    .view_for_context(context_id, &self.router)
-                    .group_for(id)
-                    .or_else(|| builtin_default_group(app.type_id()))
+                builtin_default_group(app.type_id())
             };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::PluginPermissions::builtin();
@@ -2703,6 +2699,22 @@ impl PlexiApp {
 
         match installed {
             None => {
+                if let Some(skipped) = self
+                    .registries
+                    .view_for_context(context_id, &self.router)
+                    .skipped_reason(id)
+                {
+                    log::info!(
+                        "open_view_by_id: plugin '{id}' was skipped at registry load ({}): {}",
+                        skipped.dir.display(),
+                        skipped.error
+                    );
+                    return Err(format!(
+                        "plugin '{id}' is installed at {} but could not be loaded: {}",
+                        skipped.dir.display(),
+                        skipped.error
+                    ));
+                }
                 log::warn!(
                     "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry"
                 );

@@ -8684,7 +8684,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
 fn write_hidden_axis_probe(dir: &std::path::Path, title: &str) {
     std::fs::write(
         dir.join("manifest.toml"),
-        "schema_version = 2\n\n[plugin]\nid = \"hidden-axis-probe\"\nname = \"Hidden Axis Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0759 HostHarness fixture\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"hidden-axis-probe.main\"\ndefault = true\n",
+        "schema_version = 2\n\n[plugin]\nid = \"hidden-axis-probe\"\nname = \"Hidden Axis Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0759 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"hidden-axis-probe.main\"\ndefault = true\n",
     )
     .expect("write manifest.toml");
     std::fs::write(

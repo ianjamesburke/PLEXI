@@ -13,7 +13,6 @@ id = "component-gallery"
 name = "Component Gallery"
 version = "0.1.0"
 description = "Reference gallery rendering every host-rendered SDK primitive (stint 0328)"
-watch = true
 
 [plugin.capabilities]
 capabilities = []

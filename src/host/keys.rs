@@ -1533,7 +1533,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 /// Poll global keyboard actions using the pre-built binding table.
 ///
 /// `view_active` — focused pane has an active plugin surface (affects Escape/Tab).
-/// `keyboard_capture_active` — focused plugin declared `keyboard_capture = true` in its manifest.
+/// `keyboard_capture_active` — the focused pane's runtime reports `keyboard_capture()`.
 ///   When true, all host shortcuts are suppressed *except* Global-context bindings
 ///   (Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal).
 /// `overlay_open` — an overlay owns keyboard focus. Same suppression as `keyboard_capture_active`.

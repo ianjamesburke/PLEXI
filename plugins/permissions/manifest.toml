@@ -17,7 +17,6 @@ id = "permissions"
 name = "Permissions"
 version = "0.1.0"
 description = "Review and change live tool permission decisions"
-watch = true
 
 [plugin.capabilities]
 capabilities = []

@@ -12,7 +12,6 @@ id = "canvas-click-probe"
 name = "Canvas Click Probe"
 version = "0.1.0"
 description = "POC: HostHarness click-injection e2e fixture (stint 0398) — a bare fit=contain canvas with no chrome, so the canvas widget rect equals the pane rect and an injected pane-pixel click's canvas-space landing point is exactly predictable."
-watch = true
 
 [plugin.capabilities]
 capabilities = []

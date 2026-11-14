@@ -1,7 +1,6 @@
 schema_version = 2
 
 [runtime]
-target = "wasm32-wasip2"
 execution = "local"
 python_compat = false
 kind = "wasm"

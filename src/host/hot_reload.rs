@@ -18,8 +18,7 @@
 //!   is a no-op, not a panic.
 //! - The host receives `ReloadRequest { pane_id }` exclusively through the
 //!   channel passed to `HotReloadWatcher::new`. No other side-effects.
-//! - Watching is opt-in (manifest `[plugin] watch = true`) and gated to
-//!   workspace-local installs by the caller (`PluginRegistry::launch_process`).
+//! - Every launched plugin pane is watched; there is no manifest opt-in.
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;

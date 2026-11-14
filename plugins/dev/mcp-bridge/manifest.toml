@@ -12,7 +12,6 @@ id = "mcp-bridge"
 name = "MCP Bridge"
 version = "0.1.0"
 description = "Bridges configured MCP servers onto the Plexi connector tool plane"
-watch = true
 
 [plugin.capabilities]
 capabilities = ["mcp.client"]
