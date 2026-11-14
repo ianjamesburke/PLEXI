@@ -2219,7 +2219,7 @@ fn main() -> eframe::Result {
 /// subcommands (`run`, `secret`, `plugin`, `workspace`, `notify`) are also
 /// skipped — those are dispatched separately later in `main`.
 fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
-    let known = known_subcommands();
+    let known = cli::known_subcommands();
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
     let _ = iter.next();
@@ -2265,7 +2265,6 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
     Ok(None)
 }
 
-/// Returns the set of known top-level subcommand names and aliases, cached after first call.
 /// Commands that must keep working when `[experiments]` is invalid: the ones
 /// that fix it, plus help.
 fn experiments_repair_command(args: &[String]) -> bool {
@@ -2277,21 +2276,6 @@ fn experiments_repair_command(args: &[String]) -> bool {
             .skip(1)
             .find(|a| !a.starts_with('-'))
             .is_some_and(|a| matches!(a.as_str(), "experiments" | "config" | "doctor"))
-}
-
-fn known_subcommands() -> &'static std::collections::HashSet<String> {
-    use clap::CommandFactory;
-    use std::sync::OnceLock;
-    static INSTANCE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
-    INSTANCE.get_or_init(|| {
-        crate::cli::args::Cli::command()
-            .get_subcommands()
-            .flat_map(|c| {
-                std::iter::once(c.get_name().to_string())
-                    .chain(c.get_all_aliases().map(str::to_string))
-            })
-            .collect()
-    })
 }
 
 /// Drops `--profile` and its value so clap sees only the arguments it models.

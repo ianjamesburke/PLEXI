@@ -1486,8 +1486,15 @@ impl FileBrowserView {
         );
     }
 
+    /// Copy `source` to `target`. A symlink is copied as a link, never
+    /// followed, so a link back to an ancestor cannot make the copy recurse.
     fn copy_path_recursive(source: &Path, target: &Path) -> Result<(), String> {
-        if source.is_dir() {
+        let file_type = fs::symlink_metadata(source)
+            .map_err(|err| format!("Unable to read '{}': {err}", source.display()))?
+            .file_type();
+        if file_type.is_symlink() {
+            Self::copy_symlink(source, target)?;
+        } else if file_type.is_dir() {
             fs::create_dir(target).map_err(|err| {
                 format!(
                     "Unable to create copied folder '{}': {err}",
@@ -1512,10 +1519,62 @@ impl FileBrowserView {
         Ok(())
     }
 
+    /// Recreate the symlink at `source` as `target`, pointing at the same path.
+    fn copy_symlink(source: &Path, target: &Path) -> Result<(), String> {
+        let link = fs::read_link(source)
+            .map_err(|err| format!("Unable to read link '{}': {err}", source.display()))?;
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(&link, target);
+        #[cfg(windows)]
+        let result = if source.is_dir() {
+            std::os::windows::fs::symlink_dir(&link, target)
+        } else {
+            std::os::windows::fs::symlink_file(&link, target)
+        };
+        result.map_err(|err| {
+            format!(
+                "Unable to copy link '{}' to '{}': {err}",
+                source.display(),
+                target.display()
+            )
+        })
+    }
+
+    /// Refuse to paste a folder into itself or one of its descendants. Copying
+    /// would recurse into its own output and moving is impossible.
+    fn ensure_not_pasting_into_itself(source: &Path, dest_dir: &Path) -> Result<(), String> {
+        let is_real_dir = fs::symlink_metadata(source)
+            .map_err(|err| format!("Unable to read '{}': {err}", source.display()))?
+            .is_dir();
+        if !is_real_dir {
+            return Ok(());
+        }
+        let resolve = |path: &Path| {
+            fs::canonicalize(path)
+                .map_err(|err| format!("Unable to resolve '{}': {err}", path.display()))
+        };
+        if resolve(dest_dir)?.starts_with(resolve(source)?) {
+            log::info!(
+                "file_browser: refused paste of folder '{}' into itself or a subfolder '{}'",
+                source.display(),
+                dest_dir.display()
+            );
+            return Err(format!(
+                "Cannot paste folder '{}' into itself or one of its subfolders ('{}'). Paste it into a folder outside it.",
+                source.display(),
+                dest_dir.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn paste_into_current_dir(&mut self) -> Result<Vec<PathBuf>, String> {
         let Some(clipboard) = self.operation_clipboard.clone() else {
             return Ok(Vec::new());
         };
+        for source in &clipboard.paths {
+            Self::ensure_not_pasting_into_itself(source, &self.cwd)?;
+        }
         let mut created = Vec::new();
         for source in &clipboard.paths {
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
@@ -5807,6 +5866,80 @@ mod tests {
 
         let second = app.paste_into_current_dir().expect("second paste");
         assert_eq!(second, vec![dir.path().join("alpha 2.txt")]);
+    }
+
+    /// Pasting a folder into itself or one of its descendants is refused
+    /// before anything is created; copying would otherwise recurse into its
+    /// own output.
+    #[test]
+    fn pasting_a_folder_into_itself_or_a_descendant_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("folder");
+        let sub = folder.join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir folder/sub");
+        std::fs::write(folder.join("keep.txt"), b"k").expect("write keep");
+
+        for (cwd, operation) in [
+            (folder.clone(), FileOperation::Copy),
+            (sub.clone(), FileOperation::Copy),
+            (sub.clone(), FileOperation::Cut),
+        ] {
+            let mut app = FileBrowserView::new(cwd.clone());
+            app.operation_clipboard = Some(FileOperationClipboard {
+                operation,
+                paths: vec![folder.clone()],
+            });
+
+            let err = app
+                .paste_into_current_dir()
+                .expect_err("pasting a folder into itself must be refused");
+
+            assert!(err.contains("into itself"), "{err}");
+            let mut folder_entries: Vec<String> = std::fs::read_dir(&folder)
+                .expect("read folder")
+                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            folder_entries.sort();
+            assert_eq!(
+                folder_entries,
+                vec!["keep.txt".to_string(), "sub".to_string()],
+                "{operation:?} into {} created entries",
+                cwd.display()
+            );
+            assert_eq!(
+                std::fs::read_dir(&sub).expect("read sub").count(),
+                0,
+                "{operation:?} into {} created entries",
+                cwd.display()
+            );
+        }
+    }
+
+    /// A symlink inside a copied folder is copied as a link, so a link that
+    /// points back at its own folder cannot make the copy recurse.
+    #[cfg(unix)]
+    #[test]
+    fn copying_a_folder_copies_a_symlink_cycle_as_a_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).expect("mkdir folder");
+        std::fs::write(folder.join("keep.txt"), b"k").expect("write keep");
+        std::os::unix::fs::symlink(&folder, folder.join("loop")).expect("symlink loop");
+
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        app.operation_clipboard = Some(FileOperationClipboard {
+            operation: FileOperation::Copy,
+            paths: vec![folder.clone()],
+        });
+
+        let created = app.paste_into_current_dir().expect("paste");
+
+        assert_eq!(created, vec![dir.path().join("folder 1")]);
+        let copied_link = dir.path().join("folder 1").join("loop");
+        let meta = std::fs::symlink_metadata(&copied_link).expect("copied link");
+        assert!(meta.file_type().is_symlink(), "loop must stay a symlink");
+        assert_eq!(std::fs::read_link(&copied_link).expect("read link"), folder);
+        assert!(dir.path().join("folder 1").join("keep.txt").is_file());
     }
 
     #[test]

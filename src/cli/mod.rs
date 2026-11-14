@@ -463,6 +463,24 @@ pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<Re
 pub mod args;
 pub use args::{resolve_target_from_candidates, ContextTarget, PaneTarget};
 
+/// Top-level command names and aliases of the clap tree, cached after the
+/// first call. This is the one answer to "is this word a Plexi command"; never
+/// keep a hand-written copy of it.
+pub(crate) fn known_subcommands() -> &'static std::collections::HashSet<String> {
+    use clap::CommandFactory;
+    static INSTANCE: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        args::Cli::command()
+            .get_subcommands()
+            .flat_map(|c| {
+                std::iter::once(c.get_name().to_string())
+                    .chain(c.get_all_aliases().map(str::to_string))
+            })
+            .collect()
+    })
+}
+
 fn extract_context_name(entry: &serde_json::Value) -> String {
     let Some(name_val) = entry.get("name") else {
         return String::new();
@@ -2009,6 +2027,7 @@ pub use plugin_check::plugin_check_cli;
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 #[cfg(test)]
 pub(crate) use run::format_list_commands_for_root;
+pub(crate) use run::retired_step_error;
 pub use run::{
     parse_step, run_command, run_list_commands, run_steps_with, substitute_step_args, ParsedStep,
     StepRunReport,

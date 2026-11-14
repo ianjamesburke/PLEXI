@@ -365,11 +365,51 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
 }
 
 /// Parse config text the way the host loads it: every valid setting is kept,
-/// and each retired, unknown, or invalid key is reported. Retired `[ai]` keys
-/// and keys whose value does not deserialize are dropped, so one bad key falls
-/// back to its default instead of discarding the file. Only a TOML syntax
-/// error, which leaves no key structure to recover, yields the default config.
+/// and each retired, unknown, or invalid key is reported. Retired `[ai]` keys,
+/// keys whose value does not deserialize, and `[file_handlers]` entries whose
+/// spec is rejected are dropped, so one bad key falls back to its default
+/// instead of discarding the file. Only a TOML syntax error, which leaves no
+/// key structure to recover, yields the default config.
 fn parse_config_lenient(data: &str, path: &Path) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
+    let (mut cfg, mut diags) = deserialize_config_lenient(data, path);
+    retain_valid_file_handlers(&mut cfg, &path.display().to_string(), &mut diags);
+    (cfg, diags)
+}
+
+/// Drop each `[file_handlers]` entry whose spec
+/// [`crate::app::file_handlers::FileHandler::parse`] rejects, reporting it as
+/// an invalid value so the setting is never accepted and then ignored.
+fn retain_valid_file_handlers(
+    cfg: &mut PlexiConfig,
+    path_str: &str,
+    diags: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(handlers) = cfg.file_handlers.as_mut() else {
+        return;
+    };
+    let mut rejected: Vec<(String, String)> = handlers
+        .iter()
+        .filter_map(|(ext, spec)| {
+            crate::app::file_handlers::FileHandler::parse(spec)
+                .err()
+                .map(|err| (ext.clone(), err))
+        })
+        .collect();
+    rejected.sort();
+    for (ext, err) in rejected {
+        handlers.remove(&ext);
+        log::info!("config: file_handlers.{ext} rejected: {err}");
+        diags.push(ConfigDiagnostic::InvalidValue {
+            path: path_str.to_string(),
+            key: format!("file_handlers.{ext}"),
+            error: format!("is invalid and was ignored ({err})"),
+        });
+    }
+}
+
+/// Deserialize config text, dropping keys whose value does not deserialize.
+/// See [`parse_config_lenient`].
+fn deserialize_config_lenient(data: &str, path: &Path) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
     let path_str = path.display().to_string();
     let mut table: toml::Table = match toml::from_str(data) {
         Ok(table) => table,
@@ -1007,9 +1047,10 @@ pub struct PlexiConfig {
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
-    ///   `plugin:<id>` — open in a Plexi plugin by registry id
+    ///   `app:<id>` — open in a Plexi plugin by registry id
     ///   `os`       — hand to the OS default opener (`open` / `xdg-open`)
-    ///   `cmd:<command>` — reserved; falls back to OS open until wired
+    /// Any other spec, including `cmd:<command>`, is reported at load and
+    /// dropped.
     /// A user entry overrides any manifest-declared `file_types` association.
     /// Unmapped extensions fall through to manifest associations, then builtin
     /// media players, then the OS default.
@@ -4157,6 +4198,32 @@ mod per_key_load_tests {
         assert_eq!(
             cfg.theme.and_then(|t| t.preset).as_deref(),
             Some("catppuccin-mocha")
+        );
+    }
+
+    /// `cmd:` file handlers are not implemented, so the loader reports them
+    /// instead of accepting a value it would silently treat as `os`.
+    #[test]
+    fn unsupported_cmd_file_handler_is_reported() {
+        let (cfg, diagnostics) = load(
+            "[file_handlers]\nmd = \"cmd:code -w\"\npdf = \"os\"\npng = \"app:image-viewer\"\n",
+        );
+        assert_eq!(keys(&diagnostics), ["file_handlers.md"], "{diagnostics:?}");
+        assert!(diagnostics[0].is_error());
+        assert!(
+            diagnostics[0].to_string().contains("cmd:"),
+            "{}",
+            diagnostics[0]
+        );
+        let handlers = cfg.file_handlers.expect("file_handlers loaded");
+        assert!(
+            !handlers.contains_key("md"),
+            "rejected handler must not apply"
+        );
+        assert_eq!(handlers.get("pdf").map(String::as_str), Some("os"));
+        assert_eq!(
+            handlers.get("png").map(String::as_str),
+            Some("app:image-viewer")
         );
     }
 

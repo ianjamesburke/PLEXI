@@ -2206,6 +2206,25 @@ impl PlexiApp {
                     .find(|c| c.name == name)
                     .cloned()
             })?;
+        // One check for every saved-command form, shared with `plexi run`:
+        // a retired short form is refused before anything runs.
+        let refused = cmd
+            .steps
+            .iter()
+            .chain(cmd.run.iter())
+            .find_map(|step| crate::cli::retired_step_error(step).map(|reason| (step, reason)));
+        if let Some((step, reason)) = refused {
+            log::warn!("palette: refused retired command '{name}'");
+            self.notify_command_refused(name, &reason);
+            return Some(crate::cli::StepRunReport {
+                exit_code: 2,
+                total_steps: 1,
+                completed_steps: 0,
+                failed_step_index: Some(1),
+                failed_step: Some(step.clone()),
+                error_message: Some(reason),
+            });
+        }
         self.windows[self.active_window].clear_zoom();
         let invoker_pane_id = self.focused_pane_id();
         let steps: Vec<String> = if !cmd.steps.is_empty() {
@@ -5599,6 +5618,60 @@ split = true
         let cli_removed = crate::cli::run_command_for_root(Some(&ws_root), &ws_root, "beta", &[]);
         assert_eq!(cli_removed.exit_code, 1);
         assert_eq!(cli_removed.total_steps, 0);
+    }
+
+    /// Owner ruling 2026-11-12 (ledger row 48): a saved command whose first
+    /// word is a retired short form never runs, whether it is a single-line
+    /// `run =` or a step, from the palette or `plexi run`; the user is told.
+    #[test]
+    fn retired_short_form_command_is_refused_from_the_palette_and_the_cli() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let invoker = h.add_test_pane();
+        h.focus_pane(invoker);
+        h.app.notifications_enabled = true;
+        let ws_root = h.workspace_root().to_path_buf();
+        let ws_commands = ws_root
+            .join(crate::config::workspace_channel_dir())
+            .join("commands.toml");
+        std::fs::create_dir_all(ws_commands.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ws_commands,
+            "[commands]\nold = \"focus || touch ran.txt\"\n\n[commands.stepped]\nsteps = [\"focus || touch ran.txt\"]\n",
+        )
+        .unwrap();
+        let panes_before = h.app.windows[0].panes.len();
+
+        for name in ["old", "stepped"] {
+            let report = h
+                .app
+                .run_user_command_by_name(name)
+                .expect("the command resolves");
+            assert_eq!(report.exit_code, 2, "{name}");
+            let message = report.error_message.expect("a refusal message");
+            assert!(message.contains("plexi pane focus"), "{message}");
+        }
+        h.run_frames(2);
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            panes_before,
+            "no shell pane opened"
+        );
+        assert!(
+            h.app
+                .pending_notifications
+                .iter()
+                .any(|n| n.title == "Command 'old' not run"),
+            "the palette refusal is shown, not only logged"
+        );
+
+        let cli = crate::cli::run_command_for_root(Some(&ws_root), &ws_root, "old", &[]);
+        assert_eq!(
+            cli.exit_code, 2,
+            "plexi run refuses the single-line form too"
+        );
+        assert!(!ws_root.join("ran.txt").exists(), "nothing ran");
     }
 
     #[test]

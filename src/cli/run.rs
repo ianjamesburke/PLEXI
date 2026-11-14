@@ -34,42 +34,6 @@ pub enum ParsedStep {
     Shell(String),
 }
 
-const PLEXI_SUBCOMMANDS: &[&str] = &[
-    "pane",
-    "plugin",
-    "view",
-    "context",
-    "workspace",
-    "secret",
-    "secrets",
-    "note",
-    "config",
-    "agent",
-    "assistant",
-    "host",
-    "notify",
-    "permissions",
-    "needs-you",
-    "ledger",
-    "debug",
-    "skill",
-    "agents-dashboard",
-    "changes",
-    "account",
-    "demo",
-    "doctor",
-    "routine",
-    "events",
-    "registry",
-    "open",
-    "close",
-    "focus",
-    "send",
-    "capture",
-    "list",
-    "prev",
-];
-
 fn shell_escape_step_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -288,6 +252,8 @@ fn tokenize_step_for_cli(step: &str) -> Option<Vec<String>> {
 }
 
 /// Classify a step string as either a Plexi CLI invocation or a shell snippet.
+/// A step runs through the CLI when its first word is `plexi`/`plexi-<channel>`
+/// or a top-level command of the clap tree (`known_subcommands`).
 pub fn parse_step(step: &str) -> ParsedStep {
     let trimmed = step.trim();
     if trimmed.is_empty() {
@@ -300,13 +266,48 @@ pub fn parse_step(step: &str) -> ParsedStep {
                     tokens[0] = "plexi".to_string();
                     return ParsedStep::PlexiCli(tokens);
                 }
-            } else if PLEXI_SUBCOMMANDS.contains(&first.as_str()) {
+            } else if super::known_subcommands().contains(first.as_str()) {
                 tokens.insert(0, "plexi".to_string());
                 return ParsedStep::PlexiCli(tokens);
             }
         }
     }
     ParsedStep::Shell(trimmed.to_string())
+}
+
+/// First words that were top-level Plexi commands before the CLI namespaces,
+/// with the command that replaced each (`None` when nothing did). Owner
+/// ruling 2026-11-12: for one release a saved step starting with one of them
+/// fails loudly instead of running as a shell command, so an old
+/// `commands.toml` never runs the wrong program (`open` is also the macOS
+/// opener). Delete this table in the release after 0.5 Groundwork; such steps
+/// then run in the shell like any other.
+const RETIRED_STEP_COMMANDS: &[(&str, Option<&str>)] = &[
+    ("open", Some("plexi view open")),
+    ("close", Some("plexi pane close")),
+    ("focus", Some("plexi pane focus")),
+    ("send", Some("plexi pane send")),
+    ("capture", Some("plexi pane capture")),
+    ("list", Some("plexi pane list")),
+    ("prev", None),
+];
+
+/// The refusal for a step whose first word is a retired short form, or `None`.
+/// The one check for every way a saved command runs: stepped commands (via
+/// `run_steps_with`) and single-line `run =` commands from the CLI and the
+/// palette.
+pub(crate) fn retired_step_error(step: &str) -> Option<String> {
+    let first = step.split_whitespace().next()?;
+    let (word, replacement) = RETIRED_STEP_COMMANDS
+        .iter()
+        .find(|(word, _)| *word == first)?;
+    let fix = match replacement {
+        Some(command) => format!("use `{command}` instead"),
+        None => "it has no replacement; remove the step".to_string(),
+    };
+    Some(format!(
+        "step `{step}` starts with `{word}`, which is no longer a Plexi command and is not run as a shell command; {fix}"
+    ))
 }
 
 /// Execute `steps` sequentially using `runner`, stopping at the first step
@@ -319,6 +320,19 @@ where
     for (idx, raw_step) in steps.iter().enumerate() {
         let step_num = idx + 1;
         let rendered = substitute_step_args(raw_step, extra_args);
+        if let Some(reason) = retired_step_error(&rendered) {
+            let msg = format!("step {step_num}/{total} refused: {reason}");
+            log::warn!("commands: refused retired step={step_num}/{total}");
+            eprintln!("error: {msg}");
+            return StepRunReport {
+                exit_code: 2,
+                total_steps: total,
+                completed_steps: idx,
+                failed_step_index: Some(step_num),
+                failed_step: Some(rendered),
+                error_message: Some(msg),
+            };
+        }
         let parsed = parse_step(&rendered);
         log::info!(
             "commands: running step={step_num}/{total} command_chars={}",
@@ -962,6 +976,20 @@ pub fn run_command_for_root_from_pane(
         steps.len(),
         on_load.len()
     );
+    if steps.is_empty() {
+        if let Some(reason) = retired_step_error(&run_snippet) {
+            log::warn!("cli: refused retired single-line command '{command_name}'");
+            eprintln!("error: {reason}");
+            return StepRunReport {
+                exit_code: 2,
+                total_steps: 1,
+                completed_steps: 0,
+                failed_step_index: Some(1),
+                failed_step: Some(run_snippet),
+                error_message: Some(reason),
+            };
+        }
+    }
 
     // Resolve secrets via workspace-routed v3 resolver.
     let mut resolved: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
@@ -1448,5 +1476,83 @@ config_version = 1
                 .any(|d| d.is_error() && d.to_string().contains("run:<command>")),
             "target without run: prefix must be rejected by config check, got {diags:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod step_classification_tests {
+    use super::{parse_step, ParsedStep};
+    use clap::CommandFactory;
+
+    #[test]
+    fn step_whose_first_word_is_not_a_cli_command_runs_in_the_shell() {
+        assert_eq!(
+            parse_step("open README.md"),
+            ParsedStep::Shell("open README.md".to_string())
+        );
+        assert_eq!(
+            parse_step("echo hi"),
+            ParsedStep::Shell("echo hi".to_string())
+        );
+    }
+
+    /// Owner ruling 2026-11-12: a step that starts with a retired short form
+    /// fails loudly, naming the step and the current command, and nothing
+    /// runs (not even the shell, where `open` is the macOS opener).
+    #[test]
+    fn retired_short_form_step_fails_loudly_and_never_runs() {
+        for (step, expected) in [
+            ("open README.md", "use `plexi view open` instead"),
+            ("close 3", "use `plexi pane close` instead"),
+            ("prev", "it has no replacement"),
+        ] {
+            let report = super::run_steps_with(
+                &["echo first".to_string(), step.to_string()],
+                &[],
+                |_, rendered, _| {
+                    assert_ne!(rendered, step, "a retired step must never reach the runner");
+                    0
+                },
+            );
+            assert_eq!(report.exit_code, 2, "{step}");
+            assert_eq!(report.failed_step_index, Some(2), "{step}");
+            assert_eq!(report.completed_steps, 1, "{step}");
+            let message = report.error_message.expect("a refusal message");
+            assert!(message.contains(step), "{message}");
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
+    fn step_whose_first_word_is_a_top_level_cli_command_runs_plexi() {
+        assert_eq!(
+            parse_step("ai doctor"),
+            ParsedStep::PlexiCli(vec![
+                "plexi".to_string(),
+                "ai".to_string(),
+                "doctor".to_string(),
+            ])
+        );
+    }
+
+    /// Step classification is derived from the clap tree: every top-level
+    /// command name and alias routes to the CLI. A hand-kept classifier list
+    /// that drifts from the tree fails here.
+    #[test]
+    fn step_classification_matches_the_clap_tree() {
+        for sub in crate::cli::args::Cli::command().get_subcommands() {
+            for name in std::iter::once(sub.get_name()).chain(sub.get_all_aliases()) {
+                let step = format!("{name} --help");
+                assert_eq!(
+                    parse_step(&step),
+                    ParsedStep::PlexiCli(vec![
+                        "plexi".to_string(),
+                        name.to_string(),
+                        "--help".to_string(),
+                    ]),
+                    "`{step}` names a top-level command and must run through the CLI"
+                );
+            }
+        }
     }
 }
