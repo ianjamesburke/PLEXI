@@ -863,10 +863,7 @@ mod tests {
         }
     }
 
-    /// Stint 1498: the quit save-failure dialog's rows take no Tab focus, so
-    /// Tab then Space or Enter cannot quit without saving.
-    #[test]
-    fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
+    fn open_quit_save_failure() -> PlexiUiHarness {
         let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
         h.with_app_mut(|app| {
             let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
@@ -880,16 +877,48 @@ mod tests {
         });
         h.run_steps(4);
         assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
-        for key in [egui::Key::Space, egui::Key::Enter] {
-            h.harness().key_press(egui::Key::Tab);
-            h.run_steps(2);
-            h.harness().key_press(key);
-            h.run_steps(3);
-            assert!(
-                h.with_app(|app| app.quit_coordinator.save_failure().is_some()),
-                "Tab then {key:?} quit without saving"
-            );
-        }
+        h
+    }
+
+    /// Stints 1498 and 1505: the quit save-failure dialog's rows take no Tab
+    /// focus, so Tab then Space does nothing and Tab then Enter cancels (the
+    /// safe default); neither quits without saving.
+    #[test]
+    fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
+        let mut h = open_quit_save_failure();
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert!(
+            h.with_app(|app| app.quit_coordinator.save_failure().is_some()),
+            "Tab then Space decided the dialog"
+        );
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        // Quit without saving clears the failure and keeps quitting.
+        assert!(
+            h.with_app(|app| app.quit_coordinator.save_failure().is_some() || !app.quitting),
+            "Tab then Enter quit without saving"
+        );
+    }
+
+    /// Stint 1505: Cancel is the first action and the Enter default; "Quit
+    /// without saving" comes last and needs its own key.
+    #[test]
+    fn quit_save_failure_lists_cancel_first_and_enter_cancels() {
+        let mut h = open_quit_save_failure();
+        let cancel = h.harness().get_by_label("Cancel").rect();
+        let quit = h.harness().get_by_label("Quit without saving").rect();
+        assert!(cancel.top() < quit.top(), "Cancel is listed first");
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        h.with_app(|app| {
+            assert!(app.quit_coordinator.save_failure().is_none(), "Enter decided the dialog");
+            assert!(!app.quitting, "Enter must cancel, not quit");
+        });
     }
 
     /// Stint 1498: a consent prompt that has just appeared draws its approving
@@ -9663,8 +9692,94 @@ open(out + ".done", "w").close()
         h.run_steps(2);
     }
 
+    /// A dirty text editor with its "Unsaved changes" prompt open.
+    fn open_unsaved_prompt() -> (PlexiUiHarness, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("draft.txt");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut h = PlexiUiHarness::new_sized(900.0, 320.0);
+        h.step();
+        let pane_id = h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let view_pane = ViewPane {
+                pip_status: None,
+                id: pane_id,
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
+                )),
+                workspace_root: crate::testing::scratch_context_root("ui"),
+                permissions: PluginPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "draft.txt".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+            pane_id
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            if let Some(Pane::View(a)) = win.panes.get_mut(&pane_id) {
+                if let ViewRuntime::Builtin(b) = &mut a.runtime {
+                    b.as_any_mut()
+                        .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
+                        .expect("text editor")
+                        .test_set_unsaved("edited\n");
+                }
+            }
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| assert!(app.focused_view_vetoes_close()));
+        h.run_steps(2);
+        h.harness().get_by_label("Unsaved changes");
+        (h, dir)
+    }
+
+    /// Stint 1505: keyboard focus enters "Unsaved changes" at Save (its safe
+    /// default) from either direction; Discard is last, three Tabs away.
+    #[test]
+    fn unsaved_changes_tab_order_is_save_cancel_then_discard() {
+        let labels = ["Save", "Cancel", "Discard"];
+        let (mut h, _dir) = open_unsaved_prompt();
+        h.save_screenshot(&evidence_png!()).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            tab(&mut h, false);
+            seen.push(focused_label(&mut h, &labels));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                Some("Save".to_string()),
+                Some("Cancel".to_string()),
+                Some("Discard".to_string()),
+            ],
+            "Save first, Discard last"
+        );
+
+        let (mut h, _dir) = open_unsaved_prompt();
+        tab(&mut h, true);
+        assert_eq!(
+            focused_label(&mut h, &labels).as_deref(),
+            Some("Save"),
+            "Shift+Tab also enters at Save"
+        );
+    }
+
     /// Stint 1493: Tab and Shift+Tab cycle the dialog's own actions and never
     /// reach the toolbar behind it; Enter on a Tab-focused Cancel cancels.
+    /// Stint 1505: focus enters at Cancel, the safe action.
     #[test]
     fn tab_in_close_dialog_cycles_its_actions_and_enter_activates_cancel() {
         let (mut h, a, b) = open_close_dialog();
@@ -9677,23 +9792,25 @@ open(out + ".done", "w").close()
         assert_eq!(
             seen,
             vec![
-                Some("Close".to_string()),
                 Some("Cancel".to_string()),
                 Some("Close".to_string()),
                 Some("Cancel".to_string()),
+                Some("Close".to_string()),
             ],
-            "Tab cycles Close and Cancel and wraps"
+            "Tab enters at Cancel, cycles Close and Cancel and wraps"
         );
-        h.save_screenshot(&evidence_png!("_cancel_focused"))
-            .unwrap();
         tab(&mut h, true);
-        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Close"));
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
         tab(&mut h, true);
         assert_eq!(
             focused_label(&mut h, &labels).as_deref(),
-            Some("Cancel"),
+            Some("Close"),
             "Shift+Tab wraps backwards"
         );
+        tab(&mut h, true);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+        h.save_screenshot(&evidence_png!("_cancel_focused"))
+            .unwrap();
 
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(3);
@@ -9716,10 +9833,11 @@ open(out + ".done", "w").close()
     }
 
     /// Stint 1493: Enter on a Tab-focused Close closes the pane, and Esc still
-    /// dismisses an untouched dialog.
+    /// dismisses an untouched dialog. Stint 1505: Close is the second Tab.
     #[test]
     fn enter_on_tab_focused_close_closes_and_esc_still_cancels() {
         let (mut h, a, b) = open_close_dialog();
+        tab(&mut h, false);
         tab(&mut h, false);
         assert_eq!(
             focused_label(&mut h, &["Close", "Cancel", "UI"]).as_deref(),

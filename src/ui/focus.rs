@@ -149,8 +149,8 @@ pub(crate) fn register_focus_trap(ctx: &egui::Context, key: SurfaceKey, ids: &[I
 }
 
 /// Where Tab or Shift+Tab moves focus in a trap, from the trap member that
-/// held focus last frame (`last`); with none, Tab enters at the first member
-/// and Shift+Tab at the last. Wraps at both ends.
+/// held focus last frame (`last`). With none, both enter at the first member,
+/// the dialog's safe action (stint 1505); inside, they step and wrap.
 pub(crate) fn trap_step(trap: &[Id], last: Option<Id>, backwards: bool) -> Option<Id> {
     let len = trap.len();
     if len == 0 {
@@ -159,7 +159,6 @@ pub(crate) fn trap_step(trap: &[Id], last: Option<Id>, backwards: bool) -> Optio
     let index = match last.and_then(|id| trap.iter().position(|t| *t == id)) {
         Some(i) if backwards => (i + len - 1) % len,
         Some(i) => (i + 1) % len,
-        None if backwards => len - 1,
         None => 0,
     };
     Some(trap[index])
@@ -224,8 +223,8 @@ mod tests {
         assert_eq!(trap_step(&trap, None, false), Some(a), "Tab enters first");
         assert_eq!(
             trap_step(&trap, None, true),
-            Some(c),
-            "Shift+Tab enters last"
+            Some(a),
+            "Shift+Tab also enters at the first, safe member (stint 1505)"
         );
         assert_eq!(trap_step(&trap, Some(a), false), Some(b));
         assert_eq!(trap_step(&trap, Some(c), false), Some(a), "wraps forward");

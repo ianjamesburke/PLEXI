@@ -73,6 +73,7 @@ impl PlexiApp {
                 "Cancel",
                 crate::ui::button::ButtonKind::Secondary,
             )
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,
@@ -197,6 +198,7 @@ impl PlexiApp {
                 "Cancel",
                 crate::ui::button::ButtonKind::Secondary,
             )
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,
@@ -475,18 +477,10 @@ impl PlexiApp {
 }
 
 /// The actions of this dialog, shared with its keyboard test (stint 1493).
+/// The safe action first and as the Enter default; the data-losing one last,
+/// on its own key (stint 1505).
 pub(crate) fn quit_save_failure_actions() -> [crate::ui::dialog::DialogAction<'static>; 2] {
     [
-        crate::ui::dialog::DialogAction::new(
-            "quit_without_saving",
-            "Quit without saving",
-            crate::ui::button::ButtonKind::Danger,
-        )
-        .shortcut(crate::ui::dialog::DialogShortcut::new(
-            &["Q"],
-            egui::Modifiers::NONE,
-            egui::Key::Q,
-        )),
         crate::ui::dialog::DialogAction::new(
             "cancel",
             "Cancel",
@@ -496,6 +490,16 @@ pub(crate) fn quit_save_failure_actions() -> [crate::ui::dialog::DialogAction<'s
             &["Esc"],
             egui::Modifiers::NONE,
             egui::Key::Escape,
+        )),
+        crate::ui::dialog::DialogAction::new(
+            "quit_without_saving",
+            "Quit without saving",
+            crate::ui::button::ButtonKind::Danger,
+        )
+        .shortcut(crate::ui::dialog::DialogShortcut::new(
+            &["Q"],
+            egui::Modifiers::NONE,
+            egui::Key::Q,
         )),
     ]
 }
@@ -568,6 +572,7 @@ pub(crate) fn quit_save_failure_modal<'a>(
         "Workspace could not be saved",
         actions,
     )
+    .default_action("cancel")
     .width(super::MODAL_WIDTH)
 }
 

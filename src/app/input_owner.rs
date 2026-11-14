@@ -49,6 +49,22 @@ pub(crate) enum OverlaySurface {
 const FOCUS_TRAP_LAST_ID: &str = "plexi_focus_trap_last";
 /// Memory slot for a Tab direction (`true` = backwards) seen last frame.
 const FOCUS_TRAP_TAB_ID: &str = "plexi_focus_trap_tab";
+/// Memory slot for this frame's Tab (`Some(shift)`), noted before an overlay
+/// owner takes the input buffer (stint 1505).
+const FOCUS_TRAP_TAB_NOW_ID: &str = "plexi_focus_trap_tab_now";
+
+/// Note this frame's Tab press for the focus trap, at the start of the frame:
+/// an overlay that takes the whole input buffer (unsaved changes) would
+/// otherwise hide it from the reconciler.
+pub(crate) fn note_tab_key(ctx: &egui::Context) {
+    let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab).then_some(i.modifiers.shift));
+    ctx.data_mut(|d| match tab {
+        Some(shift) => {
+            d.insert_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID), shift);
+        }
+        None => d.remove::<bool>(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID)),
+    });
+}
 
 impl PlexiApp {
     /// The overlay surface that owns input, if any: the top of the modal
@@ -176,15 +192,25 @@ impl PlexiApp {
             // egui may apply a Tab's focus move in the frame after the key
             // arrives, so the direction is carried one frame.
             let pending: Option<bool> = ctx.data(|d| d.get_temp(pending_id));
-            let (tab_now, shift) =
-                ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+            let noted: Option<bool> =
+                ctx.data(|d| d.get_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID)));
+            let (tab_now, shift) = match noted {
+                Some(shift) => (true, shift),
+                None => ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift)),
+            };
             let direction = if tab_now { Some(shift) } else { pending };
             let focused = ctx.memory(|m| m.focused());
             let outside = match focused {
                 Some(id) => !trap.contains(&id),
                 None => direction.is_some(),
             };
-            if outside {
+            // Entering from nothing, either direction lands on the trap's
+            // first member, the dialog's safe action (stint 1505), whichever
+            // widget egui's own Tab traversal picked.
+            let entering = last.is_none()
+                && direction.is_some()
+                && focused != crate::ui::focus::trap_step(trap, None, false);
+            if outside || entering {
                 match direction
                     .and_then(|backwards| crate::ui::focus::trap_step(trap, last, backwards))
                 {

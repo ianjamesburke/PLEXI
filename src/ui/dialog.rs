@@ -74,7 +74,8 @@ pub(crate) struct DialogAction<'a> {
     pub(crate) shortcut: Option<DialogShortcut<'a>>,
     alternate: Option<DialogShortcut<'a>>,
     /// A refusal (deny, cancel): in a consent dialog it works from real input
-    /// even before the dialog arms (stint 1498).
+    /// even before the dialog arms (stint 1498); in a focus trap with no Enter
+    /// default, keyboard focus enters at the first refusal (stint 1505).
     refuses: bool,
 }
 
@@ -302,7 +303,20 @@ impl<'a> ActionModal<'a> {
             }
         });
         if let Some(key) = self.focus_surface {
-            let ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
+            // Keyboard focus enters at the safe action (stint 1505): the Enter
+            // default, else the first refusal (Cancel), else the first action.
+            let entry = self.default_action.or_else(|| {
+                self.actions
+                    .iter()
+                    .find(|action| action.refuses)
+                    .map(|action| action.id)
+            });
+            let mut ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
+            if let Some(at) =
+                entry.and_then(|entry| action_ids.iter().position(|(name, _)| name == entry))
+            {
+                ids.rotate_left(at);
+            }
             crate::ui::focus::register_focus_trap(ctx, key, &ids);
         }
         ctx.data_mut(|d| d.insert_temp(action_ids_slot(self.id), action_ids));
@@ -639,9 +653,9 @@ impl UnsavedChangesDialog {
         } else {
             "Discard"
         };
+        // Left to right: Discard, Cancel, Save. The row draws right to left,
+        // so Tab meets Save (the default), Cancel, then Discard (stint 1505).
         let actions = [
-            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
-                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
             DialogAction::new("discard", discard_label, ButtonKind::Danger)
                 .shortcut(if self.reload {
                     DialogShortcut::new(&["R"], Modifiers::NONE, Key::R).exact()
@@ -651,6 +665,8 @@ impl UnsavedChangesDialog {
                 .alternate((!self.reload).then(|| {
                     DialogShortcut::new(&["cmd", "D"], Modifiers::COMMAND, Key::D).exact()
                 })),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
             DialogAction::new(
                 "save",
                 if self.conflicted {

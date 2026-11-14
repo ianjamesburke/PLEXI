@@ -898,9 +898,9 @@ mod tests {
         (h, path)
     }
 
-    /// Stint 1493 critic blocker 2: in "Workspace could not be saved", Tab then
-    /// Enter (or Space) does not quit without saving; Enter did nothing there
-    /// before.
+    /// Stint 1493 critic blocker 2 and stint 1505: in "Workspace could not be
+    /// saved", Tab then Space answers nothing and Tab then Enter cancels (the
+    /// safe default); neither quits without saving.
     #[test]
     fn quit_save_failure_tab_then_enter_does_not_quit() {
         for key in [egui::Key::Enter, egui::Key::Space] {
@@ -908,10 +908,17 @@ mod tests {
             h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
             h.press_key(key, egui::Modifiers::NONE);
             h.hidden_frame();
-            assert!(
-                h.app.quit_coordinator.save_failure().is_some(),
-                "Tab then {key:?} must not answer the dialog"
-            );
+            if key == egui::Key::Space {
+                assert!(
+                    h.app.quit_coordinator.save_failure().is_some(),
+                    "Tab then Space must not answer the dialog"
+                );
+            } else {
+                assert!(
+                    h.app.quit_coordinator.save_failure().is_none() && !h.app.quitting,
+                    "Tab then Enter cancels"
+                );
+            }
             assert!(
                 !h.app.quit_coordinator.save_waived,
                 "nothing quit without saving"
