@@ -275,6 +275,38 @@ pub fn parse_step(step: &str) -> ParsedStep {
     ParsedStep::Shell(trimmed.to_string())
 }
 
+/// First words that were top-level Plexi commands before the CLI namespaces,
+/// with the command that replaced each (`None` when nothing did). Owner
+/// ruling 2026-11-12: for one release a saved step starting with one of them
+/// fails loudly instead of running as a shell command, so an old
+/// `commands.toml` never runs the wrong program (`open` is also the macOS
+/// opener). Delete this table in the release after 0.5 Groundwork; such steps
+/// then run in the shell like any other.
+const RETIRED_STEP_COMMANDS: &[(&str, Option<&str>)] = &[
+    ("open", Some("plexi view open")),
+    ("close", Some("plexi pane close")),
+    ("focus", Some("plexi pane focus")),
+    ("send", Some("plexi pane send")),
+    ("capture", Some("plexi pane capture")),
+    ("list", Some("plexi pane list")),
+    ("prev", None),
+];
+
+/// The refusal for a step whose first word is a retired short form, or `None`.
+fn retired_step_error(step: &str) -> Option<String> {
+    let first = step.split_whitespace().next()?;
+    let (word, replacement) = RETIRED_STEP_COMMANDS
+        .iter()
+        .find(|(word, _)| *word == first)?;
+    let fix = match replacement {
+        Some(command) => format!("use `{command}` instead"),
+        None => "it has no replacement; remove the step".to_string(),
+    };
+    Some(format!(
+        "step `{step}` starts with `{word}`, which is no longer a Plexi command and is not run as a shell command; {fix}"
+    ))
+}
+
 /// Execute `steps` sequentially using `runner`, stopping at the first step
 /// whose exit code is non-zero and reporting the 1-based step index.
 pub fn run_steps_with<F>(steps: &[String], extra_args: &[String], mut runner: F) -> StepRunReport
@@ -285,6 +317,19 @@ where
     for (idx, raw_step) in steps.iter().enumerate() {
         let step_num = idx + 1;
         let rendered = substitute_step_args(raw_step, extra_args);
+        if let Some(reason) = retired_step_error(&rendered) {
+            let msg = format!("step {step_num}/{total} refused: {reason}");
+            log::warn!("commands: refused retired step={step_num}/{total}");
+            eprintln!("error: {msg}");
+            return StepRunReport {
+                exit_code: 2,
+                total_steps: total,
+                completed_steps: idx,
+                failed_step_index: Some(step_num),
+                failed_step: Some(rendered),
+                error_message: Some(msg),
+            };
+        }
         let parsed = parse_step(&rendered);
         log::info!(
             "commands: running step={step_num}/{total} command_chars={}",
@@ -1428,6 +1473,37 @@ mod step_classification_tests {
             parse_step("open README.md"),
             ParsedStep::Shell("open README.md".to_string())
         );
+        assert_eq!(
+            parse_step("echo hi"),
+            ParsedStep::Shell("echo hi".to_string())
+        );
+    }
+
+    /// Owner ruling 2026-11-12: a step that starts with a retired short form
+    /// fails loudly, naming the step and the current command, and nothing
+    /// runs (not even the shell, where `open` is the macOS opener).
+    #[test]
+    fn retired_short_form_step_fails_loudly_and_never_runs() {
+        for (step, expected) in [
+            ("open README.md", "use `plexi view open` instead"),
+            ("close 3", "use `plexi pane close` instead"),
+            ("prev", "it has no replacement"),
+        ] {
+            let report = super::run_steps_with(
+                &["echo first".to_string(), step.to_string()],
+                &[],
+                |_, rendered, _| {
+                    assert_ne!(rendered, step, "a retired step must never reach the runner");
+                    0
+                },
+            );
+            assert_eq!(report.exit_code, 2, "{step}");
+            assert_eq!(report.failed_step_index, Some(2), "{step}");
+            assert_eq!(report.completed_steps, 1, "{step}");
+            let message = report.error_message.expect("a refusal message");
+            assert!(message.contains(step), "{message}");
+            assert!(message.contains(expected), "{message}");
+        }
     }
 
     #[test]
