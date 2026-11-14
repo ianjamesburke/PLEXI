@@ -7,6 +7,7 @@ use crate::ui::theme::Colors;
 /// The keys that trigger an action, and the chips that advertise them. The
 /// action's own label is the only prose — a keyboard-first row carries no
 /// separate hint text.
+#[derive(Clone, Copy)]
 pub(crate) struct DialogShortcut<'a> {
     pub(crate) keys: &'a [&'a str],
     modifiers: egui::Modifiers,
@@ -29,14 +30,20 @@ impl<'a> DialogShortcut<'a> {
         self
     }
 
-    /// A guarded consent dialog (stint 1498) takes only a fresh press: an OS
-    /// key repeat is consumed without counting.
-    fn pressed_fresh(&self, ctx: &egui::Context) -> bool {
+    /// A guarded action (stints 1498, 1513) takes only a fresh press: an OS
+    /// key repeat is consumed without counting. `exact` also refuses extra
+    /// modifiers (Shift+Q is not Q).
+    fn pressed_fresh(&self, ctx: &egui::Context, exact: bool) -> bool {
         let repeat_only = ctx.input(|i| {
             let mut matching = i.events.iter().filter(|event| {
                 matches!(event,
                     egui::Event::Key { key, pressed: true, modifiers, .. }
-                        if *key == self.key && modifiers.matches_logically(self.modifiers)
+                        if *key == self.key
+                            && if exact {
+                                modifiers.matches_exact(self.modifiers)
+                            } else {
+                                modifiers.matches_logically(self.modifiers)
+                            }
                 )
             });
             let mut any = false;
@@ -46,7 +53,15 @@ impl<'a> DialogShortcut<'a> {
             });
             any && all_repeat
         });
-        let pressed = self.pressed(ctx);
+        let pressed = if exact {
+            Self {
+                exact: true,
+                ..*self
+            }
+            .pressed(ctx)
+        } else {
+            self.pressed(ctx)
+        };
         pressed && !repeat_only
     }
 
@@ -77,12 +92,22 @@ pub(crate) struct DialogAction<'a> {
     /// even before the dialog arms (stint 1498); in a focus trap with no Enter
     /// default, keyboard focus enters at the first refusal (stint 1505).
     refuses: bool,
+    /// Loses work (discard, quit without saving, close, overwrite): under
+    /// [`ActionModal::destructive_input`] it takes only a fresh, real press
+    /// with exact modifiers (stint 1513).
+    destructive: bool,
 }
 
 impl<'a> DialogAction<'a> {
     /// Mark this action as a refusal; see [`ActionModal::consent_input`].
     pub(crate) fn refuses(mut self) -> Self {
         self.refuses = true;
+        self
+    }
+
+    /// Mark this action as one that loses work (stint 1513).
+    pub(crate) fn destructive(mut self) -> Self {
+        self.destructive = true;
         self
     }
 
@@ -94,6 +119,7 @@ impl<'a> DialogAction<'a> {
             shortcut: None,
             alternate: None,
             refuses: false,
+            destructive: false,
         }
     }
 
@@ -123,6 +149,9 @@ pub(crate) struct ActionModal<'a> {
     focus_surface: Option<crate::ui::focus::SurfaceKey>,
     /// Set for a consent dialog (stint 1498); see [`Self::consent_input`].
     consent_input: Option<crate::app::approval_keyboard::ConsentInput>,
+    /// Set for a dialog with destructive actions (stint 1513); see
+    /// [`Self::destructive_input`].
+    destructive_input: Option<crate::app::approval_keyboard::ConsentInput>,
 }
 
 /// Memory slot holding the egui ids of a modal's actions from last frame, so
@@ -142,6 +171,7 @@ impl<'a> ActionModal<'a> {
             button_row: false,
             focus_surface: None,
             consent_input: None,
+            destructive_input: None,
         }
     }
 
@@ -173,6 +203,16 @@ impl<'a> ActionModal<'a> {
     /// Conventional confirm layout: one right-aligned row of kit buttons in
     /// the order given (left to right), each carrying its shortcut as a dim
     /// hint. Stacks full-width only when the row cannot fit the modal.
+    /// Guard this dialog's destructive actions (stint 1513) with the consent
+    /// input check in its no-arm-delay mode: a fresh, real press with exact
+    /// modifiers; never a key repeat, an injected key or an injected click.
+    /// Other actions (save, cancel) stay as they are.
+    pub(crate) fn destructive_input(mut self, synthetic_frame: bool) -> Self {
+        self.destructive_input =
+            Some(crate::app::approval_keyboard::ConsentInput::without_arm_delay(synthetic_frame));
+        self
+    }
+
     pub(crate) fn button_row(mut self) -> Self {
         self.button_row = true;
         self
@@ -194,10 +234,13 @@ impl<'a> ActionModal<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
-        let guarded = self.consent_input.is_some();
-        let press = |shortcut: &DialogShortcut<'_>| {
-            if guarded {
-                shortcut.pressed_fresh(ctx)
+        let guarded_destructive =
+            |action: &DialogAction<'_>| action.destructive && self.destructive_input.is_some();
+        let press = |action: &DialogAction<'_>, shortcut: &DialogShortcut<'_>| {
+            if guarded_destructive(action) {
+                shortcut.pressed_fresh(ctx, true)
+            } else if self.consent_input.is_some() {
+                shortcut.pressed_fresh(ctx, false)
             } else {
                 shortcut.pressed(ctx)
             }
@@ -219,11 +262,15 @@ impl<'a> ActionModal<'a> {
                     .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
             });
         let mut selected = focused_action
-            .filter(|_| {
-                ctx.input_mut(|i| {
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
-                })
+            .filter(|action| {
+                if guarded_destructive(action) {
+                    take_fresh_activation(ctx)
+                } else {
+                    ctx.input_mut(|i| {
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                            || i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+                    })
+                }
             })
             .map(|action| {
                 log::info!(
@@ -238,19 +285,36 @@ impl<'a> ActionModal<'a> {
                 .actions
                 .iter()
                 .find(|action| {
-                    action.shortcut.as_ref().is_some_and(&press)
-                        || action.alternate.as_ref().is_some_and(&press)
+                    action
+                        .shortcut
+                        .as_ref()
+                        .is_some_and(|shortcut| press(action, shortcut))
+                        || action
+                            .alternate
+                            .as_ref()
+                            .is_some_and(|shortcut| press(action, shortcut))
                 })
                 .map(|action| action.id);
         }
 
-        if selected.is_none()
-            && self.default_action.is_some()
-            && DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter)
-                .exact()
-                .pressed(ctx)
-        {
-            selected = self.default_action;
+        if selected.is_none() {
+            if let Some(default) = self.default_action {
+                let enter =
+                    DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter)
+                        .exact();
+                let default_guarded = self
+                    .actions
+                    .iter()
+                    .any(|action| action.id == default && guarded_destructive(action));
+                let pressed = if default_guarded {
+                    enter.pressed_fresh(ctx, true)
+                } else {
+                    enter.pressed(ctx)
+                };
+                if pressed {
+                    selected = self.default_action;
+                }
+            }
         }
 
         let shell = ModalShell::centered(self.id)
@@ -345,11 +409,47 @@ impl<'a> ActionModal<'a> {
                 dismissed = false;
             }
         }
+        // An injected key or click never runs a destructive action (stint 1513).
+        if let Some(input) = self.destructive_input {
+            let destructive = |id: &str| self.actions.iter().any(|a| a.id == id && a.destructive);
+            if selected.is_some_and(|id| destructive(id) && !input.admits(false)) {
+                log::info!(
+                    "destructive_guard: modal {} ignored {:?} (synthetic input)",
+                    self.id,
+                    selected
+                );
+                selected = None;
+            }
+        }
         DialogResponse {
             selected,
             dismissed,
         }
     }
+}
+
+/// A Tab-focused destructive row (stint 1513): every Enter and Space press
+/// is removed from the frame, whatever its modifiers or repeat flag, so egui
+/// cannot turn one into a click on the focused row; only a fresh press with
+/// no modifiers activates it.
+fn take_fresh_activation(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| {
+        let mut fresh = false;
+        i.events.retain(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Enter | egui::Key::Space,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } => {
+                fresh |= !*repeat && modifiers.matches_exact(egui::Modifiers::NONE);
+                false
+            }
+            _ => true,
+        });
+        fresh
+    })
 }
 
 /// The shortcut spelled as one compact hint, e.g. `⌘S`, `D`, `Esc`.
@@ -646,6 +746,7 @@ impl UnsavedChangesDialog {
         &self,
         ctx: &egui::Context,
         colors: &Colors,
+        synthetic_frame: bool,
     ) -> Option<UnsavedChangesChoice> {
         use egui::{Key, Modifiers};
         let discard_label = if self.reload {
@@ -657,6 +758,7 @@ impl UnsavedChangesDialog {
         // so Tab meets Save (the default), Cancel, then Discard (stint 1505).
         let actions = [
             DialogAction::new("discard", discard_label, ButtonKind::Danger)
+                .destructive()
                 .shortcut(if self.reload {
                     DialogShortcut::new(&["R"], Modifiers::NONE, Key::R).exact()
                 } else {
@@ -667,16 +769,24 @@ impl UnsavedChangesDialog {
                 })),
             DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
                 .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
-            DialogAction::new(
-                "save",
+            {
+                let save = DialogAction::new(
+                    "save",
+                    if self.conflicted {
+                        "Overwrite disk"
+                    } else {
+                        "Save"
+                    },
+                    ButtonKind::Primary,
+                )
+                .shortcut(DialogShortcut::new(&["cmd", "S"], Modifiers::COMMAND, Key::S).exact());
+                // "Overwrite disk" replaces changes made outside: destructive.
                 if self.conflicted {
-                    "Overwrite disk"
+                    save.destructive()
                 } else {
-                    "Save"
-                },
-                ButtonKind::Primary,
-            )
-            .shortcut(DialogShortcut::new(&["cmd", "S"], Modifiers::COMMAND, Key::S).exact()),
+                    save
+                }
+            },
         ];
         let name = std::path::Path::new(&self.path)
             .file_name()
@@ -694,6 +804,7 @@ impl UnsavedChangesDialog {
             ))
             .width(style::MODAL_WIDTH_SM)
             .default_action("save")
+            .destructive_input(synthetic_frame)
             .button_row()
             .show(ctx, colors, |ui| {
                 super::typography::modal_body(ui, &question, colors);
@@ -730,6 +841,165 @@ impl UnsavedChangesDialog {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// One frame of the dialog with `events`; `shown` false runs the frame
+    /// without it (a key held before the dialog appeared).
+    fn frame(
+        ctx: &egui::Context,
+        dialog: &UnsavedChangesDialog,
+        synthetic: bool,
+        shown: bool,
+        events: Vec<egui::Event>,
+    ) -> Option<UnsavedChangesChoice> {
+        let colors = Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+        let modifiers = events
+            .iter()
+            .find_map(|event| match event {
+                egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut choice = None;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |_| {
+                if shown {
+                    choice = dialog.show(ctx, &colors, synthetic);
+                }
+            },
+        );
+        choice
+    }
+
+    /// Stint 1513: every destructive action in "Unsaved changes" (Discard by
+    /// D and Cmd+D, Reload by R, Overwrite by Enter) takes only a fresh, real
+    /// press with exact modifiers; Save stays instant.
+    #[test]
+    fn unsaved_changes_destructive_actions_take_only_a_fresh_real_press() {
+        use egui::{Key, Modifiers};
+        let cases = [
+            (
+                false,
+                false,
+                Key::D,
+                Modifiers::NONE,
+                UnsavedChangesChoice::Discard,
+            ),
+            (
+                false,
+                false,
+                Key::D,
+                Modifiers::COMMAND,
+                UnsavedChangesChoice::Discard,
+            ),
+            (
+                false,
+                true,
+                Key::R,
+                Modifiers::NONE,
+                UnsavedChangesChoice::Reload,
+            ),
+            (
+                true,
+                false,
+                Key::Enter,
+                Modifiers::NONE,
+                UnsavedChangesChoice::Overwrite,
+            ),
+        ];
+        for (conflicted, reload, k, mods, expect) in cases {
+            let what = format!("{k:?} {mods:?} conflicted={conflicted} reload={reload}");
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let dialog = UnsavedChangesDialog {
+                path: "/tmp/draft.txt".to_string(),
+                conflicted,
+                reload,
+                error: None,
+            };
+            for _ in 0..2 {
+                frame(&ctx, &dialog, false, true, vec![]);
+            }
+            let tap = |mods| vec![key(k, mods, true), key(k, mods, false)];
+            assert_eq!(
+                frame(&ctx, &dialog, true, true, tap(mods)),
+                None,
+                "injected {what}"
+            );
+            let extra = mods | Modifiers::SHIFT;
+            assert_eq!(
+                frame(&ctx, &dialog, false, true, tap(extra)),
+                None,
+                "extra Shift {what}"
+            );
+            // Held from before the dialog: the press it sees is a key repeat.
+            frame(&ctx, &dialog, false, false, vec![key(k, mods, true)]);
+            assert_eq!(
+                frame(&ctx, &dialog, false, true, vec![key(k, mods, true)]),
+                None,
+                "held {what}"
+            );
+            frame(&ctx, &dialog, false, true, vec![key(k, mods, false)]);
+            assert_eq!(
+                frame(&ctx, &dialog, false, true, tap(mods)),
+                Some(expect),
+                "fresh {what}"
+            );
+        }
+
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let dialog = UnsavedChangesDialog {
+            path: "/tmp/draft.txt".to_string(),
+            conflicted: false,
+            reload: false,
+            error: None,
+        };
+        frame(&ctx, &dialog, false, true, vec![]);
+        let save = vec![
+            key(Key::S, Modifiers::COMMAND, true),
+            key(Key::S, Modifiers::COMMAND, false),
+        ];
+        assert_eq!(
+            frame(&ctx, &dialog, true, true, save),
+            Some(UnsavedChangesChoice::Save),
+            "Save stays instant"
+        );
+
+        // Cmd+S is Overwrite disk when conflicted: injected, it is refused.
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let conflicted = UnsavedChangesDialog {
+            path: "/tmp/draft.txt".to_string(),
+            conflicted: true,
+            reload: false,
+            error: None,
+        };
+        frame(&ctx, &conflicted, false, true, vec![]);
+        let overwrite = vec![
+            key(Key::S, Modifiers::COMMAND, true),
+            key(Key::S, Modifiers::COMMAND, false),
+        ];
+        assert_eq!(
+            frame(&ctx, &conflicted, true, true, overwrite),
+            None,
+            "an injected Cmd+S overwrote the disk"
+        );
+    }
     #[test]
     fn adoption_modal_keeps_pointer_and_shortcut_activation() {
         for keyboard in [false, true] {

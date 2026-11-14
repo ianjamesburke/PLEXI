@@ -33,14 +33,16 @@ impl PlexiApp {
     /// Shown when the final quit save failed `MAX_QUIT_SAVE_ATTEMPTS` times.
     fn draw_quit_save_failure(&mut self, ctx: &egui::Context, cause: &str) {
         let actions = quit_save_failure_actions();
-        let response = quit_save_failure_modal(&actions).show(ctx, &self.colors, |ui| {
-            crate::ui::typography::caption(ui, cause, &self.colors);
-            crate::ui::typography::caption(
-                ui,
-                "Quitting now leaves the saved workspace file as it is.",
-                &self.colors,
-            );
-        });
+        let response = quit_save_failure_modal(&actions)
+            .destructive_input(self.synthetic_input_frame)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::caption(ui, cause, &self.colors);
+                crate::ui::typography::caption(
+                    ui,
+                    "Quitting now leaves the saved workspace file as it is.",
+                    &self.colors,
+                );
+            });
         if response.selected == Some("quit_without_saving") {
             self.resolve_quit_save_failure(true);
         } else if response.dismissed || response.selected == Some("cancel") {
@@ -63,6 +65,7 @@ impl PlexiApp {
                 },
                 crate::ui::button::ButtonKind::Danger,
             )
+            .destructive()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
                 egui::Modifiers::NONE,
@@ -100,6 +103,7 @@ impl PlexiApp {
                         crate::app::FocusKind::ConfirmClose,
                     ),
                 ))
+                .destructive_input(self.synthetic_input_frame)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
@@ -170,6 +174,7 @@ impl PlexiApp {
             "Close all",
             crate::ui::button::ButtonKind::Danger,
         )
+        .destructive()
         .shortcut(crate::ui::dialog::DialogShortcut::new(
             &["Enter"],
             egui::Modifiers::NONE,
@@ -185,6 +190,7 @@ impl PlexiApp {
                     "Dissolve",
                     crate::ui::button::ButtonKind::Secondary,
                 )
+                .destructive()
                 .shortcut(crate::ui::dialog::DialogShortcut::new(
                     &["D"],
                     egui::Modifiers::NONE,
@@ -212,6 +218,7 @@ impl PlexiApp {
                         crate::app::FocusKind::ContextCloseConfirm,
                     ),
                 ))
+                .destructive_input(self.synthetic_input_frame)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &colors, |ui| {
                     for item in &state.items {
@@ -496,6 +503,7 @@ pub(crate) fn quit_save_failure_actions() -> [crate::ui::dialog::DialogAction<'s
             "Quit without saving",
             crate::ui::button::ButtonKind::Danger,
         )
+        .destructive()
         .shortcut(crate::ui::dialog::DialogShortcut::new(
             &["Q"],
             egui::Modifiers::NONE,

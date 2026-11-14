@@ -1206,7 +1206,7 @@ impl PlexiApp {
         let Some((id, dialog)) = self.focused_unsaved_changes() else {
             return;
         };
-        if let Some(choice) = dialog.show(ctx, &self.colors) {
+        if let Some(choice) = dialog.show(ctx, &self.colors, self.synthetic_input_frame) {
             if let Some(pane) = self.windows[self.active_window]
                 .panes
                 .get_mut(&id)
