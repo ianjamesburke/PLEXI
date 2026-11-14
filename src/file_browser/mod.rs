@@ -505,6 +505,26 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Whether `a` and `b` name the same filesystem entry (not following links).
+fn same_entry(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(a), Ok(b)) = (fs::symlink_metadata(a), fs::symlink_metadata(b)) else {
+            return false;
+        };
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        // Without inode numbers, only an identical path is the same entry.
+        false
+    }
+}
+
 fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let context = {
@@ -1530,12 +1550,30 @@ impl FileBrowserView {
             Some(parent) => parent.join(trimmed),
             None => return Err(format!("'{}' has no parent directory", source.display())),
         };
-        fs::rename(&source, &target).map_err(|err| {
-            let msg = format!(
-                "Unable to rename '{}' to '{}': {err}",
-                source.display(),
-                target.display()
-            );
+        // Never replace another entry at the new name, whether it was there
+        // already or appeared just now (stint 1496). A name that resolves to
+        // the source itself (the same name, or a case-only change on a
+        // case-insensitive volume) is not another entry, so it renames as
+        // before.
+        let result = if same_entry(&source, &target) {
+            fs::rename(&source, &target)
+        } else {
+            rename_no_replace(&source, &target)
+        };
+        result.map_err(|err| {
+            let msg = if err.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "Unable to rename '{}' to '{}': a file or folder with that name already exists",
+                    source.display(),
+                    target.display()
+                )
+            } else {
+                format!(
+                    "Unable to rename '{}' to '{}': {err}",
+                    source.display(),
+                    target.display()
+                )
+            };
             log::warn!("file_browser: {msg}");
             msg
         })?;
@@ -6458,6 +6496,44 @@ mod tests {
             b"mine"
         );
         assert!(!src.path().join("doc.txt").exists(), "the source moved");
+    }
+
+    /// Stint 1496: renaming onto a name that exists fails and replaces
+    /// nothing; the source keeps its name and the user is told why.
+    #[test]
+    fn rename_onto_an_existing_name_replaces_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"mine").expect("write a");
+        std::fs::write(dir.path().join("b.txt"), b"theirs").expect("write b");
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        app.rename_path = Some(dir.path().join("a.txt"));
+        let err = app
+            .rename_selected("b.txt")
+            .expect_err("a taken name must not be replaced");
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"mine");
+    }
+
+    /// A case-only rename on a case-insensitive volume names the source
+    /// itself, so it still renames (it replaces nothing).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn case_only_rename_still_renames() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("note.txt"), b"mine").expect("write");
+        let case_insensitive = dir.path().join("NOTE.txt").exists();
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
+        app.rename_path = Some(dir.path().join("note.txt"));
+        app.rename_selected("Note.txt").expect("case-only rename");
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        if case_insensitive {
+            assert_eq!(names, vec!["Note.txt".to_string()]);
+        }
+        assert_eq!(std::fs::read(dir.path().join("Note.txt")).unwrap(), b"mine");
     }
 
     /// The exclusive copy keeps what `fs::copy` kept: the file mode.
