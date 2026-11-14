@@ -301,6 +301,189 @@ impl PlexiApp {
     /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated plugin requests take the identical host
     /// code path as CLI requests arriving over PLEXI_SOCKET.
+    /// Run one `AgentSpawn` request and return its JSON reply. Shared by the IPC
+    /// arm and `agent open` (stint 1396), so a started named agent is launched
+    /// exactly as `plexi agent start` launches it.
+    pub(crate) fn agent_spawn_reply(
+        &mut self,
+        request: &crate::protocol::HostRequest,
+    ) -> serde_json::Value {
+        let crate::protocol::HostRequest::AgentSpawn {
+            role,
+            harness,
+            command,
+            task,
+            subcontext,
+            ephemeral,
+            parent_pane_id,
+            name,
+            cwd,
+            worktree: _,
+            result_schema,
+            initial_slots,
+            focus,
+            response_file: _,
+            peer_ancestry,
+        } = request
+        else {
+            return serde_json::json!({ "ok": false, "error": "agent_spawn_reply: not an agent_spawn request" });
+        };
+        let (effective_parent, spawned_by) =
+            self.resolve_unspoofable_spawner(*parent_pane_id, peer_ancestry.as_deref());
+        log::info!(
+            "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
+        );
+        let result = self.spawn_agent_worker_pane(
+            role,
+            harness,
+            command,
+            task.as_deref().unwrap_or_default(),
+            subcontext.as_deref(),
+            *ephemeral,
+            effective_parent,
+            cwd.as_deref().map(std::path::PathBuf::from),
+            result_schema.clone(),
+            None,
+            false,
+            None,
+        );
+        let payload = match result {
+            Ok((new_pane_id, target_ctx_id)) => {
+                self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
+                if *focus {
+                    self.focus_started_agent_pane(new_pane_id, effective_parent);
+                }
+                if let Some(ref custom_name) = name {
+                    if !custom_name.is_empty() {
+                        self.apply_inline_pane_name(new_pane_id, custom_name);
+                    }
+                }
+                for (slot_key, slot_val) in initial_slots {
+                    let _ = self.write_pane_slot_internal(
+                        new_pane_id,
+                        slot_key,
+                        slot_val.as_bytes(),
+                        false,
+                        true,
+                    );
+                }
+                let portal_pane_id =
+                    self.windows
+                        .iter()
+                        .flat_map(|w| w.panes.values())
+                        .find_map(|p| match p {
+                            crate::host::pane::Pane::Portal(portal)
+                                if portal.target_context_id == target_ctx_id =>
+                            {
+                                Some(portal.pane_id)
+                            }
+                            _ => None,
+                        });
+                serde_json::json!({
+                    "ok": true,
+                    "pane_id": new_pane_id,
+                    "context_id": target_ctx_id,
+                    "context_name": self.context_name_for(target_ctx_id),
+                    "portal_pane_id": portal_pane_id,
+                    "parent_pane_id": effective_parent,
+                    "spawned_by": spawned_by,
+                    "role": role,
+                    "harness": harness,
+                    "command": command,
+                })
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+        payload
+    }
+
+    /// Resume one closed agent run from its history record in a new pane, with
+    /// the harness resume command, and return the JSON reply. Shared by
+    /// `plexi agent reopen` and `agent open` (stint 1396).
+    pub(crate) fn reopen_agent_record(
+        &mut self,
+        record: &crate::workspace::AgentHistoryRecord,
+        subcontext: Option<&str>,
+        parent_pane_id: Option<u64>,
+    ) -> serde_json::Value {
+        let resume_cmd = match record.session_id.as_deref() {
+            Some(sid) if !sid.trim().is_empty() => {
+                if let Some(adapter) = crate::cli::agent::harness_adapter(&record.harness) {
+                    let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                        record.config_name.as_deref(),
+                        adapter.harness,
+                        &crate::config::config_dir(),
+                        Some(&record.cwd),
+                    );
+                    adapter.resume_command_with_flags(sid, &flags)
+                } else {
+                    format!("{} --resume {}", record.harness, sid.trim())
+                }
+            }
+            _ => record.harness.clone(),
+        };
+        let role = record
+            .config_name
+            .clone()
+            .or_else(|| record.pane_name.clone())
+            .unwrap_or_else(|| record.harness.clone());
+        let result = self.spawn_agent_worker_pane(
+            &role,
+            &record.harness,
+            &resume_cmd,
+            record.summary.as_deref().unwrap_or_default(),
+            subcontext,
+            false,
+            parent_pane_id,
+            Some(record.cwd.clone()),
+            None,
+            None,
+            false,
+            None,
+        );
+        let payload = match result {
+            Ok((new_pane_id, target_ctx_id)) => {
+                for win in &mut self.windows {
+                    if let Some(pane) = win.panes.get_mut(&new_pane_id) {
+                        if let Some(t) = pane.as_terminal_mut() {
+                            t.agent_session_id = record.session_id.clone();
+                            t.last_resumed_command = Some(resume_cmd.clone());
+                            t.slots = record.slots.clone();
+                            if let Some(ref mut a) = t.agent {
+                                a.session_id = record.session_id.clone();
+                                a.state = crate::protocol::AgentState::Idle;
+                            }
+                        }
+                        break;
+                    }
+                }
+                self.mark_workspace_dirty();
+                log::info!(
+                    "agent_reopen: reopened run_id={} session_id={:?} harness={} in pane {new_pane_id}",
+                    record.run_id,
+                    record.session_id,
+                    record.harness
+                );
+                serde_json::json!({
+                    "ok": true,
+                    "pane_id": new_pane_id,
+                    "context_id": target_ctx_id,
+                    "run_id": record.run_id,
+                    "session_id": record.session_id,
+                    "harness": record.harness,
+                    "role": role,
+                    "command": resume_cmd,
+                    "cwd": record.cwd,
+                })
+            }
+            Err(e) => serde_json::json!({
+                "ok": false,
+                "error": e,
+            }),
+        };
+        payload
+    }
+
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
         match &cmd {
             crate::protocol::HostRequest::SubmitAssistantTurn {
@@ -5021,88 +5204,8 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::AgentSpawn {
-                role,
-                harness,
-                command,
-                task,
-                subcontext,
-                ephemeral,
-                parent_pane_id,
-                name,
-                cwd,
-                worktree: _,
-                result_schema,
-                initial_slots,
-                focus,
-                response_file,
-                peer_ancestry,
-            } => {
-                let (effective_parent, spawned_by) =
-                    self.resolve_unspoofable_spawner(*parent_pane_id, peer_ancestry.as_deref());
-                log::info!(
-                    "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
-                );
-                let result = self.spawn_agent_worker_pane(
-                    role,
-                    harness,
-                    command,
-                    task.as_deref().unwrap_or_default(),
-                    subcontext.as_deref(),
-                    *ephemeral,
-                    effective_parent,
-                    cwd.as_deref().map(std::path::PathBuf::from),
-                    result_schema.clone(),
-                    None,
-                    false,
-                    None,
-                );
-                let payload = match result {
-                    Ok((new_pane_id, target_ctx_id)) => {
-                        self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
-                        if *focus {
-                            self.focus_started_agent_pane(new_pane_id, effective_parent);
-                        }
-                        if let Some(ref custom_name) = name {
-                            if !custom_name.is_empty() {
-                                self.apply_inline_pane_name(new_pane_id, custom_name);
-                            }
-                        }
-                        for (slot_key, slot_val) in initial_slots {
-                            let _ = self.write_pane_slot_internal(
-                                new_pane_id,
-                                slot_key,
-                                slot_val.as_bytes(),
-                                false,
-                                true,
-                            );
-                        }
-                        let portal_pane_id =
-                            self.windows.iter().flat_map(|w| w.panes.values()).find_map(
-                                |p| match p {
-                                    crate::host::pane::Pane::Portal(portal)
-                                        if portal.target_context_id == target_ctx_id =>
-                                    {
-                                        Some(portal.pane_id)
-                                    }
-                                    _ => None,
-                                },
-                            );
-                        serde_json::json!({
-                            "ok": true,
-                            "pane_id": new_pane_id,
-                            "context_id": target_ctx_id,
-                            "context_name": self.context_name_for(target_ctx_id),
-                            "portal_pane_id": portal_pane_id,
-                            "parent_pane_id": effective_parent,
-                            "spawned_by": spawned_by,
-                            "role": role,
-                            "harness": harness,
-                            "command": command,
-                        })
-                    }
-                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                };
+            request @ crate::protocol::HostRequest::AgentSpawn { response_file, .. } => {
+                let payload = self.agent_spawn_reply(request);
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::AgentWait {
@@ -5560,6 +5663,30 @@ impl PlexiApp {
                     write_json_response(response_file, payload);
                 }
             }
+            crate::protocol::HostRequest::AgentOpen {
+                name,
+                cwd,
+                caller_pane_id,
+                response_file,
+                peer_ancestry,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_open name={name} cwd={cwd} caller={caller_pane_id:?}"
+                );
+                let payload = match self.open_named_agent(
+                    name,
+                    std::path::Path::new(cwd),
+                    *caller_pane_id,
+                    peer_ancestry.as_deref(),
+                ) {
+                    Ok(outcome) => outcome.to_json(),
+                    Err(error) => {
+                        log::warn!("agent_open: name={name} failed: {error}");
+                        serde_json::json!({ "ok": false, "error": error })
+                    }
+                };
+                write_json_response(response_file, payload);
+            }
             crate::protocol::HostRequest::AgentReopen {
                 query,
                 subcontext,
@@ -5581,81 +5708,8 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let resume_cmd = match record.session_id.as_deref() {
-                    Some(sid) if !sid.trim().is_empty() => {
-                        if let Some(adapter) = crate::cli::agent::harness_adapter(&record.harness) {
-                            let flags = crate::cli::agent::resolved_session_harness_flags_in(
-                                record.config_name.as_deref(),
-                                adapter.harness,
-                                &crate::config::config_dir(),
-                                Some(&record.cwd),
-                            );
-                            adapter.resume_command_with_flags(sid, &flags)
-                        } else {
-                            format!("{} --resume {}", record.harness, sid.trim())
-                        }
-                    }
-                    _ => record.harness.clone(),
-                };
-                let role = record
-                    .config_name
-                    .clone()
-                    .or_else(|| record.pane_name.clone())
-                    .unwrap_or_else(|| record.harness.clone());
-                let result = self.spawn_agent_worker_pane(
-                    &role,
-                    &record.harness,
-                    &resume_cmd,
-                    record.summary.as_deref().unwrap_or_default(),
-                    subcontext.as_deref(),
-                    false,
-                    record.parent_pane_id,
-                    Some(record.cwd.clone()),
-                    None,
-                    None,
-                    false,
-                    None,
-                );
-                let payload = match result {
-                    Ok((new_pane_id, target_ctx_id)) => {
-                        for win in &mut self.windows {
-                            if let Some(pane) = win.panes.get_mut(&new_pane_id) {
-                                if let Some(t) = pane.as_terminal_mut() {
-                                    t.agent_session_id = record.session_id.clone();
-                                    t.last_resumed_command = Some(resume_cmd.clone());
-                                    t.slots = record.slots.clone();
-                                    if let Some(ref mut a) = t.agent {
-                                        a.session_id = record.session_id.clone();
-                                        a.state = crate::protocol::AgentState::Idle;
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        self.mark_workspace_dirty();
-                        log::info!(
-                            "agent_reopen: reopened run_id={} session_id={:?} harness={} in pane {new_pane_id}",
-                            record.run_id,
-                            record.session_id,
-                            record.harness
-                        );
-                        serde_json::json!({
-                            "ok": true,
-                            "pane_id": new_pane_id,
-                            "context_id": target_ctx_id,
-                            "run_id": record.run_id,
-                            "session_id": record.session_id,
-                            "harness": record.harness,
-                            "role": role,
-                            "command": resume_cmd,
-                            "cwd": record.cwd,
-                        })
-                    }
-                    Err(e) => serde_json::json!({
-                        "ok": false,
-                        "error": e,
-                    }),
-                };
+                let payload =
+                    self.reopen_agent_record(&record, subcontext.as_deref(), record.parent_pane_id);
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::Wake => {

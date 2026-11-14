@@ -2374,7 +2374,43 @@
         },
         {
           "additionalProperties": false,
-          "description": "Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`\n(`plexi agent reopen <run-id|session-id>`, stint 0803).",
+          "description": "Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`\n(`plexi agent reopen <run-id|session-id>`, stint 0803).\nOpen a named agent (`plexi agent open <name>`, stint 1396): focus it when a\npane is running it, else resume its last chat, else start a new chat.",
+          "properties": {
+            "caller_pane_id": {
+              "description": "Calling pane (`PLEXI_PANE_ID`), parent of a resumed or started pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "Working directory for workspace lookup.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Agent name, resolved through `AgentRegistry` like `agent start`.",
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_open",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "cwd",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "query": {
               "description": "Run ID (`run-...`) or harness session ID to reopen.",

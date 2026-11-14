@@ -1965,7 +1965,7 @@ pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
     agent_ask_cli, agent_create_cli, agent_done_cli, agent_flags_cli, agent_fleet_cli,
     agent_fleet_dismiss_cli, agent_history_cli, agent_hook_event_cli, agent_hook_install_cli,
-    agent_hook_uninstall_cli, agent_list_cli, agent_next_cli, agent_reopen_cli, agent_report_cli,
+    agent_hook_uninstall_cli, agent_list_cli, agent_next_cli, agent_open_cli, agent_reopen_cli, agent_report_cli,
     agent_result_cli, agent_show_cli, agent_spawn_cli, agent_start_cli, agent_status_cli,
     agent_tool_cli, agent_wait_cli, AgentHarness,
 };
