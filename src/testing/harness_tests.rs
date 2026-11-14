@@ -10652,6 +10652,193 @@ mod agent_boot {
         assert_eq!(info["agent"]["state"].as_str(), Some("idle"));
     }
 
+    /// A fake `pi` that boots, then repaints its status line every `period`
+    /// seconds, like a TUI on a timer. `changing` makes each repaint differ;
+    /// `report_idle` first tells the terminal "idle" over OSC 7501, as pi does.
+    fn repainting_pi(
+        dir: &std::path::Path,
+        changing: bool,
+        period: f64,
+        report_idle: bool,
+    ) -> String {
+        let script = dir.join("cli.py");
+        let osc = if report_idle {
+            "sys.stdout.write('\\x1b]7501;state=idle:app=pi\\x1b\\\\')\n"
+        } else {
+            ""
+        };
+        let line = if changing {
+            "'\\r[pi] ready  tick %d' % i"
+        } else {
+            "'\\r[pi] ready  model: test'"
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "#!/usr/bin/env python3\nimport sys, time\n{osc}\
+                 sys.stdout.write('pi banner\\r\\n')\nsys.stdout.flush()\n\
+                 for i in range(300):\n    sys.stdout.write({line})\n    \
+                 sys.stdout.flush()\n    time.sleep({period})\n"
+            ),
+        )
+        .expect("write script");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("pi");
+        std::os::unix::fs::symlink(&script, &link).expect("symlink");
+        link.to_string_lossy().into_owned()
+    }
+
+    fn terminal_ref(h: &HostHarness, pane_id: u64) -> &crate::host::pane::TerminalPane {
+        h.app
+            .windows
+            .iter()
+            .find_map(|win| win.panes.get(&pane_id))
+            .and_then(|pane| pane.as_terminal())
+            .expect("terminal pane")
+    }
+
+    /// Pump frames until `repaints` more PTY outputs have been drained.
+    fn pump_repaints(h: &mut HostHarness, pane_id: u64, repaints: usize) {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+        let mut seen = 0;
+        let mut last = terminal_ref(h, pane_id).last_pty_output_at;
+        while seen < repaints {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {seen} of {repaints} repaints arrived"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            h.run_frames(1);
+            let now = terminal_ref(h, pane_id).last_pty_output_at;
+            if now != last {
+                seen += 1;
+                last = now;
+            }
+        }
+    }
+
+    fn lifecycle_kinds(pane_id: u64) -> Vec<String> {
+        let timeline = crate::host::plugin_timeline::global();
+        let timeline = timeline.lock().unwrap();
+        timeline
+            .events()
+            .iter()
+            .filter(|event| {
+                event.pane_id == pane_id && event.event == crate::host::pane_lifecycle::STREAM
+            })
+            .map(|event| event.summary.clone())
+            .collect()
+    }
+
+    /// An idle agent that rewrites the same status line on a timer is not
+    /// working: identical repaints must not count as agent activity.
+    #[test]
+    fn identical_status_line_repaints_keep_an_idle_agent_idle() {
+        let dir = persistent_agent_dir("repaint-same");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = repainting_pi(&dir, false, 0.2, false);
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+        assert!(
+            std::path::Path::new(&response).exists(),
+            "an idle agent repainting the same status line never settled to Idle"
+        );
+        pump_repaints(&mut h, pane_id, 2);
+        let settled = terminal_ref(&h, pane_id).last_agent_activity_at;
+        pump_repaints(&mut h, pane_id, 6);
+        let t = terminal_ref(&h, pane_id);
+        assert_eq!(
+            t.last_agent_activity_at, settled,
+            "six identical repaints must not count as agent activity"
+        );
+        let observed = t.observed_agent.as_ref().map(|a| a.state.clone());
+        assert_eq!(observed, Some(AgentState::Idle));
+    }
+
+    /// The repaint check must not hide real work: changing text is activity.
+    #[test]
+    fn changing_status_line_still_counts_as_activity() {
+        let dir = persistent_agent_dir("repaint-changing");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = repainting_pi(&dir, true, 0.2, false);
+        let _response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_repaints(&mut h, pane_id, 3);
+        let before = terminal_ref(&h, pane_id).last_agent_activity_at;
+        pump_repaints(&mut h, pane_id, 2);
+        let after = terminal_ref(&h, pane_id).last_agent_activity_at;
+        assert!(after > before, "changing output must advance agent activity");
+    }
+
+    /// When the agent reports its own state (OSC 7501), the host's guess is
+    /// not what the pane shows: a guessed flip must not publish a lifecycle
+    /// event or mark the workspace for saving.
+    #[test]
+    fn observed_flip_under_a_reported_state_publishes_nothing() {
+        let dir = persistent_agent_dir("repaint-7501");
+        let mut h = HostHarness::new();
+        h.app.set_context_root(dir.clone(), None);
+        h.add_test_pane();
+        let command = repainting_pi(&dir, true, 1.6, true);
+        let response = spawn_agent_pane(&mut h, &dir, &command, Some(120.0));
+        h.run_frames(1);
+        let pane_id = spawned_terminal(&h);
+        pump_until_response(&mut h, &response, false);
+        assert!(std::path::Path::new(&response).exists(), "spawn never completed");
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+        while terminal_ref(&h, pane_id).reported_7501.is_none() {
+            assert!(std::time::Instant::now() < deadline, "no OSC 7501 report arrived");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            h.run_frames(1);
+        }
+        let wait_observed = |h: &mut HostHarness, state: AgentState| {
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+            while terminal_ref(h, pane_id)
+                .observed_agent
+                .as_ref()
+                .is_none_or(|a| a.state != state)
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "observed never reached {state:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                h.run_frames(1);
+            }
+        };
+        wait_observed(&mut h, AgentState::Idle);
+        let events_before = lifecycle_kinds(pane_id);
+        h.app.workspace_dirty = false;
+        wait_observed(&mut h, AgentState::Working);
+        assert_eq!(
+            terminal_ref(&h, pane_id).effective_agent_state().0,
+            AgentState::Idle,
+            "the reported idle outranks the host's guess"
+        );
+        assert_eq!(
+            lifecycle_kinds(pane_id),
+            events_before,
+            "a guessed flip the pane does not show must not publish a lifecycle event"
+        );
+        assert!(
+            !h.app.workspace_dirty,
+            "a guessed flip the pane does not show must not mark the workspace dirty"
+        );
+    }
+
     #[test]
     fn agent_spawn_fails_fast_for_unmapped_interpreter_script() {
         let dir = persistent_agent_dir("interpreter-unsupported");

@@ -1166,6 +1166,25 @@ impl TerminalBackend {
         terminal.scroll_display(Scroll::Bottom);
     }
 
+    /// A hash of the text on screen, how much has scrolled into history and
+    /// which screen is shown. Output that rewrites the screen to the same text
+    /// (a timer repaint, an invisible escape sequence) leaves it unchanged.
+    pub fn visible_text_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let term = self.term.lock();
+        let grid = term.grid();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        grid.history_size().hash(&mut hasher);
+        term.mode().contains(TermMode::ALT_SCREEN).hash(&mut hasher);
+        for line in 0..grid.screen_lines() as i32 {
+            let row = &grid[Line(line)];
+            for column in 0..grid.columns() {
+                row[Column(column)].c.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
     /// How many grid reflows (PTY `SIGWINCH` + alacritty reflow) this terminal
     /// has committed. Monotonic for the life of the backend.
     pub fn resize_commits(&self) -> u64 {

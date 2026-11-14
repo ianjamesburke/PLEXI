@@ -6096,27 +6096,43 @@ impl PlexiApp {
                     _ => true,
                 };
                 if changed {
-                    log::info!(
-                        "observed agent: pane {} {:?} -> {:?} (fg_pgid={:?})",
-                        pane_id,
-                        t.observed_agent.as_ref().map(|a| (&a.agent, &a.state)),
-                        observed.as_ref().map(|a| (&a.agent, &a.state)),
-                        fg
-                    );
-                    if is_stale_idle_fallback && !was_stale_idle_fallback {
+                    let identity_changed = t.observed_agent.as_ref().map(|a| &a.agent)
+                        != observed.as_ref().map(|a| &a.agent);
+                    let previous = t
+                        .observed_agent
+                        .as_ref()
+                        .map(|a| (a.agent.clone(), a.state.clone()));
+                    let next = observed
+                        .as_ref()
+                        .map(|a| (a.agent.clone(), a.state.clone()));
+                    let shown_changed = t.set_observed_agent(observed.clone());
+                    // A guess the pane does not show (a fresh hook or an OSC 7501
+                    // report outranks it) publishes nothing and saves nothing:
+                    // it would only churn the lifecycle stream and the workspace.
+                    if shown_changed || identity_changed {
                         log::info!(
-                            "observed agent: pane {pane_id} stale hook idle yielded to corroborated working"
+                            "observed agent: pane {pane_id} {previous:?} -> {next:?} (fg_pgid={fg:?})"
                         );
-                    } else if was_stale_idle_fallback && !is_stale_idle_fallback {
-                        log::info!(
-                            "observed agent: pane {pane_id} corroborated working settled; returning to hook idle"
+                        if is_stale_idle_fallback && !was_stale_idle_fallback {
+                            log::info!(
+                                "observed agent: pane {pane_id} stale hook idle yielded to corroborated working"
+                            );
+                        } else if was_stale_idle_fallback && !is_stale_idle_fallback {
+                            log::info!(
+                                "observed agent: pane {pane_id} corroborated working settled; returning to hook idle"
+                            );
+                        }
+                        observed_dirty = true;
+                    } else {
+                        log::debug!(
+                            "observed agent: pane {pane_id} {previous:?} -> {next:?} outranked; not shown"
                         );
                     }
-                    if let Some(agent) = &observed {
-                        transitions.push((*pane_id, agent.clone()));
+                    if shown_changed {
+                        if let Some(agent) = observed {
+                            transitions.push((*pane_id, agent));
+                        }
                     }
-                    t.set_observed_agent(observed);
-                    observed_dirty = true;
                 }
             }
         }
@@ -6496,6 +6512,8 @@ impl PlexiApp {
     pub(super) fn drain_pty_events(&mut self) {
         self.observe_pane_spawns();
         let mut panes_to_close: Vec<u64> = Vec::new();
+        let mut panes_with_output: std::collections::BTreeSet<u64> =
+            std::collections::BTreeSet::new();
 
         while let Ok((id, event)) = self.pty_event_rx.try_recv() {
             // Every event on this channel — `Wakeup` above all, which fires
@@ -6509,9 +6527,10 @@ impl PlexiApp {
                 .find_map(|win| win.panes.get_mut(&id))
                 .and_then(crate::host::pane::Pane::as_terminal_mut)
             {
-                // Host-induced output (stint 1231) still stamps send --submit
-                // settling but not agent activity.
-                term.record_pty_event(std::time::Instant::now());
+                // Every event stamps send --submit settling; whether it is agent
+                // activity is decided once the batch is drained, from the screen.
+                term.stamp_pty_event(std::time::Instant::now());
+                panes_with_output.insert(id);
             }
             match &event {
                 PtyEvent::Exit(pty_status) => {
@@ -6633,6 +6652,19 @@ impl PlexiApp {
             }
         }
 
+        // One screen read per pane per drain: output that left the text on
+        // screen as it was (a timer repaint) is not agent activity.
+        let now = std::time::Instant::now();
+        for pane_id in panes_with_output {
+            if let Some(term) = self
+                .windows
+                .iter_mut()
+                .find_map(|win| win.panes.get_mut(&pane_id))
+                .and_then(crate::host::pane::Pane::as_terminal_mut)
+            {
+                term.observe_screen_change(now);
+            }
+        }
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
