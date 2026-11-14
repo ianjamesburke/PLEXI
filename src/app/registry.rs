@@ -144,6 +144,20 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
     type Error = ManifestError;
 
     fn try_from(mut wire: PluginManifestWire) -> Result<Self, Self::Error> {
+        // The id names the plugin on every log line, state file and grant, so
+        // it must hold only the characters state files already require
+        // (stint 1344). Checked first: every later error names it.
+        if crate::host::state_scope::validate_plugin_id(&wire.plugin.id).is_err() {
+            let shown = crate::host::guest_text::shown(&wire.plugin.id);
+            return Err(ManifestError::reject(
+                &shown,
+                "plugin.id",
+                ManifestErrorKind::InvalidField(format!(
+                    "plugin id {shown:?} must be non-empty and use only A-Z a-z 0-9 . _ - \
+                     (no leading '.', no '..')"
+                )),
+            ));
+        }
         let invalid = |field: &str, message: String| {
             ManifestError::reject(
                 &wire.plugin.id,
@@ -1451,6 +1465,23 @@ mod tests {
         assert!(
             error.contains("sample") && error.contains("unknown capability ID 'llm'"),
             "{error}"
+        );
+    }
+
+    /// Stint 1344: the plugin id names the plugin on every log line, so a
+    /// manifest whose id holds anything but the state-file characters is
+    /// refused at load, and the refusal shows the id escaped.
+    #[test]
+    fn schema2_rejects_a_plugin_id_with_unsafe_characters() {
+        let raw = schema2_fixture("").replace("id = 'sample'", "id = \"evil\\u001b[31m\"");
+        let error = toml::from_str::<PluginManifest>(&raw)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("plugin.id"), "{error}");
+        assert!(!error.contains('\u{1b}'), "{error:?}");
+        assert!(
+            toml::from_str::<PluginManifest>(&schema2_fixture("")).is_ok(),
+            "a plain id still loads"
         );
     }
 

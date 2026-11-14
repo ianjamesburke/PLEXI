@@ -5,6 +5,7 @@
 //! marshalling. It intentionally does not fall back to the native PGAP
 //! subprocess path when the CPython WASM bundle is unavailable.
 
+use crate::host::guest_text;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -1165,6 +1166,8 @@ pub fn run_headless_ui_action_sequence(
 
 struct HeadlessPythonSession {
     runtime: WasmPythonRuntime,
+    /// Names the plugin when guest text is made safe for an error or log.
+    plugin_id: String,
     /// Previous decoded frame, so `tree_delta` frames (stint 0438) can be
     /// reconstructed the same way the live host does.
     last_tree: Option<PythonUiTree>,
@@ -1182,6 +1185,7 @@ impl HeadlessPythonSession {
         runtime.send(&python_init_payload(config, seed_state, size)?)?;
         let mut session = Self {
             runtime,
+            plugin_id: config.plugin_id.clone(),
             last_tree: None,
             inbox: VecDeque::new(),
         };
@@ -1286,7 +1290,7 @@ impl HeadlessPythonSession {
         self.inbox.extend(self.runtime.drain_messages()?);
         while let Some(message) = self.inbox.pop_front() {
             if message.get("type").and_then(Value::as_str) == Some("fatal_error") {
-                let fatal = fatal_error::GuestFatalError::decode(&message)
+                let fatal = fatal_error::GuestFatalError::decode(&self.plugin_id, &message)
                     .map_err(WasmPythonError::BridgeJson)?;
                 log::info!(
                     "python_compat: headless guest reported a fatal error: {}",
@@ -1305,7 +1309,8 @@ impl HeadlessPythonSession {
     /// Names which clock ran out, so an unresponsive plugin is never confused with
     /// a host that could not get CPython compiled and running.
     fn timeout_error(&mut self, verdict: PollVerdict) -> WasmPythonError {
-        let stderr = self.runtime.drain_stderr();
+        let stderr =
+            guest_text::guest_block(&self.plugin_id, "stderr", &self.runtime.drain_stderr());
         let what = match verdict {
             PollVerdict::ResponseTimedOut => {
                 format!("timed out waiting for plugin response after {HEADLESS_DEFAULT_TIMEOUT:?}")
@@ -1332,7 +1337,8 @@ impl HeadlessPythonSession {
     /// awaited message and without a `fatal_error` report: a hard crash, not a
     /// plugin exception. Drains stderr so whatever it wrote rides along.
     fn guest_death_error(&self) -> WasmPythonError {
-        let stderr = self.runtime.drain_stderr();
+        let stderr =
+            guest_text::guest_block(&self.plugin_id, "stderr", &self.runtime.drain_stderr());
         WasmPythonError::BridgeJson(format!(
             "plugin exited before responding{}",
             if stderr.trim().is_empty() {
@@ -2610,7 +2616,10 @@ fn deliver_mcp_line(
         Ok(()) => {
             if let crate::host::mcp_client::McpLine::Closed(reason) = &line {
                 connections.remove(&server_id);
-                log::info!("plugin::{plugin_id}: mcp server {server_id} closed: {reason}");
+                log::info!(
+                    "plugin::{plugin_id}: mcp server {server_id} closed: {reason}",
+                    server_id = guest_text::shown(&server_id)
+                );
             }
             McpDelivery::Delivered
         }
@@ -2651,7 +2660,10 @@ fn drop_undeliverable_mcp_backlog(
         dropped += 1;
         if let crate::host::mcp_client::McpLine::Closed(reason) = &l {
             connections.remove(&sid);
-            log::info!("plugin::{plugin_id}: mcp server {sid} closed: {reason}");
+            log::info!(
+                "plugin::{plugin_id}: mcp server {sid} closed: {reason}",
+                sid = guest_text::shown(&sid)
+            );
         }
         next = rx.try_recv().ok();
     }
@@ -3132,14 +3144,15 @@ impl LivePythonPane {
             Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {
                 log::info!(
                     "plugin::{}: registered directed pipe '{pipe_id}' on Python runtime",
-                    self.plugin_id
+                    self.plugin_id,
+                    pipe_id = guest_text::shown(pipe_id)
                 );
                 true
             }
             Err(error) => {
                 log::warn!(
                     "plugin::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
-                    self.plugin_id
+                    self.plugin_id, pipe_id = guest_text::shown(pipe_id)
                 );
                 false
             }
@@ -3314,7 +3327,8 @@ impl LivePythonPane {
             for action in result.actions {
                 log::info!(
                     "plugin::{}: emitted UI action at Python host boundary handler={action}",
-                    self.plugin_id
+                    self.plugin_id,
+                    action = guest_text::shown(&action)
                 );
                 self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
             }
@@ -3516,7 +3530,7 @@ impl LivePythonPane {
                     if granted.is_empty() {
                         log::error!(
                             "plugin::{}: file pick {request_id}: no picked path could be granted; cancelling",
-                            self.plugin_id
+                            self.plugin_id, request_id = guest_text::shown(&request_id)
                         );
                         self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                             request_id,
@@ -3535,7 +3549,8 @@ impl LivePythonPane {
                 crate::host::services::FilePickOutcome::Cancelled => {
                     log::info!(
                         "plugin::{}: file pick {request_id} cancelled",
-                        self.plugin_id
+                        self.plugin_id,
+                        request_id = guest_text::shown(&request_id)
                     );
                     self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                         request_id,
@@ -3574,6 +3589,13 @@ impl LivePythonPane {
                     self.handle_message(value);
                 }
                 Ok(DecodedOutput::DecodeError(error)) => {
+                    // Decoder errors can quote the guest value that failed.
+                    let error = guest_text::guest_line(
+                        &self.plugin_id,
+                        "decode error",
+                        &error,
+                        guest_text::MAX_LINE_CHARS,
+                    );
                     log::error!(
                         "plugin::{}: decode CPython WASM message: {error}",
                         self.plugin_id
@@ -3659,14 +3681,14 @@ impl LivePythonPane {
         log::debug!(
             "plugin::{}: CPython WASM message type={}",
             self.plugin_id,
-            message_type.unwrap_or("<missing>")
+            guest_text::shown(message_type.unwrap_or("<missing>"))
         );
         if let Some(dropped) = self.dropped_after_fatal.as_mut() {
             if *dropped == 0 {
                 log::info!(
                     "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
                     self.plugin_id,
-                    message_type.unwrap_or("<missing>").escape_debug()
+                    guest_text::shown(message_type.unwrap_or("<missing>"))
                 );
             }
             *dropped += 1;
@@ -3791,7 +3813,7 @@ impl LivePythonPane {
             }
             Some("status_summary") => {}
             Some("fatal_error") => {
-                let error = match fatal_error::GuestFatalError::decode(&message) {
+                let error = match fatal_error::GuestFatalError::decode(&self.plugin_id, &message) {
                     Ok(fatal) => {
                         for line in fatal.traceback().lines() {
                             log::error!("plugin::{} traceback: {line}", self.plugin_id);
@@ -3811,7 +3833,8 @@ impl LivePythonPane {
                 self.dropped_after_fatal = Some(0);
             }
             _ => match plugin_command_from_python_message(&message) {
-                Ok(Some(command)) => {
+                Ok(Some(mut command)) => {
+                    sanitize_guest_notification(&self.plugin_id, &mut command);
                     if let Some(capability) =
                         required_capability_for_python_plugin_command(&command)
                     {
@@ -3819,7 +3842,7 @@ impl LivePythonPane {
                             log::info!(
                                 "plugin::{}: {} denied: missing capability {capability}",
                                 self.plugin_id,
-                                message_type.unwrap_or("<missing>")
+                                guest_text::shown(message_type.unwrap_or("<missing>"))
                             );
                             return;
                         }
@@ -3835,8 +3858,14 @@ impl LivePythonPane {
                 }
                 Ok(None) => self.warn_unhandled_cpython_message(&message),
                 Err(error) => log::warn!(
-                    "plugin::{}: rejected CPython WASM message: {error}",
-                    self.plugin_id
+                    "plugin::{}: rejected CPython WASM message: {}",
+                    self.plugin_id,
+                    guest_text::guest_line(
+                        &self.plugin_id,
+                        "rejected message",
+                        &error.to_string(),
+                        guest_text::MAX_LINE_CHARS,
+                    )
                 ),
             },
         }
@@ -3890,7 +3919,8 @@ impl LivePythonPane {
         if !self.has_capability("fs.pick") {
             log::info!(
                 "plugin::{}: open_file_picker {request_id} denied: missing capability fs.pick",
-                self.plugin_id
+                self.plugin_id,
+                request_id = guest_text::shown(&request_id)
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
@@ -3919,7 +3949,7 @@ impl LivePythonPane {
                 Err(error) => {
                     log::error!(
                         "plugin::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
-                        self.plugin_id
+                        self.plugin_id, request_id = guest_text::shown(&request_id), value = guest_text::shown(&value.to_string())
                     );
                     self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                         request_id,
@@ -3930,7 +3960,7 @@ impl LivePythonPane {
         };
         log::info!(
             "plugin::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
-            self.plugin_id
+            self.plugin_id, request_id = guest_text::shown(&request_id)
         );
         let picker = Arc::clone(&self.picker);
         let tx = self.picker_tx.clone();
@@ -4007,7 +4037,7 @@ impl LivePythonPane {
                 log::info!(
                     "plugin::{}: file_read {:?} -> {} bytes",
                     self.plugin_id,
-                    message.get("path").and_then(Value::as_str).unwrap_or("?"),
+                    guest_text::shown(message.get("path").and_then(Value::as_str).unwrap_or("?")),
                     bytes.len()
                 );
                 json!({"type": "file_read_result", "content_b64": BASE64.encode(bytes)})
@@ -4141,15 +4171,22 @@ impl LivePythonPane {
         let due = unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now);
         if !due {
             log::debug!(
-                "plugin::{}: repeated unhandled CPython WASM message: {message}",
-                self.plugin_id
+                "plugin::{}: repeated unhandled CPython WASM message: {}",
+                self.plugin_id,
+                guest_text::bound_line(&message.to_string(), guest_text::MAX_LINE_CHARS).0
             );
             return;
         }
         self.unhandled_warned_at.insert(key, now);
         log::warn!(
-            "plugin::{}: unhandled CPython WASM message: {message}",
-            self.plugin_id
+            "plugin::{}: unhandled CPython WASM message: {}",
+            self.plugin_id,
+            guest_text::guest_line(
+                &self.plugin_id,
+                "unhandled message",
+                &message.to_string(),
+                guest_text::MAX_LINE_CHARS,
+            )
         );
     }
 
@@ -4224,13 +4261,16 @@ impl LivePythonPane {
             .to_string();
         log::info!(
             "plugin::{}: mcp_connect request_id={request_id} server_id={server_id}",
-            self.plugin_id
+            self.plugin_id,
+            server_id = guest_text::shown(&server_id),
+            request_id = guest_text::shown(&request_id)
         );
 
         let fail = |pane: &mut Self, error: String| {
             log::warn!(
                 "plugin::{}: mcp_connect failed server_id={server_id}: {error}",
-                pane.plugin_id
+                pane.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
             pane.send_to_runtime(&json!({
                 "type": "mcp_connected",
@@ -4251,7 +4291,8 @@ impl LivePythonPane {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
             log::info!(
                 "plugin::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
-                self.plugin_id
+                self.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
             fail(
                 self,
@@ -4316,7 +4357,8 @@ impl LivePythonPane {
             Ok(connection) => {
                 log::info!(
                     "plugin::{}: mcp connected server_id={server_id}",
-                    self.plugin_id
+                    self.plugin_id,
+                    server_id = guest_text::shown(&server_id)
                 );
                 self.mcp_connections.insert(server_id.clone(), connection);
                 self.send_to_runtime(&json!({
@@ -4358,7 +4400,8 @@ impl LivePythonPane {
         let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
             log::warn!(
                 "plugin::{}: mcp_send to unopened server {server_id}",
-                self.plugin_id
+                self.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -4370,7 +4413,8 @@ impl LivePythonPane {
         if let Err(e) = connection.send(&payload) {
             log::warn!(
                 "plugin::{}: mcp_send failed server={server_id}: {e}",
-                self.plugin_id
+                self.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
             self.mcp_connections.remove(&server_id);
             self.send_to_runtime(&json!({
@@ -4390,7 +4434,8 @@ impl LivePythonPane {
         if self.mcp_connections.remove(&server_id).is_some() {
             log::info!(
                 "plugin::{}: mcp disconnect server_id={server_id}",
-                self.plugin_id
+                self.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -4400,7 +4445,8 @@ impl LivePythonPane {
         } else {
             log::info!(
                 "plugin::{}: mcp disconnect of unopened server_id={server_id} ignored",
-                self.plugin_id
+                self.plugin_id,
+                server_id = guest_text::shown(&server_id)
             );
         }
     }
@@ -5177,13 +5223,18 @@ impl LivePythonPane {
         else {
             return;
         };
-        let exception = guest_text::guest_line(
-            &self.plugin_id,
-            "exception line",
-            exception,
-            guest_text::MAX_LINE_CHARS,
-        );
+        // Every stderr chunk re-reads the same exception, so the cut is traced
+        // once, when the failed state is entered, not per chunk.
+        let (exception, cut_from) = guest_text::bound_line(exception, guest_text::MAX_LINE_CHARS);
         if self.error.as_deref() != Some(exception.as_str()) {
+            if let Some(from) = cut_from {
+                guest_text::trace_truncation(
+                    &self.plugin_id,
+                    "exception line",
+                    from,
+                    guest_text::MAX_LINE_CHARS,
+                );
+            }
             log::info!(
                 "plugin::{}: guest entered failed state: {exception}",
                 self.plugin_id
@@ -5933,6 +5984,34 @@ fn launch_set_admits(
         }
     }
     admitted
+}
+
+/// A plugin's notification title, body and id reach the notification card,
+/// the event log and `plexi.log`: made safe where they arrive (stint 1344).
+/// The id is a key the host echoes back to the plugin, so it is escaped and
+/// capped like any identifier; a plugin's own printable ids are unchanged.
+fn sanitize_guest_notification(plugin_id: &str, command: &mut crate::app::view_trait::ViewCommand) {
+    if let crate::app::view_trait::ViewCommand::ShowNotification {
+        notify_id,
+        title,
+        body,
+        ..
+    } = command
+    {
+        *notify_id = guest_text::shown(notify_id);
+        *title = guest_text::guest_line(
+            plugin_id,
+            "notification title",
+            title,
+            guest_text::MAX_TITLE_CHARS,
+        );
+        *body = guest_text::guest_paragraph(
+            plugin_id,
+            "notification body",
+            body,
+            guest_text::MAX_LINE_CHARS,
+        );
+    }
 }
 
 fn plugin_command_from_python_message(
@@ -7540,8 +7619,6 @@ mod wire_contract_tests;
 
 #[path = "wasm_python/fatal_error.rs"]
 mod fatal_error;
-#[path = "wasm_python/guest_text.rs"]
-mod guest_text;
 
 #[cfg(test)]
 #[path = "wasm_python/fatal_error_tests.rs"]
@@ -7741,6 +7818,33 @@ mod tests {
             "closing the pane reports the rest"
         );
         assert!(summaries(&logs)[2].starts_with("admission: repeated 1 times"));
+    }
+
+    /// Stint 1344: a Python guest's notification id, title and body are
+    /// made safe where they arrive; line breaks in the body survive.
+    #[test]
+    fn guest_notification_text_is_escaped_where_it_arrives() {
+        let mut command = plugin_command_from_python_message(&json!({
+            "type": "show_notification",
+            "notify_id": "id\u{1b}[2J",
+            "title": "T\u{202e}itle",
+            "body": "line one\nline two\u{1b}]0;x\u{7}",
+        }))
+        .expect("decodes")
+        .expect("a command");
+        sanitize_guest_notification("probe", &mut command);
+        let crate::app::view_trait::ViewCommand::ShowNotification {
+            notify_id,
+            title,
+            body,
+            ..
+        } = command
+        else {
+            panic!("show_notification");
+        };
+        assert_eq!(notify_id, "id\\u{1b}[2J");
+        assert_eq!(title, "T\\u{202e}itle");
+        assert_eq!(body, "line one\nline two\\u{1b}]0;x\\u{7}");
     }
     use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_view::Modifiers;

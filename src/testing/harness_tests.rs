@@ -8701,6 +8701,25 @@ fn guest_title_log_and_stderr_text_are_escaped_and_capped() {
             text.chars().count()
         );
     }
+    // The title keeps exactly the title cap: 128 characters, 5 of them escaped
+    // (ESC +5, BEL +4, ESC +5, newline +1, U+202E +7), then the marker.
+    assert_eq!(
+        title.chars().count(),
+        crate::host::guest_text::MAX_TITLE_CHARS + 22 + crate::host::guest_text::TRUNCATED.len()
+    );
+    // Not only the marked lines: no captured line at all carries a raw escape,
+    // a bidi override, or a forged line that starts with another plugin's prefix.
+    for line in capture.lines() {
+        let head: String = line.chars().take(80).collect();
+        assert!(
+            !line.contains('\u{1b}') && !line.contains('\u{202e}'),
+            "raw guest bytes in a log line: {head:?}"
+        );
+        assert!(
+            !line.contains("\nplugin::other"),
+            "a guest value started a new log line: {head:?}"
+        );
+    }
     assert!(
         capture
             .lines()
@@ -8708,6 +8727,109 @@ fn guest_title_log_and_stderr_text_are_escaped_and_capped() {
             .any(|line| line.contains("guest-text-probe") && line.contains("truncated from")),
         "truncation must leave an info trace"
     );
+}
+
+/// Write a Python fixture plugin whose `init` runs `body` (indented code).
+fn write_guest_text_fixture(dir: &std::path::Path, id: &str, body: &str) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"Guest Text Fixture\"\nversion = \"0.1.0\"\ndescription = \"stint 1344 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+        ),
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        format!(
+            "import sys\n\
+             from plexi_sdk._v3_runtime import _emit\n\
+             from plexi_sdk.ui import Column\n\n\
+             def init(size, args):\n{body}\n\
+             \x20   return []\n\n\
+             def update(event):\n\
+             \x20   return []\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    )
+    .expect("write main.py");
+}
+
+fn launch_guest_text_fixture(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+    h.app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .expect("launch fixture");
+    *h.state().open_panes.last().expect("pane appears")
+}
+
+fn wait_for_pane_error(h: &mut HostHarness, pane_id: PaneId, needle: &str) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        if let Some(error) = python_pane_error(h, pane_id).filter(|e| e.contains(needle)) {
+            return error;
+        }
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "pane error containing {needle:?} never arrived (last: {:?})",
+            python_pane_error(h, pane_id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 1344: a decoder error that quotes the guest's own value (an unknown
+/// node type) reaches the pane and the log escaped and capped.
+#[test]
+fn guest_decode_error_is_escaped_before_it_reaches_the_pane() {
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "decode-error-probe",
+        "\x20   _emit({'type': 'component_tree', 'frame_id': 1, 'tree': {'root': 0, 'nodes': [{'id': 0, 'key': 'k', 'data': {'type': 'EVIL\\x1b[31m\\n' + 'B' * 5000}}]}})",
+    );
+    let mut h = HostHarness::new();
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let error = wait_for_pane_error(&mut h, pane_id, "unsupported CPython-WASM UINode type");
+    assert!(
+        !error
+            .chars()
+            .any(crate::host::guest_text::is_unsafe_to_print),
+        "{:?}",
+        error.chars().take(80).collect::<String>()
+    );
+    assert!(
+        error.contains("EVIL\\u{1b}[31m\\n"),
+        "{:?}",
+        error.chars().take(120).collect::<String>()
+    );
+    assert!(error.ends_with(crate::host::guest_text::TRUNCATED));
+}
+
+/// Stint 1344: the exception line read from a guest traceback on stderr is
+/// the pane's failure text, so it is escaped and capped too.
+#[test]
+fn guest_stderr_exception_is_escaped_before_it_reaches_the_pane() {
+    let tmp = tempfile::tempdir().expect("plugin dir");
+    write_guest_text_fixture(
+        tmp.path(),
+        "stderr-exception-probe",
+        "\x20   sys.stderr.write('Traceback (most recent call last):\\n  File \"main.py\", line 1, in init\\nRuntimeError: EXCMARK\\x1b]0;forged\\x07' + 'C' * 5000 + '\\n')\n\
+         \x20   sys.stderr.flush()",
+    );
+    let mut h = HostHarness::new();
+    let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
+    let error = wait_for_pane_error(&mut h, pane_id, "EXCMARK");
+    assert!(
+        !error
+            .chars()
+            .any(crate::host::guest_text::is_unsafe_to_print),
+        "{:?}",
+        error.chars().take(80).collect::<String>()
+    );
+    assert!(error.contains("EXCMARK\\u{1b}]0;forged\\u{7}"));
+    assert!(error.ends_with(crate::host::guest_text::TRUNCATED));
 }
 
 // -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------

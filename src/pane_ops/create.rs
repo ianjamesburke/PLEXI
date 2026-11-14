@@ -2825,11 +2825,15 @@ impl PlexiApp {
                 .manifest_id_for_wasm_path(&plugin_dir)
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
-                    plugin_dir
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("wasm")
-                        .to_string()
+                    // A bare `.wasm` has no manifest id; its file name stands
+                    // in, reduced to the characters a plugin id may hold
+                    // (stint 1344), since it names the plugin on every log line.
+                    sanitize_wasm_path_component(
+                        plugin_dir
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("wasm"),
+                    )
                 });
             let workspace_root = workspace_root_override.unwrap_or_else(|| {
                 plugin_dir
