@@ -183,6 +183,7 @@ impl super::PlexiApp {
     /// cancelled and the window stays.
     pub(crate) fn resolve_quit_save_failure(&mut self, quit_anyway: bool) {
         self.pending_close = false;
+        self.close_confirm_target = None;
         if quit_anyway {
             log::warn!(
                 "quit: user chose Quit without saving after {} failed saves: {}",
@@ -338,6 +339,7 @@ impl super::PlexiApp {
             "confirmation_cancelled"
         });
         self.pending_close = false;
+        self.close_confirm_target = None;
         self.pending_quit = false;
         self.quit_press_count = 0;
         self.quit_last_press = None;

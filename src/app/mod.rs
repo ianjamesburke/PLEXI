@@ -4621,12 +4621,15 @@ impl PlexiApp {
                             );
                             self.pending_context_close = Some(state);
                         }
-                    } else if self.confirm_close() {
-                        self.close_confirm_target = self.close_confirm_target_for_focused();
-                        log::info!(
-                            "close_confirm: asking pane={:?}",
-                            self.close_confirm_target.as_ref().map(|t| t.pane)
-                        );
+                    } else if let Some(target) = self
+                        .confirm_close()
+                        .then(|| self.close_confirm_target_for_focused())
+                        .flatten()
+                    {
+                        // No focused pane (an empty page) has nothing to name
+                        // or terminate: it takes the no-pane cleanup below.
+                        log::info!("close_confirm: asking pane={}", target.pane);
+                        self.close_confirm_target = Some(target);
                         self.pending_close = true;
                     } else {
                         self.execute_close_pane();

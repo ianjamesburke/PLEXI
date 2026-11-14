@@ -2040,8 +2040,6 @@ impl PlexiApp {
         }
     }
 
-    /// Execute the close-pane action (called directly when confirm_close is false,
-    /// or from the confirm-close dialog when the user confirms).
     /// The "Close pane?" target for the focused pane (stint 1491).
     pub(crate) fn close_confirm_target_for_focused(
         &self,
@@ -2098,6 +2096,8 @@ impl PlexiApp {
         self.mark_workspace_dirty();
     }
 
+    /// Execute the close-pane action (called directly when confirm_close is false,
+    /// or from the confirm-close dialog when the user confirms).
     pub(crate) fn execute_close_pane(&mut self) {
         let ctx_id = self.windows[self.active_window].context_id;
         let closed_window_id = self.windows[self.active_window].window_id;

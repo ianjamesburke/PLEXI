@@ -113,3 +113,65 @@ fn confirm_without_focus_change_closes_the_asking_pane() {
     assert_eq!(open(&h), vec![b], "a closed");
     assert!(h.app.close_confirm_target.is_none());
 }
+
+/// Critic follow-up 1: on an empty extra page there is no pane to name, so
+/// Cmd+W keeps doing the no-pane cleanup at once (the page is removed) and no
+/// dialog opens, with close confirmation on.
+#[test]
+fn close_on_an_empty_extra_page_removes_it_without_a_dialog() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+    h.app.config.confirm_close = Some(true);
+    let ctx_id = h.app.router.active().context_id;
+    let root = h.app.router.active().root.clone();
+    let window_id = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(crate::host::context::Window {
+        name: "empty page".to_string(),
+        path: root,
+        tree: egui_tiles::Tree::empty("plexi"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id,
+        context_id: ctx_id,
+    });
+    h.app.active_window = h.app.windows.len() - 1;
+    h.run_frames(2);
+    let pages = |h: &HostHarness| {
+        h.app
+            .windows
+            .iter()
+            .filter(|w| w.context_id == ctx_id)
+            .count()
+    };
+    assert_eq!(pages(&h), 2);
+
+    h.press_key(egui::Key::W, command());
+    h.run_frames(2);
+
+    assert!(!h.app.pending_close, "no dialog without a pane to name");
+    assert!(h.app.close_confirm_target.is_none());
+    assert_eq!(pages(&h), 1, "the empty page was removed");
+    assert!(h.app.windows.iter().all(|w| w.window_id != window_id));
+}
+
+/// Critic follow-up 2: resolving a quit dialog drops a recorded close
+/// target with `pending_close`, so it cannot outlive the dialog.
+#[test]
+fn quit_dialog_resolution_clears_the_close_target() {
+    let mut h = HostHarness::new();
+    let (a, _b) = two_panes(&mut h);
+    for resolve in [
+        (|h: &mut HostHarness| h.app.resolve_quit_confirmation(false)) as fn(&mut HostHarness),
+        |h: &mut HostHarness| h.app.resolve_quit_save_failure(false),
+    ] {
+        h.app.close_confirm_target = Some(h.app.close_confirm_target_for(a));
+        h.app.pending_close = true;
+        resolve(&mut h);
+        assert!(!h.app.pending_close);
+        assert!(h.app.close_confirm_target.is_none());
+    }
+}
