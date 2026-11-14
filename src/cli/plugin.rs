@@ -1554,9 +1554,9 @@ pub fn plugin_info(id: &str) -> i32 {
 }
 
 /// `plexi plugin list` — unified alias for `plexi list`.
-pub fn plugin_list() -> i32 {
-    log::info!("cli: plugin_list delegating to list_cli (unified)");
-    super::list::list_cli()
+pub fn plugin_list(json: bool) -> i32 {
+    log::info!("cli: plugin_list delegating to list_cli (unified) json={json}");
+    super::list::list_cli(json)
 }
 
 /// Discover declared views without starting a runtime.

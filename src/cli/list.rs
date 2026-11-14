@@ -1,6 +1,15 @@
-pub fn list_cli() -> i32 {
+/// `plexi plugin list`: the human table, or with `--json` one JSON array of
+/// loaded and skipped plugins (stint 1488).
+pub fn list_cli(json: bool) -> i32 {
     if super::host::plugin_mode_core_only() {
-        println!("No plugins available: core-only mode is on.");
+        println!(
+            "{}",
+            if json {
+                "[]"
+            } else {
+                "No plugins available: core-only mode is on."
+            }
+        );
         return 0;
     }
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -15,7 +24,7 @@ pub fn list_cli() -> i32 {
         installed.len(),
         registry.skipped().len()
     );
-    if installed.is_empty() {
+    if installed.is_empty() && !json {
         println!("no plugins installed");
         println!("install one with: plexi plugin install <source>[@ref]");
         print_lines(&broken);
@@ -60,6 +69,19 @@ pub fn list_cli() -> i32 {
             | crate::app::registry::RegistrySource::LocalAgent => workspace.push(row),
         }
     }
+    if json {
+        let entries = plugin_list_json(&globals, &workspace, registry.skipped());
+        match serde_json::to_string_pretty(&entries) {
+            Ok(text) => {
+                println!("{text}");
+                return 0;
+            }
+            Err(error) => {
+                eprintln!("error: plugin list could not encode JSON: {error}");
+                return 1;
+            }
+        }
+    }
     if !globals.is_empty() {
         println!(
             "Global plugins ({})",
@@ -88,6 +110,51 @@ pub fn list_cli() -> i32 {
     }
     print_lines(&broken);
     0
+}
+
+type ListRow = (String, String, String, &'static str);
+
+/// One JSON object per plugin: loaded ones with `status: "ok"`, skipped ones
+/// with `status: "skipped"`, the directory and the error that skipped them.
+fn plugin_list_json(
+    globals: &[ListRow],
+    workspace: &[ListRow],
+    skipped: &[crate::app::registry::SkippedPlugin],
+) -> serde_json::Value {
+    let loaded = |rows: &[ListRow], scope: &str| -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|(id, name, version, badge)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "version": version,
+                    "scope": scope,
+                    "pack": badge.trim_matches(['[', ']']).to_string(),
+                    "status": "ok",
+                })
+            })
+            .collect()
+    };
+    let mut entries = loaded(globals, "global");
+    entries.extend(loaded(workspace, "workspace"));
+    entries.extend(skipped.iter().map(|plugin| {
+        let id = plugin
+            .dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| plugin.dir.display().to_string());
+        serde_json::json!({
+            "id": id,
+            "path": plugin.dir.display().to_string(),
+            "scope": match plugin.source {
+                crate::app::registry::RegistrySource::Global => "global",
+                _ => "workspace",
+            },
+            "status": "skipped",
+            "error": plugin.error,
+        })
+    }));
+    serde_json::Value::Array(entries)
 }
 
 fn print_lines(lines: &[String]) {
@@ -202,5 +269,31 @@ mod tests {
             "{text}"
         );
         assert!(skipped_plugin_lines(&[]).is_empty());
+    }
+
+    /// Stint 1488: the `--json` shape, loaded and skipped plugins together.
+    #[test]
+    fn plugin_list_json_carries_loaded_and_skipped_plugins() {
+        let globals = [(
+            "notes".to_string(),
+            "Notes".to_string(),
+            "0.1.0".to_string(),
+            "[core]",
+        )];
+        let skipped = [crate::app::registry::SkippedPlugin {
+            dir: std::path::PathBuf::from("/profile/plugins/broken-app"),
+            source: crate::app::registry::RegistrySource::Global,
+            error: "invalid manifest: missing field `runtime`".into(),
+        }];
+        let value = plugin_list_json(&globals, &[], &skipped);
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"id": "notes", "name": "Notes", "version": "0.1.0", "scope": "global",
+                 "pack": "core", "status": "ok"},
+                {"id": "broken-app", "path": "/profile/plugins/broken-app", "scope": "global",
+                 "status": "skipped", "error": "invalid manifest: missing field `runtime`"}
+            ])
+        );
     }
 }

@@ -474,7 +474,38 @@ pub const CPYTHON_SHIM_COMPONENT_FILE: &str = "cpython-3.12.12/plexi-python-shim
 pub const CPYTHON_BUNDLE_SHA256: &str =
     "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272";
 pub const CPYTHON_BUNDLE_CACHE_ENV: &str = "PLEXI_CPYTHON_BUNDLE_DIR";
-pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
+
+/// How this binary was built, which decides what a user does about a missing
+/// or damaged CPython bundle (stint 1417).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildKind {
+    /// An installed Plexi: the bundle ships in its resources.
+    Packaged,
+    /// A source checkout: the bundle is a developer cache.
+    Source,
+}
+
+impl BuildKind {
+    /// Packaged when this executable belongs to an installed Plexi package.
+    pub fn current() -> Self {
+        match crate::distribution::resources() {
+            Ok(Some(_)) => Self::Packaged,
+            Ok(None) => Self::Source,
+            Err(error) => {
+                log::info!("python_compat: build kind unknown ({error}); treating as source");
+                Self::Source
+            }
+        }
+    }
+
+    /// The action that restores the CPython bundle for this build.
+    pub fn bundle_fix(self) -> &'static str {
+        match self {
+            Self::Packaged => "reinstall Plexi",
+            Self::Source => "run just fetch-cpython-bundle",
+        }
+    }
+}
 #[cfg(test)]
 pub const BUILD_CPYTHON_SHIM_COMMAND: &str = "just wasm-python-shim";
 
@@ -596,27 +627,27 @@ pub enum WasmPythonError {
     MissingEntry { path: PathBuf },
     #[error("runtime.python_compat execution='{execution}' is not implemented yet")]
     UnsupportedExecution { execution: &'static str },
-    #[error("CPython WASM bundle unavailable at {path}; run: {command}")]
-    MissingBundle {
-        path: PathBuf,
-        command: &'static str,
-    },
+    #[error("CPython WASM bundle unavailable at {path}; fix: {fix}")]
+    MissingBundle { path: PathBuf, fix: &'static str },
     #[error("CPython lifecycle shim component unavailable at {path}; run: {command}")]
     #[cfg(test)]
     MissingShimComponent {
         path: PathBuf,
         command: &'static str,
     },
-    #[error("CPython WASM bundle hash is not pinned for {version}; run: {command}")]
+    #[error("CPython WASM bundle hash is not pinned for {version}; fix: {fix}")]
     BundleHashUnpinned {
         version: &'static str,
-        command: &'static str,
+        fix: &'static str,
     },
-    #[error("CPython WASM bundle hash mismatch at {path}: expected {expected}, got {actual}")]
+    #[error(
+        "CPython WASM bundle hash mismatch at {path}: expected {expected}, got {actual}; fix: {fix}"
+    )]
     BundleHashMismatch {
         path: PathBuf,
         expected: &'static str,
         actual: String,
+        fix: &'static str,
     },
     #[error("raw WASM module ABI mismatch at {path}: {reason}")]
     #[cfg(test)]
@@ -6048,14 +6079,14 @@ pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
     if let Some(resources) =
         crate::distribution::resources().map_err(WasmPythonError::RuntimeStart)?
     {
-        return resolve_cpython_bundle(resources.join("wasm-bundles"));
+        return resolve_cpython_bundle(resources.join("wasm-bundles"), BuildKind::Packaged);
     }
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(shared_wasm_bundle_dir);
     // Development caches are fetched explicitly by the build/test scripts.
     // Runtime execution must never invoke a script from a build checkout.
-    resolve_cpython_bundle(cache_dir)
+    resolve_cpython_bundle(cache_dir, BuildKind::Source)
 }
 
 fn shared_wasm_bundle_dir() -> PathBuf {
@@ -6064,7 +6095,10 @@ fn shared_wasm_bundle_dir() -> PathBuf {
         .join(".plexi/wasm-bundles")
 }
 
-pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonError> {
+pub fn resolve_cpython_bundle(
+    cache_dir: PathBuf,
+    kind: BuildKind,
+) -> Result<PathBuf, WasmPythonError> {
     let path = cache_dir.join(CPYTHON_BUNDLE_FILE);
     log::info!(
         "python_compat: resolving CPython WASI bundle version={} cache_dir={} path={}",
@@ -6075,13 +6109,13 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
     if !path.is_file() {
         return Err(WasmPythonError::MissingBundle {
             path,
-            command: FETCH_CPYTHON_BUNDLE_COMMAND,
+            fix: kind.bundle_fix(),
         });
     }
     if CPYTHON_BUNDLE_SHA256.len() != 64 {
         return Err(WasmPythonError::BundleHashUnpinned {
             version: CPYTHON_BUNDLE_VERSION,
-            command: FETCH_CPYTHON_BUNDLE_COMMAND,
+            fix: kind.bundle_fix(),
         });
     }
     let bytes = std::fs::read(&path).map_err(|source| WasmPythonError::ReadBundle {
@@ -6094,6 +6128,7 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
             path,
             expected: CPYTHON_BUNDLE_SHA256,
             actual,
+            fix: kind.bundle_fix(),
         });
     }
     Ok(path)
@@ -10957,12 +10992,21 @@ default = true
         ));
     }
 
+    /// Stint 1417: an installed Plexi says reinstall; a source build names
+    /// the developer recipe. Neither tells the other's user the wrong thing.
     #[test]
-    fn missing_bundle_returns_actionable_error() {
+    fn missing_bundle_names_the_fix_for_the_build_kind() {
         let dir = tempdir().expect("tempdir");
-        let err = resolve_cpython_bundle(dir.path().join("wasm-bundles")).unwrap_err();
-
-        assert!(err.to_string().contains(FETCH_CPYTHON_BUNDLE_COMMAND));
+        let packaged = resolve_cpython_bundle(dir.path().join("wasm-bundles"), BuildKind::Packaged)
+            .unwrap_err()
+            .to_string();
+        assert!(packaged.contains("fix: reinstall Plexi"), "{packaged}");
+        assert!(!packaged.contains("just"), "{packaged}");
+        let source = resolve_cpython_bundle(dir.path().join("wasm-bundles"), BuildKind::Source)
+            .unwrap_err()
+            .to_string();
+        assert!(source.contains("fix: run just fetch-cpython-bundle"), "{source}");
+        assert!(!source.contains("reinstall"), "{source}");
     }
 
     #[test]
@@ -10981,9 +11025,15 @@ default = true
         std::fs::create_dir_all(bundle.parent().expect("bundle parent")).expect("bundle dir");
         std::fs::write(&bundle, b"not-python").expect("bundle");
 
-        let err = resolve_cpython_bundle(dir.path().to_path_buf()).unwrap_err();
+        let err = resolve_cpython_bundle(dir.path().to_path_buf(), BuildKind::Packaged).unwrap_err();
 
-        assert!(matches!(err, WasmPythonError::BundleHashMismatch { .. }));
+        assert!(matches!(
+            err,
+            WasmPythonError::BundleHashMismatch {
+                fix: "reinstall Plexi",
+                ..
+            }
+        ));
     }
 
     #[test]

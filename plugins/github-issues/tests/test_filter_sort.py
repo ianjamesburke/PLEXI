@@ -286,8 +286,11 @@ def test_no_repo_view_renders_interactive_input_and_detail_view_uses_card():
 
     # No-repo view includes an interactive TextInput to enter owner/repo.
     _v3_state._state = StateSnapshot(dict(app.DEFAULT_STATE), {})
+    # The body scrolls (PR #3100) so the field stays reachable in a short pane.
     no_repo_node = app.view().to_node()
-    repo_card = no_repo_node["children"][1]
+    no_repo_scroll = no_repo_node["children"][1]
+    assert no_repo_scroll["type"] == "scroll"
+    repo_card = no_repo_scroll["child"]["children"][0]
     assert repo_card["type"] == "card"
     assert any(c.get("type") == "TextInput" for c in repo_card["children"])
 
