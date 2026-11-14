@@ -3970,6 +3970,8 @@ impl eframe::App for PlexiApp {
         }
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
+        // Before any overlay owner takes the frame's input buffer.
+        input_owner::note_tab_key(ctx);
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,

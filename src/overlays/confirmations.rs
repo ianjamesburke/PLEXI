@@ -73,6 +73,7 @@ impl PlexiApp {
                 "Cancel",
                 crate::ui::button::ButtonKind::Secondary,
             )
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,
@@ -197,6 +198,7 @@ impl PlexiApp {
                 "Cancel",
                 crate::ui::button::ButtonKind::Secondary,
             )
+            .refuses()
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
                 egui::Modifiers::NONE,
