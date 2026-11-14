@@ -2755,6 +2755,22 @@ impl PlexiApp {
                 0
             }
             Some(Commands::Agent {
+                cmd: crate::cli::args::AgentCmd::Open { name, cwd },
+            }) => {
+                let eff_cwd = cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| ws_root.map(std::path::Path::to_path_buf))
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                match self.open_named_agent(&name, &eff_cwd, default_pane_id, None) {
+                    Ok(_) => 0,
+                    Err(error) => {
+                        log::warn!("palette: agent open {name} failed: {error}");
+                        1
+                    }
+                }
+            }
+            Some(Commands::Agent {
                 cmd:
                     crate::cli::args::AgentCmd::Spawn {
                         name,

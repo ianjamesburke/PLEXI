@@ -1,4 +1,5 @@
 pub mod account;
+pub(crate) mod agent_open;
 mod agent_tools;
 pub mod agents_dashboard_view;
 pub(crate) mod agents_view;
@@ -878,6 +879,9 @@ pub(crate) fn handle_socket_line_in(
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentSpawn {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::HostRequest::AgentOpen {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentWait {

@@ -19497,3 +19497,312 @@ mod host_induced_terminal_output_tests {
         );
     }
 }
+
+// -- `agent open <name>` resolver (stint 1396) -----------------------------
+
+/// A closed, resumable chat of `researcher` (the `AgentFocusFixture` agent,
+/// harness `pi`) run in `cwd`, with a saved pi session so the harness can
+/// still resume it.
+fn researcher_history_record(
+    cwd: &std::path::Path,
+    session_id: &str,
+    harness: &str,
+) -> crate::workspace::AgentHistoryRecord {
+    crate::workspace::AgentHistoryRecord {
+        fleet_seen: true,
+        fleet_dismissed: false,
+        run_id: format!("run-1396-{session_id}"),
+        pane_id: 900_001,
+        context_id: 1,
+        context_name: "test".into(),
+        parent_pane_id: None,
+        spawned_by: Some("human".into()),
+        pane_name: Some("researcher".into()),
+        harness: harness.into(),
+        config_name: Some("researcher".into()),
+        permission_posture: None,
+        session_id: Some(session_id.into()),
+        cwd: cwd.to_path_buf(),
+        ephemeral: false,
+        last_state: crate::protocol::AgentState::Idle,
+        last_blocked_reason: None,
+        last_detail: None,
+        summary: None,
+        result: None,
+        tail_preview: None,
+        slots: std::collections::HashMap::new(),
+        closed_at: 1,
+    }
+}
+
+fn seed_pi_session(
+    dir: &std::path::Path,
+    session_id: &str,
+) -> crate::cli::agent::TestPiSessionsDirGuard {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
+    crate::cli::agent::set_test_pi_sessions_dir(dir.to_path_buf())
+}
+
+fn terminal_role(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+    h.app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .and_then(|t| t.agent_role.clone())
+}
+
+fn pane_total(h: &HostHarness) -> usize {
+    h.app.windows.iter().map(|w| w.panes.len()).sum()
+}
+
+#[test]
+fn named_agent_focuses_when_running() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    let running = read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started");
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+    assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+    // A closed resumable chat exists too: running still wins.
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-running");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-running",
+            "pi",
+        ));
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: running }
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(running));
+    assert_eq!(pane_total(&h), before, "focus opens nothing");
+}
+
+#[test]
+fn named_agent_resumes_last_chat_when_stopped() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-new");
+    {
+        let mut history = h.app.fleet_history.borrow_mut();
+        history.push(researcher_history_record(&fx.proj_dir, "sess-old", "pi"));
+        history.push(researcher_history_record(&fx.proj_dir, "sess-new", "pi"));
+    }
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed {
+        pane_id,
+        session_id,
+    } = outcome
+    else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    assert_eq!(session_id, "sess-new", "the newest record is the last chat");
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("resumed terminal pane");
+    assert_eq!(t.agent_session_id.as_deref(), Some("sess-new"));
+    assert!(
+        t.last_resumed_command
+            .as_deref()
+            .is_some_and(|c| c.starts_with("pi ") && c.contains("sess-new")),
+        "resumed with the harness resume command: {:?}",
+        t.last_resumed_command
+    );
+    assert_eq!(terminal_role(&h, pane_id).as_deref(), Some("researcher"));
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane_id));
+}
+
+#[test]
+fn named_agent_starts_new_when_never_run() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    // Not a last chat: another workspace, a different harness, an ephemeral
+    // run, and a session the harness no longer has.
+    let other = fx.home.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-elsewhere");
+    {
+        let mut history = h.app.fleet_history.borrow_mut();
+        history.push(researcher_history_record(&other, "sess-elsewhere", "pi"));
+        history.push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-claude",
+            "claude",
+        ));
+        let mut ephemeral = researcher_history_record(&fx.proj_dir, "sess-elsewhere", "pi");
+        ephemeral.ephemeral = true;
+        history.push(ephemeral);
+        history.push(researcher_history_record(&fx.proj_dir, "sess-gone", "pi"));
+    }
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("expected a new chat, got {outcome:?}");
+    };
+    assert_eq!(pane_total(&h), before + 1);
+    assert_eq!(terminal_role(&h, pane_id).as_deref(), Some("researcher"));
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("started terminal pane");
+    assert_eq!(t.agent_session_id, None, "a new chat resumes nothing");
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane_id));
+
+    let missing = h
+        .app
+        .open_named_agent("no-such-agent", &fx.proj_dir, Some(caller), None)
+        .expect_err("unknown agents fail before launch");
+    assert!(missing.contains("no-such-agent"), "{missing}");
+}
+
+/// The CLI (`HostRequest::AgentOpen`) and the palette's command route resolve
+/// through the same `open_named_agent`: same outcome, same pane, no second
+/// launch.
+#[test]
+fn cli_agent_open_matches_palette() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    let running = read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started");
+    let before = pane_total(&h);
+
+    h.app.pane_navigate(caller);
+    let cli_reply = temp_response(fx.home.path(), "agent-open");
+    h.inject_ipc(HostRequest::AgentOpen {
+        name: "researcher".into(),
+        cwd: fx.proj_dir.to_string_lossy().into_owned(),
+        caller_pane_id: Some(caller),
+        response_file: cli_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.run_frames(2);
+    let cli = read_json_response(&cli_reply);
+    assert_eq!(cli["ok"], true, "{cli}");
+    assert_eq!(cli["outcome"], "focused");
+    assert_eq!(cli["pane_id"], running);
+    assert_eq!(h.app.active_focused_pane_id(), Some(running));
+
+    h.app.pane_navigate(caller);
+    let palette = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("palette open");
+    assert_eq!(palette.to_json(), cli, "CLI and palette agree");
+    assert_eq!(pane_total(&h), before, "neither path launched a pane");
+}
+
+/// A restored standby pane counts as running: `agent open` focuses it and
+/// leaves it in Standby. Standby resumes only on Enter or `pane send`
+/// (src/cli/AGENTS.md).
+#[test]
+fn named_agent_focuses_standby_pane_without_waking_it() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let standby = h.add_focused_terminal();
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&standby)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal pane");
+    terminal.standby_cwd = Some(fx.proj_dir.clone());
+    terminal.standby_session = Some(crate::workspace::SavedAgentSession {
+        fleet_result: None,
+        fleet_seen: false,
+        fleet_done_unseen: false,
+        fleet_dismissed: false,
+        fleet_since: 0,
+        harness: "pi".to_string(),
+        config_name: Some("researcher".to_string()),
+        permission_posture: None,
+        session_id: Some("sess-standby".to_string()),
+        last_state: crate::protocol::AgentState::Idle,
+        last_blocked_reason: None,
+        last_detail: None,
+        parent_pane_id: None,
+        spawned_by: None,
+        pending_child_results: Vec::new(),
+        ephemeral: false,
+        tail_preview: None,
+        standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+    });
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: standby }
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(standby));
+    let t = h.app.windows[0].panes[&standby]
+        .as_terminal()
+        .expect("terminal");
+    assert!(t.is_standby(), "focus must not wake a standby pane");
+    assert_eq!(t.last_resumed_command, None, "nothing was resumed");
+    assert_eq!(pane_total(&h), before, "focus opens nothing");
+}

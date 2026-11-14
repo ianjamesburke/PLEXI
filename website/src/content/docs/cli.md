@@ -592,6 +592,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `message` | Reply through a child agent's structured mailbox |
 | `handoff` | Transfer the current task to a permitted successor role |
 | `start` | Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
+| `open` | Open a named agent: focus it if a pane is running it, else resume its last chat, else start a new one |
 | `spawn` | Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `result` | Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`) |
@@ -789,6 +790,19 @@ Example: plexi agent start researcher
 | `<prompt>` | string | no | Optional initial message to send in the interactive session |
 | `--message` | string | no | Optional initial message to send in the interactive session |
 | `--cwd` | string | no | Working directory for workspace lookup and the interactive agent pane |
+
+### `plexi agent open`
+
+Open a named agent: focus it if a pane is running it, else resume its last chat, else start a new one.
+
+"Running" is any pane in any context, restored standby panes included. The last chat is the newest closed, non-ephemeral run of this agent in the same workspace, on the agent's current harness, whose session the harness can still resume. Prints `<outcome> <pane-id>` where outcome is `focused`, `resumed` or `started`.
+
+Example: plexi agent open researcher
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
+| `--cwd` | string | no | Working directory for workspace lookup |
 
 ### `plexi agent spawn`
 
