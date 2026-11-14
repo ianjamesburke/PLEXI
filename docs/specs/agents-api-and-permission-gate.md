@@ -97,7 +97,7 @@ or live test. Negative findings are bounded to the inspected implementations.
 | E5 | `src/agent/mod.rs:740` `gated_dispatcher` | AgentHost filters a turn snapshot from broker decisions and does not install the Assistant hook. |
 | E6 | `src/app/host_mcp.rs:73` `register_pane_credential`; `:349` dispatcher construction; `:385` tool routing; `:393` `dispatch_call` | MCP bearer binds a pane/context/root. App tools dispatch without a grant hook; event tools have separate service routing. |
 | E7 | `src/app/plugin_call.rs:19` `caller_identity`; `:40` context lookup; `:56` dispatcher; `src/app/lifecycle.rs:2305` `CallAppTool`; `src/app/mod.rs:583` `handle_socket_line` | App-call accepts a forwarded pane ID; existence is checked, peer ownership is not established on this path. No pane maps to `user`. Notification peer stamping does not fix plugin-call. |
-| E8 | `apps/chess/chess.py:170` `_tool_play`; `apps/chess/chess_domain.py:137` `play`; `:158` receipt lookup; `:283` `_authorize` | Host caller string reaches Chess. Seat checks are separate; revision, operation ID, immutable next-game value and receipt/outbox already exist. |
+| E8 | `plugins/chess/chess.py:170` `_tool_play`; `plugins/chess/chess_domain.py:137` `play`; `:158` receipt lookup; `:283` `_authorize` | Host caller string reaches Chess. Seat checks are separate; revision, operation ID, immutable next-game value and receipt/outbox already exist. |
 | E9 | `src/assistant/audit.rs:11` `AuditEvent`; `:27` `now` | Audit schema lacks call/grant IDs and stamps the literal `agent:assistant`. |
 | E10 | `src/agent/mod.rs:281` `AgentRegistry::load`; `:346` `workspace_agents_dir`; `src/assistant/skills.rs:65` `SkillRegistry::load` | Agent tiers are builtin/user/workspace, with later IDs shadowing earlier ones. Workspace agents use the channel dir; workspace skills use literal `.plexi/skills`. |
 | E11 | `src/assistant/mod.rs:2414` agent creation; `src/app/registry.rs:949` `resolve_workspace_root_with_channel` | Agent creation writes the profile tier. Workspace resolution seeks the channel marker and excludes home before checking it. |
@@ -394,7 +394,7 @@ addressing with durable IDs and revokes superseded pane-only credentials.
    move stale; wrong actor/resource, changed arguments and revoked grants fail;
    duplicate operations cannot move twice. Use scripted Assistant output.
    Verification: proposed Rust test `permission_gate_real_chess_all_ingresses`,
-   parameterized by ingress and adversarial case, loads `apps/chess` through its
+   parameterized by ingress and adversarial case, loads `plugins/chess` through its
    real runtime. Exercise the production Assistant turn loop, MCP parser/auth
    binding and socket identity handler, not a direct call to `chess_domain.play`.
    Assert the actual board, receipt, audit linkage and unchanged revision on
@@ -453,7 +453,7 @@ fixture and open the Assistant in that context using the existing plugin surface
 
 ```sh
 # Run inside the newly created PR-host terminal, not an ambient beta pane.
-plexi-pr-NNN plugin install /absolute/path/to/PLEXI/apps/chess
+plexi-pr-NNN plugin install /absolute/path/to/PLEXI/plugins/chess
 plexi-pr-NNN view open chess
 plexi-pr-NNN view open assistant
 plexi-pr-NNN pane list

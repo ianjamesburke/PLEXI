@@ -12,7 +12,7 @@ def disposable(root: Path, entry: str) -> bool:
     allowed = (
         parts in {('target',), ('assets', 'python'), ('scripts', '__pycache__'), ('sdk', 'python', '.venv'),
                   ('sdk', 'python', '.pytest_cache')}
-        or (len(parts) >= 3 and parts[0] in {'apps', 'sdk'} and parts[-1] == '__pycache__')
+        or (len(parts) >= 3 and parts[0] in {'plugins', 'sdk'} and parts[-1] == '__pycache__')
     )
     if not allowed or path.is_absolute() or '..' in parts:
         return False

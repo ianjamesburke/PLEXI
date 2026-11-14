@@ -850,4 +850,4 @@ defaulted version. Python requirement remains repo-standard `>=3.11`.
 
 ### App tests
 
-Each touched bundled plugin has a focused SDK v3 test under `apps/<plugin>/tests/`. Canvas/game plugins must prove size-aware canvas behavior; file plugins must prove `FileList` / `FileRead` effects; keyboard plugins must use normalized lowercase key strings.
+Each touched bundled plugin has a focused SDK v3 test under `plugins/<plugin>/tests/`. Canvas/game plugins must prove size-aware canvas behavior; file plugins must prove `FileList` / `FileRead` effects; keyboard plugins must use normalized lowercase key strings.

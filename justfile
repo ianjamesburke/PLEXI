@@ -86,20 +86,20 @@ test-for path:
 
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
-# apps/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.
+# plugins/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.
 # Note: cargo-component emits the adapted component under the wasip1 path.
 wasm-fixtures:
-    cd apps/wasm-poc/sysmon && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/sysmon && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/sysmon.wasm tests/wasm-fixtures/sysmon.wasm
-    cd apps/wasm-poc/audio-synth && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/audio-synth && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/audio_synth.wasm tests/wasm-fixtures/audio-synth.wasm
-    cd apps/wasm-poc/pong && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/pong && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
-    cd apps/wasm-poc/counter && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/counter && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
-    cd apps/wasm-poc/daw-engine && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/daw-engine && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/daw_engine_poc.wasm tests/wasm-fixtures/daw-engine.wasm
-    cd apps/wasm-poc/jukebox && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cd plugins/wasm-poc/jukebox && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/jukebox.wasm tests/wasm-fixtures/jukebox.wasm
     bash scripts/build-wasm-python-shim.sh
 

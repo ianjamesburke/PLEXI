@@ -61,7 +61,7 @@ selftest() {
     printf 'PASS non-embedded docs-only: <empty>\n'
     got=$(select_filters docs/CONFIG.md)
     [[ "$got" == :: ]] || { printf 'FAIL embedded markdown: %s\n' "$got"; return 1; }
-    got=$(select_filters apps/AGENTS.md)
+    got=$(select_filters plugins/AGENTS.md)
     [[ "$got" == :: ]] || { printf 'FAIL include_dir markdown: %s\n' "$got"; return 1; }
     printf 'PASS embedded markdown -> :: (code)\n'
     got=$(select_filters src/host/model.rs)
@@ -80,7 +80,7 @@ selftest() {
     [[ "$first" == "$(select_filters src/host/model.rs src/ui/widgets.rs)" ]] || return 1
     printf 'PASS determinism: byte-identical, sorted and deduplicated\n'
     [[ "$(select_filters src/future/module.rs)" == :: ]] || return 1
-    [[ -z "$(select_filters scripts/example.sh apps/example/app.py sdk/python/example.py)" ]] || return 1
+    [[ -z "$(select_filters scripts/example.sh plugins/example/app.py sdk/python/example.py)" ]] || return 1
     printf 'PASS unknown src: ::; scripts/PGAP: <empty>\n'
 }
 

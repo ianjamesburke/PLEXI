@@ -283,17 +283,17 @@ apps=(
 )
 
 for app in "${apps[@]}"; do
-  render_app "$app" "$repo_root/apps/$app"
+  render_app "$app" "$repo_root/plugins/$app"
 done
 
 write_github_state_fixtures
-render_app "github-list" "$repo_root/apps/github-issues" "$out_dir/github-list-state.json"
-render_app "github-detail" "$repo_root/apps/github-issues" "$out_dir/github-detail-state.json"
-render_app "github-loading" "$repo_root/apps/github-issues" "$out_dir/github-loading-state.json"
-render_app "github-error" "$repo_root/apps/github-issues" "$out_dir/github-error-state.json"
-render_app "github-filtered-empty" "$repo_root/apps/github-issues" "$out_dir/github-filtered-empty-state.json"
-render_app "github-filter-active" "$repo_root/apps/github-issues" "$out_dir/github-filter-active-state.json"
-render_app "github-picker" "$repo_root/apps/github-issues" "$out_dir/github-picker-state.json"
+render_app "github-list" "$repo_root/plugins/github-issues" "$out_dir/github-list-state.json"
+render_app "github-detail" "$repo_root/plugins/github-issues" "$out_dir/github-detail-state.json"
+render_app "github-loading" "$repo_root/plugins/github-issues" "$out_dir/github-loading-state.json"
+render_app "github-error" "$repo_root/plugins/github-issues" "$out_dir/github-error-state.json"
+render_app "github-filtered-empty" "$repo_root/plugins/github-issues" "$out_dir/github-filtered-empty-state.json"
+render_app "github-filter-active" "$repo_root/plugins/github-issues" "$out_dir/github-filter-active-state.json"
+render_app "github-picker" "$repo_root/plugins/github-issues" "$out_dir/github-picker-state.json"
 
 core_pngs=()
 for app in "${apps[@]}"; do

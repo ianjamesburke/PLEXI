@@ -1,6 +1,6 @@
 [workspace]
 members = ["deps/eframe-0.34.3", "deps/egui-wgpu-0.34.3", "crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
-exclude = ["apps/wasm-poc"]
+exclude = ["plugins/wasm-poc"]
 resolver = "2"
 
 [package]

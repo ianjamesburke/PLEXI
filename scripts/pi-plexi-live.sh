@@ -6,7 +6,7 @@
 #
 # Exercises:
 # 1. `packages/pi-plexi` unit suite (`node --test`).
-# 2. Isolated live Plexi host startup (`plexi host start --wait`) with `apps/dev/clip-editor-probe`.
+# 2. Isolated live Plexi host startup (`plexi host start --wait`) with `plugins/dev/clip-editor-probe`.
 # 3. `pi -ne -e <checkout>/packages/pi-plexi/extensions/index.ts --skill <checkout>/packages/pi-plexi/skills`
 #    in both:
 #    a) Non-interactive JSON mode (`pi -p --mode json`) inside a live Plexi pane context.
@@ -91,8 +91,8 @@ FIRST_PANE_ID="$(python3 -c 'import json,sys; panes=json.loads(sys.argv[1]); pri
 FIRST_CTX_ID="$(python3 -c 'import json,sys; panes=json.loads(sys.argv[1]); print(panes[0]["context_id"])' "$PANES_JSON")"
 echo "==> Initial terminal pane=$FIRST_PANE_ID context=$FIRST_CTX_ID"
 
-echo "==> [3/6] Launching deterministic editor fixture apps/dev/clip-editor-probe..."
-APP_LAUNCH_JSON="$(plexi_iso view open "$ROOT_DIR/apps/dev/clip-editor-probe" --from "$FIRST_PANE_ID")"
+echo "==> [3/6] Launching deterministic editor fixture plugins/dev/clip-editor-probe..."
+APP_LAUNCH_JSON="$(plexi_iso view open "$ROOT_DIR/plugins/dev/clip-editor-probe" --from "$FIRST_PANE_ID")"
 echo "App launch: $APP_LAUNCH_JSON"
 
 for _ in {1..40}; do
@@ -237,7 +237,7 @@ plexi_iso agent status
 if plexi_iso host screenshot --output "$SHOT_PATH" 2>/dev/null && [[ -s "$SHOT_PATH" ]]; then
   echo "==> Host screenshot captured ($SHOT_PATH)"
 else
-  plexi_iso view render "$ROOT_DIR/apps/dev/clip-editor-probe" --png --output "$SHOT_PATH" >/dev/null
+  plexi_iso view render "$ROOT_DIR/plugins/dev/clip-editor-probe" --png --output "$SHOT_PATH" >/dev/null
   test -s "$SHOT_PATH"
   echo "==> Headless PNG render captured ($SHOT_PATH; background host window occluded)"
 fi

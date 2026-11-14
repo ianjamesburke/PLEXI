@@ -4,10 +4,10 @@ Build a POC from this checkout before opening it. The repository Cargo config
 writes component artifacts to the checkout-level `target/` directory.
 
 ```sh
-cd apps/wasm-poc/counter
+cd plugins/wasm-poc/counter
 cargo component build --release --target wasm32-wasip2
 cd ../../..
-plexi app open apps/wasm-poc/counter
+plexi view open plugins/wasm-poc/counter
 ```
 
 `cargo-component` writes the host-loadable component under

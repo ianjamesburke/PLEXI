@@ -6,8 +6,8 @@ Status: active
 Search for a thing, get a list of results, pick one, view it. This is not a
 Wikipedia feature — it's the shape of most plugins anyone will build on Plexi.
 There is currently no sanctioned pattern for it, so plugins hand-roll it, badly.
-`apps/wikipedia/wikipedia.py` is the evidence case this doc uses throughout;
-`apps/github-issues/main.py` and `apps/kraken/main.py` show the same two
+`plugins/wikipedia/wikipedia.py` is the evidence case this doc uses throughout;
+`plugins/github-issues/main.py` and `plugins/kraken/main.py` show the same two
 failures independently, confirming this is a cross-cutting SDK gap, not a
 one-off mistake.
 

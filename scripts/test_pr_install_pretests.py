@@ -102,7 +102,7 @@ class InstallPretests(unittest.TestCase):
         for path in ("src/overlays/toolbar.rs",):
             self.assertFalse(module.selection([path])[0], path)
         for path in ("sdk/python/plexi_sdk/app.py", "sdk/protocol/pgap.schema.json",
-                     "src/protocol/mod.rs", "src/ui/shared.rs", "src/host/context.rs", "src/host/wasm_python.rs", "apps/test/app.py",
+                     "src/protocol/mod.rs", "src/ui/shared.rs", "src/host/context.rs", "src/host/wasm_python.rs", "plugins/test/app.py",
                      "src/app/python_env.rs", "scripts/package.py", "Cargo.toml", "unknown"):
             self.assertTrue(module.selection([path])[0], path)
         self.assertTrue(module.selection([])[0])

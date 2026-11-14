@@ -8,7 +8,7 @@ Last updated: 2026-07-27.
 
 This document defines the first-party Plexi Assistant as a host plugin, not a PGAP app. It is the workspace operator: it can reason about panes, plugins, files, permissions, installed skills, and plugin-exposed tools because the host owns those things.
 
-The current `apps/assistant/` PGAP should become a reference plugin or be retired after the host Assistant covers the same chat behavior. Third-party agent plugins can still exist, but they do not get ambient workspace control.
+The current `plugins/assistant/` PGAP should become a reference plugin or be retired after the host Assistant covers the same chat behavior. Third-party agent plugins can still exist, but they do not get ambient workspace control.
 
 ## Research Inputs
 
@@ -682,7 +682,7 @@ Phase 2:
 
 Phase 3:
 
-- Retire or rename `apps/assistant/` to `apps/examples/assistant-lite/`.
+- Retire or rename `plugins/assistant/` to `plugins/examples/assistant-lite/`.
 - Keep coding, writing, and research PGAP agents as examples of normal `ai.query` plugins.
 - Update plugin framework docs so third-party agents learn the non-privileged pattern.
 

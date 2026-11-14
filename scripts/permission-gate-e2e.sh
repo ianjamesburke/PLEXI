@@ -157,7 +157,7 @@ if [[ "$HOST_RC" -ne 0 ]] || ! grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$
 fi
 "$BIN" context set-root "$WS" >"$EVID/logs/set-root.out" 2>"$EVID/logs/set-root.err" || true
 
-"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
+"$BIN" plugin install "$REPO/plugins/chess" --yes >"$EVID/logs/app-install.out" 2>"$EVID/logs/app-install.err" || {
   record FAIL chess-install "$(tail -20 "$EVID/logs/app-install.err")"
   exit 1
 }

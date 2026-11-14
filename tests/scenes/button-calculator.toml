@@ -4,7 +4,7 @@ themes = ["plexi-dusk", "plexi-dawn"]
 suite = false
 
 [[steps]]
-open = { kind = "process", path = "apps/calc", as = "calc" }
+open = { kind = "process", path = "plugins/calc", as = "calc" }
 
 [[steps]]
 wait_view_frame = { target = "calc", timeout_s = 30.0 }

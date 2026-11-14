@@ -2960,7 +2960,7 @@ mod layout_finding_tests {
     fn core_pack_plugins_have_only_known_layout_findings() {
         let pack = crate::app::packs::Pack::from_toml_str(crate::cli::install_host::CORE_PACK_TOML)
             .expect("core pack parses");
-        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("apps");
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
         let mut errors = Vec::new();
         let mut reproduced = vec![false; KNOWN_CORE_LAYOUT_FINDINGS.len()];
         let mut checked = 0;

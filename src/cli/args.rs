@@ -4000,12 +4000,12 @@ mod tests {
     fn plugin_init_adopt_accepts_dir_in_any_position_or_defaults_to_cwd() {
         for (argv, expected_dir) in [
             (
-                vec!["plexi", "plugin", "init", "--adopt", "apps/calc"],
-                Some("apps/calc"),
+                vec!["plexi", "plugin", "init", "--adopt", "plugins/calc"],
+                Some("plugins/calc"),
             ),
             (
-                vec!["plexi", "plugin", "init", "apps/calc", "--adopt"],
-                Some("apps/calc"),
+                vec!["plexi", "plugin", "init", "plugins/calc", "--adopt"],
+                Some("plugins/calc"),
             ),
             (vec!["plexi", "plugin", "init", "--adopt"], None),
         ] {

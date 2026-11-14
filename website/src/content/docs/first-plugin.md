@@ -124,4 +124,4 @@ Declaring a capability requests it. It grants nothing until you approve it.
 
 - [Plugin guide](/docs/plugins): the sandbox, capabilities and logging in more depth.
 - [Python SDK](/docs/sdk): every effect, event and UI component.
-- The plugins that ship with Plexi are built on this same public API. Their source is in the [`apps/` directory](https://github.com/ianjamesburke/PLEXI/tree/alpha/apps) of the repository.
+- The plugins that ship with Plexi are built on this same public API. Their source is in the [`plugins/` directory](https://github.com/ianjamesburke/PLEXI/tree/alpha/apps) of the repository.

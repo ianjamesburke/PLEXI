@@ -2658,7 +2658,7 @@ fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridge
     }
 }
 
-/// Embedded name of the bundled Permissions plugin (`apps/permissions`).
+/// Embedded name of the bundled Permissions plugin (`plugins/permissions`).
 const PERMISSIONS_UI_BUNDLE: &str = "permissions";
 
 /// A pane's authority over the permission bridge (stint 1264). Derived from
@@ -12691,7 +12691,7 @@ default = true
     fn native_python_bridge_runs_calc_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let plugin_dir = root.join("apps/calc");
+        let plugin_dir = root.join("plugins/calc");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -12799,7 +12799,7 @@ default = true
     fn native_python_bridge_runs_stats_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let plugin_dir = root.join("apps/stats");
+        let plugin_dir = root.join("plugins/stats");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -12838,7 +12838,7 @@ default = true
         };
         let output = run_native_python_lifecycle_probe(
             &root.join("sdk/python"),
-            &root.join("apps").join(app_name),
+            &root.join("plugins").join(app_name),
             module_name,
             &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
             &update_bridge_arg(&snapshot, &InputEvent::TimerFired(1)).expect("update arg"),

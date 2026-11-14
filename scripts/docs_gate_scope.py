@@ -7,7 +7,7 @@ markdown that no Rust source in the tree can observe. A path is *binding*
 `build.rs`:
 
   * names it with `include_str!` or `include_bytes!` (shipped or test);
-  * embeds a directory containing it with `include_dir!` (so `apps/**` and
+  * embeds a directory containing it with `include_dir!` (so `plugins/**` and
     `sdk/python/plexi_sdk/**` are compiled into the binary);
   * names it, or a directory containing it, as a string literal inside the
     `fn` (or statement) that names `"CARGO_MANIFEST_DIR"` (`env!`,

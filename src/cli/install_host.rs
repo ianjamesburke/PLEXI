@@ -26,11 +26,11 @@ use std::process::Command;
 pub const CORE_PACK_TOML: &str = include_str!("../../packs/core.toml");
 pub const EXAMPLES_PACK_TOML: &str = include_str!("../../packs/examples.toml");
 
-// All plugins under plugins/ are embedded at compile time, including apps/dev/.
+// All plugins under plugins/ are embedded at compile time, including plugins/dev/.
 // `local:` source-spec installs look up by name in EMBEDDED_APPS.
-// apps/dev/ plugins are not referenced by any pack entry, so they are never
+// plugins/dev/ plugins are not referenced by any pack entry, so they are never
 // auto-installed — they are only rsync'd to the profile dir by install.sh.
-static EMBEDDED_APPS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
+static EMBEDDED_APPS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/plugins");
 
 /// Result of installing or updating one plugin entry. Aggregated for pack apply.
 #[derive(Debug, Clone)]
@@ -1955,11 +1955,11 @@ mod core_pack_tests {
         }
 
         // The maintained set lives ONLY in packs/core.toml. install.sh must
-        // never re-enumerate it: it may only rsync `plugins/` or `apps/dev/`
+        // never re-enumerate it: it may only rsync `plugins/` or `plugins/dev/`
         // wholesale, never a specific `plugins/<core-id>/` path.
         let install_sh = include_str!("../../scripts/install.sh");
         for entry in &pack.plugins {
-            let needle = format!("apps/{}/", entry.id);
+            let needle = format!("plugins/{}/", entry.id);
             assert!(
                 !install_sh.contains(&needle),
                 "install.sh hardcodes '{needle}' — the maintained plugin list must come \

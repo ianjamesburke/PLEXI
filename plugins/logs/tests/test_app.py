@@ -1,6 +1,6 @@
 """Tests for the Logs app.
 
-Run with:  plexi plugin test          (from apps/logs)
+Run with:  plexi plugin test          (from plugins/logs)
        or:  uv run --no-project --with pytest pytest tests/
 
 Pure-function tests cover log parsing and the host-log result handling. The
@@ -20,7 +20,7 @@ from plexi_sdk.events import HostLogResult, ToolCall
 from plexi_sdk.testing import PluginHarness
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "apps" / "logs" / "logs.py"
+APP = ROOT / "plugins" / "logs" / "logs.py"
 
 THREE_LINE_LOG = (
     "[2026-07-02 01:46:18] [INFO] [plexi::config] loaded config\n"

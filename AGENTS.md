@@ -42,7 +42,7 @@ When work begins: `stint claim <task-id>`. When done: `stint done <task-id>`. Us
 | `src/render/` | CLI renderer app contract |
 | `src/workspace/` | Workspace state, environment secrets resolver |
 | `sdk/python/` | SDK traps; AUTHORING.md canonical app guide; SDK_V3.md design spec |
-| `apps/` | App rules, maintained-set policy (`packs/core.toml`), design philosophy |
+| `plugins/` | App rules, maintained-set policy (`packs/core.toml`), design philosophy |
 | `scripts/` | Build channels, branch workflow, releases, install, RELEASE_CHANNELS.md |
 | `registry/` | CLI descriptor guide, embedded descriptor registry |
 | `docs/` | Active PRMs; lifecycle rules in `docs/AGENTS.md` |

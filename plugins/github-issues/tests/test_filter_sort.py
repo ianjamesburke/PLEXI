@@ -9,7 +9,7 @@ from plexi_sdk.testing import PluginHarness
 
 
 ROOT = Path(__file__).resolve().parents[3]
-APP = ROOT / "apps" / "github-issues" / "main.py"
+APP = ROOT / "plugins" / "github-issues" / "main.py"
 
 
 def _load_app_module():

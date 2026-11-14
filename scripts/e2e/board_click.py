@@ -3,7 +3,7 @@
 
 Prints four window-relative pixels: from_x from_y to_x to_y.
 
-apps/chess paints light squares #a6adc8, the cursor #89b4fa, and a
+plugins/chess paints light squares #a6adc8, the cursor #89b4fa, and a
 selected square #f9e2af. The host framebuffer shifts the light square
 toward #cdd6f4, so matching uses those rendered colors. Text of the
 same light color is dropped because it is not a square blob.
@@ -14,7 +14,7 @@ import sys
 
 from PIL import Image
 
-# apps/chess source fills, plus the colors the host framebuffer actually
+# plugins/chess source fills, plus the colors the host framebuffer actually
 # stores for those fills (light squares land near #81869d, not #a6adc8).
 TARGETS = (
     (166, 173, 200),  # source light

@@ -3976,7 +3976,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
 /// the other side of the IPC bridge receives the correctly inverted
 /// canvas-space coordinate for a `fit="contain"` (scaled + letterboxed) canvas.
 ///
-/// `apps/dev/canvas-click-probe` renders a bare `Canvas` with no chrome, so
+/// `plugins/dev/canvas-click-probe` renders a bare `Canvas` with no chrome, so
 /// its widget rect equals the pane's own rect — letting the test predict the
 /// canvas-space landing point from the pane rect alone, by hand, with the
 /// same `canvas_transform` formula (declared 360x440, fit=contain) stint
@@ -4078,7 +4078,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
 }
 
 /// Stint 0510: drag counterpart of stint 0398's click e2e above. Drives a
-/// REAL process-view pane (`apps/dev/canvas-click-probe`) through the
+/// REAL process-view pane (`plugins/dev/canvas-click-probe`) through the
 /// production `HostRequest::DragPane` dispatch — the exact path
 /// `plexi pane drag` and `HostHarness::inject_drag` use. The schedule is
 /// delivered one frame at a time (press → moves → release), each sample
@@ -4224,7 +4224,7 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
 
 /// Stint 0511: an emitted plugin event must land in the recorded event bus and
 /// be assertable through `HostHarness::wait_for_plugin_event`. Drives the REAL
-/// `apps/dev/event-probe` process plugin: `KeyPane('e')` makes the guest emit
+/// `plugins/dev/event-probe` process plugin: `KeyPane('e')` makes the guest emit
 /// `probe.tick`, which flows guest → bridge → `HostRequest::EmitEvent` →
 /// `PluginTimeline::record_event` — the exact path the scene `expect`
 /// `event_stream` predicate reads.
@@ -4608,7 +4608,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
 
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
-/// Drives a REAL process-view pane (`apps/dev/node-click-probe`, a single
+/// Drives a REAL process-view pane (`plugins/dev/node-click-probe`, a single
 /// `Button` with no other input) through the production
 /// `HostRequest::ClickPaneNode` dispatch — the exact path
 /// `plexi pane click <pane_id> --node <node_id>` uses — resolving the
@@ -4819,7 +4819,7 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
 }
 
 /// Stint 0426: `plexi pane key` / `HostRequest::KeyPane` targeting a real
-/// WASM Python pane (`apps/dev/key-event-probe`, a keyboard-only counter —
+/// WASM Python pane (`plugins/dev/key-event-probe`, a keyboard-only counter —
 /// no click/pointer input). Drives a real subprocess through the exact
 /// dispatch `KeyPane` uses (`drive_native_pane_key` → `ViewRuntime::handle_key`
 /// → `LivePythonPane::handle_key`) and asserts the guest's re-rendered state
@@ -6078,7 +6078,7 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
 }
 
 /// Stint 0456: end-to-end typing contract for the declarative `TextInput`,
-/// against a REAL process plugin (`apps/dev/text-input-probe`). Keystrokes
+/// against a REAL process plugin (`plugins/dev/text-input-probe`). Keystrokes
 /// with no field focused route to the plugin's raw `KeyEvent` path; after a
 /// node-targeted click focuses the field, the dispatch gate
 /// (`focused_pane_text_surface`) keeps keystrokes with the host TextEdit —
@@ -6244,7 +6244,7 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 #[test]
 fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
     let mut h = HostHarness::new();
-    let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+    let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
     h.app
         .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch todo");
@@ -6319,7 +6319,7 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
 // -- Stint 0729 follow-up: vertical-arrow list nav through a focused TextInput --
 
 /// End-to-end contract for `dispatch_plugin_key_events`'s arrow-forwarding gate,
-/// against a REAL process plugin (`apps/dev/search-nav-probe`) whose `TextInput`
+/// against a REAL process plugin (`plugins/dev/search-nav-probe`) whose `TextInput`
 /// is `autofocus=True` — the same shape as `wikipedia.py`'s search box. Before
 /// this fix, `text_surface_focused` unconditionally returned early and the
 /// plugin's KeyEvent-driven `selected` never advanced; the box holds focus
@@ -11208,7 +11208,7 @@ mod pane_send_submit_tests {
 
 /// Stint 0549: a continuous-cadence plugin's decoder must let ready frames ride
 /// the repaint the frame scheduler already scheduled, instead of forcing a
-/// second full-host repaint per guest frame. Drives the real `apps/dev/balls`
+/// second full-host repaint per guest frame. Drives the real `plugins/dev/balls`
 /// subprocess — the exemplar the 0541 audit measured — and asserts the
 /// suppression path actually engages end to end.
 #[test]
@@ -11245,7 +11245,7 @@ fn continuous_plugin_frames_ride_the_scheduled_repaint() {
 /// Stint 0549, the other direction: an input-driven (scheduled-mode) plugin must
 /// never have its frame-arrival wake suppressed. Its frames are the response
 /// to input, nothing else is scheduled to present them, and the latency would
-/// be perceptible. `apps/dev/key-event-probe` never sets a scheduler mode.
+/// be perceptible. `plugins/dev/key-event-probe` never sets a scheduler mode.
 #[test]
 fn scheduled_mode_view_never_suppresses_its_frame_wake() {
     let tmp = tempfile::tempdir().expect("tempdir");

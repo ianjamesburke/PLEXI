@@ -210,7 +210,7 @@ suite = false               # optional, default true. false = excluded from
                             # processes); run them via `just scene`.
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/balls", as = "balls", args = ["--state", '{"balls": 3}'] }
+open = { kind = "process", path = "plugins/dev/balls", as = "balls", args = ["--state", '{"balls": 3}'] }
 
 [[steps]]
 wait_view_frame = { target = "balls", timeout_s = 15.0 }
@@ -414,7 +414,7 @@ rerun exactly that seed with `PLEXI_EDITOR_GATE_SEED=<seed>`.
 
 ## DAW Release Gate
 
-Any diff touching `crates/daw-*` or `apps/wasm-poc/daw-engine/` runs the DAW
+Any diff touching `crates/daw-*` or `plugins/wasm-poc/daw-engine/` runs the DAW
 release gate before push. The DAW's pure model is a sibling crate, so its gate
 (`gate_cases` in `crates/daw-model/src/gate.rs`, exposed to the host via that
 crate's `gate` feature) is reused across every tier — same shape as the editor
