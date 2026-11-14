@@ -418,6 +418,36 @@ mod tests {
         assert_eq!(store.load_turns("live-conv").len(), 1);
     }
 
+    /// Stint 1442: the old-name `agent-ledger.jsonl` is only reported (stint
+    /// 1312), never rewritten; retention leaves it byte-identical even with
+    /// rows older than the cutoff.
+    #[test]
+    fn retention_never_rewrites_the_old_name_agent_ledger() {
+        let profile = tempfile::tempdir().unwrap();
+        let old = profile.path().join("agent-ledger.jsonl");
+        let bytes = concat!(
+            "{\"ts\":\"2026-04-09T12:00:00Z\",\"backend\":\"agents\",\"billing\":\"metered\",\"input_tokens\":1,\"output_tokens\":1,\"cost_cents\":0}\n",
+            "{\"ts\":\"2026-05-09T12:00:00Z\",\"backend\":\"agents\",\"billing\":\"metered\",\"input_tokens\":1,\"output_tokens\":1,\"cost_cents\":0}\n",
+        );
+        std::fs::write(&old, bytes).unwrap();
+        let before_modified = std::fs::metadata(&old).unwrap().modified().unwrap();
+        let report = run(&RetentionInput {
+            now: utc(2026, 5, 10),
+            log_today: NaiveDate::from_ymd_opt(2026, 5, 10).unwrap(),
+            log_retention_days: 30,
+            config_dir: profile.path(),
+            assistant_dirs: &[],
+            retain_local_history: true,
+        })
+        .unwrap();
+        assert_eq!(report.ledger_rows_pruned, 0);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&old).unwrap().modified().unwrap(),
+            before_modified
+        );
+    }
+
     #[test]
     fn unset_cloud_config_keeps_local_history() {
         let bare: crate::config::PlexiConfig = toml::from_str("font_size = 14.0\n").unwrap();
