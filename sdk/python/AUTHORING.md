@@ -106,7 +106,7 @@ plugin is the content: games, visualizers, full-bleed canvases. Then:
   content. For a canvas, use small `CanvasText` in its margins in `theme.fg`;
   the key hint is the only discoverability left.
 
-`apps/snake` is the reference: its `view()` returns a single grow `Canvas`.
+`plugins/snake` is the reference: its `view()` returns a single grow `Canvas`.
 Tools, lists and forms keep `SurfaceHeader` and `FooterKeys` as above.
 
 ## Keyed Component State
