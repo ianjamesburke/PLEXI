@@ -680,6 +680,12 @@ struct IssueRun<'a> {
     output_tokens: u32,
 }
 
+/// The step that frees an agent held by a stuck run (stint 1502): the
+/// dashboard cancel finishes the run on the host.
+fn clear_run_step(run_id: &str) -> String {
+    format!("stop it with `plexi agents-dashboard cancel {run_id}`")
+}
+
 fn issue_run(req: IssueRun<'_>) -> Value {
     let IssueRun {
         workspace,
@@ -716,7 +722,11 @@ fn issue_run(req: IssueRun<'_>) -> Value {
                 return json!({
                     "ok": false,
                     "error_code": "ledger_missing",
-                    "error": "the existing run for this admission has no ledger row",
+                    "error": format!(
+                        "run {} for admission {admission_id} has no ledger row, so this admission cannot be retried; {}, then spawn with a new admission id",
+                        existing.id,
+                        clear_run_step(&existing.id),
+                    ),
                     "run": existing,
                 });
             }
@@ -751,7 +761,12 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         return json!({
             "ok": false,
             "error_code": "assignment_conflict",
-            "error": "agent already has an active run",
+            "error": format!(
+                "agent {} already has active run {}; if that run is no longer working, {}",
+                agent.id,
+                active.id,
+                clear_run_step(&active.id),
+            ),
             "active_run": active.id,
             "admission_id": admission_id,
         });
@@ -1909,6 +1924,64 @@ mod tests {
         );
         assert_ne!(retry["ok"], true, "{retry}");
         assert_eq!(retry["error_code"], "ledger_missing", "{retry}");
+    }
+
+    /// Stint 1502 part 1: an agent stuck on an orphan active run (journalled
+    /// with no ledger row) is told exactly how to clear it, and that step works.
+    #[test]
+    fn orphan_active_run_errors_name_the_command_that_clears_it() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let agent = find_agent(fix.ws(), "worker").unwrap();
+        append_run_record(
+            fix.ws(),
+            &RunRecord {
+                id: "run_orphan".to_string(),
+                agent_id: agent.id.clone(),
+                actor_id: actor_of(&agent.id),
+                parent_run: None,
+                admission_id: "adm-1".to_string(),
+                version: 1,
+                state: "running".to_string(),
+                active: true,
+                client_ref: String::new(),
+                kind: "output".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                grants: agent.grants.clone(),
+            },
+        )
+        .unwrap();
+        let clear = "plexi agents-dashboard cancel run_orphan";
+
+        let same = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
+        );
+        assert_eq!(same["error_code"], "ledger_missing", "{same}");
+        let message = same["error"].as_str().unwrap();
+        assert!(message.contains(clear), "{message}");
+        assert!(message.contains("new admission"), "{message}");
+
+        let other = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
+        );
+        assert_eq!(other["error_code"], "assignment_conflict", "{other}");
+        let message = other["error"].as_str().unwrap();
+        assert!(message.contains(clear), "{message}");
+
+        // The named command runs finish_run on the host.
+        let finished = handle_request(
+            "finish_run",
+            &json!({"workspace": fix.ws(), "id": "run_orphan"}),
+        );
+        assert_eq!(finished["ok"], true, "{finished}");
+        let next = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
+        );
+        assert_eq!(next["ok"], true, "the cleared agent spawns again: {next}");
     }
 
     #[test]
