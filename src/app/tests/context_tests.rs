@@ -32,6 +32,43 @@ fn failed_workspace_save_remains_dirty_for_retry() {
     assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
 }
 
+/// Stint 1517: with several contexts (several strips), repeated flushes with
+/// nothing changed write identical bytes, so the comparison holds in real
+/// use; no map is written in an order that changes between saves.
+#[test]
+fn several_contexts_flush_identical_bytes_twice() {
+    use std::os::unix::fs::MetadataExt;
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    for _ in 0..4 {
+        h.app.new_context();
+    }
+    h.run_frames(2);
+    assert!(
+        h.app.router.iter().count() >= 5,
+        "fixture has several contexts"
+    );
+    assert!(h.app.save_workspace_now());
+    let path = crate::workspace::workspace_path_in(h.profile_dir());
+    let first = std::fs::read(&path).unwrap();
+    let written = std::fs::metadata(&path).unwrap().ino();
+    for _ in 0..5 {
+        h.app.mark_workspace_dirty();
+        h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        h.hidden_frame();
+        assert!(!h.app.workspace_dirty);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            written,
+            "an unchanged workspace with several contexts was rewritten"
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), first);
+}
+
 /// Stint 1517: marking the workspace dirty with nothing changed does not
 /// rewrite the file (every write replaces it by rename, so its inode would
 /// change); a real change still writes.
