@@ -788,7 +788,9 @@ mod tests {
             let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, b"invalid workspace").unwrap();
-            app.request_quit(crate::app::quit::ExitReason::HostStop);
+            // A desktop quit: `host stop` has nobody to ask and waives the
+            // save instead of opening this dialog (stint 1540).
+            app.request_quit(crate::app::quit::ExitReason::WindowClosed);
             for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
                 assert!(!app.persist_quit_state());
             }
@@ -874,7 +876,9 @@ mod tests {
             let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, b"invalid workspace").unwrap();
-            app.request_quit(crate::app::quit::ExitReason::HostStop);
+            // A desktop quit: `host stop` has nobody to ask and waives the
+            // save instead of opening this dialog (stint 1540).
+            app.request_quit(crate::app::quit::ExitReason::WindowClosed);
             for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
                 assert!(!app.persist_quit_state());
             }

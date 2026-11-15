@@ -782,9 +782,6 @@ pub fn host_start_cli(
     }
 }
 
-/// `plexi host stop` — clean shutdown request over `notify.sock` first
-/// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
-/// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
 /// Detach the spawned host from this terminal so closing the terminal — or
 /// Ctrl-C in it — does not take the host down with it.
 ///
@@ -977,6 +974,14 @@ fn uninstall_stop_step(outcome: &StopOutcome) -> Result<Option<String>, String> 
         StopOutcome::StoppedUnclean(why) => {
             Ok(Some(format!("the channel host stopped, but {why}")))
         }
+        StopOutcome::TerminationSent(_) => Ok(Some(
+            "the channel host did not answer; a termination signal was sent but it may still be running"
+                .to_string(),
+        )),
+        StopOutcome::TerminationRequested(_) => Ok(Some(
+            "the channel host did not answer and was terminated; its workspace may not have been saved"
+                .to_string(),
+        )),
         _ => Ok(None),
     }
 }
@@ -1203,6 +1208,9 @@ fn restart_confirmation_only_for_the_callers_host() {
     assert!(!restart_closes_caller(None, Some(socket), socket));
 }
 
+/// `plexi host stop` — clean shutdown request over `notify.sock` first
+/// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
+/// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
     let profile = host_config_dir(channel.as_deref());
@@ -1226,8 +1234,12 @@ pub(crate) enum StopOutcome {
     StoppedUnclean(String),
     /// The host exited without answering (a build from before the reply).
     StoppedUnknown,
-    /// No answer and still running: termination was requested.
+    /// No answer and still running: the host was terminated and seen gone,
+    /// so whatever it had not saved is lost. Never a success (stint 1540).
     TerminationRequested(u32),
+    /// No answer; termination signals were sent but the process was not
+    /// seen to end within `TERMINATION_WAIT`. It may still be running.
+    TerminationSent(u32),
     /// No host was running for this channel.
     NotRunning,
     /// The host could not be stopped.
@@ -1237,8 +1249,12 @@ pub(crate) enum StopOutcome {
 impl StopOutcome {
     fn exit_code(&self) -> i32 {
         match self {
-            Self::Clean | Self::StoppedUnknown | Self::TerminationRequested(_) => 0,
-            Self::StoppedUnclean(_) | Self::NotRunning | Self::Failed(_) => 1,
+            Self::Clean | Self::StoppedUnknown => 0,
+            Self::StoppedUnclean(_)
+            | Self::TerminationRequested(_)
+            | Self::TerminationSent(_)
+            | Self::NotRunning
+            | Self::Failed(_) => 1,
         }
     }
 
@@ -1248,9 +1264,14 @@ impl StopOutcome {
             Self::Clean => "Plexi host stopped (clean shutdown).".to_string(),
             Self::StoppedUnclean(why) => format!("Plexi host stopped, but {why}."),
             Self::StoppedUnknown => "Plexi host stopped (exit status unknown).".to_string(),
-            Self::TerminationRequested(pid) => {
-                format!("Termination requested for Plexi host (pid {pid}).")
-            }
+            Self::TerminationRequested(pid) => format!(
+                "Plexi host (pid {pid}) did not answer and was terminated; \
+                 its workspace may not have been saved."
+            ),
+            Self::TerminationSent(pid) => format!(
+                "Plexi host (pid {pid}) did not answer; a termination signal was sent \
+                 but the process may still be running."
+            ),
             Self::NotRunning => "no Plexi host is running for this channel".to_string(),
             Self::Failed(why) => why.clone(),
         }
@@ -1317,9 +1338,16 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
     }
     clean_panes_after_socket_failure(profile, pid);
     match terminate_host_process(pid) {
-        Ok(()) => {
-            log::info!("host_stop: termination requested pid={pid}");
+        Ok(Termination::Gone) => {
+            log::info!("host_stop: terminated pid={pid}");
             StopOutcome::TerminationRequested(pid)
+        }
+        Ok(Termination::StillRunning) => {
+            log::error!(
+                "host_stop: pid={pid} was signalled but not seen to end within {}ms",
+                TERMINATION_WAIT.as_millis()
+            );
+            StopOutcome::TerminationSent(pid)
         }
         Err(e) => {
             log::error!("host_stop: could not terminate pid={pid}: {e}");
@@ -1477,19 +1505,33 @@ fn clean_panes_after_socket_failure(profile: &Path, pid: u32) {
 }
 
 #[cfg(unix)]
-fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+fn terminate_host_process(pid: u32) -> std::io::Result<Termination> {
     signal_host_process(pid, libc::SIGTERM)?;
-    let deadline = Instant::now() + Duration::from_millis(250);
-    while Instant::now() < deadline {
+    if wait_for_pid_exit(pid, Duration::from_millis(250)) {
+        return Ok(Termination::Gone);
+    }
+    signal_host_process(pid, libc::SIGKILL)?;
+    if wait_for_pid_exit(pid, TERMINATION_WAIT) {
+        Ok(Termination::Gone)
+    } else {
+        Ok(Termination::StillRunning)
+    }
+}
+
+/// Whether `pid` ended within `bound`. The pid's start identity is not
+/// checked here (a reused pid reads as still running); stint 1550 owns that.
+#[cfg(unix)]
+fn wait_for_pid_exit(pid: u32, bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    loop {
         if !host_pid_alive(pid) {
-            return Ok(());
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    if host_pid_alive(pid) {
-        signal_host_process(pid, libc::SIGKILL)?;
-    }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -1516,16 +1558,18 @@ fn signal_host_process(pid: u32, signal: i32) -> std::io::Result<()> {
     }
     let error = std::io::Error::last_os_error();
     match error.raw_os_error() {
-        Some(libc::ESRCH) | Some(libc::EPERM) => {
-            log::debug!("host_stop: signal={signal} pid={pid} unavailable: {error}");
+        // Already gone: the wait that follows sees that.
+        Some(libc::ESRCH) => {
+            log::debug!("host_stop: signal={signal} pid={pid} already gone: {error}");
             Ok(())
         }
+        // Refused is a failure to stop, never a termination (stint 1540).
         _ => Err(error),
     }
 }
 
 #[cfg(windows)]
-fn terminate_host_process(pid: u32) -> std::io::Result<()> {
+fn terminate_host_process(pid: u32) -> std::io::Result<Termination> {
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
     // SAFETY: scalar inputs and checked handle; only the recorded host is targeted.
@@ -1539,9 +1583,21 @@ fn terminate_host_process(pid: u32) -> std::io::Result<()> {
     if unsafe { TerminateProcess(handle, 1) } == 0 {
         Err(std::io::Error::last_os_error())
     } else {
-        Ok(())
+        // Termination was initiated; its end is not observed here.
+        Ok(Termination::StillRunning)
     }
 }
+
+/// What terminating an unanswering host achieved (stint 1540).
+enum Termination {
+    /// The process was seen to end.
+    Gone,
+    /// Signals were sent but the process was not seen to end in time.
+    StillRunning,
+}
+
+/// How long `host stop` watches for a SIGKILLed host to end.
+const TERMINATION_WAIT: Duration = Duration::from_secs(1);
 
 fn reported_pid(info: &serde_json::Value) -> Option<u32> {
     let pid = u32::try_from(info.get("pid")?.as_u64()?).ok()?;
@@ -2130,63 +2186,108 @@ mod tests {
         );
     }
 
-    /// Stint 1501 (tests only; behaviour unchanged): a host that takes the
-    /// shutdown request and never answers is signalled once the reply timeout
-    /// passes, and `host stop` reports the termination. The "host" is a child
-    /// process this test spawns, bound to a temp profile's socket; no real
-    /// host runs and no other process is signalled.
+    /// A silent stand-in "host" bound to `profile`'s socket: it takes every
+    /// connection, reads it and never answers. Returns its pid once ready.
+    /// `detached`: the stand-in is reparented away from this test (as a real
+    /// host is never the CLI's child), so its death is seen at once; otherwise
+    /// it stays this test's child and, once signalled, a zombie the test has
+    /// not reaped, which still reads as a live pid.
     #[cfg(unix)]
-    #[test]
-    fn a_host_that_never_replies_is_terminated_and_reported() {
-        struct KillOnDrop(std::process::Child);
-        impl Drop for KillOnDrop {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let profile = tempfile::tempdir().unwrap();
-        let socket = crate::platform::ipc::endpoint_in(profile.path());
-        // Binds the socket, takes every connection and reads it, never answers.
-        let script = "import socket,sys,time\n\
+    fn spawn_silent_host(profile: &Path, detached: bool) -> (u32, Option<std::process::Child>) {
+        let socket = crate::platform::ipc::endpoint_in(profile);
+        let script = "import socket,sys,os\n\
 s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1]);s.listen(4)\n\
-print('ready',flush=True)\n\
+print('ready', os.getpid(), flush=True)\n\
 held=[]\n\
 while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
-        let mut child = std::process::Command::new("python3")
-            .args(["-c", script])
-            .arg(&socket)
+        let mut command = if detached {
+            let mut sh = std::process::Command::new("/bin/sh");
+            sh.args(["-c", "python3 -c \"$0\" \"$1\" &", script])
+                .arg(&socket);
+            sh
+        } else {
+            let mut py = std::process::Command::new("python3");
+            py.args(["-c", script]).arg(&socket);
+            py
+        };
+        let mut child = command
             .stdout(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
             .spawn()
             .expect("spawn the silent stand-in host");
-        let child_pid = child.id();
         let mut ready = String::new();
         std::io::BufRead::read_line(
             &mut std::io::BufReader::new(child.stdout.take().unwrap()),
             &mut ready,
         )
         .unwrap();
-        assert_eq!(ready.trim(), "ready");
-        let mut stand_in = KillOnDrop(child);
+        let mut words = ready.split_whitespace();
+        assert_eq!(words.next(), Some("ready"), "{ready:?}");
+        let pid: u32 = words
+            .next()
+            .and_then(|p| p.parse().ok())
+            .expect("stand-in pid");
+        if detached {
+            let _ = child.wait();
+            (pid, None)
+        } else {
+            (pid, Some(child))
+        }
+    }
 
+    /// Stint 1501, with stint 1540's wording: a host that takes the shutdown
+    /// request and never answers is signalled once the reply timeout passes;
+    /// it is seen to end, so `host stop` reports it terminated, never as a
+    /// success. The stand-in is detached from this test, as a real host is.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_never_replies_is_terminated_and_reported() {
+        let profile = tempfile::tempdir().unwrap();
+        let (pid, _) = spawn_silent_host(profile.path(), true);
         let started = Instant::now();
         let outcome = host_stop_in(profile.path(), None);
-
-        assert_eq!(outcome, StopOutcome::TerminationRequested(child_pid));
+        if host_pid_alive(pid) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+        assert_eq!(outcome, StopOutcome::TerminationRequested(pid));
         assert_eq!(
             outcome.message(),
-            format!("Termination requested for Plexi host (pid {child_pid}).")
+            format!(
+                "Plexi host (pid {pid}) did not answer and was terminated; \
+                 its workspace may not have been saved."
+            )
         );
-        assert_eq!(outcome.exit_code(), 0);
+        assert_ne!(outcome.exit_code(), 0);
         assert!(
             started.elapsed() >= HOST_STOP_REPLY_TIMEOUT,
             "signalled only after the reply timeout, took {:?}",
             started.elapsed()
         );
-        let status = stand_in.0.wait().unwrap();
+    }
+
+    /// Stint 1540: when the signalled host is not seen to end (here a child
+    /// of this test left unreaped, so its pid still answers), `host stop` does
+    /// not claim it was terminated: it says a signal was sent and the process
+    /// may still be running, and exits non-zero.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_not_seen_to_end_is_not_reported_terminated() {
+        let profile = tempfile::tempdir().unwrap();
+        let (pid, child) = spawn_silent_host(profile.path(), false);
+        let mut child = child.expect("the stand-in is this test's child");
+        let outcome = host_stop_in(profile.path(), None);
+        let status = child.wait().unwrap();
+        assert_eq!(outcome, StopOutcome::TerminationSent(pid));
+        assert_eq!(
+            outcome.message(),
+            format!(
+                "Plexi host (pid {pid}) did not answer; a termination signal was sent \
+                 but the process may still be running."
+            )
+        );
+        assert_ne!(outcome.exit_code(), 0);
         use std::os::unix::process::ExitStatusExt;
-        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+        assert!(status.signal().is_some(), "{status:?}");
     }
 
     /// The hint printed when an older host is running must not leave the user
