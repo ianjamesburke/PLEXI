@@ -490,21 +490,29 @@ pub struct PermissionMonitor {
     /// One-time UI answer tokens keyed by `needs_you_id` so interactive host/Pi UI
     /// prompts can settle a question while unauthenticated pane tool calls cannot.
     question_tokens: Mutex<BTreeMap<String, String>>,
-    /// Serializes list, expiry, resolve and retirement so one terminal
-    /// receipt wins. Lock order (stint 1383): `needs_resolve` is taken
-    /// before `decision_lock`, `needs_you` and the stores, and is never
-    /// re-taken by code that can run under it: `approve_pending`, the
-    /// Keychain reload and every mutation site only mark retirement due
-    /// (`note_retire_due`); `drain_retirements` uses `try_lock` and leaves
-    /// the work to the holder, which drains after it releases.
+    /// Serializes list, expiry, resolve, permission mutations and
+    /// retirement so one terminal receipt wins. Lock order (stint 1383):
+    /// `needs_resolve` is taken before `decision_lock`, `needs_you` and the
+    /// stores, and is never re-taken by code that can run under it:
+    /// `approve_pending`, the Keychain reload and every mutation site only
+    /// mark retirement due (`note_retire_due`), and `drain_retirements` uses
+    /// `try_lock`. `resolve_needs_you`, `approve_pending` and `mutate_entry`
+    /// drain after they release; other holders (list, question answers,
+    /// withdrawals, load) do not, and the frame loop's `expire_needs_you`
+    /// sweep is the backstop for anything left due.
     needs_resolve: Mutex<()>,
     /// Set where an ask or entry was removed; drained under `needs_resolve`
     /// once the mutation has settled (`drain_retirements`).
     retire_due: std::sync::atomic::AtomicBool,
     retire_trigger: Mutex<&'static str>,
-    /// Items whose retirement audit failed: not retried until the next load,
-    /// so a failing audit cannot loop on every sweep.
+    /// Items whose retirement audit failed: not retried until the set is
+    /// cleared, which happens only on load or a Keychain reload, so a
+    /// failing audit cannot loop on every sweep.
     retire_failed: Mutex<std::collections::BTreeSet<String>>,
+    /// Whether every store retirement checks against loaded and verified.
+    /// False after an integrity fault or with the seal key unreadable; every
+    /// retirement path, the sweep included, checks it (stint 1383).
+    retire_trusted: std::sync::atomic::AtomicBool,
     /// Painted permission-sheet buttons, so a real pointer click can find
     /// "Allow once" when the accesskit tree has not published that label.
     sheet_buttons: Mutex<Vec<SheetButton>>,
@@ -514,6 +522,10 @@ pub struct PermissionMonitor {
     sheet_published_epoch: AtomicU64,
     #[cfg(test)]
     now_override: AtomicI64,
+    /// Runs once inside `allow_entry`'s swap window (denial removed, save
+    /// not yet settled), so a test can observe what that window exposes.
+    #[cfg(test)]
+    allow_swap_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// The host token this monitor was opened with. `None` for an ephemeral
     /// monitor, which never touches disk (stint 1291).
     custody: Option<super::custody::HostProcess>,
@@ -649,6 +661,7 @@ impl PermissionMonitor {
                     Some(dir.to_path_buf()),
                     Some(*host),
                 );
+                monitor.retire_trusted.store(false, Ordering::SeqCst);
                 monitor.restore_queue();
                 monitor.file_keychain_needs_you();
                 monitor.file_integrity_finding(finding);
@@ -712,9 +725,10 @@ impl PermissionMonitor {
         monitor.restore_queue();
         // Only against stores that loaded and verified: an empty or
         // quarantined grant store would make every item look stale.
-        if faults.is_empty() {
-            monitor.retire_after_load("load");
-        }
+        monitor
+            .retire_trusted
+            .store(faults.is_empty(), Ordering::SeqCst);
+        monitor.retire_after_load("load");
         if let Some(reason) = rejected_audit_reason {
             super::seal::reject_untrusted_audit(host, &audit, &reason);
         }
@@ -920,11 +934,14 @@ impl PermissionMonitor {
             retire_due: std::sync::atomic::AtomicBool::new(false),
             retire_trigger: Mutex::new(""),
             retire_failed: Mutex::new(std::collections::BTreeSet::new()),
+            retire_trusted: std::sync::atomic::AtomicBool::new(true),
             sheet_buttons: Mutex::new(Vec::new()),
             sheet_open_epoch: AtomicU64::new(0),
             sheet_published_epoch: AtomicU64::new(0),
             #[cfg(test)]
             now_override: AtomicI64::new(0),
+            #[cfg(test)]
+            allow_swap_hook: Mutex::new(None),
             custody,
         }
     }
@@ -1740,11 +1757,15 @@ impl PermissionMonitor {
     pub fn expire_needs_you(&self) {
         self.expire_soft_grants();
         let guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        self.sweep_locked(&guard);
+    }
+
+    fn sweep_locked(&self, guard: &std::sync::MutexGuard<'_, ()>) {
         self.expire_needs_you_locked();
         // Time removes entries without a mutation (a grant or soft grant
         // expiring, a session ending), so the sweep also retires (stint 1383).
         self.retire_due.store(false, Ordering::SeqCst);
-        self.retire_stale_locked(&guard, "expiry");
+        self.retire_stale_locked(guard, "expiry");
     }
 
     fn expire_needs_you_locked(&self) {
@@ -2265,6 +2286,7 @@ impl PermissionMonitor {
     /// Keychain item's resolution, which holds `needs_resolve`, so it only
     /// marks retirement due; taking the lock here deadlocks.
     fn retire_after_reload(&self, trusted: bool) {
+        self.retire_trusted.store(trusted, Ordering::SeqCst);
         if !trusted {
             return;
         }
@@ -2310,6 +2332,9 @@ impl PermissionMonitor {
     /// trigger, outcome `ask_gone`. Caller holds `needs_resolve`, so it never
     /// races a resolution and only sees settled state.
     fn retire_stale_locked(&self, _held: &std::sync::MutexGuard<'_, ()>, trigger: &str) {
+        if !self.retire_trusted.load(Ordering::SeqCst) {
+            return;
+        }
         let candidates: Vec<(String, Option<String>)> = self
             .needs_you
             .lock()
@@ -2362,6 +2387,12 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(id.to_string(), RunOutcome::AskGone);
+        self.update_continuation_on_needs_you(
+            id,
+            NeedsYouResolution::Retired,
+            None,
+            RunOutcome::AskGone,
+        );
         log::info!(
             "needs_you: retired permission change {id}: entry {entry_id:?} no longer exists ({trigger})"
         );
@@ -2774,6 +2805,11 @@ impl PermissionMonitor {
                     if answer.is_some() {
                         record.answer = answer.clone();
                     }
+                    let outcome = if resolution == NeedsYouResolution::Retired {
+                        RunOutcome::AskGone
+                    } else {
+                        outcome
+                    };
                     record.run_outcome = Some(outcome.as_str().to_string());
                     record.updated_at = now;
                     if outcome == RunOutcome::RetryRequired
@@ -2782,7 +2818,11 @@ impl PermissionMonitor {
                         record.state = ContinuationState::Paused;
                     } else if outcome == RunOutcome::OutcomeUnknown && record.receipt.is_none() {
                         record.state = ContinuationState::OutcomeUnknown;
-                    } else if resolution == NeedsYouResolution::Denied {
+                    } else if matches!(
+                        resolution,
+                        NeedsYouResolution::Denied | NeedsYouResolution::Retired
+                    ) {
+                        // Retired: the ask went away; nothing was approved.
                         if record.state.is_in_flight() {
                             record.state = ContinuationState::Canceled;
                         }
@@ -3674,9 +3714,14 @@ impl PermissionMonitor {
         action: &str,
         caller: &PermissionCaller,
     ) -> PermissionMutation {
-        let outcome = self.mutate_entry_inner(id, action, caller);
-        // Retire what this removed only now, from settled state: `allow_entry`
-        // may replace an entry and restore it if the save fails.
+        // Held across the mutation and its save: `allow_entry` removes a
+        // denial and restores it if the save fails, and the expiry sweep
+        // (which also takes `needs_resolve`) must not see that window.
+        let outcome = {
+            let _mutating = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+            self.mutate_entry_inner(id, action, caller)
+        };
+        // Retire what this removed only now, from settled state.
         self.drain_retirements();
         outcome
     }
@@ -3889,6 +3934,17 @@ impl PermissionMonitor {
             store.records_mut().retain(|row| row.grant_id != id);
             store.record(allow);
         }
+        #[cfg(test)]
+        {
+            let hook = self
+                .allow_swap_hook
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         if let Err(error) = self.save_durable() {
             self.store()
                 .records_mut()
@@ -3914,6 +3970,8 @@ impl PermissionMonitor {
             revision_after: grant_id.clone(),
         });
         log::info!("permission_monitor: allowed {id} as {grant_id}");
+        // The denial's id is gone now that the swap is saved.
+        self.note_retire_due("denial replaced by allow");
         PermissionMutation::Applied { entry_id: grant_id }
     }
 
@@ -5248,25 +5306,23 @@ mod tests {
         assert!(open_permission_changes(&restored).is_empty());
     }
 
-    /// Approving a widen item whose ask went away in a race (the revoke's
-    /// retirement could not run yet because a resolution held the lock) is
+    /// Approving a widen item whose ask went away while retirement could not
+    /// run (the stores were untrusted, as after an integrity fault) is
     /// recorded retired, never approved. The entry count is the same before
     /// and after on the old code too; the resolution and outcome are the test.
     #[test]
     fn approving_a_permission_change_for_a_gone_ask_is_a_no_op() {
         let monitor = PermissionMonitor::ephemeral();
         let (ask, widen) = widen_for_pending_ask(&monitor);
-        {
-            let _resolving = monitor.needs_resolve.lock().unwrap();
-            let revoked = monitor.mutate_entry(&ask, "revoke", &human_caller());
-            assert!(matches!(revoked, PermissionMutation::Applied { .. }));
-            let still_open = monitor
-                .open_needs_you()
-                .into_iter()
-                .filter(|row| row.kind == NeedsYouKind::PermissionChange)
-                .count();
-            assert_eq!(still_open, 1, "retirement deferred");
-        }
+        monitor.retire_trusted.store(false, Ordering::SeqCst);
+        let revoked = monitor.mutate_entry(&ask, "revoke", &human_caller());
+        assert!(matches!(revoked, PermissionMutation::Applied { .. }));
+        assert_eq!(
+            open_permission_changes(&monitor).len(),
+            1,
+            "untrusted stores retire nothing"
+        );
+        monitor.retire_trusted.store(true, Ordering::SeqCst);
         let before = monitor.list_entries().len();
         let receipt = monitor
             .resolve_needs_you_from(&widen, true, ResolveSurface::Desktop)
@@ -5340,7 +5396,8 @@ mod tests {
     }
 
     /// The queue is restored before the grant store is (the Keychain reload
-    /// path): retirement must not run against the not-yet-loaded store.
+    /// path): retirement must not run against the not-yet-loaded store. A
+    /// guard: it passes on alpha, which had no retirement.
     #[test]
     fn restoring_the_queue_against_an_empty_grant_store_retires_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -5386,7 +5443,8 @@ mod tests {
 
     /// The Keychain reload runs inside a resolution that holds
     /// `needs_resolve`. Its retirement must not take that lock again: this
-    /// fails within five seconds (instead of hanging CI) if it ever does.
+    /// fails within five seconds (instead of hanging CI) if it ever does. A
+    /// guard: it also passes if the helper does nothing.
     #[test]
     fn reload_retirement_under_a_held_resolution_does_not_block() {
         let monitor = PermissionMonitor::ephemeral();
@@ -5400,6 +5458,148 @@ mod tests {
         assert!(
             rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
             "the Keychain reload's retirement re-locked needs_resolve"
+        );
+    }
+
+    /// The sweep checks the same trust as load: with untrusted stores (an
+    /// integrity fault, an unreadable seal key) it retires nothing.
+    #[test]
+    fn the_expiry_sweep_retires_nothing_while_stores_are_untrusted() {
+        let monitor = PermissionMonitor::ephemeral();
+        monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::PermissionChange,
+                actor: "agent:test".to_string(),
+                resource: "chess.play".to_string(),
+                summary: "names an entry the untrusted store lacks".to_string(),
+                expires_at: None,
+                run_tag: Some("allow:grant_quarantined".to_string()),
+            })
+            .unwrap();
+        monitor.retire_trusted.store(false, Ordering::SeqCst);
+        monitor.expire_needs_you();
+        assert_eq!(open_permission_changes(&monitor).len(), 1);
+    }
+
+    /// A Retired item cancels a linked continuation with `ask_gone`; it never
+    /// moves it to Running the way an approval does.
+    #[test]
+    fn a_retired_item_cancels_its_continuation() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"retired-op"}"#;
+        let fingerprint = fingerprint_args(args).unwrap();
+        let mut base = binding(&fingerprint);
+        base.target_type = TargetType::Capability;
+        base.target_id = "pane.send".into();
+        base.call_id = "pane-send".into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("approval needed")
+        };
+        monitor.update_continuation_on_needs_you(
+            &pending_request_id,
+            NeedsYouResolution::Retired,
+            None,
+            RunOutcome::Unblocked,
+        );
+        let record = monitor.get_continuation("retired-op").unwrap();
+        assert_eq!(record.state, ContinuationState::Canceled);
+        assert_eq!(record.run_outcome.as_deref(), Some("ask_gone"));
+    }
+
+    /// An "allow" on a stored denial removes it, saves, and restores it when
+    /// the save fails. The frame-loop sweep must not see that window and
+    /// retire the live "reset" item naming the denial: `mutate_entry` holds
+    /// `needs_resolve`, which the sweep also takes. The hook sweeps inside
+    /// the window whenever that lock is free.
+    #[test]
+    fn a_failed_allow_swap_never_lets_the_sweep_retire_a_live_item() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let Admission::Required { pending_request_id } =
+            admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("first call asks");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let deny = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "deny")
+            .expect("stored denial")
+            .id;
+        let PermissionMutation::NeedsYou { needs_you_id, .. } =
+            monitor.mutate_entry(&deny, "reset", &agent_caller())
+        else {
+            panic!("an agent's reset files a widen item");
+        };
+        let _unreadable = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        {
+            let weak = Arc::downgrade(&monitor);
+            // Same thread, so the test Keychain stays reachable: sweep
+            // inside the window if `needs_resolve` is free, as the frame
+            // loop would.
+            *monitor.allow_swap_hook.lock().unwrap() = Some(Box::new(move || {
+                let monitor = weak.upgrade().expect("monitor alive");
+                if let Ok(guard) = monitor.needs_resolve.try_lock() {
+                    monitor.sweep_locked(&guard);
+                };
+            }));
+        }
+        let swap = monitor.mutate_entry(&deny, "allow", &human_caller());
+        assert!(
+            matches!(swap, PermissionMutation::Rejected { .. }),
+            "the save must fail: {swap:?}"
+        );
+        assert!(
+            monitor.allow_swap_hook.lock().unwrap().is_none(),
+            "the hook ran inside the swap window"
+        );
+        assert!(
+            !monitor.retire_failed.lock().unwrap().contains(&needs_you_id),
+            "no retirement of the live item was attempted"
+        );
+        assert_eq!(
+            monitor.needs_you_of(&needs_you_id).unwrap().resolution,
+            None,
+            "the reset item for the restored denial is still open"
+        );
+    }
+
+    /// A saved "allow" replaces the denial's id, so the widen item naming the
+    /// old id is retired by the mutation itself (read without the sweep).
+    #[test]
+    fn a_saved_allow_swap_retires_the_items_naming_the_old_denial() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let Admission::Required { pending_request_id } =
+            admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("first call asks");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let deny = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "deny")
+            .expect("stored denial")
+            .id;
+        let PermissionMutation::NeedsYou { needs_you_id, .. } =
+            monitor.mutate_entry(&deny, "reset", &agent_caller())
+        else {
+            panic!("an agent's reset files a widen item");
+        };
+        let swap = monitor.mutate_entry(&deny, "allow", &human_caller());
+        assert!(matches!(swap, PermissionMutation::Applied { .. }), "{swap:?}");
+        assert_eq!(
+            // `needs_you_of`, not `get_needs_you`: that one sweeps first.
+            monitor.needs_you_of(&needs_you_id).unwrap().resolution,
+            Some(NeedsYouResolution::Retired)
         );
     }
 
