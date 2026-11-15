@@ -19,3 +19,5 @@ mod close_selection_tests;
 mod core_only_tests;
 
 pub(crate) mod consent_input_guard_tests;
+
+mod terminal_page_scroll_tests;

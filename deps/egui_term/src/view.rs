@@ -336,9 +336,17 @@ impl<'a> TerminalView<'a> {
             } else {
                 TermMode::empty()
             };
-        for crate::keyboard::PreparedEvent { event, encoding } in
-            state.keyboard.prepare(events, keyboard_mode)
-        {
+        let terminal_mode = self.backend.last_content().terminal_mode;
+        let bindings_layout = &self.bindings_layout;
+        let prepared =
+            state.keyboard.prepare(events, keyboard_mode, |key, mods| {
+                bindings_layout.scrolls_before_encoding(
+                    key,
+                    mods,
+                    terminal_mode,
+                )
+            });
+        for crate::keyboard::PreparedEvent { event, encoding } in prepared {
             let mut input_actions = vec![];
 
             match event {

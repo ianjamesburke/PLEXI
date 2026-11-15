@@ -118,6 +118,30 @@ impl BindingsLayout {
         }
     }
 
+    /// Whether a press scrolls the scrollback ahead of kitty key encoding
+    /// (Alacritty's order). Main screen only: on the alternate screen every
+    /// key goes to the program. Byte-producing bindings (`Esc`, `Char`) never
+    /// win, so a kitty-mode program never receives legacy sequences.
+    pub fn scrolls_before_encoding(
+        &self,
+        key: Key,
+        modifiers: Modifiers,
+        terminal_mode: TerminalMode,
+    ) -> bool {
+        !terminal_mode.contains(TerminalMode::ALT_SCREEN)
+            && matches!(
+                self.get_action(
+                    InputKind::KeyCode(key),
+                    modifiers,
+                    terminal_mode
+                ),
+                BindingAction::ScrollLines(_)
+                    | BindingAction::ScrollPage(_)
+                    | BindingAction::ScrollToTop
+                    | BindingAction::ScrollToBottom
+            )
+    }
+
     pub fn get_action(
         &self,
         input: InputKind,
