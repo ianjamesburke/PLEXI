@@ -538,7 +538,7 @@ impl super::PlexiApp {
 /// command and yield to the backend before cleanup without claiming an ack.
 #[cfg(test)]
 thread_local! {
-    /// Test seam: the result every native hide reports while set (stint 1542).
+    // Test seam: the result every native hide reports while set (stint 1542).
     static HIDE_RESULT: std::cell::Cell<Option<Result<bool, &'static str>>> =
         const { std::cell::Cell::new(None) };
 }
