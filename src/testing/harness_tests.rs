@@ -6921,6 +6921,109 @@ fn unsaved_dialog_switch_cancel_discard_and_save() {
     }
 }
 
+/// Stint 1538 part 1: "Restart to update" asks about an unsaved buffer as
+/// Cmd+Q does: the unsaved-changes prompt opens, no quit starts, and the
+/// buffer is untouched. Evidence PNG: the prompt on this route.
+#[test]
+fn update_restart_asks_about_an_unsaved_buffer() {
+    crate::app::quit::test_restart_scheduler::take();
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.update_quit_pending = true;
+    // On the old path the quit is already accepted after one frame (and a
+    // further frame would run it), so check that first.
+    h.run_frames(1);
+    assert!(
+        !h.app.quit_coordinator.is_active(),
+        "update restart started the quit without asking"
+    );
+    h.run_frames(1);
+    let asked = h.app.focus_stack.last().map(|k| k.name()) == Some("UnsavedChanges");
+    let quitting = h.app.quit_coordinator.is_active();
+    h.render_png(crate::ui_tests::evidence_png!())
+        .expect("render the prompt");
+    assert!(
+        asked && !quitting,
+        "update restart did not ask: prompt shown {asked}, quit already accepted {quitting}"
+    );
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    assert_eq!(
+        crate::app::quit::test_restart_scheduler::take(),
+        0,
+        "no restart scheduled"
+    );
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+/// Stint 1538 part 1: cancelling that prompt keeps the buffer and leaves the
+/// update ready; pressing Restart again once nothing is unsaved restarts.
+#[test]
+fn update_restart_cancelled_then_restarted_after_discarding() {
+    crate::app::quit::test_restart_scheduler::take();
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.update_quit_pending = true;
+    h.run_frames(2);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.quit_coordinator.is_active(), "cancel starts no quit");
+    assert!(h.text_editor_mut(pane).open_buffer().dirty, "nothing lost");
+    h.text_editor_mut(pane).test_discard_unsaved();
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::UpdateRestart),
+        "Restart again proceeds once nothing is unsaved"
+    );
+}
+
+/// Stint 1538 part 1: with nothing unsaved and no working agent, the update
+/// restart starts at once, as before.
+#[test]
+fn update_restart_with_nothing_unsaved_starts_at_once() {
+    crate::app::quit::test_restart_scheduler::take();
+    let (_dir, _path, mut h, _pane) = unsaved_editor_fixture();
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::UpdateRestart)
+    );
+}
+
+/// Stint 1538 part 1: a working agent raises the normal confirmation, and
+/// confirming it restarts into the update rather than just quitting.
+#[test]
+fn update_restart_with_a_working_agent_confirms_then_restarts() {
+    use crate::protocol::{AgentState, PaneAgentState};
+    crate::app::quit::test_restart_scheduler::take();
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    h.app.windows[0]
+        .panes
+        .get_mut(&id)
+        .unwrap()
+        .set_agent(Some(PaneAgentState {
+            pane_id: id,
+            state: AgentState::Working,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert!(h.app.pending_quit, "the working-agent confirmation opens");
+    assert!(!h.app.quit_coordinator.is_active());
+    h.app.resolve_quit_confirmation(true);
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::UpdateRestart),
+        "confirming restarts into the update"
+    );
+}
+
 #[test]
 fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
     let (_dir, path, mut h, pane) = unsaved_editor_fixture();

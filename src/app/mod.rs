@@ -235,6 +235,10 @@ pub struct PlexiApp {
     /// Confirm closes this pane only, and only while it is still focused.
     pub(crate) close_confirm_target: Option<CloseConfirmTarget>,
     pub(crate) pending_quit: bool,
+    /// The working-agent confirmation on screen came from "Restart to
+    /// update": confirming restarts into the update instead of quitting
+    /// (stint 1538).
+    pub(crate) update_restart_confirming: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
     pub(crate) ui_phase: crate::platform::logging::UiPhaseTracker,
@@ -1797,6 +1801,7 @@ impl PlexiApp {
                     pending_close: false,
                     close_confirm_target: None,
                     pending_quit: false,
+                    update_restart_confirming: false,
                     pending_context_close: None,
                     frame_tick,
                     ui_phase: ui_phase.clone(),
@@ -2088,6 +2093,7 @@ impl PlexiApp {
             pending_close: false,
             close_confirm_target: None,
             pending_quit: false,
+            update_restart_confirming: false,
             pending_context_close: None,
             frame_tick,
             ui_phase,
@@ -3073,6 +3079,7 @@ impl PlexiApp {
             pending_close: false,
             close_confirm_target: None,
             pending_quit: false,
+            update_restart_confirming: false,
             pending_context_close: None,
             frame_tick,
             ui_phase: crate::platform::logging::new_ui_phase_tracker(),
