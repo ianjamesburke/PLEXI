@@ -86,6 +86,18 @@ impl QuitCoordinator {
         self.is_active() && self.retry_at.is_none() && self.save_failure.is_none()
     }
 
+    /// Test seam: whether a failed save scheduled a retry, and making that
+    /// retry due now.
+    #[cfg(test)]
+    pub(crate) fn retry_pending(&self) -> bool {
+        self.retry_at.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn make_retry_due(&mut self) {
+        self.retry_at = Some(Instant::now());
+    }
+
     /// The validation message of the save that exhausted the retry budget.
     pub(crate) fn save_failure(&self) -> Option<&str> {
         self.save_failure.as_deref()
@@ -321,9 +333,10 @@ impl super::PlexiApp {
             return false;
         }
         // A failed save leaves the UI usable. Recheck unsaved-document vetoes
-        // before retrying a desktop quit, since the user may have edited again.
+        // before retrying a quit the person started (a desktop quit or
+        // "Restart to update", stint 1538), since they may have edited again.
         if self.quit_coordinator.retry_at.is_some()
-            && reason == ExitReason::WindowClosed
+            && matches!(reason, ExitReason::WindowClosed | ExitReason::UpdateRestart)
             && !self.prepare_user_quit()
         {
             self.quit_coordinator = QuitCoordinator::default();
@@ -442,6 +455,15 @@ impl super::PlexiApp {
         } else {
             ExitReason::WindowClosed
         };
+        // The update may have stopped being ready while the confirmation was
+        // open; then there is nothing to restart into, so nothing happens.
+        if confirmed && reason == ExitReason::UpdateRestart && self.update_status.ready().is_none()
+        {
+            log::info!("update: restart confirmed but no update is ready any more; not quitting");
+            self.quit_coordinator = QuitCoordinator::default();
+            self.quitting = false;
+            return;
+        }
         if confirmed && self.prepare_user_quit() {
             self.request_quit(reason);
             log::info!(

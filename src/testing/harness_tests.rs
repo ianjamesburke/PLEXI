@@ -6964,7 +6964,14 @@ fn update_restart_cancelled_then_restarted_after_discarding() {
     let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
     h.app.update_quit_pending = true;
-    h.run_frames(2);
+    // On the old path the quit is accepted after one frame; fail here rather
+    // than let a later frame end the test process.
+    h.run_frames(1);
+    assert!(
+        !h.app.quit_coordinator.is_active(),
+        "update restart started the quit without asking"
+    );
+    h.run_frames(1);
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(2);
     assert!(!h.app.quit_coordinator.is_active(), "cancel starts no quit");
@@ -6979,8 +6986,8 @@ fn update_restart_cancelled_then_restarted_after_discarding() {
     );
 }
 
-/// Stint 1538 part 1: with nothing unsaved and no working agent, the update
-/// restart starts at once, as before.
+/// Stint 1538 part 1, guard (passes on alpha too): with nothing unsaved and
+/// no working agent, the update restart starts at once, as before.
 #[test]
 fn update_restart_with_nothing_unsaved_starts_at_once() {
     crate::app::quit::test_restart_scheduler::take();
@@ -7012,6 +7019,11 @@ fn update_restart_with_a_working_agent_confirms_then_restarts() {
             detail: None,
             session_id: None,
         }));
+    h.app
+        .update_status
+        .apply(crate::host::update_status::UpdateEvent::Ready {
+            version: "9.9.9".into(),
+        });
     h.app.update_quit_pending = true;
     h.run_frames(1);
     assert!(h.app.pending_quit, "the working-agent confirmation opens");
@@ -7022,6 +7034,115 @@ fn update_restart_with_a_working_agent_confirms_then_restarts() {
         Some(crate::app::quit::ExitReason::UpdateRestart),
         "confirming restarts into the update"
     );
+}
+
+/// A focused terminal running a working agent, with an update ready.
+fn working_agent_with_update_ready() -> HostHarness {
+    use crate::protocol::{AgentState, PaneAgentState};
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    h.app.windows[0]
+        .panes
+        .get_mut(&id)
+        .unwrap()
+        .set_agent(Some(PaneAgentState {
+            pane_id: id,
+            state: AgentState::Working,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.app
+        .update_status
+        .apply(crate::host::update_status::UpdateEvent::Ready {
+            version: "9.9.9".into(),
+        });
+    h
+}
+
+/// Stint 1538 part 1: if the update stops being ready while the working-agent
+/// confirmation is open, accepting it restarts nothing and quits nothing.
+#[test]
+fn update_restart_confirmed_after_the_update_went_away_does_nothing() {
+    crate::app::quit::test_restart_scheduler::take();
+    let mut h = working_agent_with_update_ready();
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert!(h.app.pending_quit);
+    h.app
+        .update_status
+        .apply(crate::host::update_status::UpdateEvent::UpToDate { checked_at: 1 });
+    h.app.resolve_quit_confirmation(true);
+    assert!(
+        !h.app.quit_coordinator.is_active(),
+        "nothing to restart into"
+    );
+    assert!(!h.app.quitting);
+}
+
+/// Stint 1538 part 1: cancelling the working-agent confirmation raised by
+/// "Restart to update" clears it; the update stays ready, and a later
+/// ordinary quit confirmation is a plain quit.
+#[test]
+fn update_restart_confirmation_cancelled_leaves_an_ordinary_quit_plain() {
+    let mut h = working_agent_with_update_ready();
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert!(h.app.pending_quit);
+    h.app.resolve_quit_confirmation(false);
+    assert!(
+        !h.app.update_restart_confirming,
+        "cancel clears the restart"
+    );
+    assert!(
+        h.app.update_status.ready().is_some(),
+        "the update stays ready"
+    );
+    assert!(!h.app.prepare_user_quit(), "an ordinary quit asks too");
+    h.app.resolve_quit_confirmation(true);
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::WindowClosed),
+        "a later ordinary quit stays a quit"
+    );
+}
+
+/// Stint 1538 part 1: a restart whose first save failed leaves the UI live
+/// until its retry. An edit made in between is asked about before the retry
+/// saves and schedules the restart, as a desktop quit's retry already does.
+#[test]
+fn update_restart_retry_asks_about_an_edit_made_after_a_failed_save() {
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    let workspace = crate::workspace::workspace_path_in(h.profile_dir());
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    std::fs::write(&workspace, b"invalid workspace").unwrap();
+    h.app
+        .request_quit(crate::app::quit::ExitReason::UpdateRestart);
+    let scheduled = std::cell::Cell::new(0);
+    assert!(!h
+        .app
+        .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
+            scheduled.set(scheduled.get() + 1);
+            Ok(())
+        }));
+    assert!(h.app.quit_coordinator.retry_pending(), "the save failed");
+    // The UI is live: the person edits, and the save cause clears.
+    h.text_editor_mut(pane)
+        .test_set_unsaved("typed during the retry");
+    std::fs::remove_file(&workspace).unwrap();
+    h.app.quit_coordinator.make_retry_due();
+    h.app
+        .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
+            scheduled.set(scheduled.get() + 1);
+            Ok(())
+        });
+    assert_eq!(scheduled.get(), 0, "no restart was scheduled over the edit");
+    assert!(!h.app.quit_coordinator.is_active(), "the retry was refused");
+    assert_eq!(
+        h.text_editor_mut(pane).open_buffer().text,
+        "typed during the retry"
+    );
+    h.text_editor_mut(pane).test_discard_unsaved();
 }
 
 #[test]

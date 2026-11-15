@@ -200,9 +200,6 @@ impl<'a> ActionModal<'a> {
         self
     }
 
-    /// Conventional confirm layout: one right-aligned row of kit buttons in
-    /// the order given (left to right), each carrying its shortcut as a dim
-    /// hint. Stacks full-width only when the row cannot fit the modal.
     /// Guard this dialog's destructive actions (stint 1513) with the consent
     /// input check in its no-arm-delay mode: a fresh, real press with exact
     /// modifiers; never a key repeat, an injected key or an injected click.
@@ -213,6 +210,9 @@ impl<'a> ActionModal<'a> {
         self
     }
 
+    /// Conventional confirm layout: one right-aligned row of kit buttons in
+    /// the order given (left to right), each carrying its shortcut as a dim
+    /// hint. Stacks full-width only when the row cannot fit the modal.
     pub(crate) fn button_row(mut self) -> Self {
         self.button_row = true;
         self
