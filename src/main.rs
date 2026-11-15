@@ -280,6 +280,21 @@ fn main() -> eframe::Result {
             &crate::platform::ipc::endpoint_path(),
         ) {
             Ok(instance) => Some(instance),
+            // A live host: hand it the path argument and exit 0 at once
+            // (stint 1543).
+            Err(refusal @ app::host_instance::Refusal::HostLive { .. }) => {
+                log::info!("host_startup: second launch on a live host: {refusal}");
+                let workspace_path = launch_workspace_path(&raw_args);
+                let status = app::host_instance::hand_launch_to_live_host(
+                    workspace_path.as_deref(),
+                    |path| cli::context_cli::context_open_cli(Some(path)),
+                );
+                log::logger().flush();
+                if workspace_path.is_none() {
+                    eprintln!("{refusal}");
+                }
+                std::process::exit(status);
+            }
             Err(refusal) if refusal.is_another_host() => {
                 log::info!("host_startup: refused second host: {refusal}");
                 log::logger().flush();
@@ -2339,6 +2354,15 @@ fn configure_cli_sigpipe(raw_args: &[String]) -> std::io::Result<()> {
 /// and names no subcommand. `--version`, `--help`, parse errors and every CLI
 /// subcommand are not host startup, so host-only side effects (history
 /// retention, keychain migration) never run for them.
+/// The `plexi <path>` argument of a host launch, if any.
+fn launch_workspace_path(raw_args: &[String]) -> Option<String> {
+    use clap::Parser;
+    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
+    cli::args::Cli::try_parse_from(&args)
+        .ok()
+        .and_then(|parsed| parsed.workspace_path)
+}
+
 fn is_host_startup(raw_args: &[String]) -> bool {
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));

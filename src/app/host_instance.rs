@@ -57,7 +57,15 @@ pub(crate) struct HostInstance {
 /// Why this launch may not become the profile's host.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Refusal {
-    /// Another host holds the lock; `pid` is what it recorded, if readable.
+    /// Another host holds the lock and its socket answers: it is live, so
+    /// the launch hands its path to that host and exits 0 (stint 1543).
+    HostLive {
+        lock: PathBuf,
+        pid: Option<u32>,
+        endpoint: PathBuf,
+    },
+    /// Another host held the lock for the whole grace with no socket
+    /// answering; `pid` is what it recorded, if readable.
     LockHeld { lock: PathBuf, pid: Option<u32> },
     /// The lock was free but the socket answered: a host from a build before
     /// this guard is running and owns it.
@@ -77,7 +85,7 @@ impl Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::LockHeld { lock, pid } => {
+            Self::HostLive { lock, pid, .. } | Self::LockHeld { lock, pid } => {
                 let profile = lock.parent().unwrap_or(lock).display();
                 match pid {
                     Some(pid) => write!(
@@ -124,6 +132,26 @@ fn claim_within(
         .truncate(false)
         .open(&path)
         .map_err(|error| Refusal::LockUnavailable(format!("open {}: {error}", path.display())))?;
+    let read_pid = |path: &Path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+    };
+    // A held lock with an answering socket is a live host: say so at once
+    // instead of spending the grace (stint 1543). The grace is only for a
+    // host that has already removed its socket and is finishing its exit.
+    if matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+        && matches!(
+            crate::cli::host::probe_notify_socket(endpoint, PROBE_TIMEOUT),
+            crate::cli::host::RunningState::Running
+        )
+    {
+        return Err(Refusal::HostLive {
+            pid: read_pid(&path),
+            lock: path,
+            endpoint: endpoint.to_path_buf(),
+        });
+    }
     let deadline = std::time::Instant::now() + grace;
     let locked = loop {
         match file.try_lock() {
@@ -136,9 +164,7 @@ fn claim_within(
     match locked {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
-            let pid = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| text.trim().parse().ok());
+            let pid = read_pid(&path);
             return Err(Refusal::LockHeld { lock: path, pid });
         }
         Err(TryLockError::Error(error)) => {
@@ -172,6 +198,26 @@ fn claim_within(
         profile_dir.display()
     );
     Ok(HostInstance { _lock: file })
+}
+
+/// What a launch that found a live host does: hand its path argument, if
+/// any, to that host through `open` (the `plexi context open` request) and
+/// return the exit status. Raising the running window is stint 1487's.
+pub(crate) fn hand_launch_to_live_host(
+    workspace_path: Option<&str>,
+    open: impl FnOnce(&str) -> i32,
+) -> i32 {
+    let Some(path) = workspace_path else {
+        log::info!("host_startup: a host is already live; nothing to forward");
+        return 0;
+    };
+    let status = open(path);
+    if status == 0 {
+        log::info!("host_startup: forwarded {path:?} to the live host");
+    } else {
+        log::error!("host_startup: could not forward {path:?} to the live host (status {status})");
+    }
+    status
 }
 
 #[cfg(test)]
@@ -208,19 +254,68 @@ mod tests {
         dir.join("notify.sock")
     }
 
-    /// Stint 1459: a second launch on a profile whose host holds the lock is
-    /// refused and never touches the socket.
+    /// Stint 1543 (and 1459): a second launch on a profile whose host holds
+    /// the lock and answers on its socket is told so at once, without
+    /// spending the exit grace, and never touches the socket.
     #[test]
-    fn second_claim_on_a_live_profile_is_refused_and_leaves_the_socket() {
+    fn a_second_launch_on_a_live_host_returns_at_once() {
         let profile = tempfile::tempdir().unwrap();
         let endpoint = endpoint_in(profile.path());
         let first = claim(profile.path(), &endpoint).expect("the first launch is the host");
         let listener = crate::platform::ipc::IpcListener::bind(&endpoint).unwrap();
+        let accept = std::thread::spawn(move || {
+            let _ = listener.incoming().next();
+        });
 
-        let refusal = match claim_within(profile.path(), &endpoint, Duration::ZERO) {
+        let started = std::time::Instant::now();
+        let refusal = match claim(profile.path(), &endpoint) {
             Ok(_) => panic!("a second host must be refused"),
             Err(refusal) => refusal,
         };
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "a live host must be reported at once, took {elapsed:?}"
+        );
+        assert_eq!(
+            refusal,
+            Refusal::HostLive {
+                lock: profile.path().join(LOCK_FILE),
+                pid: Some(std::process::id()),
+                endpoint: endpoint.clone(),
+            }
+        );
+        assert!(refusal.is_another_host());
+        assert!(refusal
+            .to_string()
+            .contains("already running on this profile"));
+        #[cfg(unix)]
+        assert!(
+            endpoint.exists(),
+            "the live host's socket must not be unlinked"
+        );
+        accept.join().unwrap();
+        drop(first);
+    }
+
+    /// A held lock with no socket is a host finishing its exit: the launch
+    /// waits the grace, then refuses with a named reason.
+    #[test]
+    fn a_held_lock_without_a_socket_waits_the_grace_then_refuses() {
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let first = claim(profile.path(), &endpoint).expect("the first launch is the host");
+        let grace = Duration::from_millis(300);
+
+        let started = std::time::Instant::now();
+        let refusal = match claim_within(profile.path(), &endpoint, grace) {
+            Ok(_) => panic!("a held lock must refuse"),
+            Err(refusal) => refusal,
+        };
+        assert!(
+            started.elapsed() >= grace,
+            "a held lock with no socket must wait the grace"
+        );
         assert_eq!(
             refusal,
             Refusal::LockHeld {
@@ -231,13 +326,28 @@ mod tests {
         assert!(refusal
             .to_string()
             .contains("already running on this profile"));
-        #[cfg(unix)]
-        assert!(
-            endpoint.exists(),
-            "the live host's socket must not be unlinked"
-        );
-        drop(listener);
         drop(first);
+    }
+
+    /// A second launch hands its path argument to the live host and exits
+    /// with the hand-off's status; with no path it exits 0.
+    #[test]
+    fn a_second_launch_forwards_its_path_to_the_live_host() {
+        let mut opened = Vec::new();
+        assert_eq!(
+            hand_launch_to_live_host(Some("/work/project"), |path| {
+                opened.push(path.to_string());
+                0
+            }),
+            0
+        );
+        assert_eq!(opened, ["/work/project"]);
+
+        assert_eq!(hand_launch_to_live_host(Some("/x"), |_| 1), 1);
+        assert_eq!(
+            hand_launch_to_live_host(None, |_| panic!("nothing to forward")),
+            0
+        );
     }
 
     /// A host from a build before this guard takes no lock, but its socket
