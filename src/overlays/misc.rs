@@ -281,6 +281,43 @@ impl PlexiApp {
                         });
                     });
 
+                    // ── Explorer: generated from the key table classify_key
+                    // reads, so it cannot drift from the key handling (stint 1555).
+                    ui.add_space(style::SPACE_MD);
+                    section_label(ui, "EXPLORER", colors);
+                    let explorer = crate::file_browser::explorer_shortcut_rows();
+                    let half = explorer.len().div_ceil(2);
+                    // Two equal columns whose gap matches the divider gap above
+                    // (SPACE_MD, the 1 pt divider, SPACE_MD), so the right half
+                    // starts under the right column of the sheet.
+                    let column_width = (ui.available_width() - 2.0 * style::SPACE_MD) / 2.0;
+                    let cell_width = (column_width - style::SPACE_SM) * 0.6;
+                    ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0 * style::SPACE_MD + 1.0;
+                        ui.columns(2, |columns| {
+                            for (index, (column, rows)) in
+                                columns.iter_mut().zip(explorer.chunks(half)).enumerate()
+                            {
+                                egui::Grid::new(("shortcuts_explorer", index))
+                                    .num_columns(2)
+                                    .min_col_width(0.0)
+                                    .max_col_width(cell_width)
+                                    .spacing([style::SPACE_SM, 4.0])
+                                    .show(column, |ui| {
+                                        for (label, combos) in rows {
+                                            let combos: Vec<&[&str]> =
+                                                combos.iter().map(Vec::as_slice).collect();
+                                            crate::ui::shortcuts::key_combo_list(
+                                                ui, &combos, None, colors,
+                                            );
+                                            shortcut_description(ui, label, colors);
+                                            ui.end_row();
+                                        }
+                                    });
+                            }
+                        });
+                    });
+
                     ui.add_space(style::SPACE_MD);
                     ui.separator();
                     ui.add_space(style::SPACE_SM);
