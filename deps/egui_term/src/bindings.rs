@@ -15,6 +15,21 @@ pub enum BindingAction {
     Ignore,
 }
 
+impl BindingAction {
+    /// Scrollback actions the view performs itself. As in Alacritty, these
+    /// win over kitty key encoding; byte-producing bindings (`Esc`, `Char`)
+    /// never do, so a kitty-mode program never receives legacy sequences.
+    pub fn is_scroll(&self) -> bool {
+        matches!(
+            self,
+            BindingAction::ScrollLines(_)
+                | BindingAction::ScrollPage(_)
+                | BindingAction::ScrollToTop
+                | BindingAction::ScrollToBottom
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputKind {
     KeyCode(Key),

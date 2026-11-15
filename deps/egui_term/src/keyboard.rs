@@ -2,7 +2,7 @@
 //! and the independent main/alternate-screen stacks belong to alacritty.
 use alacritty_terminal::term::TermMode;
 use egui::{Event, Key, Modifiers};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 struct Code {
@@ -14,6 +14,9 @@ struct Code {
 #[derive(Clone, Default)]
 pub(crate) struct KeyboardEncoder {
     held: HashMap<Key, Code>,
+    /// Keys whose press a scroll binding handled; the program never saw the
+    /// press, so it must not see the release either.
+    scrolled: HashSet<Key>,
     mode: TermMode,
 }
 
@@ -25,14 +28,19 @@ pub(crate) struct PreparedEvent {
 }
 
 impl KeyboardEncoder {
+    /// `is_scroll_binding` reports whether a press is bound to a scroll
+    /// action in the current terminal mode; such presses skip kitty encoding
+    /// and fall through to the binding path (Alacritty's order).
     pub fn prepare(
         &mut self,
         events: Vec<Event>,
         mode: TermMode,
+        is_scroll_binding: impl Fn(Key, Modifiers) -> bool,
     ) -> Vec<PreparedEvent> {
         let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
         if self.mode != mode {
             self.held.clear();
+            self.scrolled.clear();
             self.mode = mode;
         }
         let mut events = events.into_iter().peekable();
@@ -45,7 +53,20 @@ impl KeyboardEncoder {
                     pressed,
                     repeat,
                     modifiers,
-                } if !mode.is_empty() => {
+                } if !mode.is_empty() => 'key: {
+                    let identity = physical_key.unwrap_or(*key);
+                    if *pressed && is_scroll_binding(*key, *modifiers) {
+                        if !*repeat {
+                            log::info!(
+                                "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
+                            );
+                        }
+                        self.scrolled.insert(identity);
+                        break 'key None;
+                    }
+                    if !*pressed && self.scrolled.remove(&identity) {
+                        break 'key Some(Vec::new());
+                    }
                     // egui-winit emits Key followed by Text for a printable
                     // press. Consume that text only when this key was encoded.
                     let text = if *pressed {
@@ -56,7 +77,6 @@ impl KeyboardEncoder {
                     } else {
                         None
                     };
-                    let identity = physical_key.unwrap_or(*key);
                     let code = if !pressed {
                         self.held
                             .remove(&identity)
@@ -307,9 +327,13 @@ mod tests {
         }
     }
 
+    fn unbound(_: Key, _: Modifiers) -> bool {
+        false
+    }
+
     fn encoded(events: Vec<Event>, mode: TermMode) -> Vec<Option<String>> {
         KeyboardEncoder::default()
-            .prepare(events, mode)
+            .prepare(events, mode, unbound)
             .into_iter()
             .map(|e| e.encoding.map(|v| String::from_utf8(v).unwrap()))
             .collect()
@@ -429,6 +453,7 @@ mod tests {
                 Event::Text("Ж".into()),
             ],
             mode,
+            unbound,
         );
         assert_eq!(result.len(), 1);
         assert_eq!(
@@ -436,8 +461,11 @@ mod tests {
             Some(b"\x1b[1078;2:1;1046u".as_slice())
         );
         // The release may have no text and a different modifier state.
-        let result = encoder
-            .prepare(vec![key(Key::A, Modifiers::NONE, false, false)], mode);
+        let result = encoder.prepare(
+            vec![key(Key::A, Modifiers::NONE, false, false)],
+            mode,
+            unbound,
+        );
         assert_eq!(
             result[0].encoding.as_deref(),
             Some(b"\x1b[1078;1:3u".as_slice())
@@ -446,8 +474,11 @@ mod tests {
             encoded(vec![Event::Text("日本".into())], mode),
             [Some("\x1b[0;1;26085:26412u".into())]
         );
-        let result =
-            encoder.prepare(vec![Event::Paste("paste me".into())], mode);
+        let result = encoder.prepare(
+            vec![Event::Paste("paste me".into())],
+            mode,
+            unbound,
+        );
         assert!(
             matches!(&result[0].event, Event::Paste(text) if text == "paste me")
         );
@@ -496,11 +527,46 @@ mod tests {
         let result = KeyboardEncoder::default().prepare(
             events.clone(),
             TermMode::ALT_SCREEN | TermMode::APP_CURSOR,
+            unbound,
         );
         assert_eq!(
             result.iter().map(|e| &e.event).collect::<Vec<_>>(),
             events.iter().collect::<Vec<_>>()
         );
         assert!(result.iter().all(|e| e.encoding.is_none()));
+    }
+
+    #[test]
+    fn kitty_scroll_binding_press_is_unencoded_and_its_release_swallowed() {
+        let mode =
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_EVENT_TYPES;
+        let scroll =
+            |k: Key, m: Modifiers| k == Key::PageUp && m == Modifiers::SHIFT;
+        let mut encoder = KeyboardEncoder::default();
+        let result = encoder.prepare(
+            vec![
+                key(Key::PageUp, Modifiers::SHIFT, true, false),
+                key(Key::PageUp, Modifiers::SHIFT, true, true),
+                key(Key::PageUp, Modifiers::SHIFT, false, false),
+                key(Key::PageUp, Modifiers::NONE, true, false),
+                key(Key::PageUp, Modifiers::NONE, false, false),
+            ],
+            mode,
+            scroll,
+        );
+        let encodings: Vec<_> = result
+            .into_iter()
+            .map(|e| e.encoding.map(|v| String::from_utf8(v).unwrap()))
+            .collect();
+        assert_eq!(
+            encodings,
+            [
+                None,
+                None,
+                Some(String::new()),
+                Some("\x1b[5;1:1~".into()),
+                Some("\x1b[5;1:3~".into()),
+            ]
+        );
     }
 }
