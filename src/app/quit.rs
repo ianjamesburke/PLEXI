@@ -227,6 +227,19 @@ impl super::PlexiApp {
                     self.quit_coordinator.save_waived = true;
                     return true;
                 }
+                // `plexi host stop` has nobody to answer the dialog either:
+                // once the bounded retries are spent it exits unsaved and
+                // says so in its reply (stint 1540).
+                if self.quit_coordinator.reason == Some(ExitReason::HostStop)
+                    && self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
+                {
+                    log::error!(
+                        "quit: host stop exits without saving after {} failed saves: {error}",
+                        self.quit_coordinator.save_failures
+                    );
+                    self.quit_coordinator.save_waived = true;
+                    return true;
+                }
                 // A boot-time block cannot clear by retrying: ask at once.
                 if self.workspace_load_failure.is_some()
                     || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
@@ -1425,15 +1438,17 @@ mod tests {
         );
     }
 
-    /// Drives `request_quit` against an unwritable-as-valid workspace file and
-    /// returns the harness after the retry budget is exhausted.
+    /// Drives a desktop quit (window close) against an unwritable-as-valid
+    /// workspace file and returns the harness after the retry budget is
+    /// exhausted, with the "Quit without saving" dialog up. (`host stop` has
+    /// no dialog: see `host_stop_failing_save_exits_unsaved_without_a_dialog`.)
     fn quit_with_unsaveable_workspace() -> (crate::testing::HostHarness, std::path::PathBuf) {
         let mut h = crate::testing::HostHarness::new();
         h.add_test_pane();
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"invalid workspace").unwrap();
-        h.app.request_quit(ExitReason::HostStop);
+        h.app.request_quit(ExitReason::WindowClosed);
         for attempt in 1..=MAX_QUIT_SAVE_ATTEMPTS {
             h.app.quit_coordinator.retry_at = None;
             assert!(!h
@@ -1740,6 +1755,44 @@ mod tests {
         );
         assert_eq!(leftovers["status"], 1);
         assert_eq!(leftovers["remaining_processes"], 2);
+    }
+
+    /// Stint 1540: `plexi host stop` has nobody to answer a dialog. A save
+    /// that keeps failing for a reason other than a boot-time block is
+    /// retried the bounded number of times, then the quit goes on unsaved:
+    /// no `pending_close`, no dialog, and the exit records Unsaved for the
+    /// stop reply. The file on disk is not rewritten.
+    #[test]
+    fn host_stop_failing_save_exits_unsaved_without_a_dialog() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"invalid workspace").unwrap();
+        assert!(
+            h.app.workspace_load_failure.is_none(),
+            "not a boot-time block"
+        );
+        h.app.request_quit(ExitReason::HostStop);
+        let mut proceeded = false;
+        for _ in 0..MAX_QUIT_SAVE_ATTEMPTS {
+            h.app.quit_coordinator.retry_at = None;
+            proceeded = h
+                .app
+                .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
+            assert!(!h.app.pending_close, "no dialog for host stop");
+            assert!(
+                h.app.quit_coordinator.save_failure().is_none(),
+                "no dialog cause set"
+            );
+        }
+        assert!(proceeded, "the quit goes on after the last failed save");
+        assert_eq!(h.app.quit_coordinator.save_failures, MAX_QUIT_SAVE_ATTEMPTS);
+        assert_eq!(
+            h.app.quit_workspace_durability(),
+            WorkspaceDurability::Unsaved
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
     }
 
     #[test]

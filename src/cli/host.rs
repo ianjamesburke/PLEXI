@@ -977,6 +977,10 @@ fn uninstall_stop_step(outcome: &StopOutcome) -> Result<Option<String>, String> 
         StopOutcome::StoppedUnclean(why) => {
             Ok(Some(format!("the channel host stopped, but {why}")))
         }
+        StopOutcome::TerminationRequested(_) => Ok(Some(
+            "the channel host did not answer and was terminated; its workspace may not have been saved"
+                .to_string(),
+        )),
         _ => Ok(None),
     }
 }
@@ -1226,7 +1230,8 @@ pub(crate) enum StopOutcome {
     StoppedUnclean(String),
     /// The host exited without answering (a build from before the reply).
     StoppedUnknown,
-    /// No answer and still running: termination was requested.
+    /// No answer and still running: the host was terminated, so whatever it
+    /// had not saved is lost. Never a success (stint 1540).
     TerminationRequested(u32),
     /// No host was running for this channel.
     NotRunning,
@@ -1237,8 +1242,11 @@ pub(crate) enum StopOutcome {
 impl StopOutcome {
     fn exit_code(&self) -> i32 {
         match self {
-            Self::Clean | Self::StoppedUnknown | Self::TerminationRequested(_) => 0,
-            Self::StoppedUnclean(_) | Self::NotRunning | Self::Failed(_) => 1,
+            Self::Clean | Self::StoppedUnknown => 0,
+            Self::StoppedUnclean(_)
+            | Self::TerminationRequested(_)
+            | Self::NotRunning
+            | Self::Failed(_) => 1,
         }
     }
 
@@ -1248,9 +1256,10 @@ impl StopOutcome {
             Self::Clean => "Plexi host stopped (clean shutdown).".to_string(),
             Self::StoppedUnclean(why) => format!("Plexi host stopped, but {why}."),
             Self::StoppedUnknown => "Plexi host stopped (exit status unknown).".to_string(),
-            Self::TerminationRequested(pid) => {
-                format!("Termination requested for Plexi host (pid {pid}).")
-            }
+            Self::TerminationRequested(pid) => format!(
+                "Plexi host (pid {pid}) did not answer and was terminated; \
+                 its workspace may not have been saved."
+            ),
             Self::NotRunning => "no Plexi host is running for this channel".to_string(),
             Self::Failed(why) => why.clone(),
         }
@@ -2174,11 +2183,16 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let outcome = host_stop_in(profile.path(), None);
 
         assert_eq!(outcome, StopOutcome::TerminationRequested(child_pid));
+        // Stint 1540: a host that had to be killed is reported as killed,
+        // never as a success.
         assert_eq!(
             outcome.message(),
-            format!("Termination requested for Plexi host (pid {child_pid}).")
+            format!(
+                "Plexi host (pid {child_pid}) did not answer and was terminated; \
+                 its workspace may not have been saved."
+            )
         );
-        assert_eq!(outcome.exit_code(), 0);
+        assert_ne!(outcome.exit_code(), 0);
         assert!(
             started.elapsed() >= HOST_STOP_REPLY_TIMEOUT,
             "signalled only after the reply timeout, took {:?}",
