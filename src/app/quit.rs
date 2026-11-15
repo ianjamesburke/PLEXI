@@ -714,7 +714,27 @@ pub(crate) fn exit_host(
     // `on_exit` returns and which this call therefore skips: the wgpu device
     // and its worker threads are reclaimed by process teardown, exactly as on
     // the `plexi host stop` path that has always exited from mid-frame.
-    std::process::exit(status);
+    end_process(status);
+}
+
+/// End the host process now, without C exit handlers (stint 1537).
+///
+/// `std::process::exit` runs the handlers registered with `atexit`; on macOS
+/// one of them (CoreAnalytics) was measured waiting its full 300 ms on most
+/// quits of a young host, with the window already hidden, which left a
+/// window for "The application is not open anymore". `_exit` skips them.
+/// What exit used to do for us is done before this: the integrity stamp and
+/// the `host stop` reply are written synchronously (atomic file write or a
+/// flushed socket write), the notify socket is removed, the logger is flushed
+/// by `exit_host`, and Rust's own stdout buffer is flushed here (`exit` would
+/// have done that in `std::rt::cleanup`). Rust statics never run `Drop` at
+/// exit either way, and the host registers no `atexit` handler of its own.
+pub(crate) fn end_process(status: i32) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `_exit` takes no pointers and does not return.
+    unsafe { libc::_exit(status) }
 }
 
 #[cfg(test)]
@@ -755,6 +775,59 @@ mod tests {
     }
 
     use super::*;
+
+    /// Marks that a C exit handler ran, for the `_exit` tests (stint 1537).
+    extern "C" fn mark_atexit_ran() {
+        if let Ok(path) = std::env::var("PLEXI_TEST_ATEXIT_MARKER") {
+            let _ = std::fs::write(path, "atexit ran");
+        }
+    }
+
+    /// Stint 1537: `exit_host` ends in `_exit`, so a C exit handler (where
+    /// macOS spent 300 ms) never runs, while the `host stop` reply it owes is
+    /// still written and the exit status is the one it reports. Runs
+    /// `exit_host` in a child copy of this test binary; nothing exits here.
+    #[test]
+    fn exit_host_ends_without_running_exit_handlers() {
+        const CHILD: &str = "PLEXI_TEST_EXIT_HOST_CHILD";
+        if std::env::var(CHILD).is_ok() {
+            unsafe {
+                libc::atexit(mark_atexit_ran);
+            }
+            let reply = std::env::var("PLEXI_TEST_STOP_REPLY").expect("reply path");
+            exit_host(
+                ExitReason::HostStop,
+                WorkspaceDurability::Saved,
+                Some(reply),
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("atexit-ran");
+        let reply = dir.path().join("stop-reply.json");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::quit::tests::exit_host_ends_without_running_exit_handlers",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PLEXI_TEST_ATEXIT_MARKER", &marker)
+            .env("PLEXI_TEST_STOP_REPLY", &reply)
+            .output()
+            .expect("run exit_host in a child");
+        assert!(
+            !marker.exists(),
+            "a C exit handler ran: exit_host did not end in _exit"
+        );
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&reply).expect("the host stop reply"))
+                .expect("the reply is JSON");
+        assert_eq!(
+            reply["status"],
+            output.status.code().expect("exit code"),
+            "{reply}"
+        );
+    }
 
     #[test]
     fn quit_cleanup_replaces_the_stale_workspace_save_heartbeat_phase() {
