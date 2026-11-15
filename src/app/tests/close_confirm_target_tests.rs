@@ -9,7 +9,10 @@ use crate::testing::HostHarness;
 /// the title from its prompt, and under load that arrives within the test's
 /// few frames, so the fixture's titles would depend on shell timing.
 #[cfg(unix)]
-fn quiet_shell() -> (tempfile::TempDir, crate::host::shell::TestShellOverrideGuard) {
+fn quiet_shell() -> (
+    tempfile::TempDir,
+    crate::host::shell::TestShellOverrideGuard,
+) {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = tempfile::tempdir().expect("shell dir");
     let script = dir.path().join("quiet-shell.sh");
