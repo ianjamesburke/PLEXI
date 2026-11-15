@@ -685,25 +685,13 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
 
     fn format_node_line(pane: &serde_json::Value) -> String {
         let id = pane.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let name = pane
-            .get("name")
-            .and_then(|v| v.as_str())
+        let name = shown_field(pane, "name")
             .filter(|s| !s.is_empty())
-            .or_else(|| {
-                pane.get("title")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-            })
-            .unwrap_or("pane");
-        let role = pane
-            .get("agent_role")
-            .and_then(|v| v.as_str())
-            .or_else(|| pane.get("agent").and_then(|v| v.as_str()));
-        let state = pane.get("agent_state").and_then(|v| v.as_str());
-        let spawned_by = pane
-            .get("spawned_by")
-            .and_then(|v| v.as_str())
-            .unwrap_or("human");
+            .or_else(|| shown_field(pane, "title").filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| "pane".to_string());
+        let role = shown_field(pane, "agent_role").or_else(|| shown_field(pane, "agent"));
+        let state = shown_field(pane, "agent_state");
+        let spawned_by = shown_field(pane, "spawned_by").unwrap_or_else(|| "human".to_string());
         let waiting = pane
             .get("pending_child_results_count")
             .and_then(|v| v.as_u64())
@@ -722,6 +710,14 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             String::new()
         };
         format!("#{id} {role_part}\"{name}\" (spawned by {spawned_by}){waiting_part}")
+    }
+
+    // A title, name or role can come from an untrusted plugin: printed for a
+    // human, each goes through the stint 1344 sanitiser (stint 1528).
+    fn shown_field(pane: &serde_json::Value, key: &str) -> Option<String> {
+        pane.get(key)
+            .and_then(|v| v.as_str())
+            .map(crate::host::guest_text::shown)
     }
 
     fn walk(
@@ -2385,5 +2381,54 @@ mod current_pane_tests {
             assert!(err.contains(&format!("{raw:?}")), "{err}");
             assert!(err.contains("plexi pane list"), "{err}");
         }
+    }
+}
+
+/// Stint 1528: a pane's title and name can come from an untrusted plugin.
+#[cfg(test)]
+mod guest_text_output_tests {
+    use super::*;
+
+    const HOSTILE: &str = "ok\u{1b}[31m\nforged #9 \"x\"\u{202e}gnp.exe\u{200b}";
+
+    fn hostile_panes() -> Vec<serde_json::Value> {
+        vec![serde_json::json!({
+            "id": 1,
+            "title": HOSTILE,
+            "agent_role": "role\u{1b}]0;t\u{7}",
+            "agent_state": "work\ning",
+            "spawned_by": "plugin\u{202e}",
+        })]
+    }
+
+    /// The human tree printer escapes guest text: no control, bidi or
+    /// invisible character reaches the terminal, and one pane is one line.
+    #[test]
+    fn the_pane_tree_escapes_guest_text() {
+        let out = format_pane_tree(&hostile_panes(), false);
+        assert!(
+            !out.chars().any(crate::host::guest_text::is_unsafe_to_print),
+            "{out:?}"
+        );
+        assert_eq!(out.lines().count(), 1, "{out:?}");
+        assert!(out.contains("\\u{1b}[31m\\nforged"), "{out:?}");
+        assert!(out.contains("\\u{202e}gnp.exe"), "{out:?}");
+    }
+
+    /// The JSON policy: JSON output is lossless. Control characters appear
+    /// only as JSON escapes (never raw), and every other character, bidi and
+    /// invisible format characters included, is kept as sent and uncapped, so
+    /// a consumer gets exactly what the plugin wrote.
+    #[test]
+    fn json_output_keeps_guest_text_lossless() {
+        let long = format!("{HOSTILE}{}", "A".repeat(5000));
+        let panes = vec![serde_json::json!({ "id": 1, "title": long })];
+        let out = format_pane_tree(&panes, true);
+        assert!(
+            !out.chars().any(|c| c.is_control() && c != '\n'),
+            "{out:.80?}"
+        );
+        let back: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(back[0]["title"].as_str().unwrap(), long);
     }
 }

@@ -1566,6 +1566,8 @@ List all open panes as a JSON array.
 
 Filter by context: `--context` (no value) returns panes in the caller's context (reads PLEXI_CONTEXT_ID from env). `--context <id-or-name>` filters to a specific context.
 
+Text a plugin wrote (titles, names, UI tree text) is kept exactly as sent in JSON: control characters appear only as JSON escapes, and every other character, including bidi and invisible format characters, is kept and not length-capped. Escape it before showing it to a person.
+
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--context` | string | no | Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With an argument, returns panes in that specific context |
@@ -1574,7 +1576,7 @@ Filter by context: `--context` (no value) returns panes in the caller's context 
 
 Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style).
 
-Displays each root pane and its spawned child panes with `spawned_by`, agent role, state, and title. Pass `--json` to output the nested forest as JSON.
+Displays each root pane and its spawned child panes with `spawned_by`, agent role, state, and title. Text a plugin wrote is escaped in this listing (control, bidi and invisible characters show as `\u{..}` escapes) and capped. Pass `--json` to output the nested forest as JSON, where that text is kept exactly as sent.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1768,6 +1770,8 @@ Return the current UI state of a pane as JSON.
 For view panes: returns a versioned, runtime-neutral `semantic` tree. Process plugins also retain the compatible `frame` RenderCommand array. Agents can use the semantic nodes to inspect what any plugin runtime is currently displaying.
 
 For terminal panes: returns a simple status object (type, title, pane_id).
+
+Text a plugin wrote (titles, names, UI tree text) is kept exactly as sent in JSON: control characters appear only as JSON escapes, and every other character, including bidi and invisible format characters, is kept and not length-capped. Escape it before showing it to a person.
 
 Every response also carries `claimed_state` (the pane's own `status` slot — an agent-authored claim, with its step token embedded in the value by convention, or `null` if never written) and `observed_state` (host-derived: process alive, seconds since last output, child pids, current foreground command) — always together, never one without the other. Pass `--stale-after <secs>` to additionally raise a typed `stale_claim` when a claim exists but the host has observed no output within that many seconds; omit it and `stale_claim` stays `null` with no evaluation performed.
 

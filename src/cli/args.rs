@@ -2076,6 +2076,11 @@ pub enum PaneCmd {
     ///
     /// Filter by context: `--context` (no value) returns panes in the caller's context
     /// (reads PLEXI_CONTEXT_ID from env). `--context <id-or-name>` filters to a specific context.
+    ///
+    /// Text a plugin wrote (titles, names, UI tree text) is kept exactly as sent
+    /// in JSON: control characters appear only as JSON escapes, and every other
+    /// character, including bidi and invisible format characters, is kept and
+    /// not length-capped. Escape it before showing it to a person.
     List {
         /// Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
         /// With an argument, returns panes in that specific context.
@@ -2085,7 +2090,9 @@ pub enum PaneCmd {
     /// Show the parent/child session provenance forest across open panes (`pstree` / `ps --forest` style).
     ///
     /// Displays each root pane and its spawned child panes with `spawned_by`, agent role, state, and title.
-    /// Pass `--json` to output the nested forest as JSON.
+    /// Text a plugin wrote is escaped in this listing (control, bidi and invisible characters show as
+    /// `\u{..}` escapes) and capped. Pass `--json` to output the nested forest as JSON, where that text
+    /// is kept exactly as sent.
     Tree {
         /// Filter by context id or name. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
         #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
@@ -2360,6 +2367,11 @@ pub enum PaneCmd {
     /// the semantic nodes to inspect what any plugin runtime is currently displaying.
     ///
     /// For terminal panes: returns a simple status object (type, title, pane_id).
+    ///
+    /// Text a plugin wrote (titles, names, UI tree text) is kept exactly as sent
+    /// in JSON: control characters appear only as JSON escapes, and every other
+    /// character, including bidi and invisible format characters, is kept and
+    /// not length-capped. Escape it before showing it to a person.
     ///
     /// Every response also carries `claimed_state` (the pane's own `status`
     /// slot — an agent-authored claim, with its step token embedded in the
