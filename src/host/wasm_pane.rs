@@ -5557,6 +5557,46 @@ mod tests {
         );
     }
 
+    /// Stint 1558: the capability prompt is ActionModal's one button layout,
+    /// its grant buttons disabled until armed. Evidence for the PR.
+    #[test]
+    fn screenshot_capability_prompt_button_row() {
+        use crate::host::pane::ViewRuntime;
+        let mut h = crate::testing::HostHarness::new();
+        let pane_id = h.add_test_pane();
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/test.wasm"),
+        );
+        live.set_pane_id(pane_id);
+        live.inner.exec(request_capability("fs:read:/tmp"), 0);
+        let window = h.app.active_window;
+        h.app.windows[window]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_view_mut())
+            .expect("test pane is a view pane")
+            .runtime = ViewRuntime::Wasm(Box::new(live));
+        h.focus_pane(pane_id);
+        h.run_frames(2);
+        h.render_png(crate::ui_tests::evidence_png!()).unwrap();
+        let rows: Vec<(String, egui::Rect, bool)> = crate::ui::layout_report::snapshot(&h.app.ctx)
+            .into_iter()
+            .filter(|r| r.surface == "modal_action")
+            .flat_map(|r| r.actions)
+            .map(|a| (a.id, a.hit, a.inactive))
+            .collect();
+        assert_eq!(rows.len(), capability_prompt_actions().len(), "{rows:?}");
+        // Four buttons do not fit the modal's width: the row stacks, first on top.
+        assert!(rows.windows(2).all(|w| w[0].1.bottom() <= w[1].1.top()));
+        for (id, _, inactive) in &rows {
+            assert_eq!(*inactive, !id.starts_with("deny"), "{id} before arming");
+        }
+    }
+
     /// Stint 1498: a click on the capability prompt delivered on a synthetic
     /// frame grants nothing; the same click made for real still grants.
     #[test]

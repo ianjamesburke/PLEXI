@@ -142,17 +142,17 @@ impl StartupErrorApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(self.colors.bg_darkest))
             .show_inside(ui, |_| {});
+        // Given right to left: the row reads Copy details, Quit.
         let actions =
             [
-                DialogAction::new("copy", "Copy details", ButtonKind::Ghost),
                 DialogAction::new("quit", "Quit", ButtonKind::Primary).shortcut(
                     DialogShortcut::new(&["Esc"], egui::Modifiers::NONE, egui::Key::Escape),
                 ),
+                DialogAction::new("copy", "Copy details", ButtonKind::Ghost),
             ];
         let view = &self.view;
         let colors = &self.colors;
         let response = ActionModal::new("startup_error", &view.title, &actions)
-            .button_row()
             .default_action("quit")
             .show(&ctx, colors, |ui| {
                 if let Some(plugin) = &view.plugin {
