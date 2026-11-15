@@ -61,23 +61,21 @@ impl KeyboardEncoder {
                     pressed,
                     repeat,
                     modifiers,
-                } if !mode.is_empty()
-                    || self
-                        .owners
-                        .contains_key(&physical_key.unwrap_or(*key)) =>
-                'key: {
+                } => 'key: {
                     let identity = physical_key.unwrap_or(*key);
                     if *pressed && !*repeat {
                         self.owners.remove(&identity);
                     }
                     let owner = if *pressed {
                         *self.owners.entry(identity).or_insert_with(|| {
-                            if mode.is_empty() || !scrolls(*key, *modifiers) {
+                            if !scrolls(*key, *modifiers) {
                                 return Owner::Program;
                             }
-                            log::info!(
-                                "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
-                            );
+                            if !mode.is_empty() {
+                                log::info!(
+                                    "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
+                                );
+                            }
                             Owner::Scroll
                         })
                     } else {
@@ -88,8 +86,13 @@ impl KeyboardEncoder {
                             *pressed && scrolls(*key, *modifiers);
                         break 'key (!still_scrolls).then(Vec::new);
                     }
+                    // A program-owned hold never scrolls, whatever the
+                    // modifiers or flags did since its press.
+                    let to_program = *pressed && scrolls(*key, *modifiers);
                     if mode.is_empty() {
-                        break 'key None;
+                        break 'key to_program.then(|| {
+                            xterm_modified(*key, *physical_key, *modifiers)
+                        });
                     }
                     // egui-winit emits Key followed by Text for a printable
                     // press. Consume that text only when this key was encoded.
@@ -147,6 +150,13 @@ impl KeyboardEncoder {
                     if encoded.is_some() && text.is_some() {
                         events.next();
                     }
+                    if encoded.is_none() && to_program {
+                        break 'key Some(xterm_modified(
+                            *key,
+                            *physical_key,
+                            *modifiers,
+                        ));
+                    }
                     encoded
                 },
                 // IME/text-only input has no physical key. Never discard it
@@ -162,6 +172,25 @@ impl KeyboardEncoder {
         }
         result
     }
+}
+
+/// The xterm modified-key form (`CSI 5;2~`, `CSI 1;9H`), which kitty's
+/// disambiguation keeps for these keys: how a program-owned hold reaches the
+/// program when a scroll binding would otherwise take it.
+fn xterm_modified(key: Key, physical: Option<Key>, mods: Modifiers) -> Vec<u8> {
+    key_code(key, mods)
+        .and_then(|code| {
+            encode_key(
+                code,
+                physical,
+                mods,
+                true,
+                false,
+                None,
+                TermMode::DISAMBIGUATE_ESC_CODES,
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn encode_key(
@@ -709,5 +738,47 @@ mod tests {
             out,
             [None, Some("\x1b[5;1:1~".into()), Some("\x1b[5;1:3~".into())]
         );
+    }
+
+    #[test]
+    fn program_hold_repeat_never_scrolls_after_kitty_turns_off() {
+        let layout = BindingsLayout::new();
+        let main = TermMode::empty();
+        let legacy = TermMode::empty();
+        let ev =
+            |mods, pressed, repeat| key(Key::PageUp, mods, pressed, repeat);
+        let shift = Modifiers::SHIFT;
+        let none = Modifiers::NONE;
+        // Program-owned kitty press, kitty turned off, Shift added: the repeat
+        // still goes to the program (xterm modified form), never scrolls.
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &layout,
+            main,
+            vec![
+                (ev(none, true, false), EVENT_TYPES),
+                (ev(shift, true, true), legacy),
+                (ev(shift, false, false), legacy),
+            ],
+        );
+        assert_eq!(
+            out,
+            [Some("\x1b[5;1:1~".into()), Some("\x1b[5;2~".into()), None]
+        );
+    }
+
+    #[test]
+    fn legacy_scroll_hold_release_is_swallowed_after_kitty_turns_on() {
+        let layout = BindingsLayout::new();
+        let ev = |pressed| key(Key::PageUp, Modifiers::SHIFT, pressed, false);
+        // Legacy press that scrolled, event reporting turned on: the program
+        // never sees its release.
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &layout,
+            TermMode::empty(),
+            vec![(ev(true), TermMode::empty()), (ev(false), EVENT_TYPES)],
+        );
+        assert_eq!(out, [None, Some(String::new())]);
     }
 }
