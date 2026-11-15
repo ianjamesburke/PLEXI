@@ -709,10 +709,11 @@ pub(crate) fn exit_host(
     }
     // The event log is written on its own thread; `_exit` would end the
     // process with the last events (the Shutdown focus segment) still queued.
-    if !crate::host::event_log::flush_global(EVENT_LOG_FLUSH_DEADLINE) {
+    let flush_deadline = event_log_flush_deadline();
+    if !crate::host::event_log::flush_global(flush_deadline) {
         log::warn!(
             "quit: event log writer did not confirm within {}ms; ending without it",
-            EVENT_LOG_FLUSH_DEADLINE.as_millis()
+            flush_deadline.as_millis()
         );
     }
     // The log file is the only record of a quit; flush before the fd dies.
@@ -727,6 +728,19 @@ pub(crate) fn exit_host(
 
 /// Longest the quit waits for the event-log writer to drain (stint 1537).
 const EVENT_LOG_FLUSH_DEADLINE: Duration = Duration::from_millis(250);
+
+/// `EVENT_LOG_FLUSH_DEADLINE`; tests running the real quit in a child set
+/// their own so they never race the production deadline on a slow runner.
+fn event_log_flush_deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("PLEXI_TEST_EVENT_LOG_FLUSH_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    EVENT_LOG_FLUSH_DEADLINE
+}
 
 /// End the host process now, without C exit handlers (stint 1537).
 ///
@@ -817,20 +831,25 @@ mod tests {
     /// Run `exit_host(HostStop)` in a child copy of this test binary, with a
     /// C exit handler registered and the event log writing to `dir`, after
     /// queueing `events` events and a final marker. Nothing exits here.
+    /// `writer_delay_ms` slows the event-log writer per event; `flush_ms`, when
+    /// set, replaces the quit's event-log flush deadline for this child.
     fn run_exit_host_child(
         test: &str,
         dir: &std::path::Path,
         events: usize,
+        writer_delay_ms: u64,
+        flush_ms: Option<u128>,
     ) -> std::process::Output {
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        if let Some(ms) = flush_ms {
+            command.env("PLEXI_TEST_EVENT_LOG_FLUSH_MS", ms.to_string());
+        }
+        let child = command
             .args(["--exact", test, "--nocapture"])
             .env("PLEXI_TEST_EXIT_HOST_CHILD", "1")
             .env("PLEXI_TEST_EXIT_DIR", dir)
             .env("PLEXI_TEST_EXIT_EVENTS", events.to_string())
-            .env(
-                "PLEXI_TEST_EVENT_LOG_DELAY_MS",
-                if events > 0 { "10" } else { "0" },
-            )
+            .env("PLEXI_TEST_EVENT_LOG_DELAY_MS", writer_delay_ms.to_string())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -848,6 +867,8 @@ mod tests {
         if std::env::var("PLEXI_TEST_EXIT_HOST_CHILD").is_err() {
             return;
         }
+        // Warn and error lines reach stdout, for the parent to read.
+        crate::testing::test_log::install();
         let dir = std::path::PathBuf::from(std::env::var("PLEXI_TEST_EXIT_DIR").unwrap());
         assert_eq!(
             unsafe { libc::atexit(mark_atexit_ran) },
@@ -901,6 +922,8 @@ mod tests {
             "app::quit::tests::exit_host_ends_without_running_exit_handlers",
             dir.path(),
             0,
+            0,
+            None,
         );
         let report = child_report(&output);
         assert!(
@@ -930,13 +953,16 @@ mod tests {
         exit_host_child_if_asked();
         let dir = tempfile::tempdir().unwrap();
         // Writing takes about 10 ms per event here, so the last of these is
-        // still queued when cleanup ends unless the quit waits (well inside
-        // its 250 ms deadline).
+        // still queued when cleanup ends unless the quit waits. The child's
+        // flush deadline is load-scaled, so a slow runner cannot make the
+        // quit give up before the writer finishes.
         let events = 15;
         let output = run_exit_host_child(
             "app::quit::tests::exit_host_waits_for_the_event_log_writer",
             dir.path(),
             events,
+            10,
+            Some(crate::testing::load_aware_timeout(Duration::from_secs(10)).as_millis()),
         );
         let report = child_report(&output);
         assert!(
@@ -953,6 +979,35 @@ mod tests {
         let last: serde_json::Value =
             serde_json::from_str(lines[events]).expect("the last line is whole JSON");
         assert_eq!(last["title"], "FINAL-MARK", "{last}");
+    }
+
+    /// Stint 1537: a writer that never confirms cannot hold the quit. The
+    /// writer is stuck on its first event; the quit gives up at its flush
+    /// deadline, logs that, and still exits.
+    #[test]
+    fn exit_host_gives_up_on_a_stuck_event_log_writer() {
+        exit_host_child_if_asked();
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let output = run_exit_host_child(
+            "app::quit::tests::exit_host_gives_up_on_a_stuck_event_log_writer",
+            dir.path(),
+            1,
+            600_000,
+            Some(200),
+        );
+        let report = child_report(&output);
+        assert!(output.status.code().is_some(), "the child exited\n{report}");
+        assert!(
+            started.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(20)),
+            "the quit waited on the writer: {:?}\n{report}",
+            started.elapsed()
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("quit: event log writer did not confirm within 200ms; ending without it"),
+            "{report}"
+        );
     }
 
     #[test]
