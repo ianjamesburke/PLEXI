@@ -367,6 +367,45 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         .map(|v| v.len())
 }
 
+/// A host is live when it answers an application-dispatched round trip on
+/// `socket_path` within `timeout`. A connect alone is not enough: a quitting
+/// host keeps its socket bound (connects land in the backlog) until its
+/// cleanup ends, and nothing answers. Never removes the socket (stint 1543).
+pub(crate) fn host_answers(socket_path: &Path, profile_dir: &Path, timeout: Duration) -> bool {
+    query_ready_status(socket_path, profile_dir, Instant::now() + timeout).is_some()
+}
+
+/// Ask the host at exactly `socket_path` to open (or focus) the context at
+/// `root`, and wait up to `timeout` for its answer. Errors name the cause.
+pub(crate) fn forward_focus_context(
+    socket_path: &Path,
+    profile_dir: &Path,
+    root: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let response_file = crate::rpc::response_file_in(profile_dir, "launch-open", "json");
+    let request = crate::protocol::HostRequest::FocusContext {
+        root: root.to_path_buf(),
+        response_file: Some(response_file.clone()),
+    };
+    let line = serde_json::to_string(&request)
+        .map(|json| format!("{json}\n"))
+        .map_err(|e| format!("encode focus_context: {e}"))?;
+    super::send_line_to_socket(socket_path, line.as_bytes(), timeout)
+        .map_err(|e| format!("send to {}: {e:?}", socket_path.display()))?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let content = crate::rpc::poll_string(&response_file, Some(remaining))
+        .map_err(|e| format!("no answer from {}: {e}", socket_path.display()))?;
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(reply) => match reply.get("error").and_then(|e| e.as_str()) {
+            Some(error) => Err(error.to_string()),
+            None => Ok(()),
+        },
+        Err(e) => Err(format!("unreadable answer: {e}")),
+    }
+}
+
 /// The host process `host start` launched, watched for an early exit while
 /// the readiness poll runs (stint 1487). Unix keeps the child handle; Windows
 /// launches through `windows_launch` and has only the pid, so there the poll

@@ -275,25 +275,20 @@ fn main() -> eframe::Result {
             println!();
             cli::trace::exit(0);
         }
+        // A second launch on a live host hands it the canonical path main
+        // resolved above (before the chdir) and exits 0 (stint 1543).
         app::host_instance::HostLaunch::Host => match app::host_instance::claim(
             &config::config_dir(),
             &crate::platform::ipc::endpoint_path(),
+            crate::config::adopted_context_path()
+                .or_else(|| adopted_root.clone())
+                .as_deref(),
         ) {
-            Ok(instance) => Some(instance),
-            // A live host: hand it the path argument and exit 0 at once
-            // (stint 1543).
-            Err(refusal @ app::host_instance::Refusal::HostLive { .. }) => {
-                log::info!("host_startup: second launch on a live host: {refusal}");
-                let workspace_path = launch_workspace_path(&raw_args);
-                let status = app::host_instance::hand_launch_to_live_host(
-                    workspace_path.as_deref(),
-                    |path| cli::context_cli::context_open_cli(Some(path)),
-                );
+            Ok(app::host_instance::Launch::Host(instance)) => Some(instance),
+            Ok(app::host_instance::Launch::HandedOff(line)) => {
                 log::logger().flush();
-                if workspace_path.is_none() {
-                    eprintln!("{refusal}");
-                }
-                std::process::exit(status);
+                println!("{line}");
+                std::process::exit(0);
             }
             Err(refusal) if refusal.is_another_host() => {
                 log::info!("host_startup: refused second host: {refusal}");
@@ -2354,15 +2349,6 @@ fn configure_cli_sigpipe(raw_args: &[String]) -> std::io::Result<()> {
 /// and names no subcommand. `--version`, `--help`, parse errors and every CLI
 /// subcommand are not host startup, so host-only side effects (history
 /// retention, keychain migration) never run for them.
-/// The `plexi <path>` argument of a host launch, if any.
-fn launch_workspace_path(raw_args: &[String]) -> Option<String> {
-    use clap::Parser;
-    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
-    cli::args::Cli::try_parse_from(&args)
-        .ok()
-        .and_then(|parsed| parsed.workspace_path)
-}
-
 fn is_host_startup(raw_args: &[String]) -> bool {
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
