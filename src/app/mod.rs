@@ -4436,23 +4436,15 @@ impl eframe::App for PlexiApp {
         log::info!("quit_phase: on_exit complete");
         // Backend teardown can call on_exit before destroying its window.
         // Normal quit never gets here: it hides, yields, and exits from logic.
-        // On unexpected backend teardown we must still preserve durability.
-        while !self.persist_quit_state() {
-            // A boot-time block never clears and no dialog can answer during
-            // teardown. Exit unsaved, leaving the file as it was found.
-            if let Some(block) = self.workspace_save_block() {
-                log::error!("quit: backend teardown cannot save the workspace: {block}");
-                break;
-            }
-            log::error!("quit: backend teardown waiting for durable workspace save");
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
+        // No dialog can answer here, so a failing save is retried a bounded
+        // number of times and the exit then records the workspace unsaved.
+        let durability = self.persist_for_teardown(std::time::Duration::from_secs(1));
         self.begin_quit_cleanup();
         quit::exit_host(
             self.quit_coordinator
                 .reason
                 .unwrap_or(quit::ExitReason::WindowClosed),
-            self.quit_workspace_durability(),
+            durability,
             self.quit_coordinator.stop_reply.take(),
         );
     }

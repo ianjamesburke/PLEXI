@@ -168,6 +168,38 @@ impl super::PlexiApp {
         saved
     }
 
+    /// The final save for a backend teardown (`on_exit`: Dock Quit, logout),
+    /// where no dialog can answer (stint 1539). Retries a failing save at most
+    /// `MAX_QUIT_SAVE_ATTEMPTS` times, `retry_delay` apart, then gives up and
+    /// leaves the file on disk as it was; a boot-time block gives up at once.
+    /// Returns what the exit records.
+    pub(crate) fn persist_for_teardown(&mut self, retry_delay: Duration) -> WorkspaceDurability {
+        // At most MAX_QUIT_SAVE_ATTEMPTS tries and one fewer delays.
+        let mut saved = false;
+        for attempt in 1..=MAX_QUIT_SAVE_ATTEMPTS {
+            if self.persist_quit_state() {
+                saved = true;
+                break;
+            }
+            if let Some(block) = self.workspace_save_block() {
+                log::error!("quit: backend teardown cannot save the workspace: {block}");
+                break;
+            }
+            log::error!(
+                "quit: backend teardown save attempt {attempt} of {MAX_QUIT_SAVE_ATTEMPTS} failed"
+            );
+            if attempt < MAX_QUIT_SAVE_ATTEMPTS {
+                std::thread::sleep(retry_delay);
+            }
+        }
+        if !saved {
+            log::error!(
+                "quit: backend teardown exits without saving the workspace; the file on disk is left as it was"
+            );
+        }
+        self.quit_workspace_durability()
+    }
+
     /// Whether the workspace this process is about to exit with is on disk.
     /// Only a successful final save counts; a waived save does not.
     pub(crate) fn quit_workspace_durability(&self) -> WorkspaceDurability {
@@ -1139,6 +1171,42 @@ mod tests {
                 usize::from(reason == ExitReason::UpdateRestart)
             );
         }
+    }
+
+    /// Stint 1539: a backend teardown (`on_exit`) whose save keeps failing
+    /// returns within its bound and records the workspace unsaved, instead of
+    /// retrying forever on the main thread. The workspace's folder is made
+    /// unwritable; the harness runs on its own thread so a hang shows up as a
+    /// timeout here, not a stuck test run.
+    #[cfg(unix)]
+    #[test]
+    fn teardown_save_failure_is_bounded_and_records_unsaved() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_test_pane();
+            h.app.workspace_dirty = true;
+            let path = crate::workspace::workspace_path_in(h.profile_dir());
+            let folder = path.parent().unwrap().to_path_buf();
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let started = std::time::Instant::now();
+            let durability = h.app.persist_for_teardown(Duration::from_millis(20));
+            let elapsed = started.elapsed();
+            let failures = h.app.quit_coordinator.save_failures;
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _ = tx.send((durability, elapsed, failures));
+        });
+        let (durability, elapsed, failures) = rx
+            .recv_timeout(crate::testing::load_aware_timeout(Duration::from_secs(10)))
+            .expect("the teardown save returns instead of retrying forever");
+        assert_eq!(durability, WorkspaceDurability::Unsaved);
+        assert_eq!(failures, MAX_QUIT_SAVE_ATTEMPTS, "it tried the full budget");
+        assert!(
+            elapsed < crate::testing::load_aware_timeout(Duration::from_secs(2)),
+            "{elapsed:?}"
+        );
     }
 
     /// Drives `request_quit` against an unwritable-as-valid workspace file and
