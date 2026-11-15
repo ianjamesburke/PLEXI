@@ -413,12 +413,12 @@ impl super::PlexiApp {
                     );
                 }
                 Ok(false) => trace("window_hide_deferred"),
+                // The window is cosmetic; the quit is not (stint 1542). A
+                // failed hide is logged and the quit goes on: egui is still
+                // asked to hide below, and cleanup and exit follow.
                 Err(error) => {
-                    log::error!("quit: cannot hide native window: {error}; retrying");
-                    self.quit_coordinator.retry_at = Some(Instant::now() + Duration::from_secs(1));
-                    self.schedule_workspace_save_wake(Duration::from_secs(1));
-                    self.quit_coordinator.saved = false;
-                    return false;
+                    trace("window_hide_failed");
+                    log::error!("quit: cannot hide native window: {error}; continuing the quit");
                 }
             }
             self.ctx
@@ -536,7 +536,18 @@ impl super::PlexiApp {
 /// `true` means AppKit reports the window removed from its visible list.
 /// This is not a compositor timestamp. Other platforms use the viewport
 /// command and yield to the backend before cleanup without claiming an ack.
+#[cfg(test)]
+thread_local! {
+    /// Test seam: the result every native hide reports while set (stint 1542).
+    static HIDE_RESULT: std::cell::Cell<Option<Result<bool, &'static str>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 fn hide_native_window(frame: &eframe::Frame) -> Result<bool, &'static str> {
+    #[cfg(test)]
+    if let Some(result) = HIDE_RESULT.with(std::cell::Cell::get) {
+        return result;
+    }
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSView;
@@ -1204,6 +1215,50 @@ mod tests {
             String::from_utf8_lossy(&output.stdout)
                 .contains("quit: event log writer did not confirm within 200ms; ending without it"),
             "{report}"
+        );
+    }
+
+    /// Stint 1542: the window is cosmetic and the quit is not. A native hide
+    /// that fails is logged and the quit goes on to cleanup and `exit_host`.
+    /// Runs the quit in a child copy of this test binary, since `exit_host`
+    /// ends the process; the child's quit trace shows how far it got.
+    #[test]
+    fn a_failed_window_hide_does_not_stop_the_quit() {
+        const CHILD: &str = "PLEXI_TEST_HIDE_FAILS_CHILD";
+        if std::env::var(CHILD).is_ok() {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_test_pane();
+            HIDE_RESULT.with(|slot| slot.set(Some(Err("NSView has no window"))));
+            h.app.request_quit(ExitReason::WindowClosed);
+            for _ in 0..10 {
+                h.app.quit_coordinator.retry_at = None;
+                h.app
+                    .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
+            }
+            panic!("the quit never reached exit_host");
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::quit::tests::a_failed_window_hide_does_not_stop_the_quit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the quit in a child");
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(
+            stderr.contains("phase=exit_call"),
+            "the quit did not reach exit_host (status {:?}):\n{stderr}",
+            child.status
+        );
+        assert!(stderr.contains("phase=window_hide_failed"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            stdout.contains(
+                "quit: cannot hide native window: NSView has no window; continuing the quit"
+            ),
+            "the failure is logged with its text:\n{stdout}"
         );
     }
 
