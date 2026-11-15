@@ -1505,7 +1505,16 @@ mod tests {
     #[ignore = "requires-pty"]
     fn host_exit_paths_reap_pane_processes() {
         const CHILD_ENV: &str = "PLEXI_TEST_QUIT_PATH";
+        /// Marks that a C exit handler ran (stint 1537: no route may run one).
+        extern "C" fn mark_atexit_ran() {
+            if let Ok(dir) = std::env::var("PLEXI_TEST_QUIT_EVIDENCE") {
+                let _ = std::fs::write(std::path::Path::new(&dir).join("atexit-ran"), "ran");
+            }
+        }
         if let Ok(mode) = std::env::var(CHILD_ENV) {
+            unsafe {
+                libc::atexit(mark_atexit_ran);
+            }
             let evidence =
                 std::path::PathBuf::from(std::env::var("PLEXI_TEST_QUIT_EVIDENCE").unwrap());
             let mut h = crate::testing::HostHarness::new();
@@ -1597,6 +1606,10 @@ wait
             if mode == "update" {
                 assert!(evidence.path().join("restart-scheduled").exists());
             }
+            assert!(
+                !evidence.path().join("atexit-ran").exists(),
+                "mode {mode}: a C exit handler ran, so exit_host did not end in _exit"
+            );
             if mode == "host-stop" {
                 // The reply `exit_host` wrote matches how the process exited.
                 let reply: serde_json::Value = serde_json::from_slice(
