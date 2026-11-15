@@ -16,6 +16,7 @@
 //! `std::process::exit`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -91,23 +92,80 @@ impl QuitCoordinator {
     }
 }
 
-/// Process-local monotonic clock. Input reception is the plugin callback boundary,
-/// not physical input or compositor presentation. External observers measure
-/// those boundaries and actual process death using the logged PID.
+/// Process-local monotonic clock, plus wall-clock milliseconds so a quit can
+/// be lined up with the system log (stint 1541). Input reception is the
+/// plugin callback boundary, not physical input or compositor presentation.
+/// External observers measure those boundaries and actual process death
+/// using the logged PID. `exit_call` also writes one `quit_summary` line.
 pub(crate) fn trace(phase: &str) {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     let origin = ORIGIN.get_or_init(Instant::now);
-    log::info!(
-        "quit_trace: pid={} elapsed_us={} phase={phase}",
+    let elapsed_us = origin.elapsed().as_micros() as u64;
+    let line = format!(
+        "quit_trace: pid={} wall_ms={} elapsed_us={elapsed_us} phase={phase}",
         std::process::id(),
-        origin.elapsed().as_micros()
+        wall_clock_ms()
     );
+    log::info!("{line}");
     #[cfg(test)]
-    eprintln!(
-        "quit_trace: pid={} elapsed_us={} phase={phase}",
-        std::process::id(),
-        origin.elapsed().as_micros()
-    );
+    eprintln!("{line}");
+    // First time each milestone was traced, as elapsed_us + 1 (0 = never).
+    static ACCEPTED_US: AtomicU64 = AtomicU64::new(0);
+    static HIDE_REQUESTED_US: AtomicU64 = AtomicU64::new(0);
+    static HIDDEN_US: AtomicU64 = AtomicU64::new(0);
+    let first = |slot: &AtomicU64| {
+        let _ = slot.compare_exchange(0, elapsed_us + 1, Ordering::Relaxed, Ordering::Relaxed);
+    };
+    match phase {
+        "quit_accepted" => first(&ACCEPTED_US),
+        "window_hide_requested" => first(&HIDE_REQUESTED_US),
+        "window_hidden_native" => first(&HIDDEN_US),
+        "exit_call" => {
+            let at = |slot: &AtomicU64| slot.load(Ordering::Relaxed).checked_sub(1);
+            // The confirmed hide when there is one, else the request.
+            let hide = at(&HIDDEN_US).or_else(|| at(&HIDE_REQUESTED_US));
+            log::info!(
+                "{}",
+                quit_summary(
+                    std::process::id(),
+                    wall_clock_ms(),
+                    at(&ACCEPTED_US),
+                    hide,
+                    elapsed_us
+                )
+            );
+        }
+        _ => {}
+    }
+}
+
+fn wall_clock_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or(0)
+}
+
+/// The one line a quit leaves for "how long was the window gone before the
+/// process ended": milliseconds from the hide and from acceptance to the exit
+/// call, `none` when that milestone never happened (an `on_exit` teardown has
+/// no coordinated hide).
+fn quit_summary(
+    pid: u32,
+    wall_ms: u128,
+    accepted_us: Option<u64>,
+    hide_us: Option<u64>,
+    exit_us: u64,
+) -> String {
+    let ms = |from: Option<u64>| match from {
+        Some(from) => format!("{:.1}", exit_us.saturating_sub(from) as f64 / 1000.0),
+        None => "none".to_string(),
+    };
+    format!(
+        "quit_summary: pid={pid} wall_ms={wall_ms} hide_to_exit_ms={} accepted_to_exit_ms={}",
+        ms(hide_us),
+        ms(accepted_us)
+    )
 }
 
 impl super::PlexiApp {
@@ -817,6 +875,58 @@ const STDOUT_FLUSH_DEADLINE: Duration = Duration::from_millis(20);
 
 #[cfg(test)]
 mod tests {
+    /// Stint 1541: every quit trace line carries wall-clock milliseconds, and
+    /// `exit_call` adds one summary line with hide-to-exit time.
+    #[test]
+    fn quit_traces_carry_wall_clock_ms_and_a_summary() {
+        let capture = crate::testing::test_log::capture();
+        for phase in ["quit_accepted", "window_hidden_native", "exit_call"] {
+            trace(phase);
+        }
+        let lines = capture.lines();
+        let traces: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("quit_trace:"))
+            .collect();
+        assert_eq!(traces.len(), 3, "{lines:?}");
+        let field = |line: &str, key: &str| -> String {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix(&format!("{key}=")))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        for line in &traces {
+            let wall: u128 = field(line, "wall_ms").parse().expect("wall_ms is a number");
+            assert!(now.abs_diff(wall) < 60_000, "{line}");
+        }
+        let summaries: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("quit_summary:"))
+            .collect();
+        assert_eq!(summaries.len(), 1, "{lines:?}");
+        let hide: f64 = field(summaries[0], "hide_to_exit_ms")
+            .parse()
+            .expect("a hide time");
+        assert!(hide >= 0.0, "{}", summaries[0]);
+        assert!(field(summaries[0], "wall_ms").parse::<u128>().is_ok());
+    }
+
+    #[test]
+    fn quit_summary_names_each_interval_or_none() {
+        assert_eq!(
+            quit_summary(7, 42, Some(1_000), Some(3_500), 13_500),
+            "quit_summary: pid=7 wall_ms=42 hide_to_exit_ms=10.0 accepted_to_exit_ms=12.5"
+        );
+        assert_eq!(
+            quit_summary(7, 42, None, None, 5),
+            "quit_summary: pid=7 wall_ms=42 hide_to_exit_ms=none accepted_to_exit_ms=none"
+        );
+    }
+
     /// Stint 1459: the first host notices, once, when another process
     /// replaces or removes its socket file.
     #[cfg(unix)]
