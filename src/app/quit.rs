@@ -61,6 +61,9 @@ pub(crate) struct QuitCoordinator {
     saved: bool,
     retry_at: Option<Instant>,
     hide_requested: bool,
+    /// The hide was confirmed or handed to the backend; false after a failed
+    /// native hide, so the watchdog reports a visible stall as `[FREEZE]`.
+    window_hidden: bool,
     restart_scheduled: bool,
     /// Consecutive failed final saves since the last success.
     save_failures: u32,
@@ -401,7 +404,9 @@ impl super::PlexiApp {
             trace("window_hide_requested");
             // AppKit confirmation is distinct from egui's occlusion flag:
             // occluded means covered, and cannot prove the window disappeared.
-            match hide_native_window(frame) {
+            let hidden = hide_native_window(frame);
+            self.quit_coordinator.window_hidden = hidden.is_ok();
+            match hidden {
                 Ok(true) => {
                     trace("window_hidden_native");
                     // Native hide is acknowledged now. Deferred backends only
@@ -445,7 +450,7 @@ impl super::PlexiApp {
         crate::platform::logging::mark_shutdown_cleanup(
             &self.ui_phase,
             self.quit_coordinator.is_active(),
-            self.quit_coordinator.hide_requested,
+            self.quit_coordinator.window_hidden,
         );
     }
 
@@ -1237,20 +1242,43 @@ mod tests {
             }
             panic!("the quit never reached exit_host");
         }
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut running = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "app::quit::tests::a_failed_window_hide_does_not_stop_the_quit",
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .expect("run the quit in a child");
+        let pid = running.id();
+        // A hung child fails this test instead of hanging the run.
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        let finished = loop {
+            if running.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                let _ = running.kill();
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let child = running.wait_with_output().unwrap();
+        let _ = std::fs::remove_dir_all(format!("/tmp/plexi-t-{pid}"));
         let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(finished, "the quit hung after a failed hide:\n{stderr}");
         assert!(
             stderr.contains("phase=exit_call"),
             "the quit did not reach exit_host (status {:?}):\n{stderr}",
             child.status
+        );
+        assert_eq!(
+            child.status.code(),
+            Some(0),
+            "a saved quit after a failed hide exits 0:\n{stderr}"
         );
         assert!(stderr.contains("phase=window_hide_failed"), "{stderr}");
         let stdout = String::from_utf8_lossy(&child.stdout);
@@ -1260,6 +1288,35 @@ mod tests {
             ),
             "the failure is logged with its text:\n{stdout}"
         );
+    }
+
+    /// Stint 1542: after a failed native hide the window may still be on
+    /// screen, so the watchdog must report a stalled cleanup as `[FREEZE]`,
+    /// not as an expected `[SHUTDOWN_WAIT]`. A confirmed hide still is one.
+    #[test]
+    fn a_failed_window_hide_leaves_the_watchdog_on_freeze() {
+        for (hide, expect_wait) in [(Err("NSView has no window"), false), (Ok(true), true)] {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_test_pane();
+            HIDE_RESULT.with(|slot| slot.set(Some(hide)));
+            h.app.request_quit(ExitReason::WindowClosed);
+            for _ in 0..10 {
+                if h.app.quit_coordinator.hide_requested {
+                    break;
+                }
+                h.app.quit_coordinator.retry_at = None;
+                h.app
+                    .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
+            }
+            HIDE_RESULT.with(|slot| slot.set(None));
+            assert!(h.app.quit_coordinator.hide_requested, "the hide step ran");
+            h.app.begin_quit_cleanup();
+            assert_eq!(
+                crate::platform::logging::expects_shutdown_wait(&h.app.ui_phase),
+                expect_wait,
+                "hide {hide:?}"
+            );
+        }
     }
 
     #[test]

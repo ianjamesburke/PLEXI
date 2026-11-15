@@ -517,6 +517,13 @@ pub(crate) fn current_ui_phase_name(tracker: &UiPhaseTracker) -> &'static str {
     ui_phase_snapshot(tracker).name
 }
 
+/// Test-only accessor: whether the watchdog would report a stall now as an
+/// expected `[SHUTDOWN_WAIT]` (hidden window) rather than a `[FREEZE]`.
+#[cfg(test)]
+pub(crate) fn expects_shutdown_wait(tracker: &UiPhaseTracker) -> bool {
+    ui_phase_snapshot(tracker).expected_shutdown_wait
+}
+
 /// Pure threshold decision for the slow-drain log line: only worth a log line
 /// once a single drain call has eaten a meaningful slice of one frame budget.
 /// Kept separate from `time_drain` so it's directly unit-testable, matching
