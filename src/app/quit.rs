@@ -170,9 +170,10 @@ impl super::PlexiApp {
 
     /// The final save for a backend teardown (`on_exit`: Dock Quit, logout),
     /// where no dialog can answer (stint 1539). Retries a failing save at most
-    /// `MAX_QUIT_SAVE_ATTEMPTS` times, `retry_delay` apart, then gives up and
-    /// leaves the file on disk as it was; a boot-time block gives up at once.
-    /// Returns what the exit records.
+    /// `MAX_QUIT_SAVE_ATTEMPTS` times, `retry_delay` apart, then gives up; a
+    /// boot-time block gives up at once. The workspace on disk may then not
+    /// hold the latest changes (a failed attempt can already have rotated the
+    /// `.prev` copy or renamed a new file in). Returns what the exit records.
     pub(crate) fn persist_for_teardown(&mut self, retry_delay: Duration) -> WorkspaceDurability {
         // At most MAX_QUIT_SAVE_ATTEMPTS tries and one fewer delays.
         let mut saved = false;
@@ -194,7 +195,7 @@ impl super::PlexiApp {
         }
         if !saved {
             log::error!(
-                "quit: backend teardown exits without saving the workspace; the file on disk is left as it was"
+                "quit: backend teardown gives up on the final save; the workspace on disk may not hold the latest changes"
             );
         }
         self.quit_workspace_durability()
@@ -1173,6 +1174,85 @@ mod tests {
         }
     }
 
+    /// Makes the profile's workspace folder unwritable for the guard's life;
+    /// dropping it, even in a panic, makes the folder writable again.
+    #[cfg(unix)]
+    struct UnwritableWorkspaceFolder(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl UnwritableWorkspaceFolder {
+        fn new(profile: &std::path::Path) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            let path = crate::workspace::workspace_path_in(profile);
+            let folder = path.parent().unwrap().to_path_buf();
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+            Self(folder)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UnwritableWorkspaceFolder {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    /// Stint 1539: the real `on_exit` (Dock Quit, logout) with a save that
+    /// keeps failing ends the process within its bound and reports the
+    /// workspace unsaved, instead of retrying on the main thread forever.
+    /// `on_exit` ends in `exit_host`, so it runs in a child copy of this test
+    /// binary; a hung child is killed and fails the test.
+    #[cfg(unix)]
+    #[test]
+    fn on_exit_with_a_failing_save_exits_unsaved_within_its_bound() {
+        const CHILD: &str = "PLEXI_TEST_ON_EXIT_CHILD";
+        if std::env::var(CHILD).is_ok() {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_test_pane();
+            h.app.workspace_dirty = true;
+            let _unwritable = UnwritableWorkspaceFolder::new(h.profile_dir());
+            eframe::App::on_exit(&mut h.app);
+            panic!("on_exit returned instead of exiting");
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::quit::tests::on_exit_with_a_failing_save_exits_unsaved_within_its_bound",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run on_exit in a child");
+        let pid = child.id();
+        // Five attempts one second apart, plus cleanup.
+        let deadline =
+            std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let output = child.wait_with_output().unwrap();
+        let _ = std::fs::remove_dir_all(format!("/tmp/plexi-t-{pid}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let status = status.unwrap_or_else(|| panic!("on_exit never ended the process:\n{stderr}"));
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "an unsaved exit reports status 1:\n{stderr}"
+        );
+        assert!(stderr.contains("phase=exit_call"), "{stderr}");
+    }
+
     /// Stint 1539: a backend teardown (`on_exit`) whose save keeps failing
     /// returns within its bound and records the workspace unsaved, instead of
     /// retrying forever on the main thread. The workspace's folder is made
@@ -1181,21 +1261,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn teardown_save_failure_is_bounded_and_records_unsaved() {
-        use std::os::unix::fs::PermissionsExt as _;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut h = crate::testing::HostHarness::new();
             h.add_test_pane();
             h.app.workspace_dirty = true;
-            let path = crate::workspace::workspace_path_in(h.profile_dir());
-            let folder = path.parent().unwrap().to_path_buf();
-            std::fs::create_dir_all(&folder).unwrap();
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let _unwritable = UnwritableWorkspaceFolder::new(h.profile_dir());
             let started = std::time::Instant::now();
             let durability = h.app.persist_for_teardown(Duration::from_millis(20));
             let elapsed = started.elapsed();
             let failures = h.app.quit_coordinator.save_failures;
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
             let _ = tx.send((durability, elapsed, failures));
         });
         let (durability, elapsed, failures) = rx
