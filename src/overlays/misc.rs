@@ -281,6 +281,36 @@ impl PlexiApp {
                         });
                     });
 
+                    // ── Explorer: generated from the key table classify_key
+                    // reads, so it cannot drift from the key handling (stint 1555).
+                    ui.add_space(style::SPACE_MD);
+                    section_label(ui, "EXPLORER", colors);
+                    let explorer = crate::file_browser::explorer_shortcut_rows();
+                    let half = explorer.len().div_ceil(2);
+                    // One four-column grid (keys, label, keys, label) keeps the
+                    // two halves on shared rows without a raw horizontal layout.
+                    let column_width = (ui.available_width() - 2.0 * style::SPACE_MD) / 2.0;
+                    let cell_width = (column_width - style::SPACE_SM) * 0.6;
+                    egui::Grid::new("shortcuts_explorer")
+                        .num_columns(4)
+                        .min_col_width(0.0)
+                        .max_col_width(cell_width)
+                        .spacing([style::SPACE_SM, 4.0])
+                        .show(ui, |ui| {
+                            for index in 0..half {
+                                for (label, combos) in [explorer.get(index), explorer.get(index + half)]
+                                    .into_iter()
+                                    .flatten()
+                                {
+                                    let combos: Vec<&[&str]> =
+                                        combos.iter().map(Vec::as_slice).collect();
+                                    crate::ui::shortcuts::key_combo_list(ui, &combos, None, colors);
+                                    shortcut_description(ui, label, colors);
+                                }
+                                ui.end_row();
+                            }
+                        });
+
                     ui.add_space(style::SPACE_MD);
                     ui.separator();
                     ui.add_space(style::SPACE_SM);

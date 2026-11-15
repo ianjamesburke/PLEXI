@@ -57,7 +57,7 @@ enum Mode {
     Palette,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FileBrowserAction {
     SelectNext,
     SelectPrev,
@@ -162,149 +162,11 @@ fn classify_key(
     input: &crate::app::input_router::PlexiInput,
     text_entry_active: bool,
 ) -> Option<FileBrowserAction> {
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Period, true) {
-        return Some(FileBrowserAction::ToggleHidden);
-    }
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::R, true) {
-        return Some(FileBrowserAction::Refresh);
-    }
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::C, true) {
-        return Some(FileBrowserAction::CopyPath);
-    }
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::A, false) {
-        return Some(FileBrowserAction::SelectAll);
-    }
-    if cmd_key_pressed_no_repeat(input, egui::Key::N, false) {
-        return Some(FileBrowserAction::NewFile);
-    }
-    if cmd_key_pressed_no_repeat(input, egui::Key::N, true) {
-        return Some(FileBrowserAction::NewFolder);
-    }
-    if cmd_key_pressed_no_repeat(input, egui::Key::K, false) {
-        return Some(FileBrowserAction::EnterPaletteCommand);
-    }
-    if cmd_key_pressed_no_repeat(input, egui::Key::F, false) {
-        return Some(FileBrowserAction::EnterSearch);
-    }
-    // Command chords belong to the host shortcut router. F2 and bare `r` are
-    // the file-manager rename keys and cannot collide with pane rename (Cmd+R).
-    if !text_entry_active
-        && !input.modifiers().any()
-        && (key_pressed_no_repeat(input, egui::Key::F2)
-            || key_pressed_no_repeat(input, egui::Key::R))
+    if let Some(row) = EXPLORER_KEYS
+        .iter()
+        .find(|row| row.matches(input, text_entry_active))
     {
-        return Some(FileBrowserAction::Rename);
-    }
-    if !text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Y)
-    {
-        return Some(FileBrowserAction::CopyPath);
-    }
-    if !text_entry_active
-        && !input.modifiers().shift
-        && (cmd_key_pressed_no_repeat(input, egui::Key::C, false)
-            || input
-                .events()
-                .iter()
-                .any(|e| matches!(e, egui::Event::Copy)))
-    {
-        return Some(FileBrowserAction::Copy);
-    }
-    if !text_entry_active
-        && !input.modifiers().shift
-        && (cmd_key_pressed_no_repeat(input, egui::Key::X, false)
-            || input.events().iter().any(|e| matches!(e, egui::Event::Cut)))
-    {
-        return Some(FileBrowserAction::Cut);
-    }
-    if !text_entry_active
-        && !input.modifiers().shift
-        && (cmd_key_pressed_no_repeat(input, egui::Key::V, false)
-            || input
-                .events()
-                .iter()
-                .any(|e| matches!(e, egui::Event::Paste(_))))
-    {
-        return Some(FileBrowserAction::Paste);
-    }
-    // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
-    // File Browser unless the full shortcut map is reviewed.
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Backspace, false) {
-        return Some(FileBrowserAction::MoveToTrash);
-    }
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::O, false) {
-        return Some(FileBrowserAction::OpenWithDefault);
-    }
-    if !text_entry_active && cmd_key_pressed_no_repeat(input, egui::Key::Enter, false) {
-        return Some(FileBrowserAction::Reveal);
-    }
-    if key_pressed_no_repeat(input, egui::Key::Escape) {
-        return Some(FileBrowserAction::Escape);
-    }
-    if text_entry_active && !input.modifiers().any() && key_pressed_no_repeat(input, egui::Key::Tab)
-    {
-        return Some(FileBrowserAction::TabComplete);
-    }
-    if key_pressed_no_repeat(input, egui::Key::Backspace) {
-        return Some(FileBrowserAction::Backspace);
-    }
-    if input.key_pressed(egui::Key::ArrowDown)
-        || (!text_entry_active && input.key_pressed(egui::Key::J) && !input.modifiers().any())
-    {
-        return Some(FileBrowserAction::SelectNext);
-    }
-    if input.key_pressed(egui::Key::ArrowUp)
-        || (!text_entry_active && input.key_pressed(egui::Key::K) && !input.modifiers().any())
-    {
-        return Some(FileBrowserAction::SelectPrev);
-    }
-    if input.key_pressed(egui::Key::Home) {
-        return Some(FileBrowserAction::SelectFirst);
-    }
-    if input.key_pressed(egui::Key::End) {
-        return Some(FileBrowserAction::SelectLast);
-    }
-    if input.key_pressed(egui::Key::PageDown) {
-        return Some(FileBrowserAction::PageDown);
-    }
-    if input.key_pressed(egui::Key::PageUp) {
-        return Some(FileBrowserAction::PageUp);
-    }
-    if !input.modifiers().command
-        && (key_pressed_no_repeat(input, egui::Key::Enter)
-            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowRight))
-            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::L)))
-    {
-        return Some(FileBrowserAction::Activate);
-    }
-    if !input.modifiers().command
-        && ((!text_entry_active && key_pressed_no_repeat(input, egui::Key::ArrowLeft))
-            || (!text_entry_active && key_pressed_no_repeat(input, egui::Key::H)))
-    {
-        return Some(FileBrowserAction::NavigateUp);
-    }
-    if !text_entry_active
-        && key_pressed_no_repeat(input, egui::Key::Slash)
-        && !input.modifiers().command
-    {
-        return Some(FileBrowserAction::EnterPaletteSlash);
-    }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any()
-    {
-        return Some(FileBrowserAction::ToggleSort);
-    }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any()
-    {
-        return Some(FileBrowserAction::ToggleInspector);
-    }
-    if !text_entry_active
-        && key_pressed_no_repeat(input, egui::Key::Space)
-        && !input.modifiers().any()
-    {
-        return Some(FileBrowserAction::ToggleQuickLook);
-    }
-    if !text_entry_active && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any()
-    {
-        return Some(FileBrowserAction::CdTerminalAndClose);
+        return Some(row.action.clone());
     }
     let mut text = String::new();
     for event in input.events() {
@@ -318,6 +180,312 @@ fn classify_key(
         return Some(FileBrowserAction::AppendText(text));
     }
     None
+}
+
+/// Which modifiers a row accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyMods {
+    /// Cmd held; Shift held exactly when `shift`.
+    Cmd { shift: bool },
+    /// No modifier held.
+    Bare,
+    /// Anything but Cmd.
+    NoCmd,
+    /// Any modifiers.
+    Any,
+}
+
+/// When a row applies. While typing (search or palette), letter keys fall
+/// through to the query instead of firing navigation or actions; arrows,
+/// Enter, Escape and Backspace always work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyMode {
+    Always,
+    Browsing,
+    Typing,
+}
+
+/// The clipboard event that also delivers a Cmd+C/X/V row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipEvent {
+    Copy,
+    Cut,
+    Paste,
+}
+
+/// One Explorer key binding. [`EXPLORER_KEYS`] is the single source for both
+/// [`classify_key`] and the shortcuts sheet (stint 1555), so the sheet cannot
+/// drift from the key handling.
+pub(crate) struct ExplorerKey {
+    action: FileBrowserAction,
+    key: egui::Key,
+    mods: KeyMods,
+    mode: KeyMode,
+    /// Held keys repeat (scrolling); everything else fires once per press.
+    repeats: bool,
+    clip: Option<ClipEvent>,
+    /// What the sheet says the key does.
+    pub(crate) label: &'static str,
+}
+
+impl ExplorerKey {
+    const fn new(
+        action: FileBrowserAction,
+        key: egui::Key,
+        mods: KeyMods,
+        mode: KeyMode,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            action,
+            key,
+            mods,
+            mode,
+            repeats: false,
+            clip: None,
+            label,
+        }
+    }
+
+    const fn repeating(mut self) -> Self {
+        self.repeats = true;
+        self
+    }
+
+    const fn or_clipboard(mut self, clip: ClipEvent) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+
+    fn matches(&self, input: &crate::app::input_router::PlexiInput, typing: bool) -> bool {
+        let mode_ok = match self.mode {
+            KeyMode::Always => true,
+            KeyMode::Browsing => !typing,
+            KeyMode::Typing => typing,
+        };
+        if !mode_ok {
+            return false;
+        }
+        let held = input.modifiers();
+        let pressed = match self.mods {
+            KeyMods::Cmd { shift } => cmd_key_pressed_no_repeat(input, self.key, shift),
+            mods => {
+                let mods_ok = match mods {
+                    KeyMods::Bare => !held.any(),
+                    KeyMods::NoCmd => !held.command,
+                    _ => true,
+                };
+                mods_ok
+                    && if self.repeats {
+                        input.key_pressed(self.key)
+                    } else {
+                        key_pressed_no_repeat(input, self.key)
+                    }
+            }
+        };
+        pressed
+            || self.clip.is_some_and(|clip| {
+                !held.shift
+                    && input.events().iter().any(|e| match clip {
+                        ClipEvent::Copy => matches!(e, egui::Event::Copy),
+                        ClipEvent::Cut => matches!(e, egui::Event::Cut),
+                        ClipEvent::Paste => matches!(e, egui::Event::Paste(_)),
+                    })
+            })
+    }
+
+    /// The chips the shortcuts sheet draws for this row.
+    pub(crate) fn chips(&self) -> Vec<&'static str> {
+        let mut chips = Vec::new();
+        if let KeyMods::Cmd { shift } = self.mods {
+            chips.push("cmd");
+            if shift {
+                chips.push("shift");
+            }
+        }
+        chips.push(key_chip(self.key));
+        chips
+    }
+}
+
+fn key_chip(key: egui::Key) -> &'static str {
+    use egui::Key as K;
+    match key {
+        K::ArrowDown => "down",
+        K::ArrowUp => "up",
+        K::ArrowLeft => "left",
+        K::ArrowRight => "right",
+        K::Enter => "enter",
+        K::Escape => "escape",
+        K::Backspace => "backspace",
+        K::Tab => "tab",
+        K::Space => "space",
+        K::Home => "Home",
+        K::End => "End",
+        K::PageUp => "PgUp",
+        K::PageDown => "PgDn",
+        other => other.symbol_or_name(),
+    }
+}
+
+const fn cmd(shift: bool) -> KeyMods {
+    KeyMods::Cmd { shift }
+}
+
+/// Every Explorer key. The first matching row wins, so order matters (Cmd+Backspace
+/// before Backspace, Cmd+Shift+C before Cmd+C).
+pub(crate) const EXPLORER_KEYS: &[ExplorerKey] = {
+    use FileBrowserAction as A;
+    use KeyMode::{Always, Browsing, Typing};
+    use KeyMods::{Any, Bare, NoCmd};
+    &[
+        ExplorerKey::new(
+            A::ToggleHidden,
+            egui::Key::Period,
+            cmd(true),
+            Browsing,
+            "Show / hide hidden files",
+        ),
+        ExplorerKey::new(A::Refresh, egui::Key::R, cmd(true), Browsing, "Refresh"),
+        ExplorerKey::new(A::CopyPath, egui::Key::C, cmd(true), Browsing, "Copy path"),
+        ExplorerKey::new(
+            A::SelectAll,
+            egui::Key::A,
+            cmd(false),
+            Browsing,
+            "Select all",
+        ),
+        ExplorerKey::new(A::NewFile, egui::Key::N, cmd(false), Always, "New file"),
+        ExplorerKey::new(A::NewFolder, egui::Key::N, cmd(true), Always, "New folder"),
+        ExplorerKey::new(
+            A::EnterPaletteCommand,
+            egui::Key::K,
+            cmd(false),
+            Always,
+            "Commands",
+        ),
+        ExplorerKey::new(A::EnterSearch, egui::Key::F, cmd(false), Always, "Search"),
+        ExplorerKey::new(A::Rename, egui::Key::F2, Bare, Browsing, "Rename"),
+        ExplorerKey::new(A::Rename, egui::Key::R, Bare, Browsing, "Rename"),
+        ExplorerKey::new(A::CopyPath, egui::Key::Y, Bare, Browsing, "Copy path"),
+        ExplorerKey::new(A::Copy, egui::Key::C, cmd(false), Browsing, "Copy")
+            .or_clipboard(ClipEvent::Copy),
+        ExplorerKey::new(A::Cut, egui::Key::X, cmd(false), Browsing, "Cut")
+            .or_clipboard(ClipEvent::Cut),
+        ExplorerKey::new(A::Paste, egui::Key::V, cmd(false), Browsing, "Paste")
+            .or_clipboard(ClipEvent::Paste),
+        ExplorerKey::new(
+            A::MoveToTrash,
+            egui::Key::Backspace,
+            cmd(false),
+            Browsing,
+            "Move to Trash",
+        ),
+        ExplorerKey::new(
+            A::OpenWithDefault,
+            egui::Key::O,
+            cmd(false),
+            Browsing,
+            "Open with default app",
+        ),
+        ExplorerKey::new(
+            A::Reveal,
+            egui::Key::Enter,
+            cmd(false),
+            Browsing,
+            "Reveal in Finder",
+        ),
+        ExplorerKey::new(A::Escape, egui::Key::Escape, Any, Always, "Cancel / close"),
+        ExplorerKey::new(
+            A::TabComplete,
+            egui::Key::Tab,
+            Bare,
+            Typing,
+            "Complete path",
+        ),
+        ExplorerKey::new(
+            A::Backspace,
+            egui::Key::Backspace,
+            Any,
+            Always,
+            "Up a folder (in search: delete character)",
+        ),
+        ExplorerKey::new(
+            A::SelectNext,
+            egui::Key::ArrowDown,
+            Any,
+            Always,
+            "Next item",
+        )
+        .repeating(),
+        ExplorerKey::new(A::SelectNext, egui::Key::J, Bare, Browsing, "Next item").repeating(),
+        ExplorerKey::new(
+            A::SelectPrev,
+            egui::Key::ArrowUp,
+            Any,
+            Always,
+            "Previous item",
+        )
+        .repeating(),
+        ExplorerKey::new(A::SelectPrev, egui::Key::K, Bare, Browsing, "Previous item").repeating(),
+        ExplorerKey::new(A::SelectFirst, egui::Key::Home, Any, Always, "First item").repeating(),
+        ExplorerKey::new(A::SelectLast, egui::Key::End, Any, Always, "Last item").repeating(),
+        ExplorerKey::new(A::PageDown, egui::Key::PageDown, Any, Always, "Page down").repeating(),
+        ExplorerKey::new(A::PageUp, egui::Key::PageUp, Any, Always, "Page up").repeating(),
+        ExplorerKey::new(A::Activate, egui::Key::Enter, NoCmd, Always, "Open"),
+        ExplorerKey::new(A::Activate, egui::Key::ArrowRight, NoCmd, Browsing, "Open"),
+        ExplorerKey::new(A::Activate, egui::Key::L, NoCmd, Browsing, "Open"),
+        ExplorerKey::new(
+            A::NavigateUp,
+            egui::Key::ArrowLeft,
+            NoCmd,
+            Browsing,
+            "Up a folder",
+        ),
+        ExplorerKey::new(A::NavigateUp, egui::Key::H, NoCmd, Browsing, "Up a folder"),
+        ExplorerKey::new(
+            A::EnterPaletteSlash,
+            egui::Key::Slash,
+            NoCmd,
+            Browsing,
+            "Path palette",
+        ),
+        ExplorerKey::new(A::ToggleSort, egui::Key::S, Bare, Browsing, "Change sort"),
+        ExplorerKey::new(
+            A::ToggleInspector,
+            egui::Key::I,
+            Bare,
+            Browsing,
+            "Show / hide inspector",
+        ),
+        ExplorerKey::new(
+            A::ToggleQuickLook,
+            egui::Key::Space,
+            Bare,
+            Browsing,
+            "Quick Look",
+        ),
+        ExplorerKey::new(
+            A::CdTerminalAndClose,
+            egui::Key::T,
+            Bare,
+            Browsing,
+            "cd the linked terminal here, close",
+        ),
+    ]
+};
+
+/// The Explorer's keys for the shortcuts sheet, one entry per label in table
+/// order, with every key that does it.
+pub(crate) fn explorer_shortcut_rows() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
+    let mut rows: Vec<(&'static str, Vec<Vec<&'static str>>)> = Vec::new();
+    for key in EXPLORER_KEYS {
+        match rows.iter_mut().find(|(label, _)| *label == key.label) {
+            Some((_, combos)) => combos.push(key.chips()),
+            None => rows.push((key.label, vec![key.chips()])),
+        }
+    }
+    rows
 }
 
 pub struct FileBrowserView {
@@ -4498,6 +4666,151 @@ mod tests {
             consumed = app.handle_key(&input) == KeyDisposition::Consumed;
         });
         consumed
+    }
+
+    fn classify_events(
+        events: Vec<Event>,
+        modifiers: Modifiers,
+        typing: bool,
+    ) -> Option<FileBrowserAction> {
+        let ctx = egui::Context::default();
+        let raw = RawInput {
+            events,
+            modifiers,
+            ..Default::default()
+        };
+        let mut action = None;
+        let _ = ctx.run_ui(raw, |ui| {
+            let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+            action = classify_key(&input, typing);
+        });
+        action
+    }
+
+    /// The modifiers a row asks for, as a press would carry them.
+    fn row_modifiers(row: &ExplorerKey) -> Modifiers {
+        match row.mods {
+            KeyMods::Cmd { shift } => Modifiers {
+                command: true,
+                mac_cmd: true,
+                shift,
+                ..Default::default()
+            },
+            KeyMods::Bare | KeyMods::NoCmd | KeyMods::Any => Modifiers::default(),
+        }
+    }
+
+    /// Stint 1555: the shortcuts sheet is read from EXPLORER_KEYS, and
+    /// classify_key is too. Every row's key, pressed in the row's mode, is
+    /// classified as that row's action, so no row is shadowed or dead and the
+    /// sheet never lists a key that does something else.
+    #[test]
+    fn every_explorer_key_row_classifies_to_its_action() {
+        for row in EXPLORER_KEYS {
+            let typing = row.mode == KeyMode::Typing;
+            let modifiers = row_modifiers(row);
+            let got = classify_events(vec![key_event(row.key, modifiers)], modifiers, typing);
+            assert_eq!(
+                got.as_ref(),
+                Some(&row.action),
+                "{:?} {:?} ({}) does not classify to its row",
+                row.mods,
+                row.key,
+                row.label
+            );
+        }
+    }
+
+    /// The reverse direction: every action a key can trigger has a row, so a
+    /// new key binding cannot skip the sheet. The match is exhaustive: a new
+    /// FileBrowserAction must be placed on one side or the other here.
+    #[test]
+    fn every_keyed_explorer_action_has_a_sheet_row() {
+        fn keyed(action: &FileBrowserAction) -> bool {
+            use FileBrowserAction as A;
+            match action {
+                // Typed text, not a key.
+                A::AppendText(_) => false,
+                A::SelectNext
+                | A::SelectPrev
+                | A::SelectFirst
+                | A::SelectLast
+                | A::PageDown
+                | A::PageUp
+                | A::Activate
+                | A::NavigateUp
+                | A::Backspace
+                | A::Escape
+                | A::EnterSearch
+                | A::EnterPaletteSlash
+                | A::EnterPaletteCommand
+                | A::TabComplete
+                | A::ToggleSort
+                | A::ToggleInspector
+                | A::ToggleQuickLook
+                | A::ToggleHidden
+                | A::Refresh
+                | A::CdTerminalAndClose
+                | A::SelectAll
+                | A::NewFile
+                | A::NewFolder
+                | A::Rename
+                | A::Copy
+                | A::CopyPath
+                | A::Cut
+                | A::Paste
+                | A::MoveToTrash
+                | A::Reveal
+                | A::OpenWithDefault => true,
+            }
+        }
+        use FileBrowserAction as A;
+        let all = [
+            A::SelectNext,
+            A::SelectPrev,
+            A::SelectFirst,
+            A::SelectLast,
+            A::PageDown,
+            A::PageUp,
+            A::Activate,
+            A::NavigateUp,
+            A::Backspace,
+            A::Escape,
+            A::EnterSearch,
+            A::EnterPaletteSlash,
+            A::EnterPaletteCommand,
+            A::TabComplete,
+            A::ToggleSort,
+            A::ToggleInspector,
+            A::ToggleQuickLook,
+            A::ToggleHidden,
+            A::Refresh,
+            A::CdTerminalAndClose,
+            A::SelectAll,
+            A::NewFile,
+            A::NewFolder,
+            A::Rename,
+            A::Copy,
+            A::CopyPath,
+            A::Cut,
+            A::Paste,
+            A::MoveToTrash,
+            A::Reveal,
+            A::OpenWithDefault,
+            A::AppendText(String::new()),
+        ];
+        for action in all.iter().filter(|a| keyed(a)) {
+            assert!(
+                EXPLORER_KEYS.iter().any(|row| &row.action == action),
+                "{action:?} is bound to a key but has no EXPLORER_KEYS row"
+            );
+        }
+        let rows = explorer_shortcut_rows();
+        let trash = rows
+            .iter()
+            .find(|(label, _)| *label == "Move to Trash")
+            .expect("the sheet lists Move to Trash");
+        assert_eq!(trash.1, vec![vec!["cmd", "backspace"]]);
     }
 
     fn make_empty_dir_plugin() -> (FileBrowserView, tempfile::TempDir) {
