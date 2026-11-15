@@ -533,9 +533,6 @@ impl super::PlexiApp {
     }
 }
 
-/// `true` means AppKit reports the window removed from its visible list.
-/// This is not a compositor timestamp. Other platforms use the viewport
-/// command and yield to the backend before cleanup without claiming an ack.
 #[cfg(test)]
 thread_local! {
     // Test seam: the result every native hide reports while set (stint 1542).
@@ -543,6 +540,9 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// `true` means AppKit reports the window removed from its visible list.
+/// This is not a compositor timestamp. Other platforms use the viewport
+/// command and yield to the backend before cleanup without claiming an ack.
 fn hide_native_window(frame: &eframe::Frame) -> Result<bool, &'static str> {
     #[cfg(test)]
     if let Some(result) = HIDE_RESULT.with(std::cell::Cell::get) {
