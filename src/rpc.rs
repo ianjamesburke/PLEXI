@@ -162,14 +162,48 @@ impl std::fmt::Display for PollError {
     }
 }
 
+/// The longest single wait inside a bounded read; longer deadlines loop.
+const MAX_READ_CHUNK_WAIT: Duration = Duration::from_secs(3600);
+
+/// Read the reply until the peer closes. `timeout` bounds the whole read,
+/// not each chunk: a peer trickling bytes cannot hold it open past the
+/// deadline, and no time left is a timeout, never a blocking read (stint
+/// 1543). `None` waits for the close, however long it takes.
 fn read_stream_to_end(
     mut stream: IpcStream,
     timeout: Option<Duration>,
 ) -> Result<Option<Vec<u8>>, PollError> {
-    let _ = stream.set_read_timeout(timeout);
+    let deadline = timeout.map(|t| Instant::now() + t);
+    if deadline.is_none() {
+        // Clear any timeout the transport left on the stream.
+        let _ = stream.set_read_timeout(None);
+    }
     let mut buf = Vec::new();
-    match stream.read_to_end(&mut buf) {
-        Ok(_) => {
+    let mut chunk = [0u8; 8192];
+    let read = loop {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(PollError::TimedOut);
+            }
+            // macOS refuses SO_RCVTIMEO (EINVAL) on a socket whose peer has
+            // already closed; the read below then returns at once with what
+            // was written, so that refusal is not a failure. The value is
+            // never zero (checked above) and is capped well under the OS
+            // limit, so a refusal cannot leave a live read unbounded.
+            if let Err(error) = stream.set_read_timeout(Some(remaining.min(MAX_READ_CHUNK_WAIT))) {
+                log::debug!("rpc: read timeout not set ({error}); peer likely closed");
+            }
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => break Err(e),
+        }
+    };
+    match read {
+        Ok(()) => {
             // Strip a leading PEER_IDENTITY_ACK byte (0x06) if the caller did
             // not consume it prior to polling.
             if buf.first() == Some(&0x06) && buf.len() > 1 {
@@ -498,6 +532,57 @@ pub(crate) fn sweep_stale(profile_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peer that keeps the connection open and writes one byte every
+    /// 100 ms, until the reader goes away.
+    #[cfg(unix)]
+    fn trickling_peer() -> (IpcStream, std::thread::JoinHandle<()>) {
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < until && writer.write_all(b"x").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        (reader, peer)
+    }
+
+    /// Stint 1543: the read deadline is total. A peer trickling bytes faster
+    /// than the per-read timeout cannot keep a round trip open past it.
+    #[cfg(unix)]
+    #[test]
+    fn a_trickling_peer_cannot_outlast_the_read_deadline() {
+        let (reader, peer) = trickling_peer();
+        let started = Instant::now();
+        let result = read_stream_to_end(reader, Some(Duration::from_millis(300)));
+        let elapsed = started.elapsed();
+        assert!(matches!(result, Err(PollError::TimedOut)), "{result:?}");
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "the deadline must bound the whole read, took {elapsed:?}"
+        );
+        peer.join().unwrap();
+    }
+
+    /// No time left is a timeout, never a blocking read: a zero read timeout
+    /// is rejected by the OS, and ignoring that error used to block forever.
+    #[cfg(unix)]
+    #[test]
+    fn no_time_left_is_a_timeout_not_a_blocking_read() {
+        let (reader, peer) = {
+            let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+            let peer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                drop(writer);
+            });
+            (reader, peer)
+        };
+        let started = Instant::now();
+        let result = read_stream_to_end(reader, Some(Duration::ZERO));
+        assert!(matches!(result, Err(PollError::TimedOut)), "{result:?}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        peer.join().unwrap();
+    }
 
     #[test]
     fn poll_reads_and_deletes_on_success() {

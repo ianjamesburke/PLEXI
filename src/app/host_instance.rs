@@ -317,11 +317,30 @@ mod tests {
     ) -> std::thread::JoinHandle<Vec<PathBuf>> {
         use std::io::BufRead as _;
         let listener = crate::platform::ipc::IpcListener::bind(endpoint).unwrap();
+        listener.set_nonblocking(true).unwrap();
         std::thread::spawn(move || {
             let mut roots = Vec::new();
-            for stream in listener.incoming().take(count) {
+            // Fail rather than hang when fewer connections arrive.
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            for _ in 0..count {
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "the stand-in host got {} of {count} connections",
+                                roots.len()
+                            );
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(e) => panic!("accept: {e}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
                 let mut line = String::new();
-                std::io::BufReader::new(stream.unwrap())
+                std::io::BufReader::new(stream)
                     .read_line(&mut line)
                     .unwrap();
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -401,6 +420,63 @@ mod tests {
             Err(refusal) => panic!("the launch must take over after the quit: {refusal}"),
         }
         quitting.join().unwrap();
+    }
+
+    /// A host that answers the readiness round trip with a trickle (one byte
+    /// every 100 ms, never finishing) is not live: the launch gives up within
+    /// the probe's bound and falls back to the lock wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_trickling_host_is_not_live_and_the_launch_waits_on_the_lock() {
+        use std::io::{BufRead as _, Write as _};
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let old = claim_host(profile.path(), &endpoint).expect("the old host");
+        let listener = crate::platform::ipc::IpcListener::bind(&endpoint).unwrap();
+        let sock = endpoint.clone();
+        let trickling = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let mut stream = stream;
+            let until = std::time::Instant::now() + Duration::from_millis(1500);
+            while std::time::Instant::now() < until && stream.write_all(b" ").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            drop(listener);
+            let _ = std::fs::remove_file(&sock);
+            drop(old);
+        });
+
+        let started = std::time::Instant::now();
+        let probe_gave_up = std::sync::atomic::AtomicBool::new(false);
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            None,
+            Duration::from_secs(5),
+            &|endpoint| {
+                let live =
+                    crate::cli::host::host_answers(endpoint, profile.path(), LIVE_PROBE_TIMEOUT);
+                probe_gave_up.store(
+                    started.elapsed() < LIVE_PROBE_TIMEOUT * 3,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                live
+            },
+            &|_, _| unreachable!("no path"),
+        );
+        assert!(
+            probe_gave_up.load(std::sync::atomic::Ordering::SeqCst),
+            "the probe must give up within its bound"
+        );
+        assert!(
+            matches!(launch, Ok(Launch::Host(_))),
+            "the launch must fall back to the lock and take over"
+        );
+        trickling.join().unwrap();
     }
 
     /// The launch's path goes to exactly the live host's endpoint, as the
