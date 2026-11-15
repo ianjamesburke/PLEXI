@@ -5536,7 +5536,8 @@ mod tests {
         else {
             panic!("an agent's reset files a widen item");
         };
-        let _unreadable = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        let _unreadable =
+            crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
         {
             let weak = Arc::downgrade(&monitor);
             // Same thread, so the test Keychain stays reachable: sweep
@@ -5559,7 +5560,11 @@ mod tests {
             "the hook ran inside the swap window"
         );
         assert!(
-            !monitor.retire_failed.lock().unwrap().contains(&needs_you_id),
+            !monitor
+                .retire_failed
+                .lock()
+                .unwrap()
+                .contains(&needs_you_id),
             "no retirement of the live item was attempted"
         );
         assert_eq!(
@@ -5595,7 +5600,10 @@ mod tests {
             panic!("an agent's reset files a widen item");
         };
         let swap = monitor.mutate_entry(&deny, "allow", &human_caller());
-        assert!(matches!(swap, PermissionMutation::Applied { .. }), "{swap:?}");
+        assert!(
+            matches!(swap, PermissionMutation::Applied { .. }),
+            "{swap:?}"
+        );
         assert_eq!(
             // `needs_you_of`, not `get_needs_you`: that one sweeps first.
             monitor.needs_you_of(&needs_you_id).unwrap().resolution,
