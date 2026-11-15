@@ -707,6 +707,14 @@ pub(crate) fn exit_host(
         );
         log::info!("quit: host stop reply status={status} delivered={delivered}");
     }
+    // The event log is written on its own thread; `_exit` would end the
+    // process with the last events (the Shutdown focus segment) still queued.
+    if !crate::host::event_log::flush_global(EVENT_LOG_FLUSH_DEADLINE) {
+        log::warn!(
+            "quit: event log writer did not confirm within {}ms; ending without it",
+            EVENT_LOG_FLUSH_DEADLINE.as_millis()
+        );
+    }
     // The log file is the only record of a quit; flush before the fd dies.
     trace("exit_call");
     log::logger().flush();
@@ -717,25 +725,48 @@ pub(crate) fn exit_host(
     end_process(status);
 }
 
+/// Longest the quit waits for the event-log writer to drain (stint 1537).
+const EVENT_LOG_FLUSH_DEADLINE: Duration = Duration::from_millis(250);
+
 /// End the host process now, without C exit handlers (stint 1537).
 ///
 /// `std::process::exit` runs the handlers registered with `atexit`; on macOS
 /// one of them (CoreAnalytics) was measured waiting its full 300 ms on most
 /// quits of a young host, with the window already hidden, which left a
 /// window for "The application is not open anymore". `_exit` skips them.
-/// What exit used to do for us is done before this: the integrity stamp and
-/// the `host stop` reply are written synchronously (atomic file write or a
-/// flushed socket write), the notify socket is removed, the logger is flushed
-/// by `exit_host`, and Rust's own stdout buffer is flushed here (`exit` would
-/// have done that in `std::rt::cleanup`). Rust statics never run `Drop` at
-/// exit either way, and the host registers no `atexit` handler of its own.
+/// What exit used to do for us is done before this:
+/// - the integrity stamp and the `host stop` reply are written synchronously
+///   (an atomic file write, or a socket write that is flushed and shut down);
+/// - the notify socket is removed;
+/// - the event log, written on its own `plexi-event-log` thread, is drained
+///   by `exit_host` (`event_log::flush_global`, bounded);
+/// - the logger is flushed by `exit_host` (its file writes are unbuffered);
+/// - Rust's stdout buffer is flushed here, which `exit` did in
+///   `std::rt::cleanup`. That cleanup only `try_lock`s stdout so a thread
+///   that leaked the lock cannot hang exit; the public API has no try-lock,
+///   so the flush runs on a helper thread and is given `STDOUT_FLUSH_DEADLINE`.
+///   stderr is unbuffered.
+///
+/// Rust statics never run `Drop` at exit either way, and the host registers
+/// no `atexit` handler of its own.
 pub(crate) fn end_process(status: i32) -> ! {
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let flusher = std::thread::Builder::new()
+        .name("plexi-exit-stdout".into())
+        .spawn(move || {
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            let _ = done_tx.send(());
+        });
+    if flusher.is_ok() {
+        let _ = done_rx.recv_timeout(STDOUT_FLUSH_DEADLINE);
+    }
     // SAFETY: `_exit` takes no pointers and does not return.
     unsafe { libc::_exit(status) }
 }
+
+/// Longest the exit waits for Rust's stdout buffer to flush.
+const STDOUT_FLUSH_DEADLINE: Duration = Duration::from_millis(20);
 
 #[cfg(test)]
 mod tests {
@@ -778,55 +809,150 @@ mod tests {
 
     /// Marks that a C exit handler ran, for the `_exit` tests (stint 1537).
     extern "C" fn mark_atexit_ran() {
-        if let Ok(path) = std::env::var("PLEXI_TEST_ATEXIT_MARKER") {
-            let _ = std::fs::write(path, "atexit ran");
+        if let Ok(dir) = std::env::var("PLEXI_TEST_EXIT_DIR") {
+            let _ = std::fs::write(std::path::Path::new(&dir).join("atexit-ran"), "atexit ran");
         }
+    }
+
+    /// Run `exit_host(HostStop)` in a child copy of this test binary, with a
+    /// C exit handler registered and the event log writing to `dir`, after
+    /// queueing `events` events and a final marker. Nothing exits here.
+    fn run_exit_host_child(
+        test: &str,
+        dir: &std::path::Path,
+        events: usize,
+    ) -> std::process::Output {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("PLEXI_TEST_EXIT_HOST_CHILD", "1")
+            .env("PLEXI_TEST_EXIT_DIR", dir)
+            .env("PLEXI_TEST_EXIT_EVENTS", events.to_string())
+            .env(
+                "PLEXI_TEST_EVENT_LOG_DELAY_MS",
+                if events > 0 { "10" } else { "0" },
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run exit_host in a child");
+        let pid = child.id();
+        let output = child.wait_with_output().expect("child output");
+        // The child's test profile fallback (`config_dir`), left by its quit.
+        let _ = std::fs::remove_dir_all(format!("/tmp/plexi-t-{pid}"));
+        output
+    }
+
+    /// The child half of the `_exit` tests: register the exit handler, queue
+    /// the events, quit. Returns only when not running as the child.
+    fn exit_host_child_if_asked() {
+        if std::env::var("PLEXI_TEST_EXIT_HOST_CHILD").is_err() {
+            return;
+        }
+        let dir = std::path::PathBuf::from(std::env::var("PLEXI_TEST_EXIT_DIR").unwrap());
+        assert_eq!(
+            unsafe { libc::atexit(mark_atexit_ran) },
+            0,
+            "atexit registration"
+        );
+        std::fs::write(dir.join("registered"), "yes").unwrap();
+        crate::host::event_log::init_global(dir.join("events.jsonl"));
+        let events: usize = std::env::var("PLEXI_TEST_EXIT_EVENTS")
+            .unwrap()
+            .parse()
+            .unwrap();
+        for index in 0..=events {
+            let title = if index == events {
+                "FINAL-MARK".to_string()
+            } else {
+                format!("event-{index}")
+            };
+            crate::host::event_log::emit_scoped(
+                crate::host::event_log::HostEvent::NotificationPosted {
+                    id: index.to_string(),
+                    title,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                },
+                None,
+            );
+        }
+        exit_host(
+            ExitReason::HostStop,
+            WorkspaceDurability::Saved,
+            Some(dir.join("stop-reply.json").display().to_string()),
+        );
+    }
+
+    fn child_report(output: &std::process::Output) -> String {
+        format!(
+            "child status {:?}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
     }
 
     /// Stint 1537: `exit_host` ends in `_exit`, so a C exit handler (where
     /// macOS spent 300 ms) never runs, while the `host stop` reply it owes is
-    /// still written and the exit status is the one it reports. Runs
-    /// `exit_host` in a child copy of this test binary; nothing exits here.
+    /// still written and the exit status is the one it reports.
     #[test]
     fn exit_host_ends_without_running_exit_handlers() {
-        const CHILD: &str = "PLEXI_TEST_EXIT_HOST_CHILD";
-        if std::env::var(CHILD).is_ok() {
-            unsafe {
-                libc::atexit(mark_atexit_ran);
-            }
-            let reply = std::env::var("PLEXI_TEST_STOP_REPLY").expect("reply path");
-            exit_host(
-                ExitReason::HostStop,
-                WorkspaceDurability::Saved,
-                Some(reply),
-            );
-        }
+        exit_host_child_if_asked();
         let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("atexit-ran");
-        let reply = dir.path().join("stop-reply.json");
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "app::quit::tests::exit_host_ends_without_running_exit_handlers",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .env("PLEXI_TEST_ATEXIT_MARKER", &marker)
-            .env("PLEXI_TEST_STOP_REPLY", &reply)
-            .output()
-            .expect("run exit_host in a child");
-        assert!(
-            !marker.exists(),
-            "a C exit handler ran: exit_host did not end in _exit"
+        let output = run_exit_host_child(
+            "app::quit::tests::exit_host_ends_without_running_exit_handlers",
+            dir.path(),
+            0,
         );
-        let reply: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&reply).expect("the host stop reply"))
-                .expect("the reply is JSON");
+        let report = child_report(&output);
+        assert!(
+            dir.path().join("registered").exists(),
+            "the child never registered its handler\n{report}"
+        );
+        assert!(
+            !dir.path().join("atexit-ran").exists(),
+            "a C exit handler ran: exit_host did not end in _exit\n{report}"
+        );
+        let reply: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("stop-reply.json")).expect("the host stop reply"),
+        )
+        .expect("the reply is JSON");
         assert_eq!(
             reply["status"],
             output.status.code().expect("exit code"),
-            "{reply}"
+            "{reply}\n{report}"
         );
+    }
+
+    /// Stint 1537: the event log is written on its own thread, and `_exit`
+    /// does not wait for it, so `exit_host` waits for the writer. Every event
+    /// queued before the quit, the last one included, is in the file whole.
+    #[test]
+    fn exit_host_waits_for_the_event_log_writer() {
+        exit_host_child_if_asked();
+        let dir = tempfile::tempdir().unwrap();
+        // Writing takes about 10 ms per event here, so the last of these is
+        // still queued when cleanup ends unless the quit waits (well inside
+        // its 250 ms deadline).
+        let events = 15;
+        let output = run_exit_host_child(
+            "app::quit::tests::exit_host_waits_for_the_event_log_writer",
+            dir.path(),
+            events,
+        );
+        let report = child_report(&output);
+        assert!(
+            dir.path().join("registered").exists(),
+            "the child never registered its handler\n{report}"
+        );
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            events + 1,
+            "events written before the quit\n{report}"
+        );
+        let last: serde_json::Value =
+            serde_json::from_str(lines[events]).expect("the last line is whole JSON");
+        assert_eq!(last["title"], "FINAL-MARK", "{last}");
     }
 
     #[test]

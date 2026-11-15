@@ -3483,7 +3483,7 @@ impl LivePythonPane {
     }
 
     /// Write every pending launch-set admission count now. The quit path
-    /// calls this before `exit_host`, whose `process::exit` skips `Drop`.
+    /// calls this before `exit_host`, whose `_exit` skips `Drop`.
     pub fn flush_admission_summaries(&self) {
         self.launch_admissions.flush(std::time::Instant::now());
     }
@@ -5932,7 +5932,7 @@ impl LaunchAdmissionMemo {
     }
 
     /// Write every pending count now. The quit path calls this explicitly:
-    /// `exit_host` ends in `process::exit`, which skips `Drop`.
+    /// `exit_host` ends in `_exit`, which skips `Drop`.
     fn flush(&self, now: std::time::Instant) {
         for run in self.0.borrow_mut().values_mut() {
             run.summarize(now);
@@ -7758,7 +7758,7 @@ mod tests {
         );
     }
 
-    /// The quit path cannot rely on Drop (exit_host ends in process::exit):
+    /// The quit path cannot rely on Drop (exit_host ends in _exit):
     /// an explicit flush writes the pending count and leaves nothing pending.
     #[test]
     fn flush_writes_pending_counts_and_leaves_nothing_pending() {

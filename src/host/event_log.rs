@@ -213,8 +213,15 @@ struct EmitMessage {
     context_root: Option<PathBuf>,
 }
 
+/// What the writer thread receives: an event to write, or a barrier it
+/// answers once everything queued before it is written (stint 1537).
+enum WriterMessage {
+    Emit(Box<EmitMessage>),
+    Flush(mpsc::Sender<()>),
+}
+
 pub struct EventLog {
-    tx: mpsc::SyncSender<EmitMessage>,
+    tx: mpsc::SyncSender<WriterMessage>,
     /// Monotonic count of events dropped due to a full channel.
     pub dropped_count: Arc<AtomicU64>,
 }
@@ -227,7 +234,7 @@ impl EventLog {
     /// per distinct `context_root` an emitted event names — see
     /// [`Self::emit_scoped`].
     pub fn new(global_path: PathBuf) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<EmitMessage>(4096);
+        let (tx, rx) = mpsc::sync_channel::<WriterMessage>(4096);
         let dropped_count = Arc::new(AtomicU64::new(0));
 
         std::thread::Builder::new()
@@ -242,7 +249,28 @@ impl EventLog {
                 // every subsequent event).
                 let mut root_files: HashMap<PathBuf, Option<RollingFile>> = HashMap::new();
 
-                while let Ok(msg) = rx.recv() {
+                while let Ok(message) = rx.recv() {
+                    let msg = match message {
+                        WriterMessage::Emit(msg) => {
+                            let msg = *msg;
+                            // Test seam: a slow writer, so a quit that does not
+                            // wait for it loses the last events (stint 1537).
+                            #[cfg(test)]
+                            if let Some(ms) = std::env::var("PLEXI_TEST_EVENT_LOG_DELAY_MS")
+                                .ok()
+                                .and_then(|ms| ms.parse().ok())
+                            {
+                                std::thread::sleep(std::time::Duration::from_millis(ms));
+                            }
+                            msg
+                        }
+                        WriterMessage::Flush(done) => {
+                            // Every line queued before this barrier is written
+                            // (each `writeln!` goes straight to the file).
+                            let _ = done.send(());
+                            continue;
+                        }
+                    };
                     match serde_json::to_string(&msg.envelope) {
                         Ok(line) => {
                             if let Some(ref mut f) = global_file {
@@ -295,7 +323,7 @@ impl EventLog {
             envelope,
             context_root: context_root.map(PathBuf::from),
         };
-        match self.tx.try_send(msg) {
+        match self.tx.try_send(WriterMessage::Emit(Box::new(msg))) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 self.dropped_count.fetch_add(1, Ordering::Relaxed);
@@ -308,6 +336,34 @@ impl EventLog {
                 log::warn!("event_log: writer thread has exited");
             }
         }
+    }
+}
+
+impl EventLog {
+    /// Wait, up to `deadline`, until every event queued so far is written.
+    /// Returns whether the writer confirmed in time.
+    fn flush(&self, deadline: std::time::Duration) -> bool {
+        let (done_tx, done_rx) = mpsc::channel();
+        let queued_by = std::time::Instant::now() + deadline;
+        let mut barrier = WriterMessage::Flush(done_tx);
+        // A full channel drains as the writer works; retry the barrier until
+        // the deadline rather than blocking on it.
+        loop {
+            match self.tx.try_send(barrier) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(back)) => {
+                    if std::time::Instant::now() >= queued_by {
+                        return false;
+                    }
+                    barrier = back;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return false,
+            }
+        }
+        done_rx
+            .recv_timeout(queued_by.saturating_duration_since(std::time::Instant::now()))
+            .is_ok()
     }
 }
 
@@ -379,6 +435,18 @@ pub fn emit_scoped(event: HostEvent, context_root: Option<&std::path::Path>) {
     mirror_to_flight_recorder(&event);
     if let Some(log) = GLOBAL_EVENT_LOG.get() {
         log.emit_scoped(event, context_root);
+    }
+}
+
+/// Wait, up to `deadline`, until the global writer thread has written every
+/// event queued so far. The quit path calls this before `_exit`, which would
+/// otherwise end the process with the last events (the Shutdown focus
+/// segment) still in the channel (stint 1537). `true` when there is no
+/// global log or the writer confirmed in time.
+pub fn flush_global(deadline: std::time::Duration) -> bool {
+    match GLOBAL_EVENT_LOG.get() {
+        Some(log) => log.flush(deadline),
+        None => true,
     }
 }
 
