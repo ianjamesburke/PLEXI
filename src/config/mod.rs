@@ -3111,6 +3111,14 @@ pub fn set_adopted_context_path(path: PathBuf) {
     }
 }
 
+/// The adopted context path, without consuming it.
+pub fn adopted_context_path() -> Option<PathBuf> {
+    ADOPTED_CONTEXT_PATH
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
 /// Consume the adopted context path. Returns `Some` at most once.
 pub fn take_adopted_context_path() -> Option<PathBuf> {
     ADOPTED_CONTEXT_PATH
