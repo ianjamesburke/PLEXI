@@ -956,7 +956,10 @@ mod tests {
         let mut h = open_quit_save_failure();
         let cancel = h.harness().get_by_label("Cancel").rect();
         let quit = h.harness().get_by_label("Quit without saving").rect();
-        assert!(cancel.top() < quit.top(), "Cancel is listed first");
+        assert!(
+            cancel.left() > quit.left(),
+            "Cancel is listed first (rightmost)"
+        );
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(3);
         h.with_app(|app| {
@@ -1002,6 +1005,91 @@ mod tests {
             assert!(errors.is_empty(), "{errors:?}");
         });
         h.save_screenshot(&evidence_png!("_armed")).unwrap();
+    }
+
+    /// Stint 1558: the raw WASM review renders as ActionModal's one button
+    /// row (Allow and remember rightmost, Deny on its left, one top edge) and
+    /// keeps its consent guard: Allow is disabled until armed, a real click
+    /// on it inside the arm delay allows nothing, Tab never focuses its
+    /// buttons (so egui's Space/Enter click cannot bypass the guard), and once
+    /// armed the same click allows.
+    #[test]
+    fn raw_wasm_review_button_row_keeps_its_consent_guard() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        // A copy outside the checkout, so the published evidence shows no
+        // machine path.
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("sysmon.wasm");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wasm-fixtures/sysmon.wasm"),
+            &fixture,
+        )
+        .unwrap();
+        use egui_kittest::kittest::NodeT;
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        let pending =
+            |h: &mut PlexiUiHarness| h.with_app(|app| app.pending_raw_wasm_launches.len());
+        let allow = h.harness().get_by_label("Allow and remember").rect();
+        let deny = h.harness().get_by_label("Deny").rect();
+        assert_eq!(allow.top(), deny.top(), "one row");
+        assert!(
+            allow.left() > deny.right(),
+            "Allow is rightmost, Deny on its left"
+        );
+        let disabled = |h: &mut PlexiUiHarness, label| {
+            h.harness()
+                .get_by_label(label)
+                .accesskit_node()
+                .is_disabled()
+        };
+        assert!(disabled(&mut h, "Allow and remember"));
+        assert!(!disabled(&mut h, "Deny"));
+
+        click_at(&mut h, allow.center());
+        assert_eq!(pending(&mut h), 1, "a click inside the arm delay allowed");
+
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let focused = focused_label(&mut h, &["Allow and remember", "Deny"]);
+        assert!(focused.is_none(), "Tab focused the review's {focused:?}");
+        assert!(!disabled(&mut h, "Allow and remember"));
+        h.save_screenshot(&evidence_png!()).unwrap();
+        click_at(&mut h, allow.center());
+        assert_eq!(pending(&mut h), 0, "a real click once armed must allow");
+    }
+
+    /// A real pointer press and release at `pos`, each in its own frame.
+    fn click_at(h: &mut PlexiUiHarness, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+        }
+        h.run_steps(2);
     }
 
     fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
@@ -8536,9 +8624,8 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!());
     }
 
-    /// ActionModal defaults: shortcut chips lead every action row, all rows
-    /// share the modal's left edge, and the destructive action is distinct
-    /// without a filled button (stint 0542).
+    /// ActionModal's one layout (stint 1558): right-aligned kit buttons with
+    /// their keys inside, kind-coloured, Cancel on the left.
     #[test]
     fn screenshot_action_modal_context_close_confirm() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
