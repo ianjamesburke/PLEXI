@@ -4,6 +4,24 @@
 use crate::protocol::HostRequest;
 use crate::testing::HostHarness;
 
+/// A terminal shell that never writes a title escape, held for the life of
+/// the returned guard on this thread (stint 1530). A real login shell sets
+/// the title from its prompt, and under load that arrives within the test's
+/// few frames, so the fixture's titles would depend on shell timing.
+#[cfg(unix)]
+fn quiet_shell() -> (
+    tempfile::TempDir,
+    crate::host::shell::TestShellOverrideGuard,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("shell dir");
+    let script = dir.path().join("quiet-shell.sh");
+    std::fs::write(&script, "#!/bin/sh\nexec cat\n").expect("write shell");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let guard = crate::host::shell::set_test_shell_override(script.to_string_lossy());
+    (dir, guard)
+}
+
 fn command() -> egui::Modifiers {
     egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
 }
@@ -206,7 +224,9 @@ fn pane_gone_while_its_dialog_is_up_closes_the_dialog_and_says_so() {
 /// Stint 1500: an unnamed terminal's dialog names it with the title its
 /// header paints.
 #[test]
+#[cfg(unix)]
 fn unnamed_terminal_dialog_label_matches_its_header_title() {
+    let _shell = quiet_shell();
     let mut h = HostHarness::new();
     let term = h.add_focused_terminal();
     h.run_frames(2);
@@ -232,7 +252,9 @@ fn unnamed_terminal_dialog_label_matches_its_header_title() {
 /// Stint 1500: two terminals in one folder share a title; their dialogs
 /// still say which one closes.
 #[test]
+#[cfg(unix)]
 fn same_folder_terminals_get_distinct_dialog_titles() {
+    let _shell = quiet_shell();
     let mut h = HostHarness::new();
     let a = h.add_focused_terminal();
     h.run_frames(2);
