@@ -436,9 +436,18 @@ impl super::PlexiApp {
         self.quit_press_count = 0;
         self.quit_last_press = None;
         self.quitting = confirmed;
+        // A confirmation raised by "Restart to update" restarts (stint 1538).
+        let reason = if std::mem::take(&mut self.update_restart_confirming) {
+            ExitReason::UpdateRestart
+        } else {
+            ExitReason::WindowClosed
+        };
         if confirmed && self.prepare_user_quit() {
-            self.request_quit(ExitReason::WindowClosed);
-            log::info!("quit: working-agent confirmation accepted");
+            self.request_quit(reason);
+            log::info!(
+                "quit: working-agent confirmation accepted reason={}",
+                reason.label()
+            );
         } else {
             self.quit_coordinator = QuitCoordinator::default();
             self.quitting = false;
