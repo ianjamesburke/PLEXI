@@ -1254,15 +1254,37 @@ mod tests {
         );
     }
 
+    /// Stint 1555: Cmd+/ lists the Explorer's keys, read from the same table
+    /// as the Explorer's key handling, Move to Trash included.
+    #[test]
+    fn screenshot_shortcuts_sheet_lists_the_explorer_keys() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 1100.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| app.show_shortcuts = true);
+        h.run_steps(4);
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        for (label, _) in crate::file_browser::explorer_shortcut_rows() {
+            assert!(
+                h.harness().query_all_by_label(label).next().is_some(),
+                "the sheet is missing the Explorer row {label:?}"
+            );
+        }
+        assert!(h.harness().query_by_label("EXPLORER").is_some());
+    }
+
     /// Stint 1067: the shortcuts body must not stay capped at egui's seeded
     /// default area height. When the window has room, every row is inside the
     /// modal's scroll viewport without scrolling; when it does not, the modal
     /// fills the screen budget and scrolling reaches the last rows.
     #[test]
     fn shortcuts_overlay_every_row_reachable_at_every_scale() {
-        const LAST_ROWS: [&str; 3] = [
-            "Send pane (focus stays)",
-            "Reset UI scale",
+        // The bottom rows: the last Explorer row of each column (the sheet's
+        // last section since stint 1555), and the footer.
+        let explorer = crate::file_browser::explorer_shortcut_rows();
+        let half = explorer.len().div_ceil(2);
+        let last_rows = [
+            explorer[half - 1].0,
+            explorer[explorer.len() - 1].0,
             "ADHDISNTREAL@GMAIL.COM",
         ];
         let pad = f32::from(crate::ui::style::MODAL_PADDING_V);
@@ -1285,7 +1307,7 @@ mod tests {
             );
             // Rows paint inside the frame's vertical padding.
             let viewport_bottom = area.max.y - pad;
-            let hidden: Vec<&str> = LAST_ROWS
+            let hidden: Vec<&str> = last_rows
                 .iter()
                 .copied()
                 .filter(|label| {
@@ -1320,7 +1342,7 @@ mod tests {
             ]);
             h.run_steps(30);
             let area = ui_scale_area_rect(&h, "shortcuts");
-            for label in LAST_ROWS {
+            for label in last_rows {
                 let rect = h.harness().get_by_label(label).rect() / ppp;
                 assert!(
                     rect.max.y <= area.max.y - pad + tol && rect.min.y >= area.min.y - tol,
