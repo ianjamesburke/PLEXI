@@ -340,9 +340,11 @@ impl<'a> TerminalView<'a> {
         let bindings_layout = &self.bindings_layout;
         let prepared =
             state.keyboard.prepare(events, keyboard_mode, |key, mods| {
-                bindings_layout
-                    .get_action(InputKind::KeyCode(key), mods, terminal_mode)
-                    .is_scroll()
+                bindings_layout.scrolls_before_encoding(
+                    key,
+                    mods,
+                    terminal_mode,
+                )
             });
         for crate::keyboard::PreparedEvent { event, encoding } in prepared {
             let mut input_actions = vec![];

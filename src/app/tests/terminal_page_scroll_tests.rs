@@ -59,6 +59,26 @@ fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
     id
 }
 
+/// egui marks a press of a key it still holds as a repeat, so a test that
+/// presses the same key twice must release it in between, as a user does.
+fn release_key(h: &mut HostHarness, key: egui::Key, modifiers: egui::Modifiers) {
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        modifiers,
+        events: vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers,
+        }],
+        ..Default::default()
+    });
+}
+
 fn display_offset(h: &mut HostHarness, id: PaneId) -> usize {
     h.terminal_backend(id).sync().grid.display_offset()
 }
@@ -120,7 +140,13 @@ fn shift_page_up_scrolls_scrollback_with_kitty_keyboard_active() {
     );
     h.terminal_backend(id).enable_input_tap();
     // No binding claims Cmd+PageUp, so the program still gets it encoded.
-    h.press_key(egui::Key::PageUp, egui::Modifiers::MAC_CMD);
+    let cmd = egui::Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..egui::Modifiers::NONE
+    };
+    h.press_key(egui::Key::PageUp, cmd);
+    release_key(&mut h, egui::Key::PageUp, cmd);
     h.run_frames(2);
     assert_eq!(
         String::from_utf8_lossy(&h.terminal_backend(id).take_input_tap()),

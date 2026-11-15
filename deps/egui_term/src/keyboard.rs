@@ -2,7 +2,7 @@
 //! and the independent main/alternate-screen stacks belong to alacritty.
 use alacritty_terminal::term::TermMode;
 use egui::{Event, Key, Modifiers};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
 struct Code {
@@ -11,12 +11,20 @@ struct Code {
     text: bool,
 }
 
+/// Who received the press that started a key hold. Its repeats and release
+/// follow it, whatever the modifiers or kitty flags do mid-hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    Scroll,
+    Program,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct KeyboardEncoder {
     held: HashMap<Key, Code>,
-    /// Keys whose press a scroll binding handled; the program never saw the
-    /// press, so it must not see the release either.
-    scrolled: HashSet<Key>,
+    /// Per physical key; a non-repeat press starts a new hold, so an entry
+    /// left by a lost release never outlives the next press.
+    owners: HashMap<Key, Owner>,
     mode: TermMode,
 }
 
@@ -28,19 +36,19 @@ pub(crate) struct PreparedEvent {
 }
 
 impl KeyboardEncoder {
-    /// `is_scroll_binding` reports whether a press is bound to a scroll
-    /// action in the current terminal mode; such presses skip kitty encoding
-    /// and fall through to the binding path (Alacritty's order).
+    /// `scrolls` reports whether a press scrolls ahead of kitty encoding
+    /// (`BindingsLayout::scrolls_before_encoding`). Such a press, and the
+    /// repeats of its hold that still match, fall through to the binding
+    /// path; the rest of that hold never reaches the program.
     pub fn prepare(
         &mut self,
         events: Vec<Event>,
         mode: TermMode,
-        is_scroll_binding: impl Fn(Key, Modifiers) -> bool,
+        scrolls: impl Fn(Key, Modifiers) -> bool,
     ) -> Vec<PreparedEvent> {
         let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
         if self.mode != mode {
             self.held.clear();
-            self.scrolled.clear();
             self.mode = mode;
         }
         let mut events = events.into_iter().peekable();
@@ -53,19 +61,35 @@ impl KeyboardEncoder {
                     pressed,
                     repeat,
                     modifiers,
-                } if !mode.is_empty() => 'key: {
+                } if !mode.is_empty()
+                    || self
+                        .owners
+                        .contains_key(&physical_key.unwrap_or(*key)) =>
+                'key: {
                     let identity = physical_key.unwrap_or(*key);
-                    if *pressed && is_scroll_binding(*key, *modifiers) {
-                        if !*repeat {
+                    if *pressed && !*repeat {
+                        self.owners.remove(&identity);
+                    }
+                    let owner = if *pressed {
+                        *self.owners.entry(identity).or_insert_with(|| {
+                            if mode.is_empty() || !scrolls(*key, *modifiers) {
+                                return Owner::Program;
+                            }
                             log::info!(
                                 "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
                             );
-                        }
-                        self.scrolled.insert(identity);
-                        break 'key None;
+                            Owner::Scroll
+                        })
+                    } else {
+                        self.owners.remove(&identity).unwrap_or(Owner::Program)
+                    };
+                    if owner == Owner::Scroll {
+                        let still_scrolls =
+                            *pressed && scrolls(*key, *modifiers);
+                        break 'key (!still_scrolls).then(Vec::new);
                     }
-                    if !*pressed && self.scrolled.remove(&identity) {
-                        break 'key Some(Vec::new());
+                    if mode.is_empty() {
+                        break 'key None;
                     }
                     // egui-winit emits Key followed by Text for a printable
                     // press. Consume that text only when this key was encoded.
@@ -536,37 +560,154 @@ mod tests {
         assert!(result.iter().all(|e| e.encoding.is_none()));
     }
 
-    #[test]
-    fn kitty_scroll_binding_press_is_unencoded_and_its_release_swallowed() {
-        let mode =
-            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_EVENT_TYPES;
-        let scroll =
-            |k: Key, m: Modifiers| k == Key::PageUp && m == Modifiers::SHIFT;
-        let mut encoder = KeyboardEncoder::default();
-        let result = encoder.prepare(
-            vec![
-                key(Key::PageUp, Modifiers::SHIFT, true, false),
-                key(Key::PageUp, Modifiers::SHIFT, true, true),
-                key(Key::PageUp, Modifiers::SHIFT, false, false),
-                key(Key::PageUp, Modifiers::NONE, true, false),
-                key(Key::PageUp, Modifiers::NONE, false, false),
-            ],
-            mode,
-            scroll,
-        );
-        let encodings: Vec<_> = result
+    use crate::bindings::{
+        BindingAction, BindingsLayout, InputKind, KeyboardBinding,
+    };
+    use crate::TerminalMode;
+
+    const EVENT_TYPES: TermMode =
+        TermMode::DISAMBIGUATE_ESC_CODES.union(TermMode::REPORT_EVENT_TYPES);
+
+    /// Runs one frame per event through the real binding table, so state
+    /// carries across frames as it does in the view.
+    fn frames(
+        encoder: &mut KeyboardEncoder,
+        layout: &BindingsLayout,
+        screen: TermMode,
+        steps: Vec<(Event, TermMode)>,
+    ) -> Vec<Option<String>> {
+        steps
             .into_iter()
-            .map(|e| e.encoding.map(|v| String::from_utf8(v).unwrap()))
-            .collect();
+            .map(|(event, flags)| {
+                let mut out = encoder.prepare(vec![event], flags, |k, m| {
+                    layout.scrolls_before_encoding(k, m, screen | flags)
+                });
+                assert_eq!(out.len(), 1);
+                out.remove(0)
+                    .encoding
+                    .map(|v| String::from_utf8(v).unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn kitty_main_screen_scroll_bindings_win_but_byte_bindings_do_not() {
+        // What egui-winit reports for the macOS Command key.
+        let cmd = Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        let layout = BindingsLayout::new();
+        let mut encoder = KeyboardEncoder::default();
+        let flags = TermMode::DISAMBIGUATE_ESC_CODES;
+        let shift_page_up = key(Key::PageUp, Modifiers::SHIFT, true, false);
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (shift_page_up.clone(), flags),
+                (key(Key::PageDown, Modifiers::SHIFT, true, false), flags),
+                // Char binding (Ctrl+A => 0x01) and Esc binding
+                // (Shift+Up => CSI 1;2A) keep the kitty encoding.
+                (key(Key::A, Modifiers::CTRL, true, false), flags),
+                (key(Key::PageUp, Modifiers::CTRL, true, false), flags),
+                (key(Key::PageUp, cmd, true, false), flags),
+            ],
+        );
         assert_eq!(
-            encodings,
+            out,
             [
                 None,
                 None,
-                Some(String::new()),
-                Some("\x1b[5;1:1~".into()),
-                Some("\x1b[5;1:3~".into()),
+                Some("\x1b[97;5u".into()),
+                Some("\x1b[5;5~".into()),
+                Some("\x1b[5;9~".into()),
             ]
+        );
+        // Alternate screen: nothing scrolls ahead of the encoding, including
+        // scroll bindings without an ALT_SCREEN exclusion (macOS Cmd+Home).
+        let mut unrestricted = BindingsLayout::new();
+        unrestricted.add_bindings(crate::generate_bindings!(
+            KeyboardBinding;
+            Home, Modifiers::COMMAND; BindingAction::ScrollToTop;
+        ));
+        assert!(unrestricted.scrolls_before_encoding(
+            Key::Home,
+            cmd,
+            TermMode::empty()
+        ));
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &unrestricted,
+            TermMode::ALT_SCREEN,
+            vec![
+                (shift_page_up, flags),
+                (key(Key::Home, cmd, true, false), flags),
+            ],
+        );
+        assert_eq!(out, [Some("\x1b[5;2~".into()), Some("\x1b[1;9H".into())]);
+    }
+
+    #[test]
+    fn kitty_hold_follows_the_press_owner_across_modifier_and_flag_changes() {
+        let layout = BindingsLayout::new();
+        let main = TermMode::empty();
+        let ev =
+            |mods, pressed, repeat| key(Key::PageUp, mods, pressed, repeat);
+        let shift = Modifiers::SHIFT;
+        let none = Modifiers::NONE;
+        // Press went to the program: adding Shift mid-hold changes nothing.
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &layout,
+            main,
+            vec![
+                (ev(none, true, false), EVENT_TYPES),
+                (ev(shift, true, true), EVENT_TYPES),
+                (ev(shift, false, false), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(
+            out,
+            [
+                Some("\x1b[5;1:1~".into()),
+                Some("\x1b[5;2:2~".into()),
+                Some("\x1b[5;2:3~".into()),
+            ]
+        );
+        // Press scrolled: repeats scroll while Shift is held, then nothing of
+        // the hold reaches the program, even across a kitty flags change.
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &layout,
+            main,
+            vec![
+                (ev(shift, true, false), EVENT_TYPES),
+                (ev(shift, true, true), EVENT_TYPES),
+                (ev(none, true, true), EVENT_TYPES),
+                (
+                    ev(none, false, false),
+                    EVENT_TYPES | TermMode::REPORT_ALTERNATE_KEYS,
+                ),
+            ],
+        );
+        assert_eq!(out, [None, None, Some(String::new()), Some(String::new())]);
+        // A lost release cannot capture the key: the next press decides anew.
+        let out = frames(
+            &mut KeyboardEncoder::default(),
+            &layout,
+            main,
+            vec![
+                (ev(shift, true, false), EVENT_TYPES),
+                (ev(none, true, false), EVENT_TYPES),
+                (ev(none, false, false), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(
+            out,
+            [None, Some("\x1b[5;1:1~".into()), Some("\x1b[5;1:3~".into())]
         );
     }
 }
