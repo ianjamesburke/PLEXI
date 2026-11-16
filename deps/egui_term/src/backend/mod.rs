@@ -293,6 +293,10 @@ pub struct TerminalBackend {
     /// grid. Observable so the resize-debounce regression test can assert a
     /// multi-frame drag coalesces instead of reflowing once per frame.
     resize_commits: u64,
+    /// Key holds of the program in this PTY. Owned here, not by the view, so
+    /// the host can end them when the pane loses the keyboard whether or not
+    /// it is rendered (`release_held_keys`).
+    pub(crate) keyboard: crate::keyboard::KeyboardEncoder,
     /// Layout geometry seen but not yet committed, held by the frame-stability
     /// debounce in [`Self::request_resize`].
     pending_resize: Option<PendingResize>,
@@ -468,6 +472,7 @@ impl TerminalBackend {
             max_scroll_limit: 10_000,
             input_tap: Mutex::new(None),
             resize_commits: 0,
+            keyboard: crate::keyboard::KeyboardEncoder::default(),
             pending_resize: None,
         })
     }
@@ -646,6 +651,25 @@ impl TerminalBackend {
     /// rendered snapshot. Encode against the current parser state.
     pub(crate) fn keyboard_mode(&self) -> TermMode {
         *self.term.lock().mode() & TermMode::KITTY_KEYBOARD_PROTOCOL
+    }
+
+    /// Ends every key hold, for when this terminal stops owning the keyboard
+    /// (window blurred, focus moved, overlay opened, pane hidden): it will
+    /// never receive those physical releases. Writes the release reports the
+    /// program asked for as a plain write, so the viewport does not jump.
+    pub fn release_held_keys(&mut self) {
+        if !self.keyboard.is_holding() {
+            return;
+        }
+        let releases = self.keyboard.release_held(self.keyboard_mode());
+        if !releases.is_empty() {
+            log::info!(
+                "kitty keyboard: pane {} lost the keyboard mid-hold; sent {} bytes of key releases",
+                self.id,
+                releases.len()
+            );
+            self.write(releases);
+        }
     }
 
     pub fn child_pid(&self) -> u32 {
@@ -1206,7 +1230,7 @@ impl TerminalBackend {
         (self.size.num_cols, self.size.num_lines)
     }
 
-    pub(crate) fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+    fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
         let bytes: Cow<'static, [u8]> = input.into();
         if let Ok(mut tap) = self.input_tap.lock() {
             if let Some(buf) = tap.as_mut() {

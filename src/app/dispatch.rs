@@ -205,6 +205,25 @@ impl PlexiApp {
         }
     }
 
+    /// End the key holds of every terminal that does not own the keyboard
+    /// this frame (stint 1564). Such a terminal never receives the physical
+    /// releases (window blurred, focus moved, an overlay took input), and a
+    /// hidden pane (behind a zoom, in another context) never renders, so this
+    /// runs from `App::logic` over all panes rather than from the view.
+    pub(super) fn release_unowned_terminal_holds(&mut self, ctx: &egui::Context) {
+        let owner = match self.input_owner(ctx) {
+            crate::app::input_owner::InputOwner::Pane(pane_id) => Some(pane_id),
+            _ => None,
+        };
+        for (pane_id, pane) in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
+            if Some(*pane_id) != owner {
+                if let Some(terminal) = pane.as_terminal_mut() {
+                    terminal.backend.release_held_keys();
+                }
+            }
+        }
+    }
+
     /// If the focused pane in the active window is a terminal and no overlay
     /// owns keyboard input, take this frame's input-intent events out of `ctx`
     /// and return them for the focused terminal (stint 0387). The caller threads

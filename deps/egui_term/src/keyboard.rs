@@ -19,9 +19,18 @@ enum Owner {
     Program,
 }
 
+/// A press the program was sent, kept so the hold can be released for it
+/// when its physical release will never arrive (see `release_held`).
+#[derive(Clone, Copy)]
+struct Hold {
+    code: Code,
+    physical: Option<Key>,
+    mods: Modifiers,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct KeyboardEncoder {
-    held: HashMap<Key, Code>,
+    held: HashMap<Key, Hold>,
     /// Per physical key; a non-repeat press starts a new hold, so an entry
     /// left by a lost release never outlives the next press.
     owners: HashMap<Key, Owner>,
@@ -116,6 +125,7 @@ impl KeyboardEncoder {
                     let code = if !pressed {
                         self.held
                             .remove(&identity)
+                            .map(|hold| hold.code)
                             .or_else(|| key_code(*key, *modifiers))
                     } else {
                         let mut code = key_code(*key, *modifiers);
@@ -141,7 +151,14 @@ impl KeyboardEncoder {
                             }
                         }
                         if let Some(code) = code {
-                            self.held.insert(identity, code);
+                            self.held.insert(
+                                identity,
+                                Hold {
+                                    code,
+                                    physical: *physical_key,
+                                    mods: *modifiers,
+                                },
+                            );
                         }
                         code
                     };
@@ -182,38 +199,39 @@ impl KeyboardEncoder {
         result
     }
 
+    /// Whether any key hold is open, so callers can skip `release_held`.
+    pub fn is_holding(&self) -> bool {
+        !self.owners.is_empty() || !self.held.is_empty()
+    }
+
     /// Ends every hold this terminal owns, for when it stops receiving the
     /// keyboard (window focus loss, focus moving to another pane): the
     /// physical releases will never arrive here. Returns the release reports
-    /// the program asked for under `mode`; a later physical release of these
-    /// keys is a stray and never reaches the program.
+    /// the program asked for under `mode`, each with its press's modifiers; a
+    /// later physical release of these keys is a stray and never reaches the
+    /// program.
     pub fn release_held(&mut self, mode: TermMode) -> Vec<u8> {
-        let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
-        let mut bytes = Vec::new();
-        for (identity, owner) in self.owners.drain() {
-            let code = self.held.remove(&identity);
-            if owner == Owner::Scroll {
-                continue;
-            }
-            if let Some(release) = code
-                .or_else(|| key_code(identity, Modifiers::NONE))
-                .and_then(|code| {
-                    encode_key(
-                        code,
-                        Some(identity),
-                        Modifiers::NONE,
-                        false,
-                        false,
-                        None,
-                        mode,
-                    )
-                })
-            {
-                bytes.extend(release);
-            }
+        self.owners.clear();
+        let held = std::mem::take(&mut self.held);
+        // Flags changed since the last encoded key: `prepare` drops holds
+        // across a flags change, so there is nothing the program expects.
+        if mode & TermMode::KITTY_KEYBOARD_PROTOCOL != self.mode {
+            return Vec::new();
         }
-        self.held.clear();
-        bytes
+        held.into_values()
+            .filter_map(|hold| {
+                encode_key(
+                    hold.code,
+                    hold.physical,
+                    hold.mods,
+                    false,
+                    false,
+                    None,
+                    self.mode,
+                )
+            })
+            .flatten()
+            .collect()
     }
 }
 
@@ -848,6 +866,30 @@ mod tests {
             ],
         );
         assert_eq!(out, [Some(String::new()), Some(String::new())]);
+        // A modified printable hold is released with its press's modifiers;
+        // without them it would not be reported at all.
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (ev(Key::J, Modifiers::CTRL, true), EVENT_TYPES),
+                (ev(Key::K, Modifiers::ALT, true), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(
+            out,
+            [Some("\x1b[106;5:1u".into()), Some("\x1b[107;3:1u".into())]
+        );
+        // Hold order is not significant.
+        let released =
+            String::from_utf8(encoder.release_held(EVENT_TYPES)).unwrap();
+        assert!(
+            released.contains("\x1b[106;5:3u")
+                && released.contains("\x1b[107;3:3u")
+                && released.len() == "\x1b[106;5:3u\x1b[107;3:3u".len(),
+            "{released:?}"
+        );
         // Without release reporting, ending a hold writes nothing.
         frames(
             &mut encoder,

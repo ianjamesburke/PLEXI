@@ -61,6 +61,14 @@ fn window_focus_loss_releases_a_held_key_once() {
                 egui::vec2(1280.0, 800.0),
             )),
             focused: false,
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    focused: Some(false),
+                    ..Default::default()
+                },
+            ))
+            .collect(),
             events: vec![egui::Event::WindowFocused(false)],
             ..Default::default()
         });
@@ -103,4 +111,25 @@ fn closing_the_holding_pane_sends_no_stray_release_to_its_successor() {
     release_key(&mut h, egui::Key::PageUp, egui::Modifiers::NONE);
     h.run_frames(1);
     assert_eq!(tap(&mut h, b), "", "the successor never saw the press");
+}
+
+/// The holding pane stops rendering (another pane zoomed over it) at the
+/// same moment focus leaves it: the release must not wait for a render.
+#[test]
+#[ignore = "requires-pty"]
+fn focus_switch_to_a_zoomed_pane_releases_the_hidden_holder() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_terminals(&mut h);
+    press_page_up(&mut h, a);
+    h.focus_pane(b);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    release_key(&mut h, egui::Key::PageUp, egui::Modifiers::NONE);
+    h.run_frames(1);
+    assert_eq!(tap(&mut h, b), "", "the zoomed pane never saw the press");
+    assert_eq!(
+        tap(&mut h, a),
+        RELEASE,
+        "the hidden holder gets one release"
+    );
 }
