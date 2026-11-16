@@ -1970,6 +1970,7 @@ impl PlexiApp {
         pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
+        pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
         let lookup_root =
             crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
         pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
@@ -2010,7 +2011,11 @@ impl PlexiApp {
             .insert(new_id, Pane::Terminal(Box::new(pane)));
         pending_credential.mark_live();
 
-        let split_target = self.windows[target_win_idx].focused_pane;
+        // Beside the parent pane when it is in the target window, else beside
+        // the window's focus (same rule as the subcontext portal above).
+        let split_target = parent_pane_id
+            .and_then(|pid| self.windows[target_win_idx].tree.tiles.find_pane(&pid))
+            .or(self.windows[target_win_idx].focused_pane);
         let share =
             crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
         let new_tile = super::layout::insert_split_tile(

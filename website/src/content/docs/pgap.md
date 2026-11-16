@@ -674,9 +674,18 @@ Tier 1 escalation (`Worker -> Master`): ask the parent master agent a question a
 | `question` | `string` | yes |
 | `response_file` | `string` | yes |
 
-### `agent_reopen`
+### `agent_open`
 
 Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl` (`plexi agent reopen <run-id|sessi...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `caller_pane_id` | `integer?` | no |
+| `cwd` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `agent_reopen`
 
 | Field | Type | Required |
 |-------|------|----------|

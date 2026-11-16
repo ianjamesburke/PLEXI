@@ -1,4 +1,5 @@
 pub mod account;
+pub(crate) mod agent_open;
 mod agent_tools;
 pub mod agents_dashboard_view;
 pub(crate) mod agents_view;
@@ -479,6 +480,9 @@ pub struct PlexiApp {
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
+    /// `agent open` requests from the palette, run in `App::logic` because the
+    /// resolver probes processes (stint 1396).
+    pub(crate) pending_agent_opens: Vec<agent_open::PendingAgentOpen>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -890,6 +894,9 @@ pub(crate) fn handle_socket_line_in(
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentSpawn {
+                    peer_ancestry: p, ..
+                }
+                | crate::protocol::HostRequest::AgentOpen {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentWait {
@@ -1904,6 +1911,7 @@ impl PlexiApp {
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
+                    pending_agent_opens: Vec::new(),
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2196,6 +2204,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
+            pending_agent_opens: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3186,6 +3195,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
+            pending_agent_opens: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
@@ -6100,6 +6110,7 @@ pub(crate) fn restore_workspace(
                         root: ctx_root.cloned(),
                         depth: ctx_depth,
                     };
+                    let mut auto_resume_launched = false;
                     let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
@@ -6189,6 +6200,7 @@ pub(crate) fn restore_workspace(
                                     &resume_cmd,
                                     session.ephemeral,
                                 );
+                                auto_resume_launched = true;
                             }
                         }
                     }
@@ -6219,6 +6231,11 @@ pub(crate) fn restore_workspace(
                         default_font_size,
                     ) {
                         Ok(mut pane) => {
+                            if auto_resume_launched {
+                                pane.begin_agent_launch(
+                                    crate::host::pane::AgentLaunchKind::Command,
+                                );
+                            }
                             pane.name = saved_pane.name.clone().or_else(|| {
                                 effective_session
                                     .as_ref()

@@ -145,6 +145,7 @@ impl ReleaseFeature {
                 Sub(&["agent", "fleet"]),
                 Sub(&["agent", "history"]),
                 Sub(&["agent", "next"]),
+                Sub(&["agent", "open"]),
                 Sub(&["agent", "reopen"]),
                 Sub(&["agent", "result"]),
                 Sub(&["agent", "spawn"]),

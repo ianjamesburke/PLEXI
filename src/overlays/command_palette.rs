@@ -2780,6 +2780,24 @@ impl PlexiApp {
                 0
             }
             Some(Commands::Agent {
+                cmd: crate::cli::args::AgentCmd::Open { name, cwd },
+            }) => {
+                let eff_cwd = cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| ws_root.map(std::path::Path::to_path_buf))
+                    .unwrap_or_else(|| self.router.active().root.clone());
+                // The resolver probes processes; it runs in `App::logic`.
+                log::info!("palette: agent open {name} queued");
+                self.pending_agent_opens
+                    .push(crate::app::agent_open::PendingAgentOpen {
+                        name,
+                        cwd: eff_cwd,
+                        caller: default_pane_id,
+                    });
+                0
+            }
+            Some(Commands::Agent {
                 cmd:
                     crate::cli::args::AgentCmd::Spawn {
                         name,

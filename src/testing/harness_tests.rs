@@ -14747,6 +14747,13 @@ mod agent_state_restoration_tests {
             !active_term.is_standby(),
             "active context pane must auto-resume"
         );
+        // Stint 1396: the auto-resume launch is recorded at restore, so the
+        // agent counts as running before any activity tick has seen it.
+        assert!(
+            active_term.agent_launch.is_some(),
+            "auto-resume records its launch"
+        );
+        assert_eq!(h.app.running_named_agent_pane("lead"), Some(10));
         assert_eq!(
             active_term.last_resumed_command.as_deref(),
             Some("claude --verbose --resume sess-active-10")
@@ -14854,6 +14861,13 @@ mod agent_state_restoration_tests {
             bg_term_after.last_resumed_command.as_deref(),
             Some("codex --verbose resume thread-bg-20")
         );
+        // Stint 1396: the wake records its launch, so the agent stays running
+        // between leaving Standby and the first tick that sees it.
+        assert!(
+            bg_term_after.agent_launch.is_some(),
+            "a Standby wake records its launch"
+        );
+        assert_eq!(h.app.running_named_agent_pane("worker"), Some(20));
     }
 
     #[test]
@@ -20811,4 +20825,836 @@ mod zoomed_pane_input_tests {
             );
         }
     }
+}
+
+// -- `agent open <name>` resolver (stint 1396) -----------------------------
+
+/// A closed, resumable chat of `researcher` (the `AgentFocusFixture` agent,
+/// harness `pi`) run in `cwd`, with a saved pi session so the harness can
+/// still resume it.
+fn researcher_history_record(
+    cwd: &std::path::Path,
+    session_id: &str,
+    harness: &str,
+) -> crate::workspace::AgentHistoryRecord {
+    crate::workspace::AgentHistoryRecord {
+        fleet_seen: true,
+        fleet_dismissed: false,
+        run_id: format!("run-1396-{session_id}"),
+        pane_id: 900_001,
+        context_id: 1,
+        context_name: "test".into(),
+        parent_pane_id: None,
+        spawned_by: Some("human".into()),
+        pane_name: Some("researcher".into()),
+        harness: harness.into(),
+        config_name: Some("researcher".into()),
+        permission_posture: None,
+        session_id: Some(session_id.into()),
+        cwd: cwd.to_path_buf(),
+        ephemeral: false,
+        last_state: crate::protocol::AgentState::Idle,
+        last_blocked_reason: None,
+        last_detail: None,
+        summary: None,
+        result: None,
+        tail_preview: None,
+        slots: std::collections::HashMap::new(),
+        closed_at: 1,
+    }
+}
+
+fn seed_pi_session(
+    dir: &std::path::Path,
+    session_id: &str,
+) -> crate::cli::agent::TestPiSessionsDirGuard {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
+    crate::cli::agent::set_test_pi_sessions_dir(dir.to_path_buf())
+}
+
+fn terminal_role(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+    h.app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .and_then(|t| t.agent_role.clone())
+}
+
+fn pane_total(h: &HostHarness) -> usize {
+    h.app.windows.iter().map(|w| w.panes.len()).sum()
+}
+
+#[test]
+fn named_agent_focuses_when_running() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    let running = read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started");
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+    assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+    // A closed resumable chat exists too: running still wins.
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-running");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-running",
+            "pi",
+        ));
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: running }
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(running));
+    assert_eq!(pane_total(&h), before, "focus opens nothing");
+}
+
+#[test]
+fn named_agent_resumes_last_chat_when_stopped() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-new");
+    {
+        let mut history = h.app.fleet_history.borrow_mut();
+        history.push(researcher_history_record(&fx.proj_dir, "sess-old", "pi"));
+        history.push(researcher_history_record(&fx.proj_dir, "sess-new", "pi"));
+        // Newer, but not a resumable chat on the agent's current harness: the
+        // ruling (ledger row 104) picks the newest record that is.
+        history.push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-claude",
+            "claude",
+        ));
+        history.push(researcher_history_record(&fx.proj_dir, "sess-gone", "pi"));
+    }
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed {
+        pane_id,
+        session_id,
+    } = outcome
+    else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    assert_eq!(
+        session_id, "sess-new",
+        "the newest resumable record on the current harness is the last chat"
+    );
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("resumed terminal pane");
+    assert_eq!(t.agent_session_id.as_deref(), Some("sess-new"));
+    assert!(
+        t.last_resumed_command
+            .as_deref()
+            .is_some_and(|c| c.starts_with("pi ") && c.contains("sess-new")),
+        "resumed with the harness resume command: {:?}",
+        t.last_resumed_command
+    );
+    assert_eq!(terminal_role(&h, pane_id).as_deref(), Some("researcher"));
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane_id));
+}
+
+#[test]
+fn named_agent_starts_new_when_never_run() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    // Not a last chat: another workspace, a different harness, an ephemeral
+    // run, and a session the harness no longer has.
+    let other = fx.home.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-elsewhere");
+    {
+        let mut history = h.app.fleet_history.borrow_mut();
+        history.push(researcher_history_record(&other, "sess-elsewhere", "pi"));
+        history.push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-claude",
+            "claude",
+        ));
+        let mut ephemeral = researcher_history_record(&fx.proj_dir, "sess-elsewhere", "pi");
+        ephemeral.ephemeral = true;
+        history.push(ephemeral);
+        history.push(researcher_history_record(&fx.proj_dir, "sess-gone", "pi"));
+    }
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("expected a new chat, got {outcome:?}");
+    };
+    assert_eq!(pane_total(&h), before + 1);
+    assert_eq!(terminal_role(&h, pane_id).as_deref(), Some("researcher"));
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("started terminal pane");
+    assert_eq!(t.agent_session_id, None, "a new chat resumes nothing");
+    assert_eq!(h.app.active_focused_pane_id(), Some(pane_id));
+
+    let missing = h
+        .app
+        .open_named_agent("no-such-agent", &fx.proj_dir, Some(caller), None)
+        .expect_err("unknown agents fail before launch");
+    assert!(missing.contains("no-such-agent"), "{missing}");
+}
+
+/// The CLI (`HostRequest::AgentOpen`) and the palette's command route resolve
+/// through the same `open_named_agent`: same outcome, same pane, no second
+/// launch.
+#[test]
+fn cli_agent_open_matches_palette() {
+    // The harness installs its own profile; the fixture's must win so the
+    // resolver finds `researcher` through `config_dir()`.
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    let running = read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started");
+    let before = pane_total(&h);
+
+    h.app.pane_navigate(caller);
+    let cli_reply = temp_response(fx.home.path(), "agent-open");
+    h.inject_ipc(HostRequest::AgentOpen {
+        name: "researcher".into(),
+        cwd: fx.proj_dir.to_string_lossy().into_owned(),
+        caller_pane_id: Some(caller),
+        response_file: cli_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.run_frames(2);
+    let cli = read_json_response(&cli_reply);
+    assert_eq!(cli["ok"], true, "{cli}");
+    assert_eq!(cli["outcome"], "focused");
+    assert_eq!(cli["pane_id"], running);
+    assert_eq!(h.app.active_focused_pane_id(), Some(running));
+
+    assert_eq!(
+        palette_open_from(&mut h, &fx, caller, 0),
+        running,
+        "the palette route focuses the same pane"
+    );
+    assert_eq!(pane_total(&h), before, "neither path launched a pane");
+}
+
+/// A restored standby pane counts as running: `agent open` focuses it and
+/// leaves it in Standby. Standby resumes only on Enter or `pane send`
+/// (src/cli/AGENTS.md).
+#[test]
+fn named_agent_focuses_standby_pane_without_waking_it() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let standby = h.add_focused_terminal();
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&standby)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal pane");
+    terminal.standby_cwd = Some(fx.proj_dir.clone());
+    terminal.standby_session = Some(crate::workspace::SavedAgentSession {
+        fleet_result: None,
+        fleet_seen: false,
+        fleet_done_unseen: false,
+        fleet_dismissed: false,
+        fleet_since: 0,
+        harness: "pi".to_string(),
+        config_name: Some("researcher".to_string()),
+        permission_posture: None,
+        session_id: Some("sess-standby".to_string()),
+        last_state: crate::protocol::AgentState::Idle,
+        last_blocked_reason: None,
+        last_detail: None,
+        parent_pane_id: None,
+        spawned_by: None,
+        pending_child_results: Vec::new(),
+        ephemeral: false,
+        tail_preview: None,
+        standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+    });
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+    let before = pane_total(&h);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: standby }
+    );
+    assert_eq!(h.app.active_focused_pane_id(), Some(standby));
+    let t = h.app.windows[0].panes[&standby]
+        .as_terminal()
+        .expect("terminal");
+    assert!(t.is_standby(), "focus must not wake a standby pane");
+    assert_eq!(t.last_resumed_command, None, "nothing was resumed");
+    assert_eq!(pane_total(&h), before, "focus opens nothing");
+}
+
+/// Start one live `researcher` pane beside `caller`; returns its pane id.
+fn start_researcher(h: &mut HostHarness, fx: &AgentFocusFixture, caller: PaneId) -> PaneId {
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started")
+}
+
+/// The linear container holding `pane` in window 0, and the index of its
+/// slot among that container's children. A pane's own Tabs wrapper is part of
+/// the slot, as in `insert_split_tile`.
+fn tile_slot(h: &HostHarness, pane: PaneId) -> (egui_tiles::TileId, usize) {
+    let tree = &h.app.windows[0].tree;
+    let mut tile = tree.tiles.find_pane(&pane).expect("pane has a tile");
+    let mut parent = tree.tiles.parent_of(tile).expect("tile has a parent");
+    while let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))) =
+        tree.tiles.get(parent)
+    {
+        tile = parent;
+        parent = tree.tiles.parent_of(tile).expect("tabs have a parent");
+    }
+    match tree.tiles.get(parent) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) => (
+            parent,
+            linear
+                .children
+                .iter()
+                .position(|c| *c == tile)
+                .expect("child of its parent"),
+        ),
+        other => panic!("expected a linear parent, got {other:?}"),
+    }
+}
+
+/// Several panes run the agent: the one focused most recently wins, read
+/// through the focus history's `(window, tile)` entries, not the newest pane.
+#[test]
+fn named_agent_focuses_most_recently_focused_of_several() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let older = start_researcher(&mut h, &fx, caller);
+    let newer = start_researcher(&mut h, &fx, caller);
+    assert!(newer > older, "the tie-break alone would pick {newer}");
+    h.app.pane_navigate(older);
+    h.run_frames(1);
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: older }
+    );
+}
+
+/// A pane whose agent process exited is not running: `agent open` starts a
+/// new chat instead of focusing the dead pane.
+#[test]
+fn named_agent_skips_exited_pane() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let dead = start_researcher(&mut h, &fx, caller);
+    h.app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&dead))
+        .and_then(Pane::as_terminal_mut)
+        .expect("researcher pane")
+        .exited = true;
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("an exited pane is not running, got {outcome:?}");
+    };
+    assert_ne!(pane_id, dead);
+}
+
+/// Ruling 3 (ledger row 104): a resumed chat opens beside the calling pane,
+/// even when another pane of that window holds focus.
+#[test]
+fn named_agent_resumes_beside_unfocused_caller() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let focused = h.add_focused_terminal();
+    assert_eq!(h.app.active_focused_pane_id(), Some(focused));
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-beside");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(&fx.proj_dir, "sess-beside", "pi"));
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed { pane_id, .. } = outcome else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    let (caller_parent, caller_idx) = tile_slot(&h, caller);
+    assert_eq!(
+        tile_slot(&h, pane_id),
+        (caller_parent, caller_idx + 1),
+        "the resumed pane sits right after the caller, not after the focused pane"
+    );
+}
+
+/// The claimed caller is not trusted when the socket peer resolves to a live
+/// pane: the resumed chat's parent (placement, provenance, posture) is the
+/// verified pane.
+#[test]
+fn named_agent_resume_uses_verified_caller_not_claimed() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let verified = h.add_focused_terminal();
+    let claimed = h.add_focused_terminal();
+    let verified_pid = h.app.windows[0].panes[&verified]
+        .as_terminal()
+        .expect("terminal")
+        .backend
+        .child_pid();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-verified");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-verified",
+            "pi",
+        ));
+
+    let outcome = h
+        .app
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(claimed),
+            Some(&[verified_pid]),
+        )
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed { pane_id, .. } = outcome else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("resumed terminal");
+    assert_eq!(
+        t.parent_pane_id,
+        Some(verified),
+        "the socket peer, not the claimed caller {claimed}, is the parent"
+    );
+}
+
+/// Start one `researcher` pane beside `caller` whose supervised command is
+/// `command`; returns its pane id.
+fn start_researcher_running(
+    h: &mut HostHarness,
+    fx: &AgentFocusFixture,
+    caller: PaneId,
+    command: &str,
+) -> PaneId {
+    let mut req = fx.start(Some(caller));
+    if let HostRequest::AgentSpawn { command: c, .. } = &mut req {
+        *c = command.to_string();
+    }
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started")
+}
+
+/// Run `agent open researcher` the way the palette does: a user command step
+/// through `run_user_command_by_name`, queued for `App::logic`. The open runs
+/// on the next frame.
+fn palette_queue_open_researcher(h: &mut HostHarness, fx: &AgentFocusFixture) {
+    h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
+        name: "open-researcher".into(),
+        scope: crate::cli::UserCommandScope::Workspace,
+        description: None,
+        run: None,
+        steps: vec![format!(
+            "agent open researcher --cwd '{}'",
+            fx.proj_dir.display()
+        )],
+        on_load: Vec::new(),
+        secrets: Vec::new(),
+        split: false,
+    }];
+    let report = h
+        .app
+        .run_user_command_by_name("open-researcher")
+        .expect("palette command");
+    assert_eq!(report.exit_code, 0, "{report:?}");
+}
+
+/// Force one 1 Hz activity tick (`tick_terminal_activity`) on the next frame.
+fn activity_tick(h: &mut HostHarness) {
+    h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.run_frames(1);
+}
+
+fn terminal<'a>(h: &'a HostHarness, pane: PaneId) -> &'a crate::host::pane::TerminalPane {
+    h.app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane))
+        .and_then(Pane::as_terminal)
+        .expect("terminal pane")
+}
+
+/// Tick until `done` holds for `pane`, failing after a load-aware deadline.
+fn tick_until(
+    h: &mut HostHarness,
+    pane: PaneId,
+    what: &str,
+    done: impl Fn(&crate::host::pane::TerminalPane) -> bool,
+) {
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(15));
+    while !done(terminal(h, pane)) {
+        assert!(std::time::Instant::now() < deadline, "{what}: timed out");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        activity_tick(h);
+    }
+}
+
+fn write_to_terminal(h: &mut HostHarness, pane: PaneId, text: &str) {
+    h.terminal_backend(pane)
+        .process_command(egui_term::BackendCommand::Write(text.as_bytes().to_vec()));
+}
+
+/// Open through the palette from `caller` and return the pane that took
+/// focus, asserting how many panes it added.
+fn palette_open_from(
+    h: &mut HostHarness,
+    fx: &AgentFocusFixture,
+    caller: PaneId,
+    added: usize,
+) -> PaneId {
+    h.app.pane_navigate(caller);
+    let before = pane_total(h);
+    palette_queue_open_researcher(h, fx);
+    h.run_frames(1);
+    assert_eq!(pane_total(h), before + added);
+    h.app.active_focused_pane_id().expect("focused pane")
+}
+
+/// "Running" follows the host's own observation of the pane, never a hook
+/// report. A supervised launch that keeps running stays running across ticks.
+/// A launch that ends (the harness exits, its supervisor execs the interactive
+/// shell) ends at the first tick that sees the bare prompt; after that, a
+/// user's command or an `exec` of another shell in the leftover pane is not the
+/// agent. Each open goes through the palette route and the logic drain.
+#[test]
+#[ignore = "requires-pty"]
+fn named_agent_running_follows_the_host_launch_observation() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+
+    let long = start_researcher_running(&mut h, &fx, caller, "sleep 30");
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        activity_tick(&mut h);
+        assert!(
+            terminal(&h, long).agent_launch.is_some(),
+            "a running supervised launch stays running"
+        );
+    }
+    assert_eq!(palette_open_from(&mut h, &fx, caller, 0), long);
+    h.app.close_pane_by_id(long);
+
+    let shell = start_researcher_running(&mut h, &fx, caller, "true");
+    tick_until(
+        &mut h,
+        shell,
+        "the harness exits, the shell takes over",
+        |t| t.agent_launch.is_none(),
+    );
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(
+        started, shell,
+        "a shell whose harness exited is not running"
+    );
+    h.app.close_pane_by_id(started);
+
+    write_to_terminal(&mut h, shell, "sleep 30\n");
+    tick_until(&mut h, shell, "the user's sleep runs", |t| {
+        t.activity == Some(crate::protocol::AgentState::Working)
+    });
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(started, shell, "a user's command is not the agent");
+    h.app.close_pane_by_id(started);
+
+    write_to_terminal(&mut h, shell, "\x03");
+    write_to_terminal(&mut h, shell, "exec /bin/bash\n");
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        activity_tick(&mut h);
+    }
+    assert!(terminal(&h, shell).agent_launch.is_none());
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(started, shell, "an exec'd shell is not the agent");
+}
+
+/// A known harness the host's detector sees in a pane's foreground (relaunched
+/// by hand after the launch ended) runs the agent; the same pane without it
+/// does not. Uses the detector's cached result, as `agent open` does.
+#[test]
+fn named_agent_counts_detected_agent_after_launch_ended() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let shell = h.add_focused_terminal();
+    let t = h.app.windows[0]
+        .panes
+        .get_mut(&shell)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal");
+    t.agent_role = Some("researcher".into());
+    t.agent_launch = None;
+    t.observed_agent = None;
+    assert_eq!(h.app.running_named_agent_pane("researcher"), None);
+
+    h.app.windows[0]
+        .panes
+        .get_mut(&shell)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal")
+        .observed_agent = Some(crate::protocol::PaneAgentState {
+        pane_id: shell,
+        state: crate::protocol::AgentState::Working,
+        agent: "pi".into(),
+        detail: None,
+        session_id: None,
+    });
+    h.app.pane_navigate(caller);
+    assert_eq!(
+        h.app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .expect("open"),
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell }
+    );
+}
+
+/// Two palette opens back to back, drained in one logic pass: the first starts
+/// the agent and records its launch; the second sees that launch and focuses
+/// the pane. One pane, not two.
+#[test]
+fn named_agent_back_to_back_opens_start_one_pane() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let before = pane_total(&h);
+    h.app.pane_navigate(caller);
+    palette_queue_open_researcher(&mut h, &fx);
+    palette_queue_open_researcher(&mut h, &fx);
+    assert_eq!(
+        h.app.pending_agent_opens.len(),
+        2,
+        "the palette queues opens"
+    );
+
+    h.run_frames(1);
+
+    assert!(
+        h.app.pending_agent_opens.is_empty(),
+        "App::logic drained them"
+    );
+    assert_eq!(
+        pane_total(&h),
+        before + 1,
+        "the second open found the first"
+    );
+}
+
+/// A pane whose agent launch is a resume typed into its interactive shell (a
+/// Standby wake) for `harness`, begun `ago` in the past. Returns the pane and
+/// its shell pid.
+fn typed_resume_pane(
+    h: &mut HostHarness,
+    harness: &str,
+    ago: std::time::Duration,
+) -> (PaneId, i32) {
+    let pane = h.add_focused_terminal();
+    let t = h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal");
+    t.agent_role = Some("researcher".into());
+    t.begin_agent_launch(crate::host::pane::AgentLaunchKind::TypedResume {
+        harness: harness.into(),
+    });
+    let launch = t.agent_launch.as_mut().expect("launch");
+    launch.started -= ago;
+    (pane, t.backend.child_pid() as i32)
+}
+
+fn observe_launch(
+    h: &mut HostHarness,
+    pane: PaneId,
+    fg: i32,
+    children: usize,
+    fg_agent: Option<&str>,
+) -> bool {
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal")
+        .observe_agent_launch(Some(fg), &Ok(children), fg_agent)
+}
+
+/// Codex review 7, both delayed-wake sequences. A woken shell that spends
+/// longer than the command grace in a slow pre-exec step (owns the
+/// foreground, no children) has not run the resume yet. A hook's short-lived
+/// non-agent child, then a childless tick, is not the resume either. Only the
+/// detector naming the woken harness proves it ran, so the launch, and the
+/// agent, stay running in both sequences.
+#[test]
+fn typed_resume_launch_needs_its_harness_in_the_foreground() {
+    let mut h = HostHarness::new();
+    let ten_s = std::time::Duration::from_secs(10);
+
+    let (slow, shell) = typed_resume_pane(&mut h, "codex", ten_s);
+    for _ in 0..3 {
+        assert!(!observe_launch(&mut h, slow, shell, 0, None));
+    }
+    assert_eq!(h.app.running_named_agent_pane("researcher"), Some(slow));
+    h.app.close_pane_by_id(slow);
+
+    let (hooked, shell) = typed_resume_pane(&mut h, "codex", ten_s);
+    let hook_child = shell + 1;
+    assert!(!observe_launch(&mut h, hooked, hook_child, 1, None));
+    assert!(!observe_launch(&mut h, hooked, shell, 0, None));
+    let t = h.app.windows[0].panes[&hooked]
+        .as_terminal()
+        .expect("terminal");
+    assert!(
+        t.agent_launch.as_ref().is_some_and(|l| !l.seen_running),
+        "a hook child is not the resume"
+    );
+    assert_eq!(h.app.running_named_agent_pane("researcher"), Some(hooked));
+}
+
+/// A typed resume ends at the first bare prompt after the detector named its
+/// harness (`codex` here; `claude` resolves to the detector's `claude-code`),
+/// and a resume line that never runs (Ctrl-C at the prompt) expires after
+/// `TYPED_RESUME_EXPIRY`. Reads the live shell's argv, so it needs a PTY.
+#[test]
+#[ignore = "requires-pty"]
+fn typed_resume_launch_ends_after_its_harness_or_the_expiry() {
+    let mut h = HostHarness::new();
+    let (ran, shell) = typed_resume_pane(&mut h, "claude", std::time::Duration::ZERO);
+    let harness_pgid = shell + 1;
+    assert!(!observe_launch(
+        &mut h,
+        ran,
+        harness_pgid,
+        1,
+        Some("claude-code")
+    ));
+    assert!(
+        observe_launch(&mut h, ran, shell, 0, None),
+        "the first bare prompt after the harness ends the launch"
+    );
+    h.app.close_pane_by_id(ran);
+
+    let past_expiry = crate::host::pane::TYPED_RESUME_EXPIRY + std::time::Duration::from_secs(1);
+    let (never, shell) = typed_resume_pane(&mut h, "codex", past_expiry);
+    assert!(
+        observe_launch(&mut h, never, shell, 0, None),
+        "a resume that never ran expires at a bare prompt"
+    );
+    let (fresh, shell) = typed_resume_pane(
+        &mut h,
+        "codex",
+        crate::host::pane::TYPED_RESUME_EXPIRY - std::time::Duration::from_secs(1),
+    );
+    assert!(
+        !observe_launch(&mut h, fresh, shell, 0, None),
+        "not before the expiry"
+    );
 }

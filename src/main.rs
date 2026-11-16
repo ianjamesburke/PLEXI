@@ -837,6 +837,11 @@ fn main() -> eframe::Result {
                         AgentCmd::History { limit } => {
                             cli::trace::exit(cli::agent_history_cli(limit, json))
                         }
+                        AgentCmd::Open { name, cwd } => cli::trace::exit(cli::agent_open_cli(
+                            &name,
+                            cwd.as_deref(),
+                            json,
+                        )),
                         AgentCmd::Reopen { target, subcontext } => cli::trace::exit(
                             cli::agent_reopen_cli(&target, subcontext.as_deref(), json),
                         ),
