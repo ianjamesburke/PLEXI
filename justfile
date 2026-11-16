@@ -568,6 +568,7 @@ test-build-inputs:
 
 # Infrastructure checks, including offline Cargo build-input fixtures.
 test-infra-scripts: test-build-inputs
+    uv run --no-project python scripts/test_wit_snapshots.py
     uv run --no-project python scripts/test_skill_check.py
     python3 scripts/test_release_evidence.py
     uv run --no-project python scripts/test_docs_gate_scope.py

@@ -1,0 +1,24 @@
+name: check WIT snapshots
+
+on:
+  pull_request:
+    branches: [alpha]
+
+permissions:
+  contents: read
+
+jobs:
+  immutable-snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Test snapshot guard
+        run: uv run --no-project python -m unittest scripts/test_wit_snapshots.py
+      - name: Reject edits to existing snapshots
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-wit-snapshots.sh "$BASE_SHA" "$HEAD_SHA"
