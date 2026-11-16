@@ -134,7 +134,13 @@ pub(crate) fn draw_text_caret(
     }
 }
 
-/// Focus-gain edge detection that survives the reconciler (stint 0545).
+/// The field's first focused pass since it was shown (stints 0545, 1559):
+/// select-all fires once per showing, so focus that returns later (Tab back
+/// from a dialog button, a click into the text) keeps the user's caret and
+/// draft. A pass in which the field was not drawn starts a new showing.
+///
+/// The edge is detected here rather than with egui's helpers, which are
+/// unusable, proven against the real build:
 ///
 /// Two egui conveniences are unusable here, proven against the real build:
 /// - `Response::gained_focus` compares against egui's `id_previous_frame`,
@@ -148,21 +154,24 @@ pub(crate) fn draw_text_caret(
 ///   the window is blurred; an OS-gated edge detector reads `false` for the
 ///   entire blurred session and never fires.
 ///
-/// So: read pure memory focus and track the state observed on our own
-/// previous pass.
-fn focus_gained_since_last_pass(ctx: &egui::Context, id: egui::Id) -> bool {
+/// So: read pure memory focus and track what our own previous pass saw.
+fn first_focus_since_shown(ctx: &egui::Context, id: egui::Id) -> bool {
     let has_focus = ctx.memory(|memory| memory.has_focus(id));
-    let flag = id.with("plexi_observed_focus");
-    let was_focused = ctx.data_mut(|data| {
-        let was = data.get_temp::<bool>(flag).unwrap_or(false);
-        data.insert_temp(flag, has_focus);
-        was
-    });
-    has_focus && !was_focused
+    let pass = ctx.cumulative_pass_nr();
+    let slot = id.with("plexi_first_focus_since_shown");
+    ctx.data_mut(|data| {
+        let (last_pass, focused_before) = data
+            .get_temp::<(u64, bool)>(slot)
+            .unwrap_or((u64::MAX, false));
+        let same_showing = last_pass == pass || last_pass.wrapping_add(1) == pass;
+        let focused_before = same_showing && focused_before;
+        data.insert_temp(slot, (pass, focused_before || has_focus));
+        has_focus && !focused_before
+    })
 }
 
 fn select_all(ctx: &egui::Context, id: egui::Id, buf: &str, log_name: &str) {
-    log::info!("{log_name}: select-all on focus gain");
+    log::info!("{log_name}: select-all on first focus");
     if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
         state
             .cursor
@@ -213,7 +222,7 @@ pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     surface: Option<crate::ui::focus::SurfaceKey>,
-    select_all_on_focus: bool,
+    select_all_on_open: bool,
     password: bool,
     font_size: Option<f32>,
     log_name: &'a str,
@@ -225,7 +234,7 @@ impl<'a> TextField<'a> {
             id,
             hint: hint.into(),
             surface: None,
-            select_all_on_focus: false,
+            select_all_on_open: false,
             password: false,
             font_size: None,
             log_name: "text_field",
@@ -241,8 +250,10 @@ impl<'a> TextField<'a> {
         self
     }
 
-    pub(crate) fn select_all_on_focus(mut self, select_all_on_focus: bool) -> Self {
-        self.select_all_on_focus = select_all_on_focus;
+    /// Select the whole text when the field first takes focus after it is
+    /// shown; later focus keeps the caret (see [`first_focus_since_shown`]).
+    pub(crate) fn select_all_on_open(mut self, select_all_on_open: bool) -> Self {
+        self.select_all_on_open = select_all_on_open;
         self
     }
 
@@ -286,7 +297,7 @@ impl<'a> TextField<'a> {
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }
-        if self.select_all_on_focus && focus_gained_since_last_pass(ui.ctx(), self.id) {
+        if self.select_all_on_open && first_focus_since_shown(ui.ctx(), self.id) {
             select_all(ui.ctx(), self.id, buf, self.log_name);
         }
         response
@@ -297,7 +308,7 @@ pub(crate) struct TextArea<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     surface: Option<crate::ui::focus::SurfaceKey>,
-    select_all_on_focus: bool,
+    select_all_on_open: bool,
     rows: usize,
     desired_width: f32,
     max_height: Option<f32>,
@@ -318,7 +329,7 @@ impl<'a> TextArea<'a> {
             id,
             hint: hint.into(),
             surface: None,
-            select_all_on_focus: false,
+            select_all_on_open: false,
             rows: 3,
             desired_width: f32::INFINITY,
             max_height: None,
@@ -367,8 +378,10 @@ impl<'a> TextArea<'a> {
         self
     }
 
-    pub(crate) fn select_all_on_focus(mut self, select_all_on_focus: bool) -> Self {
-        self.select_all_on_focus = select_all_on_focus;
+    /// Select the whole text when the field first takes focus after it is
+    /// shown; later focus keeps the caret (see [`first_focus_since_shown`]).
+    pub(crate) fn select_all_on_open(mut self, select_all_on_open: bool) -> Self {
+        self.select_all_on_open = select_all_on_open;
         self
     }
 
@@ -440,7 +453,7 @@ impl<'a> TextArea<'a> {
     ) -> egui::Response {
         let id = self.id;
         let surface = self.surface;
-        let select_all_on_focus = self.select_all_on_focus;
+        let select_all_on_open = self.select_all_on_open;
         let log_name = self.log_name;
         let response = if let Some(max_height) = self.max_height {
             egui::ScrollArea::vertical()
@@ -455,7 +468,7 @@ impl<'a> TextArea<'a> {
         if let Some(key) = surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, id);
         }
-        if select_all_on_focus && focus_gained_since_last_pass(ui.ctx(), id) {
+        if select_all_on_open && first_focus_since_shown(ui.ctx(), id) {
             select_all(ui.ctx(), id, buf, log_name);
         }
         response

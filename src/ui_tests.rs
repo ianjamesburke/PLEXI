@@ -12028,6 +12028,16 @@ open(out + ".done", "w").close()
             })
         }
 
+        /// The text in the open dialog's field.
+        fn buffer(self, h: &mut PlexiUiHarness) -> String {
+            h.with_app(|app| match self {
+                Self::RenamePane => app.rename_buffer.clone(),
+                Self::RenameContext => app.context_rename.as_ref().unwrap().buffer.clone(),
+                Self::Description => app.description_buffer.clone(),
+                Self::ContextRoot => app.text_overlay.as_ref().unwrap().0.buffer.clone(),
+            })
+        }
+
         /// The value the dialog writes on commit.
         fn committed(self, h: &mut PlexiUiHarness, pane: crate::spatial::tiling::PaneId) -> String {
             h.with_app(|app| match self {
@@ -12133,6 +12143,61 @@ open(out + ".done", "w").close()
         h.run_steps(2);
         assert!(!TextDialog::RenamePane.is_open(&mut h));
         assert_eq!(TextDialog::RenamePane.committed(&mut h, pane), before);
+    }
+
+    /// Stint 1559 review: the field selects all only when the dialog opens.
+    /// Edit the draft, Tab to a button, click back into the text and type:
+    /// the draft keeps its edit and gains the new text. Reopening selects
+    /// the text again.
+    #[test]
+    fn text_entry_field_keeps_the_draft_when_refocused_from_a_button() {
+        for dialog in [TextDialog::RenamePane, TextDialog::Description] {
+            let mut h = PlexiUiHarness::new();
+            h.step();
+            add_focused_pane(&mut h);
+            h.step();
+            dialog.open(&mut h, "draft");
+            let typed = |h: &mut PlexiUiHarness, text: &str| {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(text.to_string()));
+                h.step();
+            };
+            let click_field = |h: &mut PlexiUiHarness, value: &str| {
+                h.harness()
+                    .query_all_by(|node| {
+                        matches!(
+                            node.role(),
+                            egui::accesskit::Role::TextInput
+                                | egui::accesskit::Role::MultilineTextInput
+                        ) && node.value().as_deref() == Some(value)
+                    })
+                    .next()
+                    .expect("the dialog's field")
+                    .click();
+                h.run_steps(2);
+            };
+            // Opening selects the draft; a click places the caret.
+            click_field(&mut h, "draft");
+            typed(&mut h, " one");
+            assert_eq!(dialog.buffer(&mut h), "draft one", "{dialog:?}");
+            tab(&mut h, false);
+            h.run_steps(2);
+            click_field(&mut h, "draft one");
+            typed(&mut h, " two");
+            assert_eq!(
+                dialog.buffer(&mut h),
+                "draft one two",
+                "{dialog:?}: refocusing the field replaced the draft"
+            );
+            // A reopened dialog selects its text again.
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(2);
+            dialog.open(&mut h, "again");
+            typed(&mut h, "fresh");
+            assert_eq!(dialog.buffer(&mut h), "fresh", "{dialog:?} reopen");
+        }
     }
 
     /// Visual review (stint 1559): each text-entry dialog is an `ActionModal`

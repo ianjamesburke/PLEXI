@@ -135,7 +135,7 @@ impl<'a> DialogAction<'a> {
 }
 
 /// A text field body for [`ActionModal::show_field`] (stint 1559). The kit
-/// owns the field's focus surface, select-all on focus and its place above
+/// owns the field's focus surface, select-all on open and its place above
 /// the button row.
 pub(crate) struct DialogField<'b> {
     id: egui::Id,
@@ -180,7 +180,7 @@ impl<'b> DialogField<'b> {
             None => {
                 crate::ui::text_field::TextField::singleline(self.id, self.placeholder)
                     .surface(self.surface)
-                    .select_all_on_focus(true)
+                    .select_all_on_open(true)
                     .log_name(log_name)
                     .show(ui, self.buffer, colors);
             }
@@ -190,7 +190,7 @@ impl<'b> DialogField<'b> {
                     .desired_width(ui.available_width())
                     .rows(rows)
                     .surface(self.surface)
-                    .select_all_on_focus(true)
+                    .select_all_on_open(true)
                     .log_name(log_name)
                     .show(ui, self.buffer, colors);
             }
