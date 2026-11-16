@@ -107,15 +107,30 @@
     },
     {
       "id": "src/overlays/misc.rs::draw_edit_description_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_text_entry_dialogs"
+      },
+      "states": "field filled and selected; 900px and 360px windows",
+      "minimum": "ActionModal field body owns the field above bounded action rows."
     },
     {
       "id": "src/overlays/misc.rs::draw_rename_context_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_text_entry_dialogs"
+      },
+      "states": "field filled and selected; 900px and 360px windows",
+      "minimum": "ActionModal field body owns the field above bounded action rows."
     },
     {
       "id": "src/overlays/misc.rs::draw_rename_pane_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_text_entry_dialogs"
+      },
+      "states": "field filled and selected; 900px and 360px windows",
+      "minimum": "ActionModal field body owns the field above bounded action rows."
     },
     {
       "id": "src/overlays/misc.rs::draw_shortcuts_overlay",
@@ -123,11 +138,21 @@
     },
     {
       "id": "src/overlays/misc.rs::draw_single_line_rename_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_text_entry_dialogs"
+      },
+      "states": "field filled and selected; 900px and 360px windows",
+      "minimum": "ActionModal field body owns the field above bounded action rows."
     },
     {
       "id": "src/overlays/misc.rs::draw_text_input_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_text_entry_dialogs"
+      },
+      "states": "field filled and selected; 900px and 360px windows",
+      "minimum": "ActionModal field body owns the field above bounded action rows."
     },
     {
       "id": "src/overlays/mod.rs::draw_contact_footer",
