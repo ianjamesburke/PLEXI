@@ -6560,6 +6560,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
             delivery_unknown: false,
+            host_integrity: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -12478,6 +12479,7 @@ open(out + ".done", "w").close()
                     enqueued_at: std::time::Instant::now(),
                     tombstoned: false,
                     delivery_unknown: false,
+                    host_integrity: false,
                     deliver_after: None,
                     origin_in_view: false,
                 }

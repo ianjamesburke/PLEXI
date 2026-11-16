@@ -3322,6 +3322,7 @@ impl HeadlessBackend {
                             enqueued_at: std::time::Instant::now(),
                             tombstoned: false,
                             delivery_unknown: false,
+                            host_integrity: false,
                             deliver_after: None,
                             origin_in_view: false,
                         });

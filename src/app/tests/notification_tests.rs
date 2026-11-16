@@ -50,6 +50,7 @@ fn snoozed_notification_invisible_then_visible() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: Some(wake_past), // already elapsed → visible
         origin_in_view: false,
     });
@@ -143,6 +144,7 @@ fn snoozed_notification_exempt_from_timeout() {
         enqueued_at: std::time::Instant::now() - std::time::Duration::from_secs(600),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(300)),
         origin_in_view: false,
     });
@@ -183,6 +185,7 @@ fn persist_roundtrip() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     };
@@ -277,6 +280,34 @@ fn persist_ttl_drops_old_notifications() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A notice about the user's own data stays until acknowledged: restoring it
+/// after more than seven days keeps it, while an ordinary one beside it expires.
+#[test]
+fn persist_ttl_keeps_unacknowledged_integrity_notices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notifications.json");
+    let notices =
+        [("integrity", true), ("ordinary", false)].map(|(id, integrity)| PendingNotification {
+            notify_id: id.into(),
+            required: integrity,
+            host_integrity: integrity,
+            ..Default::default()
+        });
+    crate::app::notifications::save_pending_notifications_to(&notices, &path);
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let eight_days_ago = crate::platform::clock::now_secs().saturating_sub(8 * 24 * 3600);
+    for entry in saved.as_array_mut().unwrap() {
+        entry["enqueued_at_secs"] = eight_days_ago.into();
+    }
+    std::fs::write(&path, saved.to_string()).unwrap();
+
+    let restored = load_pending_notifications_from(&path);
+    let ids: Vec<&str> = restored.iter().map(|n| n.notify_id.as_str()).collect();
+    assert_eq!(ids, ["integrity"]);
+    assert!(restored[0].host_integrity);
+}
+
 /// Regression guard for #791: dispatch_notify_action_cmds with pane_focus
 /// host_action must call pane_navigate synchronously before writing the
 /// response file (so navigation is complete before the shell unblocks).
@@ -368,6 +399,7 @@ fn window_scoped_notification_visible_only_on_source_window() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -463,6 +495,7 @@ fn auto_dismiss_removes_message_when_sender_focused() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -593,6 +626,7 @@ fn auto_dismiss_spares_required_notifications() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -640,6 +674,7 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -747,6 +782,7 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     }
@@ -868,6 +904,42 @@ fn enqueue_notification_rejects_when_live_queue_is_full() {
         .pending_notifications
         .iter()
         .all(|n| n.notify_id != "rejected-at-capacity"));
+}
+
+/// Stint 1604: a notice about the user's own data is admitted when the live
+/// queue is full; rejecting it would lose it for good (the set-aside already
+/// happened and is never re-detected).
+#[test]
+fn set_aside_notice_is_delivered_when_the_live_queue_is_full() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("migration-plugin-v2")).unwrap();
+    std::fs::write(
+        root.path().join("migration-plugin-v2/complete"),
+        "schema=2\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("plugins/logs")).unwrap();
+    std::fs::create_dir_all(root.path().join("apps/logs")).unwrap();
+    std::fs::write(root.path().join("apps/.core_build"), "0.4.6-build").unwrap();
+    crate::app::plugin_migration::migrate(root.path()).unwrap();
+    let aside = root.path().display().to_string();
+
+    let mut h = HostHarness::new();
+    let limit = crate::app::notifications::MAX_PENDING_NOTIFICATIONS;
+    h.app.pending_notifications = (0..limit)
+        .map(|index| PendingNotification {
+            notify_id: format!("already-queued-{index}"),
+            ..Default::default()
+        })
+        .collect();
+    h.app.surface_set_aside_apps();
+    assert!(
+        h.app
+            .pending_notifications
+            .iter()
+            .any(|n| n.title == "Old apps folder moved aside" && n.body.contains(&aside)),
+        "the set-aside notice must be admitted past the cap"
+    );
 }
 
 #[test]
@@ -1200,6 +1272,7 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
             delivery_unknown: false,
+            host_integrity: false,
             deliver_after: None,
             origin_in_view: false,
         },
@@ -1735,6 +1808,7 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         enqueued_at: std::time::Instant::now(),
         tombstoned: false,
         delivery_unknown: false,
+        host_integrity: false,
         deliver_after: None,
         origin_in_view: false,
     }
