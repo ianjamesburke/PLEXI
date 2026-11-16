@@ -3702,6 +3702,7 @@ impl eframe::App for PlexiApp {
         if self.service_quit(frame) {
             return;
         }
+        self.release_unowned_terminal_holds(ctx);
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();

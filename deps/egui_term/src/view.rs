@@ -98,7 +98,6 @@ pub struct TerminalViewState {
     cursor_blink_enabled: bool,
     copy_mode: Option<CopyModeState>,
     search_mode: Option<SearchModeState>,
-    keyboard: crate::keyboard::KeyboardEncoder,
     /// Selection captured when this pane lost focus. Used to keep the selection
     /// highlight visible in unfocused panes even if the alacritty backend clears
     /// the live selection due to new terminal output.
@@ -116,7 +115,6 @@ impl Default for TerminalViewState {
             cursor_blink_enabled: true,
             copy_mode: None,
             search_mode: None,
-            keyboard: crate::keyboard::KeyboardEncoder::default(),
             frozen_selection_range: None,
         }
     }
@@ -330,23 +328,47 @@ impl<'a> TerminalView<'a> {
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
         events.extend(layout.ctx.input(|i| i.events.clone()));
-        let keyboard_mode =
-            if state.search_mode.is_none() && state.copy_mode.is_none() {
-                self.backend.keyboard_mode()
-            } else {
-                TermMode::empty()
-            };
-        let terminal_mode = self.backend.last_content().terminal_mode;
-        let bindings_layout = &self.bindings_layout;
-        let prepared =
-            state.keyboard.prepare(events, keyboard_mode, |key, mods| {
-                bindings_layout.scrolls_before_encoding(
-                    key,
-                    mods,
-                    terminal_mode,
+        // An unfocused terminal (here for the pointer) is given no keyboard
+        // input, so its encoder must never record a hold from it.
+        if !has_focus {
+            events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Text(_)
+                        | egui::Event::Key { .. }
+                        | egui::Event::Copy
+                        | egui::Event::Paste(_)
                 )
             });
-        for crate::keyboard::PreparedEvent { event, encoding } in prepared {
+        }
+        let terminal_mode = self.backend.last_content().terminal_mode;
+        let bindings_layout = &self.bindings_layout;
+        let scrolls = |key, mods| {
+            bindings_layout.scrolls_before_encoding(key, mods, terminal_mode)
+        };
+        let mut events = events.into_iter().peekable();
+        // One event at a time: each is dispatched and acknowledged before the
+        // next is encoded, so a hold exists only for a press that was
+        // delivered, and search/copy mode applies from the event that
+        // entered it.
+        loop {
+            let keyboard_mode =
+                if state.search_mode.is_none() && state.copy_mode.is_none() {
+                    self.backend.keyboard_mode()
+                } else {
+                    TermMode::empty()
+                };
+            let Some(crate::keyboard::PreparedEvent {
+                event,
+                encoding,
+                hold,
+            }) =
+                self.backend
+                    .keyboard
+                    .next(&mut events, keyboard_mode, scrolls)
+            else {
+                break;
+            };
             let mut input_actions = vec![];
 
             match event {
@@ -354,9 +376,6 @@ impl<'a> TerminalView<'a> {
                 | egui::Event::Key { .. }
                 | egui::Event::Copy
                 | egui::Event::Paste(_) => {
-                    if !has_focus {
-                        continue;
-                    }
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
 
@@ -617,6 +636,14 @@ impl<'a> TerminalView<'a> {
                 },
                 _ => {},
             };
+
+            let written = input_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    InputAction::BackendCall(BackendCommand::Write(_))
+                )
+            });
+            self.backend.keyboard.acknowledge(hold, written);
 
             for action in input_actions {
                 match action {
