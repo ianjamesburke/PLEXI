@@ -553,6 +553,7 @@ impl PlexiApp {
                     egui::Id::new("text_input_overlay_field"),
                     &overlay.hint,
                     SurfaceKey::Overlay(OverlaySurface::Layer(crate::app::FocusKind::TextInput)),
+                    overlay.session,
                     &mut overlay.buffer,
                 ),
             );
@@ -632,21 +633,18 @@ impl PlexiApp {
     }
 
     /// The one single-line rename dialog: an `ActionModal` field dialog with
-    /// "Rename" (Enter) and "Cancel" (Esc). It pairs with `focus_kind`, which
-    /// names the field's input surface; `id` names the modal and prefixes the
-    /// field id. Returns `(commit, cancel)`; the caller owns what committing
-    /// means.
+    /// "Rename" (Enter) and "Cancel" (Esc) under `title`, over `field`; `id`
+    /// names the modal. Returns `(commit, cancel)`; the caller owns what
+    /// committing means.
     fn draw_single_line_rename_overlay(
         ctx: &egui::Context,
         id: &str,
         title: &str,
-        placeholder: &str,
-        focus_kind: crate::app::FocusKind,
-        buffer: &mut String,
+        field: crate::ui::dialog::DialogField<'_>,
         colors: &Colors,
     ) -> (bool, bool) {
         use crate::ui::button::ButtonKind;
-        use crate::ui::dialog::{ActionModal, DialogAction, DialogField, DialogShortcut};
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
         use egui::{Key, Modifiers};
         let actions = [
             DialogAction::new("rename", "Rename", ButtonKind::Primary)
@@ -657,18 +655,7 @@ impl PlexiApp {
         ];
         let response = ActionModal::new(id, title, &actions)
             .width(MODAL_WIDTH)
-            .show_field(
-                ctx,
-                colors,
-                DialogField::singleline(
-                    egui::Id::new(format!("{id}_input")),
-                    placeholder,
-                    crate::ui::focus::SurfaceKey::Overlay(
-                        crate::app::input_owner::OverlaySurface::Layer(focus_kind),
-                    ),
-                    buffer,
-                ),
-            );
+            .show_field(ctx, colors, field);
         (
             response.selected == Some("rename"),
             response.selected == Some("cancel") || response.dismissed,
@@ -685,9 +672,17 @@ impl PlexiApp {
             ctx,
             "rename_pane",
             "Rename Pane",
-            "Pane name...",
-            crate::app::FocusKind::RenamePane,
-            &mut self.rename_buffer,
+            crate::ui::dialog::DialogField::singleline(
+                egui::Id::new("rename_pane_input"),
+                "Pane name...",
+                crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::RenamePane,
+                    ),
+                ),
+                self.rename_session,
+                &mut self.rename_buffer,
+            ),
             &self.colors,
         );
 
@@ -741,9 +736,17 @@ impl PlexiApp {
             ctx,
             "rename_context",
             "Name this context",
-            "Context name...",
-            crate::app::FocusKind::ContextRename,
-            &mut edit.buffer,
+            crate::ui::dialog::DialogField::singleline(
+                egui::Id::new("rename_context_input"),
+                "Context name...",
+                crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::ContextRename,
+                    ),
+                ),
+                edit.session,
+                &mut edit.buffer,
+            ),
             &self.colors,
         );
 
@@ -793,6 +796,7 @@ impl PlexiApp {
                             crate::app::FocusKind::ContextDescription,
                         ),
                     ),
+                    self.description_session,
                     3,
                     &mut self.description_buffer,
                 ),

@@ -517,6 +517,8 @@ pub struct FileBrowserView {
     pending_operation: Option<PendingFileOperation>,
     rename_path: Option<PathBuf>,
     rename_buffer: String,
+    /// The rename prompt's open session; see `OpenSession`.
+    rename_session: crate::ui::text_field::OpenSession,
     pending_cmds: Vec<ViewCommand>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
@@ -771,6 +773,7 @@ impl FileBrowserView {
             pending_operation: None,
             rename_path: None,
             rename_buffer: String::new(),
+            rename_session: crate::ui::text_field::OpenSession::new(),
             pending_cmds: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
@@ -1793,6 +1796,7 @@ impl FileBrowserView {
         };
         self.rename_path = Some(entry.path);
         self.rename_buffer = entry.name;
+        self.rename_session = crate::ui::text_field::OpenSession::new();
         log::info!("file_browser: rename prompt opened");
     }
 
@@ -3121,7 +3125,7 @@ impl FileBrowserView {
                     egui::Id::new(("file_browser_rename_input", pane_key)),
                     "",
                 )
-                .select_all_on_open(true)
+                .select_all_on_open(self.rename_session)
                 .log_name("file_browser_rename")
                 .show(ui, &mut self.rename_buffer, colors);
                 let submitted = text_response.lost_focus()

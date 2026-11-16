@@ -4059,6 +4059,7 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
             label: "Root directory".to_string(),
             hint: "/path/to/project".to_string(),
             buffer: String::new(),
+            session: crate::ui::text_field::OpenSession::new(),
         },
         OverlayTarget::ContextRoot(0),
     ));

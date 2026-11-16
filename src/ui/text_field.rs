@@ -134,15 +134,27 @@ pub(crate) fn draw_text_caret(
     }
 }
 
-/// The field's first focused pass since it was shown (stints 0545, 1559):
-/// select-all fires once per showing, so focus that returns later (Tab back
-/// from a dialog button, a click into the text) keeps the user's caret and
-/// draft. A pass in which the field was not drawn starts a new showing.
+/// One open session of a text field's owner (stint 1559): the owner makes a
+/// new one each time it opens (a dialog, an inline rename) and keeps it while
+/// open, drawn or not, so an overlay that covers it and leaves is not a
+/// reopen. A field with [`TextField::select_all_on_open`] selects its text on
+/// its first focus in each session; focus that returns later (Tab back from
+/// a dialog button, a click into the text, an overlay leaving) keeps the
+/// user's caret and draft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct OpenSession(u64);
+
+impl OpenSession {
+    pub(crate) fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// Whether this pass is the field's first focused pass in `session`.
 ///
-/// The edge is detected here rather than with egui's helpers, which are
-/// unusable, proven against the real build:
-///
-/// Two egui conveniences are unusable here, proven against the real build:
+/// Focus is read from memory rather than with egui's helpers, which are
+/// unusable here, proven against the real build (stint 0545):
 /// - `Response::gained_focus` compares against egui's `id_previous_frame`,
 ///   snapshotted at `begin_pass` — the post-frame reconciler
 ///   (`reconcile_egui_focus`, stint 0429) grants focus *after* every widget
@@ -153,20 +165,15 @@ pub(crate) fn draw_text_caret(
 ///   CLI-injected input (`plexi pane send`, drive-host, harness) lands while
 ///   the window is blurred; an OS-gated edge detector reads `false` for the
 ///   entire blurred session and never fires.
-///
-/// So: read pure memory focus and track what our own previous pass saw.
-fn first_focus_since_shown(ctx: &egui::Context, id: egui::Id) -> bool {
-    let has_focus = ctx.memory(|memory| memory.has_focus(id));
-    let pass = ctx.cumulative_pass_nr();
-    let slot = id.with("plexi_first_focus_since_shown");
+fn first_focus_in_session(ctx: &egui::Context, id: egui::Id, session: OpenSession) -> bool {
+    if !ctx.memory(|memory| memory.has_focus(id)) {
+        return false;
+    }
+    let slot = id.with("plexi_select_all_session");
     ctx.data_mut(|data| {
-        let (last_pass, focused_before) = data
-            .get_temp::<(u64, bool)>(slot)
-            .unwrap_or((u64::MAX, false));
-        let same_showing = last_pass == pass || last_pass.wrapping_add(1) == pass;
-        let focused_before = same_showing && focused_before;
-        data.insert_temp(slot, (pass, focused_before || has_focus));
-        has_focus && !focused_before
+        let first = data.get_temp::<OpenSession>(slot) != Some(session);
+        data.insert_temp(slot, session);
+        first
     })
 }
 
@@ -222,7 +229,7 @@ pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     surface: Option<crate::ui::focus::SurfaceKey>,
-    select_all_on_open: bool,
+    select_all_on_open: Option<OpenSession>,
     password: bool,
     font_size: Option<f32>,
     log_name: &'a str,
@@ -234,7 +241,7 @@ impl<'a> TextField<'a> {
             id,
             hint: hint.into(),
             surface: None,
-            select_all_on_open: false,
+            select_all_on_open: None,
             password: false,
             font_size: None,
             log_name: "text_field",
@@ -250,10 +257,10 @@ impl<'a> TextField<'a> {
         self
     }
 
-    /// Select the whole text when the field first takes focus after it is
-    /// shown; later focus keeps the caret (see [`first_focus_since_shown`]).
-    pub(crate) fn select_all_on_open(mut self, select_all_on_open: bool) -> Self {
-        self.select_all_on_open = select_all_on_open;
+    /// Select the whole text on the field's first focus in `session`;
+    /// later focus keeps the caret (see [`OpenSession`]).
+    pub(crate) fn select_all_on_open(mut self, session: OpenSession) -> Self {
+        self.select_all_on_open = Some(session);
         self
     }
 
@@ -297,7 +304,10 @@ impl<'a> TextField<'a> {
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }
-        if self.select_all_on_open && first_focus_since_shown(ui.ctx(), self.id) {
+        if self
+            .select_all_on_open
+            .is_some_and(|session| first_focus_in_session(ui.ctx(), self.id, session))
+        {
             select_all(ui.ctx(), self.id, buf, self.log_name);
         }
         response
@@ -308,7 +318,7 @@ pub(crate) struct TextArea<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     surface: Option<crate::ui::focus::SurfaceKey>,
-    select_all_on_open: bool,
+    select_all_on_open: Option<OpenSession>,
     rows: usize,
     desired_width: f32,
     max_height: Option<f32>,
@@ -329,7 +339,7 @@ impl<'a> TextArea<'a> {
             id,
             hint: hint.into(),
             surface: None,
-            select_all_on_open: false,
+            select_all_on_open: None,
             rows: 3,
             desired_width: f32::INFINITY,
             max_height: None,
@@ -378,10 +388,10 @@ impl<'a> TextArea<'a> {
         self
     }
 
-    /// Select the whole text when the field first takes focus after it is
-    /// shown; later focus keeps the caret (see [`first_focus_since_shown`]).
-    pub(crate) fn select_all_on_open(mut self, select_all_on_open: bool) -> Self {
-        self.select_all_on_open = select_all_on_open;
+    /// Select the whole text on the field's first focus in `session`;
+    /// later focus keeps the caret (see [`OpenSession`]).
+    pub(crate) fn select_all_on_open(mut self, session: OpenSession) -> Self {
+        self.select_all_on_open = Some(session);
         self
     }
 
@@ -468,7 +478,7 @@ impl<'a> TextArea<'a> {
         if let Some(key) = surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, id);
         }
-        if select_all_on_open && first_focus_since_shown(ui.ctx(), id) {
+        if select_all_on_open.is_some_and(|session| first_focus_in_session(ui.ctx(), id, session)) {
             select_all(ui.ctx(), id, buf, log_name);
         }
         response

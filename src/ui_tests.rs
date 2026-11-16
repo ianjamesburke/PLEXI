@@ -12001,9 +12001,8 @@ open(out + ".done", "w").close()
                     app.context_rename.as_mut().unwrap().buffer = buffer.to_string();
                 }
                 Self::Description => {
-                    app.editing_description = Some(0);
+                    app.open_description_edit(0);
                     app.description_buffer = buffer.to_string();
-                    app.push_focus_layer(FocusKind::ContextDescription);
                 }
                 Self::ContextRoot => {
                     app.text_overlay = Some((
@@ -12011,6 +12010,7 @@ open(out + ".done", "w").close()
                             label: "Set context root".to_string(),
                             hint: "/path/to/project or ~/...".to_string(),
                             buffer: buffer.to_string(),
+                            session: crate::ui::text_field::OpenSession::new(),
                         },
                         crate::app::OverlayTarget::ContextRoot(0),
                     ));
@@ -12192,6 +12192,52 @@ open(out + ".done", "w").close()
                 "{dialog:?}: refocusing the field replaced the draft"
             );
             // A reopened dialog selects its text again.
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(2);
+            dialog.open(&mut h, "again");
+            typed(&mut h, "fresh");
+            assert_eq!(dialog.buffer(&mut h), "fresh", "{dialog:?} reopen");
+        }
+    }
+
+    /// Stint 1559 review: a text dialog covered by another overlay is hidden,
+    /// not closed. Edit the draft, cover it, uncover it and type: the draft
+    /// keeps its edit. Reopening still selects the text.
+    #[test]
+    fn text_entry_field_keeps_the_draft_when_uncovered() {
+        for dialog in TextDialog::ALL {
+            let mut h = PlexiUiHarness::new();
+            h.step();
+            add_focused_pane(&mut h);
+            h.step();
+            dialog.open(&mut h, "draft");
+            let typed = |h: &mut PlexiUiHarness, text: &str| {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(text.to_string()));
+                h.step();
+            };
+            h.harness().key_press(egui::Key::End);
+            h.step();
+            typed(&mut h, " one");
+            assert_eq!(dialog.buffer(&mut h), "draft one", "{dialog:?}");
+            h.with_app_mut(|app| {
+                app.show_shortcuts = true;
+                app.sync_shortcuts_focus();
+            });
+            h.run_steps(2);
+            h.with_app_mut(|app| {
+                app.show_shortcuts = false;
+                app.sync_shortcuts_focus();
+            });
+            h.run_steps(2);
+            typed(&mut h, " two");
+            assert_eq!(
+                dialog.buffer(&mut h),
+                "draft one two",
+                "{dialog:?}: uncovering the dialog replaced the draft"
+            );
             h.harness().key_press(egui::Key::Escape);
             h.run_steps(2);
             dialog.open(&mut h, "again");

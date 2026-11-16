@@ -807,11 +807,7 @@ impl PlexiApp {
                     self.open_context_rename(i);
                 }
                 WindowMenuAction::EditDescription => {
-                    log::info!("sidebar: edit context description ctx_idx={i}");
-                    self.editing_description = Some(i);
-                    self.description_buffer =
-                        self.router.get(i).description.clone().unwrap_or_default();
-                    self.push_focus_layer(crate::app::FocusKind::ContextDescription);
+                    self.open_description_edit(i);
                 }
                 WindowMenuAction::MoveToTop => {
                     self.cancel_context_rename("sidebar reorder");
@@ -847,6 +843,7 @@ impl PlexiApp {
                             label: "Set context root".to_string(),
                             hint: "/path/to/project or ~/...".to_string(),
                             buffer: existing,
+                            session: crate::ui::text_field::OpenSession::new(),
                         },
                         crate::app::OverlayTarget::ContextRoot(i),
                     ));

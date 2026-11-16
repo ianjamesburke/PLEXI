@@ -139,6 +139,7 @@ pub(crate) struct TextInputOverlay {
     pub label: String,
     pub hint: String,
     pub buffer: String,
+    pub session: crate::ui::text_field::OpenSession,
 }
 
 use crate::config;
@@ -197,6 +198,7 @@ pub(crate) struct ContextRenameState {
     pub(crate) target_id: u64,
     pub(crate) origin_id: u64,
     pub(crate) buffer: String,
+    pub(crate) session: crate::ui::text_field::OpenSession,
 }
 
 pub struct PlexiApp {
@@ -331,8 +333,12 @@ pub struct PlexiApp {
     pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
     pub(crate) context_rename: Option<ContextRenameState>,
     pub(crate) rename_buffer: String,
+    /// The pane rename dialog's open session; see `OpenSession`.
+    pub(crate) rename_session: crate::ui::text_field::OpenSession,
     pub(crate) editing_description: Option<usize>,
     pub(crate) description_buffer: String,
+    /// The description dialog's open session; see `OpenSession`.
+    pub(crate) description_session: crate::ui::text_field::OpenSession,
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
@@ -1850,8 +1856,10 @@ impl PlexiApp {
                     _test_scratch: None,
                     context_rename: None,
                     rename_buffer: String::new(),
+                    rename_session: crate::ui::text_field::OpenSession::new(),
                     editing_description: None,
                     description_buffer: String::new(),
+                    description_session: crate::ui::text_field::OpenSession::new(),
                     drag_context: None,
                     parked_section_expanded: false,
                     show_command_palette: false,
@@ -2143,8 +2151,10 @@ impl PlexiApp {
             _test_scratch: None,
             context_rename: None,
             rename_buffer: String::new(),
+            rename_session: crate::ui::text_field::OpenSession::new(),
             editing_description: None,
             description_buffer: String::new(),
+            description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
             show_command_palette: false,
@@ -3129,8 +3139,10 @@ impl PlexiApp {
             _test_scratch: Some(scratch),
             context_rename: None,
             rename_buffer: String::new(),
+            rename_session: crate::ui::text_field::OpenSession::new(),
             editing_description: None,
             description_buffer: String::new(),
+            description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
             show_command_palette: false,
@@ -3492,12 +3504,27 @@ impl PlexiApp {
             })
             .unwrap_or_default();
         self.renaming_pane = Some(pane_id);
+        self.rename_session = crate::ui::text_field::OpenSession::new();
         // Sync the focus layer immediately so `input_captured_by_overlay()`
         // is accurate for the rest of this frame — without this, there is a
         // one-frame window where `renaming_pane` is Some but the focus layer
         // has not been pushed yet.
         self.sync_rename_pane_focus();
         log::info!("rename_pane: opened for pane {pane_id:?}");
+    }
+
+    /// Open the context description dialog for the context at `ctx_idx`.
+    pub(crate) fn open_description_edit(&mut self, ctx_idx: usize) {
+        log::info!("sidebar: edit context description ctx_idx={ctx_idx}");
+        self.editing_description = Some(ctx_idx);
+        self.description_buffer = self
+            .router
+            .get(ctx_idx)
+            .description
+            .clone()
+            .unwrap_or_default();
+        self.description_session = crate::ui::text_field::OpenSession::new();
+        self.push_focus_layer(crate::app::FocusKind::ContextDescription);
     }
 
     /// Single entry point for opening a context rename. Used by Cmd+Shift+R
@@ -3510,6 +3537,7 @@ impl PlexiApp {
             target_id: target.context_id,
             origin_id: self.router.active().context_id,
             buffer: target.name.to_string(),
+            session: crate::ui::text_field::OpenSession::new(),
         });
         log::info!("context_rename: opened context_id={}", target.context_id);
         self.sync_context_rename_focus();

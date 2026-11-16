@@ -135,12 +135,13 @@ impl<'a> DialogAction<'a> {
 }
 
 /// A text field body for [`ActionModal::show_field`] (stint 1559). The kit
-/// owns the field's focus surface, select-all on open and its place above
-/// the button row.
+/// owns the field's focus surface, select-all on its first focus in the
+/// owner's open `session`, and its place above the button row.
 pub(crate) struct DialogField<'b> {
     id: egui::Id,
     placeholder: &'b str,
     surface: crate::ui::focus::SurfaceKey,
+    session: crate::ui::text_field::OpenSession,
     /// `None` is a single-line field; `Some(rows)` a multi-line one.
     rows: Option<usize>,
     buffer: &'b mut String,
@@ -151,12 +152,14 @@ impl<'b> DialogField<'b> {
         id: egui::Id,
         placeholder: &'b str,
         surface: crate::ui::focus::SurfaceKey,
+        session: crate::ui::text_field::OpenSession,
         buffer: &'b mut String,
     ) -> Self {
         Self {
             id,
             placeholder,
             surface,
+            session,
             rows: None,
             buffer,
         }
@@ -166,12 +169,13 @@ impl<'b> DialogField<'b> {
         id: egui::Id,
         placeholder: &'b str,
         surface: crate::ui::focus::SurfaceKey,
+        session: crate::ui::text_field::OpenSession,
         rows: usize,
         buffer: &'b mut String,
     ) -> Self {
         Self {
             rows: Some(rows),
-            ..Self::singleline(id, placeholder, surface, buffer)
+            ..Self::singleline(id, placeholder, surface, session, buffer)
         }
     }
 
@@ -180,7 +184,7 @@ impl<'b> DialogField<'b> {
             None => {
                 crate::ui::text_field::TextField::singleline(self.id, self.placeholder)
                     .surface(self.surface)
-                    .select_all_on_open(true)
+                    .select_all_on_open(self.session)
                     .log_name(log_name)
                     .show(ui, self.buffer, colors);
             }
@@ -190,7 +194,7 @@ impl<'b> DialogField<'b> {
                     .desired_width(ui.available_width())
                     .rows(rows)
                     .surface(self.surface)
-                    .select_all_on_open(true)
+                    .select_all_on_open(self.session)
                     .log_name(log_name)
                     .show(ui, self.buffer, colors);
             }
