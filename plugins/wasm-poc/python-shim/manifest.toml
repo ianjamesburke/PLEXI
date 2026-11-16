@@ -9,7 +9,7 @@ version = "0.1.0"
 description = "CPython lifecycle shim boundary POC for SDK v3 JSON bridge."
 
 [plugin.capabilities]
-capabilities = ["timer"]
+capabilities = []
 
 [plugin.capabilities.wasm]
 required = ["state:read-write"]

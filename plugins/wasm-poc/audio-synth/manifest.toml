@@ -9,7 +9,7 @@ version = "0.1.0"
 description = "Additive sine oscillator. RT audio POC proving audio output and Plexi Pipes waveform streaming."
 
 [plugin.capabilities]
-capabilities = ["audio.playback", "pipe.open", "timer"]
+capabilities = ["audio.playback", "pipe.open"]
 
 [plugin.capabilities.wasm]
 required = ["state:read-write"]

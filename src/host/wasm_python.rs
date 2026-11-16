@@ -3735,13 +3735,6 @@ impl LivePythonPane {
                     )
                 })
             }
-            Some("set_timer" | "cancel_timer") if !self.has_capability("timer") => {
-                log::info!(
-                    "plugin::{}: {} denied: missing capability timer",
-                    self.plugin_id,
-                    guest_text::shown(message_type.unwrap_or("<missing>"))
-                );
-            }
             Some("set_timer") => {
                 if let (Some(id), Some(after_ms)) = (
                     message.get("timer_id").and_then(Value::as_str),
@@ -10286,78 +10279,6 @@ mod tests {
                 Some(now + interval - CONTINUOUS_FRAME_HEADROOM)
             );
         }
-    }
-
-    #[test]
-    fn python_timer_without_capability_is_not_armed() {
-        let app = tempdir().expect("plugin dir");
-        let _profile = crate::config::set_test_profile_dir(app.path().join("profile"));
-        let _shared = crate::config::set_test_shared_dir(app.path().join("shared"));
-        std::fs::write(
-            app.path().join("main.py"),
-            "def init(size, args): return []\n",
-        )
-        .expect("write plugin");
-        let logs = crate::testing::test_log::capture();
-        let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.timer"))
-            .expect("launch pane");
-        pane.handle_message(json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1}));
-        assert!(pane.timers.is_empty(), "undeclared timer must not be armed");
-        assert!(logs.records().iter().any(|(level, line)| {
-            *level == log::Level::Info
-                && line == "plugin::test.timer: set_timer denied: missing capability timer"
-        }));
-    }
-
-    #[test]
-    fn python_timer_with_capability_fires_and_can_be_cancelled() {
-        let app = tempdir().expect("plugin dir");
-        let _profile = crate::config::set_test_profile_dir(app.path().join("profile"));
-        let _shared = crate::config::set_test_shared_dir(app.path().join("shared"));
-        std::fs::write(
-            app.path().join("main.py"),
-            "def init(size, args): return []\n",
-        )
-        .expect("write plugin");
-        let mut config = state_test_config(app.path(), "test.timer");
-        config.capabilities = vec!["timer".to_string()];
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
-        pane.handle_message(
-            json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1, "repeat": true}),
-        );
-        pane.timers.get_mut("tick").expect("armed timer").deadline = std::time::Instant::now();
-        pane.fire_due_timers();
-        assert_eq!(pane.pending_timer_events, vec!["tick"]);
-        assert!(
-            pane.timers.contains_key("tick"),
-            "repeating timer stays armed"
-        );
-        pane.handle_message(json!({"type": "cancel_timer", "timer_id": "tick"}));
-        assert!(pane.timers.is_empty());
-    }
-
-    #[test]
-    fn python_timer_cancel_without_capability_preserves_timer() {
-        let app = tempdir().expect("plugin dir");
-        let _profile = crate::config::set_test_profile_dir(app.path().join("profile"));
-        let _shared = crate::config::set_test_shared_dir(app.path().join("shared"));
-        std::fs::write(
-            app.path().join("main.py"),
-            "def init(size, args): return []\n",
-        )
-        .expect("write plugin");
-        let mut config = state_test_config(app.path(), "test.timer");
-        config.capabilities = vec!["timer".to_string()];
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
-        pane.handle_message(json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1}));
-        pane.config.capabilities.clear();
-        let logs = crate::testing::test_log::capture();
-        pane.handle_message(json!({"type": "cancel_timer", "timer_id": "tick"}));
-        assert!(pane.timers.contains_key("tick"));
-        assert!(logs.records().iter().any(|(level, line)| {
-            *level == log::Level::Info
-                && line == "plugin::test.timer: cancel_timer denied: missing capability timer"
-        }));
     }
 
     #[test]

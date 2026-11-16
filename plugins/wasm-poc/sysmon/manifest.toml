@@ -9,7 +9,7 @@ version = "0.1.0"
 description = "CPU, memory, disk, and network stats POC for the Plexi WASM runtime."
 
 [plugin.capabilities]
-capabilities = ["timer"]
+capabilities = []
 
 [plugin.capabilities.wasm]
 required = ["state:read-write"]

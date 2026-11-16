@@ -15,7 +15,7 @@ description = "Bridges configured MCP servers onto the Plexi connector tool plan
 watch = true
 
 [plugin.capabilities]
-capabilities = ["mcp.client", "timer"]
+capabilities = ["mcp.client"]
 
 [[contributes.views]]
 id = "mcp-bridge.main"
