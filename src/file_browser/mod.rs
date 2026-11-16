@@ -488,7 +488,18 @@ pub(crate) fn explorer_shortcut_rows() -> Vec<(&'static str, Vec<Vec<&'static st
     rows
 }
 
+#[derive(Clone)]
+enum FileBrowserActivation {
+    Navigate(PathBuf),
+    OpenMenu(egui::Id),
+    ShowHidden(bool),
+    ClosePalette,
+    SearchFocus { pane: u64, field: egui::Id },
+    SearchClear { pane: u64, field: egui::Id },
+}
+
 pub struct FileBrowserView {
+    node_activations: crate::ui::node_activation::NodeActivations<FileBrowserActivation>,
     pub cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
@@ -743,6 +754,30 @@ fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
 }
 
 impl FileBrowserView {
+    fn apply_node_activation(&mut self, action: FileBrowserActivation, ctx: &egui::Context) {
+        match action {
+            FileBrowserActivation::Navigate(path) => {
+                if self.in_search { self.exit_search(); }
+                self.navigate_into(path);
+            }
+            FileBrowserActivation::OpenMenu(id) => egui::Popup::open_id(ctx, id),
+            FileBrowserActivation::ShowHidden(value) => {
+                self.columns.show_hidden = value;
+                self.refresh_preserving_filter();
+            }
+            FileBrowserActivation::ClosePalette => self.exit_palette(),
+            FileBrowserActivation::SearchFocus { pane, field } => {
+                if !self.in_search { self.enter_search(); }
+                crate::ui::focus::claim_text_surface(ctx, crate::ui::focus::SurfaceKey::Pane(pane), field);
+            }
+            FileBrowserActivation::SearchClear { pane, field } => {
+                self.search_query.clear();
+                self.refilter();
+                crate::ui::focus::claim_text_surface(ctx, crate::ui::focus::SurfaceKey::Pane(pane), field);
+            }
+        }
+        log::info!("file_browser: applied painted node activation");
+    }
     pub fn new(cwd: PathBuf) -> Self {
         log::info!("file_browser: opened with middle-elided filenames and tabular counts");
         let mut app = Self {
@@ -772,6 +807,7 @@ impl FileBrowserView {
             rename_path: None,
             rename_buffer: String::new(),
             pending_cmds: Vec::new(),
+            node_activations: Default::default(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
             in_search: false,
@@ -3313,7 +3349,6 @@ impl FileBrowserView {
         &mut self,
         ui: &mut egui::Ui,
         colors: &Colors,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let mut navigate_target: Option<PathBuf> = None;
         let font_size = self.font_size;
@@ -3394,8 +3429,8 @@ impl FileBrowserView {
                     label.clone()
                 };
                 let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
-                let synthetic_click = pending_click.is_some_and(|click| click.targets_id(btn.id));
-                if btn.clicked() || synthetic_click {
+                self.node_activations.record(&btn, FileBrowserActivation::Navigate(seg_path.clone()));
+                if btn.clicked() {
                     navigate_target = Some(seg_path.clone());
                 }
             }
@@ -3413,23 +3448,18 @@ impl FileBrowserView {
                         .kind(crate::ui::button::ButtonKind::Secondary)
                         .size(crate::ui::button::ButtonSize::Sm),
                 );
-                let synthetic_open =
-                    pending_click.is_some_and(|click| click.targets_id(menu_button.id));
-                if synthetic_open {
-                    log::info!("file_browser: View menu opened via synthetic node click");
+                self.node_activations.record(&menu_button, FileBrowserActivation::OpenMenu(bar_id));
+                if menu_button.clicked() {
+                    self.apply_node_activation(FileBrowserActivation::OpenMenu(bar_id), ui.ctx());
                 }
-                let set_open = if synthetic_open {
-                    Some(egui::SetOpenCommand::Bool(true))
-                } else if menu_button.clicked() {
-                    Some(egui::SetOpenCommand::Toggle)
-                } else {
-                    None
-                };
                 egui::Popup::menu(&menu_button)
                     .id(bar_id)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .open_memory(set_open)
+                    .open_memory(None)
                     .show(|ui| {
+                        if ui.is_sizing_pass() {
+                            ui.ctx().request_discard("measure file browser View menu");
+                        }
                         let mut folders_on_top = self.columns.folders_on_top;
                         if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
                             self.columns.folders_on_top = folders_on_top;
@@ -3441,19 +3471,9 @@ impl FileBrowserView {
                         }
                         let mut show_hidden = self.columns.show_hidden;
                         let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
-                        let synthetic_toggle =
-                            pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
-                        if show_hidden_resp.changed() || synthetic_toggle {
-                            self.columns.show_hidden = if show_hidden_resp.changed() {
-                                show_hidden
-                            } else {
-                                !self.columns.show_hidden
-                            };
-                            self.refresh_preserving_filter();
-                            log::info!(
-                                "file_browser: show_hidden changed to {}",
-                                self.columns.show_hidden
-                            );
+                        self.node_activations.record(&show_hidden_resp, FileBrowserActivation::ShowHidden(!self.columns.show_hidden));
+                        if show_hidden_resp.changed() {
+                            self.apply_node_activation(FileBrowserActivation::ShowHidden(show_hidden), ui.ctx());
                         }
                         let mut inspector = self.inspector_open;
                         if ui.checkbox(&mut inspector, "Inspector").changed() {
@@ -3489,10 +3509,7 @@ impl FileBrowserView {
         });
 
         if let Some(target) = navigate_target {
-            if self.in_search {
-                self.exit_search();
-            }
-            self.navigate_into(target);
+            self.apply_node_activation(FileBrowserActivation::Navigate(target), ui.ctx());
         }
     }
 
@@ -3501,7 +3518,6 @@ impl FileBrowserView {
         ui: &mut egui::Ui,
         colors: &Colors,
         pane_id: u64,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let claim = std::mem::take(&mut self.search_focus_pending);
         let hit_count = self.search_session.hits().len();
@@ -3512,7 +3528,6 @@ impl FileBrowserView {
         )
         .claim_focus(claim)
         .font_size(self.font_size)
-        .pending_click(pending_click)
         .shortcut(if self.in_search {
             None
         } else {
@@ -3525,6 +3540,12 @@ impl FileBrowserView {
             }
         }
         let out = bar.show(ui, &mut self.search_query, colors);
+        let focus = FileBrowserActivation::SearchFocus { pane: pane_id, field: out.field_id };
+        self.node_activations.record_id(out.field_id, focus.clone());
+        if let Some(id) = out.icon_id { self.node_activations.record_id(id, focus); }
+        if let Some(id) = out.clear_id {
+            self.node_activations.record_id(id, FileBrowserActivation::SearchClear { pane: pane_id, field: out.field_id });
+        }
         if out.changed {
             if !self.in_search {
                 self.enter_search();
@@ -3540,7 +3561,6 @@ impl FileBrowserView {
         ui: &mut egui::Ui,
         colors: &Colors,
         pane_id: u64,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let claim = std::mem::take(&mut self.palette_focus_pending);
         let cursor_to_end = std::mem::take(&mut self.palette_cursor_to_end);
@@ -3638,9 +3658,8 @@ impl FileBrowserView {
                             .text_size(self.font_size)
                             .text_color(colors.text_dim),
                     );
-                    let synthetic_close =
-                        pending_click.is_some_and(|c| c.targets_id(close_btn.id));
-                    if close_btn.clicked() || synthetic_close {
+                    self.node_activations.record(&close_btn, FileBrowserActivation::ClosePalette);
+                    if close_btn.clicked() {
                         close_clicked = true;
                     }
                 });
@@ -3771,7 +3790,7 @@ impl FileBrowserView {
             });
 
         if close_clicked {
-            self.exit_palette();
+            self.apply_node_activation(FileBrowserActivation::ClosePalette, ui.ctx());
         } else if let Some(idx) = clicked_candidate {
             self.palette_selected = idx;
             self.submit_palette();
@@ -3918,6 +3937,12 @@ impl FileBrowserView {
         self.columns.show_hidden
     }
 
+    #[cfg(test)]
+    pub(crate) fn toggle_menu_setting_for_test(&mut self, hidden: bool) {
+        if hidden { self.columns.show_hidden = !self.columns.show_hidden; }
+        else { self.columns.folders_on_top = !self.columns.folders_on_top; }
+    }
+
     /// Queue the same `OpenArtifact` a user activation (Enter / double-click)
     /// queues. The host stamps `sender_pane_id` when it drains the command.
     #[cfg(test)]
@@ -3927,6 +3952,13 @@ impl FileBrowserView {
 }
 
 impl View for FileBrowserView {
+    fn activate_node(&mut self, id: egui::Id, ctx: &egui::Context) -> crate::ui::node_activation::NodeActivation {
+        let Some(action) = self.node_activations.get(id) else {
+            return crate::ui::node_activation::NodeActivation::NotActivatable;
+        };
+        self.apply_node_activation(action, ctx);
+        crate::ui::node_activation::NodeActivation::Activated
+    }
     fn service_external(
         &mut self,
         wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
@@ -4000,8 +4032,8 @@ impl View for FileBrowserView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
+        self.node_activations.clear();
         let colors = ctx.colors;
         if let Some(text) = self.pending_clipboard_text.take() {
             ui.ctx().copy_text(text);
@@ -4015,12 +4047,12 @@ impl View for FileBrowserView {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, pending_click);
+                self.draw_toolbar(ui, colors);
 
                 if self.in_palette {
-                    self.draw_action_palette(ui, colors, ctx.pane_id, pending_click);
+                    self.draw_action_palette(ui, colors, ctx.pane_id);
                 } else {
-                    self.draw_search_bar(ui, colors, ctx.pane_id, pending_click);
+                    self.draw_search_bar(ui, colors, ctx.pane_id);
                 }
 
                 ui.add_space(style::SPACE_XS);
@@ -7342,7 +7374,7 @@ mod tests {
         let ctx = egui::Context::default();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
-            app.draw_search_bar(ui, &colors, 42, None);
+            app.draw_search_bar(ui, &colors, 42);
         });
         let registry = crate::ui::focus::drain_text_surfaces(&ctx);
         let key = crate::ui::focus::SurfaceKey::Pane(42);
@@ -7377,7 +7409,7 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        app.draw_action_palette(ui, &colors, 42, None);
+                        app.draw_action_palette(ui, &colors, 42);
                     },
                 ));
             }
@@ -7598,7 +7630,7 @@ mod tests {
                         colors: &colors,
                         pane_id: 1,
                     };
-                    app.ui(ui, &render_ctx, None);
+                    app.ui(ui, &render_ctx);
                 });
             });
 
@@ -7811,7 +7843,7 @@ mod tests {
         crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
-            app.draw_action_palette(ui, &colors, 77, None);
+            app.draw_action_palette(ui, &colors, 77);
         });
         let registry = crate::ui::focus::drain_text_surfaces(&ctx);
         let key = crate::ui::focus::SurfaceKey::Pane(77);
@@ -8266,7 +8298,7 @@ mod tests {
                 pane_id: 100,
                 colors: &colors,
             };
-            app.ui(ui, &render_ctx, None);
+            app.ui(ui, &render_ctx);
         });
         assert!(
             !app.in_search,
@@ -8402,7 +8434,7 @@ mod tests {
                 pane_id: 200,
                 colors: &colors,
             };
-            app.ui(ui, &render_ctx, None);
+            app.ui(ui, &render_ctx);
         });
 
         let mut found_empty_state = false;

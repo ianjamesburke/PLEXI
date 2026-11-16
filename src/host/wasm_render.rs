@@ -47,6 +47,7 @@ pub struct CanvasClick {
 /// Interactions produced by one render pass, to be translated into guest input.
 #[derive(Default, Debug)]
 pub struct RenderResult {
+    pub node_activated: bool,
     /// Action strings from clicked buttons, selected list rows, or submitted inputs.
     pub actions: Vec<String>,
     /// `(on_change action, new value)` pairs from edited text inputs.
@@ -685,11 +686,13 @@ fn cross_align(a: Alignment) -> egui::Align {
 /// `HostHarness::inject_node_click`) targets this frame's node `id` by its
 /// arena id — the same honest match `PaneClickTarget::Pos` does by rect
 /// containment, just keyed on identity instead of geometry.
-fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>, id: u32) -> bool {
-    matches!(
-        pending_click.map(|c| c.target),
-        Some(crate::host::pane::PaneClickTarget::Node(n)) if n == u64::from(id)
-    )
+fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>, id: u32, out: &mut RenderResult) -> bool {
+    let matched = pending_click.is_some_and(|c| c.phase == crate::host::pane::PointerPhase::Click && matches!(
+        c.target,
+        crate::host::pane::PaneClickTarget::Node(n) if n.reference.id == u64::from(id)
+    ));
+    out.node_activated |= matched;
+    matched
 }
 
 /// Maximum un-echoed `on_change` values tracked per `TextInput`. A guest that
@@ -1143,7 +1146,7 @@ fn render_button_node(
         ButtonStyle::Danger => ButtonKind::Danger,
         ButtonStyle::Ghost => ButtonKind::Ghost,
     };
-    let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
+    let synthetic_click = !b.disabled && node_click_matches(pending_click, id, out);
     let add_button = |ui: &mut egui::Ui| {
         ui.add_enabled(
             !b.disabled,
@@ -1985,7 +1988,7 @@ fn render_node_inner(
                 // routes keystrokes here instead of the plugin's KeyEvent path.
                 // The claim routes through the reconciler (stint 0429), which
                 // grants it while this pane owns input.
-                if node_click_matches(pending_click, id) {
+                if node_click_matches(pending_click, id, out) {
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
             }
@@ -2161,9 +2164,9 @@ fn render_node_inner(
                                 ),
                             );
                         }
-                        let list_clicked = i == 0 && node_click_matches(pending_click, id);
+                        let list_clicked = i == 0 && node_click_matches(pending_click, id, out);
                         if resp.clicked()
-                            || node_click_matches(pending_click, *item_id)
+                            || node_click_matches(pending_click, *item_id, out)
                             || list_clicked
                         {
                             if let Some(action) = l.on_select.as_deref().filter(|a| !a.is_empty()) {
@@ -2579,8 +2582,8 @@ fn render_data_table_node(
                 }
                 let child_clicked = child_ids
                     .get(row_offset + row_idx)
-                    .is_some_and(|cid| node_click_matches(pending_click, *cid));
-                let table_clicked = row_idx == 0 && node_click_matches(pending_click, id);
+                    .is_some_and(|cid| node_click_matches(pending_click, *cid, out));
+                let table_clicked = row_idx == 0 && node_click_matches(pending_click, id, out);
                 if resp.clicked() || child_clicked || table_clicked {
                     if let Some(action) = table.on_select.as_deref().filter(|a| !a.is_empty()) {
                         out.actions.push(format!("{action}:{row_idx}"));
@@ -5843,6 +5846,16 @@ mod tests {
         );
 
         // Render and verify Card surface rect + accent text + table/list actions on click.
+        let click_for = |id: u64| {
+            let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+            state.bind_refs(Some(&tree), 1);
+            let reference = &state.nodes.iter().find(|node| node.id == id.to_string()).unwrap().r#ref;
+            crate::host::node_ref::NodeClick {
+                reference: crate::host::node_ref::NodeRef::parse(reference).unwrap(),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                ticket: id,
+            }
+        };
         let mut table_click = RenderResult::default();
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -5853,7 +5866,7 @@ mod tests {
                     None,
                     None,
                     Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(4),
+                        target: crate::host::pane::PaneClickTarget::Node(click_for(4)),
                         button: "left",
                         phase: crate::host::pane::PointerPhase::Click,
                     }),
@@ -5885,7 +5898,7 @@ mod tests {
                     None,
                     None,
                     Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(6),
+                        target: crate::host::pane::PaneClickTarget::Node(click_for(6)),
                         button: "left",
                         phase: crate::host::pane::PointerPhase::Click,
                     }),

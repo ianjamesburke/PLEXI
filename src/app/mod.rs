@@ -673,6 +673,7 @@ pub struct PlexiApp {
     /// zoomed pane alike (PR #3094) — see `crate::host::pane::PendingPaneClick`.
     pub(crate) pending_pane_clicks:
         HashMap<crate::spatial::tiling::PaneId, crate::host::pane::PendingPaneClick>,
+    pub(crate) pending_node_clicks: HashMap<u64, crate::host::node_ref::NodeClickRequest>,
     /// Synthetic key/text input queued by pane IPC until the target pane's next
     /// production render. Egui 0.34 rebuilds `InputState` at `begin_pass`, so
     /// writing directly into `Context::input_mut` from IPC dispatch can be
@@ -1966,6 +1967,7 @@ impl PlexiApp {
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
                     pending_pane_clicks: HashMap::new(),
+            pending_node_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
@@ -2257,6 +2259,7 @@ impl PlexiApp {
             overlay_held_cmds: Vec::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
+            pending_node_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
@@ -3246,6 +3249,7 @@ impl PlexiApp {
             overlay_held_cmds: Vec::new(),
             agent_host: crate::agent::AgentHost::inert(),
             pending_pane_clicks: HashMap::new(),
+            pending_node_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
@@ -3709,6 +3713,7 @@ impl eframe::App for PlexiApp {
             ctx.request_repaint();
         }
         self.update_preamble(ctx);
+        self.service_node_clicks();
         if self.service_quit(frame) {
             return;
         }

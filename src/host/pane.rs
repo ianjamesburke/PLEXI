@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 3;
 
 fn short_session_id(id: &str) -> &str {
     const MAX_SESSION_ID_CHARS: usize = 12;
@@ -54,6 +54,10 @@ fn standby_session_line(
 /// Runtime-neutral, read-only representation returned by `plexi pane state`.
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct SemanticPaneState {
+    #[serde(skip)]
+    pub epoch: u128,
+    #[serde(skip)]
+    pub click_outcome: Option<super::node_ref::NodeClickOutcome>,
     pub schema_version: u32,
     pub runtime_kind: String,
     pub roots: Vec<String>,
@@ -69,7 +73,14 @@ impl Default for SemanticPaneState {
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct SemanticPaneNode {
     pub id: String,
+    pub r#ref: String,
     pub role: String,
+    #[serde(skip)]
+    pub disabled: bool,
+    #[serde(skip)]
+    pub toggled: Option<String>,
+    #[serde(skip)]
+    pub numeric_value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +96,8 @@ pub(crate) struct SemanticPaneNode {
 impl SemanticPaneState {
     pub(crate) fn empty(runtime_kind: &str) -> Self {
         Self {
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            click_outcome: None,
             schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
             runtime_kind: runtime_kind.to_string(),
             roots: Vec::new(),
@@ -97,6 +110,8 @@ impl SemanticPaneState {
         let mut nodes = Vec::new();
         let roots = collect_process_semantics(frame, "frame", &mut nodes);
         Self {
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            click_outcome: None,
             schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
             runtime_kind: "process".to_string(),
             roots,
@@ -106,21 +121,27 @@ impl SemanticPaneState {
 
     pub(crate) fn from_accesskit(
         nodes: &egui::IdMap<egui::accesskit::Node>,
-        pane_rect: egui::Rect,
+        owned_ids: &std::collections::HashSet<egui::Id>,
     ) -> Self {
         let mut nodes: Vec<SemanticPaneNode> = nodes
             .iter()
             .filter_map(|(id, node)| {
                 let bounds = node.bounds()?;
-                let center = egui::pos2(
-                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
-                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
-                );
-                pane_rect.contains(center).then(|| SemanticPaneNode {
+                if !owned_ids.contains(id) { return None; }
+                let toggled = node.toggled().map(|value| match value {
+                    egui::accesskit::Toggled::True => "on",
+                    egui::accesskit::Toggled::False => "off",
+                    egui::accesskit::Toggled::Mixed => "mixed",
+                }.to_string());
+                Some(SemanticPaneNode {
+                    disabled: node.is_disabled(),
+                    toggled: toggled.clone(),
+                    numeric_value: node.numeric_value(),
                     id: id.value().to_string(),
+                    r#ref: String::new(),
                     role: format!("{:?}", node.role()).to_ascii_lowercase(),
                     label: node.label().map(str::to_string),
-                    value: node.value().map(str::to_string),
+                    value: node.value().map(str::to_string).or(toggled).or_else(|| node.numeric_value().map(|value| value.to_string())),
                     children: node.children().iter().map(|id| id.0.to_string()).collect(),
                     bounds: Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]),
                     canvas_commands: Vec::new(),
@@ -142,6 +163,8 @@ impl SemanticPaneState {
             .map(|node| node.id.clone())
             .collect();
         Self {
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            click_outcome: None,
             schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
             runtime_kind: "builtin".to_string(),
             roots,
@@ -252,7 +275,11 @@ impl SemanticPaneState {
                 };
                 SemanticPaneNode {
                     id: node.id.to_string(),
+                    r#ref: String::new(),
                     role: role.to_string(),
+                    disabled: false,
+                    toggled: None,
+                    numeric_value: None,
                     label,
                     value,
                     children,
@@ -262,6 +289,8 @@ impl SemanticPaneState {
             })
             .collect();
         Self {
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            click_outcome: None,
             schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
             runtime_kind: "wasm".to_string(),
             roots: vec![tree.root.to_string()],
@@ -281,6 +310,32 @@ impl SemanticPaneState {
                     .collect();
             }
         }
+    }
+
+    pub(crate) fn bind_refs(&mut self, tree: Option<&crate::host::wasm_view::UiTree>, epoch: u128) {
+        self.epoch = epoch;
+        if let Some(tree) = tree { self.expose_canvas_commands(tree); }
+        let refs = super::node_ref::refs(self, tree, epoch);
+        for node in &mut self.nodes {
+            node.r#ref = refs.get(&node.id).cloned().unwrap_or_default();
+        }
+    }
+
+    pub(crate) fn resolve_node_ref(&self, value: &str) -> Result<u64, String> {
+        let id = self.validate_node_ref(value)?;
+        self.resolve_interactive_node(&id.to_string())
+    }
+
+    pub(crate) fn validate_node_ref(&self, value: &str) -> Result<u64, String> {
+        let reference = super::node_ref::NodeRef::parse(value)?;
+        let id = reference.id.to_string();
+        let Some(node) = self.nodes.iter().find(|node| node.id == id) else {
+            return Err(format!("ref {value} is stale: node {id} is missing. Re-read pane state."));
+        };
+        if node.r#ref != reference.to_string() {
+            return Err(format!("ref {value} is stale: node {id} is now {} {:?} (ref {}). Re-read pane state.", node.role, node.label.as_deref().unwrap_or(""), node.r#ref));
+        }
+        Ok(reference.id)
     }
 
     /// Resolve `node_id` (as reported by `plexi pane state`) against this
@@ -345,7 +400,11 @@ fn collect_process_semantics(
             });
             nodes.push(SemanticPaneNode {
                 id: path.to_string(),
+                r#ref: String::new(),
                 role: role.to_string(),
+                    disabled: false,
+                    toggled: None,
+                    numeric_value: None,
                 label,
                 value,
                 children,
@@ -2022,7 +2081,7 @@ mod agent_source_tests {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaneClickTarget {
     Pos(egui::Pos2),
-    Node(u64),
+    Node(super::node_ref::NodeClick),
 }
 
 /// A pointer click injected by `HostRequest::ClickPane`/`ClickPaneNode`
@@ -2060,18 +2119,6 @@ pub(crate) enum PointerPhase {
     Press,
     Move,
     Release,
-}
-
-impl PendingPaneClick {
-    /// True when this pending click's target identity-matches `id` — the same
-    /// honest node-id equality check `node_click_matches` (wasm_render.rs)
-    /// uses on the WASM/Python path, applied to a Builtin plugin's own `egui::Id`
-    /// instead of a WASM arena index. Drag-phase samples never activate a
-    /// node — only a real `Click` does.
-    pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
-        self.phase == PointerPhase::Click
-            && matches!(self.target, PaneClickTarget::Node(n) if n == id.value())
-    }
 }
 
 pub enum ViewRuntime {
@@ -2129,9 +2176,17 @@ impl ViewRuntime {
         pending_click: Option<PendingPaneClick>,
     ) {
         match self {
-            ViewRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
+            ViewRuntime::Builtin(app) => app.ui(ui, ctx),
             ViewRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
             ViewRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+        }
+    }
+
+    pub(crate) fn take_node_click_outcome(&mut self) -> Option<super::node_ref::NodeClickOutcome> {
+        match self {
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(app) => app.node_click_outcome.take(),
+            ViewRuntime::Wasm(app) => app.node_click_outcome.take(),
         }
     }
 
@@ -2620,7 +2675,7 @@ mod semantic_state_tests {
     }
 
     #[test]
-    fn accesskit_normalization_removes_children_outside_pane() {
+    fn accesskit_normalization_retains_owned_nodes_outside_geometry() {
         let parent_id = egui::Id::new("parent");
         let inside_id = egui::Id::new("inside");
         let outside_id = egui::Id::new("outside");
@@ -2650,7 +2705,7 @@ mod semantic_state_tests {
 
         let state = SemanticPaneState::from_accesskit(
             &nodes,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(100.0, 100.0)),
+            &[parent_id, outside_id].into_iter().collect(),
         );
         let parent = state
             .nodes
@@ -2658,19 +2713,91 @@ mod semantic_state_tests {
             .find(|node| node.id == parent_id.value().to_string())
             .expect("parent retained");
 
-        assert_eq!(parent.children, vec![inside_id.value().to_string()]);
+        assert_eq!(parent.children, vec![outside_id.value().to_string()]);
+        assert!(!state.nodes.iter().any(|node| node.id == inside_id.value().to_string()));
+    }
+
+    #[test]
+    fn a2_accesskit_refs_cover_state_but_not_bounds() {
+        use egui::accesskit::{Node, Rect, Role, Toggled};
+        let id = egui::Id::new("owned");
+        let mut nodes = egui::IdMap::default();
+        let mut node = Node::new(Role::CheckBox);
+        node.set_bounds(Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 });
+        node.set_toggled(Toggled::False);
+        nodes.insert(id, node);
+        let owned = [id].into_iter().collect();
+        let snapshot = |nodes: &egui::IdMap<Node>| {
+            let mut state = SemanticPaneState::from_accesskit(nodes, &owned);
+            state.bind_refs(None, 1);
+            state.nodes[0].clone()
+        };
+        let original = snapshot(&nodes);
+        assert_eq!(original.value.as_deref(), Some("off"));
+        nodes.get_mut(&id).unwrap().set_bounds(Rect { x0: 900.0, y0: 900.0, x1: 950.0, y1: 950.0 });
+        assert_eq!(original.r#ref, snapshot(&nodes).r#ref);
+        nodes.get_mut(&id).unwrap().set_toggled(Toggled::True);
+        assert_ne!(original.r#ref, snapshot(&nodes).r#ref);
+        assert_eq!(snapshot(&nodes).value.as_deref(), Some("on"));
+        // Text value must not mask state from the digest.
+        nodes.get_mut(&id).unwrap().set_value("constant text");
+        let text = snapshot(&nodes);
+        nodes.get_mut(&id).unwrap().set_toggled(Toggled::Mixed);
+        assert_ne!(text.r#ref, snapshot(&nodes).r#ref);
+        let toggled = snapshot(&nodes);
+        nodes.get_mut(&id).unwrap().set_numeric_value(3.0);
+        assert_ne!(toggled.r#ref, snapshot(&nodes).r#ref);
+        let numeric = snapshot(&nodes);
+        nodes.get_mut(&id).unwrap().set_disabled();
+        assert_ne!(numeric.r#ref, snapshot(&nodes).r#ref);
+        let mut state = SemanticPaneState::from_accesskit(&nodes, &owned);
+        state.bind_refs(None, 1);
+        let before = state.nodes[0].r#ref.clone();
+        let other = egui::Id::new("popup-root");
+        let mut unknown = Node::new(Role::Unknown);
+        unknown.set_bounds(Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 });
+        nodes.insert(other, unknown);
+        let mut state = SemanticPaneState::from_accesskit(&nodes, &[id, other].into_iter().collect());
+        state.bind_refs(None, 1);
+        assert_ne!(before, state.nodes.iter().find(|n| n.id == id.value().to_string()).unwrap().r#ref);
+        let numeric_id = egui::Id::new("number");
+        let mut number = Node::new(Role::Slider);
+        number.set_bounds(Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 });
+        number.set_numeric_value(4.5);
+        nodes.insert(numeric_id, number);
+        let state = SemanticPaneState::from_accesskit(&nodes, &[numeric_id].into_iter().collect());
+        assert_eq!(state.nodes[0].value.as_deref(), Some("4.5"));
     }
 
     fn node(id: &str, role: &str) -> SemanticPaneNode {
         SemanticPaneNode {
             id: id.to_string(),
+            r#ref: String::new(),
             role: role.to_string(),
+                    disabled: false,
+                    toggled: None,
+                    numeric_value: None,
             label: None,
             value: None,
             children: Vec::new(),
             bounds: None,
             canvas_commands: Vec::new(),
         }
+    }
+
+    #[test]
+    fn stale_node_click_rejects_replacement_button() {
+        let mut state = SemanticPaneState::empty("wasm");
+        let mut original = node("5", "button");
+        original.label = Some("Approve A".into());
+        state.nodes = vec![original];
+        state.bind_refs(None, 1);
+        let resolved = state.nodes[0].r#ref.clone();
+        state.nodes[0].label = Some("Delete B".into());
+        state.bind_refs(None, 1);
+        let error = state.resolve_node_ref(&resolved)
+            .expect_err("a replacement button must not receive the stale click");
+        assert!(error.contains("stale"), "{error}");
     }
 
     #[test]

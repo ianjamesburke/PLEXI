@@ -258,8 +258,11 @@ pub trait View: Send {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     );
+
+    fn activate_node(&mut self, _id: egui::Id, _ctx: &egui::Context) -> crate::ui::node_activation::NodeActivation {
+        crate::ui::node_activation::NodeActivation::NotActivatable
+    }
 
     /// Handle raw key input before the plugin's own render pass.
     /// Return `Consumed` to prevent downstream handlers from seeing the event.

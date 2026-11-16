@@ -26,6 +26,7 @@ pub mod keys;
 pub mod launch_failed;
 pub mod mcp_client;
 pub mod model;
+pub(crate) mod node_ref;
 pub mod pane;
 pub(crate) mod pane_lifecycle;
 pub mod pane_liveness;

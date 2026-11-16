@@ -16,6 +16,9 @@ use std::ops::Range;
 
 /// Outcome of rendering a [`SearchBar`] for one frame.
 pub struct SearchBarOutput {
+    pub icon_id: Option<Id>,
+    pub field_id: Id,
+    pub clear_id: Option<Id>,
     /// True if the query text was modified this frame (typing, paste, or clear button).
     pub changed: bool,
     /// True if the search input or magnifier icon was clicked.
@@ -34,7 +37,6 @@ pub struct SearchBar<'a> {
     status: Option<StatusKind>,
     scanning: bool,
     font_size: f32,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
     shortcut: Option<&'a [&'a str]>,
 }
 
@@ -54,7 +56,6 @@ impl<'a> SearchBar<'a> {
             status: None,
             scanning: false,
             font_size: style::TEXT_HINT,
-            pending_click: None,
             shortcut: None,
         }
     }
@@ -99,22 +100,14 @@ impl<'a> SearchBar<'a> {
         self
     }
 
-    /// Forward a queued synthetic node click (`plexi pane click --node`).
-    pub fn pending_click(
-        mut self,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) -> Self {
-        self.pending_click = pending_click;
-        self
-    }
-
     pub fn show(self, ui: &mut Ui, query: &mut String, colors: &Colors) -> SearchBarOutput {
         let mut cleared = false;
         let before = query.clone();
 
         let (status_label, status_compact) = status_labels(self.status, self.scanning);
         let has_clear = !query.is_empty();
-        let clear_id = self.id.with("clear_btn");
+        let mut clear_id = None;
+        let mut icon_id = None;
         let gap = style::SPACE_SM;
 
         let font_id = FontId::proportional(self.font_size);
@@ -179,10 +172,8 @@ impl<'a> SearchBar<'a> {
         if icon_visible {
             let icon_resp = ui.interact(icon_rect, self.id.with("icon"), Sense::click());
             paint_magnifier_icon(ui.painter(), icon_rect, colors.accent);
-            icon_clicked = icon_resp.clicked()
-                || self
-                    .pending_click
-                    .is_some_and(|c| c.targets_id(icon_resp.id));
+            icon_clicked = icon_resp.clicked();
+            icon_id = icon_resp.enabled().then_some(icon_resp.id);
         }
         let input_left = if icon_visible {
             icon_rect.right() + gap
@@ -231,10 +222,8 @@ impl<'a> SearchBar<'a> {
                             .text_size(self.font_size + 2.0)
                             .text_color(colors.text_dim),
                     );
-                    let synthetic = self
-                        .pending_click
-                        .is_some_and(|c| c.targets_id(btn.id) || c.targets_id(clear_id));
-                    if btn.clicked() || synthetic {
+                    clear_id = btn.enabled().then_some(btn.id);
+                    if btn.clicked() {
                         query.clear();
                         cleared = true;
                         if let Some(surface_key) = self.surface {
@@ -280,14 +269,13 @@ impl<'a> SearchBar<'a> {
             }
         }
 
-        let clicked = resp.clicked()
-            || icon_clicked
-            || self
-                .pending_click
-                .is_some_and(|c| c.targets_id(resp.id) || c.targets_id(self.id));
+        let clicked = resp.clicked() || icon_clicked;
         let gained_focus = resp.gained_focus();
         let changed = resp.changed() || cleared || *query != before;
         SearchBarOutput {
+            icon_id,
+            field_id: resp.id,
+            clear_id,
             changed,
             clicked,
             gained_focus,

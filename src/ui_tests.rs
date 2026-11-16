@@ -91,7 +91,6 @@ impl crate::app::view_trait::View for ButtonGalleryFixture {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _: Option<crate::host::pane::PendingPaneClick>,
     ) {
         // Padded so captions and the first column are never flush with the pane edge.
         egui::Frame::new()
@@ -125,7 +124,6 @@ impl crate::app::view_trait::View for DescriptorDropdownFixture {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _: Option<crate::host::pane::PendingPaneClick>,
     ) {
         crate::render::descriptor_widgets::form_fields(
             ui,
@@ -178,7 +176,6 @@ impl crate::app::view_trait::View for DropdownSceneFixture {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let response = crate::ui::dropdown::select_value(
             ui,
@@ -4365,7 +4362,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             &mut self,
             ui: &mut egui::Ui,
             ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             use crate::ui::button::KitButton;
             let layer = ui.layer_id();
@@ -4482,7 +4478,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             &mut self,
             ui: &mut egui::Ui,
             ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             let layer = ui.layer_id();
             let start = ui
@@ -7393,7 +7388,6 @@ open(out + ".done", "w").close()
             &mut self,
             ui: &mut egui::Ui,
             _: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, BACKDROP_FIXTURE_FILL);
@@ -7470,7 +7464,6 @@ open(out + ".done", "w").close()
             &mut self,
             ui: &mut egui::Ui,
             ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             ui.set_width(self.width);
             crate::overlays::ui_gallery::gallery_rows(
@@ -11287,7 +11280,6 @@ open(out + ".done", "w").close()
             &mut self,
             ui: &mut egui::Ui,
             ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             crate::host::wasm_render::render_ui_tree_with_surface(
                 ui,
@@ -15140,7 +15132,6 @@ open(out + ".done", "w").close()
             &mut self,
             ui: &mut egui::Ui,
             _: &crate::app::view_trait::ViewRenderContext<'_>,
-            _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             let raw_y = ui.input(|input| {
                 input

@@ -2070,7 +2070,7 @@ fn permissions_button(h: &HostHarness, pane_id: u64, label: &str) -> Option<Stri
         .nodes
         .into_iter()
         .find(|node| node.role == "button" && node.label.as_deref() == Some(label))
-        .map(|node| node.id)
+        .map(|node| node.r#ref)
 }
 
 /// `plexi pane click <pane> --node <id>`: the route that skips

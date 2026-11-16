@@ -23,7 +23,6 @@ impl crate::app::view_trait::View for ThemeEventRecorder {
         &mut self,
         _ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 

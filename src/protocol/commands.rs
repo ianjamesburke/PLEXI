@@ -1022,7 +1022,7 @@ pub enum HostRequest {
     /// to `response_file` when set.
     ClickPaneNode {
         pane_id: u64,
-        node_id: String,
+        node_ref: String,
         /// "left" (default), "right", or "middle".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         button: Option<String>,
@@ -3566,17 +3566,17 @@ mod tests {
 
     #[test]
     fn click_pane_node_command_round_trips_serde() {
-        let json = r#"{"type":"click_pane_node","pane_id":42,"node_id":"5","button":"left","response_file":"result.json"}"#;
+        let json = r#"{"type":"click_pane_node","pane_id":42,"node_ref":"5.0123456789abcdef","button":"left","response_file":"result.json"}"#;
         let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             HostRequest::ClickPaneNode {
                 pane_id,
-                node_id,
+                node_ref,
                 button,
                 response_file,
             } => {
                 assert_eq!(*pane_id, 42);
-                assert_eq!(node_id, "5");
+                assert_eq!(node_ref, "5.0123456789abcdef");
                 assert_eq!(button.as_deref(), Some("left"));
                 assert_eq!(response_file.as_deref(), Some("result.json"));
             }
@@ -3589,7 +3589,7 @@ mod tests {
         );
 
         // Optional fields: button and response_file absent → None
-        let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#;
+        let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_ref":"3.0123456789abcdef"}"#;
         let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
             HostRequest::ClickPaneNode {
@@ -3608,6 +3608,7 @@ mod tests {
 
         // Required-field discipline: missing node_id must fail
         let bad = r#"{"type":"click_pane_node","pane_id":1}"#;
+        assert!(serde_json::from_str::<HostRequest>(r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#).is_err());
         assert!(
             serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required node_id field"

@@ -1325,7 +1325,7 @@ pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
         serde_json::json!({
             "type": "click_pane_node",
             "pane_id": pane_id,
-            "node_id": node_id,
+            "node_ref": node_id,
             "button": button,
         }),
         "pane-click-node-response",

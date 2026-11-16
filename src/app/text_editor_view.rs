@@ -2537,7 +2537,6 @@ impl View for TextEditorView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
         self.host_pane_id = Some(ctx.pane_id);
@@ -3959,7 +3958,6 @@ mod tests {
                         colors: &colors,
                         pane_id: 1,
                     },
-                    None,
                 );
             },
             app,

@@ -377,7 +377,6 @@ mod tests {
             &mut self,
             _ui: &mut egui::Ui,
             _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _pending_click: Option<crate::host::pane::PendingPaneClick>,
         ) {
         }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

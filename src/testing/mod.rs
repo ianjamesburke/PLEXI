@@ -971,7 +971,7 @@ impl HostHarness {
     ) -> &Self {
         self.inject_ipc(HostRequest::ClickPaneNode {
             pane_id,
-            node_id: node_id.to_string(),
+            node_ref: node_id.to_string(),
             button: Some(button.to_string()),
             response_file,
         })

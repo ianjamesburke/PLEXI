@@ -97,6 +97,40 @@ fn slot_list_entries(
 }
 
 impl PlexiApp {
+    pub(super) fn service_node_clicks(&mut self) {
+        let mut completed = Vec::new();
+        for window in &mut self.windows {
+            for (pane_id, pane) in &mut window.panes {
+                if let Some(view) = pane.as_view_mut() {
+                    if let Some(outcome) = view.semantic_state.click_outcome.take() {
+                        if self.pending_node_clicks.get(pane_id).is_some_and(|request| request.click.ticket == outcome.ticket) {
+                            completed.push((*pane_id, outcome.result));
+                        }
+                    }
+                }
+            }
+        }
+        for (pane_id, request) in &self.pending_node_clicks {
+            if !completed.iter().any(|(id, _)| id == pane_id) && std::time::Instant::now() >= request.click.deadline {
+                completed.push((*pane_id, Err(format!("ref {} expired before delivery. Re-read pane state.", request.click.reference))));
+            }
+        }
+        for (pane_id, result) in completed {
+            if let Some(request) = self.pending_node_clicks.remove(&pane_id) {
+                if self.pending_pane_clicks.get(&pane_id).is_some_and(|pending| matches!(pending.target, crate::host::pane::PaneClickTarget::Node(click) if click.ticket == request.click.ticket)) {
+                    self.pending_pane_clicks.remove(&pane_id);
+                }
+                log::info!("pane node click completed: pane={pane_id} ref={} result={result:?}", request.click.reference);
+                if let Some(file) = request.response_file {
+                    let value = match result {
+                        Ok(()) => serde_json::json!({"ok": true}),
+                        Err(error) => serde_json::json!({"error": error}),
+                    };
+                    write_json_response(&file, value);
+                }
+            }
+        }
+    }
     pub(super) fn drain_pane_cmd_channel(&mut self) {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
             self.handle_pane_ipc_request(cmd);
@@ -3487,14 +3521,17 @@ impl PlexiApp {
             }
             crate::protocol::HostRequest::ClickPaneNode {
                 pane_id,
-                node_id,
+                node_ref,
                 button,
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=click_pane_node pane_id={pane_id} node_id={node_id} button={button:?}"
+                    "pane_ipc: kind=click_pane_node pane_id={pane_id} node_ref={node_ref} button={button:?}"
                 );
                 let result: Result<serde_json::Value, String> = (|| {
+                    if self.pending_node_clicks.contains_key(pane_id) {
+                        return Err(format!("pane {pane_id} already has a pending node click"));
+                    }
                     let Some((win_idx, _tile_id)) = self.find_pane_in_any_window(*pane_id) else {
                         return Err(format!("pane {pane_id} not found"));
                     };
@@ -3507,9 +3544,12 @@ impl PlexiApp {
                             "pane {pane_id}: click injection is only supported for view panes"
                         ));
                     };
-                    let arena_id = view_pane
-                        .semantic_state()
-                        .resolve_interactive_node(node_id)?;
+                    view_pane.semantic_state().resolve_node_ref(node_ref)?;
+                    let click = crate::host::node_ref::NodeClick {
+                        reference: crate::host::node_ref::NodeRef::parse(node_ref)?,
+                        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ticket: uuid::Uuid::new_v4().as_u64_pair().0,
+                    };
                     if !self.pane_navigate(*pane_id) {
                         return Err(format!("pane {pane_id} could not be focused"));
                     }
@@ -3526,23 +3566,25 @@ impl PlexiApp {
                     self.pending_pane_clicks.insert(
                         *pane_id,
                         crate::host::pane::PendingPaneClick {
-                            target: crate::host::pane::PaneClickTarget::Node(arena_id),
+                            target: crate::host::pane::PaneClickTarget::Node(click),
                             button: button_str,
                             phase: crate::host::pane::PointerPhase::Click,
                         },
                     );
+                    self.pending_node_clicks.insert(*pane_id, crate::host::node_ref::NodeClickRequest {
+                        click,
+                        response_file: response_file.clone(),
+                    });
                     self.ctx.request_repaint();
+                    self.ctx.request_repaint_after(std::time::Duration::from_secs(2));
                     log::info!(
-                        "pane_ipc: click_pane_node: pane_id={pane_id} queued node_id={node_id} arena_id={arena_id}"
+                        "pane_ipc: click_pane_node: pane_id={pane_id} queued ref={node_ref}"
                     );
                     Ok(serde_json::json!({"ok": true}))
                 })();
-                if let Some(rf) = response_file {
-                    let json = match &result {
-                        Ok(v) => v.to_string(),
-                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
-                    };
-                    write_response(rf, json.as_bytes());
+                if let (Err(error), Some(rf)) = (&result, response_file) {
+                    log::info!("node click refused: {error}");
+                    write_json_response(rf, serde_json::json!({"error": error}));
                 }
             }
             crate::protocol::HostRequest::DragPane {
@@ -3596,7 +3638,8 @@ impl PlexiApp {
                             (Some([x, y]), None) => Ok(pane_rect.min + egui::vec2(*x, *y)),
                             (None, Some(node_id)) => {
                                 let state = view_pane.semantic_state();
-                                let Some(node) = state.nodes.iter().find(|n| &n.id == node_id)
+                                let resolved_id = state.validate_node_ref(node_id)?.to_string();
+                                let Some(node) = state.nodes.iter().find(|n| n.id == resolved_id)
                                 else {
                                     return Err(format!(
                                         "drag {which}: node {node_id} not found in this pane's current tree"

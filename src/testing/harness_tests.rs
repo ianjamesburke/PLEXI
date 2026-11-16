@@ -2071,7 +2071,6 @@ impl crate::app::view_trait::View for KeyBurstProbe {
         &mut self,
         _ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
@@ -2128,7 +2127,6 @@ impl crate::app::view_trait::View for TextInputProbe {
         &mut self,
         ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
@@ -4592,7 +4590,6 @@ impl crate::app::view_trait::View for PipeTestView {
         &mut self,
         _ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
@@ -4895,19 +4892,19 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         .nodes
         .iter()
         .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
-        .map(|n| n.id.clone())
+        .map(|n| n.r#ref.clone())
         .expect("semantic tree exposes the Increment button by role/label");
     let text_id = semantic_state
         .nodes
         .iter()
         .find(|n| n.role == "text")
-        .map(|n| n.id.clone())
+        .map(|n| n.r#ref.clone())
         .expect("semantic tree exposes the count Text node");
     assert_eq!(
         semantic_state
             .nodes
             .iter()
-            .find(|n| n.id == text_id)
+            .find(|n| n.r#ref == text_id)
             .and_then(|n| n.label.as_deref()),
         Some("0"),
         "count starts at 0"
@@ -4916,8 +4913,8 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     // Fail-loud path: a node id absent from the current tree is rejected,
     // never silently no-op'd.
     let missing_response = temp_response(tmp.path(), "click-node-missing");
-    h.inject_node_click(pane_id, "9999", "left", Some(missing_response.clone()));
-    h.run_frames(1);
+    h.inject_node_click(pane_id, "9999.0000000000000000", "left", Some(missing_response.clone()));
+    h.run_frames(2);
     let missing = read_json_response(&missing_response);
     assert!(
         missing.get("error").is_some(),
@@ -4932,7 +4929,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         "left",
         Some(non_interactive_response.clone()),
     );
-    h.run_frames(1);
+    h.run_frames(2);
     let non_interactive = read_json_response(&non_interactive_response);
     assert!(
         non_interactive.get("error").is_some(),
@@ -4945,7 +4942,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     // pipe — poll for the plugin's re-render to reflect it.
     let click_response = temp_response(tmp.path(), "click-node-increment");
     h.inject_node_click(pane_id, &button_id, "left", Some(click_response.clone()));
-    h.run_frames(1);
+    h.run_frames(2);
     let response = read_json_response(&click_response);
     assert_eq!(
         response["ok"], true,
@@ -4955,7 +4952,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     let start = std::time::Instant::now();
     let mut observed_count: Option<String> = None;
     loop {
-        h.run_frames(1);
+        h.run_frames(2);
         let state = h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
@@ -4992,6 +4989,53 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
 /// `INTERACTIVE_ROLES` accept a real `checkbox` node whose id is a full `u64`
 /// egui hash (why `PaneClickTarget::Node` was widened from `u32`). Every node id
 /// is read off the live semantic tree, never fabricated.
+#[test]
+fn file_browser_node_ref_semantics_stable_across_idle_frames() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("sample.txt"), "stable file").expect("seed file");
+    std::fs::create_dir(tmp.path().join("folder")).expect("seed folder");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_view_pane(
+        Box::new(crate::file_browser::FileBrowserView::new(tmp.path().to_path_buf())),
+        PluginPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    let semantics = |h: &HostHarness| {
+        let mut state = h.app.windows[h.app.active_window].panes.get(&pane_id)
+            .and_then(Pane::as_view).expect("file browser").semantic_state();
+        assert!(!state.nodes.is_empty(), "must capture real semantics");
+        state.nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        state.roots.sort();
+        for node in &mut state.nodes { node.bounds = None; }
+        serde_json::to_value(state).expect("semantic snapshot")
+    };
+    h.run_frames(2);
+    let before = semantics(&h);
+    h.run_frames(1);
+    assert_eq!(before, semantics(&h), "idle frames must preserve ref inputs");
+    h.run_frames(1);
+    assert_eq!(before, semantics(&h), "second idle frame must preserve ref inputs");
+    h.app.open_builtin_view_pane(
+        Box::new(crate::file_browser::FileBrowserView::new(tmp.path().to_path_buf())),
+        PluginPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let other = h.state().open_panes.into_iter().find(|id| *id != pane_id).expect("second pane");
+    h.focus_pane(other);
+    h.run_frames(2);
+    let unfocused = semantics(&h);
+    assert!(h.app.pane_navigate(pane_id));
+    h.run_frames(1);
+    assert_eq!(unfocused, semantics(&h), "focusing the pane must preserve ref inputs");
+}
+
 #[test]
 fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -5033,7 +5077,7 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
             .nodes
             .iter()
             .find(|n| n.role == role && n.label.as_deref() == Some(label))
-            .map(|n| n.id.clone())
+            .map(|n| n.r#ref.clone())
     };
 
     assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
@@ -5063,10 +5107,19 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
          Show hidden files checkbox in the semantic tree",
     );
 
+    let refs = |h: &HostHarness| {
+        let state = a2_state(h, pane_id);
+        assert!(!state.nodes.iter().find(|n| n.label.as_deref() == Some("Show hidden files")).unwrap().disabled);
+        let mut refs: Vec<_> = state.nodes.into_iter().map(|n| n.r#ref).collect();
+        refs.sort(); refs
+    };
+    let before = refs(&h);
+    for _ in 0..3 { h.run_frames(1); assert_eq!(before, refs(&h)); }
+
     // Step 2 (SYNTHETIC): click the now-exposed checkbox by node id.
     let click_response = temp_response(tmp.path(), "click-node-hidden-files");
     h.inject_node_click(pane_id, &checkbox_id, "left", Some(click_response.clone()));
-    h.run_frames(1);
+    h.run_frames(2);
     let response = read_json_response(&click_response);
     assert_eq!(
         response["ok"], true,
@@ -5210,7 +5263,7 @@ fn bare_escape_closes_focused_python_wasm_pane() {
 /// fix in `LivePythonPane::ui`, this hung until timeout because the click
 /// was dropped the instant it landed on the not-ready frame.
 #[test]
-fn queued_node_click_survives_a_hot_reload_relaunch_race() {
+fn queued_node_click_is_refused_after_hot_reload() {
     let mut h = HostHarness::new();
 
     let pane_id = h.launch_dev_view("node-click-probe");
@@ -5221,13 +5274,12 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
         .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
         .expect("view pane has a semantic tree");
-    let button_arena_id = semantic_state
+    let button_ref = semantic_state
         .nodes
         .iter()
         .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
-        .map(|n| n.id.clone())
-        .and_then(|id| semantic_state.resolve_interactive_node(&id).ok())
-        .expect("Increment button resolves to an arena id");
+        .map(|n| n.r#ref.clone())
+        .expect("Increment button exposes a ref");
 
     // Queue the click directly on the pending-click map — bypassing the IPC
     // queue (`inject_node_click`) — so the relaunch below is guaranteed to
@@ -5235,14 +5287,10 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
     // same `run_frames` call both draining the queue AND rendering the
     // still-live (pre-reload) pane, delivering the click before the race
     // window this test exists to exercise.
-    h.app.pending_pane_clicks.insert(
-        pane_id,
-        crate::host::pane::PendingPaneClick {
-            target: crate::host::pane::PaneClickTarget::Node(button_arena_id),
-            button: "left",
-            phase: crate::host::pane::PointerPhase::Click,
-        },
-    );
+    let response = h.workspace_root().join("reload-click.json");
+    h.inject_node_click(pane_id, &button_ref, "left", Some(response.to_string_lossy().into_owned()));
+    h.hidden_frame();
+    assert!(!response.exists(), "dispatch must not acknowledge delivery");
 
     // Force the exact race: relaunch before any frame drains the queued
     // click, landing it on a not-initialized/not-ready `ui()` call.
@@ -5269,7 +5317,10 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
                 .find(|n| n.role == "text")
                 .and_then(|n| n.label.clone());
         }
-        if observed_count.as_deref() == Some("1") {
+        assert_ne!(observed_count.as_deref(), Some("1"), "stale click must never reach relaunched guest");
+        if observed_count.as_deref() == Some("0") && response.exists() {
+            let reply: serde_json::Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+            assert!(reply.get("error").is_some(), "{reply}");
             break;
         }
         assert!(
@@ -6315,7 +6366,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
                 .nodes
                 .iter()
                 .find(|n| n.role == "text_input")
-                .map(|n| n.id.clone())
+                .map(|n| n.r#ref.clone())
         })
         .expect("semantic tree exposes the TextInput node");
     h.inject_node_click(pane_id, &input_node_id, "left", None);
@@ -6400,7 +6451,7 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
                 .nodes
                 .iter()
                 .find(|n| n.role == "text_input")
-                .map(|n| n.id.clone())
+                .map(|n| n.r#ref.clone())
         })
         .expect("semantic tree exposes the TextInput node");
     h.inject_node_click(pane_id, &input_node_id, "left", None);
@@ -22170,4 +22221,191 @@ fn agent_mesh_gate_queued_palette_open_shows_denial() {
         .iter()
         .any(|n| n.body.contains("experiments enable agent_mesh")));
     assert!(h.app.pending_user_commands.is_empty());
+}
+
+fn a2_file_browser(h: &mut HostHarness, root: &std::path::Path) -> PaneId {
+    h.app.open_builtin_view_pane(
+        Box::new(crate::file_browser::FileBrowserView::new(root.to_path_buf())),
+        PluginPermissions::builtin(), root.to_path_buf(), None, Some("split_h"), None,
+    );
+    h.app.active_focused_pane_id().unwrap()
+}
+fn a2_state(h: &HostHarness, pane: PaneId) -> crate::host::pane::SemanticPaneState {
+    h.app.windows[h.app.active_window].panes[&pane].as_view().unwrap().semantic_state()
+}
+fn a2_browser_mut(h: &mut HostHarness, pane: PaneId) -> &mut crate::file_browser::FileBrowserView {
+    let ViewRuntime::Builtin(view) = &mut h.app.windows[h.app.active_window].panes.get_mut(&pane).unwrap().as_view_mut().unwrap().runtime else { panic!("builtin") };
+    view.as_any_mut().downcast_mut().unwrap()
+}
+fn a2_open_menu(h: &mut HostHarness, pane: PaneId, root: &std::path::Path) {
+    let state = a2_state(h, pane);
+    let reference = &state.nodes.iter().find(|n| n.label.as_deref() == Some("View \u{2304}")).unwrap().r#ref;
+    let response = temp_response(root, "a2-open");
+    h.inject_node_click(pane, reference, "left", Some(response.clone()));
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+}
+fn a2_checkbox_change(same_control: bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let pane = a2_file_browser(&mut h, tmp.path());
+    h.run_frames(2);
+    a2_open_menu(&mut h, pane, tmp.path());
+    let state = a2_state(&h, pane);
+    let reference = state.nodes.iter().find(|n| n.label.as_deref() == Some("Show hidden files")).unwrap().r#ref.clone();
+    a2_browser_mut(&mut h, pane).toggle_menu_setting_for_test(same_control);
+    h.run_frames(1);
+    let response = temp_response(tmp.path(), "a2-stale");
+    h.inject_node_click(pane, &reference, "left", Some(response.clone()));
+    h.run_frames(2);
+    let result = read_json_response(&response);
+    assert!(result["error"].as_str().is_some_and(|e| e.contains("stale")), "{result}");
+    assert_eq!(a2_browser_mut(&mut h, pane).show_hidden(), same_control);
+}
+#[test]
+fn a2_checkbox_ref_rejects_other_toggle_change() { a2_checkbox_change(false); }
+#[test]
+fn a2_checkbox_ref_rejects_same_toggle_change() { a2_checkbox_change(true); }
+
+#[test]
+fn a2_popup_nodes_belong_only_to_the_creating_pane() {
+    for browser_first in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut h = HostHarness::new();
+        let (browser, neighbor) = if browser_first {
+            let browser = a2_file_browser(&mut h, tmp.path());
+            (browser, h.add_test_pane())
+        } else {
+            let neighbor = h.add_test_pane();
+            (a2_file_browser(&mut h, tmp.path()), neighbor)
+        };
+        h.run_frames(2);
+        let refs = |h: &HostHarness| {
+            let mut refs: Vec<_> = a2_state(h, neighbor).nodes.into_iter().map(|n| n.r#ref).collect();
+            refs.sort(); refs
+        };
+        let before = refs(&h);
+        a2_open_menu(&mut h, browser, tmp.path());
+        assert!(a2_state(&h, browser).nodes.iter().any(|n| n.label.as_deref() == Some("Show hidden files")));
+        assert!(!a2_state(&h, neighbor).nodes.iter().any(|n| n.label.as_deref() == Some("Show hidden files")));
+        assert_eq!(before, refs(&h));
+    }
+}
+
+#[derive(Default)]
+struct A2PopupFixture {
+    open: bool,
+    renamed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    discard: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    activations: crate::ui::node_activation::NodeActivations<bool>,
+}
+impl crate::app::view_trait::View for A2PopupFixture {
+    fn type_id(&self) -> &'static str { "a2-popup" }
+    fn display_name(&self) -> String { "Popup fixture".into() }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
+        self.activations.clear();
+        if self.discard.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            ui.ctx().request_discard("test delivery in discarded pass");
+        }
+        let label = if self.renamed.load(std::sync::atomic::Ordering::SeqCst) { "Changed fixture" } else { "Open fixture" };
+        let button = ui.add(crate::ui::button::KitButton::new(label, ctx.colors));
+        self.activations.record(&button, true);
+        egui::Popup::menu(&button).open(self.open).show(|ui| {
+            let response = ui.checkbox(&mut false, "Fixture checkbox");
+            self.activations.record(&response, false);
+        });
+    }
+    fn activate_node(&mut self, id: egui::Id, ctx: &egui::Context) -> crate::ui::node_activation::NodeActivation {
+        let Some(open) = self.activations.get(id) else { return crate::ui::node_activation::NodeActivation::NotActivatable };
+        self.open |= open;
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ctx.request_repaint();
+        crate::ui::node_activation::NodeActivation::Activated
+    }
+}
+fn a2_fixture(h: &mut HostHarness, root: &std::path::Path, view: A2PopupFixture) -> PaneId {
+    h.app.open_builtin_view_pane(Box::new(view), PluginPermissions::builtin(), root.to_path_buf(), None, Some("split_h"), None);
+    h.app.active_focused_pane_id().unwrap()
+}
+#[test]
+fn a2_sizing_ref_expires_without_discard() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let fixture = A2PopupFixture::default();
+    let count = fixture.count.clone();
+    let pane = a2_fixture(&mut h, tmp.path(), fixture);
+    h.run_frames(2);
+    let state = a2_state(&h, pane);
+    let reference = state.nodes.iter().find(|n| n.label.as_deref() == Some("Open fixture")).unwrap().r#ref.clone();
+    h.inject_node_click(pane, &reference, "left", None);
+    h.run_frames(2);
+    let state = a2_state(&h, pane);
+    let checkbox = state.nodes.iter().find(|n| n.label.as_deref() == Some("Fixture checkbox")).unwrap();
+    assert!(checkbox.disabled, "first popup frame is the invisible sizing pass");
+    let reference = checkbox.r#ref.clone();
+    count.store(0, std::sync::atomic::Ordering::SeqCst);
+    h.run_frames(1);
+    let state = a2_state(&h, pane);
+    let checkbox = state.nodes.iter().find(|n| n.label.as_deref() == Some("Fixture checkbox")).unwrap();
+
+    assert!(!checkbox.disabled);
+    assert_ne!(reference, checkbox.r#ref);
+    let response = temp_response(tmp.path(), "a2-sizing-stale");
+    h.inject_node_click(pane, &reference, "left", Some(response.clone()));
+    h.run_frames(2);
+    assert!(read_json_response(&response)["error"].as_str().unwrap().contains("stale"));
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+#[test]
+fn a2_discarded_delivery_activates_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let fixture = A2PopupFixture::default();
+    let count = fixture.count.clone();
+    let discard = fixture.discard.clone();
+    let pane = a2_fixture(&mut h, tmp.path(), fixture);
+    h.run_frames(2);
+    let state = a2_state(&h, pane);
+    let reference = state.nodes.iter().find(|n| n.label.as_deref() == Some("Open fixture")).unwrap().r#ref.clone();
+    discard.store(true, std::sync::atomic::Ordering::SeqCst);
+    let response = temp_response(tmp.path(), "a2-discard-delivery");
+    h.inject_node_click(pane, &reference, "left", Some(response.clone()));
+    h.run_frames(2);
+    assert_eq!(read_json_response(&response)["ok"], true);
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a2_later_surface_discard_does_not_publish_earlier_pane() {
+    use eframe::App;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let fixture = A2PopupFixture::default();
+    let renamed = fixture.renamed.clone();
+    let pane = a2_fixture(&mut h, tmp.path(), fixture);
+    h.run_frames(2);
+    let original = a2_state(&h, pane).nodes.iter().find(|n| n.label.as_deref() == Some("Open fixture")).unwrap().r#ref.clone();
+    renamed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut passes = 0;
+    let app = &mut h.app;
+    let _ = h.ctx.run_ui(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+        ..Default::default()
+    }, |ui| {
+        if passes == 1 {
+            // App::logic can serve pane state here, before the presented pass.
+            let state = app.windows[app.active_window].panes[&pane].as_view().unwrap().semantic_state();
+            let node = state.nodes.iter().find(|n| n.role == "button").unwrap();
+            assert_eq!(node.r#ref, original, "a later surface discarded the previous pass; its pane state must not be published");
+        }
+        app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
+        app.ui(ui, &mut eframe::Frame::_new_kittest());
+        if passes == 0 {
+            ui.ctx().request_discard("a later host surface needs a sizing pass");
+        }
+        passes += 1;
+    });
+    assert_eq!(passes, 2);
 }

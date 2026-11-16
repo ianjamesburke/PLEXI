@@ -1931,6 +1931,8 @@ pub struct LiveWasmPane {
     /// new; the counter is what host-owned edit buffers reconcile against
     /// (stint 0720).
     tree_seq: u64,
+    node_epoch: u128,
+    pub(crate) node_click_outcome: Option<super::node_ref::NodeClickOutcome>,
     /// Runtime-neutral semantics retained from the last committed guest tree.
     semantic_state: crate::host::pane::SemanticPaneState,
     /// egui texture id of the guest surface, registered once into the host's
@@ -1986,6 +1988,8 @@ impl LiveWasmPane {
             #[cfg(test)]
             last_text: String::new(),
             tree_seq: 0,
+            node_epoch: uuid::Uuid::new_v4().as_u128(),
+            node_click_outcome: None,
             semantic_state: crate::host::pane::SemanticPaneState::empty("wasm"),
             surface_id: None,
             surface_dims: None,
@@ -2267,6 +2271,7 @@ impl LiveWasmPane {
                     self.last_text = tree.visible_text();
                 }
                 self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        self.semantic_state.bind_refs(Some(&tree), self.node_epoch);
             }
             Err(error) => self.fail("background view", error),
         }
@@ -2299,6 +2304,7 @@ impl LiveWasmPane {
             self.last_text = tree.visible_text();
         }
         self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        self.semantic_state.bind_refs(Some(&tree), self.node_epoch);
         Ok(())
     }
 
@@ -2424,6 +2430,7 @@ impl LiveWasmPane {
             self.last_text = tree.visible_text();
         }
         self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        self.semantic_state.bind_refs(Some(&tree), self.node_epoch);
         // Composite the guest's GPU render zero-copy: register its surface
         // texture into the host's shared egui renderer once and sample it live.
         // The guest re-renders into the same texture every frame, so the
@@ -2500,6 +2507,9 @@ impl LiveWasmPane {
             None => None,
         };
         self.tree_seq += 1;
+        self.semantic_state.bind_refs(Some(&tree), self.node_epoch);
+        let (pending_click, refused) = super::node_ref::check_click(pending_click, &self.semantic_state);
+        if refused.is_some() { self.node_click_outcome = refused; }
         let result = super::wasm_render::render_ui_tree_with_canvas_fits(
             ui,
             &tree,
@@ -2510,7 +2520,13 @@ impl LiveWasmPane {
             Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
             self.tree_seq,
         );
-        match self.inner.apply_render_result(result, now) {
+        let mut outcome = super::node_ref::delivered(pending_click, result.node_activated);
+        let applied = self.inner.apply_render_result(result, now);
+        if let Err(error) = &applied {
+            if let Some(outcome) = &mut outcome { outcome.result = Err(error.to_string()); }
+        }
+        if outcome.is_some() { self.node_click_outcome = outcome; }
+        match applied {
             Ok(true) => {
                 match self.inner.view() {
                     Ok(t) => {
@@ -2520,6 +2536,7 @@ impl LiveWasmPane {
                         }
                         self.semantic_state =
                             crate::host::pane::SemanticPaneState::from_wasm_tree(&t);
+        self.semantic_state.bind_refs(Some(&t), self.node_epoch);
                     }
                     Err(e) => {
                         self.fail("view after input", e);

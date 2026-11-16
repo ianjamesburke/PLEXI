@@ -5105,7 +5105,6 @@ impl View for AssistantView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.pump_turn_io();
         // Active panes do not receive `background_tick`; defer until after
@@ -7600,7 +7599,7 @@ enabled = ["allowed.tool"]
                     colors: &colors,
                     pane_id: 1,
                 };
-                View::ui(&mut app, ui, &render_ctx, None);
+                View::ui(&mut app, ui, &render_ctx);
             });
         });
 

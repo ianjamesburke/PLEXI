@@ -34,7 +34,6 @@ impl View for AgentsDashboardView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
         let lines = crate::agent::runs::pane_lines(&self.workspace);

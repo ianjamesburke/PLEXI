@@ -151,12 +151,20 @@ pub fn render(
     let content_rect = ui.available_rect_before_wrap();
     let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
     content_ui.set_clip_rect(content_rect.intersect(ui.clip_rect()));
+    let builtin = matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_));
+    let previous_ids: std::collections::HashSet<egui::Id> = if builtin {
+        ui.ctx().viewport(|viewport| viewport.this_pass.accesskit_state.as_ref()
+            .map(|state| state.nodes.keys().copied().collect()).unwrap_or_default())
+    } else { Default::default() };
     view_pane.runtime.ui(&mut content_ui, &ctx, pending_click);
+    if let Some(outcome) = view_pane.runtime.take_node_click_outcome() {
+        view_pane.semantic_state.click_outcome = Some(outcome);
+    }
     if matches!(
         view_pane.runtime,
         crate::host::pane::ViewRuntime::Builtin(_)
     ) {
-        if let Some(state) = ui.ctx().viewport(|viewport| {
+        let current_state = ui.ctx().viewport(|viewport| {
             viewport
                 .this_pass
                 .accesskit_state
@@ -164,12 +172,41 @@ pub fn render(
                 .map(|accesskit| {
                     crate::host::pane::SemanticPaneState::from_accesskit(
                         &accesskit.nodes,
-                        content_rect,
+                        &accesskit.nodes.keys().filter(|id| !previous_ids.contains(id)).copied().collect(),
                     )
                 })
-        }) {
-            view_pane.semantic_state = state;
+        });
+        let current_state = current_state.map(|mut state| {
+            state.bind_refs(None, view_pane.semantic_state.epoch);
+            state
+        });
+        if let Some(crate::host::pane::PendingPaneClick { target: crate::host::pane::PaneClickTarget::Node(click), .. }) = pending_click {
+            let result = if let Some(state) = &current_state {
+                click.check(state).and_then(|id| {
+                    let widget_id = ui.ctx().viewport(|viewport| viewport.this_pass.accesskit_state.as_ref().and_then(|state| state.nodes.keys().find(|key| key.value() == id).copied()))
+                        .ok_or_else(|| format!("node {id} is absent from this paint pass"))?;
+                    let crate::host::pane::ViewRuntime::Builtin(view) = &mut view_pane.runtime else { unreachable!() };
+                    match view.activate_node(widget_id, ui.ctx()) {
+                        crate::ui::node_activation::NodeActivation::Activated => { ui.ctx().request_repaint(); Ok(()) },
+                        crate::ui::node_activation::NodeActivation::NotActivatable => {
+                            let node = state.nodes.iter().find(|node| node.id == id.to_string());
+                            Err(format!("node {id} ({} {:?}) has no activation in this view", node.map_or("unknown", |n| n.role.as_str()), node.and_then(|n| n.label.as_deref()).unwrap_or("")))
+                        }
+                    }
+                })
+            } else {
+                Err("node click refused: this paint pass has no semantic tree".to_string())
+            };
+            log::info!("builtin node activation: ref={} result={result:?}", click.reference);
+            view_pane.semantic_state.click_outcome = Some(click.outcome(result));
         }
+        if !ui.ctx().will_discard() {
+            if let Some(mut state) = current_state {
+                state.click_outcome = view_pane.semantic_state.click_outcome.take();
+                view_pane.semantic_state = state;
+            }
+        }
+
     }
 }
 

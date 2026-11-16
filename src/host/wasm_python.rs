@@ -1385,6 +1385,8 @@ pub struct LivePythonPane {
     /// the renderer's host-owned edit buffers can tell a newly committed guest
     /// tree from a repaint of the same stale one (stint 0720).
     tree_seq: u64,
+    node_epoch: u128,
+    pub(crate) node_click_outcome: Option<super::node_ref::NodeClickOutcome>,
     pending_trees: HashMap<u64, Arc<PythonUiTree>>,
     initialized: bool,
     ready: bool,
@@ -3082,6 +3084,8 @@ impl LivePythonPane {
             title: None,
             tree: None,
             tree_seq: 0,
+            node_epoch: uuid::Uuid::new_v4().as_u128(),
+            node_click_outcome: None,
             pending_trees: HashMap::new(),
             initialized: false,
             ready: false,
@@ -3328,6 +3332,9 @@ impl LivePythonPane {
         }
         if let Some(tree) = &self.tree {
             let render_started = std::time::Instant::now();
+            let state = self.semantic_state();
+            let (pending_click, refused) = super::node_ref::check_click(pending_click, &state);
+            if refused.is_some() { self.node_click_outcome = refused; }
             let result = super::wasm_render::render_ui_tree_with_canvas_fits(
                 ui,
                 &tree.tree,
@@ -3339,6 +3346,7 @@ impl LivePythonPane {
                 self.tree_seq,
             );
             self.perf_ui_render += render_started.elapsed();
+            let mut outcome = super::node_ref::delivered(pending_click, result.node_activated);
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
                 log::info!(
@@ -3346,7 +3354,10 @@ impl LivePythonPane {
                     self.plugin_id,
                     action = guest_text::shown(&action)
                 );
-                self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
+                if let Err(error) = self.runtime.send(&json!({"type": "ui_action", "handler_id": action})) {
+                    log::error!("plugin::{}: node action delivery failed: {error}", self.plugin_id);
+                    if let Some(outcome) = &mut outcome { outcome.result = Err(error.to_string()); }
+                }
             }
             for (handler_id, value) in result.value_changes {
                 self.send_to_runtime(&json!({
@@ -3362,6 +3373,7 @@ impl LivePythonPane {
                     "pressed": click.pressed,
                 }));
             }
+            if outcome.is_some() { self.node_click_outcome = outcome; }
         } else {
             if pending_click.is_some() {
                 log::info!(
@@ -5227,7 +5239,9 @@ impl LivePythonPane {
     }
 
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
-        python_semantic_state(self.tree.as_deref())
+        let mut state = python_semantic_state(self.tree.as_deref());
+        state.bind_refs(self.tree.as_ref().map(|tree| &tree.tree), self.node_epoch);
+        state
     }
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
         python_lifecycle(
@@ -5327,6 +5341,7 @@ impl LivePythonPane {
             held.arm_token = None;
         }
         self.tree = None;
+        self.node_epoch = uuid::Uuid::new_v4().as_u128();
         self.tree_seq += 1;
         self.pending_trees.clear();
         self.initialized = false;
