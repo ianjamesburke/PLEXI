@@ -20,7 +20,7 @@ description = "Review and change live tool permission decisions"
 watch = true
 
 [plugin.capabilities]
-capabilities = []
+capabilities = ["timer"]
 
 [[contributes.views]]
 id = "permissions.main"

@@ -14,7 +14,7 @@ version = "0.1.0"
 description = "GPU surface-node POC demonstrating direct rendering inside a Plexi pane."
 
 [plugin.capabilities]
-capabilities = ["gpu.render", "pipe.open"]
+capabilities = ["gpu.render", "pipe.open", "timer"]
 
 [plugin.capabilities.wasm]
 required = []
