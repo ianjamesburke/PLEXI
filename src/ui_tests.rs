@@ -956,7 +956,10 @@ mod tests {
         let mut h = open_quit_save_failure();
         let cancel = h.harness().get_by_label("Cancel").rect();
         let quit = h.harness().get_by_label("Quit without saving").rect();
-        assert!(cancel.top() < quit.top(), "Cancel is listed first");
+        assert!(
+            cancel.left() > quit.left(),
+            "Cancel is listed first (rightmost)"
+        );
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(3);
         h.with_app(|app| {
@@ -1002,6 +1005,91 @@ mod tests {
             assert!(errors.is_empty(), "{errors:?}");
         });
         h.save_screenshot(&evidence_png!("_armed")).unwrap();
+    }
+
+    /// Stint 1558: the raw WASM review renders as ActionModal's one button
+    /// row (Allow and remember rightmost, Deny on its left, one top edge) and
+    /// keeps its consent guard: Allow is disabled until armed, a real click
+    /// on it inside the arm delay allows nothing, Tab never focuses its
+    /// buttons (so egui's Space/Enter click cannot bypass the guard), and once
+    /// armed the same click allows.
+    #[test]
+    fn raw_wasm_review_button_row_keeps_its_consent_guard() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        // A copy outside the checkout, so the published evidence shows no
+        // machine path.
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("sysmon.wasm");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wasm-fixtures/sysmon.wasm"),
+            &fixture,
+        )
+        .unwrap();
+        use egui_kittest::kittest::NodeT;
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        let pending =
+            |h: &mut PlexiUiHarness| h.with_app(|app| app.pending_raw_wasm_launches.len());
+        let allow = h.harness().get_by_label("Allow and remember").rect();
+        let deny = h.harness().get_by_label("Deny").rect();
+        assert_eq!(allow.top(), deny.top(), "one row");
+        assert!(
+            allow.left() > deny.right(),
+            "Allow is rightmost, Deny on its left"
+        );
+        let disabled = |h: &mut PlexiUiHarness, label| {
+            h.harness()
+                .get_by_label(label)
+                .accesskit_node()
+                .is_disabled()
+        };
+        assert!(disabled(&mut h, "Allow and remember"));
+        assert!(!disabled(&mut h, "Deny"));
+
+        click_at(&mut h, allow.center());
+        assert_eq!(pending(&mut h), 1, "a click inside the arm delay allowed");
+
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let focused = focused_label(&mut h, &["Allow and remember", "Deny"]);
+        assert!(focused.is_none(), "Tab focused the review's {focused:?}");
+        assert!(!disabled(&mut h, "Allow and remember"));
+        h.save_screenshot(&evidence_png!()).unwrap();
+        click_at(&mut h, allow.center());
+        assert_eq!(pending(&mut h), 0, "a real click once armed must allow");
+    }
+
+    /// A real pointer press and release at `pos`, each in its own frame.
+    fn click_at(h: &mut PlexiUiHarness, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+        }
+        h.run_steps(2);
     }
 
     fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
@@ -8536,9 +8624,8 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!());
     }
 
-    /// ActionModal defaults: shortcut chips lead every action row, all rows
-    /// share the modal's left edge, and the destructive action is distinct
-    /// without a filled button (stint 0542).
+    /// ActionModal's one layout (stint 1558): right-aligned kit buttons with
+    /// their keys inside, kind-coloured, Cancel on the left.
     #[test]
     fn screenshot_action_modal_context_close_confirm() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
@@ -10241,6 +10328,127 @@ open(out + ".done", "w").close()
         let mut both = vec![a, b];
         both.sort_unstable();
         assert_eq!(open, both, "Enter on Cancel closes nothing");
+    }
+
+    /// The `modal_action` hit rects of the open modal, in paint order.
+    fn modal_action_hits(h: &mut PlexiUiHarness) -> Vec<egui::Rect> {
+        h.with_app(|app| {
+            crate::ui::layout_report::snapshot(&app.ctx)
+                .into_iter()
+                .filter(|r| r.surface == "modal_action")
+                .flat_map(|r| r.actions)
+                .map(|a| a.hit)
+                .collect()
+        })
+    }
+
+    /// Resize the window and let the modal settle; returns whether the
+    /// action buttons stack (no two share a top edge).
+    fn resize_settle(h: &mut PlexiUiHarness, width: f32) -> bool {
+        h.harness().set_size(egui::vec2(width, 640.0));
+        h.run_steps(3);
+        let hits = modal_action_hits(h);
+        assert!(hits.len() >= 2, "{hits:?}");
+        hits.windows(2).all(|w| w[0].top() != w[1].top())
+    }
+
+    /// Stint 1558 review: a Tab-focused Cancel keeps keyboard focus when the
+    /// close dialog reflows from a row to a stack and back (a narrow window or
+    /// a raised UI scale), so Enter still cancels instead of firing Close's
+    /// Enter shortcut. Both directions: focused in the row, then in the stack.
+    #[test]
+    fn close_dialog_cancel_keeps_focus_across_row_and_stack_reflow() {
+        const WIDE: f32 = 1100.0;
+        const NARROW: f32 = 170.0;
+        for focus_while_stacked in [false, true] {
+            let (mut h, a, b) = open_close_dialog();
+            if focus_while_stacked {
+                assert!(resize_settle(&mut h, NARROW), "narrow window stacks");
+            }
+            tab(&mut h, false);
+            let labels = ["Close", "Cancel", "UI"];
+            assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+            for (width, stacks) in [(NARROW, true), (WIDE, false), (NARROW, true)] {
+                assert_eq!(resize_settle(&mut h, width), stacks, "width {width}");
+                assert_eq!(
+                    focused_label(&mut h, &labels).as_deref(),
+                    Some("Cancel"),
+                    "focus after reflow to width {width} (focused while stacked: {focus_while_stacked})"
+                );
+            }
+            resize_settle(&mut h, if focus_while_stacked { WIDE } else { NARROW });
+            h.harness().key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(
+                !h.with_app(|app| app.pending_close),
+                "Enter left the dialog open"
+            );
+            let mut open: Vec<u64> = h.with_app(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .keys()
+                    .copied()
+                    .collect()
+            });
+            open.sort_unstable();
+            let mut both = vec![a, b];
+            both.sort_unstable();
+            assert_eq!(open, both, "Enter after reflow closed a pane");
+        }
+    }
+
+    /// Stint 1558 review: a consent dialog's buttons never take Tab focus,
+    /// whether laid out as a row or a stack and across the reflow between them.
+    #[test]
+    fn raw_wasm_review_buttons_take_no_focus_across_reflow() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("sysmon.wasm");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wasm-fixtures/sysmon.wasm"),
+            &fixture,
+        )
+        .unwrap();
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+        h.run_steps(2);
+        let labels = ["Allow and remember", "Deny"];
+        for (width, stacks) in [
+            (1100.0, false),
+            (240.0, true),
+            (1100.0, false),
+            (240.0, true),
+        ] {
+            assert_eq!(resize_settle(&mut h, width), stacks, "width {width}");
+            for _ in 0..3 {
+                tab(&mut h, false);
+                let focused = focused_label(&mut h, &labels);
+                assert!(
+                    focused.is_none(),
+                    "Tab focused {focused:?} at width {width}"
+                );
+            }
+        }
+        assert_eq!(
+            h.with_app(|app| app.pending_raw_wasm_launches.len()),
+            1,
+            "nothing decided the review"
+        );
     }
 
     /// Stint 1493: Enter on a Tab-focused Close closes the pane, and Esc still

@@ -111,6 +111,7 @@ pub(crate) struct KitButton<'a> {
     flat: bool,
     surface: Option<Color32>,
     hint: Option<&'a str>,
+    focusable: bool,
 }
 
 impl<'a> KitButton<'a> {
@@ -131,7 +132,16 @@ impl<'a> KitButton<'a> {
             flat: false,
             surface: None,
             hint: None,
+            focusable: true,
         }
+    }
+
+    /// Whether Tab can focus the button. A dialog outside a focus trap turns
+    /// it off: egui's own Enter or Space click on a focused button bypasses
+    /// the dialog's input guards (stints 1493, 1498).
+    pub(crate) fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
     }
 
     /// A dim shortcut hint painted inside the button after the label. It is
@@ -358,7 +368,12 @@ impl egui::Widget for KitButton<'_> {
             .corner_radius(self.class().radius())
             .fill(visuals.fill)
             .min_size(min_size)
-            .wrap_mode(self.wrap);
+            .wrap_mode(self.wrap)
+            .sense(if self.focusable {
+                egui::Sense::click()
+            } else {
+                egui::Sense::CLICK
+            });
         let hover_fill = if repaints_when_selected(kind, self.selected) {
             visuals.fill.lerp_to_gamma(self.colors.text_primary, 0.06)
         } else {

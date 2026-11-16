@@ -453,3 +453,33 @@ fn raw_wasm_review_ignores_a_real_click_inside_the_arm_delay() {
         "a real click inside the arm delay allowed"
     );
 }
+
+/// Stint 1558: event consent is ActionModal's one button row. Evidence for
+/// the PR, armed and unarmed; the actions read Deny, Always, Allow once left
+/// to right on one top edge.
+#[test]
+fn screenshot_event_consent_button_row() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+    let connection = open_event_consent(&mut h, pane);
+    h.run_frames(2);
+    h.render_png(crate::ui_tests::evidence_png!("_arming"))
+        .unwrap();
+    h.app.event_consent_guard.backdate(ARM_DELAY);
+    h.run_frames(2);
+    h.render_png(crate::ui_tests::evidence_png!("_armed"))
+        .unwrap();
+    let rows: Vec<(String, egui::Rect)> = crate::ui::layout_report::snapshot(&h.app.ctx)
+        .into_iter()
+        .filter(|r| r.surface == "modal_action")
+        .flat_map(|r| r.actions)
+        .map(|a| (a.id, a.hit))
+        .collect();
+    let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["allow_once", "allow_always", "deny"], "paint order");
+    assert!(rows.iter().all(|(_, hit)| hit.top() == rows[0].1.top()));
+    assert!(rows[0].1.left() > rows[1].1.left() && rows[1].1.left() > rows[2].1.left());
+    drop(connection);
+}

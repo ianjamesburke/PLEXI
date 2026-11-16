@@ -98,10 +98,6 @@
       "paint_card | p.text(": 4,
       "paint_card | let galley = p.text(": 1
     },
-    "src/ui/dialog.rs": {
-      "action_row | let (rect, response) = ui.allocate_exact_size(": 1,
-      "action_row | f.layout_no_wrap(": 1
-    },
     "src/ui/hints.rs": {
       "show | ui.horizontal(|ui| {": 1,
       "show_modal_footer | let row_resp = ui.horizontal(|ui| {": 1,
@@ -183,13 +179,6 @@
     }
   },
   "approved": [
-    {
-      "source": "src/ui/dialog.rs",
-      "site": "action_row | .galley_with_override_text_color(label_pos, galley, color);",
-      "count": 1,
-      "surface": "src/ui/dialog.rs",
-      "rationale": "ActionModal owns measured shortcut columns and complete wrapped action labels with minimum named hit targets; production layout reports and rendered fixtures check the result."
-    },
     {
       "source": "src/ui/list.rs",
       "site": "show | let action_response = ui.interact(",

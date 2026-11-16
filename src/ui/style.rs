@@ -309,10 +309,6 @@ pub const SCRIM_ALPHA: u8 = 190;
 pub const MODAL_PADDING_H: i8 = 12;
 pub const MODAL_PADDING_V: i8 = 10;
 
-/// Height of one `ActionModal` action row (shortcut chips + label). Sits
-/// between a dense list row and a form button: the chips need breathing room
-/// but a confirm modal's action stack must not read as a menu.
-pub const MODAL_ACTION_ROW_H: f32 = 30.0;
 /// Floor for a modal's scrolling body when the window is shorter than the
 /// modal chrome; below this the body scrolls in a usable strip.
 pub const MODAL_BODY_MIN_H: f32 = 120.0;
