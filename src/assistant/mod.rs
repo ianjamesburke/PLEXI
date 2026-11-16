@@ -273,6 +273,11 @@ enum ToolFlowEvent {
 impl ToolFlowEvent {
     /// Reject at the queue consumer, not only at the worker that enqueued it.
     fn reject_cancelled(&self) -> bool {
+        // Completion is an observation, not permission to execute. Preserve
+        // it after cancellation; the consumer checks turn ownership.
+        if matches!(self, Self::Finished { .. }) {
+            return false;
+        }
         let cancel = match self {
             Self::Started { cancel, .. }
             | Self::Finished { cancel, .. }
@@ -2301,6 +2306,13 @@ impl AssistantView {
         }
         self.drain_stream_deltas();
         while let Ok(outcome) = self.outcome_rx.try_recv() {
+            // A worker sends Finished before its outcome, but the outcome
+            // can arrive just after the first flow drain. Preserve those
+            // completions before finish_turn clears the running tool state.
+            while let Ok(event) = self.flow_rx.try_recv() {
+                self.drain_stream_deltas();
+                self.handle_flow_event(event);
+            }
             self.delta_rx = None;
             self.pending_reply = None;
             self.pending_connector_actor = None;
@@ -2363,12 +2375,20 @@ impl AssistantView {
             }
             ToolFlowEvent::Finished {
                 tool,
-                error,
+                mut error,
                 detail,
                 input_summary,
                 output_preview,
-                ..
+                cancel,
             } => {
+                if !cancel.same_turn(&self.turn_cancel)
+                    || (cancel.is_cancelled() && !self.model.streaming.in_flight)
+                {
+                    return;
+                }
+                if cancel.is_cancelled() {
+                    error = Some("cancelled: turn ended".to_string());
+                }
                 log::info!(
                     "assistant: tool '{tool}' finished ({})",
                     if error.is_none() { "ok" } else { "error" }
@@ -2587,10 +2607,10 @@ impl AssistantView {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|_, ready| !ready.owner.same_turn(cancel));
-        let owns_sheet = self.pending_permission_cancel.as_ref()
-            .map(|owner| owner.same_turn(cancel))
-            .unwrap_or(self.permission_owner.is_some() == isolated
-                && (self.pending_reply.is_some() || self.pending_subscribe.is_some()));
+        let owns_sheet = self
+            .pending_permission_cancel
+            .as_ref()
+            .is_some_and(|owner| owner.same_turn(cancel));
         if owns_sheet {
             self.unblock_pending_workers(reason);
         }
@@ -3088,31 +3108,50 @@ impl AssistantView {
         });
     }
 
-    fn reload_settings(&mut self) {
-        let report = self.settings_loader.load(&self.session_overrides);
-        let previous = &self.settings.permissions;
-        let next = &report.settings.permissions;
-        if previous.posture.value != next.posture.value
-            || previous.rules.len() != next.rules.len()
-            || previous.rules.iter().any(|rule| !next.rules.iter().any(|candidate|
-                rule.rule == candidate.rule && rule.decision == candidate.decision))
-        {
-            self.cancel_turn(false, "effective permissions changed");
-            self.cancel_turn(true, "effective permissions changed");
+    /// Compare the combined settings/agent posture, ignoring list ordering,
+    /// duplicate rules and the config layer that supplied each value.
+    fn update_posture(&mut self, reason: &str, update: impl FnOnce(&mut Self)) {
+        fn canonical(
+            mut posture: crate::broker::PermissionPosture,
+        ) -> crate::broker::PermissionPosture {
+            for rules in [&mut posture.allow, &mut posture.ask, &mut posture.deny] {
+                rules.sort();
+                rules.dedup();
+            }
+            posture
         }
-        self.settings = report.settings;
-        self.settings_errors = report.errors;
+        let previous = canonical(self.active_posture());
+        // Plan and Review share the broker default, but Plan also restricts
+        // tool discovery. Compare the effective mode without its provenance.
+        let previous_mode = self.settings.permissions.posture.value;
+        update(self);
+        if previous != canonical(self.active_posture())
+            || previous_mode != self.settings.permissions.posture.value
+        {
+            self.cancel_turn(false, reason);
+            self.cancel_turn(true, reason);
+        }
+    }
+
+    fn reload_settings(&mut self) {
+        self.update_posture("effective permissions changed: settings reload", |this| {
+            let report = this.settings_loader.load(&this.session_overrides);
+            this.settings = report.settings;
+            this.settings_errors = report.errors;
+        });
     }
 
     fn reload_agents(&mut self) {
-        self.agent_registry = AgentRegistry::load(&self.profile_dir, &self.workspace_root);
-        if self
-            .agent_registry
-            .active(&self.model.active_agent_id)
-            .is_none()
-        {
-            self.model.active_agent_id = "default".to_string();
-        }
+        self.update_posture("effective permissions changed: agent reload", |this| {
+            this.agent_registry = AgentRegistry::load(&this.profile_dir, &this.workspace_root);
+            if this
+                .agent_registry
+                .active(&this.model.active_agent_id)
+                .is_none()
+            {
+                this.model.active_agent_id = "default".to_string();
+            }
+        });
     }
 
     fn cmd_list_agents(&mut self) {
@@ -3166,8 +3205,7 @@ impl AssistantView {
             self.execute_effects(effects);
             return;
         };
-        self.model.active_agent_id = agent.id.clone();
-        self.model.effort_override = None;
+        let agent_id = agent.id.clone();
         log::info!(
             "assistant: switched active agent to '{}' ({})",
             agent.id,
@@ -3177,6 +3215,10 @@ impl AssistantView {
             "Active agent: `{}` ({}).",
             agent.id, agent.display_name
         ));
+        self.update_posture("effective permissions changed: agent switch", |this| {
+            this.model.active_agent_id = agent_id;
+            this.model.effort_override = None;
+        });
         self.execute_effects(effects);
     }
 

@@ -1181,11 +1181,13 @@ impl ToolDispatcher {
             return ToolCallResult::coded("permission_denied", &call_id, None);
         }
         // Once use has been recorded, cancellation still closes its audit outcome.
+        let mut observed_start = false;
         let result = (|| {
             if self.cancel.is_cancelled() {
                 return ToolCallResult::coded("cancelled", &call_id, None);
             }
             if let Some(hooks) = &self.hooks {
+                observed_start = true;
                 hooks.before_call(name, &input_json);
             }
             if self.cancel.is_cancelled() {
@@ -1266,10 +1268,10 @@ impl ToolDispatcher {
                 Some(operation_id.as_str()).filter(|s| !s.is_empty()),
             );
         }
-        if !self.cancel.is_cancelled() {
-            if let Some(hooks) = &self.hooks {
-                hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
-            }
+        // Completion closes the observation even when cancellation raced
+        // execution. It must not erase an already-executed tool's history.
+        if let Some(hooks) = self.hooks.as_ref().filter(|_| observed_start) {
+            hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
         }
         result
     }
