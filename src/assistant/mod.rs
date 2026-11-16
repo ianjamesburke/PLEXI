@@ -1307,10 +1307,12 @@ impl AssistantView {
             flow_tx: flow_tx.clone(),
             actor_scope,
         }));
-        // Host event tools stay visible. `host.events.subscribe` is admitted
-        // by the permission monitor like every other tool. Approving that
-        // sheet records the stream grant and leaves the result here so the
-        // worker finishes without a second prompt.
+        // Host event tools pass the same host decision as the native host
+        // tools, so Plan withholds them (they are not read-only).
+        // `host.events.subscribe` is admitted by the permission monitor like
+        // every other tool. Approving that sheet records the stream grant and
+        // leaves the result here so the worker finishes without a second
+        // prompt.
         let flow_tx = flow_tx.clone();
         let prepared = Arc::clone(&self.prepared_host_calls);
         let handler: HostToolHandler = Arc::new(move |name, input_json| {
@@ -1335,7 +1337,13 @@ impl AssistantView {
                 .recv()
                 .unwrap_or_else(|_| ToolCallResult::err("host_tool_failed: assistant pane closed"))
         });
-        visible_host_tools.extend(Self::host_event_tools());
+        for tool in Self::host_event_tools() {
+            if self.host_tool_decision(&tool) == Decision::Deny {
+                log::info!("assistant: host event tool '{}' withheld (deny)", tool.name);
+                continue;
+            }
+            visible_host_tools.push(tool);
+        }
         dispatcher.add_host_tools(visible_host_tools, handler);
         dispatcher
     }
@@ -5485,6 +5493,7 @@ enabled = ["allowed.tool"]
             test_scope_origin(9207, 9207),
         );
         seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
+        seed_grant(&mut app, "app.csv.read_range", Decision::Allow);
 
         let visible: HashSet<String> = app
             .gated_dispatcher()
@@ -5907,15 +5916,38 @@ enabled = ["allowed.tool"]
         });
     }
 
-    /// What admission does with one plugin tool and no grants: `"ask"` when
-    /// the permission sheet opens, `"not_found"` when the tool was withheld.
-    fn plugin_tool_admission(context_id: u64, plan: bool, read_only: bool) -> (bool, &'static str) {
+    /// Record a real allow-always grant for `tool` the way a user does: the
+    /// call asks, the sheet is answered Allow always, and the call runs.
+    fn grant_through_sheet(app: &mut AssistantView, tool: &str) {
+        let rx = dispatch_on_worker(Arc::new(app.gated_dispatcher()), tool);
+        pump_until(app, "permission sheet", |a| {
+            a.model.pending_permission.is_some()
+        });
+        app.resolve_permission(PermissionChoice::AllowAlways);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("granted call completes");
+        assert!(result.error.is_none(), "granted call failed: {result:?}");
+    }
+
+    /// What admission does with one plugin tool: `"ask"` when the permission
+    /// sheet opens, `"ran"` when it executed, `"not_found"` when withheld.
+    /// `granted` seeds an allow grant for the tool first.
+    fn plugin_tool_admission(
+        context_id: u64,
+        plan: bool,
+        read_only: bool,
+        granted: bool,
+    ) -> (bool, &'static str) {
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_plugin_with_context(ws.path(), context_id);
+        register_echo_provider_ro(context_id, "label.tool", context_id, read_only);
+        if granted {
+            grant_through_sheet(&mut app, "label.tool");
+        }
         if plan {
             app.settings.permissions.posture.value = settings::AssistantPermissionPosture::Plan;
         }
-        register_echo_provider_ro(context_id, "label.tool", context_id, read_only);
         let dispatcher = Arc::new(app.gated_dispatcher());
         let visible = dispatcher
             .all_tools()
@@ -5929,7 +5961,9 @@ enabled = ["allowed.tool"]
                 break "ask";
             }
             if let Ok(result) = rx.try_recv() {
-                let error = result.error.unwrap_or_default();
+                let Some(error) = result.error else {
+                    break "ran";
+                };
                 assert!(
                     error.contains("tool_not_found"),
                     "unexpected result: {error}"
@@ -5951,12 +5985,26 @@ enabled = ["allowed.tool"]
     #[test]
     fn plan_posture_withholds_plugin_tools_whatever_their_read_only_label() {
         assert_eq!(
-            plugin_tool_admission(9311, true, true),
+            plugin_tool_admission(9311, true, true, false),
             (false, "not_found")
         );
         assert_eq!(
-            plugin_tool_admission(9310, true, false),
+            plugin_tool_admission(9310, true, false, false),
             (false, "not_found")
+        );
+    }
+
+    /// An allow grant does not get a falsely read_only-labelled plugin tool
+    /// past Plan either; outside Plan the same grant runs it.
+    #[test]
+    fn plan_posture_withholds_a_granted_read_only_labelled_plugin_tool() {
+        assert_eq!(
+            plugin_tool_admission(9312, true, true, true),
+            (false, "not_found")
+        );
+        assert_eq!(
+            plugin_tool_admission(9302, false, true, true),
+            (true, "ran")
         );
     }
 
@@ -5964,39 +6012,42 @@ enabled = ["allowed.tool"]
     /// plugin tool with no grant asks either way.
     #[test]
     fn normal_posture_asks_for_a_plugin_tool_whatever_its_read_only_label() {
-        assert_eq!(plugin_tool_admission(9301, false, true), (true, "ask"));
-        assert_eq!(plugin_tool_admission(9300, false, false), (true, "ask"));
+        assert_eq!(
+            plugin_tool_admission(9301, false, true, false),
+            (true, "ask")
+        );
+        assert_eq!(
+            plugin_tool_admission(9300, false, false, false),
+            (true, "ask")
+        );
     }
 
-    /// Host tools keep their host-authored flag in Plan: read-only host tools
-    /// stay visible, mutating ones are withheld.
+    /// Host tools keep their host-authored flag in Plan: every read-only host
+    /// tool stays visible and every mutating one, event tools included, is
+    /// withheld.
     #[test]
-    fn plan_posture_keeps_read_only_host_tools() {
+    fn plan_posture_offers_exactly_the_read_only_host_tools() {
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_plugin_with_context(ws.path(), 9320);
         app.settings.permissions.posture.value = settings::AssistantPermissionPosture::Plan;
-        let host = AssistantView::host_tools();
-        let read = host
-            .iter()
-            .find(|t| t.read_only)
-            .expect("a read-only host tool");
-        let write = host.iter().find(|t| !t.read_only);
-        let visible: Vec<String> = app
+        let visible: HashSet<String> = app
             .gated_dispatcher()
             .all_tools()
             .into_iter()
             .map(|t| t.name)
             .collect();
-        assert!(
-            visible.contains(&read.name),
-            "{} must stay visible: {visible:?}",
-            read.name
-        );
-        if let Some(write) = write {
-            assert!(
-                !visible.contains(&write.name),
-                "{} must be withheld: {visible:?}",
-                write.name
+        let host: Vec<AiTool> = AssistantView::host_tools()
+            .into_iter()
+            .chain(AssistantView::host_event_tools())
+            .collect();
+        assert!(host.iter().any(|t| t.read_only) && host.iter().any(|t| !t.read_only));
+        for tool in host {
+            assert_eq!(
+                visible.contains(&tool.name),
+                tool.read_only,
+                "{} (read_only={}) in Plan: {visible:?}",
+                tool.name,
+                tool.read_only
             );
         }
     }
