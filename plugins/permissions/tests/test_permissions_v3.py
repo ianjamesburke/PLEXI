@@ -1,11 +1,71 @@
 from __future__ import annotations
 
 import plexi_sdk as sdk
+import pytest
 from plexi_sdk import _v3_state
 from plexi_sdk.effects import PermissionDecision, ReadPermissionDecisions, SetState
 from plexi_sdk.events import KeyEvent, PermissionInventory, UiAction
 
 import main as permissions
+
+
+def _rendered_action(label: str) -> str:
+    from plexi_sdk._adapter import _encode_uitree
+
+    tree = _encode_uitree(permissions.view())
+    return next(node["data"]["on_click"] for node in tree["nodes"]
+                if node["data"].get("label") == label)
+
+
+@pytest.mark.parametrize("label,action,kind", [
+    ("Allow", "allow", "deny"),
+    ("Revoke", "revoke", "allow"),
+    ("Ask again", "reset", "deny"),
+])
+@pytest.mark.parametrize("change", ["removed", "empty", "reordered"])
+def test_rendered_decision_binds_entry_across_poll(label, action, kind, change) -> None:
+    clicked = {"id": "clicked:entry", "kind": kind, "tool": "clicked.tool"}
+    other = {"id": "other", "kind": kind, "tool": "other.tool"}
+    _set_state({**permissions.DEFAULT_STATE, "mode": "detail", "entries": [clicked, other]})
+    handler = _rendered_action(label)
+    entries = {"removed": [other], "empty": [], "reordered": [other, clicked]}[change]
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=entries))))
+    effects = permissions.update(UiAction(handler))
+    decisions = [effect for effect in effects if isinstance(effect, PermissionDecision)]
+    if change == "reordered":
+        assert len(decisions) == 1
+        assert (decisions[0].id, decisions[0].action) == (clicked["id"], action)
+    else:
+        assert decisions == []
+        data = _state_effect(effects)
+        assert data["notice"]
+        _set_state(data)
+        assert data["notice"] in _texts(permissions.view())
+
+
+def test_missing_ids_are_rejected_in_inventory_and_saved_state() -> None:
+    rows = [{"kind": "deny"}, {"kind": "pending"}, {"id": "", "kind": "allow"},
+            {"id": None}, {"id": " "}, {"id": 123}]
+    _set_state(dict(permissions.DEFAULT_STATE))
+    data = _state_effect(permissions.update(PermissionInventory(entries=rows)))
+    assert data["entries"] == []
+    _set_state({**permissions.DEFAULT_STATE, "entries": rows})
+    assert permissions._state()["entries"] == []
+
+
+@pytest.mark.parametrize("action", ["allow", "revoke", "reset"])
+def test_button_without_target_never_falls_back_to_selection(action) -> None:
+    _set_state(_sample_state())
+    effects = permissions.update(UiAction(f"permissions:{action}"))
+    assert not any(isinstance(effect, PermissionDecision) for effect in effects)
+    assert _state_effect(effects)["notice"]
+
+
+def test_keyboard_revoke_uses_current_selection() -> None:
+    _set_state(_sample_state())
+    effects = permissions.update(KeyEvent("x"))
+    decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
+    assert (decision.id, decision.action) == ("grant-allow", "revoke")
 
 
 def test_back_node_survives_inventory_rebuild_after_revoke() -> None:
@@ -28,13 +88,20 @@ def test_back_node_survives_inventory_rebuild_after_revoke() -> None:
     _set_state(_state_effect(permissions.update(PermissionInventory(entries=[timer]))))
     after = runtime._stabilize_tree_ids(_encode_uitree(permissions.view()))
     current = next(node for node in after["nodes"] if node["data"].get("label") == "Back")
-    assert back["id"] == current["id"], (back, current)
+    assert back["id"] == current["id"]
+    assert permissions._state()["selected_id"] is None
     old_actions = {node["id"] for node in before["nodes"]
-                   if node["data"].get("on_click") in {"permissions:allow", "permissions:revoke"}}
+                   if node["data"].get("on_click", "").startswith(("permissions:allow:", "permissions:revoke:"))}
+    assert old_actions
     assert old_actions.isdisjoint(node["id"] for node in after["nodes"])
 
-    # A later poll can add a denial before the timer grant. Back still denotes
+    # Choose the remaining grant explicitly. A later poll can add a denial
+    # before it. Back still denotes
     # navigation, while none of the prior decision's actions may be retargeted.
+    _set_state(_state_effect(permissions.update(KeyEvent("down"))))
+    _set_state(_state_effect(permissions.update(KeyEvent("enter"))))
+    after = runtime._stabilize_tree_ids(_encode_uitree(permissions.view()))
+    back = next(node for node in after["nodes"] if node["data"].get("label") == "Back")
     runtime._last_tree = after
     denial = {"id": "denial", "kind": "deny", "tool": "probe.denied"}
     _set_state(_state_effect(permissions.update(PermissionInventory(entries=[denial, timer]))))
@@ -110,7 +177,7 @@ def test_inventory_replaces_entries() -> None:
 def test_revoke_reset_and_allow_ask_the_host() -> None:
     _set_state(_sample_state())
 
-    effects = permissions.update(UiAction("permissions:select:1"))
+    effects = permissions.update(UiAction('permissions:select:["grant-allow", "grant-deny"]:1'))
     data = _state_effect(effects)
     assert data["selected"] == 1
 
@@ -120,19 +187,19 @@ def test_revoke_reset_and_allow_ask_the_host() -> None:
     assert data["selected"] == 1
 
     _set_state(data)
-    effects = permissions.update(UiAction("permissions:reset"))
+    effects = permissions.update(UiAction("permissions:reset:grant-deny"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "reset"
     assert decision.id == "grant-deny"
 
     _set_state(_sample_state())
-    effects = permissions.update(UiAction("permissions:revoke"))
+    effects = permissions.update(UiAction("permissions:revoke:grant-allow"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "revoke"
     assert decision.id == "grant-allow"
 
     _set_state(data)
-    effects = permissions.update(UiAction("permissions:allow"))
+    effects = permissions.update(UiAction("permissions:allow:grant-deny"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "allow"
     assert decision.id == "grant-deny"
@@ -207,9 +274,91 @@ def test_list_and_detail_views_use_app_bar_and_actions() -> None:
     _set_state({**_sample_state(), "mode": "detail"})
     detail_view = permissions.view()
     assert isinstance(detail_view.children[0], SurfaceHeader)
-    assert any(isinstance(child, Actions) for child in detail_view.children)
+    assert any(isinstance(getattr(child, "child", child), Actions) for child in detail_view.children)
     detail_node = detail_view.to_node()
     detail_header = detail_node["children"][0]
     assert detail_header["type"] == "surface_header"
     assert detail_header["title"] == "Permissions"
 
+
+
+@pytest.mark.parametrize("mode", ["list", "detail"])
+def test_selection_follows_id_after_reorder(mode) -> None:
+    data = {**_sample_state(), "mode": mode}
+    _set_state(data)
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=data["entries"][::-1]))))
+    decision = next(e for e in permissions.update(KeyEvent("x")) if isinstance(e, PermissionDecision))
+    assert decision.id == "grant-allow"
+    if mode == "list":
+        handler = _rendered_action("Open")
+        _set_state(_state_effect(permissions.update(UiAction(handler))))
+    assert "Id: grant-allow" in _texts(permissions.view())
+
+
+def test_selection_clears_when_entry_disappears() -> None:
+    data = {**_sample_state(), "mode": "detail"}
+    _set_state(data)
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=data["entries"][1:]))))
+    effects = permissions.update(KeyEvent("x"))
+    assert not any(isinstance(e, PermissionDecision) for e in effects)
+    assert _state_effect(effects)["notice"]
+    assert "Id: grant-deny" not in _texts(permissions.view())
+
+
+def test_duplicate_ids_are_rejected_with_notice() -> None:
+    rows = [{"id": "duplicate", "kind": "deny"}, {"id": "duplicate", "kind": "pending"},
+            {"id": "unique", "kind": "allow"}]
+    _set_state(dict(permissions.DEFAULT_STATE))
+    data = _state_effect(permissions.update(PermissionInventory(entries=rows)))
+    assert [row["id"] for row in data["entries"]] == ["unique"]
+    assert "duplicate" in data["notice"].lower()
+    _set_state({**permissions.DEFAULT_STATE, "entries": rows})
+    assert [row["id"] for row in permissions._state()["entries"]] == ["unique"]
+    assert permissions._state()["notice"]
+
+
+@pytest.mark.parametrize("kind", ["allow", "", "unknown"])
+def test_allow_refuses_wrong_kind(kind) -> None:
+    _set_state({**permissions.DEFAULT_STATE, "entries": [{"id": "wrong", "kind": kind}]})
+    effects = permissions.update(UiAction("permissions:allow:wrong"))
+    assert not any(isinstance(e, PermissionDecision) for e in effects)
+    assert _state_effect(effects)["notice"]
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_rendered_open_and_row_selection_bind_entry_across_poll(removed) -> None:
+    from plexi_sdk._adapter import _encode_uitree
+
+    data = _sample_state()
+    _set_state(data)
+    open_handler = _rendered_action("Open")
+    tree = _encode_uitree(permissions.view())
+    prefix = next(n["data"]["on_select"] for n in tree["nodes"] if "on_select" in n["data"])
+    entries = data["entries"][1:] if removed else data["entries"][::-1]
+    polled = _state_effect(permissions.update(PermissionInventory(entries=entries)))
+    for handler in [open_handler, f"{prefix}:0"]:
+        _set_state(polled)
+        result = _state_effect(permissions.update(UiAction(handler)))
+        if removed:
+            assert result["selected_id"] is None
+            assert result["notice"]
+        else:
+            assert result["selected_id"] == "grant-allow"
+
+
+@pytest.mark.parametrize("kind", ["deny", "pending"])
+def test_allow_accepts_eligible_kind(kind) -> None:
+    _set_state({**permissions.DEFAULT_STATE, "entries": [{"id": "eligible", "kind": kind}]})
+    effects = permissions.update(UiAction("permissions:allow:eligible"))
+    assert any(isinstance(e, PermissionDecision) and e.id == "eligible" for e in effects)
+
+
+def test_cleared_selection_stays_clear_on_subsequent_poll() -> None:
+    data = {**_sample_state(), "mode": "detail"}
+    _set_state(data)
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=data["entries"][1:]))))
+    # Reintroducing the removed entry does not silently reselect it either.
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=data["entries"]))))
+    assert permissions._state()["selected_id"] is None
+    effects = permissions.update(KeyEvent("x"))
+    assert not any(isinstance(e, PermissionDecision) for e in effects)
