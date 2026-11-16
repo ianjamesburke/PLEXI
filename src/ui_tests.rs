@@ -10330,6 +10330,127 @@ open(out + ".done", "w").close()
         assert_eq!(open, both, "Enter on Cancel closes nothing");
     }
 
+    /// The `modal_action` hit rects of the open modal, in paint order.
+    fn modal_action_hits(h: &mut PlexiUiHarness) -> Vec<egui::Rect> {
+        h.with_app(|app| {
+            crate::ui::layout_report::snapshot(&app.ctx)
+                .into_iter()
+                .filter(|r| r.surface == "modal_action")
+                .flat_map(|r| r.actions)
+                .map(|a| a.hit)
+                .collect()
+        })
+    }
+
+    /// Resize the window and let the modal settle; returns whether the
+    /// action buttons stack (no two share a top edge).
+    fn resize_settle(h: &mut PlexiUiHarness, width: f32) -> bool {
+        h.harness().set_size(egui::vec2(width, 640.0));
+        h.run_steps(3);
+        let hits = modal_action_hits(h);
+        assert!(hits.len() >= 2, "{hits:?}");
+        hits.windows(2).all(|w| w[0].top() != w[1].top())
+    }
+
+    /// Stint 1558 review: a Tab-focused Cancel keeps keyboard focus when the
+    /// close dialog reflows from a row to a stack and back (a narrow window or
+    /// a raised UI scale), so Enter still cancels instead of firing Close's
+    /// Enter shortcut. Both directions: focused in the row, then in the stack.
+    #[test]
+    fn close_dialog_cancel_keeps_focus_across_row_and_stack_reflow() {
+        const WIDE: f32 = 1100.0;
+        const NARROW: f32 = 170.0;
+        for focus_while_stacked in [false, true] {
+            let (mut h, a, b) = open_close_dialog();
+            if focus_while_stacked {
+                assert!(resize_settle(&mut h, NARROW), "narrow window stacks");
+            }
+            tab(&mut h, false);
+            let labels = ["Close", "Cancel", "UI"];
+            assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+            for (width, stacks) in [(NARROW, true), (WIDE, false), (NARROW, true)] {
+                assert_eq!(resize_settle(&mut h, width), stacks, "width {width}");
+                assert_eq!(
+                    focused_label(&mut h, &labels).as_deref(),
+                    Some("Cancel"),
+                    "focus after reflow to width {width} (focused while stacked: {focus_while_stacked})"
+                );
+            }
+            resize_settle(&mut h, if focus_while_stacked { WIDE } else { NARROW });
+            h.harness().key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(
+                !h.with_app(|app| app.pending_close),
+                "Enter left the dialog open"
+            );
+            let mut open: Vec<u64> = h.with_app(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .keys()
+                    .copied()
+                    .collect()
+            });
+            open.sort_unstable();
+            let mut both = vec![a, b];
+            both.sort_unstable();
+            assert_eq!(open, both, "Enter after reflow closed a pane");
+        }
+    }
+
+    /// Stint 1558 review: a consent dialog's buttons never take Tab focus,
+    /// whether laid out as a row or a stack and across the reflow between them.
+    #[test]
+    fn raw_wasm_review_buttons_take_no_focus_across_reflow() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("sysmon.wasm");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wasm-fixtures/sysmon.wasm"),
+            &fixture,
+        )
+        .unwrap();
+        let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        h.with_app_mut(|app| {
+            app.launch_view_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("unreviewed wasm launch queues a review");
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            app.raw_wasm_review_guard
+                .backdate(crate::app::approval_keyboard::ARM_DELAY)
+        });
+        h.run_steps(2);
+        let labels = ["Allow and remember", "Deny"];
+        for (width, stacks) in [
+            (1100.0, false),
+            (240.0, true),
+            (1100.0, false),
+            (240.0, true),
+        ] {
+            assert_eq!(resize_settle(&mut h, width), stacks, "width {width}");
+            for _ in 0..3 {
+                tab(&mut h, false);
+                let focused = focused_label(&mut h, &labels);
+                assert!(
+                    focused.is_none(),
+                    "Tab focused {focused:?} at width {width}"
+                );
+            }
+        }
+        assert_eq!(
+            h.with_app(|app| app.pending_raw_wasm_launches.len()),
+            1,
+            "nothing decided the review"
+        );
+    }
+
     /// Stint 1493: Enter on a Tab-focused Close closes the pane, and Esc still
     /// dismisses an untouched dialog. Stint 1505: Close is the second Tab.
     #[test]

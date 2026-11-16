@@ -316,6 +316,7 @@ impl<'a> ActionModal<'a> {
             add_body(ui);
             ui.add_space(style::SPACE_MD + style::SPACE_SM);
             let row = ButtonRow {
+                modal: self.id,
                 actions: self.actions,
                 colors,
                 // A guarded dialog's buttons take Tab focus only inside a
@@ -445,6 +446,7 @@ fn confirm_button<'b>(
 /// never on hover or press, so no state moves a button. A row that cannot
 /// fit stacks full-width with the first action on top.
 struct ButtonRow<'a, 'c> {
+    modal: &'c str,
     actions: &'a [DialogAction<'a>],
     colors: &'c Colors,
     focusable: bool,
@@ -454,6 +456,7 @@ struct ButtonRow<'a, 'c> {
 impl<'a> ButtonRow<'a, '_> {
     fn show(self, ui: &mut egui::Ui, action_ids: &mut Vec<(String, egui::Id)>) -> Option<&'a str> {
         let Self {
+            modal,
             actions,
             colors,
             focusable,
@@ -485,7 +488,15 @@ impl<'a> ButtonRow<'a, '_> {
             if stacked {
                 button = button.min_width(ui.available_width());
             }
-            let response = ui.add_enabled(enabled, button);
+            // Each button's id is keyed on the modal and the action, never on
+            // where it sits in the ui tree, so a row-to-stack reflow (a narrow
+            // window, a raised UI scale) keeps Tab focus on the same action.
+            let id = egui::Id::new(("plexi_action_modal_button", modal, action.id));
+            let response = ui
+                .scope_builder(egui::UiBuilder::new().id(id), |ui| {
+                    ui.add_enabled(enabled, button)
+                })
+                .inner;
             action_ids.push((action.id.to_string(), response.id));
             reports.push(super::layout_report::Action {
                 id: action.id.into(),
