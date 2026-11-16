@@ -625,6 +625,20 @@ pub struct SkippedPlugin {
     pub error: String,
 }
 
+impl SkippedPlugin {
+    /// Explain why an installed plugin cannot be used, for CLI and host callers.
+    pub(crate) fn load_error(&self, id: &str) -> String {
+        let message = format!(
+            "plugin '{}' is installed at {} but could not be loaded: {}",
+            crate::host::guest_text::shown(id),
+            self.dir.display(),
+            self.error
+        );
+        log::info!("plugin lookup refused: {message}");
+        message
+    }
+}
+
 pub struct PluginRegistry {
     /// All discovered plugins keyed by their id.
     plugins: HashMap<String, InstalledPlugin>,

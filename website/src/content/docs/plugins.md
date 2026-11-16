@@ -66,7 +66,7 @@ without importing your code, and renders the view at small and normal pane
 sizes. There is no build step.
 
 Saving a source file reloads the view in the same pane. This is always on; the
-manifest `watch` key has no effect.
+manifest `watch` key is rejected, and a plugin that sets it will not load.
 
 `plexi view render ./my-plugin --png --output shot.png` renders a view without
 a host window, which is how an agent looks at its own work.
