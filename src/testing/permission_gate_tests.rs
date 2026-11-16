@@ -2357,3 +2357,135 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         "the desktop click applied the allow"
     );
 }
+
+// ── Stint 1569: Needs-you retirement edges left untested by stint 1383 ─────
+
+fn agent_widen(mon: &PermissionMonitor, ask: &str) -> String {
+    let caller = crate::broker::gate::PermissionCaller {
+        human: false,
+        actor_id: "agent:synthetic-probe".to_string(),
+    };
+    match mon.mutate_entry(ask, "allow", &caller) {
+        crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => needs_you_id,
+        other => panic!("an agent's allow files a widen item: {other:?}"),
+    }
+}
+
+fn resolution_of(
+    mon: &PermissionMonitor,
+    id: &str,
+) -> Option<crate::broker::gate::NeedsYouResolution> {
+    mon.get_needs_you(id).expect("item record").resolution
+}
+
+/// Approving the ask itself retires the agent's pending "allow" item for it
+/// at once (no sweep runs), and the grant the approval minted is kept.
+#[test]
+fn approving_an_ask_retires_its_permission_change_and_keeps_the_grant() {
+    use crate::broker::gate::{NeedsYouResolution, ResolveSurface};
+    let workspace = tempfile::tempdir().unwrap();
+    let mon = PermissionMonitor::ephemeral();
+    let ask = admit_probe(&mon, workspace.path(), "call-granted", "probe.granted");
+    let widen = agent_widen(&mon, &ask);
+
+    mon.approve_pending(&ask, ApprovalChoice::Always).unwrap();
+
+    assert!(
+        mon.open_needs_you()
+            .iter()
+            .all(|row| row.kind != crate::broker::gate::NeedsYouKind::PermissionChange),
+        "the ask was granted, so its widen item is retired immediately"
+    );
+    assert_eq!(
+        resolution_of(&mon, &widen),
+        Some(NeedsYouResolution::Retired)
+    );
+    let grant = mon
+        .list_entries()
+        .into_iter()
+        .find(|entry| entry.kind == "allow")
+        .expect("the approval's grant is kept")
+        .id;
+    // Settling the retired item afterwards changes nothing either.
+    let receipt = mon
+        .resolve_needs_you_from(&widen, true, ResolveSurface::Desktop)
+        .expect("a retired item returns its receipt");
+    assert!(receipt.already);
+    assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
+    assert!(mon.list_entries().iter().any(|entry| entry.id == grant));
+    assert!(matches!(
+        mon.admit(AdmitRequest {
+            call_id: "call-granted-again",
+            tool: "probe.granted",
+            input_json: "{}",
+            principal: &crate::broker::principal::Principal::agent("agent:synthetic-probe"),
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: workspace.path(),
+            context_id: 1,
+            package_id: "synthetic-probe",
+            instance_id: 1,
+            target_type: TargetType::HostTool,
+        }),
+        Admission::Proceed { .. }
+    ));
+}
+
+/// Revoke an ask, repeat the same request: the new ask gets a new id and a
+/// new widen item. The old, retired item id can neither authorize nor close
+/// the new ask or its item, from either answer.
+#[test]
+fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
+    use crate::broker::gate::{
+        NeedsYouResolution, PermissionCaller, PermissionMutation, ResolveSurface,
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let mon = PermissionMonitor::ephemeral();
+    let first = admit_probe(&mon, workspace.path(), "call-reask", "probe.reask");
+    let old_widen = agent_widen(&mon, &first);
+    let human = PermissionCaller {
+        human: true,
+        actor_id: "human".to_string(),
+    };
+    let revoked = mon.mutate_entry(&first, "revoke", &human);
+    assert!(
+        matches!(revoked, PermissionMutation::Applied { .. }),
+        "{revoked:?}"
+    );
+    // `open_needs_you` only reads; `get_needs_you` sweeps and would retire it.
+    assert!(
+        mon.open_needs_you().iter().all(|row| row.id != old_widen),
+        "the revoke itself retires the item"
+    );
+    assert_eq!(
+        resolution_of(&mon, &old_widen),
+        Some(NeedsYouResolution::Retired)
+    );
+
+    let second = admit_probe(&mon, workspace.path(), "call-reask", "probe.reask");
+    assert_ne!(second, first, "a repeated request is a fresh ask");
+    let new_widen = agent_widen(&mon, &second);
+    assert_ne!(new_widen, old_widen, "a fresh ask files a fresh item");
+    assert_eq!(permission_changes(&mon), vec![new_widen.clone()]);
+
+    for approve in [true, false] {
+        let receipt = mon
+            .resolve_needs_you_from(&old_widen, approve, ResolveSurface::Desktop)
+            .expect("a retired item returns its receipt");
+        assert!(receipt.already, "approve={approve}");
+        assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
+        assert!(
+            mon.show_pending(&second).is_some(),
+            "approve={approve}: the new ask is still pending"
+        );
+        assert_eq!(
+            resolution_of(&mon, &new_widen),
+            None,
+            "approve={approve}: the new item is open"
+        );
+        assert!(
+            !entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"),
+            "approve={approve}: no grant minted"
+        );
+    }
+}
