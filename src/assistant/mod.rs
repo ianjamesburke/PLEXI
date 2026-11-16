@@ -228,13 +228,18 @@ enum PermissionReply {
 enum ToolFlowEvent {
     /// A tool call is about to run (passed the gate). `input_summary` is a
     /// compact one-line summary of the call input for the running row.
-    Started { tool: String, input_summary: String },
+    Started {
+        tool: String,
+        input_summary: String,
+        cancel: CancelToken,
+    },
     /// A tool call finished (`error: None` = success). `detail` is an
     /// optional render payload lifted from the tool output — the unified
     /// diff of a `host.files.edit`/`host.files.write`, shown in the
     /// transcript so the user watches the plugin change. `input_summary` and
     /// `output_preview` feed the row's caret dropdown (stint 0455).
     Finished {
+        cancel: CancelToken,
         tool: String,
         error: Option<String>,
         detail: Option<String>,
@@ -244,6 +249,7 @@ enum ToolFlowEvent {
     /// An ask-gated tool needs a user decision. The worker is blocked on
     /// `reply` until the sheet resolves (or the pane drops the sender).
     Ask {
+        cancel: CancelToken,
         tool: String,
         input_json: String,
         actor_id: String,
@@ -257,10 +263,36 @@ enum ToolFlowEvent {
     /// `reply`; an ask-gated subscribe holds the reply until the sheet
     /// resolves.
     HostCall {
+        cancel: CancelToken,
         tool: String,
         input_json: String,
         reply: SyncSender<ToolCallResult>,
     },
+}
+
+impl ToolFlowEvent {
+    /// Reject at the queue consumer, not only at the worker that enqueued it.
+    fn reject_cancelled(&self) -> bool {
+        let cancel = match self {
+            Self::Started { cancel, .. }
+            | Self::Finished { cancel, .. }
+            | Self::Ask { cancel, .. }
+            | Self::HostCall { cancel, .. } => cancel,
+        };
+        if !cancel.is_cancelled() {
+            return false;
+        }
+        match self {
+            Self::Ask { reply, .. } => {
+                let _ = reply.try_send(PermissionReply::Deny);
+            }
+            Self::HostCall { reply, .. } => {
+                let _ = reply.try_send(ToolCallResult::err("cancelled: turn ended"));
+            }
+            _ => {}
+        }
+        true
+    }
 }
 
 /// The Assistant's per-turn ask-gate, installed on the turn's
@@ -268,6 +300,7 @@ enum ToolFlowEvent {
 /// until the UI thread answers. PGAP and `AgentHost` dispatchers install no
 /// hooks and are unaffected.
 struct AssistantToolHooks {
+    cancel: CancelToken,
     /// Input summary per in-flight tool, stashed in `before_call` so
     /// `after_call` (which is not handed the input) can attach it to the
     /// finished row. Keyed by tool name — calls within one turn run
@@ -277,8 +310,14 @@ struct AssistantToolHooks {
 }
 
 struct AssistantPresenter {
+    cancel: CancelToken,
     flow_tx: Sender<ToolFlowEvent>,
     actor_scope: ActorScope,
+}
+
+struct PreparedHostCall {
+    owner: CancelToken,
+    result: ToolCallResult,
 }
 
 impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter {
@@ -294,6 +333,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
         if self
             .flow_tx
             .send(ToolFlowEvent::Ask {
+                cancel: self.cancel.clone(),
                 tool: tool.to_string(),
                 input_json: summary.to_string(),
                 actor_id: actor.to_string(),
@@ -306,8 +346,8 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
         {
             return Ok(crate::broker::gate::ApprovalChoice::Deny);
         }
-        match reply_rx.recv() {
-            Ok(PermissionReply::Allow { choice }) => Ok(match choice {
+        match self.cancel.recv(&reply_rx) {
+            Some(PermissionReply::Allow { choice }) => Ok(match choice {
                 model::PermissionChoice::AllowOnce => crate::broker::gate::ApprovalChoice::Once,
                 model::PermissionChoice::AllowSession => {
                     crate::broker::gate::ApprovalChoice::Session
@@ -318,7 +358,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
                     crate::broker::gate::ApprovalChoice::DenyAlways
                 }
             }),
-            Ok(PermissionReply::NotSaved { message }) => Err(message),
+            Some(PermissionReply::NotSaved { message }) => Err(message),
             _ => Ok(crate::broker::gate::ApprovalChoice::Deny),
         }
     }
@@ -333,6 +373,7 @@ impl ToolCallHooks for AssistantToolHooks {
             .unwrap()
             .insert(name.to_string(), tool_input_detail(input_json));
         let _ = self.flow_tx.send(ToolFlowEvent::Started {
+            cancel: self.cancel.clone(),
             tool: name.to_string(),
             input_summary,
         });
@@ -340,6 +381,7 @@ impl ToolCallHooks for AssistantToolHooks {
 
     fn after_call(&self, name: &str, error: Option<&str>, output_json: Option<&str>) {
         let _ = self.flow_tx.send(ToolFlowEvent::Finished {
+            cancel: self.cancel.clone(),
             tool: name.to_string(),
             error: error.map(str::to_string),
             detail: tool_render_detail(name, output_json),
@@ -693,6 +735,7 @@ pub struct AssistantView {
     /// External turn that owns the open permission sheet, when the desktop
     /// conversation did not open it.
     permission_owner: Option<IsolatedPermissionOwner>,
+    pending_permission_cancel: Option<CancelToken>,
     /// Turn ids a caller was told are `waiting_for_permission`.
     outcome_interest: HashSet<String>,
     /// The host-tool handler was entered from an isolated external turn.
@@ -711,7 +754,7 @@ pub struct AssistantView {
     /// Subscribe results prepared on the UI thread when the sheet resolves.
     /// The host-tool handler returns one of these so the worker does not
     /// wait for a second gate.
-    prepared_host_calls: Arc<Mutex<HashMap<String, ToolCallResult>>>,
+    prepared_host_calls: Arc<Mutex<HashMap<String, PreparedHostCall>>>,
     /// Shared plugin event timeline (production: the global instance).
     timeline: Arc<Mutex<PluginTimeline>>,
     /// Live event-stream subscriptions: `(target_id, subscription_id)` where
@@ -727,6 +770,7 @@ pub struct AssistantView {
     /// at each `start_turn`; ESC and event-preempt trip it to abort the
     /// streaming turn and fold queued context into an immediate follow-up.
     turn_cancel: CancelToken,
+    side_cancel: CancelToken,
     /// Cached layout state for `egui_commonmark` markdown rendering of
     /// assistant replies. Persists across frames for performance.
     commonmark_cache: egui_commonmark::CommonMarkCache,
@@ -876,6 +920,7 @@ impl AssistantView {
             side_in_flight: None,
             side_conversation: None,
             permission_owner: None,
+            pending_permission_cancel: None,
             outcome_interest: HashSet::new(),
             host_call_from_isolated: false,
             external_outcomes: HashMap::new(),
@@ -892,6 +937,7 @@ impl AssistantView {
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
             turn_cancel: CancelToken::new(),
+            side_cancel: CancelToken::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
             compact_pending: false,
@@ -1063,7 +1109,8 @@ impl AssistantView {
                 // can finish and have their stale outcome dropped.
                 AssistantEffect::CancelTurn => {
                     self.pending_skill = None;
-                    self.unblock_pending_workers(
+                    self.cancel_turn(
+                        false,
                         "cancelled: the conversation was cleared mid-turn",
                     );
                     log::info!("assistant: in-flight turn cancelled by conversation switch");
@@ -1237,14 +1284,18 @@ impl AssistantView {
     /// (declared tools and settings). They do not authorize. `read_only` does
     /// not skip the monitor. Explicit deny grants stay invisible.
     fn gated_dispatcher(&self) -> ToolDispatcher {
-        self.gated_dispatcher_on(self.flow_tx.clone())
+        self.gated_dispatcher_on(self.flow_tx.clone(), self.turn_cancel.clone())
     }
 
     /// Build the dispatcher for one turn. Discovery filters are configuration
     /// (declared tools and settings). They do not authorize. `read_only` does
     /// not skip the monitor. Explicit deny grants stay invisible.
     /// `flow_tx` is the pane channel that receives ask/start/finish events.
-    fn gated_dispatcher_on(&self, flow_tx: Sender<ToolFlowEvent>) -> ToolDispatcher {
+    fn gated_dispatcher_on(
+        &self,
+        flow_tx: Sender<ToolFlowEvent>,
+        cancel: CancelToken,
+    ) -> ToolDispatcher {
         let (actor_id, actor_scope) = self.connector_actor();
         let mut dispatcher = ToolDispatcher::from_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope::new(
@@ -1299,11 +1350,14 @@ impl AssistantView {
             }
             visible_host_tools.push(tool);
         }
+        dispatcher.set_cancel(cancel.clone());
         dispatcher.set_hooks(Arc::new(AssistantToolHooks {
+            cancel: cancel.clone(),
             in_flight_inputs: Mutex::new(HashMap::new()),
             flow_tx: flow_tx.clone(),
         }));
         dispatcher.set_presenter(Arc::new(AssistantPresenter {
+            cancel: cancel.clone(),
             flow_tx: flow_tx.clone(),
             actor_scope,
         }));
@@ -1316,16 +1370,24 @@ impl AssistantView {
         let flow_tx = flow_tx.clone();
         let prepared = Arc::clone(&self.prepared_host_calls);
         let handler: HostToolHandler = Arc::new(move |name, input_json| {
-            if let Some(ready) = prepared
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(input_json)
-            {
+            if cancel.is_cancelled() {
+                return ToolCallResult::err("cancelled: turn ended");
+            }
+            let ready = {
+                let mut prepared = prepared.lock().unwrap_or_else(|error| error.into_inner());
+                if prepared.get(input_json).is_some_and(|ready| ready.owner.same_turn(&cancel)) {
+                    prepared.remove(input_json)
+                } else {
+                    None
+                }
+            };
+            if let Some(ready) = ready {
                 log::info!("assistant: host tool '{name}' completed from the permission decision");
-                return ready;
+                return ready.result;
             }
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
             let sent = flow_tx.send(ToolFlowEvent::HostCall {
+                cancel: cancel.clone(),
                 tool: name.to_string(),
                 input_json: input_json.to_string(),
                 reply: reply_tx,
@@ -1333,9 +1395,8 @@ impl AssistantView {
             if sent.is_err() {
                 return ToolCallResult::err("host_tool_failed: assistant pane closed");
             }
-            reply_rx
-                .recv()
-                .unwrap_or_else(|_| ToolCallResult::err("host_tool_failed: assistant pane closed"))
+            cancel.recv(&reply_rx)
+                .unwrap_or_else(|| ToolCallResult::err("cancelled: turn ended or pane closed"))
         });
         for tool in Self::host_event_tools() {
             if self.host_tool_decision(&tool) == Decision::Deny {
@@ -1732,14 +1793,29 @@ impl AssistantView {
     /// Execute one `host.events.*` call on the UI thread. Replies on the
     /// worker's channel — except an ask-gated subscribe, which parks the
     /// reply in `pending_subscribe` until the permission sheet resolves.
+    #[cfg(test)]
     fn handle_host_call(
         &mut self,
         tool: &str,
         input_json: &str,
         reply: SyncSender<ToolCallResult>,
     ) {
+        self.handle_host_call_for_turn(tool, input_json, reply, self.turn_cancel.clone());
+    }
+
+    fn handle_host_call_for_turn(
+        &mut self,
+        tool: &str,
+        input_json: &str,
+        reply: SyncSender<ToolCallResult>,
+        cancel: CancelToken,
+    ) {
         let from_isolated = self.host_call_from_isolated;
         self.host_call_from_isolated = false;
+        if cancel.is_cancelled() {
+            let _ = reply.send(ToolCallResult::err("cancelled: turn ended"));
+            return;
+        }
         if tool == HOST_TOOL_BUILD_RUN {
             self.handle_build_run(input_json, reply);
             return;
@@ -1774,6 +1850,7 @@ impl AssistantView {
                 ));
             }
             self.pending_commands.push(ViewCommand::AssistantHostTool {
+                cancel,
                 name: tool.to_string(),
                 input_json: input_json.to_string(),
                 origin_pane_id: 0,
@@ -1861,6 +1938,7 @@ impl AssistantView {
                             target,
                             reply,
                         });
+                        self.pending_permission_cancel = Some(cancel.clone());
                         self.release_external_waiters_for_pending_permission();
                     }
                 }
@@ -1932,12 +2010,15 @@ impl AssistantView {
         }
         // Fresh cancel token per turn — a clone goes to the worker/broker, the
         // original stays here so ESC and event-preempt can trip this turn only.
-        let cancel = CancelToken::new();
-        if !isolated {
+        self.cancel_turn(isolated, "turn replaced");
+        let cancel = CancelToken::for_turn(turn_id.clone());
+        if isolated {
+            self.side_cancel = cancel.clone();
+        } else {
             self.turn_cancel = cancel.clone();
         }
         let dispatcher = if isolated {
-            self.gated_dispatcher_on(self.side_flow_tx.clone())
+            self.gated_dispatcher_on(self.side_flow_tx.clone(), cancel.clone())
         } else {
             self.gated_dispatcher()
         };
@@ -2268,10 +2349,14 @@ impl AssistantView {
 
     /// Handle one tool-flow event from the broker worker thread.
     fn handle_flow_event(&mut self, event: ToolFlowEvent) {
+        if event.reject_cancelled() {
+            return;
+        }
         match event {
             ToolFlowEvent::Started {
                 tool,
                 input_summary,
+                ..
             } => {
                 log::info!("assistant: tool '{tool}' running");
                 self.model.tool_call_started(&tool, &input_summary);
@@ -2282,6 +2367,7 @@ impl AssistantView {
                 detail,
                 input_summary,
                 output_preview,
+                ..
             } => {
                 log::info!(
                     "assistant: tool '{tool}' finished ({})",
@@ -2316,11 +2402,13 @@ impl AssistantView {
                 pending_request_id,
                 resource_id,
                 reply,
+                cancel,
             } => {
                 log::info!(
                     "assistant: permission sheet shown for '{tool}' pending={pending_request_id} actor={actor_id} resource={resource_id}"
                 );
                 self.permission_owner = None;
+                self.pending_permission_cancel = Some(cancel);
                 self.model.permission_requested_scoped(
                     &tool,
                     &summarize_input(&input_json),
@@ -2339,7 +2427,8 @@ impl AssistantView {
                 tool,
                 input_json,
                 reply,
-            } => self.handle_host_call(&tool, &input_json, reply),
+                cancel,
+            } => self.handle_host_call_for_turn(&tool, &input_json, reply, cancel),
         }
     }
 
@@ -2412,7 +2501,7 @@ impl AssistantView {
                 trigger_lines.len()
             );
             self.queued_event_lines.extend(trigger_lines);
-            self.turn_cancel.cancel();
+            self.cancel_turn(false, "event preemption");
         } else {
             self.start_event_turn(trigger_lines.len());
         }
@@ -2458,10 +2547,9 @@ impl AssistantView {
             let effects = self.model.submit();
             self.execute_effects(effects);
         }
-        self.turn_cancel.cancel();
         // Unblock a worker parked on a permission sheet so it observes the
         // cancel at the next tool-loop boundary instead of hanging.
-        self.unblock_pending_workers("cancelled: interrupted by user (ESC)");
+        self.cancel_turn(false, "cancelled: interrupted by user (ESC)");
         log::info!(
             "assistant: ESC interrupt — cancelling in-flight turn ({} queued user message(s), {} queued event line(s))",
             self.model.queued_user_turns,
@@ -2474,6 +2562,9 @@ impl AssistantView {
     /// boundary instead of hanging. Shared by conversation-switch cancel and
     /// ESC interrupt. `reason` is surfaced to the blocked subscribe caller.
     fn unblock_pending_workers(&mut self, reason: &str) {
+        self.model.pending_permission = None;
+        self.permission_owner = None;
+        self.pending_permission_cancel = None;
         if let Some(tx) = self.pending_reply.take() {
             let _ = tx.send(PermissionReply::Deny);
         }
@@ -2484,9 +2575,34 @@ impl AssistantView {
         }
     }
 
+    /// Turn ownership is independent of the transcript's streaming flag.
+    fn cancel_turn(&mut self, isolated: bool, reason: &str) {
+        let cancel = if isolated {
+            &self.side_cancel
+        } else {
+            &self.turn_cancel
+        };
+        cancel.cancel_with_reason(reason);
+        self.prepared_host_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, ready| !ready.owner.same_turn(cancel));
+        let owns_sheet = self.pending_permission_cancel.as_ref()
+            .map(|owner| owner.same_turn(cancel))
+            .unwrap_or(self.permission_owner.is_some() == isolated
+                && (self.pending_reply.is_some() || self.pending_subscribe.is_some()));
+        if owns_sheet {
+            self.unblock_pending_workers(reason);
+        }
+    }
+
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
     pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
+        if self.pending_permission_cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+            self.unblock_pending_workers("cancelled: permission owner ended");
+            return;
+        }
         if self.pending_subscribe.is_some() {
             self.resolve_subscribe_permission(choice);
             return;
@@ -2571,7 +2687,11 @@ impl AssistantView {
                     self.prepared_host_calls
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
-                        .insert(input.to_string(), outcome);
+                        .insert(input.to_string(), PreparedHostCall {
+                            owner: self.pending_permission_cancel.clone()
+                                .unwrap_or_else(|| self.turn_cancel.clone()),
+                            result: outcome,
+                        });
                 }
                 None => log::warn!(
                     "assistant: subscribe approval for '{}' had no tool input",
@@ -2970,6 +3090,16 @@ impl AssistantView {
 
     fn reload_settings(&mut self) {
         let report = self.settings_loader.load(&self.session_overrides);
+        let previous = &self.settings.permissions;
+        let next = &report.settings.permissions;
+        if previous.posture.value != next.posture.value
+            || previous.rules.len() != next.rules.len()
+            || previous.rules.iter().any(|rule| !next.rules.iter().any(|candidate|
+                rule.rule == candidate.rule && rule.decision == candidate.decision))
+        {
+            self.cancel_turn(false, "effective permissions changed");
+            self.cancel_turn(true, "effective permissions changed");
+        }
         self.settings = report.settings;
         self.settings_errors = report.errors;
     }
@@ -4155,6 +4285,7 @@ impl AssistantView {
     /// Clear the sheet. A external denial is recorded on that conversation,
     /// not on the desktop transcript.
     fn commit_permission_sheet(&mut self, choice: PermissionChoice, tool: &str) {
+        self.pending_permission_cancel = None;
         let owner = self.permission_owner.take();
         let effects = self.model.permission_resolved(choice);
         self.execute_effects(effects);
@@ -4534,6 +4665,9 @@ impl AssistantView {
     }
 
     fn handle_isolated_flow_event(&mut self, event: ToolFlowEvent) {
+        if event.reject_cancelled() {
+            return;
+        }
         match event {
             ToolFlowEvent::Started { tool, .. } => {
                 log::info!("assistant: isolated turn tool '{tool}' running");
@@ -4548,9 +4682,10 @@ impl AssistantView {
                 tool,
                 input_json,
                 reply,
+                cancel,
             } => {
                 self.host_call_from_isolated = true;
-                self.handle_host_call(&tool, &input_json, reply);
+                self.handle_host_call_for_turn(&tool, &input_json, reply, cancel);
             }
             ToolFlowEvent::Ask {
                 tool,
@@ -4560,6 +4695,7 @@ impl AssistantView {
                 pending_request_id,
                 resource_id,
                 reply,
+                cancel,
             } => {
                 let turn_id = self.side_in_flight.clone().unwrap_or_default();
                 if self.model.pending_permission.is_none()
@@ -4574,6 +4710,7 @@ impl AssistantView {
                         &pending_request_id,
                     );
                     self.pending_reply = Some(reply);
+                    self.pending_permission_cancel = Some(cancel);
                     self.pending_connector_actor = Some((actor_id, actor_scope));
                     self.pending_tool_input = Some(input_json);
                 } else {
@@ -4590,6 +4727,9 @@ impl AssistantView {
     }
 
     fn finish_isolated_turn(&mut self, outcome: TurnOutcome) {
+        if self.permission_owner.as_ref().is_some_and(|owner| owner.turn_id == outcome.turn_id) {
+            self.unblock_pending_workers("isolated turn finished");
+        }
         self.side_in_flight = None;
         self.side_conversation = None;
         let result = match (outcome.text, outcome.error) {
@@ -4648,6 +4788,13 @@ fn nonempty_tag(value: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+impl Drop for AssistantView {
+    fn drop(&mut self) {
+        self.cancel_turn(false, "assistant pane dropped");
+        self.cancel_turn(true, "assistant pane dropped");
+    }
 }
 
 impl View for AssistantView {
@@ -4973,6 +5120,8 @@ mod tests {
     fn test_app(ws: &Path) -> AssistantView {
         AssistantView::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, 1)
     }
+
+    include!("turn_lifecycle_tests.rs");
 
     /// Like `test_app` but with an explicit `context_id`. The global tool
     /// registry (`plexi_ai::tool_dispatch`) is a process-wide singleton, so
@@ -7291,6 +7440,7 @@ enabled = ["allowed.tool"]
         app.model.streaming.in_flight = true;
         app.flow_tx
             .send(ToolFlowEvent::HostCall {
+                cancel: app.turn_cancel.clone(),
                 tool: HOST_TOOL_PANES_LIST.to_string(),
                 input_json: "{}".to_string(),
                 reply,

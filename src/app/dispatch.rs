@@ -770,12 +770,19 @@ impl PlexiApp {
                     log::warn!("plugin events: request missing source pane")
                 }
                 ViewCommand::AssistantHostTool {
+                    cancel,
                     name,
                     input_json,
                     origin_pane_id,
                     origin_context_id,
                     reply,
                 } => {
+                    if cancel.is_cancelled() {
+                        let _ = reply.send(crate::plexi_ai::tool_dispatch::ToolCallResult::err(
+                            "cancelled: turn ended",
+                        ));
+                        continue;
+                    }
                     // Network fetch resolves its policy here on the UI thread
                     // but must not block it on a remote peer, so it owns its
                     // own reply channel and answers from a worker thread.
@@ -1751,12 +1758,14 @@ impl PlexiApp {
                         });
                     }
                     ViewCommand::AssistantHostTool {
+                        cancel,
                         name,
                         input_json,
                         reply,
                         ..
                     } => {
                         deferred.push(ViewCommand::AssistantHostTool {
+                            cancel,
                             name,
                             input_json,
                             origin_pane_id: pane_id,

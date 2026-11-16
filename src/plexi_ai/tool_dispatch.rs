@@ -762,6 +762,7 @@ pub trait PermissionPresenter: Send + Sync {
 }
 
 pub struct ToolDispatcher {
+    cancel: crate::plexi_ai::CancelToken,
     /// Snapshot: exposed_name → (provider_pane_id, provider_tool_name, AiTool).
     /// Already filtered to the caller's context.
     tools: HashMap<String, (u64, String, AiTool)>,
@@ -872,6 +873,7 @@ impl ToolDispatcher {
             provider_apps,
             host_tools: HashMap::new(),
             host_handler: None,
+            cancel: crate::plexi_ai::CancelToken::new(),
             caller_plugin_id,
             caller_pane_id,
             scope,
@@ -900,6 +902,10 @@ impl ToolDispatcher {
     /// the permission monitor inside `dispatch_call` is the only authorizer.
     pub fn set_hooks(&mut self, hooks: Arc<dyn ToolCallHooks>) {
         self.hooks = Some(hooks);
+    }
+
+    pub(crate) fn set_cancel(&mut self, cancel: crate::plexi_ai::CancelToken) {
+        self.cancel = cancel;
     }
 
     pub fn set_presenter(&mut self, presenter: Arc<dyn PermissionPresenter>) {
@@ -946,6 +952,9 @@ impl ToolDispatcher {
     /// Dispatch a single tool call. The permission monitor admits the call
     /// before any handler runs. Hooks only observe a call that was admitted.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+        if self.cancel.is_cancelled() {
+            return ToolCallResult::coded("cancelled", &call_id, None);
+        }
         let pane = (self.scope.caller_pane_id != 0).then_some(self.scope.caller_pane_id);
         let context = Some(self.scope.context_id);
         log::info!(
@@ -1072,6 +1081,11 @@ impl ToolDispatcher {
                 // Waiting desktop presenters observe a decision already committed by
                 // the banner. Do not submit it a second time: the monitor rejects
                 // duplicate decisions. Re-admission below still checks revocation.
+                let choice = if self.cancel.is_cancelled() {
+                    crate::broker::gate::ApprovalChoice::Deny
+                } else {
+                    choice
+                };
                 let decided =
                     if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
                         Ok(())
@@ -1141,6 +1155,9 @@ impl ToolDispatcher {
             };
             return ToolCallResult::coded(code, &call_id, None);
         };
+        if self.cancel.is_cancelled() {
+            return ToolCallResult::coded("cancelled", &call_id, None);
+        }
         let operation_id = crate::broker::gate::operation_id_of(&input_json);
         let resource = resource_id.clone().unwrap_or_default();
         if self
@@ -1163,33 +1180,42 @@ impl ToolDispatcher {
             );
             return ToolCallResult::coded("permission_denied", &call_id, None);
         }
-        if let Some(hooks) = &self.hooks {
-            hooks.before_call(name, &input_json);
-        }
-        let envelope = authorization_envelope(
-            &grant_id,
-            &self.scope.caller_plugin_id,
-            &package,
-            resource_id.as_deref(),
-            &call_id,
-            resource_scope,
-        );
-        let result = if self.host_tools.contains_key(name) {
-            let Some(handler) = &self.host_handler else {
-                return ToolCallResult::err(format!(
-                    "host_tool_unhandled: no handler for {name:?}"
-                ));
-            };
-            log::info!(
-                "tool_dispatch: caller={} → host tool {name} call_id={call_id} grant={grant_id}",
-                self.caller_plugin_id,
-                name = crate::host::guest_text::shown(name),
-                call_id = crate::host::guest_text::shown(&call_id)
+        // Once use has been recorded, cancellation still closes its audit outcome.
+        let result = (|| {
+            if self.cancel.is_cancelled() {
+                return ToolCallResult::coded("cancelled", &call_id, None);
+            }
+            if let Some(hooks) = &self.hooks {
+                hooks.before_call(name, &input_json);
+            }
+            if self.cancel.is_cancelled() {
+                return ToolCallResult::coded("cancelled", &call_id, None);
+            }
+            let envelope = authorization_envelope(
+                &grant_id,
+                &self.scope.caller_plugin_id,
+                &package,
+                resource_id.as_deref(),
+                &call_id,
+                resource_scope,
             );
-            handler(name, &input_json)
-        } else {
-            self.dispatch_inner(call_id.clone(), name, input_json, Some(envelope))
-        };
+            if self.host_tools.contains_key(name) {
+                let Some(handler) = &self.host_handler else {
+                    return ToolCallResult::err(format!(
+                        "host_tool_unhandled: no handler for {name:?}"
+                    ));
+                };
+                log::info!(
+                    "tool_dispatch: caller={} → host tool {name} call_id={call_id} grant={grant_id}",
+                    self.caller_plugin_id,
+                    name = crate::host::guest_text::shown(name),
+                    call_id = crate::host::guest_text::shown(&call_id)
+                );
+                handler(name, &input_json)
+            } else {
+                self.dispatch_inner(call_id.clone(), name, input_json, Some(envelope))
+            }
+        })();
         if let Some(error) = &result.error {
             let code = result.error_code.as_deref().unwrap_or("error");
             let detail: String = error.chars().take(180).collect();
@@ -1240,8 +1266,10 @@ impl ToolDispatcher {
                 Some(operation_id.as_str()).filter(|s| !s.is_empty()),
             );
         }
-        if let Some(hooks) = &self.hooks {
-            hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
+        if !self.cancel.is_cancelled() {
+            if let Some(hooks) = &self.hooks {
+                hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
+            }
         }
         result
     }
@@ -1351,6 +1379,10 @@ impl ToolDispatcher {
         // Send ToolCall to the owning pane.
         let sent = {
             let registry = global_registry().lock().unwrap();
+            if self.cancel.is_cancelled() {
+                pending_calls().lock().unwrap().remove(&call_id);
+                return ToolCallResult::coded("cancelled", &call_id, None);
+            }
             if let Some(entry) = registry.entries.get(pane_id) {
                 // A pane may be replaced or moved while a human considers the
                 // request. Recheck the snapshot under the same lock as send.
@@ -1394,7 +1426,10 @@ impl ToolDispatcher {
         }
 
         // Block until the plugin sends ToolResult or the timeout fires.
-        match result_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        match self
+            .cancel
+            .recv_timeout(&result_rx, Duration::from_millis(timeout_ms))
+        {
             Ok(result) => {
                 log::info!(
                     "tool_dispatch: tool={name} call_id={call_id} result={}",
@@ -1411,6 +1446,9 @@ impl ToolDispatcher {
             Err(_) => {
                 // Clean up the stale pending entry.
                 pending_calls().lock().unwrap().remove(&call_id);
+                if self.cancel.is_cancelled() {
+                    return ToolCallResult::coded("cancelled", &call_id, None);
+                }
                 log::warn!(
                     "tool_dispatch: tool {name} call_id={call_id} timed out after {timeout_ms}ms",
                     name = crate::host::guest_text::shown(name),
