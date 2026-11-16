@@ -643,6 +643,31 @@ fn grants_from_component(engine: &Engine, component: &Component) -> Grants {
     grants
 }
 
+fn host_wit_package() -> &'static str {
+    include_str!("../../wit/plexi.wit")
+        .lines()
+        .find_map(|line| line.strip_prefix("package "))
+        .map(|package| package.trim_end_matches(';'))
+        .unwrap_or("plexi:platform (version unavailable)")
+}
+
+fn component_load_error(plugin_id: &str, error: wasmtime::Error) -> wasmtime::Error {
+    // Wasmtime does not expose a typed component signature-mismatch error.
+    // Inspect its chain only at load boundaries, never errors from guest calls.
+    if error
+        .chain()
+        .any(|cause| cause.to_string().contains("type mismatch"))
+    {
+        let package = host_wit_package();
+        log::info!("plugin::{plugin_id}: incompatible SDK (host WIT {package}): {error:#}");
+        error.context(format!(
+            "plugin '{plugin_id}' was built against an older SDK; rebuild against the current SDK (host WIT package {package})"
+        ))
+    } else {
+        error
+    }
+}
+
 impl WasmView {
     fn engine_and_component(path: &Path) -> wasmtime::Result<(Engine, Component)> {
         let engine = super::wasm_engine::create_engine()?;
@@ -742,15 +767,18 @@ impl WasmView {
         // struct's instantiate would demand every export of `plexi-full-plugin`;
         // standard plugins only export `lifecycle`, so build that unconditionally
         // and probe for the optional `audio-rt-process` export.
-        let pre = linker.instantiate_pre(component)?;
-        let lifecycle_idx = LifecycleIndices::new(&pre)?;
+        let load_error = |error| component_load_error(&plugin_id, error);
+        let pre = linker.instantiate_pre(component).map_err(load_error)?;
+        let lifecycle_idx = LifecycleIndices::new(&pre).map_err(load_error)?;
         let audio_idx = AudioProcessIndices::new(&pre).ok();
 
         let mut store = Store::new(engine, ctx);
-        let instance = pre.instantiate(&mut store)?;
-        let lifecycle = lifecycle_idx.load(&mut store, &instance)?;
+        let instance = pre.instantiate(&mut store).map_err(load_error)?;
+        let lifecycle = lifecycle_idx
+            .load(&mut store, &instance)
+            .map_err(load_error)?;
         let audio = match audio_idx {
-            Some(idx) => Some(idx.load(&mut store, &instance)?),
+            Some(idx) => Some(idx.load(&mut store, &instance).map_err(load_error)?),
             None => None,
         };
 
@@ -947,6 +975,110 @@ impl WasmView {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn wit_sources_match_version_snapshot() {
+        use sha2::{Digest, Sha256};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let wit = std::fs::read_to_string(root.join("wit/plexi.wit")).unwrap();
+        let package = wit
+            .lines()
+            .find_map(|line| line.strip_prefix("package "))
+            .unwrap();
+        let version = package.trim_end_matches(';').split_once('@').unwrap().1;
+        let mut pending = vec![root.join("wit")];
+        let mut sources = Vec::new();
+        while let Some(path) = pending.pop() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(entry.path());
+                } else if entry.path().extension().is_some_and(|ext| ext == "wit") {
+                    sources.push(entry.path());
+                }
+            }
+        }
+        sources.sort();
+        let actual: String = sources
+            .iter()
+            .map(|path| {
+                format!(
+                    "{:x}  {}\n",
+                    Sha256::digest(std::fs::read(path).unwrap()),
+                    path.strip_prefix(&root).unwrap().display()
+                )
+            })
+            .collect();
+        // Existing version snapshots are immutable. A WIT edit requires a package
+        // version bump and a new snapshot, never rewriting an existing snapshot.
+        let snapshot = root
+            .join("tests/wit-versions")
+            .join(format!("{version}.sha256"));
+        let expected = std::fs::read_to_string(&snapshot).unwrap_or_else(|error| {
+            panic!("add WIT version snapshot {}: {error}", snapshot.display())
+        });
+        assert_eq!(
+            actual, expected,
+            "WIT changed without a package version bump; bump the WIT version and add a new version snapshot"
+        );
+    }
+
+    #[test]
+    fn older_sdk_record_shape_reports_rebuild_and_plugin_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let capture = crate::testing::test_log::capture();
+        // Frozen sysmon from d6c1a15e1^ (blob b4317b91fd8e0e885977b6e27112e7254a235cdd),
+        // before Row/Column gained `justify`. Do not rebuild this negative fixture.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon-pre-justify.wasm");
+        let error = WasmView::load_with_grants(
+            "com.plexi.old-sysmon",
+            &path,
+            StateStore::ephemeral(),
+            Grants {
+                state: true,
+                ..Grants::default()
+            },
+        )
+        .err()
+        .expect("previous record shape must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("rebuild against the current SDK"),
+            "{error:#}"
+        );
+        assert!(message.contains("com.plexi.old-sysmon"), "{message}");
+        assert!(message.contains(host_wit_package()), "{message}");
+        assert!(format!("{error:#}").contains("expected record of 5 fields, found 4 fields"));
+        assert!(
+            capture.lines().iter().any(|line| {
+                line.contains("com.plexi.old-sysmon") && line.contains("type mismatch")
+            }),
+            "original Wasmtime error must be logged"
+        );
+    }
+
+    #[test]
+    fn missing_capability_is_not_reported_as_an_older_sdk() {
+        let dir = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let error = WasmView::load_with_grants(
+            "com.plexi.ungranted-sysmon",
+            &fixture(),
+            StateStore::ephemeral(),
+            Grants::default(),
+        )
+        .err()
+        .expect("state import needs a grant");
+        let message = format!("{error:#}");
+        assert!(message.contains("host-state"), "{message}");
+        assert!(
+            !message.contains("rebuild against the current SDK"),
+            "{message}"
+        );
+    }
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")
