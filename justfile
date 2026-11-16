@@ -89,6 +89,8 @@ test-for path:
 # plugins/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.
 # Note: cargo-component emits the adapted component under the wasip1 path.
 wasm-fixtures:
+    cd plugins/wasm-poc/timer-only && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cp target/wasm32-wasip1/release/timer_only.wasm tests/wasm-fixtures/timer-only.wasm
     cd plugins/wasm-poc/sysmon && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/sysmon.wasm tests/wasm-fixtures/sysmon.wasm
     cd plugins/wasm-poc/audio-synth && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
