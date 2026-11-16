@@ -21548,3 +21548,113 @@ fn named_agent_back_to_back_opens_start_one_pane() {
         "the second open found the first"
     );
 }
+
+/// A pane whose agent launch is a resume typed into its interactive shell (a
+/// Standby wake) for `harness`, begun `ago` in the past. Returns the pane and
+/// its shell pid.
+fn typed_resume_pane(
+    h: &mut HostHarness,
+    harness: &str,
+    ago: std::time::Duration,
+) -> (PaneId, i32) {
+    let pane = h.add_focused_terminal();
+    let t = h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal");
+    t.agent_role = Some("researcher".into());
+    t.begin_agent_launch(crate::host::pane::AgentLaunchKind::TypedResume {
+        harness: harness.into(),
+    });
+    let launch = t.agent_launch.as_mut().expect("launch");
+    launch.started -= ago;
+    (pane, t.backend.child_pid() as i32)
+}
+
+fn observe_launch(
+    h: &mut HostHarness,
+    pane: PaneId,
+    fg: i32,
+    children: usize,
+    fg_agent: Option<&str>,
+) -> bool {
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal")
+        .observe_agent_launch(Some(fg), &Ok(children), fg_agent)
+}
+
+/// Codex review 7, both delayed-wake sequences. A woken shell that spends
+/// longer than the command grace in a slow pre-exec step (owns the
+/// foreground, no children) has not run the resume yet. A hook's short-lived
+/// non-agent child, then a childless tick, is not the resume either. Only the
+/// detector naming the woken harness proves it ran, so the launch, and the
+/// agent, stay running in both sequences.
+#[test]
+fn typed_resume_launch_needs_its_harness_in_the_foreground() {
+    let mut h = HostHarness::new();
+    let ten_s = std::time::Duration::from_secs(10);
+
+    let (slow, shell) = typed_resume_pane(&mut h, "codex", ten_s);
+    for _ in 0..3 {
+        assert!(!observe_launch(&mut h, slow, shell, 0, None));
+    }
+    assert_eq!(h.app.running_named_agent_pane("researcher"), Some(slow));
+    h.app.close_pane_by_id(slow);
+
+    let (hooked, shell) = typed_resume_pane(&mut h, "codex", ten_s);
+    let hook_child = shell + 1;
+    assert!(!observe_launch(&mut h, hooked, hook_child, 1, None));
+    assert!(!observe_launch(&mut h, hooked, shell, 0, None));
+    let t = h.app.windows[0].panes[&hooked]
+        .as_terminal()
+        .expect("terminal");
+    assert!(
+        t.agent_launch.as_ref().is_some_and(|l| !l.seen_running),
+        "a hook child is not the resume"
+    );
+    assert_eq!(h.app.running_named_agent_pane("researcher"), Some(hooked));
+}
+
+/// A typed resume ends at the first bare prompt after the detector named its
+/// harness (`codex` here; `claude` resolves to the detector's `claude-code`),
+/// and a resume line that never runs (Ctrl-C at the prompt) expires after
+/// `TYPED_RESUME_EXPIRY`. Reads the live shell's argv, so it needs a PTY.
+#[test]
+#[ignore = "requires-pty"]
+fn typed_resume_launch_ends_after_its_harness_or_the_expiry() {
+    let mut h = HostHarness::new();
+    let (ran, shell) = typed_resume_pane(&mut h, "claude", std::time::Duration::ZERO);
+    let harness_pgid = shell + 1;
+    assert!(!observe_launch(
+        &mut h,
+        ran,
+        harness_pgid,
+        1,
+        Some("claude-code")
+    ));
+    assert!(
+        observe_launch(&mut h, ran, shell, 0, None),
+        "the first bare prompt after the harness ends the launch"
+    );
+    h.app.close_pane_by_id(ran);
+
+    let past_expiry = crate::host::pane::TYPED_RESUME_EXPIRY + std::time::Duration::from_secs(1);
+    let (never, shell) = typed_resume_pane(&mut h, "codex", past_expiry);
+    assert!(
+        observe_launch(&mut h, never, shell, 0, None),
+        "a resume that never ran expires at a bare prompt"
+    );
+    let (fresh, shell) = typed_resume_pane(
+        &mut h,
+        "codex",
+        crate::host::pane::TYPED_RESUME_EXPIRY - std::time::Duration::from_secs(1),
+    );
+    assert!(
+        !observe_launch(&mut h, fresh, shell, 0, None),
+        "not before the expiry"
+    );
+}

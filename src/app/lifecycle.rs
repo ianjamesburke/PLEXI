@@ -5972,6 +5972,21 @@ impl PlexiApp {
                 let shell_pid = t.backend.child_pid();
                 let fg = t.backend.foreground_pid();
                 let children = crate::host::shell::pid_child_count(shell_pid);
+                // The known agent leading the PTY foreground group, if any:
+                // the detector's identity for this tick.
+                let fg_agent = if t.exited {
+                    None
+                } else {
+                    fg.filter(|fg| *fg != shell_pid as i32).and_then(|fg| {
+                        match crate::host::shell::get_pid_agent_probe(fg as u32) {
+                            crate::host::shell::AgentProcessProbe::Known(agent) => Some(agent),
+                            crate::host::shell::AgentProcessProbe::UnsupportedInterpreter {
+                                ..
+                            }
+                            | crate::host::shell::AgentProcessProbe::Unknown => None,
+                        }
+                    })
+                };
                 // What the pane shows before this tick. A tick publishes at
                 // most one change to it, read after every input is updated.
                 let shown_at_start = t.shown_agent().map(|a| (a.agent, a.state));
@@ -5994,10 +6009,11 @@ impl PlexiApp {
                         }
                     }
                 };
-                if let Some(launch) = t.agent_launch {
-                    if t.observe_agent_launch(fg, &children) {
+                if let Some(launch) = t.agent_launch.clone() {
+                    if t.observe_agent_launch(fg, &children, fg_agent) {
                         log::info!(
-                            "agent launch: pane {pane_id} shell back at its prompt after {:?} (seen running: {}); launch ended",
+                            "agent launch: pane {pane_id} {:?} ended after {:?} (seen running: {})",
+                            launch.kind,
                             launch.started.elapsed(),
                             launch.seen_running
                         );
@@ -6070,28 +6086,18 @@ impl PlexiApp {
                 let observed = if t.exited {
                     None
                 } else {
-                    fg.filter(|fg| *fg != shell_pid as i32)
-                        .and_then(
-                            |fg| match crate::host::shell::get_pid_agent_probe(fg as u32) {
-                                crate::host::shell::AgentProcessProbe::Known(agent) => Some(agent),
-                                crate::host::shell::AgentProcessProbe::UnsupportedInterpreter {
-                                    ..
-                                }
-                                | crate::host::shell::AgentProcessProbe::Unknown => None,
-                            },
-                        )
-                        .map(|agent| {
-                            // A TUI that has stopped redrawing on its own is
-                            // sitting at its prompt; host-induced repaints
-                            // (a committed resize) do not count (stints 1231, 1438).
-                            crate::protocol::PaneAgentState {
-                                pane_id: *pane_id,
-                                state: t.observed_output_state(std::time::Instant::now()),
-                                agent: t.agent_role.clone().unwrap_or_else(|| agent.to_string()),
-                                detail: None,
-                                session_id: None,
-                            }
-                        })
+                    fg_agent.map(|agent| {
+                        // A TUI that has stopped redrawing on its own is
+                        // sitting at its prompt; host-induced repaints
+                        // (a committed resize) do not count (stints 1231, 1438).
+                        crate::protocol::PaneAgentState {
+                            pane_id: *pane_id,
+                            state: t.observed_output_state(std::time::Instant::now()),
+                            agent: t.agent_role.clone().unwrap_or_else(|| agent.to_string()),
+                            detail: None,
+                            session_id: None,
+                        }
+                    })
                 };
                 // A manually started agent can return to the shell without
                 // exiting the terminal. Retire a stale working or idle hook only when

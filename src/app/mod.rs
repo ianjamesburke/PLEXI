@@ -6232,7 +6232,9 @@ pub(crate) fn restore_workspace(
                     ) {
                         Ok(mut pane) => {
                             if auto_resume_launched {
-                                pane.begin_agent_launch();
+                                pane.begin_agent_launch(
+                                    crate::host::pane::AgentLaunchKind::Command,
+                                );
                             }
                             pane.name = saved_pane.name.clone().or_else(|| {
                                 effective_session
