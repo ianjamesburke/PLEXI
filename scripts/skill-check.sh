@@ -23,6 +23,12 @@ WS="${WS:-/tmp/plexi-w7-ws}"
 DISPLAY_NUM="${DISPLAY:-:99}"
 LOG="$PROFILE/plexi.log"
 SKILL_SRC="$REPO/skills/plexi-cli/SKILL.md"
+# Match skill_install::skill_channel: main and release candidates use the
+# stable skill name; development channels install alongside it.
+case "$CHANNEL" in
+  main|rc-*) SKILL_NAME="plexi-cli" ;;
+  *) SKILL_NAME="plexi-cli-$CHANNEL" ;;
+esac
 
 mkdir -p "$EVID/jobs" "$EVID/logs" "$EVID/home"
 export PATH="$HOME/.local/bin:$PATH"
@@ -71,8 +77,8 @@ if ! HOME="$EVID/home" "$BIN" skill install --agent all >"$EVID/logs/install.out
   record FAIL step1 "$(cat "$EVID/logs/install.err")"
   exit 1
 fi
-CLAUDE_SKILL="$EVID/home/.claude/skills/plexi-cli/SKILL.md"
-CODEX_SKILL="$EVID/home/.codex/skills/plexi-cli/SKILL.md"
+CLAUDE_SKILL="$EVID/home/.claude/skills/$SKILL_NAME/SKILL.md"
+CODEX_SKILL="$EVID/home/.codex/skills/$SKILL_NAME/SKILL.md"
 if [[ -s "$CLAUDE_SKILL" && -s "$CODEX_SKILL" ]]; then
   record PASS step1 "installed under HOME/.claude and HOME/.codex"
 else
