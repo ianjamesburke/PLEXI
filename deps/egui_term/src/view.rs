@@ -360,7 +360,12 @@ impl<'a> TerminalView<'a> {
                 )
             },
         );
-        for crate::keyboard::PreparedEvent { event, encoding } in prepared {
+        for crate::keyboard::PreparedEvent {
+            event,
+            encoding,
+            starts_hold,
+        } in prepared
+        {
             let mut input_actions = vec![];
 
             match event {
@@ -628,6 +633,19 @@ impl<'a> TerminalView<'a> {
                 },
                 _ => {},
             };
+
+            // A press the terminal consumed itself (search, copy mode, its
+            // Cmd shortcuts) never reached the program: it holds nothing.
+            if let Some(key) = starts_hold {
+                if !input_actions.iter().any(|action| {
+                    matches!(
+                        action,
+                        InputAction::BackendCall(BackendCommand::Write(_))
+                    )
+                }) {
+                    self.backend.keyboard.forget(key);
+                }
+            }
 
             for action in input_actions {
                 match action {

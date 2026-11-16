@@ -49,6 +49,9 @@ pub(crate) struct PreparedEvent {
     /// None delegates to the existing legacy binding path; an empty encoding
     /// consumes the event without writing (e.g. release reporting is disabled).
     pub encoding: Option<Vec<u8>>,
+    /// The key whose program hold this press started. The caller `forget`s
+    /// it when the press is consumed locally instead of reaching the PTY.
+    pub starts_hold: Option<Key>,
 }
 
 impl KeyboardEncoder {
@@ -66,6 +69,7 @@ impl KeyboardEncoder {
         let mut events = events.into_iter().peekable();
         let mut result = Vec::new();
         while let Some(event) = events.next() {
+            let mut starts_hold = None;
             let encoding = match &event {
                 Event::Key {
                     key,
@@ -84,13 +88,12 @@ impl KeyboardEncoder {
                         mods: *modifiers,
                         code: None,
                     };
-                    // A press (or an ownerless repeat) that starts a hold
-                    // records its kitty code below.
-                    let mut starts_hold = false;
+                    // A press (or an ownerless repeat) that starts a program
+                    // hold records its kitty code below.
                     let hold = if *pressed {
                         *self.holds.entry(identity).or_insert_with(|| {
-                            starts_hold = true;
                             if !scrolls(*key, *modifiers) {
+                                starts_hold = Some(identity);
                                 return Hold::Program(press);
                             }
                             if !mode.is_empty() {
@@ -118,7 +121,15 @@ impl KeyboardEncoder {
                                 *pressed && scrolls(*key, *modifiers);
                             break 'key (!still_scrolls).then(Vec::new);
                         },
-                        Hold::Released => break 'key Some(Vec::new()),
+                        Hold::Released => {
+                            // The repeat's paired text goes with it.
+                            if *pressed
+                                && matches!(events.peek(), Some(Event::Text(_)))
+                            {
+                                events.next();
+                            }
+                            break 'key Some(Vec::new());
+                        },
                         Hold::Program(held) => held,
                     };
                     // A program-owned hold never scrolls, whatever the
@@ -164,7 +175,7 @@ impl KeyboardEncoder {
                                 }
                             }
                         }
-                        if starts_hold {
+                        if starts_hold.is_some() {
                             self.holds.insert(
                                 identity,
                                 Hold::Program(Press { code, ..press }),
@@ -204,9 +215,19 @@ impl KeyboardEncoder {
                 },
                 _ => None,
             };
-            result.push(PreparedEvent { event, encoding });
+            result.push(PreparedEvent {
+                event,
+                encoding,
+                starts_hold,
+            });
         }
         result
+    }
+
+    /// Drops the hold a press started when the press never reached the
+    /// program (the terminal consumed it, e.g. a search-mode key).
+    pub fn forget(&mut self, key: Key) {
+        self.holds.remove(&key);
     }
 
     /// Whether a program hold is open, so callers can skip `release_held`.
@@ -996,6 +1017,40 @@ mod tests {
             ],
         );
         assert_eq!(out, [Some(String::new()), Some(String::new())]);
+    }
+
+    #[test]
+    fn released_repeat_swallows_its_paired_text_but_not_ime_text() {
+        let mode =
+            TermMode::REPORT_ALL_KEYS_AS_ESC | TermMode::REPORT_EVENT_TYPES;
+        let mut encoder = KeyboardEncoder::default();
+        let a = |repeat| key(Key::A, Modifiers::NONE, true, repeat);
+        let out = encoder.prepare(
+            vec![a(false), Event::Text("a".into())],
+            mode,
+            unbound,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].encoding.as_deref(),
+            Some(b"\x1b[97;1:1u".as_slice())
+        );
+        assert_eq!(encoder.release_held(mode), b"\x1b[97;1:3u");
+        // Focus returns with A still held: its repeat and the repeat's text
+        // never reach the program; later IME text still does.
+        let out = encoder.prepare(
+            vec![a(true), Event::Text("a".into())],
+            mode,
+            unbound,
+        );
+        assert_eq!(out.len(), 1, "the repeat's text is consumed with it");
+        assert_eq!(out[0].encoding.as_deref(), Some(b"".as_slice()));
+        let out =
+            encoder.prepare(vec![Event::Text("日".into())], mode, unbound);
+        assert_eq!(
+            out[0].encoding.as_deref(),
+            Some("\x1b[26085;1u".as_bytes())
+        );
     }
 
     #[test]

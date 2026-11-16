@@ -38,6 +38,15 @@ fn two_terminals(h: &mut HostHarness) -> (PaneId, PaneId) {
     (a, b)
 }
 
+/// The harness's first (non-terminal) pane.
+fn other_pane(h: &HostHarness, id: PaneId) -> PaneId {
+    *h.app.windows[0]
+        .panes
+        .keys()
+        .find(|pane| **pane != id)
+        .expect("the harness's first pane")
+}
+
 fn press_page_up(h: &mut HostHarness, id: PaneId) {
     h.press_key(egui::Key::PageUp, egui::Modifiers::NONE);
     h.run_frames(1);
@@ -142,11 +151,7 @@ fn focus_switch_to_a_zoomed_pane_releases_the_hidden_holder() {
 fn hovered_unfocused_terminal_records_no_hold() {
     let mut h = HostHarness::new();
     let id = kitty_terminal(&mut h);
-    let other = *h.app.windows[0]
-        .panes
-        .keys()
-        .find(|pane| **pane != id)
-        .expect("the harness's first pane");
+    let other = other_pane(&h, id);
     h.focus_pane(other);
     h.run_frames(3);
     let rect = h
@@ -180,4 +185,28 @@ fn hovered_unfocused_terminal_records_no_hold() {
     });
     h.run_frames(2);
     assert_eq!(tap(&mut h, id), "", "an unfocused terminal sends nothing");
+}
+
+/// Keys the terminal consumes itself (Cmd+F entering search, then a key
+/// typed into search) never reached the program, so losing focus sends no
+/// release for them.
+#[test]
+#[ignore = "requires-pty"]
+fn locally_consumed_keys_get_no_release() {
+    let mut h = HostHarness::new();
+    let id = kitty_terminal(&mut h);
+    let cmd = egui::Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..egui::Modifiers::NONE
+    };
+    h.press_key(egui::Key::F, cmd);
+    release_key(&mut h, egui::Key::F, cmd);
+    h.press_key(egui::Key::PageUp, egui::Modifiers::NONE);
+    h.run_frames(1);
+    assert_eq!(tap(&mut h, id), "", "search consumed both presses");
+    let other = other_pane(&h, id);
+    h.focus_pane(other);
+    h.run_frames(2);
+    assert_eq!(tap(&mut h, id), "", "no release for a press never sent");
 }
