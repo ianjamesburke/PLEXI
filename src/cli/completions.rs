@@ -91,7 +91,13 @@ pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, Str
         shell,
         binary_name
     );
-    let mut cmd = crate::cli::help::gated_command();
+    // A pure function of the CLI definition (stint 1604): the installer runs
+    // this against a profile it must not touch, so no experiment is read and
+    // every experiment-owned path stays hidden, as on a fresh profile.
+    let mut cmd = crate::cli::help::gate_command(
+        <crate::cli::args::Cli as clap::CommandFactory>::command(),
+        |_| false,
+    );
     if shell_variant == Shell::Zsh {
         // Generate to a buffer so we can post-process the zsh script.
         let mut buf = Vec::new();

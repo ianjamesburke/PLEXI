@@ -395,6 +395,9 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
     let ready = journal.join("ready");
     let done = journal.join("complete");
     if done.is_file() {
+        if old.exists() && only_reseeded_core(&old, &new) {
+            return set_aside_reseeded_core(root, &old);
+        }
         if old.exists() {
             let mut failure = MigrationFailure::new(
                 OPERATION_TREE,
@@ -637,6 +640,63 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
         backup.display(),
         source_count,
         count_entries(&new),
+    ));
+    Ok(())
+}
+
+/// The stamp a 0.4 host writes into `apps/` after seeding the core pack.
+const LEGACY_CORE_STAMP: &str = ".core_build";
+
+/// True when a reappeared `apps/` is only what a still-running 0.4 host seeds
+/// on its own: the core stamp, and package directories that `plugins/` already
+/// holds by the same name. Anything else (no stamp, a file, a symlink, a
+/// package `plugins/` lacks, an unreadable entry) is user content.
+fn only_reseeded_core(old: &Path, new: &Path) -> bool {
+    if !old.join(LEGACY_CORE_STAMP).is_file() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(old) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        entry.is_ok_and(|entry| {
+            let name = entry.file_name();
+            name == LEGACY_CORE_STAMP
+                || (entry.file_type().is_ok_and(|kind| kind.is_dir()) && new.join(&name).is_dir())
+        })
+    })
+}
+
+/// Move a host-seeded `apps/` to `apps.old-<UTC date>[-n]` beside it. Nothing
+/// is deleted; the next free suffix is used when the host seeds it again.
+fn set_aside_reseeded_core(root: &Path, old: &Path) -> Result<(), Box<MigrationFailure>> {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let aside = std::iter::once(format!("apps.old-{date}"))
+        .chain((1..).map(|n| format!("apps.old-{date}-{n}")))
+        .map(|name| root.join(name))
+        .find(|path| !path.exists() && !path.is_symlink())
+        .expect("an unbounded suffix sequence always has a free name");
+    std::fs::rename(old, &aside).map_err(|error| {
+        Box::new(
+            MigrationFailure::new(
+                OPERATION_TREE,
+                root,
+                format!(
+                    "cannot move the host-seeded legacy apps/ aside to {}: {error}",
+                    aside.display()
+                ),
+            )
+            .plain(format!(
+                "The old apps folder came back after your plugins were already upgraded, and Plexi could not move it aside: {error}"
+            ))
+            .file(old.to_path_buf())
+            .hint("quit every running Plexi, move apps/ out of the profile, then relaunch."),
+        )
+    })?;
+    trace(format!(
+        "plugin_migration: legacy apps/ reappeared holding only the host-seeded core pack already in plugins/; moved aside source={} destination={}",
+        old.display(),
+        aside.display()
     ));
     Ok(())
 }
@@ -1647,5 +1707,73 @@ mod tests {
         assert!(root.path().join("apps").is_dir());
         assert!(root.path().join("plugins").is_dir());
         assert!(!root.path().join(MIGRATION).join("complete").exists());
+    }
+
+    /// A migrated profile (journal complete, `plugins/` populated) where a
+    /// still-running 0.4 host seeded `apps/` again: core stamp plus the given
+    /// package directories.
+    fn reseeded_profile(apps: &[&str]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(MIGRATION)).unwrap();
+        std::fs::write(root.path().join(MIGRATION).join("complete"), "schema=2\n").unwrap();
+        for id in ["sudoku", "logs"] {
+            std::fs::create_dir_all(root.path().join("plugins").join(id)).unwrap();
+        }
+        for id in apps {
+            stage_legacy(root.path(), id, "schema_version = 1\n");
+        }
+        std::fs::write(root.path().join("apps").join(".core_build"), "0.4.6-build").unwrap();
+        root
+    }
+
+    /// Stint 1604: a 0.4 host still running during the upgrade re-seeds the
+    /// core pack into `apps/`. That folder holds nothing the user made, so it
+    /// is moved aside and startup proceeds; a second re-seed gets a suffix.
+    #[test]
+    fn plugin_rename_reseeded_core_only_apps_is_moved_aside_and_startup_proceeds() {
+        let root = reseeded_profile(&["sudoku", "logs"]);
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        migrate(root.path()).expect("a host-seeded apps/ must not stop startup");
+        assert!(!root.path().join("apps").exists());
+        let aside = root.path().join(format!("apps.old-{date}"));
+        assert!(aside.join("sudoku/manifest.toml").is_file());
+        assert!(aside.join(".core_build").is_file());
+        assert!(root.path().join("plugins/sudoku").is_dir());
+        let traces = EARLY_TRACES.lock().unwrap().clone();
+        assert!(traces.iter().any(|(level, line)| *level == log::Level::Info
+            && line.contains("moved aside")
+            && line.contains(&aside.display().to_string())));
+
+        stage_legacy(root.path(), "logs", "schema_version = 1\n");
+        std::fs::write(root.path().join("apps/.core_build"), "0.4.6-build").unwrap();
+        migrate(root.path()).unwrap();
+        assert!(root.path().join(format!("apps.old-{date}-1/logs")).is_dir());
+        assert!(!root.path().join("apps").exists());
+    }
+
+    /// A reappeared `apps/` holding anything the host did not seed stays fatal
+    /// with the original message and is left exactly where it is.
+    #[test]
+    fn plugin_rename_reappeared_apps_with_user_content_stays_fatal() {
+        let without_stamp = reseeded_profile(&["sudoku"]);
+        std::fs::remove_file(without_stamp.path().join("apps/.core_build")).unwrap();
+        for root in [reseeded_profile(&["sudoku", "mine"]), without_stamp] {
+            let failure = migrate(root.path()).unwrap_err();
+            assert_eq!(
+                failure.reason,
+                "legacy apps/ reappeared after plugin migration; use plugins/ and schema_version = 2"
+            );
+            assert!(failure.unchanged);
+            assert!(root.path().join("apps/sudoku").is_dir());
+            let names: Vec<_> = std::fs::read_dir(root.path())
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !names.iter().any(|name| name.starts_with("apps.old-")),
+                "{names:?}"
+            );
+        }
     }
 }
