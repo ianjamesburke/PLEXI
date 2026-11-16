@@ -6110,6 +6110,7 @@ pub(crate) fn restore_workspace(
                         root: ctx_root.cloned(),
                         depth: ctx_depth,
                     };
+                    let mut auto_resume_launched = false;
                     let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
@@ -6199,6 +6200,7 @@ pub(crate) fn restore_workspace(
                                     &resume_cmd,
                                     session.ephemeral,
                                 );
+                                auto_resume_launched = true;
                             }
                         }
                     }
@@ -6229,6 +6231,9 @@ pub(crate) fn restore_workspace(
                         default_font_size,
                     ) {
                         Ok(mut pane) => {
+                            if auto_resume_launched {
+                                pane.begin_agent_launch();
+                            }
                             pane.name = saved_pane.name.clone().or_else(|| {
                                 effective_session
                                     .as_ref()

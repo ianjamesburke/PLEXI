@@ -14747,6 +14747,13 @@ mod agent_state_restoration_tests {
             !active_term.is_standby(),
             "active context pane must auto-resume"
         );
+        // Stint 1396: the auto-resume launch is recorded at restore, so the
+        // agent counts as running before any activity tick has seen it.
+        assert!(
+            active_term.agent_launch.is_some(),
+            "auto-resume records its launch"
+        );
+        assert_eq!(h.app.running_named_agent_pane("lead"), Some(10));
         assert_eq!(
             active_term.last_resumed_command.as_deref(),
             Some("claude --verbose --resume sess-active-10")
@@ -14854,6 +14861,13 @@ mod agent_state_restoration_tests {
             bg_term_after.last_resumed_command.as_deref(),
             Some("codex --verbose resume thread-bg-20")
         );
+        // Stint 1396: the wake records its launch, so the agent stays running
+        // between leaving Standby and the first tick that sees it.
+        assert!(
+            bg_term_after.agent_launch.is_some(),
+            "a Standby wake records its launch"
+        );
+        assert_eq!(h.app.running_named_agent_pane("worker"), Some(20));
     }
 
     #[test]
@@ -21424,7 +21438,7 @@ fn named_agent_running_follows_the_host_launch_observation() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         activity_tick(&mut h);
         assert!(
-            terminal(&h, long).agent_launch_at.is_some(),
+            terminal(&h, long).agent_launch.is_some(),
             "a running supervised launch stays running"
         );
     }
@@ -21436,7 +21450,7 @@ fn named_agent_running_follows_the_host_launch_observation() {
         &mut h,
         shell,
         "the harness exits, the shell takes over",
-        |t| t.agent_launch_at.is_none(),
+        |t| t.agent_launch.is_none(),
     );
     let started = palette_open_from(&mut h, &fx, caller, 1);
     assert_ne!(
@@ -21459,7 +21473,7 @@ fn named_agent_running_follows_the_host_launch_observation() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         activity_tick(&mut h);
     }
-    assert!(terminal(&h, shell).agent_launch_at.is_none());
+    assert!(terminal(&h, shell).agent_launch.is_none());
     let started = palette_open_from(&mut h, &fx, caller, 1);
     assert_ne!(started, shell, "an exec'd shell is not the agent");
 }
@@ -21479,7 +21493,7 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
         .and_then(Pane::as_terminal_mut)
         .expect("terminal");
     t.agent_role = Some("researcher".into());
-    t.agent_launch_at = None;
+    t.agent_launch = None;
     t.observed_agent = None;
     assert_eq!(h.app.running_named_agent_pane("researcher"), None);
 

@@ -1006,26 +1006,17 @@ pub(crate) fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
 /// as unknown. One of the two terminal-activity signals (alongside the PTY
 /// foreground pgid): a shell with children is running something.
 ///
-/// macOS uses `proc_listpids(PROC_PPID_ONLY)` (`<sys/proc_info.h>`), whose
-/// `-1` failure is distinct from an empty list, not `proc_listchildpids`
-/// (root `AGENTS.md` trap: `EFAULT` on Sonoma).
+/// macOS uses `proc_listpids(PROC_PPID_ONLY)` (`<sys/proc_info.h>`), not
+/// `proc_listchildpids` (root `AGENTS.md` trap: `EFAULT` on Sonoma).
 pub fn pid_child_count(pid: u32) -> std::io::Result<usize> {
     #[cfg(target_os = "macos")]
     {
-        const PROC_PPID_ONLY: u32 = 6;
         let mut buf = [0i32; 64];
-        let bytes = unsafe {
-            libc::proc_listpids(
-                PROC_PPID_ONLY,
-                pid,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                std::mem::size_of_val(&buf) as libc::c_int,
-            )
-        };
-        if bytes < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(bytes as usize / std::mem::size_of::<i32>())
+        list_child_pids_into(
+            pid,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            std::mem::size_of_val(&buf) as libc::c_int,
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -1037,6 +1028,29 @@ pub fn pid_child_count(pid: u32) -> std::io::Result<usize> {
         let _ = pid;
         Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
+}
+
+/// `proc_listpids(PROC_PPID_ONLY, pid)` into `buf`, as a child count. Apple's
+/// libproc wrapper turns a failed syscall into a `0` return with `errno` set
+/// (xnu `libsyscall/wrappers/libproc/libproc.c`), the same value as "no
+/// children", so `errno` is cleared first and read back to tell them apart.
+#[cfg(target_os = "macos")]
+fn list_child_pids_into(
+    pid: u32,
+    buf: *mut libc::c_void,
+    size: libc::c_int,
+) -> std::io::Result<usize> {
+    const PROC_PPID_ONLY: u32 = 6;
+    // SAFETY: `__error` returns this thread's errno slot.
+    unsafe { *libc::__error() = 0 };
+    // SAFETY: the kernel validates `buf`/`size` and fails with EFAULT, never
+    // writing outside the range it was given.
+    let bytes = unsafe { libc::proc_listpids(PROC_PPID_ONLY, pid, buf, size) };
+    let error = std::io::Error::last_os_error();
+    if bytes < 0 || (bytes == 0 && error.raw_os_error().is_some_and(|code| code != 0)) {
+        return Err(error);
+    }
+    Ok(bytes as usize / std::mem::size_of::<i32>())
 }
 
 fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
@@ -1762,5 +1776,23 @@ mod tests {
         let _ = leaf.kill();
         let _ = parent.wait();
         let _ = leaf.wait();
+    }
+
+    /// Stint 1396: Apple's wrapper reports a failed listing as `0`, the same
+    /// as "no children". With a real child present, a buffer the kernel cannot
+    /// write fails with EFAULT, and the count must be an error, not `Ok(0)`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn child_count_failure_is_an_error_not_zero() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let unwritable = 8usize as *mut libc::c_void;
+        let result = list_child_pids_into(std::process::id(), unwritable, 256);
+        let _ = child.kill();
+        let _ = child.wait();
+        let error = result.expect_err("a failed listing is an error");
+        assert_eq!(error.raw_os_error(), Some(libc::EFAULT), "{error}");
     }
 }

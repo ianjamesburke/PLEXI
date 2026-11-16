@@ -5983,15 +5983,23 @@ impl PlexiApp {
                     // running. fg pgid covers foreground jobs; the children
                     // check covers shells whose job-control behavior doesn't
                     // move the fg pgid, plus backgrounded servers.
-                    let running = fg.is_some_and(|fg| fg != shell_pid as i32)
-                        || children.as_ref().is_ok_and(|n| *n > 0);
-                    running.then_some(AgentState::Working)
+                    // A failed child count is unknown, not "nothing running":
+                    // keep the last observation until a count succeeds.
+                    if fg.is_some_and(|fg| fg != shell_pid as i32) {
+                        Some(AgentState::Working)
+                    } else {
+                        match &children {
+                            Ok(n) => (*n > 0).then_some(AgentState::Working),
+                            Err(_) => t.activity.clone(),
+                        }
+                    }
                 };
-                if let Some(started) = t.agent_launch_at {
+                if let Some(launch) = t.agent_launch {
                     if t.observe_agent_launch(fg, &children) {
                         log::info!(
-                            "agent launch: pane {pane_id} shell back at its prompt after {:?}; launch ended",
-                            started.elapsed()
+                            "agent launch: pane {pane_id} shell back at its prompt after {:?} (seen running: {}); launch ended",
+                            launch.started.elapsed(),
+                            launch.seen_running
                         );
                     } else if let Err(error) = &children {
                         log::info!(

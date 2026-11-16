@@ -844,11 +844,10 @@ pub struct TerminalPane {
     pub tail_preview: Option<String>,
     /// Set when the agent explicitly completed via `plexi agent done` or clean ephemeral exit.
     pub agent_completed: bool,
-    /// Set when the host spawned this pane with an agent launch command
-    /// (`spawn_agent_worker_pane`): the launch is running until
-    /// [`TerminalPane::observe_agent_launch`] sees its shell back at a bare
-    /// interactive prompt (stint 1396).
-    pub agent_launch_at: Option<std::time::Instant>,
+    /// The agent launch the host started in this pane, if it has not ended.
+    /// Set only through [`TerminalPane::begin_agent_launch`]; ended only by
+    /// [`TerminalPane::observe_agent_launch`] (stint 1396).
+    pub agent_launch: Option<AgentLaunch>,
     /// When present, this background/sub-context agent pane was restored into lightweight
     /// `[Plexi Standby]` and has not yet launched its agent CLI process.
     pub standby_session: Option<crate::workspace::SavedAgentSession>,
@@ -920,6 +919,20 @@ pub struct TerminalPane {
     #[cfg(test)]
     pub spawn_env: HashMap<String, String>,
 }
+
+/// An agent launch the host started in a terminal pane (stint 1396).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentLaunch {
+    pub started: std::time::Instant,
+    /// The activity tick has seen something run in the pane since it began.
+    pub seen_running: bool,
+}
+
+/// How long a launch that was never seen running may sit at a bare prompt
+/// before it counts as ended: covers a resume command written into a shell
+/// that has not forked it yet. A launch seen running ends on the first bare
+/// prompt; this never expires a running agent.
+pub const AGENT_LAUNCH_START_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Why a terminal pane could not start: its PTY spawn failed (stint 1499).
 #[derive(Debug)]
@@ -1051,7 +1064,7 @@ impl TerminalPane {
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,
-            agent_launch_at: None,
+            agent_launch: None,
             standby_session: None,
             standby_resume_command: None,
             standby_cwd: None,
@@ -1138,22 +1151,45 @@ impl TerminalPane {
         self.standby_session.is_some()
     }
 
+    /// Record that the host just launched or resumed an agent in this pane.
+    /// Every path that starts an agent process calls this: a spawned agent
+    /// pane, a restored pane that auto-resumes, and a Standby wake.
+    pub fn begin_agent_launch(&mut self) {
+        log::info!("agent launch: pane {} launch began", self.id);
+        self.agent_launch = Some(AgentLaunch {
+            started: std::time::Instant::now(),
+            seen_running: false,
+        });
+    }
+
     /// End the agent launch once the shell is back at its own prompt, and only
     /// on positive evidence: the shell holds the PTY foreground, a successful
-    /// child count is zero, and the shell has left its launch command (it is
+    /// child count is zero, the shell has left its launch command (it is
     /// readable, is not still the host's pre-exec fork, and no longer carries
-    /// `-c`). An observation that fails or is missing keeps the launch running,
-    /// so an unknown never reads as an absent agent. Returns true when it ended.
+    /// `-c`), and either the launch was seen running or
+    /// [`AGENT_LAUNCH_START_GRACE`] passed (a resume typed into a waiting
+    /// shell has not forked yet). An observation that fails or is missing
+    /// keeps the launch running, so an unknown never reads as an absent agent.
+    /// Returns true when it ended.
     pub fn observe_agent_launch(
         &mut self,
         fg_pgid: Option<i32>,
         children: &std::io::Result<usize>,
     ) -> bool {
-        if self.agent_launch_at.is_none() || self.exited {
+        let Some(launch) = self.agent_launch.as_mut() else {
+            return false;
+        };
+        if self.exited {
             return false;
         }
         let shell_pid = self.backend.child_pid();
+        if fg_pgid.is_some_and(|fg| fg != shell_pid as i32) || matches!(children, Ok(n) if *n > 0) {
+            launch.seen_running = true;
+        }
         if fg_pgid != Some(shell_pid as i32) || !matches!(children, Ok(0)) {
+            return false;
+        }
+        if !launch.seen_running && launch.started.elapsed() < AGENT_LAUNCH_START_GRACE {
             return false;
         }
         let host_name = std::env::current_exe().ok().and_then(|exe| {
@@ -1167,7 +1203,7 @@ impl TerminalPane {
         if name.is_none() || name == host_name || !left_launch {
             return false;
         }
-        self.agent_launch_at = None;
+        self.agent_launch = None;
         true
     }
 
@@ -1250,6 +1286,7 @@ impl TerminalPane {
             self.backend
                 .process_command(egui_term::BackendCommand::Write(line.into_bytes()));
             self.last_resumed_command = Some(resume_cmd.clone());
+            self.begin_agent_launch();
         }
         log::info!(
             "standby: resumed agent pane {} harness={} session_id={:?}",

@@ -163,7 +163,7 @@ impl PlexiApp {
     /// the panes holding the role (ephemeral workers are task runs, not the
     /// named agent's chat, and never count), a pane runs the agent when it is
     /// in Standby (focused, not woken), its host-recorded launch has not ended
-    /// (`TerminalPane::agent_launch_at`: set at spawn, cleared only when the
+    /// (`TerminalPane::agent_launch`: set at spawn, restore and wake, cleared only when the
     /// 1 Hz activity tick sees its shell back at a bare prompt, so a pane an
     /// earlier open just started counts), or the host's agent detector sees a
     /// known agent in its foreground (`observed_agent`, e.g. a harness
@@ -187,10 +187,7 @@ impl PlexiApp {
                 }
                 let reason = if t.exited {
                     "its process exited"
-                } else if t.is_standby()
-                    || t.agent_launch_at.is_some()
-                    || t.observed_agent.is_some()
-                {
+                } else if t.is_standby() || t.agent_launch.is_some() || t.observed_agent.is_some() {
                     return Some(*id);
                 } else {
                     "its launch ended and no agent is in its foreground"
