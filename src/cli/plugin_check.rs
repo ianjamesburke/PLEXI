@@ -150,6 +150,7 @@ struct PythonAstReport {
     functions: Vec<String>,
     legacy_plugin_classes: Vec<String>,
     warnings: Vec<String>,
+    timer_uses: Vec<(String, usize)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -295,6 +296,7 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
             &manifest.plugin.id,
             &entry_path,
             &manifest.plugin.dependencies,
+            &manifest.plugin.capabilities.capabilities,
         ) {
             Ok(analysis) => {
                 if analysis.has_init && analysis.has_update && analysis.has_view {
@@ -1531,6 +1533,7 @@ fn analyze_python_entry(
     plugin_id: &str,
     entry_path: &Path,
     python_dependencies: &[String],
+    capabilities: &[String],
 ) -> Result<SdkAnalysis, String> {
     let runtime = crate::app::python_env::resolve_python_runtime(
         plugin_id,
@@ -1538,10 +1541,14 @@ fn analyze_python_entry(
         true,
         python_dependencies,
     )?;
-    analyze_python_entry_with(entry_path, Path::new(&runtime.executable))
+    analyze_python_entry_with(entry_path, Path::new(&runtime.executable), capabilities)
 }
 
-fn analyze_python_entry_with(entry_path: &Path, python: &Path) -> Result<SdkAnalysis, String> {
+fn analyze_python_entry_with(
+    entry_path: &Path,
+    python: &Path,
+    capabilities: &[String],
+) -> Result<SdkAnalysis, String> {
     let script = r#"
 import ast
 import json
@@ -1617,7 +1624,32 @@ for node in tree.body:
         if any(base_name(base) == "App" for base in node.bases):
             legacy_plugin_classes.append(node.name)
 
-json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classes, "warnings": warnings}, sys.stdout)
+# Resolve SDK import aliases without executing the app. Calls in handlers count
+# even when the render probe never reaches them; comments and strings do not.
+imports = {}
+for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom) and node.module:
+        for alias in node.names:
+            imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    elif isinstance(node, ast.Import):
+        for alias in node.names:
+            imports[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+
+def qualified_name(node):
+    if isinstance(node, ast.Name):
+        return imports.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        return f"{qualified_name(node.value)}.{node.attr}"
+    return ""
+
+timer_uses = []
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        name = qualified_name(node.func)
+        if name in ("plexi_sdk.effects.SetTimer", "plexi_sdk.effects.CancelTimer"):
+            timer_uses.append((name.rsplit(".", 1)[1], node.lineno))
+
+json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classes, "warnings": warnings, "timer_uses": timer_uses}, sys.stdout)
 "#;
 
     let output = std::process::Command::new(python)
@@ -1653,6 +1685,17 @@ json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classe
             analysis.errors.push(format!(
                 "SDK — missing module-level {required}(); SDK v3 plugins define init(size, args), update(event), and view()"
             ));
+        }
+    }
+
+    if !capabilities.iter().any(|capability| capability == "timer") {
+        for (effect, line) in report.timer_uses {
+            let error = format!(
+                "SDK — {}:{line}: {effect} requires the missing timer capability; declare capabilities = [\"timer\"] under [plugin.capabilities]",
+                entry_path.display()
+            );
+            log::info!("plugin_check: {error}");
+            analysis.errors.push(error);
         }
     }
 
@@ -1710,6 +1753,84 @@ mod plugin_check_tests {
     }
 
     #[test]
+    fn sdk_analysis_rejects_timer_effects_without_capability() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        for effect in ["SetTimer(1, 100)", "CancelTimer(1)"] {
+            fs::write(
+                &entry,
+                format!(
+                    "from plexi_sdk.effects import SetTimer, CancelTimer\ndef init(size, args):\n    return []\ndef update(event):\n    return [{effect}]\ndef view():\n    return None\n"
+                ),
+            )
+            .unwrap();
+            let analysis =
+                super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                    .expect("analysis should run");
+            assert!(
+                analysis.errors.iter().any(|error| {
+                    error.contains(&entry.display().to_string())
+                        && error.contains("timer")
+                        && error.contains(effect.split('(').next().unwrap())
+                }),
+                "{effect} must name the source and missing timer capability: {:?}",
+                analysis.errors
+            );
+            let declared = super::analyze_python_entry_with(
+                &entry,
+                std::path::Path::new("python3"),
+                &["timer".to_string()],
+            )
+            .expect("analysis should run with declared capability");
+            assert!(declared.errors.is_empty(), "{:?}", declared.errors);
+        }
+    }
+
+    #[test]
+    fn sdk_analysis_resolves_timer_import_aliases() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        for (import, call) in [
+            ("from plexi_sdk import effects as fx", "fx.SetTimer(1, 100)"),
+            ("import plexi_sdk.effects as fx", "fx.CancelTimer(1)"),
+            (
+                "import plexi_sdk.effects",
+                "plexi_sdk.effects.SetTimer(1, 100)",
+            ),
+            (
+                "from plexi_sdk.effects import CancelTimer as Stop",
+                "Stop(1)",
+            ),
+        ] {
+            fs::write(
+                &entry,
+                format!("{import}\ndef init(size, args): return []\ndef update(event): return [{call}]\ndef view(): return None\n"),
+            )
+            .unwrap();
+            let analysis =
+                super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                    .expect("analysis should run");
+            assert_eq!(analysis.errors.len(), 1, "{call}: {:?}", analysis.errors);
+            assert!(analysis.errors[0].contains("timer capability"));
+        }
+    }
+
+    #[test]
+    fn sdk_analysis_ignores_timer_strings_comments_and_unrelated_calls() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            "from another_library import SetTimer\n# effects.CancelTimer(1)\ndef init(size, args): return []\ndef update(event): return [SetTimer(1, 100)]\ndef view(): return 'effects.SetTimer(1, 100)'\n",
+        )
+        .unwrap();
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
+        assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+    }
+
+    #[test]
     fn sdk_analysis_accepts_module_level_v3_plugin() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
@@ -1728,8 +1849,9 @@ def view():
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
-            .expect("analysis should run");
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     }
 
@@ -1757,8 +1879,9 @@ def view():
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
-            .expect("analysis should run");
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
         assert!(
             analysis
                 .legacy_plugin_classes
@@ -1785,8 +1908,9 @@ def view():
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
-            .expect("analysis should run");
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
         assert!(
             analysis
                 .errors
@@ -1816,8 +1940,9 @@ def view():
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
-            .expect("analysis should run");
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
         assert!(
             analysis
                 .warnings
@@ -1855,8 +1980,9 @@ def view():
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
-            .expect("analysis should run");
+        let analysis =
+            super::analyze_python_entry_with(&entry, std::path::Path::new("python3"), &[])
+                .expect("analysis should run");
         assert!(analysis.warnings.is_empty(), "{:?}", analysis.warnings);
     }
 
