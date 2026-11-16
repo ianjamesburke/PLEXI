@@ -17,7 +17,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "54428838fc61d9aec9b5de4cb8ba7bb03edcbeac58c07699fc289ab54f4e5d7f"
+      "checksum": "36781ab96c549c4ebbeb3be41dc1ac04b146651912460d31d7881288d321b1ff"
     },
     {
       "id": "chess",
@@ -35,7 +35,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "f8b80965c10e4c02ba216051dd23e161c7c9802a478b3834e32132c453e7c876"
+      "checksum": "90d6b1a4809d8d65785a085a800a8ce49225ef63565012238c943f4a12fd1cba"
     },
     {
       "id": "logs",
@@ -56,7 +56,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "a21b15ef6e0b8d1262b5fa2ad71f20abe7cb6ed3a0b36b8394c3a734f7534816"
+      "checksum": "04f1560a7e458bb98fe6c3a0055a57b7ef90058520ebe20170fa299ae1ff7f34"
     },
     {
       "id": "permissions",
@@ -64,7 +64,9 @@
       "version": "0.1.0",
       "description": "Review and change live tool permission decisions",
       "publisher": "plexi",
-      "capabilities": [],
+      "capabilities": [
+        "timer"
+      ],
       "tags": [
         "core",
         "free",
@@ -74,7 +76,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "196ddbc8b19deec833cf494aaf40bd8b9ee1c8e37db9edb349f8a384dfdead11"
+      "checksum": "4c820fdd65fc319e1e3693f566b26d9f27b23559a677f9d636ed0a984cb615e0"
     },
     {
       "id": "todo",
@@ -92,7 +94,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "e2c49217ec2a32d49a56d7a26a734f3bb856ad6b2d444178a4e6726e1e2753e5"
+      "checksum": "f31bdeb9c45d0c68f39ba1b0ec48555f9a34acc6a321bfdc121c4321fd0f59db"
     },
     {
       "id": "wikipedia",
@@ -112,7 +114,7 @@
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "20b7d273148aad0444a26231e6c56b81fd19aa23112597914a22753780e79a37"
+      "checksum": "aa2c457e2471f713485533390c2c2a97027eea39404a6c516cdc34a70111abad"
     }
   ]
 }
