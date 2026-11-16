@@ -2272,6 +2272,11 @@ impl LiveWasmPane {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn timer_deadline_for_test(&self) -> Option<u64> {
+        self.inner.next_deadline_ms()
+    }
+
     pub(crate) fn needs_background_tick(&self) -> bool {
         self.inner.has_pending_inputs()
     }
