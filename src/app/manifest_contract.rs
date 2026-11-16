@@ -198,6 +198,57 @@ impl Contributions {
     }
 }
 
+// Diagnostics only: serde and TryFrom remain the admission contract. Inspect
+// the required fields before the Value is consumed, then use the hint only if
+// admission fails. Optional/defaulted fields must not become requirements here.
+fn required_field_hint(value: &toml::Value) -> Option<(&'static str, String)> {
+    for field in [
+        "schema_version",
+        "plugin",
+        "plugin.id",
+        "plugin.name",
+        "runtime",
+        "runtime.kind",
+        "runtime.entry",
+        "contributes",
+    ] {
+        let supplied = field
+            .split('.')
+            .try_fold(value, |value, key| value.get(key));
+        let (valid, expected) = match field {
+            "schema_version" => (
+                supplied.and_then(toml::Value::as_integer)
+                    == Some(i64::from(super::MANIFEST_SCHEMA_VERSION)),
+                format!("set schema_version = {}", super::MANIFEST_SCHEMA_VERSION),
+            ),
+            "plugin" | "runtime" | "contributes" => (
+                supplied.is_some_and(toml::Value::is_table),
+                format!("add a [{field}] table"),
+            ),
+            "runtime.kind" => (
+                matches!(supplied.and_then(toml::Value::as_str), Some("python" | "wasm")),
+                "set runtime.kind to \"python\" or \"wasm\"".into(),
+            ),
+            "runtime.entry" => (
+                supplied.and_then(toml::Value::as_str).is_some_and(|entry| !entry.is_empty()),
+                "set runtime.entry to a string naming the plugin entry file (for example, \"main.py\" or \"main.wasm\")".into(),
+            ),
+            _ => (
+                supplied.is_some_and(toml::Value::is_str),
+                format!("set {field} to a string{}", if field == "plugin.id" {
+                    " using A-Z a-z 0-9 . _ - (no leading '.', no '..')"
+                } else {
+                    " containing the plugin display name"
+                }),
+            ),
+        };
+        if !valid {
+            return Some((field, expected));
+        }
+    }
+    None
+}
+
 impl PluginManifest {
     /// The single manifest parse path. Typed contract errors survive; a legacy
     /// `[app]` table is never accepted and the error only says what to rename.
@@ -207,7 +258,7 @@ impl PluginManifest {
                 "<unknown>",
                 "manifest",
                 ManifestErrorKind::InvalidField(crate::host::guest_text::escape_untrusted(
-                    &e.to_string(),
+                    &format!("manifest.toml: {e}"),
                     true,
                 )),
             )
@@ -222,6 +273,7 @@ impl PluginManifest {
                 .unwrap_or("<unknown>"),
         );
         let legacy = value.get("app").is_some();
+        let hint = required_field_hint(&value);
         // Name the schema the file declares; a schema 2 file can still carry
         // a leftover `[app]` table.
         let declared = match value.get("schema_version") {
@@ -232,18 +284,35 @@ impl PluginManifest {
             // toml's message ends in a newline; keep the error one line.
             let e = e.to_string();
             let e = e.trim_end();
-            let message = if legacy {
-                format!(
-                    "`[app]` manifests are no longer accepted ({declared}); rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
-                )
+            let (field, message) = if legacy {
+                ("manifest", format!(
+                    "manifest.toml: `[app]` manifests are no longer accepted ({declared}); rename `[app]` to `[plugin]`, move the entry file to `[runtime]`, declare views under `[[contributes.views]]`, and set schema_version = 2 (parse error: {e})"
+                ))
+            } else if let Some((field, expected)) = &hint {
+                (*field, format!("manifest.toml: {e}; {expected}"))
             } else {
-                e.to_owned()
+                ("manifest", format!("manifest.toml: {e}"))
             };
             // toml quotes the manifest's own text, which the plugin wrote.
             let message = crate::host::guest_text::escape_untrusted(&message, true);
-            ManifestError::reject(&plugin, "manifest", ManifestErrorKind::InvalidField(message))
+            ManifestError::reject(&plugin, field, ManifestErrorKind::InvalidField(message))
         })?;
-        Self::try_from(wire)
+        Self::try_from(wire).map_err(|error| {
+            if let ManifestErrorKind::InvalidField(message) = &error.kind {
+                let repair = hint
+                    .as_ref()
+                    .filter(|(field, _)| *field == error.field)
+                    .map(|(_, expected)| format!("; {expected}"))
+                    .unwrap_or_default();
+                ManifestError::reject(
+                    &error.plugin,
+                    &error.field,
+                    ManifestErrorKind::InvalidField(format!("manifest.toml: {message}{repair}")),
+                )
+            } else {
+                error
+            }
+        })
     }
 
     /// Hold this lock through installation. Directory and git/pack installers
@@ -311,6 +380,80 @@ mod tests {
     use crate::cli::plugin_check::plugin_check_cli;
 
     const GOOD: &str = include_str!("../../tests/fixtures/schema2/good.toml");
+
+    #[test]
+    fn missing_schema_version_names_value_and_file() {
+        let raw = GOOD.replace("schema_version = 2\n", "");
+        let error = PluginManifest::parse(&raw).unwrap_err().to_string();
+        assert!(error.contains("schema_version = 2"), "{error}");
+        assert!(error.contains("manifest.toml"), "{error}");
+    }
+
+    #[test]
+    fn required_manifest_fields_name_expected_values() {
+        for (section, field, expected) in [
+            ("", "plugin", "[plugin]"),
+            ("", "runtime", "[runtime]"),
+            ("", "contributes", "[contributes]"),
+            ("plugin", "id", "a string"),
+            ("plugin", "name", "a string"),
+            ("runtime", "kind", "\"python\" or \"wasm\""),
+            ("runtime", "entry", "a string"),
+        ] {
+            for wrong_type in [false, true] {
+                let mut value: toml::Value = toml::from_str(GOOD).unwrap();
+                let table = if section.is_empty() {
+                    value.as_table_mut().unwrap()
+                } else {
+                    value[section].as_table_mut().unwrap()
+                };
+                if wrong_type {
+                    table.insert(field.into(), toml::Value::Boolean(false));
+                } else {
+                    table.remove(field);
+                }
+                let raw = toml::to_string(&value).unwrap();
+                let error = PluginManifest::parse(&raw).unwrap_err();
+                let path = if section.is_empty() {
+                    field.to_owned()
+                } else {
+                    format!("{section}.{field}")
+                };
+                assert_eq!(error.field, path, "{error}");
+                let message = error.to_string();
+                assert!(message.contains(expected), "{message}");
+                assert!(message.contains("manifest.toml"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn wrong_schema_version_names_exact_assignment() {
+        for version in ["1", "3", "-1", "4294967296", "\"2\"", "false", "2.0"] {
+            let raw = GOOD.replace("schema_version = 2", &format!("schema_version = {version}"));
+            let error = PluginManifest::parse(&raw).unwrap_err();
+            assert_eq!(error.field, "schema_version", "{error}");
+            let message = error.to_string();
+            assert!(message.contains("schema_version = 2"), "{message}");
+            assert!(message.contains("manifest.toml"), "{message}");
+        }
+    }
+
+    #[test]
+    fn wrong_runtime_kind_names_accepted_set() {
+        let error = PluginManifest::parse(&GOOD.replace("kind = \"wasm\"", "kind = \"native\""))
+            .unwrap_err();
+        assert_eq!(error.field, "runtime.kind", "{error}");
+        let message = error.to_string();
+        assert!(message.contains("\"python\" or \"wasm\""), "{message}");
+        assert!(message.contains("manifest.toml"), "{message}");
+    }
+
+    #[test]
+    fn missing_schema_version_reaches_plugin_check_output() {
+        let dir = stage(&GOOD.replace("schema_version = 2\n", ""));
+        assert_eq!(plugin_check_cli(dir.path().to_str().unwrap(), &[], None), 1);
+    }
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(
