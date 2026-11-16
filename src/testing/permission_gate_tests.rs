@@ -100,6 +100,7 @@ fn post_mcp(port: u16, token: &str, body: &[u8]) -> serde_json::Value {
         .unwrap_or_else(|error| panic!("mcp reply was not JSON ({error}): {text}"))
 }
 
+#[track_caller]
 fn pump_until(h: &mut HostHarness, mut done: impl FnMut(&mut HostHarness) -> bool) {
     let started = Instant::now();
     while !done(h) {
@@ -2074,6 +2075,7 @@ fn permissions_button(h: &HostHarness, pane_id: u64, label: &str) -> Option<Stri
 
 /// `plexi pane click <pane> --node <id>`: the route that skips
 /// `refuse_synthetic_approval` and reaches the plugin's own button handler.
+#[track_caller]
 fn node_click_permissions_button(h: &mut HostHarness, pane_id: u64, label: &str) {
     pump_until(h, |h| permissions_button(h, pane_id, label).is_some());
     let node = permissions_button(h, pane_id, label).expect("button node");
@@ -2135,7 +2137,12 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     let mut h = HostHarness::new();
     let workspace = h.workspace_root();
     let mon = monitor();
+    // Keep probe rows ahead of the app's automatic timer grant without
+    // depending on wall-clock seconds or grant-id ordering.
+    let now = mon.now_secs();
+    mon.set_now_for_test(now - 1);
     let pending = admit_probe(&mon, &workspace, "call-pending", "probe.pending");
+    mon.set_now_for_test(now);
 
     let root = tempfile::tempdir().unwrap();
     let dir = crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
@@ -2153,6 +2160,25 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         .expect("Permissions pane");
     h.wait_for_first_render(pane);
 
+    // Launching the app legitimately auto-grants its declared timer capability.
+    // Synthetic clicks must preserve those grants as well as the probe asks.
+    let launch_grants: Vec<_> = entry_kinds(&mon)
+        .into_iter()
+        .filter(|(_, kind)| kind != "pending")
+        .collect();
+    assert_eq!(launch_grants.len(), 1, "only the timer launch grant");
+    assert_eq!(launch_grants[0].1, "allow");
+    let timer = mon
+        .list_entries()
+        .into_iter()
+        .find(|row| row.id == launch_grants[0].0)
+        .unwrap();
+    assert_eq!(
+        (timer.actor_id.as_str(), timer.tool.as_str()),
+        ("permissions", "timer")
+    );
+    let before_allow = entry_kinds(&mon);
+
     // (a) Allow on a pending ask: a Needs you item, no grant, ask still pending.
     node_click_permissions_button(&mut h, pane, "Open");
     node_click_permissions_button(&mut h, pane, "Allow");
@@ -2161,30 +2187,69 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         mon.show_pending(&pending).is_some(),
         "the ask is still pending"
     );
-    assert!(!entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"));
+    assert_eq!(
+        entry_kinds(&mon),
+        before_allow,
+        "Allow must change no grant"
+    );
 
     // (b) What a synthetic click can still do: narrow. Revoke denies the ask.
     node_click_permissions_button(&mut h, pane, "Revoke");
     pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
-    assert!(!entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"));
+    assert_eq!(
+        entry_kinds(&mon),
+        launch_grants,
+        "Revoke removes only the ask"
+    );
     // The ask is gone, so the Allow item that named it is retired (stint 1383).
     assert!(permission_changes(&mon).is_empty());
 
     // (a) Ask again and Allow on a stored denial: Needs you items only.
+    mon.set_now_for_test(now - 1);
     let to_deny = admit_probe(&mon, &workspace, "call-deny", "probe.denied");
     mon.approve_pending(&to_deny, ApprovalChoice::DenyAlways)
         .unwrap();
+    mon.set_now_for_test(now);
     let deny = entry_kinds(&mon)
         .into_iter()
         .find(|(_, kind)| kind == "deny")
         .expect("stored denial")
         .0;
+    // Stored decisions stamp the wall clock rather than the monitor's test
+    // clock. Give this fixture denial the same deterministic row ordering.
+    mon.store()
+        .records_mut()
+        .iter_mut()
+        .find(|record| record.grant_id == deny)
+        .unwrap()
+        .created_at = now - 1;
+    // Refresh the list before opening the denial; the timer grant remains.
+    node_click_permissions_button(&mut h, pane, "Back");
+    node_click_permissions_button(&mut h, pane, "Reload");
+    pump_until(&mut h, |h| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane)
+            .and_then(crate::host::pane::Pane::as_view)
+            .is_some_and(|view| {
+                view.semantic_state()
+                    .nodes
+                    .iter()
+                    .any(|node| node.label.as_deref() == Some("probe.denied  deny"))
+            })
+    });
+    node_click_permissions_button(&mut h, pane, "Open");
     node_click_permissions_button(&mut h, pane, "Ask again");
     pump_until(&mut h, |_| permission_changes(&mon).len() == 1);
     node_click_permissions_button(&mut h, pane, "Allow");
     pump_until(&mut h, |_| permission_changes(&mon).len() == 2);
     let unchanged = entry_kinds(&mon);
-    assert_eq!(unchanged, vec![(deny.clone(), "deny".to_string())]);
+    let mut expected = launch_grants.clone();
+    expected.push((deny.clone(), "deny".to_string()));
+    expected.sort();
+    let mut actual = unchanged.clone();
+    actual.sort();
+    assert_eq!(actual, expected);
     let allow_item = permission_changes(&mon)
         .into_iter()
         .find(|id| {
@@ -2353,7 +2418,9 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         !mon.list_needs_you().iter().any(|row| row.id == allow_item)
     });
     assert!(
-        entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"),
+        entry_kinds(&mon)
+            .iter()
+            .any(|(id, kind)| id != &launch_grants[0].0 && kind == "allow"),
         "the desktop click applied the allow"
     );
 }
