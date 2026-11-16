@@ -305,6 +305,9 @@ impl PlexiApp {
         &mut self,
         request: &crate::protocol::HostRequest,
     ) -> serde_json::Value {
+        if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentSpawn") {
+            return serde_json::json!({ "ok": false, "error": error });
+        }
         let crate::protocol::HostRequest::AgentSpawn {
             role,
             harness,
@@ -5693,6 +5696,13 @@ impl PlexiApp {
                 subcontext,
                 response_file,
             } => {
+                if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentReopen") {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({ "ok": false, "error": error }),
+                    );
+                    return;
+                }
                 log::info!("pane_ipc: kind=agent_reopen query={query} subcontext={subcontext:?}");
                 let history = crate::workspace::load_agent_history();
                 let matched = history.into_iter().rev().find(|r| {

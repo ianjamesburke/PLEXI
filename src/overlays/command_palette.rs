@@ -601,11 +601,14 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             window_id,
             pane_id,
             ..
-        } => Some(PaletteAction::Focus(PaletteFocusTarget {
-            context_id: *context_id,
-            window_id: *window_id,
-            pane_id: Some(*pane_id),
-        })),
+        } => {
+            crate::app::agent_open::admit_agent_mesh_route("palette agent focus").ok()?;
+            Some(PaletteAction::Focus(PaletteFocusTarget {
+                context_id: *context_id,
+                window_id: *window_id,
+                pane_id: Some(*pane_id),
+            }))
+        }
         PaletteEntry::View { id, .. } => Some(PaletteAction::OpenView(id.clone())),
         PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
         PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
@@ -2461,6 +2464,20 @@ impl PlexiApp {
             }
         };
 
+        if let Some(Commands::Agent { cmd }) = &cli.command {
+            let route = match cmd {
+                crate::cli::args::AgentCmd::Start { .. } => Some("palette agent start"),
+                crate::cli::args::AgentCmd::Spawn { .. } => Some("palette agent spawn"),
+                crate::cli::args::AgentCmd::Open { .. } => Some("palette agent open"),
+                _ => None,
+            };
+            if let Some(route) = route {
+                if crate::app::agent_open::admit_agent_mesh_route(route).is_err() {
+                    return 1;
+                }
+            }
+        }
+
         static HOST_STEP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let next_resp_path = || {
             let seq = HOST_STEP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3825,7 +3842,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_mesh_gate_palette_agent_selection() {
+        let entry = PaletteEntry::Agent {
+            context_id: 7,
+            window_id: 7,
+            pane_id: 42,
+            agent_name: "reviewer".into(),
+            secondary: String::new(),
+            state: crate::protocol::AgentState::Idle,
+            focused: false,
+            search_text: "reviewer".into(),
+        };
+        for enabled in [false, true] {
+            let _experiments = crate::release::set_test_experiments(if enabled {
+                &[crate::release::ReleaseFeature::AgentMesh]
+            } else {
+                &[]
+            });
+            assert_eq!(action_for_palette_entry(&entry).is_some(), enabled);
+        }
+    }
+
+    #[test]
     fn palette_mouse_and_enter_resolve_the_same_action() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
         let entry = PaletteEntry::Agent {
             context_id: 7,
             window_id: 7,

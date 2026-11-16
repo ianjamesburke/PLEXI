@@ -108,7 +108,7 @@ impl ReleaseFeature {
     /// takes effect after `plexi host restart`. Pure CLI gates re-read the
     /// config on every invocation.
     pub fn requires_restart(self) -> bool {
-        !matches!(self, Self::AiSetup | Self::Ledger | Self::AgentMesh)
+        !matches!(self, Self::AiSetup | Self::Ledger)
     }
 
     /// The clap paths this experiment owns. Empty for runtime-only surfaces
@@ -161,5 +161,13 @@ impl ReleaseFeature {
             | Self::MediaIo
             | Self::Accessibility => &[],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_mesh_gate_requires_restart() {
+        assert!(super::ReleaseFeature::AgentMesh.requires_restart());
     }
 }
