@@ -4854,6 +4854,8 @@ mod agent_tests {
 
     #[test]
     fn workspace_definition_flows_through_spawn_fleet_next_and_runs() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
         let mut h = crate::testing::HostHarness::new();
         h.add_focused_terminal();
         let root = h.workspace_root();
