@@ -1233,7 +1233,6 @@ pub(crate) fn workspace_walk_stops() -> Result<Vec<PathBuf>, String> {
 /// Optional discovery APIs retain their shape, but surface lookup errors and
 /// return no workspace. They must never retry an unbounded walk.
 fn report_workspace_walk_error(error: String) {
-    log::error!("{error}");
     eprintln!("error: {error}");
 }
 
@@ -1937,6 +1936,27 @@ mod tests {
     fn missing_home_lookups_find_no_workspace() {
         if std::env::var_os("PLEXI_1345_REGISTRY_CHILD").is_some() {
             assert!(std::env::var_os("HOME").is_none());
+            // The child owns its logger, so concurrent tests cannot affect this count.
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            struct WalkFailureLogs(AtomicUsize);
+            impl log::Log for WalkFailureLogs {
+                fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                    true
+                }
+                fn log(&self, record: &log::Record<'_>) {
+                    if record
+                        .args()
+                        .to_string()
+                        .starts_with("workspace walk refused:")
+                    {
+                        self.0.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                fn flush(&self) {}
+            }
+            static LOGS: WalkFailureLogs = WalkFailureLogs(AtomicUsize::new(0));
+            log::set_logger(&LOGS).unwrap();
+            log::set_max_level(log::LevelFilter::Info);
             let _failed = fail_test_home_lookups();
             let cwd = std::env::current_dir().unwrap();
             let error = try_resolve_workspace_root_with_channel(&cwd, &registry_config_dir())
@@ -1951,6 +1971,7 @@ mod tests {
             assert!(resolve_agent_lookup_workspace_root(&cwd).is_none());
             assert!(resolve_agent_create_workspace_root(&cwd).is_none());
             assert!(find_dev_pack_plugin("anything", &cwd).is_none());
+            assert_eq!(LOGS.0.load(Ordering::Relaxed), 5, "log each failed walk once");
             return;
         }
         let tmp = tempfile::tempdir().unwrap();

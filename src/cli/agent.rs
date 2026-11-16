@@ -5329,16 +5329,55 @@ mod agent_tests {
 
     #[test]
     fn missing_home_lookups_refuse_agent_resolution() {
+        const CHILD: &str = "PLEXI_1345_AGENT_CHILD";
+        if let Some(command) = std::env::var_os(CHILD) {
+            assert!(std::env::var_os("HOME").is_none());
+            assert!(std::env::var_os("PLEXI_SOCKET").is_none());
+            assert!(std::env::var_os("PLEXI_CHANNEL").is_none());
+            let tmp = tempfile::tempdir().unwrap();
+            let _profile = crate::config::set_test_profile_dir(tmp.path().join("profile"));
+            let _failed = crate::app::registry::fail_test_home_lookups();
+            let cwd = tmp.path().to_str().unwrap();
+            let code = match command.to_str().unwrap() {
+                "show" => super::agent_show_cli("default", Some(cwd), false),
+                "start" => super::agent_start_cli("default", Some(cwd), None, false),
+                "spawn" => {
+                    super::agent_spawn_cli("default", "task", None, false, None, Some(cwd), false)
+                }
+                other => panic!("unexpected agent command: {other}"),
+            };
+            assert_eq!(code, 1);
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(tmp.path().join("profile"));
-        let _failed = crate::app::registry::fail_test_home_lookups();
-        let cwd = tmp.path().to_str().unwrap();
-        assert_eq!(super::agent_show_cli("default", Some(cwd), false), 1);
-        assert_eq!(super::agent_start_cli("default", Some(cwd), None, false), 1);
-        assert_eq!(
-            super::agent_spawn_cli("default", "task", None, false, None, Some(cwd), false),
-            1
-        );
+        for command in ["show", "start", "spawn"] {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cli::agent::agent_tests::missing_home_lookups_refuse_agent_resolution",
+                    "--nocapture",
+                ])
+                .env(CHILD, command)
+                .env_remove("HOME")
+                .env_remove("PLEXI_SOCKET")
+                .env_remove("PLEXI_CHANNEL")
+                .current_dir(tmp.path())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let output = crate::app::registry::wait_for_home_lookup_test(child);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "{command}: {}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout),
+            );
+            assert!(stderr.contains("HOME lookup"), "{command}: {stderr}");
+            assert!(stderr.contains("login-home"), "{command}: {stderr}");
+            assert!(stderr.contains("set HOME"), "{command}: {stderr}");
+        }
     }
 
     #[test]
