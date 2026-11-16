@@ -20,7 +20,7 @@ use crate::workspace::AgentHistoryRecord;
 pub(crate) enum AgentOpenOutcome {
     /// An open pane holds the agent's chat; it now has focus.
     Focused { pane_id: PaneId },
-    /// The agent's last chat was resumed in its existing pane or a new pane.
+    /// The agent's last chat was resumed in a new pane.
     Resumed { pane_id: PaneId, session_id: String },
     /// No resumable chat: a new chat was started.
     Started { pane_id: PaneId },
@@ -125,38 +125,9 @@ impl PlexiApp {
             .ok_or_else(|| format!("agent open: start payload for '{name}' has no harness"))?
             .to_string();
 
-        if let Some(pane_id) = self.exited_named_agent_chat(name, &harness, cwd) {
-            let t = self
-                .windows
-                .iter_mut()
-                .find_map(|win| win.panes.get_mut(&pane_id))
-                .and_then(crate::host::pane::Pane::as_terminal_mut)
-                .ok_or_else(|| format!("agent open: chat pane {pane_id} disappeared"))?;
-            let session = t
-                .build_saved_agent_session()
-                .ok_or_else(|| format!("agent open: pane {pane_id} has no agent session"))?;
-            let session_id = session
-                .session_id
-                .clone()
-                .ok_or_else(|| format!("agent open: pane {pane_id} has no chat id"))?;
-            // Reuse Standby's typed-resume dispatch and launch tracking. The
-            // selected pane still owns a live shell, so no new pane is needed.
-            t.standby_session = Some(session);
-            t.resume_from_standby()
-                .ok_or_else(|| format!("agent open: pane {pane_id} could not resume '{name}'"))?;
-            if !self.pane_navigate(pane_id) {
-                return Err(format!(
-                    "agent open: pane {pane_id} holding '{name}' could not be focused"
-                ));
-            }
-            log::info!("agent_open: name={name} outcome=resumed pane={pane_id} session_id={session_id} exited chat still open");
-            return Ok(AgentOpenOutcome::Resumed {
-                pane_id,
-                session_id,
-            });
-        }
-
-        if let Some(record) = self.last_named_agent_chat(name, &harness, cwd) {
+        let open_chat = self.exited_named_agent_chat(name, &harness, cwd);
+        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
+        {
             let session_id = record.session_id.clone().unwrap_or_default();
             let reply = self.reopen_agent_record(&record, None, parent);
             let pane_id = spawned_pane_id(&reply)?;
@@ -255,9 +226,15 @@ impl PlexiApp {
 
     /// After live/standby resolution, prefer the newest open chat to closed
     /// history. Pane ids are allocated in creation order. Only a live shell with
-    /// a saved, resumable session is eligible for typed resume in place. No
-    /// history record is created until the pane closes.
-    fn exited_named_agent_chat(&self, name: &str, harness: &str, cwd: &Path) -> Option<PaneId> {
+    /// a saved, resumable session is eligible. Build a transient record for the
+    /// existing reopen path; never type into or mutate the leftover shell.
+    /// History is persisted only when the pane closes.
+    fn exited_named_agent_chat(
+        &self,
+        name: &str,
+        harness: &str,
+        cwd: &Path,
+    ) -> Option<AgentHistoryRecord> {
         let workspace = agent_chat_workspace(cwd);
         let adapter = crate::cli::agent::harness_adapter(harness);
         let mut candidates: Vec<_> = self
@@ -266,19 +243,19 @@ impl PlexiApp {
             .flat_map(|win| {
                 win.panes.iter().filter_map(move |(id, pane)| {
                     let t = pane.as_terminal()?;
-                    (t.agent_role.as_deref() == Some(name)).then_some((*id, t, &win.path))
+                    (t.agent_role.as_deref() == Some(name)).then_some((*id, t, win))
                 })
             })
             .collect();
         candidates.sort_unstable_by_key(|(id, _, _)| std::cmp::Reverse(*id));
         let mut selected = None;
-        for (id, t, win_path) in candidates {
+        for (id, t, win) in candidates {
             let session_id = t.agent_session_id.as_deref().unwrap_or_default();
             let chat_cwd = t
                 .standby_cwd
                 .as_deref()
                 .or(t.initial_cwd.as_deref())
-                .unwrap_or(win_path);
+                .unwrap_or(&win.path);
             let reason = if t.exited {
                 Some("its PTY process exited")
             } else if t.ephemeral {
@@ -301,13 +278,21 @@ impl PlexiApp {
                     "agent_open: name={name} skipped open pane={id} session_id={session_id}: {reason}"
                 );
             } else {
-                selected = Some(id);
+                let context_name = self
+                    .router
+                    .iter()
+                    .find(|c| c.context_id == win.context_id)
+                    .map(|c| c.name.displayed().to_string())
+                    .unwrap_or_default();
+                selected =
+                    t.build_history_record(win.context_id, &context_name, chat_cwd.to_path_buf());
                 log::info!(
                     "agent_open: name={name} selected open pane={id} session_id={session_id} for resume"
                 );
             }
         }
-        if let Some(pane_id) = selected {
+        if let Some(record) = &selected {
+            let pane_id = record.pane_id;
             for record in self
                 .fleet_history
                 .borrow()
