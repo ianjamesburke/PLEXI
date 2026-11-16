@@ -1970,6 +1970,7 @@ impl PlexiApp {
         pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
+        pane.agent_launch_at = Some(std::time::Instant::now());
         let lookup_root =
             crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
         pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(

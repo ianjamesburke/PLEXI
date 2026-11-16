@@ -162,16 +162,15 @@ impl PlexiApp {
     /// Owner call 1: which pane counts as running `name`. Any context. Among
     /// the panes holding the role (ephemeral workers are task runs, not the
     /// named agent's chat, and never count), a pane runs the agent when it is
-    /// in Standby (focused, not woken) or its processes say so
-    /// ([`crate::host::pane_liveness::agent_process_liveness`]): its launch
-    /// command is still running, which also covers a pane an earlier open
-    /// started that has not yet reached its harness, or a known agent process
-    /// runs below its shell. Hook reports never decide it. Several match: the
-    /// most recently focused (the current focus first), else the newest pane.
-    /// Probes processes: call from `App::logic` only.
+    /// in Standby (focused, not woken), its host-recorded launch has not ended
+    /// (`TerminalPane::agent_launch_at`: set at spawn, cleared only when the
+    /// 1 Hz activity tick sees its shell back at a bare prompt, so a pane an
+    /// earlier open just started counts), or the host's agent detector sees a
+    /// known agent in its foreground (`observed_agent`, e.g. a harness
+    /// relaunched by hand). Reads cached host state only: no hook report
+    /// decides it and nothing is probed here. Several match: the most recently
+    /// focused (the current focus first), else the newest pane.
     pub(crate) fn running_named_agent_pane(&self, name: &str) -> Option<PaneId> {
-        use crate::host::pane_liveness::{agent_process_liveness, AgentProcessLiveness};
-        let shell = crate::host::shell::detect_shell();
         let candidates: Vec<PaneId> = self
             .windows
             .iter()
@@ -186,23 +185,18 @@ impl PlexiApp {
                 if role != name || t.ephemeral {
                     return None;
                 }
-                if t.is_standby() {
+                let reason = if t.exited {
+                    "its process exited"
+                } else if t.is_standby()
+                    || t.agent_launch_at.is_some()
+                    || t.observed_agent.is_some()
+                {
                     return Some(*id);
-                }
-                let excluded = |reason: &str| {
-                    log::info!("agent_open: name={name} pane={id} not running: {reason}");
-                    None
+                } else {
+                    "its launch ended and no agent is in its foreground"
                 };
-                if t.exited {
-                    return excluded("its process exited");
-                }
-                match agent_process_liveness(t.backend.child_pid(), &shell) {
-                    AgentProcessLiveness::Launching | AgentProcessLiveness::Agent(_) => Some(*id),
-                    AgentProcessLiveness::Dead => excluded("its process is gone"),
-                    AgentProcessLiveness::NoAgent => {
-                        excluded("no agent process runs below its shell")
-                    }
-                }
+                log::info!("agent_open: name={name} pane={id} not running: {reason}");
+                None
             })
             .collect();
         let recency = self.panes_by_focus_recency();

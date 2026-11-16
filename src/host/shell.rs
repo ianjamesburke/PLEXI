@@ -1001,33 +1001,41 @@ pub(crate) fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
     None
 }
 
-/// True when `pid` has at least one live child process. Used as one of the
-/// two terminal-activity signals (alongside the PTY foreground pgid): a
-/// shell with children is running something — a script, a server, a REPL.
-pub fn pid_has_children(pid: u32) -> bool {
+/// Number of live children of `pid`, or why they could not be counted. An
+/// error never means "no children": callers that act on absence must treat it
+/// as unknown. One of the two terminal-activity signals (alongside the PTY
+/// foreground pgid): a shell with children is running something.
+///
+/// macOS uses `proc_listpids(PROC_PPID_ONLY)` (`<sys/proc_info.h>`), whose
+/// `-1` failure is distinct from an empty list, not `proc_listchildpids`
+/// (root `AGENTS.md` trap: `EFAULT` on Sonoma).
+pub fn pid_child_count(pid: u32) -> std::io::Result<usize> {
     #[cfg(target_os = "macos")]
     {
-        // One pid slot is enough — we only care whether any child exists.
-        let mut buf = [0i32; 1];
-        let n = unsafe {
-            libc::proc_listchildpids(
-                pid as libc::pid_t,
+        const PROC_PPID_ONLY: u32 = 6;
+        let mut buf = [0i32; 64];
+        let bytes = unsafe {
+            libc::proc_listpids(
+                PROC_PPID_ONLY,
+                pid,
                 buf.as_mut_ptr() as *mut libc::c_void,
                 std::mem::size_of_val(&buf) as libc::c_int,
             )
         };
-        n > 0
+        if bytes < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(bytes as usize / std::mem::size_of::<i32>())
     }
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
+            .map(|s| s.split_whitespace().count())
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = pid;
-        false
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
 }
 
@@ -1725,5 +1733,34 @@ mod tests {
             assert!(text.contains("!= \"${ZDOTDIR%/}\""));
             assert!(text.contains("!= */shell-integration/zsh"));
         }
+    }
+
+    /// Stint 1396: a real grandchild is counted, a process with none counts
+    /// zero, and both are `Ok` (never an error read as absence).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn pid_child_count_sees_real_children() {
+        let mut parent = std::process::Command::new("/bin/sh")
+            .args(["-c", "/bin/sleep 30 & wait"])
+            .spawn()
+            .expect("spawn sh");
+        let mut leaf = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let count = loop {
+            let count = pid_child_count(parent.id()).expect("count children");
+            if count > 0 || std::time::Instant::now() > deadline {
+                break count;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(count, 1, "the sh's sleep child is seen");
+        assert_eq!(pid_child_count(leaf.id()).expect("count children"), 0);
+        let _ = parent.kill();
+        let _ = leaf.kill();
+        let _ = parent.wait();
+        let _ = leaf.wait();
     }
 }

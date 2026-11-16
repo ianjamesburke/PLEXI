@@ -21066,12 +21066,11 @@ fn cli_agent_open_matches_palette() {
     assert_eq!(cli["pane_id"], running);
     assert_eq!(h.app.active_focused_pane_id(), Some(running));
 
-    h.app.pane_navigate(caller);
-    let palette = h
-        .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
-        .expect("palette open");
-    assert_eq!(palette.to_json(), cli, "CLI and palette agree");
+    assert_eq!(
+        palette_open_from(&mut h, &fx, caller, 0),
+        running,
+        "the palette route focuses the same pane"
+    );
     assert_eq!(pane_total(&h), before, "neither path launched a pane");
 }
 
@@ -21331,36 +21330,58 @@ fn start_researcher_running(
         .expect("started")
 }
 
-/// Pump frames until the pane's process probe reports `want`.
-fn wait_for_agent_liveness(
+/// Run `agent open researcher` the way the palette does: a user command step
+/// through `run_user_command_by_name`, queued for `App::logic`. The open runs
+/// on the next frame.
+fn palette_queue_open_researcher(h: &mut HostHarness, fx: &AgentFocusFixture) {
+    h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
+        name: "open-researcher".into(),
+        scope: crate::cli::UserCommandScope::Workspace,
+        description: None,
+        run: None,
+        steps: vec![format!(
+            "agent open researcher --cwd '{}'",
+            fx.proj_dir.display()
+        )],
+        on_load: Vec::new(),
+        secrets: Vec::new(),
+        split: false,
+    }];
+    let report = h
+        .app
+        .run_user_command_by_name("open-researcher")
+        .expect("palette command");
+    assert_eq!(report.exit_code, 0, "{report:?}");
+}
+
+/// Force one 1 Hz activity tick (`tick_terminal_activity`) on the next frame.
+fn activity_tick(h: &mut HostHarness) {
+    h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.run_frames(1);
+}
+
+fn terminal<'a>(h: &'a HostHarness, pane: PaneId) -> &'a crate::host::pane::TerminalPane {
+    h.app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane))
+        .and_then(Pane::as_terminal)
+        .expect("terminal pane")
+}
+
+/// Tick until `done` holds for `pane`, failing after a load-aware deadline.
+fn tick_until(
     h: &mut HostHarness,
     pane: PaneId,
-    want: impl Fn(&crate::host::pane_liveness::AgentProcessLiveness) -> bool,
     what: &str,
+    done: impl Fn(&crate::host::pane::TerminalPane) -> bool,
 ) {
-    use std::time::{Duration, Instant};
-    let shell = crate::host::shell::detect_shell();
-    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
-    loop {
-        h.run_frames(1);
-        let pid = h
-            .app
-            .windows
-            .iter()
-            .find_map(|w| w.panes.get(&pane))
-            .and_then(Pane::as_terminal)
-            .expect("terminal pane")
-            .backend
-            .child_pid();
-        let seen = crate::host::pane_liveness::agent_process_liveness(pid, &shell);
-        if want(&seen) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{what}: probe still says {seen:?}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(15));
+    while !done(terminal(h, pane)) {
+        assert!(std::time::Instant::now() < deadline, "{what}: timed out");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        activity_tick(h);
     }
 }
 
@@ -21369,113 +21390,144 @@ fn write_to_terminal(h: &mut HostHarness, pane: PaneId, text: &str) {
         .process_command(egui_term::BackendCommand::Write(text.as_bytes().to_vec()));
 }
 
-/// The harness exits and its supervisor hands the pane to an interactive
-/// shell: no agent runs there, so `agent open` starts a new chat. A user's own
-/// command in that shell is not an agent either. A known harness relaunched by
-/// hand in it is: `agent open` focuses the pane. Process ground truth only; no
-/// hook report is sent.
+/// Open through the palette from `caller` and return the pane that took
+/// focus, asserting how many panes it added.
+fn palette_open_from(
+    h: &mut HostHarness,
+    fx: &AgentFocusFixture,
+    caller: PaneId,
+    added: usize,
+) -> PaneId {
+    h.app.pane_navigate(caller);
+    let before = pane_total(h);
+    palette_queue_open_researcher(h, fx);
+    h.run_frames(1);
+    assert_eq!(pane_total(h), before + added);
+    h.app.active_focused_pane_id().expect("focused pane")
+}
+
+/// "Running" follows the host's own observation of the pane, never a hook
+/// report. A supervised launch that keeps running stays running across ticks.
+/// A launch that ends (the harness exits, its supervisor execs the interactive
+/// shell) ends at the first tick that sees the bare prompt; after that, a
+/// user's command or an `exec` of another shell in the leftover pane is not the
+/// agent. Each open goes through the palette route and the logic drain.
 #[test]
 #[ignore = "requires-pty"]
-fn named_agent_running_follows_the_pane_processes() {
-    use crate::host::pane_liveness::AgentProcessLiveness;
+fn named_agent_running_follows_the_host_launch_observation() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
-    let shell = start_researcher_running(&mut h, &fx, caller, "true");
-    wait_for_agent_liveness(
-        &mut h,
-        shell,
-        |l| *l == AgentProcessLiveness::NoAgent,
-        "the harness exits and the launch hands over to the shell",
-    );
-    let open = |h: &mut HostHarness| {
-        h.app.pane_navigate(caller);
-        h.app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
-            .expect("open")
-    };
 
-    let outcome = open(&mut h);
-    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
-        panic!("a shell whose harness exited is not running, got {outcome:?}");
-    };
-    h.app.close_pane_by_id(pane_id);
-
-    // A user's own command in the leftover shell.
-    write_to_terminal(&mut h, shell, "sleep 30\n");
-    wait_for_agent_liveness(
-        &mut h,
-        shell,
-        |l| *l == AgentProcessLiveness::NoAgent,
-        "a user command is not an agent",
-    );
-    let shell_pid = h.app.windows[0].panes[&shell]
-        .as_terminal()
-        .expect("terminal")
-        .backend
-        .child_pid();
-    let deadline = std::time::Instant::now()
-        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
-    while std::process::Command::new("pgrep")
-        .args(["-P", &shell_pid.to_string()])
-        .output()
-        .map(|o| o.stdout.is_empty())
-        .unwrap_or(true)
-    {
-        assert!(std::time::Instant::now() < deadline, "sleep never started");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    let long = start_researcher_running(&mut h, &fx, caller, "sleep 30");
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        activity_tick(&mut h);
+        assert!(
+            terminal(&h, long).agent_launch_at.is_some(),
+            "a running supervised launch stays running"
+        );
     }
-    let outcome = open(&mut h);
-    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
-        panic!("a user's command is not the agent, got {outcome:?}");
-    };
-    h.app.close_pane_by_id(pane_id);
-    write_to_terminal(&mut h, shell, "\x03");
+    assert_eq!(palette_open_from(&mut h, &fx, caller, 0), long);
+    h.app.close_pane_by_id(long);
 
-    // A known harness relaunched by hand (a binary named `pi`).
-    let bin = fx.home.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::copy("/bin/sleep", bin.join("pi")).unwrap();
-    write_to_terminal(
+    let shell = start_researcher_running(&mut h, &fx, caller, "true");
+    tick_until(
         &mut h,
         shell,
-        &format!("'{}' 30\n", bin.join("pi").display()),
+        "the harness exits, the shell takes over",
+        |t| t.agent_launch_at.is_none(),
     );
-    wait_for_agent_liveness(
-        &mut h,
-        shell,
-        |l| *l == AgentProcessLiveness::Agent("pi"),
-        "a relaunched pi is an agent",
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(
+        started, shell,
+        "a shell whose harness exited is not running"
     );
-    assert_eq!(
-        open(&mut h),
-        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell },
-        "a harness relaunched by hand runs the agent"
-    );
+    h.app.close_pane_by_id(started);
+
+    write_to_terminal(&mut h, shell, "sleep 30\n");
+    tick_until(&mut h, shell, "the user's sleep runs", |t| {
+        t.activity == Some(crate::protocol::AgentState::Working)
+    });
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(started, shell, "a user's command is not the agent");
+    h.app.close_pane_by_id(started);
+
     write_to_terminal(&mut h, shell, "\x03");
+    write_to_terminal(&mut h, shell, "exec /bin/bash\n");
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        activity_tick(&mut h);
+    }
+    assert!(terminal(&h, shell).agent_launch_at.is_none());
+    let started = palette_open_from(&mut h, &fx, caller, 1);
+    assert_ne!(started, shell, "an exec'd shell is not the agent");
 }
 
-/// Two palette opens back to back: the first starts the agent, and the second
-/// sees that pane still launching and focuses it. One pane, not two.
+/// A known harness the host's detector sees in a pane's foreground (relaunched
+/// by hand after the launch ended) runs the agent; the same pane without it
+/// does not. Uses the detector's cached result, as `agent open` does.
+#[test]
+fn named_agent_counts_detected_agent_after_launch_ended() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let shell = h.add_focused_terminal();
+    let t = h.app.windows[0]
+        .panes
+        .get_mut(&shell)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal");
+    t.agent_role = Some("researcher".into());
+    t.agent_launch_at = None;
+    t.observed_agent = None;
+    assert_eq!(h.app.running_named_agent_pane("researcher"), None);
+
+    h.app.windows[0]
+        .panes
+        .get_mut(&shell)
+        .and_then(Pane::as_terminal_mut)
+        .expect("terminal")
+        .observed_agent = Some(crate::protocol::PaneAgentState {
+        pane_id: shell,
+        state: crate::protocol::AgentState::Working,
+        agent: "pi".into(),
+        detail: None,
+        session_id: None,
+    });
+    h.app.pane_navigate(caller);
+    assert_eq!(
+        h.app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .expect("open"),
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell }
+    );
+}
+
+/// Two palette opens back to back, drained in one logic pass: the first starts
+/// the agent and records its launch; the second sees that launch and focuses
+/// the pane. One pane, not two.
 #[test]
 fn named_agent_back_to_back_opens_start_one_pane() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
     let before = pane_total(&h);
-    for _ in 0..2 {
-        h.app
-            .pending_agent_opens
-            .push(crate::app::agent_open::PendingAgentOpen {
-                name: "researcher".into(),
-                cwd: fx.proj_dir.clone(),
-                caller: Some(caller),
-            });
-    }
+    h.app.pane_navigate(caller);
+    palette_queue_open_researcher(&mut h, &fx);
+    palette_queue_open_researcher(&mut h, &fx);
+    assert_eq!(
+        h.app.pending_agent_opens.len(),
+        2,
+        "the palette queues opens"
+    );
 
-    h.app.drain_pending_agent_opens();
+    h.run_frames(1);
 
-    assert!(h.app.pending_agent_opens.is_empty());
+    assert!(
+        h.app.pending_agent_opens.is_empty(),
+        "App::logic drained them"
+    );
     assert_eq!(
         pane_total(&h),
         before + 1,

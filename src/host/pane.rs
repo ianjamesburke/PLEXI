@@ -844,6 +844,11 @@ pub struct TerminalPane {
     pub tail_preview: Option<String>,
     /// Set when the agent explicitly completed via `plexi agent done` or clean ephemeral exit.
     pub agent_completed: bool,
+    /// Set when the host spawned this pane with an agent launch command
+    /// (`spawn_agent_worker_pane`): the launch is running until
+    /// [`TerminalPane::observe_agent_launch`] sees its shell back at a bare
+    /// interactive prompt (stint 1396).
+    pub agent_launch_at: Option<std::time::Instant>,
     /// When present, this background/sub-context agent pane was restored into lightweight
     /// `[Plexi Standby]` and has not yet launched its agent CLI process.
     pub standby_session: Option<crate::workspace::SavedAgentSession>,
@@ -1046,6 +1051,7 @@ impl TerminalPane {
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,
+            agent_launch_at: None,
             standby_session: None,
             standby_resume_command: None,
             standby_cwd: None,
@@ -1130,6 +1136,39 @@ impl TerminalPane {
     /// True when this agent pane is currently in lightweight `[Plexi Standby]`.
     pub fn is_standby(&self) -> bool {
         self.standby_session.is_some()
+    }
+
+    /// End the agent launch once the shell is back at its own prompt, and only
+    /// on positive evidence: the shell holds the PTY foreground, a successful
+    /// child count is zero, and the shell has left its launch command (it is
+    /// readable, is not still the host's pre-exec fork, and no longer carries
+    /// `-c`). An observation that fails or is missing keeps the launch running,
+    /// so an unknown never reads as an absent agent. Returns true when it ended.
+    pub fn observe_agent_launch(
+        &mut self,
+        fg_pgid: Option<i32>,
+        children: &std::io::Result<usize>,
+    ) -> bool {
+        if self.agent_launch_at.is_none() || self.exited {
+            return false;
+        }
+        let shell_pid = self.backend.child_pid();
+        if fg_pgid != Some(shell_pid as i32) || !matches!(children, Ok(0)) {
+            return false;
+        }
+        let host_name = std::env::current_exe().ok().and_then(|exe| {
+            exe.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        });
+        let name = crate::host::shell::get_pid_name(shell_pid);
+        let left_launch = crate::host::shell::get_pid_argv(shell_pid)
+            .is_some_and(|argv| !argv.iter().any(|arg| arg == "-c"));
+        if name.is_none() || name == host_name || !left_launch {
+            return false;
+        }
+        self.agent_launch_at = None;
+        true
     }
 
     /// Formatted `[Plexi Standby]` label and resume instruction when this pane is in Standby.

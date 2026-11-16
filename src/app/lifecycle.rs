@@ -5971,6 +5971,7 @@ impl PlexiApp {
                 }
                 let shell_pid = t.backend.child_pid();
                 let fg = t.backend.foreground_pid();
+                let children = crate::host::shell::pid_child_count(shell_pid);
                 // What the pane shows before this tick. A tick publishes at
                 // most one change to it, read after every input is updated.
                 let shown_at_start = t.shown_agent().map(|a| (a.agent, a.state));
@@ -5983,9 +5984,21 @@ impl PlexiApp {
                     // check covers shells whose job-control behavior doesn't
                     // move the fg pgid, plus backgrounded servers.
                     let running = fg.is_some_and(|fg| fg != shell_pid as i32)
-                        || crate::host::shell::pid_has_children(shell_pid);
+                        || children.as_ref().is_ok_and(|n| *n > 0);
                     running.then_some(AgentState::Working)
                 };
+                if let Some(started) = t.agent_launch_at {
+                    if t.observe_agent_launch(fg, &children) {
+                        log::info!(
+                            "agent launch: pane {pane_id} shell back at its prompt after {:?}; launch ended",
+                            started.elapsed()
+                        );
+                    } else if let Err(error) = &children {
+                        log::info!(
+                            "agent launch: pane {pane_id} children unknown ({error}); launch kept"
+                        );
+                    }
+                }
                 if new != t.activity {
                     log::info!(
                         "terminal activity: pane {} {:?} -> {:?} (shell_pid={}, fg_pgid={:?})",
