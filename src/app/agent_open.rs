@@ -1,5 +1,5 @@
 //! `agent open <name>` (stint 1396): the one resolver for opening a named agent.
-//! Focus a running/standby pane, else its newest open exited chat, else resume
+//! Focus a running/standby pane, else resume its newest open exited chat, else resume
 //! its last closed chat, else start a new chat. The CLI reaches it through `HostRequest::AgentOpen`; the palette's
 //! Agents stop calls [`PlexiApp::open_named_agent`] directly.
 //!
@@ -20,7 +20,7 @@ use crate::workspace::AgentHistoryRecord;
 pub(crate) enum AgentOpenOutcome {
     /// An open pane holds the agent's chat; it now has focus.
     Focused { pane_id: PaneId },
-    /// The agent's last chat was resumed in a new pane.
+    /// The agent's last chat was resumed in its existing pane or a new pane.
     Resumed { pane_id: PaneId, session_id: String },
     /// No resumable chat: a new chat was started.
     Started { pane_id: PaneId },
@@ -126,12 +126,34 @@ impl PlexiApp {
             .to_string();
 
         if let Some(pane_id) = self.exited_named_agent_chat(name, &harness, cwd) {
+            let t = self
+                .windows
+                .iter_mut()
+                .find_map(|win| win.panes.get_mut(&pane_id))
+                .and_then(crate::host::pane::Pane::as_terminal_mut)
+                .ok_or_else(|| format!("agent open: chat pane {pane_id} disappeared"))?;
+            let session = t
+                .build_saved_agent_session()
+                .ok_or_else(|| format!("agent open: pane {pane_id} has no agent session"))?;
+            let session_id = session
+                .session_id
+                .clone()
+                .ok_or_else(|| format!("agent open: pane {pane_id} has no chat id"))?;
+            // Reuse Standby's typed-resume dispatch and launch tracking. The
+            // selected pane still owns a live shell, so no new pane is needed.
+            t.standby_session = Some(session);
+            t.resume_from_standby()
+                .ok_or_else(|| format!("agent open: pane {pane_id} could not resume '{name}'"))?;
             if !self.pane_navigate(pane_id) {
                 return Err(format!(
                     "agent open: pane {pane_id} holding '{name}' could not be focused"
                 ));
             }
-            return Ok(AgentOpenOutcome::Focused { pane_id });
+            log::info!("agent_open: name={name} outcome=resumed pane={pane_id} session_id={session_id} exited chat still open");
+            return Ok(AgentOpenOutcome::Resumed {
+                pane_id,
+                session_id,
+            });
         }
 
         if let Some(record) = self.last_named_agent_chat(name, &harness, cwd) {
@@ -232,11 +254,12 @@ impl PlexiApp {
     }
 
     /// After live/standby resolution, prefer the newest open chat to closed
-    /// history. Pane ids are allocated in creation order. Focus preserves its
-    /// transcript without typing a resume command into the shell. No history
-    /// record is created until the pane closes.
+    /// history. Pane ids are allocated in creation order. Only a live shell with
+    /// a saved, resumable session is eligible for typed resume in place. No
+    /// history record is created until the pane closes.
     fn exited_named_agent_chat(&self, name: &str, harness: &str, cwd: &Path) -> Option<PaneId> {
         let workspace = agent_chat_workspace(cwd);
+        let adapter = crate::cli::agent::harness_adapter(harness);
         let mut candidates: Vec<_> = self
             .windows
             .iter()
@@ -256,7 +279,9 @@ impl PlexiApp {
                 .as_deref()
                 .or(t.initial_cwd.as_deref())
                 .unwrap_or(win_path);
-            let reason = if t.ephemeral {
+            let reason = if t.exited {
+                Some("its PTY process exited")
+            } else if t.ephemeral {
                 Some("ephemeral run")
             } else if agent_chat_workspace(chat_cwd) != workspace {
                 Some("different workspace")
@@ -264,6 +289,8 @@ impl PlexiApp {
                 Some("different harness")
             } else if session_id.trim().is_empty() {
                 Some("no captured chat id")
+            } else if !adapter.is_some_and(|a| a.harness.session_exists(session_id)) {
+                Some("the harness has no saved session for it")
             } else if selected.is_some() {
                 Some("older than selected open chat")
             } else {
@@ -276,7 +303,7 @@ impl PlexiApp {
             } else {
                 selected = Some(id);
                 log::info!(
-                    "agent_open: name={name} outcome=focused pane={id} session_id={session_id} exited chat still open"
+                    "agent_open: name={name} selected open pane={id} session_id={session_id} for resume"
                 );
             }
         }
