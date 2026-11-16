@@ -1755,9 +1755,11 @@ pub fn agent_create_in(
             crate::agent::AgentSource::User,
         )
     } else {
-        let Some(ws_root) =
-            crate::app::registry::resolve_agent_create_workspace_root(&effective_cwd)
-        else {
+        let stops = crate::app::registry::workspace_walk_stops()?;
+        let Some(ws_root) = crate::app::registry::resolve_agent_create_workspace_root_stopping_at(
+            &effective_cwd,
+            &stops,
+        ) else {
             return Err(format!(
                 "no project workspace (.plexi/ or .git) found at or above {}; run inside a project or pass --global",
                 effective_cwd.display()
@@ -2165,9 +2167,16 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
     let effective_cwd = cwd
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let workspace_root = effective_cwd.as_deref().and_then(|cwd| {
-        resolve_agent_workspace_root_for(name, cwd, &crate::app::registry::workspace_walk_stops())
-    });
+    let stops = match crate::app::registry::workspace_walk_stops() {
+        Ok(stops) => stops,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    let workspace_root = effective_cwd
+        .as_deref()
+        .and_then(|cwd| resolve_agent_workspace_root_for(name, cwd, &stops));
     match agent_show_in(
         name,
         &crate::config::config_dir(),
@@ -2525,7 +2534,13 @@ pub fn agent_start_cli(
     let parent_pane_id = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|v| v.parse().ok());
-    let stops = crate::app::registry::workspace_walk_stops();
+    let stops = match crate::app::registry::workspace_walk_stops() {
+        Ok(stops) => stops,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
     let payload = match resolve_agent_start_in_stopping_at(
         agent_name,
         &crate::config::config_dir(),
@@ -2566,7 +2581,13 @@ pub fn agent_spawn_cli(
             .ok()
             .and_then(|v| v.parse().ok())
     });
-    let stops = crate::app::registry::workspace_walk_stops();
+    let stops = match crate::app::registry::workspace_walk_stops() {
+        Ok(stops) => stops,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
     let ephemeral_override = if ephemeral { Some(true) } else { None };
     let mut payload = match resolve_agent_spawn_in_stopping_at(
         agent_name,
@@ -5304,6 +5325,20 @@ mod agent_tests {
         let json = super::agent_show_in("redacted-show", profile.path(), None, true).unwrap();
         assert!(!json.contains(secret), "json leaked secret: {json}");
         assert!(json.contains("[REDACTED]"), "json did not redact: {json}");
+    }
+
+    #[test]
+    fn missing_home_lookups_refuse_agent_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(tmp.path().join("profile"));
+        let _failed = crate::app::registry::fail_test_home_lookups();
+        let cwd = tmp.path().to_str().unwrap();
+        assert_eq!(super::agent_show_cli("default", Some(cwd), false), 1);
+        assert_eq!(super::agent_start_cli("default", Some(cwd), None, false), 1);
+        assert_eq!(
+            super::agent_spawn_cli("default", "task", None, false, None, Some(cwd), false),
+            1
+        );
     }
 
     #[test]

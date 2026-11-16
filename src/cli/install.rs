@@ -172,17 +172,20 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
 }
 
 /// Workspace root the no-arg `plexi plugin install` applies `plugins.toml` from.
-fn workspace_pack_root(cwd: &Path) -> Option<PathBuf> {
+fn workspace_pack_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
     // The registry's walk stops at `$HOME` and at the login home, so a
     // redirected `HOME` never makes the installed profile dir a workspace
     // (stint 1337).
-    let root = crate::app::registry::resolve_workspace_root(cwd);
+    let root = crate::app::registry::try_resolve_workspace_root_with_channel(
+        cwd,
+        &crate::config::workspace_channel_dir(),
+    )?;
     log::info!(
         "cli: install_workspace_pack workspace walk from {} found {:?}",
         cwd.display(),
         root.as_ref().map(|r| r.display().to_string())
     );
-    root
+    Ok(root)
 }
 
 /// `plexi install` with no args — detect `<channel_dir>/plugins.toml` and apply it.
@@ -202,7 +205,13 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let channel_dir = crate::config::workspace_channel_dir();
 
-    let workspace_root = workspace_pack_root(&cwd);
+    let workspace_root = match workspace_pack_root(&cwd) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
 
     let Some(root) = workspace_root else {
         eprintln!(
@@ -819,7 +828,7 @@ mod workspace_pack_root_tests {
         let _login = crate::app::registry::set_test_login_home(&login_home);
 
         assert_eq!(
-            workspace_pack_root(&cwd),
+            workspace_pack_root(&cwd).unwrap(),
             None,
             "the login home's profile dir is not a workspace"
         );
@@ -837,6 +846,6 @@ mod workspace_pack_root_tests {
         std::fs::create_dir_all(login_home.join(&channel_dir)).unwrap();
         let _login = crate::app::registry::set_test_login_home(&login_home);
 
-        assert_eq!(workspace_pack_root(&cwd), Some(workspace));
+        assert_eq!(workspace_pack_root(&cwd).unwrap(), Some(workspace));
     }
 }

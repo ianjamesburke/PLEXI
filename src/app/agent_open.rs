@@ -108,7 +108,7 @@ impl PlexiApp {
 
         // The definition decides the harness; unknown agents fail here, before
         // anything is launched (same resolution as `agent start`).
-        let stops = crate::app::registry::workspace_walk_stops();
+        let stops = crate::app::registry::workspace_walk_stops()?;
         let (verified_caller, _) = self.resolve_unspoofable_spawner(caller, peer_ancestry);
         let parent = self.agent_open_parent(verified_caller);
         let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
