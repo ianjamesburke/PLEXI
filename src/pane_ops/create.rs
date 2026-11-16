@@ -3920,6 +3920,79 @@ mod tests {
         (app, snapshot)
     }
 
+    fn installed_wasm_timer_case(declares_timer: bool) {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let mut h = HostHarness::new();
+        let apps = tempfile::tempdir().expect("apps");
+        let plugin_dir = apps.path().join("sysmon");
+        std::fs::create_dir(&plugin_dir).expect("plugin dir");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut manifest =
+            std::fs::read_to_string(root.join("plugins/wasm-poc/sysmon/manifest.toml"))
+                .expect("sysmon manifest");
+        manifest = manifest.replace(
+            "../../../target/wasm32-wasip1/release/sysmon.wasm",
+            root.join("tests/wasm-fixtures/sysmon.wasm")
+                .to_str()
+                .unwrap(),
+        );
+        if !declares_timer {
+            manifest = manifest.replace("capabilities = [\"timer\"]", "capabilities = []");
+        }
+        std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
+        let registry = PluginRegistry::load_with_global(apps.path(), apps.path());
+        let installed = registry
+            .get("com.plexi.sysmon")
+            .expect("installed sysmon")
+            .clone();
+        let workspace_root = h.workspace_root();
+        let pane_id = h
+            .app
+            .open_installed_wasm_view_pane(0, installed, workspace_root, None, Vec::new())
+            .expect("launch without timer consent");
+        let view = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap();
+        let crate::host::pane::ViewRuntime::Wasm(live) = &mut view.runtime else {
+            panic!("expected WASM");
+        };
+        let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            crate::ui::theme::setup_fonts(ui.ctx())
+        });
+        let logs = crate::testing::test_log::capture();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            live.ui(ui, &colors, None, pane_id);
+        });
+        assert_eq!(
+            live.timer_deadline_for_test().is_some(),
+            declares_timer,
+            "manifest timer declaration must govern the init timer"
+        );
+        assert!(!live.has_pending_capability_prompt());
+        if !declares_timer {
+            assert!(logs.records().contains(&(
+                log::Level::Info,
+                "plugin::com.plexi.sysmon: set_timer denied: missing capability timer".to_string()
+            )));
+        }
+    }
+
+    #[test]
+    fn installed_wasm_manifest_timer_arms() {
+        installed_wasm_timer_case(true);
+    }
+
+    #[test]
+    fn installed_wasm_without_manifest_timer_is_denied() {
+        installed_wasm_timer_case(false);
+    }
+
     fn media_permissions() -> PluginPermissions {
         use crate::app::permissions::Capability;
         let mut permissions = PluginPermissions::default();
