@@ -208,6 +208,7 @@ struct TreeRenderEnv<'a> {
     /// True inside a row's own measuring pass, where nested rows are laid
     /// out in one pass so no row is measured once per enclosing row.
     in_row_measure: bool,
+    compact_chrome: bool,
 }
 
 /// Rows nested deeper than this, and rows inside another row's measuring
@@ -275,6 +276,7 @@ fn render_ui_tree_into(
         tree_seq,
         row_depth: 0,
         in_row_measure: false,
+        compact_chrome: false,
     };
     let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
         render_node(ui, env, tree.root, out, 0);
@@ -445,6 +447,20 @@ fn render_root_with_chrome_bands(
     let stack_size = egui::vec2(ui.available_width(), ui.available_height());
     let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
 
+    let env = TreeRenderEnv {
+        compact_chrome: stack_rect.height() < style::VIEW_COMPACT_HEIGHT,
+        ..env
+    };
+    if env.compact_chrome {
+        trace_layout_once(ui, "compact plugin chrome", || {
+            format!(
+                "height={:.0} threshold={}",
+                stack_rect.height(),
+                style::VIEW_COMPACT_HEIGHT
+            )
+        });
+    }
+
     let bars_h = if leading > 0 {
         ui.scope_builder(egui::UiBuilder::new().max_rect(stack_rect), |ui| {
             ui.set_clip_rect(stack_rect);
@@ -463,7 +479,11 @@ fn render_root_with_chrome_bands(
     };
 
     let footer_h = trailing
-        .map(|(_, f)| view_chrome::footer_keys_height(ui, &f.entries, f.divider))
+        .map(|(_, f)| {
+            ViewChrome::new(env.colors)
+                .compact(env.compact_chrome)
+                .footer_height(ui, &f.entries, f.divider)
+        })
         .unwrap_or(0.0);
     let body_end = c.children.len() - usize::from(trailing.is_some());
     let body_rect = egui::Rect::from_min_max(
@@ -483,7 +503,10 @@ fn render_root_with_chrome_bands(
             ui.set_max_height(body_inner.height());
             render_column_children(
                 ui,
-                env,
+                TreeRenderEnv {
+                    compact_chrome: false,
+                    ..env
+                },
                 &c.children[leading..body_end],
                 c.gap,
                 c.align,
@@ -1872,6 +1895,7 @@ fn render_node_inner(
         tree_seq,
         row_depth: _,
         in_row_measure,
+        compact_chrome,
     } = env;
     if depth > MAX_DEPTH {
         return;
@@ -2417,11 +2441,15 @@ fn render_node_inner(
         }
 
         UiNodeData::SurfaceHeader(a) => {
-            ViewChrome::new(colors).paint_view_bar(ui, &a.title, &a.subtitle);
+            ViewChrome::new(colors)
+                .compact(compact_chrome)
+                .paint_view_bar(ui, &a.title, &a.subtitle);
         }
 
         UiNodeData::FooterKeys(f) => {
-            ViewChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
+            ViewChrome::new(colors)
+                .compact(compact_chrome)
+                .paint_footer_keys(ui, &f.entries, f.divider);
         }
 
         // Bottom-pinned nodes are partitioned and rendered by the enclosing
@@ -3375,6 +3403,30 @@ mod tests {
                     }),
                 ),
             ],
+        }
+    }
+
+    #[test]
+    fn short_plugin_chrome_preserves_normal_height_bands() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let tree = chrome_tree();
+        // The headless harness adds eight points around the plugin viewport.
+        for (height, header_height) in [(130.0, 25.0), (179.0, 25.0), (180.0, 49.0), (240.0, 49.0)]
+        {
+            let layout = render_ui_tree_layout(&tree, 336.0, height + 16.0);
+            let header = layout.iter().find(|fact| fact.id == 1).unwrap();
+            assert_eq!(
+                header.rect.unwrap().height(),
+                header_height,
+                "viewport height {height}"
+            );
+            let footer = layout.iter().find(|fact| fact.id == 7).unwrap();
+            assert_eq!(
+                footer.rect.unwrap().height(),
+                if height < 180.0 { 31.0 } else { 43.0 }
+            );
+            assert!(!header.text_cut && !footer.text_cut);
         }
     }
 

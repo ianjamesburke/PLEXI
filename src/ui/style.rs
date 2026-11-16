@@ -27,6 +27,9 @@ use egui::CornerRadius;
 
 // ── Spacing scale ──────────────────────────────────────────────────────────
 // 4-based scale. Use these for padding, margins, gaps between siblings.
+/// Plugin chrome switches to compact spacing below this viewport height.
+pub const VIEW_COMPACT_HEIGHT: f32 = 180.0;
+
 pub const SPACE_XS: f32 = 4.0;
 pub const SPACE_SM: f32 = 8.0;
 pub const SPACE_MD: f32 = 12.0;

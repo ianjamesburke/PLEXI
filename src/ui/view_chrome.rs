@@ -11,6 +11,7 @@ const APP_BAR_DOUBLE_BAND_H: f32 = 48.0;
 
 pub(crate) struct ViewChrome<'a> {
     colors: &'a Colors,
+    compact: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -24,7 +25,15 @@ pub(crate) struct TextLabelStyle {
 
 impl<'a> ViewChrome<'a> {
     pub(crate) fn new(colors: &'a Colors) -> Self {
-        Self { colors }
+        Self {
+            colors,
+            compact: false,
+        }
+    }
+
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     pub(crate) fn toolbar_fill(&self) -> Color32 {
@@ -60,9 +69,13 @@ impl<'a> ViewChrome<'a> {
     }
 
     pub(crate) fn paint_view_bar(&self, ui: &mut Ui, title: &str, subtitle: &str) -> egui::Rect {
-        let has_subtitle = !subtitle.is_empty();
-        let band_h = view_bar_band_height(has_subtitle);
-        let total_h = view_bar_height(subtitle);
+        let has_subtitle = !self.compact && !subtitle.is_empty();
+        let band_h = if self.compact {
+            APP_BAR_TITLE_SIZE + 2.0 * style::SPACE_XS
+        } else {
+            view_bar_band_height(has_subtitle)
+        };
+        let total_h = band_h + 1.0;
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), total_h),
             egui::Sense::hover(),
@@ -134,8 +147,19 @@ impl<'a> ViewChrome<'a> {
             .map(|e| HintGroup::from_strings(&e.keys, &e.description))
             .collect();
         HintBar::new(&groups)
+            .compact(self.compact)
             .pane_footer_band(divider)
             .show(ui, self.colors);
+    }
+
+    pub(crate) fn footer_height(&self, ui: &Ui, entries: &[FooterKeyEntry], divider: bool) -> f32 {
+        let groups: Vec<HintGroup<'_>> = entries
+            .iter()
+            .map(|e| HintGroup::from_strings(&e.keys, &e.description))
+            .collect();
+        HintBar::new(&groups)
+            .compact(self.compact)
+            .band_height(ui, divider)
     }
 
     fn paint_fitted_text(
@@ -162,10 +186,6 @@ impl<'a> ViewChrome<'a> {
             .foreground(color, super::foreground::Role::SmallText);
         crate::ui::snap::galley_snapped(painter, pos, galley, color);
     }
-}
-
-pub(crate) fn view_bar_height(subtitle: &str) -> f32 {
-    view_bar_band_height(!subtitle.is_empty()) + 1.0
 }
 
 fn view_bar_band_height(has_subtitle: bool) -> f32 {
