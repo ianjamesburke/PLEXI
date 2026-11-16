@@ -1691,7 +1691,7 @@ json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classe
     if !capabilities.iter().any(|capability| capability == "timer") {
         for (effect, line) in report.timer_uses {
             let error = format!(
-                "SDK — {}:{line}: {effect} requires the missing timer capability; declare capabilities = [\"timer\"] under [plugin.capabilities]",
+                "SDK — {}:{line}: {effect} requires the missing timer capability; add \"timer\" to [plugin.capabilities] capabilities (entry module only is checked)",
                 entry_path.display()
             );
             log::info!("plugin_check: {error}");
