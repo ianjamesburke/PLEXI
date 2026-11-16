@@ -720,6 +720,7 @@ pub struct AssistantView {
     pub(crate) pending_commands: Vec<ViewCommand>,
     settings_loader: SettingsLoader,
     settings_watches: Vec<(PathBuf, crate::host::path_watch::PathWatch)>,
+    settings_watch_retry_at: Option<std::time::Instant>,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
     settings_errors: Vec<SettingsLoadError>,
@@ -806,6 +807,60 @@ struct PendingSubscribe {
 }
 
 impl AssistantView {
+    fn service_settings_watches(
+        &mut self,
+        now: std::time::Instant,
+        mut create_watch: impl FnMut(
+            &Path,
+            Option<std::ffi::OsString>,
+        ) -> Result<crate::host::path_watch::PathWatch, String>,
+    ) -> bool {
+        let changed = self
+            .settings_watches
+            .iter()
+            .fold(false, |changed, (_, watch)| watch.take_changed() || changed);
+        if !changed
+            && (self.settings_watches.len() == 3
+                || self
+                    .settings_watch_retry_at
+                    .is_some_and(|retry_at| now < retry_at))
+        {
+            return false;
+        }
+        let mut previous = std::mem::take(&mut self.settings_watches);
+        for path in self.settings_loader.watch_paths() {
+            // Watch the nearest existing ancestor when a settings directory
+            // does not exist yet. Its creation wakes us to re-arm closer to
+            // the file. Parent-directory watches survive atomic file saves.
+            let mut target = path;
+            while let Some(parent) = target.parent() {
+                if parent.is_dir() {
+                    if let Some(index) = previous.iter().position(|(armed, _)| armed == target) {
+                        self.settings_watches.push(previous.swap_remove(index));
+                        break;
+                    }
+                    match create_watch(
+                        parent,
+                        target.file_name().map(std::ffi::OsStr::to_os_string),
+                    ) {
+                        Ok(watch) => self.settings_watches.push((target.to_path_buf(), watch)),
+                        Err(error) => log::warn!("assistant: settings watch: {error}"),
+                    }
+                    break;
+                }
+                target = parent;
+            }
+        }
+        // A failed watch must not recreate watchers, warn, and reload on every
+        // logic pass. Retain successful watches and retry missing ones later.
+        self.settings_watch_retry_at =
+            (self.settings_watches.len() < 3).then_some(now + std::time::Duration::from_secs(1));
+        // Reload after arming too: a write between load and watch registration
+        // must not leave a running turn with stale permissions.
+        self.reload_settings();
+        true
+    }
+
     /// Open the Assistant for a workspace: resume the persisted active
     /// conversation of `context_id` (the host context this pane lives in),
     /// or create a fresh one. `profile_dir` is the channel config dir —
@@ -908,6 +963,7 @@ impl AssistantView {
             pending_commands: Vec::new(),
             settings_loader,
             settings_watches: Vec::new(),
+            settings_watch_retry_at: None,
             session_overrides,
             settings: settings_report.settings,
             settings_errors: settings_report.errors,
@@ -4968,46 +5024,15 @@ impl View for AssistantView {
         self.run_pending_compaction();
     }
 
-    fn service_external(
-        &mut self,
-        wake: &Arc<dyn crate::app::ui_mailbox::UiWake>,
-    ) -> bool {
-        let changed = self.settings_watches.iter().fold(false, |changed, (_, watch)| {
-            watch.take_changed() || changed
-        });
-        if !changed && self.settings_watches.len() == 3 {
-            return false;
-        }
-        let mut previous = std::mem::take(&mut self.settings_watches);
-        for path in self.settings_loader.watch_paths() {
-            // Watch the nearest existing ancestor when a settings directory
-            // does not exist yet. Its creation wakes us to re-arm closer to
-            // the file. Parent-directory watches survive atomic file saves.
-            let mut target = path;
-            while let Some(parent) = target.parent() {
-                if parent.is_dir() {
-                    if let Some(index) = previous.iter().position(|(armed, _)| armed == target) {
-                        self.settings_watches.push(previous.swap_remove(index));
-                        break;
-                    }
-                    match crate::host::path_watch::PathWatch::new(
-                        parent,
-                        target.file_name().map(std::ffi::OsStr::to_os_string),
-                        Arc::clone(wake),
-                        "assistant_settings",
-                    ) {
-                        Ok(watch) => self.settings_watches.push((target.to_path_buf(), watch)),
-                        Err(error) => log::warn!("assistant: settings watch: {error}"),
-                    }
-                    break;
-                }
-                target = parent;
-            }
-        }
-        // Reload after arming too: a write between load and watch registration
-        // must not leave a running turn with stale permissions.
-        self.reload_settings();
-        true
+    fn service_external(&mut self, wake: &Arc<dyn crate::app::ui_mailbox::UiWake>) -> bool {
+        self.service_settings_watches(std::time::Instant::now(), |parent, name| {
+            crate::host::path_watch::PathWatch::new(
+                parent,
+                name,
+                Arc::clone(wake),
+                "assistant_settings",
+            )
+        })
     }
 
     fn needs_background_tick(&self) -> bool {

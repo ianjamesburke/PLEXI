@@ -227,29 +227,20 @@ fn turn_lifecycle_agent_reload_cancels_dispatchers() {
 
 #[test]
 fn turn_lifecycle_executed_tool_retains_cancelled_transcript_row() {
-    check_executed_tool_transcript(false, false, false);
+    check_executed_tool_transcript(false, false);
 }
 
 #[test]
 fn turn_lifecycle_cancel_during_execution_retains_transcript_row() {
-    check_executed_tool_transcript(true, false, false);
+    check_executed_tool_transcript(true, false);
 }
 
 #[test]
 fn turn_lifecycle_late_completion_does_not_enter_next_conversation() {
-    check_executed_tool_transcript(true, true, false);
+    check_executed_tool_transcript(true, true);
 }
 
-#[test]
-fn turn_lifecycle_completed_before_cancel_screenshot() {
-    check_executed_tool_transcript(false, false, true);
-}
-
-fn check_executed_tool_transcript(
-    cancel_in_handler: bool,
-    switch_conversation: bool,
-    screenshot: bool,
-) {
+fn check_executed_tool_transcript(cancel_in_handler: bool, switch_conversation: bool) {
     let ws = tempfile::tempdir().unwrap();
     let mut app = test_app(ws.path());
     app.model.streaming.in_flight = true;
@@ -315,17 +306,6 @@ fn check_executed_tool_transcript(
             .unwrap();
         assert_eq!(row.status, Some(model::ToolStatus::Succeeded));
         assert!(!row.text.contains("cancelled:"));
-        if !screenshot {
-            return;
-        }
-        let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 720.0);
-        h.step();
-        h.open_assistant_built(app, ws.path().to_path_buf());
-        h.run_steps(3);
-        // Keep pixels in this worktree: the implementer may only put logs in /tmp.
-        std::fs::create_dir_all("target/1597-evidence").unwrap();
-        h.save_screenshot("target/1597-evidence/completed-before-cancel.png")
-            .unwrap();
     }
 }
 
@@ -432,6 +412,7 @@ fn turn_lifecycle_settings_watch_cancels_without_command() {
     let wake: Arc<dyn crate::app::ui_mailbox::UiWake> =
         Arc::new(crate::app::ui_mailbox::RecordingWake::new());
     app.service_external(&wake);
+    arm_lifecycle_settings_watch();
     app.model.streaming.in_flight = true;
     let dispatcher = app.gated_dispatcher();
     let path = ws.path().join("agents/settings.toml");
@@ -566,7 +547,7 @@ fn turn_lifecycle_settings_watch_hidden_host_all_scopes() {
             (path, app.turn_cancel.clone(), app.gated_dispatcher())
         };
         h.hidden_frame();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        arm_lifecycle_settings_watch();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let temp = path.with_extension("new");
         std::fs::write(&temp, "[permissions]\ndefault_posture = \"plan\"\n").unwrap();
@@ -590,4 +571,64 @@ fn turn_lifecycle_settings_watch_hidden_host_all_scopes() {
             Some("cancelled")
         );
     }
+}
+
+#[test]
+fn turn_lifecycle_settings_watch_failure_backs_off() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut app = test_app(ws.path());
+    let logs = crate::testing::test_log::capture();
+    let now = std::time::Instant::now();
+    let mut attempts = 0;
+    let mut fail = |_: &Path, _: Option<std::ffi::OsString>| {
+        attempts += 1;
+        Err("injected watcher failure".to_owned())
+    };
+    assert!(app.service_settings_watches(now, &mut fail));
+    for _ in 0..10 {
+        assert!(
+            !app.service_settings_watches(now, &mut fail),
+            "must not reload or retry during backoff"
+        );
+    }
+    assert!(!app.service_settings_watches(
+        now + std::time::Duration::from_millis(999),
+        &mut fail,
+    ));
+    assert_eq!(attempts, 3);
+    assert_eq!(
+        logs.lines()
+            .iter()
+            .filter(|line| line.contains("injected watcher failure"))
+            .count(),
+        3
+    );
+    assert!(
+        app.service_settings_watches(now + std::time::Duration::from_secs(1), |_, _| {
+            attempts += 1;
+            Err("injected retry failure".to_owned())
+        })
+    );
+    assert_eq!(attempts, 6);
+    let wake: Arc<dyn crate::app::ui_mailbox::UiWake> =
+        Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+    assert!(app.service_settings_watches(
+        now + std::time::Duration::from_secs(2),
+        |parent, name| {
+            crate::host::path_watch::PathWatch::new(parent, name, wake.clone(), "test")
+        }
+    ));
+    assert_eq!(app.settings_watches.len(), 3);
+    assert!(
+        !app.service_settings_watches(now + std::time::Duration::from_secs(3), |_, _| panic!(
+            "healthy watches must be retained"
+        ))
+    );
+}
+
+fn arm_lifecycle_settings_watch() {
+    // FSEvents registration is asynchronous, as in PathWatch's arm helper.
+    std::thread::sleep(crate::testing::load_aware_timeout(
+        std::time::Duration::from_millis(200),
+    ));
 }
