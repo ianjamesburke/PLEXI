@@ -328,6 +328,19 @@ impl<'a> TerminalView<'a> {
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
         events.extend(layout.ctx.input(|i| i.events.clone()));
+        // An unfocused terminal (here for the pointer) is given no keyboard
+        // input, so its encoder must never record a hold from it.
+        if !has_focus {
+            events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Text(_)
+                        | egui::Event::Key { .. }
+                        | egui::Event::Copy
+                        | egui::Event::Paste(_)
+                )
+            });
+        }
         let keyboard_mode =
             if state.search_mode.is_none() && state.copy_mode.is_none() {
                 self.backend.keyboard_mode()
@@ -355,9 +368,6 @@ impl<'a> TerminalView<'a> {
                 | egui::Event::Key { .. }
                 | egui::Event::Copy
                 | egui::Event::Paste(_) => {
-                    if !has_focus {
-                        continue;
-                    }
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
 

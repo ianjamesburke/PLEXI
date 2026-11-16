@@ -11,30 +11,37 @@ struct Code {
     text: bool,
 }
 
-/// Who received the press that started a key hold. Its repeats and release
-/// follow it, whatever the modifiers or kitty flags do mid-hold.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Owner {
+/// One physical key's hold, from its non-repeat press to its release. Its
+/// repeats and release follow the press, whatever the modifiers or kitty
+/// flags do mid-hold.
+#[derive(Clone, Copy)]
+enum Hold {
+    /// The press scrolled the scrollback: repeats scroll while they still
+    /// match, and nothing of the hold reaches the program.
     Scroll,
-    Program,
+    /// The press reached the program.
+    Program(Press),
+    /// `release_held` already reported this hold released: its repeats and
+    /// physical release never reach the program.
+    Released,
 }
 
-/// A press the program was sent, kept so the hold can be released for it
-/// when its physical release will never arrive (see `release_held`).
+/// The press that started a program hold, kept so `release_held` can report
+/// its release with the press's code and modifiers.
 #[derive(Clone, Copy)]
-struct Hold {
-    code: Code,
+struct Press {
+    key: Key,
     physical: Option<Key>,
     mods: Modifiers,
+    /// The kitty code sent, when the press was kitty-encoded.
+    code: Option<Code>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct KeyboardEncoder {
-    held: HashMap<Key, Hold>,
     /// Per physical key; a non-repeat press starts a new hold, so an entry
     /// left by a lost release never outlives the next press.
-    owners: HashMap<Key, Owner>,
-    mode: TermMode,
+    holds: HashMap<Key, Hold>,
 }
 
 pub(crate) struct PreparedEvent {
@@ -56,10 +63,6 @@ impl KeyboardEncoder {
         scrolls: impl Fn(Key, Modifiers) -> bool,
     ) -> Vec<PreparedEvent> {
         let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
-        if self.mode != mode {
-            self.held.clear();
-            self.mode = mode;
-        }
         let mut events = events.into_iter().peekable();
         let mut result = Vec::new();
         while let Some(event) = events.next() {
@@ -73,37 +76,51 @@ impl KeyboardEncoder {
                 } => 'key: {
                     let identity = physical_key.unwrap_or(*key);
                     if *pressed && !*repeat {
-                        self.owners.remove(&identity);
+                        self.holds.remove(&identity);
                     }
-                    let owner = if *pressed {
-                        *self.owners.entry(identity).or_insert_with(|| {
+                    let press = Press {
+                        key: *key,
+                        physical: *physical_key,
+                        mods: *modifiers,
+                        code: None,
+                    };
+                    // A press (or an ownerless repeat) that starts a hold
+                    // records its kitty code below.
+                    let mut starts_hold = false;
+                    let hold = if *pressed {
+                        *self.holds.entry(identity).or_insert_with(|| {
+                            starts_hold = true;
                             if !scrolls(*key, *modifiers) {
-                                return Owner::Program;
+                                return Hold::Program(press);
                             }
                             if !mode.is_empty() {
                                 log::info!(
                                     "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
                                 );
                             }
-                            Owner::Scroll
+                            Hold::Scroll
                         })
                     } else {
-                        match self.owners.remove(&identity) {
-                            Some(owner) => owner,
+                        match self.holds.remove(&identity) {
+                            Some(hold) => hold,
                             // This terminal never saw the press (it went to
-                            // another pane, or was already released on focus
-                            // loss): the program must not see a release.
+                            // another pane): the program must not see a
+                            // release.
                             None if !mode.is_empty() => {
                                 break 'key Some(Vec::new())
                             },
-                            None => Owner::Program,
+                            None => Hold::Program(press),
                         }
                     };
-                    if owner == Owner::Scroll {
-                        let still_scrolls =
-                            *pressed && scrolls(*key, *modifiers);
-                        break 'key (!still_scrolls).then(Vec::new);
-                    }
+                    let held = match hold {
+                        Hold::Scroll => {
+                            let still_scrolls =
+                                *pressed && scrolls(*key, *modifiers);
+                            break 'key (!still_scrolls).then(Vec::new);
+                        },
+                        Hold::Released => break 'key Some(Vec::new()),
+                        Hold::Program(held) => held,
+                    };
                     // A program-owned hold never scrolls, whatever the
                     // modifiers or flags did since its press.
                     let to_program = *pressed && scrolls(*key, *modifiers);
@@ -123,10 +140,7 @@ impl KeyboardEncoder {
                         None
                     };
                     let code = if !pressed {
-                        self.held
-                            .remove(&identity)
-                            .map(|hold| hold.code)
-                            .or_else(|| key_code(*key, *modifiers))
+                        held.code.or_else(|| key_code(*key, *modifiers))
                     } else {
                         let mut code = key_code(*key, *modifiers);
                         // For layouts not represented by egui::Key, egui uses
@@ -150,14 +164,10 @@ impl KeyboardEncoder {
                                 }
                             }
                         }
-                        if let Some(code) = code {
-                            self.held.insert(
+                        if starts_hold {
+                            self.holds.insert(
                                 identity,
-                                Hold {
-                                    code,
-                                    physical: *physical_key,
-                                    mods: *modifiers,
-                                },
+                                Hold::Program(Press { code, ..press }),
                             );
                         }
                         code
@@ -199,39 +209,50 @@ impl KeyboardEncoder {
         result
     }
 
-    /// Whether any key hold is open, so callers can skip `release_held`.
+    /// Whether a program hold is open, so callers can skip `release_held`.
     pub fn is_holding(&self) -> bool {
-        !self.owners.is_empty() || !self.held.is_empty()
+        self.holds
+            .values()
+            .any(|hold| matches!(hold, Hold::Program(_)))
     }
 
-    /// Ends every hold this terminal owns, for when it stops receiving the
+    /// Ends every program hold, for when this terminal stops receiving the
     /// keyboard (window focus loss, focus moving to another pane): the
     /// physical releases will never arrive here. Returns the release reports
-    /// the program asked for under `mode`, each with its press's modifiers; a
-    /// later physical release of these keys is a stray and never reaches the
-    /// program.
+    /// the program asked for under the current `mode`, each with its press's
+    /// code and modifiers. A reported hold's later repeats and physical
+    /// release never reach the program; a hold with nothing to report is
+    /// forgotten. Scroll holds keep their ownership until their release.
     pub fn release_held(&mut self, mode: TermMode) -> Vec<u8> {
-        self.owners.clear();
-        let held = std::mem::take(&mut self.held);
-        // Flags changed since the last encoded key: `prepare` drops holds
-        // across a flags change, so there is nothing the program expects.
-        if mode & TermMode::KITTY_KEYBOARD_PROTOCOL != self.mode {
-            return Vec::new();
-        }
-        held.into_values()
-            .filter_map(|hold| {
-                encode_key(
-                    hold.code,
-                    hold.physical,
-                    hold.mods,
-                    false,
-                    false,
-                    None,
-                    self.mode,
-                )
-            })
-            .flatten()
-            .collect()
+        let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
+        let mut bytes = Vec::new();
+        self.holds.retain(|_, hold| {
+            let Hold::Program(press) = *hold else {
+                return true;
+            };
+            let release = press
+                .code
+                .or_else(|| key_code(press.key, press.mods))
+                .and_then(|code| {
+                    encode_key(
+                        code,
+                        press.physical,
+                        press.mods,
+                        false,
+                        false,
+                        None,
+                        mode,
+                    )
+                })
+                .unwrap_or_default();
+            if release.is_empty() {
+                return false;
+            }
+            bytes.extend(release);
+            *hold = Hold::Released;
+            true
+        });
+        bytes
     }
 }
 
@@ -903,6 +924,78 @@ mod tests {
         assert!(encoder
             .release_held(TermMode::DISAMBIGUATE_ESC_CODES)
             .is_empty());
+    }
+
+    #[test]
+    fn release_held_survives_a_flags_change_that_keeps_release_reporting() {
+        let layout = BindingsLayout::new();
+        let mut encoder = KeyboardEncoder::default();
+        let seven = EVENT_TYPES | TermMode::REPORT_ALTERNATE_KEYS;
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (key(Key::PageUp, Modifiers::NONE, true, false), EVENT_TYPES),
+                // Any later key under the new flags (CSI > 7 u).
+                (key(Key::F5, Modifiers::NONE, true, false), seven),
+            ],
+        );
+        assert_eq!(out[0].as_deref(), Some("\x1b[5;1:1~"));
+        let released = String::from_utf8(encoder.release_held(seven)).unwrap();
+        assert!(released.contains("\x1b[5;1:3~"), "{released:?}");
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![(key(Key::PageUp, Modifiers::NONE, false, false), seven)],
+        );
+        assert_eq!(out, [Some(String::new())], "late release swallowed");
+    }
+
+    #[test]
+    fn release_held_keeps_the_press_modifiers_across_repeats() {
+        let layout = BindingsLayout::new();
+        let mut encoder = KeyboardEncoder::default();
+        // Ctrl+J, Ctrl let go, J repeats unmodified (falls back to text).
+        frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (key(Key::J, Modifiers::CTRL, true, false), EVENT_TYPES),
+                (key(Key::J, Modifiers::NONE, true, true), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(encoder.release_held(EVENT_TYPES), b"\x1b[106;5:3u");
+    }
+
+    #[test]
+    fn release_held_keeps_scroll_ownership_until_the_physical_release() {
+        let layout = BindingsLayout::new();
+        let mut encoder = KeyboardEncoder::default();
+        let ev =
+            |mods, pressed, repeat| key(Key::PageUp, mods, pressed, repeat);
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![(ev(Modifiers::SHIFT, true, false), EVENT_TYPES)],
+        );
+        assert_eq!(out, [None], "Shift+PageUp scrolls");
+        assert!(encoder.release_held(EVENT_TYPES).is_empty());
+        // Focus returns with PageUp still held; Shift is let go and PageUp
+        // repeats: the hold still belongs to the scrollback.
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (ev(Modifiers::NONE, true, true), EVENT_TYPES),
+                (ev(Modifiers::NONE, false, false), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(out, [Some(String::new()), Some(String::new())]);
     }
 
     #[test]

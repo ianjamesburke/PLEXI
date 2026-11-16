@@ -133,3 +133,51 @@ fn focus_switch_to_a_zoomed_pane_releases_the_hidden_holder() {
         "the hidden holder gets one release"
     );
 }
+
+/// A kitty terminal that is hovered but not focused must not record a key
+/// meant for the focused (non-terminal) pane, so it is never sent a release
+/// for a press it was not given.
+#[test]
+#[ignore = "requires-pty"]
+fn hovered_unfocused_terminal_records_no_hold() {
+    let mut h = HostHarness::new();
+    let id = kitty_terminal(&mut h);
+    let other = *h.app.windows[0]
+        .panes
+        .keys()
+        .find(|pane| **pane != id)
+        .expect("the harness's first pane");
+    h.focus_pane(other);
+    h.run_frames(3);
+    let rect = h
+        .app
+        .ctx
+        .read_response(egui_term::terminal_widget_id(id))
+        .expect("the terminal widget rendered")
+        .rect;
+    let screen = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(1280.0, 800.0),
+    ));
+    h.frame(egui::RawInput {
+        screen_rect: screen,
+        events: vec![egui::Event::PointerMoved(rect.center())],
+        ..Default::default()
+    });
+    h.frame(egui::RawInput {
+        screen_rect: screen,
+        events: vec![
+            egui::Event::PointerMoved(rect.center()),
+            egui::Event::Key {
+                key: egui::Key::PageUp,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        ..Default::default()
+    });
+    h.run_frames(2);
+    assert_eq!(tap(&mut h, id), "", "an unfocused terminal sends nothing");
+}
