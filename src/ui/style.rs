@@ -237,6 +237,9 @@ pub const GALLERY_NARROW_W: f32 = 320.0;
 
 pub const MODAL_WIDTH_SM: f32 = 440.0; // Confirm dialogs: one question, one button row.
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
+/// A text-entry dialog hangs this far below the top of the window, scrim-less,
+/// so the workspace it edits stays in view.
+pub const FIELD_MODAL_TOP: f32 = 80.0;
 pub const TOAST_MAX_WIDTH: f32 = 480.0;
 pub const PANE_HEADER_TITLE_MIN: f32 = 72.0;
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
