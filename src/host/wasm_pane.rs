@@ -1121,6 +1121,17 @@ impl WasmPane {
                 let stats = self.stats.read();
                 self.queue.push_back(InputEvent::SystemStatsResult(stats));
             }
+            Effect::SetTimer(_) | Effect::CancelTimer(_) if !self.has_session_grant("timer") => {
+                let name = if matches!(effect, Effect::SetTimer(_)) {
+                    "set_timer"
+                } else {
+                    "cancel_timer"
+                };
+                log::info!(
+                    "plugin::{}: {name} denied: missing capability timer",
+                    guest_text::shown(self.app.plugin_id())
+                );
+            }
             Effect::SetTimer(t) => {
                 let next_fire_ms = now_ms + t.delay_ms as u64;
                 if let Some(existing) = self.timers.iter_mut().find(|x| x.id == t.id) {
@@ -2845,7 +2856,7 @@ pub(crate) fn capability_prompt_modal<'a>(
 mod tests {
     use super::super::wasm_view::bindings::plexi::platform::types::{
         AiMessage as WitAiMessage, EventStreamDecl as WitEventStreamDecl, NotificationEffect,
-        SpawnEffect,
+        SpawnEffect, TimerEffect,
     };
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
@@ -2883,7 +2894,9 @@ mod tests {
     fn pane(cpu: f32) -> WasmPane {
         let app = WasmView::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
             .expect("load");
-        WasmPane::new(app, Box::new(FakeStats { cpu }))
+        let mut p = WasmPane::new(app, Box::new(FakeStats { cpu }));
+        p.session_grants.insert("timer".to_string());
+        p
     }
 
     fn counter_pane() -> WasmPane {
@@ -2894,6 +2907,71 @@ mod tests {
         )
         .expect("load counter");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    #[test]
+    fn timer_capability_rejects_set_without_grant() {
+        let mut p = counter_pane();
+        let logs = crate::testing::test_log::capture();
+        p.exec(
+            Effect::SetTimer(TimerEffect {
+                id: 7,
+                delay_ms: 20,
+                repeat: true,
+            }),
+            100,
+        );
+        assert!(p.timers.is_empty(), "ungranted timer must not be armed");
+        assert!(logs.records().contains(&(
+            log::Level::Info,
+            "plugin::counter-pane: set_timer denied: missing capability timer".to_string(),
+        )));
+    }
+
+    #[test]
+    fn timer_capability_rejects_cancel_without_grant() {
+        let mut p = counter_pane();
+        p.timers.push(Timer {
+            id: 7,
+            delay_ms: 20,
+            repeat: true,
+            next_fire_ms: 120,
+        });
+        let logs = crate::testing::test_log::capture();
+        p.exec(Effect::CancelTimer(7), 100);
+        assert_eq!(
+            p.timers.len(),
+            1,
+            "ungranted cancel must preserve the timer"
+        );
+        assert_eq!(p.timers[0].next_fire_ms, 120);
+        assert!(logs.records().contains(&(
+            log::Level::Info,
+            "plugin::counter-pane: cancel_timer denied: missing capability timer".to_string(),
+        )));
+    }
+
+    #[test]
+    fn timer_capability_admits_set_replace_and_cancel() {
+        let mut p = counter_pane();
+        p.session_grants.insert("timer".to_string());
+        for (delay_ms, repeat) in [(20, false), (40, true)] {
+            p.exec(
+                Effect::SetTimer(TimerEffect {
+                    id: 7,
+                    delay_ms,
+                    repeat,
+                }),
+                100,
+            );
+            assert_eq!(p.timers.len(), 1);
+            assert_eq!(p.timers[0].id, 7);
+            assert_eq!(p.timers[0].delay_ms, delay_ms);
+            assert_eq!(p.timers[0].repeat, repeat);
+            assert_eq!(p.timers[0].next_fire_ms, 100 + u64::from(delay_ms));
+        }
+        p.exec(Effect::CancelTimer(7), 100);
+        assert!(p.timers.is_empty());
     }
 
     /// Stint 0724 Phase D 2/2: `WasmPane::set_context_id` — always called
@@ -4573,7 +4651,9 @@ mod tests {
     fn pong_pane() -> WasmPane {
         let app = WasmView::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
             .expect("load pong (gpu device required)");
-        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+        let mut p = WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }));
+        p.session_grants.insert("timer".to_string());
+        p
     }
 
     // Bright (white paddle) pixels in the left paddle column [21,28].
@@ -4988,7 +5068,9 @@ mod tests {
     fn daw_pane() -> WasmPane {
         let app = WasmView::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
             .expect("load daw-engine");
-        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+        let mut p = WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }));
+        p.session_grants.insert("timer".to_string());
+        p
     }
 
     fn tool_call(call_id: &str, name: &str, input_json: &str) -> InputEvent {
@@ -5158,7 +5240,9 @@ mod tests {
         let app =
             WasmView::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
                 .expect("load jukebox");
-        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+        let mut p = WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }));
+        p.session_grants.insert("timer".to_string());
+        p
     }
 
     /// Minimal float32 (format 3) WAV bytes — the exact shape the jukebox's
