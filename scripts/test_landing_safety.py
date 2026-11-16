@@ -68,6 +68,116 @@ class LandingSafety(unittest.TestCase):
         self.run_cmd('git', 'commit', '-m', 'remote', cwd=other)
         self.run_cmd('git', 'push', cwd=other)
 
+    def full_flow_lane(self, path):
+        """Pushed lane editing `path`, a stint task, and a gh stub whose squash
+        is a three-way merge onto current alpha (what GitHub does to a behind PR)."""
+        branch = 'feature/stint-1234-fix'
+        lane = self.root / 'worktrees' / branch
+        self.run_cmd('git', 'worktree', 'add', '-b', branch, str(lane))
+        (lane / path).write_text('feature\n')
+        self.run_cmd('git', 'commit', '-am', 'feature', cwd=lane)
+        self.run_cmd('git', 'push', '-u', 'origin', branch, cwd=lane)
+        sha = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
+        (self.root / '.stint/tasks').mkdir(parents=True)
+        (self.root / '.stint/tasks/1234-fix.md').write_text('status: doing\n')
+        self.env.update(TEST_BRANCH=branch, TEST_SHA=sha, TEST_REMOTE=str(self.remote),
+                        TEST_GH_STATE=str(self.base / 'merged'))
+        self.stub('gh', r"""
+if [ "$1 $2" = 'pr view' ]; then
+  if [ -f "$TEST_GH_STATE" ]; then state=MERGED; else state=OPEN; fi
+  if [[ "$*" == *closingIssuesReferences* ]]; then
+    printf '\n'
+  elif [[ "$*" == *'--jq'* ]]; then
+    printf '{"branch":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
+  else
+    printf '{"headRefName":"%s","headRefOid":"%s","state":"%s"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
+  fi
+elif [ "$1 $2" = 'pr merge' ]; then
+  test "${6:-}" = "$TEST_SHA"
+  tmp=$(mktemp -d)
+  git clone -q -b alpha "$TEST_REMOTE" "$tmp"
+  git -C "$tmp" config user.email fixture@example.invalid
+  git -C "$tmp" config user.name Fixture
+  git -C "$tmp" fetch -q origin "$TEST_BRANCH"
+  git -C "$tmp" merge -q --squash FETCH_HEAD
+  git -C "$tmp" commit -qm squash
+  git -C "$tmp" push -q origin alpha
+  touch "$TEST_GH_STATE"
+fi
+""")
+        return branch, lane, sha
+
+    def test_full_merge_allows_behind_pr_with_disjoint_paths(self):
+        branch, lane, sha = self.full_flow_lane('a')
+        self.remote_commit('b')
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PR is behind alpha', result.stdout)
+        self.assertRegex(result.stdout, r'PR paths:\n +a\n')
+        self.assertRegex(result.stdout, r'alpha paths since merge base:\n +b\n')
+        self.assertIn('Disjoint', result.stdout)
+        self.assertEqual((self.root / 'a').read_text(), 'feature\n')
+        self.assertEqual((self.root / 'b').read_text(), 'remote\n')
+        self.assertFalse(lane.exists())
+
+    def test_full_merge_refuses_behind_pr_with_overlapping_path(self):
+        branch, lane, sha = self.full_flow_lane('a')
+        self.remote_commit('a')
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, r'both changed these paths.*\n +a\n')
+        self.assertFalse((self.base / 'merged').exists())
+        self.assertTrue(lane.exists())
+
+    def test_full_merge_refuses_behind_pr_when_alpha_renamed_its_path(self):
+        branch, lane, sha = self.full_flow_lane('a')
+        other = self.base / 'other'
+        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
+        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'mv', 'a', 'moved', cwd=other)
+        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-m', 'rename', cwd=other)
+        self.run_cmd('git', 'push', cwd=other)
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, r'both changed these paths.*\n +a\n')
+        self.assertFalse((self.base / 'merged').exists())
+
+    def test_cleanup_accepts_server_side_rebased_lane_only(self):
+        branch = 'feature/stint-1234-fix'
+        lane = self.root / 'worktrees' / branch
+        self.run_cmd('git', 'worktree', 'add', '-b', branch, str(lane))
+        (lane / 'a').write_text('feature\n')
+        self.run_cmd('git', 'commit', '-am', 'feature', cwd=lane)
+        self.run_cmd('git', 'push', '-u', 'origin', branch, cwd=lane)
+        reviewed = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
+        # Server-side rebase: GitHub rewrites the remote branch; the lane keeps `reviewed`.
+        self.remote_commit('b')
+        other = self.base / 'other'
+        self.run_cmd('git', 'fetch', 'origin', branch, cwd=other)
+        self.run_cmd('git', 'checkout', '-b', branch, 'FETCH_HEAD', cwd=other)
+        self.run_cmd('git', 'rebase', 'alpha', cwd=other)
+        self.run_cmd('git', 'push', '--force', 'origin', branch, cwd=other)
+        rebased = self.run_cmd('git', 'rev-parse', 'HEAD', cwd=other).stdout.strip()
+        self.assertNotEqual(reviewed, rebased)
+        # Shape recorded from the real GitHub GraphQL API (PR timeline, HeadRefForcePushedEvent).
+        events = {'data': {'repository': {'pullRequest': {'timelineItems': {'nodes': [
+            {'beforeCommit': {'oid': reviewed}, 'afterCommit': {'oid': rebased}}]}}}}}
+        self.env['TEST_PR'] = json.dumps({'state': 'MERGED', 'headRefName': branch, 'headRefOid': rebased})
+        self.env['TEST_EVENTS'] = json.dumps(events)
+        self.stub('gh', 'if [ "$1 $2" = "api graphql" ]; then printf "%s\\n" "$TEST_EVENTS"; else printf "%s\\n" "$TEST_PR"; fi')
+        # A lane at a commit that was never a PR head is still refused.
+        (lane / 'a').write_text('unpushed\n')
+        self.run_cmd('git', 'commit', '-am', 'unpushed', cwd=lane)
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, rebased)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('lane branch has moved', result.stderr)
+        self.assertTrue(lane.exists())
+        self.run_cmd('git', 'reset', '--hard', reviewed, cwd=lane)
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, rebased)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('pre-rebase head', result.stdout)
+        self.assertFalse(lane.exists())
+        self.assertEqual(self.run_cmd('git', 'ls-remote', '--heads', 'origin', branch).stdout, '')
+
     def test_sync_preserves_disjoint_and_refuses_overlapping_or_divergent(self):
         (self.root / 'b').write_text('local\n')
         self.remote_commit('a')

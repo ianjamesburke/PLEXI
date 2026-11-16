@@ -68,9 +68,67 @@ assert_clean_lane() {
     fi
 }
 
+# A reviewed head that is behind alpha may merge when no path changed on alpha
+# since the merge base is also changed by the PR. GitHub's squash of a behind
+# PR applies the PR onto current alpha (a three-way merge), so disjoint paths
+# cannot revert alpha's commits. Renames count as both paths. Semantic
+# conflicts between disjoint changes are the post-merge alpha run's job.
+assert_disjoint_from_alpha() {
+    local MERGE_BASE="$1" REVIEWED_HEAD="$2" PR_FILES ALPHA_FILES OVERLAP
+    if [ "$MERGE_BASE" = "$(git rev-parse origin/alpha)" ]; then
+        return 0
+    fi
+    PR_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" "$REVIEWED_HEAD" | LC_ALL=C sort -u)
+    ALPHA_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" origin/alpha | LC_ALL=C sort -u)
+    OVERLAP=$(LC_ALL=C comm -12 <(printf '%s\n' "$PR_FILES") <(printf '%s\n' "$ALPHA_FILES") | sed '/^$/d')
+    echo "==> PR is behind alpha (merge base $MERGE_BASE); comparing changed paths"
+    echo "    PR paths:"
+    printf '%s\n' "$PR_FILES" | sed 's/^/      /'
+    echo "    alpha paths since merge base:"
+    printf '%s\n' "$ALPHA_FILES" | sed 's/^/      /'
+    if [ -n "$OVERLAP" ]; then
+        echo "ERROR: PR is behind alpha and both changed these paths; rebase and repeat required validation and independent review before merging:" >&2
+        printf '%s\n' "$OVERLAP" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    echo "==> Disjoint: no path changed on both sides; merging without rebase"
+}
+
+# Heads the PR branch held before force-pushes that led to PR_HEAD, newest
+# first, from GitHub's HeadRefForcePushedEvent record. A server-side rebase is
+# such a force-push; the local lane still holds the pre-rebase head.
+prior_pr_heads() {
+    local PR="$1" PR_HEAD="$2" EVENTS
+    EVENTS=$(gh api graphql -F owner='{owner}' -F name='{repo}' -F number="$PR" -f query='
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: 100) {
+        nodes { ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+      }
+    }
+  }
+}') || {
+        echo "ERROR: could not read force-push history of PR #$PR from GitHub; no cleanup performed." >&2
+        return 1
+    }
+    printf '%s' "$EVENTS" | jq -r --arg head "$PR_HEAD" '
+        [.data.repository.pullRequest.timelineItems.nodes[]
+         | {b: .beforeCommit.oid, a: .afterCommit.oid}]
+        | reverse
+        | reduce .[] as $e ({cur: $head, out: []};
+            if $e.a == .cur and $e.b != null then {cur: $e.b, out: (.out + [$e.b])} else . end)
+        | .out[]'
+}
+
+lane_head_matches() {
+    local HEAD="$1" PR_HEAD="$2" PRIOR="$3"
+    [ -z "$HEAD" ] || [ "$HEAD" = "$PR_HEAD" ] || printf '%s\n' "$PRIOR" | grep -Fqx "$HEAD"
+}
+
 do_cleanup() {
     local PR="$1" BRANCH="$2" REVIEWED_HEAD="$3" WORKTREE_PATH="$ROOT/worktrees/$2"
-    local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD
+    local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD PRIOR=""
     INFO=$(gh pr view "$PR" --json state,headRefName,headRefOid)
     STATE=$(printf '%s' "$INFO" | jq -r .state)
     PR_BRANCH=$(printf '%s' "$INFO" | jq -r .headRefName)
@@ -82,9 +140,13 @@ do_cleanup() {
     assert_clean_lane "$BRANCH"
     LOCAL_HEAD=$(git rev-parse -q --verify "refs/heads/$BRANCH" || true)
     REMOTE_HEAD=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk '{print $1}')
-    if { [ -n "$LOCAL_HEAD" ] && [ "$LOCAL_HEAD" != "$PR_HEAD" ]; } || { [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$PR_HEAD" ]; }; then
-        echo "ERROR: lane branch has moved since its PR; preserve it and inspect before cleanup." >&2
-        return 1
+    if ! lane_head_matches "$LOCAL_HEAD" "$PR_HEAD" "" || ! lane_head_matches "$REMOTE_HEAD" "$PR_HEAD" ""; then
+        PRIOR=$(prior_pr_heads "$PR" "$PR_HEAD") || return 1
+        if ! lane_head_matches "$LOCAL_HEAD" "$PR_HEAD" "$PRIOR" || ! lane_head_matches "$REMOTE_HEAD" "$PR_HEAD" "$PRIOR"; then
+            echo "ERROR: lane branch has moved since its PR (local ${LOCAL_HEAD:-none}, remote ${REMOTE_HEAD:-none}, merged head $PR_HEAD, not a pre-rebase head); preserve it and inspect before cleanup." >&2
+            return 1
+        fi
+        echo "==> Lane holds pre-rebase head of PR #$PR (local ${LOCAL_HEAD:-none}, remote ${REMOTE_HEAD:-none}); GitHub force-pushed it to merged head $PR_HEAD"
     fi
     echo "==> Cleaning up PR #$PR lane artifacts"
     just channel-clean "pr-${PR}"
@@ -109,7 +171,7 @@ do_cleanup() {
         git branch -D "$BRANCH"
     fi
     if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-        git push --force-with-lease="refs/heads/$BRANCH:$PR_HEAD" origin ":refs/heads/$BRANCH"
+        git push --force-with-lease="refs/heads/$BRANCH:$REMOTE_HEAD" origin ":refs/heads/$BRANCH"
     fi
 }
 
@@ -474,17 +536,15 @@ case "$CMD" in
                 echo "ERROR: PR branch no longer matches reviewed head; review the current head." >&2
                 exit 1
             fi
-            if ! git merge-base --is-ancestor origin/alpha "$REVIEWED_HEAD"; then
-                echo "ERROR: PR is behind alpha; rebase and repeat required validation and independent review before merging." >&2
-                exit 1
-            fi
+            MERGE_BASE=$(git merge-base origin/alpha "$REVIEWED_HEAD")
+            assert_disjoint_from_alpha "$MERGE_BASE" "$REVIEWED_HEAD"
             # Refuse before the remote merge when a local edit intersects the PR.
             while IFS= read -r -d '' path; do
                 if [ -n "$(git status --porcelain -- "$path")" ]; then
                     echo "ERROR: local change overlaps PR path $path; preserve it and resolve before merging." >&2
                     exit 1
                 fi
-            done < <(git diff --name-only -z origin/alpha "$REVIEWED_HEAD")
+            done < <(git diff --name-only -z --no-renames "$MERGE_BASE" "$REVIEWED_HEAD")
             do_squash "$PR" "$REVIEWED_HEAD"
         else
             echo "==> PR already merged — skipping squash; resuming sync and cleanup"
