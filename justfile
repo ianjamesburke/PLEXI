@@ -207,16 +207,7 @@ gen-sdk-docs:
 
 # Verify the committed SDK docs are up to date with the current SDK source.
 # Fails if website/src/content/docs/sdk.md is stale.
-check-sdk-docs:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    python3 tools/gen_sdk_docs.py --stdout > /tmp/plexi_check_sdk.md
-    if ! diff -q website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md > /dev/null; then
-        echo "ERROR: website/src/content/docs/sdk.md is stale. Run 'just gen-sdk-docs'."
-        diff website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md || true
-        exit 1
-    fi
-    echo "SDK docs are up to date."
+check-sdk-docs: (check-generated "website/src/content/docs/sdk.md" "python3 tools/gen_sdk_docs.py --stdout" "gen-sdk-docs" "SDK docs are up to date.")
 
 # Generate PGAP capability reference docs from the protocol JSON schema.
 # Run after any change to src/protocol/ (via just gen-schema first).
@@ -225,16 +216,7 @@ gen-capability-docs:
 
 # Verify the committed PGAP docs are up to date with the current schema.
 # Fails if website/src/content/docs/pgap.md is stale.
-check-capability-docs:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    python3 tools/gen_capability_docs.py --stdout > /tmp/plexi_check_pgap.md
-    if ! diff -q website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md > /dev/null; then
-        echo "ERROR: website/src/content/docs/pgap.md is stale. Run 'just gen-capability-docs'."
-        diff website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md || true
-        exit 1
-    fi
-    echo "PGAP capability docs are up to date."
+check-capability-docs: (check-generated "website/src/content/docs/pgap.md" "python3 tools/gen_capability_docs.py --stdout" "gen-capability-docs" "PGAP capability docs are up to date.")
 
 # Assert every non-hidden CLI command is mentioned in at least one docs page.
 check-docs-coverage:
@@ -250,8 +232,7 @@ check-authoring-docs:
 gen-manifest-docs:
     uv run --no-project python tools/gen_manifest_docs.py
 
-check-manifest-docs:
-    uv run --no-project python tools/gen_manifest_docs.py --check
+check-manifest-docs: (check-generated "website/src/content/docs/plugin-manifest.md" "uv run --no-project python tools/gen_manifest_docs.py --stdout" "gen-manifest-docs" "Manifest reference is up to date.")
 
 # Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
 # Verify sdk/python/uv.lock matches sdk/python/pyproject.toml.

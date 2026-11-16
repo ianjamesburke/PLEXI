@@ -68,9 +68,128 @@ assert_clean_lane() {
     fi
 }
 
+# Outputs of the justfile's check-generated gates: the first argument of every
+# recipe dependency on check-generated, read through just's own parser. just
+# dumps a literal argument as a string and an expression as an array; anything
+# but a non-empty string literal, or no such dependency at all, fails closed.
+generated_artifacts() {
+    local DUMP ARTIFACTS
+    DUMP=$(just --justfile "$ROOT/justfile" --working-directory "$ROOT" --dump --dump-format json) || {
+        echo "ERROR: could not read generated artifacts from $ROOT/justfile via 'just --dump'; refusing behind-alpha merge." >&2
+        return 1
+    }
+    ARTIFACTS=$(printf '%s' "$DUMP" | jq -r '
+        if (.recipes | type) != "object" then error("dump has no recipes object") else . end
+        | [.recipes[] | .dependencies
+           | if type != "array" then error("recipe dependencies are not an array") else .[] end
+           | select(.recipe == "check-generated")]
+        | if length == 0 then error("no recipe depends on check-generated") else .[] end
+        | .arguments
+        | if type != "array" or length != 4 then error("check-generated dependency does not have 4 arguments: \(tojson)")
+          elif (.[0] | type) != "string" or .[0] == "" then error("check-generated artifact is not a string literal: \(.[0] | tojson)")
+          else .[0] end') || {
+        echo "ERROR: unexpected 'just --dump' shape for check-generated in $ROOT/justfile; refusing behind-alpha merge." >&2
+        return 1
+    }
+    printf '%s\n' "$ARTIFACTS" | LC_ALL=C sort -u
+}
+
+# Lock inputs no check-generated recipe owns (check-sdk-lock verifies, not
+# generates): the SDK's dependency manifest and its lockfile.
+SDK_LOCK_PATHS='sdk/python/pyproject.toml
+sdk/python/uv.lock'
+
+
+# Paths whose change can invalidate unrelated changes (build inputs, CI,
+# generated outputs). Alpha's push run builds and lints but does not test, so a
+# behind PR touching or meeting one of these must rebase and re-validate.
+global_paths() {
+    local GENERATED="$1" PATH_NAME
+    while IFS= read -r PATH_NAME; do
+        [ -n "$PATH_NAME" ] || continue
+        case "$PATH_NAME" in
+            Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock|build.rs|*/build.rs|.github/workflows/*)
+                printf '%s\n' "$PATH_NAME" ;;
+            *) if printf '%s\n%s\n' "$GENERATED" "$SDK_LOCK_PATHS" | grep -Fqx -- "$PATH_NAME"; then printf '%s\n' "$PATH_NAME"; fi ;;
+        esac
+    done
+}
+
+# A reviewed head that is behind alpha may merge when no path changed on alpha
+# since the merge base is also changed by the PR, and neither side touched a
+# global path. GitHub's squash of a behind PR applies the PR onto current alpha
+# (a three-way merge), so disjoint paths cannot revert alpha's commits. Renames
+# count as both paths. Remaining semantic conflicts surface in the nightly
+# host test run.
+assert_disjoint_from_alpha() {
+    local REVIEWED_HEAD="$1" MERGE_BASE PR_FILES ALPHA_FILES OVERLAP GENERATED GLOBAL
+    MERGE_BASE=$(git merge-base --all origin/alpha "$REVIEWED_HEAD")
+    if [ "$(printf '%s\n' "$MERGE_BASE" | wc -l)" -ne 1 ]; then
+        echo "ERROR: alpha and $REVIEWED_HEAD have more than one merge base (criss-cross history); rebase onto alpha and repeat validation before merging:" >&2
+        printf '%s\n' "$MERGE_BASE" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    if [ "$MERGE_BASE" = "$(git rev-parse origin/alpha)" ]; then
+        return 0
+    fi
+    PR_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" "$REVIEWED_HEAD" | LC_ALL=C sort -u)
+    ALPHA_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" origin/alpha | LC_ALL=C sort -u)
+    OVERLAP=$(LC_ALL=C comm -12 <(printf '%s\n' "$PR_FILES") <(printf '%s\n' "$ALPHA_FILES") | sed '/^$/d')
+    echo "==> PR is behind alpha (merge base $MERGE_BASE); comparing changed paths"
+    echo "    PR paths:"
+    printf '%s\n' "$PR_FILES" | sed 's/^/      /'
+    echo "    alpha paths since merge base:"
+    printf '%s\n' "$ALPHA_FILES" | sed 's/^/      /'
+    if [ -n "$OVERLAP" ]; then
+        echo "ERROR: PR is behind alpha and both changed these paths; rebase and repeat required validation and independent review before merging:" >&2
+        printf '%s\n' "$OVERLAP" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    GENERATED=$(generated_artifacts) || exit 1
+    GLOBAL=$(printf '%s\n%s\n' "$PR_FILES" "$ALPHA_FILES" | global_paths "$GENERATED" | LC_ALL=C sort -u)
+    if [ -n "$GLOBAL" ]; then
+        echo "ERROR: PR is behind alpha and these global paths (build inputs, CI workflows, or generated outputs) changed on one side; rebase and repeat required validation before merging:" >&2
+        printf '%s\n' "$GLOBAL" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    echo "==> Disjoint: no path changed on both sides and no global path changed; merging without rebase"
+}
+
+# Heads the PR branch held before force-pushes that led to PR_HEAD, newest
+# first, from GitHub's HeadRefForcePushedEvent record. A server-side rebase is
+# such a force-push; the local lane still holds the pre-rebase head.
+prior_pr_heads() {
+    local PR="$1" PR_HEAD="$2" EVENTS
+    EVENTS=$(gh api graphql -F owner='{owner}' -F name='{repo}' -F number="$PR" -f query='
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: 100) {
+        nodes { ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+      }
+    }
+  }
+}') || {
+        echo "ERROR: could not read force-push history of PR #$PR from GitHub; no cleanup performed." >&2
+        return 1
+    }
+    printf '%s' "$EVENTS" | jq -r --arg head "$PR_HEAD" '
+        [.data.repository.pullRequest.timelineItems.nodes[]
+         | {b: .beforeCommit.oid, a: .afterCommit.oid}]
+        | reverse
+        | reduce .[] as $e ({cur: $head, out: []};
+            if $e.a == .cur and $e.b != null then {cur: $e.b, out: (.out + [$e.b])} else . end)
+        | .out[]'
+}
+
+lane_head_matches() {
+    local HEAD="$1" PR_HEAD="$2" PRIOR="$3"
+    [ -z "$HEAD" ] || [ "$HEAD" = "$PR_HEAD" ] || printf '%s\n' "$PRIOR" | grep -Fqx "$HEAD"
+}
+
 do_cleanup() {
     local PR="$1" BRANCH="$2" REVIEWED_HEAD="$3" WORKTREE_PATH="$ROOT/worktrees/$2"
-    local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD
+    local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD PRIOR=""
     INFO=$(gh pr view "$PR" --json state,headRefName,headRefOid)
     STATE=$(printf '%s' "$INFO" | jq -r .state)
     PR_BRANCH=$(printf '%s' "$INFO" | jq -r .headRefName)
@@ -82,9 +201,28 @@ do_cleanup() {
     assert_clean_lane "$BRANCH"
     LOCAL_HEAD=$(git rev-parse -q --verify "refs/heads/$BRANCH" || true)
     REMOTE_HEAD=$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk '{print $1}')
-    if { [ -n "$LOCAL_HEAD" ] && [ "$LOCAL_HEAD" != "$PR_HEAD" ]; } || { [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$PR_HEAD" ]; }; then
-        echo "ERROR: lane branch has moved since its PR; preserve it and inspect before cleanup." >&2
-        return 1
+    if ! lane_head_matches "$LOCAL_HEAD" "$PR_HEAD" "" || ! lane_head_matches "$REMOTE_HEAD" "$PR_HEAD" ""; then
+        PRIOR=$(prior_pr_heads "$PR" "$PR_HEAD") || return 1
+        if ! lane_head_matches "$LOCAL_HEAD" "$PR_HEAD" "$PRIOR" || ! lane_head_matches "$REMOTE_HEAD" "$PR_HEAD" "$PRIOR"; then
+            echo "ERROR: lane branch has moved since its PR (local ${LOCAL_HEAD:-none}, remote ${REMOTE_HEAD:-none}, merged head $PR_HEAD, not a pre-rebase head); preserve it and inspect before cleanup." >&2
+            return 1
+        fi
+        echo "==> Lane holds pre-rebase head of PR #$PR (local ${LOCAL_HEAD:-none}, remote ${REMOTE_HEAD:-none}); GitHub force-pushed it to merged head $PR_HEAD"
+        # A force-push can drop commits, so the timeline does not prove the old
+        # head's work landed. Keep every old head under a durable local ref.
+        if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$PR_HEAD" ]; then
+            git fetch -q origin "refs/heads/$BRANCH"
+            if [ "$(git rev-parse FETCH_HEAD)" != "$REMOTE_HEAD" ]; then
+                echo "ERROR: remote lane branch moved while preserving it; no cleanup performed." >&2
+                return 1
+            fi
+        fi
+        local HEAD_SHA
+        for HEAD_SHA in $(printf '%s\n%s\n' "$LOCAL_HEAD" "$REMOTE_HEAD" | sort -u); do
+            [ "$HEAD_SHA" != "$PR_HEAD" ] || continue
+            git update-ref "refs/plexi-preserved/pr-$PR/$HEAD_SHA" "$HEAD_SHA"
+            echo "==> Preserved pre-rebase head $HEAD_SHA at refs/plexi-preserved/pr-$PR/$HEAD_SHA (restore: git branch <name> refs/plexi-preserved/pr-$PR/$HEAD_SHA)"
+        done
     fi
     echo "==> Cleaning up PR #$PR lane artifacts"
     just channel-clean "pr-${PR}"
@@ -105,11 +243,18 @@ do_cleanup() {
         echo "==> Retiring lane with recognized generated artifacts (if present)"
         git worktree remove "$WORKTREE_PATH"
     fi
-    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-        git branch -D "$BRANCH"
+    # Compare-and-delete: a commit made on the lane after the checks above
+    # keeps the branch. update-ref does not check worktrees, so refuse first.
+    if git worktree list --porcelain | grep -Fqx "branch refs/heads/$BRANCH"; then
+        echo "ERROR: lane branch $BRANCH is checked out in another worktree; branch kept, remote not deleted." >&2
+        return 1
+    fi
+    if [ -n "$LOCAL_HEAD" ] && ! git update-ref -d "refs/heads/$BRANCH" "$LOCAL_HEAD"; then
+        echo "ERROR: lane branch $BRANCH moved during cleanup (expected $LOCAL_HEAD); branch kept, remote not deleted." >&2
+        return 1
     fi
     if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-        git push --force-with-lease="refs/heads/$BRANCH:$PR_HEAD" origin ":refs/heads/$BRANCH"
+        git push --force-with-lease="refs/heads/$BRANCH:$REMOTE_HEAD" origin ":refs/heads/$BRANCH"
     fi
 }
 
@@ -474,17 +619,15 @@ case "$CMD" in
                 echo "ERROR: PR branch no longer matches reviewed head; review the current head." >&2
                 exit 1
             fi
-            if ! git merge-base --is-ancestor origin/alpha "$REVIEWED_HEAD"; then
-                echo "ERROR: PR is behind alpha; rebase and repeat required validation and independent review before merging." >&2
-                exit 1
-            fi
+            assert_disjoint_from_alpha "$REVIEWED_HEAD"
+            MERGE_BASE=$(git merge-base origin/alpha "$REVIEWED_HEAD")
             # Refuse before the remote merge when a local edit intersects the PR.
             while IFS= read -r -d '' path; do
                 if [ -n "$(git status --porcelain -- "$path")" ]; then
                     echo "ERROR: local change overlaps PR path $path; preserve it and resolve before merging." >&2
                     exit 1
                 fi
-            done < <(git diff --name-only -z origin/alpha "$REVIEWED_HEAD")
+            done < <(git diff --name-only -z --no-renames "$MERGE_BASE" "$REVIEWED_HEAD")
             do_squash "$PR" "$REVIEWED_HEAD"
         else
             echo "==> PR already merged — skipping squash; resuming sync and cleanup"
