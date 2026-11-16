@@ -730,9 +730,7 @@ pub fn plugin_uninstall(id: &str, assume_yes: bool) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let Some(installed) = registry.get(id) else {
-        eprintln!(
-            "error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins"
-        );
+        eprintln!("error: {}", plugin_lookup_error(&registry, id));
         return 1;
     };
     let plugin_dir = installed.plugin_dir.clone();
@@ -1558,9 +1556,7 @@ pub fn plugin_info(id: &str) -> i32 {
         &crate::app::registry::plugins_dir(),
     );
     let Some(installed) = registry.get(id) else {
-        eprintln!(
-            "error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins"
-        );
+        eprintln!("error: {}", plugin_lookup_error(&registry, id));
         return 1;
     };
     let plugin_dir = installed
@@ -1839,9 +1835,7 @@ pub fn view_render(
                 )
             }
             None => {
-                eprintln!(
-                    "error: plugin '{plugin}' not found — run `plexi plugin list` to see installed plugins"
-                );
+                eprintln!("error: {}", plugin_lookup_error(&registry, plugin));
                 return 1;
             }
         }
@@ -3394,6 +3388,83 @@ mod scaffold_marketplace_tests {
         let _on =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
         assert_placeholder(&manifest_for(scaffold_python_plugin));
+    }
+}
+
+pub(super) fn plugin_lookup_error(
+    registry: &crate::app::registry::PluginRegistry,
+    id: &str,
+) -> String {
+    registry
+        .skipped_reason(id)
+        .map(|skipped| skipped.load_error(id))
+        .unwrap_or_else(|| {
+            format!("plugin '{id}' not found — run `plexi plugin list` to see installed plugins")
+        })
+}
+
+#[cfg(test)]
+mod skipped_plugin_tests {
+    fn assert_skipped(command: &str) {
+        const CHILD: &str = "PLEXI_1603_CHILD";
+        if let Some(profile) = std::env::var_os(CHILD) {
+            let _profile = crate::config::set_test_profile_dir(profile.into());
+            let code = match command {
+                "plugin_uninstall" => super::plugin_uninstall("test.skipped", true),
+                "plugin_info" => super::plugin_info("test.skipped"),
+                "view_render" => super::view_render("test.skipped", "500x500", None, None, false),
+                _ => panic!("unknown test command"),
+            };
+            assert_eq!(code, 1);
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = tmp.path().join("profile");
+        let plugin = profile.join("plugins/test.skipped");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("manifest.toml"),
+            "schema_version = 2\n[plugin]\nid = \"test.skipped\"\nname = \"Skipped\"\nversion = \"0.1.0\"\nwatch = true\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n").unwrap();
+        let registry = crate::app::registry::PluginRegistry::load_with_global(
+            tmp.path(),
+            &profile.join("plugins"),
+        );
+        let reason = &registry
+            .skipped_reason("test.skipped")
+            .expect("fixture skipped")
+            .error;
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("cli::plugin::skipped_plugin_tests::{command}_reports_skip_reason"),
+                "--nocapture",
+            ])
+            .env(CHILD, &profile)
+            .env("HOME", tmp.path())
+            .current_dir(tmp.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = crate::app::registry::wait_for_home_lookup_test(child);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(stderr.contains(reason), "expected {reason}: {stderr}");
+        assert!(!stderr.contains("not found"), "{stderr}");
+        assert!(plugin.exists(), "skipped plugin must remain on disk");
+    }
+
+    #[test]
+    fn plugin_uninstall_reports_skip_reason() {
+        assert_skipped("plugin_uninstall");
+    }
+    #[test]
+    fn plugin_info_reports_skip_reason() {
+        assert_skipped("plugin_info");
+    }
+    #[test]
+    fn view_render_reports_skip_reason() {
+        assert_skipped("view_render");
     }
 }
 

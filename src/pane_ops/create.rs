@@ -2778,13 +2778,10 @@ impl PlexiApp {
                     log::info!(
                         "open_view_by_id: plugin '{id}' was skipped at registry load ({}): {}",
                         skipped.dir.display(),
-                        skipped.error
+                        skipped.error,
+                        id = crate::host::guest_text::shown(id)
                     );
-                    return Err(format!(
-                        "plugin '{id}' is installed at {} but could not be loaded: {}",
-                        skipped.dir.display(),
-                        skipped.error
-                    ));
+                    return Err(skipped.load_error(id));
                 }
                 log::warn!(
                     "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry", id = crate::host::guest_text::shown(id)
@@ -3874,6 +3871,30 @@ fn sanitize_wasm_path_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_plugin_error_truncates_long_id() {
+        let mut h = HostHarness::new();
+        let dir = crate::app::registry::plugins_dir().join("skipped");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "a".repeat(2000);
+        std::fs::write(dir.join("manifest.toml"), format!(
+            "schema_version = 2\n[plugin]\nid = \"{id}\"\nname = \"Skipped\"\nversion = \"0.1.0\"\nwatch = true\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n"
+        )).unwrap();
+        let root = h.app.router.active().root.clone();
+        h.app.registries =
+            crate::app::registry_views::RegistryViews::new_with_global(dir.parent().unwrap());
+        let error = h
+            .app
+            .launch_view_by_id_with_layout(&id, None, &[], Some(root))
+            .expect_err("skipped plugin must not launch");
+        assert!(error.contains("could not be loaded"), "{error}");
+        assert!(
+            error.contains(&crate::host::guest_text::shown(&id)),
+            "{error}"
+        );
+        assert!(!error.contains(&id), "raw id must be truncated: {error}");
+    }
 
     /// Stint 1344: a bare `.wasm` is named by its file, and that id is its
     /// permission principal. Two names that used to reduce to one id must not

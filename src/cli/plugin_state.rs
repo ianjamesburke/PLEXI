@@ -124,9 +124,9 @@ fn resolve(
     scope_raw: Option<&str>,
     registry: &crate::app::registry::PluginRegistry,
 ) -> Result<ResolvedState, String> {
-    let installed = registry.get(plugin_id).ok_or_else(|| {
-        format!("plugin '{plugin_id}' not found — run `plexi plugin list` to see installed plugins")
-    })?;
+    let installed = registry
+        .get(plugin_id)
+        .ok_or_else(|| super::plugin::plugin_lookup_error(registry, plugin_id))?;
     if !installed.state_declared {
         return Err(format!(
             "plugin '{plugin_id}' declares no [state] section — it has no file-backed state to address"
@@ -369,6 +369,30 @@ fn set_from(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolve_reports_skip_reason() {
+        let (plugins, _) = install_plugin(None);
+        let manifest = plugins.path().join("test.state/manifest.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("[plugin]", "[plugin]\nwatch = true"),
+        )
+        .unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let registry =
+            crate::app::registry::PluginRegistry::load_with_global(bare.path(), plugins.path());
+        let reason = &registry
+            .skipped_reason("test.state")
+            .expect("fixture skipped")
+            .error;
+        let error = match super::resolve("test.state", None, &registry) {
+            Err(error) => error,
+            Ok(_) => panic!("skipped plugin must fail resolution"),
+        };
+        assert!(error.contains(reason), "{error}");
+        assert!(!error.contains("not found"), "{error}");
+    }
     use super::*;
     use tempfile::tempdir;
 
