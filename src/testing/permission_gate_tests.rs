@@ -2203,18 +2203,17 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     node_click_permissions_button(&mut h, pane, "Revoke");
     pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
     // Force the inventory rebuild to land after resolving Back and before its
-    // click. The selected pending row disappears, leaving the timer grant and
-    // fewer action buttons. Back must retain its identity across that change.
+    // click. The selected pending row disappears and selection clears.
+    // Back must retain its identity while no other entry is opened implicitly.
     pump_until(&mut h, |h| {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane)
             .and_then(crate::host::pane::Pane::as_view)
             .is_some_and(|view| {
-                view.semantic_state()
-                    .nodes
-                    .iter()
-                    .any(|node| node.label.as_deref() == Some("timer  allow"))
+                view.semantic_state().nodes.iter().any(|node| {
+                    node.label.as_deref() == Some("Choose another entry from the list.")
+                })
             })
     });
     assert_eq!(
@@ -2257,6 +2256,33 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
                     .nodes
                     .iter()
                     .any(|node| node.label.as_deref() == Some("probe.denied  deny"))
+            })
+    });
+    // The removed selection stays cleared across polls. Choose the denial
+    // explicitly before opening it instead of inheriting its old row position.
+    let list = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane)
+        .and_then(crate::host::pane::Pane::as_view)
+        .unwrap()
+        .semantic_state()
+        .nodes
+        .into_iter()
+        .find(|node| node.role == "list_view")
+        .expect("permission list");
+    // A node click on ListView selects its first row through the renderer.
+    // Raw synthetic KeyPane input to Permissions is intentionally refused.
+    click_permissions_node(&mut h, pane, "select-denial", &list.id);
+    pump_until(&mut h, |h| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane)
+            .and_then(crate::host::pane::Pane::as_view)
+            .is_some_and(|view| {
+                view.semantic_state()
+                    .nodes
+                    .iter()
+                    .any(|node| node.role == "list_view" && node.value.as_deref() == Some("0"))
             })
     });
     node_click_permissions_button(&mut h, pane, "Open");

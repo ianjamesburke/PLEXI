@@ -6,6 +6,7 @@ Rows come from the host. This app does not keep a second grant store.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from plexi_sdk import log
@@ -26,6 +27,7 @@ POLL_TIMER = 1
 DEFAULT_STATE: dict[str, Any] = {
     "entries": [],
     "selected": 0,
+    "selected_id": None,
     "mode": "list",
     "notice": "",
     "inventory_seen": False,
@@ -49,26 +51,32 @@ def update(event) -> list:
 
     if isinstance(event, PermissionInventory):
         data = _state()
-        entries = [entry for row in event.entries if (entry := _entry(row)) is not None]
-        selected = _clamp(data["selected"], len(entries))
+        entries, invalid_notice = _entries(event.entries)
+        selected_id = data["selected_id"]
+        if not data["inventory_seen"] and selected_id is None and entries:
+            selected_id = entries[0]["id"]
+        if not any(row["id"] == selected_id for row in entries):
+            selected_id = None
         if event.notice:
             notice = event.notice
         elif event.status == "list":
             notice = ""
         else:
             notice = data["notice"]
+        if invalid_notice:
+            notice = invalid_notice
         log.debug(
             f"permissions: inventory count={len(entries)} status={event.status or 'list'}"
         )
         if (
             data["inventory_seen"]
             and entries == data["entries"]
-            and selected == data["selected"]
+            and selected_id == data["selected_id"]
             and notice == data["notice"]
         ):
             return []
         data["entries"] = entries
-        data["selected"] = selected
+        data["selected_id"] = selected_id
         data["notice"] = notice
         data["inventory_seen"] = True
         return _commit(data)
@@ -82,7 +90,12 @@ def update(event) -> list:
         log.info("permissions: reload")
         return [ReadPermissionDecisions()]
 
-    if action == "detail" and data["entries"]:
+    if action == "detail" or action.startswith("detail:"):
+        entry_id = data["selected_id"] if isinstance(event, KeyEvent) else action.removeprefix("detail:")
+        if not any(row["id"] == entry_id for row in data["entries"]):
+            data["notice"] = "That permission entry is no longer available. Choose an entry again."
+            return _commit(data)
+        data["selected_id"] = entry_id
         data["mode"] = "detail"
         data["notice"] = ""
         return _commit(data)
@@ -92,32 +105,39 @@ def update(event) -> list:
         return _commit(data)
 
     if action.startswith("select:"):
+        # SelectList appends a row index; resolve it in the rendered snapshot,
+        # never in an inventory that may have changed since that click.
         try:
-            idx = int(action.removeprefix("select:"))
-        except ValueError:
+            snapshot, idx = action.removeprefix("select:").rsplit(":", 1)
+            entry_id = json.loads(snapshot)[int(idx)]
+        except (ValueError, IndexError, TypeError):
             return []
-        data["selected"] = _clamp(idx, len(data["entries"]))
-        log.info(f"permissions: selected row {data['selected']}")
+        if not any(row["id"] == entry_id for row in data["entries"]):
+            data["notice"] = "That permission entry is no longer available. Choose an entry again."
+            return _commit(data)
+        data["selected_id"] = entry_id
+        log.info(f"permissions: selected entry {entry_id}")
         return _commit(data)
 
-    if action == "up":
-        data["selected"] = _clamp(data["selected"] - 1, len(data["entries"]))
-        return _commit(data)
-
-    if action == "down":
-        data["selected"] = _clamp(data["selected"] + 1, len(data["entries"]))
+    if action in {"up", "down"}:
+        idx = _clamp(data["selected"] + (-1 if action == "up" else 1), len(data["entries"]))
+        data["selected_id"] = data["entries"][idx]["id"] if data["entries"] else None
         return _commit(data)
 
     decision, _, entry_id = action.partition(":")
     if decision in {"revoke", "reset", "allow"}:
         # Keyboard shortcuts address the current selection. Button events must
         # carry the identity captured when rendered, never a positional fallback.
-        if isinstance(event, KeyEvent) and data["entries"]:
-            entry_id = data["entries"][data["selected"]]["id"]
+        if isinstance(event, KeyEvent):
+            entry_id = data["selected_id"]
         entry = next((row for row in data["entries"] if row["id"] == entry_id), None)
         if entry is None:
             log.info(f"permissions: refused {decision}; entry no longer available")
             data["notice"] = "That permission entry is no longer available. Reload and choose an entry again."
+            return _commit(data)
+        if decision == "allow" and entry["kind"] not in {"deny", "pending"}:
+            log.info(f"permissions: refused allow for kind {entry['kind']}")
+            data["notice"] = "Allow is only available for denied or pending entries."
             return _commit(data)
         log.info(f"permissions: {decision} {entry['id']}")
         return [PermissionDecision(id=entry["id"], action=decision)]
@@ -127,7 +147,7 @@ def update(event) -> list:
 
 def view():
     data = _state()
-    if data["mode"] == "detail" and data["entries"]:
+    if data["mode"] == "detail":
         return _detail_view(data)
     return _list_view(data)
 
@@ -136,12 +156,40 @@ def _state() -> dict:
     data = dict(DEFAULT_STATE)
     for key, value in DEFAULT_STATE.items():
         data[key] = state.get(key, value)
-    data["entries"] = [entry for row in data.get("entries") or [] if (entry := _entry(row)) is not None]
-    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["entries"]))
+    data["entries"], invalid_notice = _entries(data.get("entries") or [])
+    # Migrate old state once; a cleared selection after a poll stays cleared.
+    if data["selected_id"] is None and not data["inventory_seen"] and data["entries"]:
+        idx = _clamp(int(data.get("selected") or 0), len(data["entries"]))
+        data["selected_id"] = data["entries"][idx]["id"]
+    _sync_selection(data)
     data["mode"] = data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
     data["notice"] = str(data.get("notice") or "")
     data["inventory_seen"] = bool(data.get("inventory_seen"))
+    if invalid_notice:
+        data["notice"] = invalid_notice
     return data
+
+
+def _entries(rows: list) -> tuple[list[dict], str]:
+    entries = [entry for row in rows if (entry := _entry(row)) is not None]
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for entry in entries:
+        if entry["id"] in seen:
+            duplicates.add(entry["id"])
+        seen.add(entry["id"])
+    if duplicates:
+        log.info("permissions: rejected duplicate entry ids")
+        return [entry for entry in entries if entry["id"] not in duplicates], "Duplicate permission entry ids were rejected. Reload the inventory."
+    return entries, ""
+
+
+def _sync_selection(data: dict) -> None:
+    data["selected"] = next((idx for idx, row in enumerate(data["entries"])
+                             if row["id"] == data["selected_id"]), -1)
+    if data["selected"] == -1:
+        data["selected_id"] = None
+
 
 
 def _entry(row: dict) -> dict | None:
@@ -165,7 +213,7 @@ def _entry(row: dict) -> dict | None:
 
 
 def _commit(data: dict) -> list:
-    data["selected"] = _clamp(data["selected"], len(data["entries"]))
+    _sync_selection(data)
     return [SetState(data), SetStatus(_status(data))]
 
 
@@ -181,7 +229,7 @@ def _list_view(data: dict):
         body: Any = SelectList(
             rows,
             selected_idx=data["selected"],
-            on_select="permissions:select",
+            on_select=f"permissions:select:{json.dumps([entry['id'] for entry in data['entries']])}",
         )
     elif not data["inventory_seen"]:
         body = Text("Waiting for permission decisions…", size=12.0)
@@ -195,7 +243,7 @@ def _list_view(data: dict):
             Spacer(grow=True),
             Actions(
                 [
-                    Button("Open", "permissions:detail", disabled=not rows),
+                    Button("Open", f"permissions:detail:{data['selected_id'] or ''}", disabled=data["selected_id"] is None),
                     Button("Reload", "permissions:reload"),
                 ]
             ),
@@ -207,6 +255,19 @@ def _list_view(data: dict):
 
 
 def _detail_view(data: dict):
+    if data["selected_id"] is None:
+        return Column(
+            [
+                SurfaceHeader("Permissions", "The selected entry is no longer available."),
+                Text("Choose another entry from the list.", size=12.0),
+                Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
+                Spacer(grow=True),
+                Keyed(Actions([Keyed(Button("Back", "permissions:back"), key="back")]), key="actions"),
+                FooterKeys([("esc", "back")]),
+            ],
+            gap=8.0,
+            grow=True,
+        )
     entry = data["entries"][data["selected"]]
     kind = entry["kind"]
     resource = entry["resource_id"] or "any"
@@ -235,7 +296,7 @@ def _detail_view(data: dict):
             Text(f"Workspace: {entry['workspace'] or '-'}", size=12.0),
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
             Spacer(grow=True),
-            Actions(buttons),
+            Keyed(Actions(buttons), key="actions"),
             FooterKeys([("x", "revoke"), ("esc", "back")]),
         ],
         gap=8.0,
@@ -265,7 +326,7 @@ def _action(event) -> str | None:
 
 def _status(data: dict) -> str:
     count = len(data["entries"])
-    if data["mode"] == "detail" and count:
+    if data["mode"] == "detail" and data["selected_id"] is not None:
         entry = data["entries"][data["selected"]]
         return f"{entry['tool']} {entry['kind']}"
     return f"{count} decisions"
