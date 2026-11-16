@@ -20501,7 +20501,10 @@ mod terminal_spawn_failure_output {
         let logs = crate::testing::test_log::capture();
         let _shell = crate::host::shell::set_test_shell_override(MISSING_SHELL);
 
-        assert!(h.app.split_focused(true, None, false, false, None).is_none());
+        assert!(h
+            .app
+            .split_focused(true, None, false, false, None)
+            .is_none());
 
         let errors: Vec<String> = logs
             .records()
@@ -20537,7 +20540,6 @@ mod terminal_spawn_failure_output {
         );
     }
 }
-
 
 /// Stint 1508: observed agent activity follows the text on screen, driven at
 /// chosen instants against a real terminal (`cat` with echo off), so no
@@ -20989,6 +20991,190 @@ fn named_agent_resumes_last_chat_when_stopped() {
     assert_eq!(h.app.active_focused_pane_id(), Some(pane_id));
 }
 
+/// Harness exit leaves the shell and its captured chat in an open pane.
+/// Closing that pane remains the point at which history is recorded.
+#[test]
+fn named_agent_resumes_exited_chat_before_closed_history() {
+    for busy in [false, true] {
+        let mut h = HostHarness::new();
+        let fx = AgentFocusFixture::new();
+        let caller = h.add_focused_terminal();
+        let sessions = fx.home.path().join("pi-sessions");
+        let _pi = seed_pi_session(&sessions, "sess-old");
+        let _new_pi = seed_pi_session(&sessions, "sess-new");
+        h.app
+            .fleet_history
+            .borrow_mut()
+            .push(researcher_history_record(&fx.proj_dir, "sess-old", "pi"));
+        let newest = start_researcher(&mut h, &fx, caller);
+        let t = h.app.windows[0]
+            .panes
+            .get_mut(&newest)
+            .and_then(Pane::as_terminal_mut)
+            .unwrap();
+        // Seed the production state after harness exit; no PTY timing dependency.
+        t.agent_launch = None;
+        t.observed_agent = None;
+        t.agent_completed = true;
+        t.agent_session_id = Some("sess-new".into());
+        t.activity = busy.then_some(crate::protocol::AgentState::Working);
+        t.backend.enable_input_tap();
+        assert!(!t.exited);
+        let outcome = h
+            .app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .unwrap();
+        let crate::app::agent_open::AgentOpenOutcome::Resumed {
+            pane_id,
+            session_id,
+        } = outcome
+        else {
+            panic!("expected resume, got {outcome:?}");
+        };
+        assert_eq!(session_id, "sess-new");
+        assert_ne!(pane_id, newest, "resume must spawn, including busy={busy}");
+        let old = terminal(&h, newest);
+        assert!(
+            old.backend.take_input_tap().is_empty(),
+            "leftover shell receives no input"
+        );
+        assert!(old.agent_launch.is_none());
+        assert!(old.last_resumed_command.is_none());
+        assert!(old.standby_session.is_none());
+        assert_eq!(
+            old.activity,
+            busy.then_some(crate::protocol::AgentState::Working)
+        );
+        let resumed = terminal(&h, pane_id);
+        assert!(resumed.agent_launch.is_some());
+        assert_eq!(resumed.initial_cwd.as_ref(), Some(&fx.proj_dir));
+        assert_eq!(resumed.agent_session_id.as_deref(), Some("sess-new"));
+        assert!(resumed
+            .last_resumed_command
+            .as_deref()
+            .is_some_and(|c| c.starts_with("pi ") && c.contains("sess-new")));
+        assert_eq!(
+            h.app.fleet_history.borrow().len(),
+            1,
+            "resume does not persist history"
+        );
+        h.app.fleet_history.borrow_mut().clear();
+        assert_eq!(
+            h.app
+                .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+                .unwrap(),
+            crate::app::agent_open::AgentOpenOutcome::Focused { pane_id }
+        );
+        h.app.close_pane_by_id(newest);
+        let history = h.app.fleet_history.borrow();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].session_id.as_deref(), Some("sess-new"));
+        assert_eq!(history[0].config_name.as_deref(), Some("researcher"));
+    }
+}
+
+#[test]
+fn named_agent_exited_chat_selects_newest_eligible_pane() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "older");
+    let _new_pi = seed_pi_session(&sessions, "newer");
+    let older = start_researcher(&mut h, &fx, caller);
+    let newer = start_researcher(&mut h, &fx, caller);
+    for (id, session) in [(older, "older"), (newer, "newer")] {
+        let t = h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .and_then(Pane::as_terminal_mut)
+            .unwrap();
+        t.agent_launch = None;
+        t.observed_agent = None;
+        t.agent_completed = true;
+        t.agent_session_id = Some(session.into());
+    }
+    // Focus recency ranks live agents, but must not select an older exited chat.
+    h.app.pane_navigate(older);
+    let resumed = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .unwrap();
+    assert_eq!(
+        resumed,
+        crate::app::agent_open::AgentOpenOutcome::Resumed {
+            pane_id: resumed.pane_id(),
+            session_id: "newer".into()
+        }
+    );
+    assert_ne!(resumed.pane_id(), newer);
+    h.app.close_pane_by_id(resumed.pane_id());
+    let other = fx.home.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    for skip in [
+        "ephemeral",
+        "workspace",
+        "harness",
+        "missing-session",
+        "dead-pty",
+        "not-resumable",
+    ] {
+        for id in [older, newer] {
+            h.app.windows[0]
+                .panes
+                .get_mut(&id)
+                .and_then(Pane::as_terminal_mut)
+                .unwrap()
+                .agent_launch = None;
+        }
+        {
+            let t = h.app.windows[0]
+                .panes
+                .get_mut(&newer)
+                .and_then(Pane::as_terminal_mut)
+                .unwrap();
+            t.exited = skip == "dead-pty";
+            t.ephemeral = skip == "ephemeral";
+            t.initial_cwd = Some(if skip == "workspace" {
+                other.clone()
+            } else {
+                fx.proj_dir.clone()
+            });
+            t.agent_harness = Some(if skip == "harness" { "claude" } else { "pi" }.into());
+            t.agent_session_id = (skip != "missing-session").then(|| {
+                if skip == "not-resumable" {
+                    "missing"
+                } else {
+                    "newer"
+                }
+                .into()
+            });
+        }
+        let resumed = h
+            .app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .unwrap();
+        assert_eq!(
+            resumed,
+            crate::app::agent_open::AgentOpenOutcome::Resumed {
+                pane_id: resumed.pane_id(),
+                session_id: "older".into()
+            },
+            "skip {skip}"
+        );
+        assert_ne!(resumed.pane_id(), older);
+        h.app.close_pane_by_id(resumed.pane_id());
+    }
+    let live = start_researcher(&mut h, &fx, caller);
+    assert_eq!(
+        h.app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .unwrap(),
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: live },
+        "live agents still precede exited chats",
+    );
+}
+
 #[test]
 fn named_agent_starts_new_when_never_run() {
     // The harness installs its own profile; the fixture's must win so the
@@ -21217,13 +21403,17 @@ fn named_agent_skips_exited_pane() {
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
     let dead = start_researcher(&mut h, &fx, caller);
-    h.app
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "dead-session");
+    let t = h
+        .app
         .windows
         .iter_mut()
         .find_map(|w| w.panes.get_mut(&dead))
         .and_then(Pane::as_terminal_mut)
-        .expect("researcher pane")
-        .exited = true;
+        .expect("researcher pane");
+    t.exited = true;
+    t.agent_session_id = Some("dead-session".into());
     h.app.pane_navigate(caller);
     h.run_frames(1);
 

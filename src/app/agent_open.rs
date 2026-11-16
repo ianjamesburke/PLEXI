@@ -1,6 +1,6 @@
 //! `agent open <name>` (stint 1396): the one resolver for opening a named agent.
-//! Focus it if a pane is running it, else resume its last chat, else start a new
-//! chat. The CLI reaches it through `HostRequest::AgentOpen`; the palette's
+//! Focus a running/standby pane, else resume its newest open exited chat, else resume
+//! its last closed chat, else start a new chat. The CLI reaches it through `HostRequest::AgentOpen`; the palette's
 //! Agents stop calls [`PlexiApp::open_named_agent`] directly.
 //!
 //! Each owner call (ledger row 104) sits behind one function, so changing a
@@ -18,7 +18,7 @@ use crate::workspace::AgentHistoryRecord;
 /// What `agent open` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentOpenOutcome {
-    /// A pane was already running the agent; it now has focus.
+    /// An open pane holds the agent's chat; it now has focus.
     Focused { pane_id: PaneId },
     /// The agent's last chat was resumed in a new pane.
     Resumed { pane_id: PaneId, session_id: String },
@@ -125,7 +125,9 @@ impl PlexiApp {
             .ok_or_else(|| format!("agent open: start payload for '{name}' has no harness"))?
             .to_string();
 
-        if let Some(record) = self.last_named_agent_chat(name, &harness, cwd) {
+        let open_chat = self.exited_named_agent_chat(name, &harness, cwd);
+        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
+        {
             let session_id = record.session_id.clone().unwrap_or_default();
             let reply = self.reopen_agent_record(&record, None, parent);
             let pane_id = spawned_pane_id(&reply)?;
@@ -220,6 +222,91 @@ impl PlexiApp {
             .collect();
         panes.extend(self.focused_pane_id());
         panes
+    }
+
+    /// After live/standby resolution, prefer the newest open chat to closed
+    /// history. Pane ids are allocated in creation order. Only a live shell with
+    /// a saved, resumable session is eligible. Build a transient record for the
+    /// existing reopen path; never type into or mutate the leftover shell.
+    /// History is persisted only when the pane closes.
+    fn exited_named_agent_chat(
+        &self,
+        name: &str,
+        harness: &str,
+        cwd: &Path,
+    ) -> Option<AgentHistoryRecord> {
+        let workspace = agent_chat_workspace(cwd);
+        let adapter = crate::cli::agent::harness_adapter(harness);
+        let mut candidates: Vec<_> = self
+            .windows
+            .iter()
+            .flat_map(|win| {
+                win.panes.iter().filter_map(move |(id, pane)| {
+                    let t = pane.as_terminal()?;
+                    (t.agent_role.as_deref() == Some(name)).then_some((*id, t, win))
+                })
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(id, _, _)| std::cmp::Reverse(*id));
+        let mut selected = None;
+        for (id, t, win) in candidates {
+            let session_id = t.agent_session_id.as_deref().unwrap_or_default();
+            let chat_cwd = t
+                .standby_cwd
+                .as_deref()
+                .or(t.initial_cwd.as_deref())
+                .unwrap_or(&win.path);
+            let reason = if t.exited {
+                Some("its PTY process exited")
+            } else if t.ephemeral {
+                Some("ephemeral run")
+            } else if agent_chat_workspace(chat_cwd) != workspace {
+                Some("different workspace")
+            } else if t.agent_harness.as_deref() != Some(harness) {
+                Some("different harness")
+            } else if session_id.trim().is_empty() {
+                Some("no captured chat id")
+            } else if !adapter.is_some_and(|a| a.harness.session_exists(session_id)) {
+                Some("the harness has no saved session for it")
+            } else if selected.is_some() {
+                Some("older than selected open chat")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                log::info!(
+                    "agent_open: name={name} skipped open pane={id} session_id={session_id}: {reason}"
+                );
+            } else {
+                let context_name = self
+                    .router
+                    .iter()
+                    .find(|c| c.context_id == win.context_id)
+                    .map(|c| c.name.displayed().to_string())
+                    .unwrap_or_default();
+                selected =
+                    t.build_history_record(win.context_id, &context_name, chat_cwd.to_path_buf());
+                log::info!(
+                    "agent_open: name={name} selected open pane={id} session_id={session_id} for resume"
+                );
+            }
+        }
+        if let Some(record) = &selected {
+            let pane_id = record.pane_id;
+            for record in self
+                .fleet_history
+                .borrow()
+                .iter()
+                .filter(|r| r.config_name.as_deref() == Some(name))
+            {
+                log::info!(
+                    "agent_open: name={name} skipped closed run_id={} session_id={:?}: open chat pane={pane_id} takes precedence",
+                    record.run_id,
+                    record.session_id
+                );
+            }
+        }
+        selected
     }
 
     /// Owner call 2: which closed run is `name`'s last chat. The newest
