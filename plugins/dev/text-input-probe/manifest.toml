@@ -13,7 +13,6 @@ id = "text-input-probe"
 name = "Text Input Probe"
 version = "0.1.0"
 description = "POC: HostHarness TextInput typing fixture (stint 0456) — a bare TextInput plus observer Text rows; a passing run proves focused-field typing, on_change round-trip, and Enter-submit end to end."
-watch = true
 
 [plugin.capabilities]
 capabilities = []

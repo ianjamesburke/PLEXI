@@ -13,7 +13,7 @@ The sudoku plugin is the migration canary. Each SDK version bump ships alongside
 
 A single version source of truth exists: `pyproject.toml`. `_version.py` derives from it at build time; no other module declares a version independently.
 
-Plugins declare `min_sdk_version = "X.Y.Z"` in `manifest.toml`. The host reads this field at PGAP launch and rejects the plugin with a user-visible error if the installed SDK is older. Plugins without `min_sdk_version` launch without a version check; no existing plugin breaks.
+A manifest has no SDK version gate: the host never enforced `min_sdk_version`, so the key was removed (stint 1454) and a manifest that sets it is rejected. `[requires]` declares host version compatibility.
 
 The wire protocol carries a `protocol_version` field so the host knows which features a plugin may use. Version negotiation happens at handshake time, before the first `view()` call.
 
@@ -62,7 +62,6 @@ Canvas plugins that previously hardcoded hex colors migrate by replacing hex lit
 ## Definition of Finished
 
 - `pyproject.toml` is the single version source. `sdk.__version__` reads from it. No other module carries a version field.
-- A manifest with `min_sdk_version` newer than the installed SDK causes the host to display a version mismatch error instead of launching the app.
 - `CanvasRect` with `border_color` and `border_width` renders a stroked outline. The `Card` and `DetailTable` components use this; the four-rect hack is gone.
 - A `MouseEvent` from a click on a `CanvasRect` with `hit_region = "cell-3-4"` delivers `event.region == "cell-3-4"`. The sudoku plugin's `_hit()`, `_num_btn_layout()`, and `_menu_mouse()` methods are removed.
 - The sudoku plugin's sidebar (difficulty selector, timer, number buttons) renders as a `Column` node inside a `Row`, not as pixel-positioned canvas elements.

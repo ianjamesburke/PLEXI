@@ -5,7 +5,6 @@ id = "ui-gallery"
 name = "UI Gallery"
 version = "0.1.0"
 description = "Reference implementation of every SDK component."
-watch = true
 
 [plugin.capabilities]
 capabilities = []
