@@ -2,6 +2,7 @@
 """Exercise lane startup, alpha sync, and cleanup against disposable Git repos."""
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -25,22 +26,30 @@ class LandingSafety(unittest.TestCase):
         (self.root / 'a').write_text('base\n')
         (self.root / 'b').write_text('base\n')
         (self.root / 'Cargo.toml').write_text('version = \"1.0.0\"\n')
+        # Generated outputs are declared through check-generated, as in the real justfile.
+        (self.root / 'justfile').write_text(
+            'check-generated artifact generator regen ok:\n    true\n\n'
+            'check-schema: (check-generated "gen/schema.json" "cat src" "gen-schema" "ok")\n')
         (self.root / '.gitignore').write_text('ignored-data/\ntarget/\nassets/python/\n.venv/\n.pytest_cache/\n__pycache__/\n')
         for name in ('assets/keep', 'sdk/python/tests/keep', 'plugins/todo/keep', 'scripts/keep'):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('tracked')
-        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore', 'assets', 'sdk', 'plugins', 'scripts')
+        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', 'justfile', '.gitignore', 'assets', 'sdk', 'plugins', 'scripts')
         self.run_cmd('git', 'commit', '-m', 'base')
         self.run_cmd('git', 'remote', 'add', 'origin', str(self.remote))
         self.run_cmd('git', 'push', '-u', 'origin', 'alpha')
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.env = utf8_env()
+        real_just = shutil.which('just')
+        if real_just is None:
+            raise RuntimeError('just is required: merge-pr reads generated artifacts through just --dump')
+        self.env['REAL_JUST'] = real_just
         self.env.pop('PLEXI_PANE_ID', None)
         self.env['PATH'] = str(self.bin) + os.pathsep + self.env['PATH']
         self.stub('stint', 'exit 0')
-        self.stub('just', 'echo "$*" >> "$TEST_LOG"')
+        self.stub('just', 'if [ "$1" = --justfile ]; then exec "$REAL_JUST" "$@"; fi\necho "$*" >> "$TEST_LOG"')
         self.env['TEST_LOG'] = str(self.base / 'calls')
 
     def tearDown(self):
@@ -93,11 +102,27 @@ if [ "$1 $2" = 'pr view' ]; then
     printf '{"headRefName":"%s","headRefOid":"%s","state":"%s"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   fi
 elif [ "$1 $2" = 'pr merge' ]; then
-  test "${6:-}" = "$TEST_SHA"
+  echo "$*" >> "$TEST_GH_MERGE_LOG"
+  test "$4 $5 ${6:-}" = "--squash --match-head-commit $TEST_SHA"
   tmp=$(mktemp -d)
   git clone -q -b alpha "$TEST_REMOTE" "$tmp"
   git -C "$tmp" config user.email fixture@example.invalid
   git -C "$tmp" config user.name Fixture
+  if [ -n "${TEST_MOVE_HEAD:-}" ]; then
+    # Someone pushes to the PR branch after merge-pr fetched it.
+    git -C "$tmp" fetch -q origin "$TEST_BRANCH"
+    git -C "$tmp" checkout -q -b moved FETCH_HEAD
+    echo moved > "$tmp/a"
+    git -C "$tmp" commit -qam moved
+    git -C "$tmp" push -q origin "moved:$TEST_BRANCH"
+    git -C "$tmp" checkout -q alpha
+  fi
+  # GitHub refuses --match-head-commit when the PR head differs.
+  head=$(git ls-remote "$TEST_REMOTE" "refs/heads/$TEST_BRANCH" | cut -f1)
+  if [ "$head" != "$6" ]; then
+    echo "Head branch was modified. Review and try the merge again." >&2
+    exit 1
+  fi
   git -C "$tmp" fetch -q origin "$TEST_BRANCH"
   git -C "$tmp" merge -q --squash FETCH_HEAD
   git -C "$tmp" commit -qm squash
@@ -105,6 +130,7 @@ elif [ "$1 $2" = 'pr merge' ]; then
   touch "$TEST_GH_STATE"
 fi
 """)
+        self.env['TEST_GH_MERGE_LOG'] = str(self.base / 'gh-merge-calls')
         return branch, lane, sha
 
     def test_full_merge_allows_behind_pr_with_disjoint_paths(self):
@@ -119,6 +145,61 @@ fi
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'remote\n')
         self.assertFalse(lane.exists())
+        self.assertEqual((self.base / 'gh-merge-calls').read_text(),
+                         f'pr merge 1 --squash --match-head-commit {sha}\n')
+
+    def test_full_merge_refuses_when_pr_head_moves_after_fetch(self):
+        branch, lane, sha = self.full_flow_lane('a')
+        self.env['TEST_MOVE_HEAD'] = '1'
+        alpha_before = self.run_cmd('git', 'ls-remote', 'origin', 'refs/heads/alpha').stdout
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Head branch was modified', result.stderr)
+        self.assertFalse((self.base / 'merged').exists())
+        self.assertEqual(self.run_cmd('git', 'ls-remote', 'origin', 'refs/heads/alpha').stdout, alpha_before)
+        self.assertTrue(lane.exists())
+
+    def assert_global_path_refuses(self, path):
+        branch, lane, sha = self.full_flow_lane('a')
+        other = self.base / 'other'
+        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
+        (other / path).parent.mkdir(parents=True, exist_ok=True)
+        (other / path).write_text('alpha change\n')
+        self.run_cmd('git', 'add', path, cwd=other)
+        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-m', 'global', cwd=other)
+        self.run_cmd('git', 'push', cwd=other)
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('global paths', result.stderr)
+        self.assertIn('\n  ' + path + '\n', result.stderr)
+        self.assertFalse((self.base / 'merged').exists())
+
+    def test_full_merge_refuses_behind_pr_when_alpha_changed_cargo_toml(self):
+        self.assert_global_path_refuses('Cargo.toml')
+
+    def test_full_merge_refuses_behind_pr_when_alpha_changed_justfile_generated_output(self):
+        self.assert_global_path_refuses('gen/schema.json')
+
+    def test_full_merge_refuses_criss_cross_history(self):
+        branch, lane, p1 = self.full_flow_lane('a')
+        other = self.base / 'other'
+        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
+        ident = ('-c', 'user.email=f@example.invalid', '-c', 'user.name=F')
+        (other / 'b').write_text('alpha side\n')
+        self.run_cmd('git', *ident, 'commit', '-am', 'A1', cwd=other)
+        self.run_cmd('git', 'push', cwd=other)
+        self.run_cmd('git', 'fetch', 'origin', branch, cwd=other)
+        self.run_cmd('git', *ident, 'merge', '--no-ff', '-m', 'A2', 'FETCH_HEAD', cwd=other)
+        self.run_cmd('git', 'fetch', 'origin', 'alpha', cwd=lane)
+        self.run_cmd('git', 'merge', '--no-ff', '-m', 'P2', 'origin/alpha', cwd=lane)
+        self.run_cmd('git', 'push', 'origin', branch, cwd=lane)
+        self.run_cmd('git', 'push', cwd=other)
+        p2 = self.run_cmd('git', 'rev-parse', 'HEAD', cwd=lane).stdout.strip()
+        self.env['TEST_SHA'] = p2
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', p2)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('more than one merge base', result.stderr)
+        self.assertFalse((self.base / 'merged').exists())
 
     def test_full_merge_refuses_behind_pr_with_overlapping_path(self):
         branch, lane, sha = self.full_flow_lane('a')
@@ -175,8 +256,58 @@ fi
         result = self.script('merge-pr.sh', 'cleanup', '1', branch, rebased)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('pre-rebase head', result.stdout)
+        self.assertEqual(self.run_cmd('git', 'rev-parse', f'refs/plexi-preserved/pr-1/{reviewed}').stdout.strip(), reviewed)
         self.assertFalse(lane.exists())
         self.assertEqual(self.run_cmd('git', 'ls-remote', '--heads', 'origin', branch).stdout, '')
+
+    def merged_lane_with_force_push(self, drop_commit):
+        """Lane pushed at `old`; the remote branch is then force-pushed to `new`
+        (a rebase, or a replacement that drops the lane's last commit)."""
+        branch = 'feature/stint-1234-fix'
+        lane = self.root / 'worktrees' / branch
+        self.run_cmd('git', 'worktree', 'add', '-b', branch, str(lane))
+        (lane / 'a').write_text('feature\n')
+        self.run_cmd('git', 'commit', '-am', 'feature', cwd=lane)
+        (lane / 'b').write_text('valuable\n')
+        self.run_cmd('git', 'commit', '-am', 'valuable', cwd=lane)
+        self.run_cmd('git', 'push', '-u', 'origin', branch, cwd=lane)
+        old = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
+        other = self.base / 'other'
+        self.run_cmd('git', 'clone', str(self.remote), str(other), cwd=self.base)
+        self.run_cmd('git', 'checkout', '-b', 'replacement', f'origin/{branch}' + ('~1' if drop_commit else ''), cwd=other)
+        (other / 'c').write_text('replacement\n')
+        self.run_cmd('git', 'add', 'c', cwd=other)
+        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-m', 'replacement', cwd=other)
+        self.run_cmd('git', 'push', '--force', 'origin', f'replacement:{branch}', cwd=other)
+        new = self.run_cmd('git', 'rev-parse', 'HEAD', cwd=other).stdout.strip()
+        # Shape recorded from the real GitHub GraphQL API (PR timeline, HeadRefForcePushedEvent).
+        events = {'data': {'repository': {'pullRequest': {'timelineItems': {'nodes': [
+            {'beforeCommit': {'oid': old}, 'afterCommit': {'oid': new}}]}}}}}
+        self.env['TEST_PR'] = json.dumps({'state': 'MERGED', 'headRefName': branch, 'headRefOid': new})
+        self.env['TEST_EVENTS'] = json.dumps(events)
+        self.stub('gh', 'if [ "$1 $2" = "api graphql" ]; then printf "%s\\n" "$TEST_EVENTS"; else printf "%s\\n" "$TEST_PR"; fi')
+        return branch, lane, old, new
+
+    def test_cleanup_preserves_lane_head_dropped_by_force_push(self):
+        branch, lane, old, new = self.merged_lane_with_force_push(drop_commit=True)
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, new)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'refs/plexi-preserved/pr-1/{old}', result.stdout)
+        self.assertFalse(lane.exists())
+        self.assertEqual(self.run_cmd('git', 'show', f'refs/plexi-preserved/pr-1/{old}:b').stdout, 'valuable\n')
+
+    def test_cleanup_keeps_branch_committed_to_during_cleanup(self):
+        branch, lane, old, new = self.merged_lane_with_force_push(drop_commit=False)
+        self.env['TEST_RACE_LANE'] = str(lane)
+        self.stub('just', 'if [ "$1" = --justfile ]; then exec "$REAL_JUST" "$@"; fi\n'
+                          'if [ "$1" = channel-clean ]; then git -C "$TEST_RACE_LANE" -c user.email=f@example.invalid '
+                          '-c user.name=F commit -q --allow-empty -m race; fi')
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, new)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('moved during cleanup', result.stderr)
+        raced = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
+        self.assertEqual(self.run_cmd('git', 'rev-parse', f'{raced}~1').stdout.strip(), old)
+        self.assertNotEqual(self.run_cmd('git', 'ls-remote', '--heads', 'origin', branch).stdout, '')
 
     def test_sync_preserves_disjoint_and_refuses_overlapping_or_divergent(self):
         (self.root / 'b').write_text('local\n')
