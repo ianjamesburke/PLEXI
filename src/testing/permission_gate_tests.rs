@@ -2167,6 +2167,8 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     node_click_permissions_button(&mut h, pane, "Revoke");
     pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
     assert!(!entry_kinds(&mon).iter().any(|(_, kind)| kind == "allow"));
+    // The ask is gone, so the Allow item that named it is retired (stint 1383).
+    assert!(permission_changes(&mon).is_empty());
 
     // (a) Ask again and Allow on a stored denial: Needs you items only.
     let to_deny = admit_probe(&mon, &workspace, "call-deny", "probe.denied");
@@ -2178,9 +2180,9 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         .expect("stored denial")
         .0;
     node_click_permissions_button(&mut h, pane, "Ask again");
-    pump_until(&mut h, |_| permission_changes(&mon).len() == 2);
+    pump_until(&mut h, |_| permission_changes(&mon).len() == 1);
     node_click_permissions_button(&mut h, pane, "Allow");
-    pump_until(&mut h, |_| permission_changes(&mon).len() == 3);
+    pump_until(&mut h, |_| permission_changes(&mon).len() == 2);
     let unchanged = entry_kinds(&mon);
     assert_eq!(unchanged, vec![(deny.clone(), "deny".to_string())]);
     let allow_item = permission_changes(&mon)
