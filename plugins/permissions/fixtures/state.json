@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {"id": "cap:logs:read", "kind": "allow", "actor_id": "logs", "tool": "logs.read", "when": "2026-11-12 22:24:27 UTC"},
+    {"id": "cap:logs:timer", "kind": "allow", "actor_id": "logs", "tool": "timer", "when": "2026-11-12 22:24:27 UTC"}
+  ],
+  "selected": 0,
+  "mode": "list",
+  "notice": "",
+  "inventory_seen": true
+}
