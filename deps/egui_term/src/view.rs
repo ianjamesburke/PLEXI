@@ -341,31 +341,34 @@ impl<'a> TerminalView<'a> {
                 )
             });
         }
-        let keyboard_mode =
-            if state.search_mode.is_none() && state.copy_mode.is_none() {
-                self.backend.keyboard_mode()
-            } else {
-                TermMode::empty()
-            };
         let terminal_mode = self.backend.last_content().terminal_mode;
         let bindings_layout = &self.bindings_layout;
-        let prepared = self.backend.keyboard.prepare(
-            events,
-            keyboard_mode,
-            |key, mods| {
-                bindings_layout.scrolls_before_encoding(
-                    key,
-                    mods,
-                    terminal_mode,
-                )
-            },
-        );
-        for crate::keyboard::PreparedEvent {
-            event,
-            encoding,
-            starts_hold,
-        } in prepared
-        {
+        let scrolls = |key, mods| {
+            bindings_layout.scrolls_before_encoding(key, mods, terminal_mode)
+        };
+        let mut events = events.into_iter().peekable();
+        // One event at a time: each is dispatched and acknowledged before the
+        // next is encoded, so a hold exists only for a press that was
+        // delivered, and search/copy mode applies from the event that
+        // entered it.
+        loop {
+            let keyboard_mode =
+                if state.search_mode.is_none() && state.copy_mode.is_none() {
+                    self.backend.keyboard_mode()
+                } else {
+                    TermMode::empty()
+                };
+            let Some(crate::keyboard::PreparedEvent {
+                event,
+                encoding,
+                hold,
+            }) =
+                self.backend
+                    .keyboard
+                    .next(&mut events, keyboard_mode, scrolls)
+            else {
+                break;
+            };
             let mut input_actions = vec![];
 
             match event {
@@ -634,18 +637,13 @@ impl<'a> TerminalView<'a> {
                 _ => {},
             };
 
-            // A press the terminal consumed itself (search, copy mode, its
-            // Cmd shortcuts) never reached the program: it holds nothing.
-            if let Some(key) = starts_hold {
-                if !input_actions.iter().any(|action| {
-                    matches!(
-                        action,
-                        InputAction::BackendCall(BackendCommand::Write(_))
-                    )
-                }) {
-                    self.backend.keyboard.forget(key);
-                }
-            }
+            let written = input_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    InputAction::BackendCall(BackendCommand::Write(_))
+                )
+            });
+            self.backend.keyboard.acknowledge(hold, written);
 
             for action in input_actions {
                 match action {

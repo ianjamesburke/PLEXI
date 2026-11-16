@@ -210,3 +210,84 @@ fn locally_consumed_keys_get_no_release() {
     h.run_frames(2);
     assert_eq!(tap(&mut h, id), "", "no release for a press never sent");
 }
+
+fn key_event(key: egui::Key, modifiers: egui::Modifiers, pressed: bool) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// Several key events buffered into one frame (a delayed frame).
+fn one_frame(h: &mut HostHarness, events: Vec<egui::Event>) {
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    });
+}
+
+const CMD: egui::Modifiers = egui::Modifiers {
+    mac_cmd: true,
+    command: true,
+    ..egui::Modifiers::NONE
+};
+
+/// Cmd+A is consumed by the terminal (select-all copy); its release in the
+/// same frame must not reach the program either.
+#[test]
+#[ignore = "requires-pty"]
+fn locally_consumed_press_and_release_in_one_frame_send_nothing() {
+    let mut h = HostHarness::new();
+    let id = kitty_terminal(&mut h);
+    one_frame(
+        &mut h,
+        vec![
+            key_event(egui::Key::A, CMD, true),
+            key_event(egui::Key::A, CMD, false),
+        ],
+    );
+    h.run_frames(1);
+    assert_eq!(
+        tap(&mut h, id),
+        "",
+        "neither Cmd+A press nor release is sent"
+    );
+}
+
+/// A consumed Cmd+A followed in the same frame by a delivered Ctrl+A: the
+/// Ctrl+A hold survives, so losing focus releases it.
+#[test]
+#[ignore = "requires-pty"]
+fn consumed_press_does_not_drop_a_later_delivered_hold_in_one_frame() {
+    let mut h = HostHarness::new();
+    let id = kitty_terminal(&mut h);
+    one_frame(
+        &mut h,
+        vec![
+            key_event(egui::Key::A, CMD, true),
+            key_event(egui::Key::A, CMD, false),
+            key_event(egui::Key::A, egui::Modifiers::CTRL, true),
+        ],
+    );
+    h.run_frames(1);
+    assert_eq!(
+        tap(&mut h, id),
+        "\x1b[97;5:1u",
+        "only Ctrl+A's press is sent"
+    );
+    let other = other_pane(&h, id);
+    h.focus_pane(other);
+    h.run_frames(2);
+    assert_eq!(
+        tap(&mut h, id),
+        "\x1b[97;5:3u",
+        "Ctrl+A is released on focus loss"
+    );
+}

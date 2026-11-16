@@ -3,6 +3,7 @@
 use alacritty_terminal::term::TermMode;
 use egui::{Event, Key, Modifiers};
 use std::collections::HashMap;
+use std::iter::Peekable;
 
 #[derive(Clone, Copy)]
 struct Code {
@@ -49,185 +50,216 @@ pub(crate) struct PreparedEvent {
     /// None delegates to the existing legacy binding path; an empty encoding
     /// consumes the event without writing (e.g. release reporting is disabled).
     pub encoding: Option<Vec<u8>>,
-    /// The key whose program hold this press started. The caller `forget`s
-    /// it when the press is consumed locally instead of reaching the PTY.
-    pub starts_hold: Option<Key>,
+    /// The hold this event starts, recorded only by `acknowledge`.
+    pub hold: Option<PendingHold>,
 }
 
+/// A hold started by a prepared press. It is recorded once the caller has
+/// dispatched the press: a program hold only if the press reached the PTY.
+pub(crate) struct PendingHold(Key, Hold);
+
 impl KeyboardEncoder {
+    /// Prepares the next input event. The caller dispatches it and calls
+    /// `acknowledge` before preparing the next, so each event is encoded
+    /// against the holds of the events actually delivered before it.
+    ///
     /// `scrolls` reports whether a press scrolls ahead of kitty encoding
     /// (`BindingsLayout::scrolls_before_encoding`). Such a press, and the
     /// repeats of its hold that still match, fall through to the binding
     /// path; the rest of that hold never reaches the program.
-    pub fn prepare(
+    pub fn next(
+        &mut self,
+        events: &mut Peekable<impl Iterator<Item = Event>>,
+        mode: TermMode,
+        scrolls: impl Fn(Key, Modifiers) -> bool,
+    ) -> Option<PreparedEvent> {
+        let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
+        let event = events.next()?;
+        let mut pending = None;
+        let encoding = match &event {
+            Event::Key {
+                key,
+                physical_key,
+                pressed,
+                repeat,
+                modifiers,
+            } => 'key: {
+                let identity = physical_key.unwrap_or(*key);
+                if *pressed && !*repeat {
+                    self.holds.remove(&identity);
+                }
+                let press = Press {
+                    key: *key,
+                    physical: *physical_key,
+                    mods: *modifiers,
+                    code: None,
+                };
+                // A press (or an ownerless repeat) starts a hold; a
+                // program hold records its kitty code below.
+                let hold = if *pressed {
+                    match self.holds.get(&identity) {
+                        Some(hold) => *hold,
+                        None => {
+                            let hold = if !scrolls(*key, *modifiers) {
+                                Hold::Program(press)
+                            } else {
+                                if !mode.is_empty() {
+                                    log::info!(
+                                            "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
+                                        );
+                                }
+                                Hold::Scroll
+                            };
+                            pending = Some(PendingHold(identity, hold));
+                            hold
+                        },
+                    }
+                } else {
+                    match self.holds.remove(&identity) {
+                        Some(hold) => hold,
+                        // This terminal never saw the press (it went to
+                        // another pane): the program must not see a
+                        // release.
+                        None if !mode.is_empty() => break 'key Some(Vec::new()),
+                        None => Hold::Program(press),
+                    }
+                };
+                let held = match hold {
+                    Hold::Scroll => {
+                        let still_scrolls =
+                            *pressed && scrolls(*key, *modifiers);
+                        break 'key (!still_scrolls).then(Vec::new);
+                    },
+                    Hold::Released => {
+                        // The repeat's paired text goes with it.
+                        if *pressed
+                            && matches!(events.peek(), Some(Event::Text(_)))
+                        {
+                            events.next();
+                        }
+                        break 'key Some(Vec::new());
+                    },
+                    Hold::Program(held) => held,
+                };
+                // A program-owned hold never scrolls, whatever the
+                // modifiers or flags did since its press.
+                let to_program = *pressed && scrolls(*key, *modifiers);
+                if mode.is_empty() {
+                    break 'key to_program.then(|| {
+                        xterm_modified(*key, *physical_key, *modifiers)
+                    });
+                }
+                // egui-winit emits Key followed by Text for a printable
+                // press. Consume that text only when this key was encoded.
+                let text = if *pressed {
+                    match events.peek() {
+                        Some(Event::Text(text)) => Some(text.as_str()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let code = if !pressed {
+                    held.code.or_else(|| key_code(*key, *modifiers))
+                } else {
+                    let mut code = key_code(*key, *modifiers);
+                    // For layouts not represented by egui::Key, egui uses
+                    // the physical key. Preserve the actual Unicode text.
+                    if let Some(text) =
+                        text.filter(|text| !text.is_ascii() && !modifiers.alt)
+                    {
+                        let mut chars = text.chars();
+                        if let (Some(c), None) = (chars.next(), chars.next()) {
+                            let mut lower = c.to_lowercase();
+                            if let (Some(c), None) =
+                                (lower.next(), lower.next())
+                            {
+                                code = Some(Code {
+                                    number: c as u32,
+                                    suffix: 'u',
+                                    text: true,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(PendingHold(_, Hold::Program(press))) =
+                        &mut pending
+                    {
+                        press.code = code;
+                    }
+                    code
+                };
+                let encoded = code.and_then(|code| {
+                    encode_key(
+                        code,
+                        *physical_key,
+                        *modifiers,
+                        *pressed,
+                        *repeat,
+                        text,
+                        mode,
+                    )
+                });
+                if encoded.is_some() && text.is_some() {
+                    events.next();
+                }
+                if encoded.is_none() && to_program {
+                    break 'key Some(xterm_modified(
+                        *key,
+                        *physical_key,
+                        *modifiers,
+                    ));
+                }
+                encoded
+            },
+            // IME/text-only input has no physical key. Never discard it
+            // when an application requests escape-coded text.
+            Event::Text(text)
+                if mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC) =>
+            {
+                Some(encode_text(text, mode).into_bytes())
+            },
+            _ => None,
+        };
+        Some(PreparedEvent {
+            event,
+            encoding,
+            hold: pending,
+        })
+    }
+
+    /// Records the hold a dispatched event started. A program hold is kept
+    /// only when the press was `written` to the PTY; a press the terminal
+    /// consumed itself (search, copy mode, its Cmd shortcuts) holds nothing,
+    /// so its release never reaches the program.
+    pub fn acknowledge(&mut self, hold: Option<PendingHold>, written: bool) {
+        match hold {
+            Some(PendingHold(_, Hold::Program(_))) if !written => {},
+            Some(PendingHold(key, hold)) => {
+                self.holds.insert(key, hold);
+            },
+            None => {},
+        }
+    }
+
+    /// Every event at once, each acknowledged as written when it encoded
+    /// to bytes: the view's dispatch loop for a test with no local keys.
+    #[cfg(test)]
+    fn prepare(
         &mut self,
         events: Vec<Event>,
         mode: TermMode,
         scrolls: impl Fn(Key, Modifiers) -> bool,
     ) -> Vec<PreparedEvent> {
-        let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
         let mut events = events.into_iter().peekable();
         let mut result = Vec::new();
-        while let Some(event) = events.next() {
-            let mut starts_hold = None;
-            let encoding = match &event {
-                Event::Key {
-                    key,
-                    physical_key,
-                    pressed,
-                    repeat,
-                    modifiers,
-                } => 'key: {
-                    let identity = physical_key.unwrap_or(*key);
-                    if *pressed && !*repeat {
-                        self.holds.remove(&identity);
-                    }
-                    let press = Press {
-                        key: *key,
-                        physical: *physical_key,
-                        mods: *modifiers,
-                        code: None,
-                    };
-                    // A press (or an ownerless repeat) that starts a program
-                    // hold records its kitty code below.
-                    let hold = if *pressed {
-                        *self.holds.entry(identity).or_insert_with(|| {
-                            if !scrolls(*key, *modifiers) {
-                                starts_hold = Some(identity);
-                                return Hold::Program(press);
-                            }
-                            if !mode.is_empty() {
-                                log::info!(
-                                    "kitty keyboard: {key:?} {modifiers:?} scrolls the scrollback instead of reaching the program"
-                                );
-                            }
-                            Hold::Scroll
-                        })
-                    } else {
-                        match self.holds.remove(&identity) {
-                            Some(hold) => hold,
-                            // This terminal never saw the press (it went to
-                            // another pane): the program must not see a
-                            // release.
-                            None if !mode.is_empty() => {
-                                break 'key Some(Vec::new())
-                            },
-                            None => Hold::Program(press),
-                        }
-                    };
-                    let held = match hold {
-                        Hold::Scroll => {
-                            let still_scrolls =
-                                *pressed && scrolls(*key, *modifiers);
-                            break 'key (!still_scrolls).then(Vec::new);
-                        },
-                        Hold::Released => {
-                            // The repeat's paired text goes with it.
-                            if *pressed
-                                && matches!(events.peek(), Some(Event::Text(_)))
-                            {
-                                events.next();
-                            }
-                            break 'key Some(Vec::new());
-                        },
-                        Hold::Program(held) => held,
-                    };
-                    // A program-owned hold never scrolls, whatever the
-                    // modifiers or flags did since its press.
-                    let to_program = *pressed && scrolls(*key, *modifiers);
-                    if mode.is_empty() {
-                        break 'key to_program.then(|| {
-                            xterm_modified(*key, *physical_key, *modifiers)
-                        });
-                    }
-                    // egui-winit emits Key followed by Text for a printable
-                    // press. Consume that text only when this key was encoded.
-                    let text = if *pressed {
-                        match events.peek() {
-                            Some(Event::Text(text)) => Some(text.as_str()),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    let code = if !pressed {
-                        held.code.or_else(|| key_code(*key, *modifiers))
-                    } else {
-                        let mut code = key_code(*key, *modifiers);
-                        // For layouts not represented by egui::Key, egui uses
-                        // the physical key. Preserve the actual Unicode text.
-                        if let Some(text) = text
-                            .filter(|text| !text.is_ascii() && !modifiers.alt)
-                        {
-                            let mut chars = text.chars();
-                            if let (Some(c), None) =
-                                (chars.next(), chars.next())
-                            {
-                                let mut lower = c.to_lowercase();
-                                if let (Some(c), None) =
-                                    (lower.next(), lower.next())
-                                {
-                                    code = Some(Code {
-                                        number: c as u32,
-                                        suffix: 'u',
-                                        text: true,
-                                    });
-                                }
-                            }
-                        }
-                        if starts_hold.is_some() {
-                            self.holds.insert(
-                                identity,
-                                Hold::Program(Press { code, ..press }),
-                            );
-                        }
-                        code
-                    };
-                    let encoded = code.and_then(|code| {
-                        encode_key(
-                            code,
-                            *physical_key,
-                            *modifiers,
-                            *pressed,
-                            *repeat,
-                            text,
-                            mode,
-                        )
-                    });
-                    if encoded.is_some() && text.is_some() {
-                        events.next();
-                    }
-                    if encoded.is_none() && to_program {
-                        break 'key Some(xterm_modified(
-                            *key,
-                            *physical_key,
-                            *modifiers,
-                        ));
-                    }
-                    encoded
-                },
-                // IME/text-only input has no physical key. Never discard it
-                // when an application requests escape-coded text.
-                Event::Text(text)
-                    if mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC) =>
-                {
-                    Some(encode_text(text, mode).into_bytes())
-                },
-                _ => None,
-            };
-            result.push(PreparedEvent {
-                event,
-                encoding,
-                starts_hold,
-            });
+        while let Some(mut prepared) = self.next(&mut events, mode, &scrolls) {
+            let written =
+                prepared.encoding.as_ref().is_some_and(|b| !b.is_empty());
+            self.acknowledge(prepared.hold.take(), written);
+            result.push(prepared);
         }
         result
-    }
-
-    /// Drops the hold a press started when the press never reached the
-    /// program (the terminal consumed it, e.g. a search-mode key).
-    pub fn forget(&mut self, key: Key) {
-        self.holds.remove(&key);
     }
 
     /// Whether a program hold is open, so callers can skip `release_held`.
