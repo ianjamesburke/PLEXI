@@ -69,15 +69,36 @@ assert_clean_lane() {
 }
 
 # Outputs of the justfile's check-generated gates: the first argument of every
-# recipe dependency on check-generated, read through just's own parser.
+# recipe dependency on check-generated, read through just's own parser. just
+# dumps a literal argument as a string and an expression as an array; anything
+# but a non-empty string literal, or no such dependency at all, fails closed.
 generated_artifacts() {
-    local DUMP
+    local DUMP ARTIFACTS
     DUMP=$(just --justfile "$ROOT/justfile" --working-directory "$ROOT" --dump --dump-format json) || {
         echo "ERROR: could not read generated artifacts from $ROOT/justfile via 'just --dump'; refusing behind-alpha merge." >&2
         return 1
     }
-    printf '%s' "$DUMP" | jq -r '.recipes[].dependencies[] | select(.recipe == "check-generated") | .arguments[0]' | LC_ALL=C sort -u
+    ARTIFACTS=$(printf '%s' "$DUMP" | jq -r '
+        if (.recipes | type) != "object" then error("dump has no recipes object") else . end
+        | [.recipes[] | .dependencies
+           | if type != "array" then error("recipe dependencies are not an array") else .[] end
+           | select(.recipe == "check-generated")]
+        | if length == 0 then error("no recipe depends on check-generated") else .[] end
+        | .arguments
+        | if type != "array" or length != 4 then error("check-generated dependency does not have 4 arguments: \(tojson)")
+          elif (.[0] | type) != "string" or .[0] == "" then error("check-generated artifact is not a string literal: \(.[0] | tojson)")
+          else .[0] end') || {
+        echo "ERROR: unexpected 'just --dump' shape for check-generated in $ROOT/justfile; refusing behind-alpha merge." >&2
+        return 1
+    }
+    printf '%s\n' "$ARTIFACTS" | LC_ALL=C sort -u
 }
+
+# Lock inputs no check-generated recipe owns (check-sdk-lock verifies, not
+# generates): the SDK's dependency manifest and its lockfile.
+SDK_LOCK_PATHS='sdk/python/pyproject.toml
+sdk/python/uv.lock'
+
 
 # Paths whose change can invalidate unrelated changes (build inputs, CI,
 # generated outputs). Alpha's push run builds and lints but does not test, so a
@@ -89,7 +110,7 @@ global_paths() {
         case "$PATH_NAME" in
             Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock|build.rs|*/build.rs|.github/workflows/*)
                 printf '%s\n' "$PATH_NAME" ;;
-            *) if printf '%s\n' "$GENERATED" | grep -Fqx -- "$PATH_NAME"; then printf '%s\n' "$PATH_NAME"; fi ;;
+            *) if printf '%s\n%s\n' "$GENERATED" "$SDK_LOCK_PATHS" | grep -Fqx -- "$PATH_NAME"; then printf '%s\n' "$PATH_NAME"; fi ;;
         esac
     done
 }

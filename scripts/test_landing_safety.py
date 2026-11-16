@@ -180,6 +180,38 @@ fi
     def test_full_merge_refuses_behind_pr_when_alpha_changed_justfile_generated_output(self):
         self.assert_global_path_refuses('gen/schema.json')
 
+    def test_full_merge_refuses_behind_pr_when_alpha_changed_sdk_lock_inputs(self):
+        self.assert_global_path_refuses('sdk/python/uv.lock')
+
+    def test_full_merge_refuses_behind_pr_when_alpha_changed_sdk_pyproject(self):
+        self.assert_global_path_refuses('sdk/python/pyproject.toml')
+
+    def assert_bad_justfile_refuses(self, justfile, message):
+        """Alpha replaces the justfile; the behind, disjoint PR must fail closed."""
+        branch, lane, sha = self.full_flow_lane('a')
+        other = self.base / 'other'
+        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
+        (other / 'justfile').write_text(justfile)
+        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-am', 'justfile', cwd=other)
+        self.run_cmd('git', 'push', cwd=other)
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected 'just --dump' shape", result.stderr)
+        self.assertIn(message, result.stderr)
+        self.assertFalse((self.base / 'merged').exists())
+
+    def test_full_merge_refuses_when_generated_artifact_is_an_expression(self):
+        self.assert_bad_justfile_refuses(
+            'out := "gen/schema.json"\n'
+            'check-generated artifact generator regen ok:\n    true\n\n'
+            'check-schema: (check-generated out "cat src" "gen-schema" "ok")\n',
+            'not a string literal: ["variable","out"]')
+
+    def test_full_merge_refuses_when_no_recipe_declares_generated_artifacts(self):
+        self.assert_bad_justfile_refuses(
+            'check-generated artifact generator regen ok:\n    true\n',
+            'no recipe depends on check-generated')
+
     def test_full_merge_refuses_criss_cross_history(self):
         branch, lane, p1 = self.full_flow_lane('a')
         other = self.base / 'other'

@@ -232,8 +232,7 @@ check-authoring-docs:
 gen-manifest-docs:
     uv run --no-project python tools/gen_manifest_docs.py
 
-check-manifest-docs:
-    uv run --no-project python tools/gen_manifest_docs.py --check
+check-manifest-docs: (check-generated "website/src/content/docs/plugin-manifest.md" "uv run --no-project python tools/gen_manifest_docs.py --stdout" "gen-manifest-docs" "Manifest reference is up to date.")
 
 # Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
 # Verify sdk/python/uv.lock matches sdk/python/pyproject.toml.

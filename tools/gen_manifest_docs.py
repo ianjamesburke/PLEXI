@@ -61,14 +61,12 @@ def generate() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--stdout", action="store_true", help="print instead of writing; just check-manifest-docs diffs it")
     args = parser.parse_args()
     try:
         content = generate()
-        if args.check:
-            if OUTPUT.read_text() != content:
-                raise ValueError("manifest reference is stale; run just gen-manifest-docs")
-            print("Manifest reference is up to date.")
+        if args.stdout:
+            print(content, end="")
         else:
             OUTPUT.write_text(content)
             print(f"Wrote {OUTPUT.relative_to(ROOT)}")
