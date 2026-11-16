@@ -457,6 +457,7 @@ pub(crate) fn restore_view_pane_in_profile(
             })
         }
         crate::workspace::SavedViewLaunch::Wasm { wasm_path, args } => {
+            use crate::app::registry::{ManifestType, PluginRegistry};
             use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
             use crate::host::wasm_view::{StateStore, WasmView};
 
@@ -471,6 +472,24 @@ pub(crate) fn restore_view_pane_in_profile(
                     "WASM component not found at {}",
                     wasm_path.display()
                 ));
+            }
+            let registry =
+                PluginRegistry::load_with_global(&workspace_root, &profile_dir.join("plugins"));
+            if let Some(installed) = registry.get(manifest_id).filter(|installed| {
+                installed.manifest.manifest_type == ManifestType::Wasm
+                    && crate::platform::path::canonical_or_self(&installed.bin_path)
+                        == crate::platform::path::canonical_or_self(wasm_path)
+            }) {
+                // Mint non-sensitive manifest capabilities before the WASM
+                // sets collect stored rows, just as an installed launch does.
+                // Import-derived grants below still require sensitive review.
+                gate_plugin_permissions_in_profile(
+                    profile_dir,
+                    manifest_id,
+                    &workspace_root,
+                    &installed.manifest.capabilities.capabilities,
+                    installed.manifest.capabilities.allowed_hosts.clone(),
+                );
             }
             let permission_store =
                 crate::app::permissions::PermissionStore::load_or_default(profile_dir)
@@ -3986,6 +4005,107 @@ mod tests {
     #[test]
     fn installed_wasm_manifest_timer_arms() {
         installed_wasm_timer_case(true);
+    }
+
+    fn restore_wasm_timer_case(fixture: &str, requires_review: bool) {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let h = HostHarness::new();
+        let plugin_dir = h.profile_dir().join("plugins/timer-only");
+        std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+        let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/wasm-fixtures/{fixture}.wasm"));
+        assert_eq!(
+            WasmView::inspect_required_grants(&wasm_path)
+                .expect("inspect timer fixture")
+                .capability_ids()
+                .is_empty(),
+            !requires_review,
+            "fixture imports must isolate timer from sensitive review"
+        );
+        let manifest = format!(
+            r#"schema_version = 2
+[plugin]
+id = "com.plexi.timer-only"
+name = "Timer only"
+version = "0.1.0"
+[plugin.capabilities]
+capabilities = ["timer"]
+[runtime]
+kind = "wasm"
+entry = '{}'
+[[contributes.views]]
+id = "com.plexi.timer-only.main"
+default = true
+"#,
+            wasm_path.display()
+        );
+        std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
+        let workspace_root = h.workspace_root();
+        assert!(
+            PluginRegistry::load_with_global(&workspace_root, &h.profile_dir().join("plugins"))
+                .get("com.plexi.timer-only")
+                .is_some(),
+            "restore fixture must have a valid installed manifest"
+        );
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
+            .expect("permission monitor");
+        assert!(
+            monitor.store().records().is_empty(),
+            "no prior launch grants"
+        );
+        let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        let pane_id = 1596;
+        let restored = restore_view_pane_in_profile(
+            "com.plexi.timer-only",
+            &crate::workspace::SavedViewLaunch::Wasm {
+                wasm_path,
+                args: Vec::new(),
+            },
+            RestoreTarget {
+                pane_id,
+                context_id: h.app.windows[0].context_id,
+                workspace_root: workspace_root.clone(),
+                context_root: &workspace_root,
+                saved_name: None,
+            },
+            &colors,
+            h.profile_dir(),
+        );
+        if requires_review {
+            assert_eq!(
+                restored.err().as_deref(),
+                Some("restore requires permission review for: state:read-write")
+            );
+            return;
+        }
+        let mut restored = restored.expect("restore timer plugin without prior installed launch");
+        let view = restored.pane.as_view_mut().expect("view");
+        let crate::host::pane::ViewRuntime::Wasm(live) = &mut view.runtime else {
+            panic!("expected WASM");
+        };
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            crate::ui::theme::setup_fonts(ui.ctx())
+        });
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            live.ui(ui, &colors, None, pane_id);
+        });
+        assert!(
+            live.timer_deadline_for_test().is_some(),
+            "restored timer must arm"
+        );
+        assert!(!live.has_pending_capability_prompt());
+    }
+
+    #[test]
+    fn restore_wasm_manifest_timer_arms_in_fresh_workspace() {
+        restore_wasm_timer_case("timer-only", false);
+    }
+
+    #[test]
+    fn restore_wasm_manifest_timer_does_not_bypass_sensitive_review() {
+        restore_wasm_timer_case("sysmon", true);
     }
 
     #[test]
