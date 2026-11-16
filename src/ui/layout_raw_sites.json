@@ -215,13 +215,6 @@
       "rationale": "Window drag regions use measured toolbar and title bounds; titlebar fixtures and pointer tests cover their exclusions."
     },
     {
-      "source": "src/ui/dialog.rs",
-      "site": "button_row | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {",
-      "count": 1,
-      "surface": "src/ui/dialog.rs",
-      "rationale": "ActionModal button rows right-align measured kit buttons, stack them full-width when the measured row does not fit, and emit modal_action layout reports; the unsaved-changes scene checks wide and narrow panes."
-    },
-    {
       "source": "src/overlays/ui_gallery.rs",
       "site": "draw_button_sizes | ui.horizontal_wrapped(|ui| {",
       "count": 1,

@@ -96,6 +96,9 @@ def check_raw(root: Path, entries: list[dict], baseline: dict, sources=None) -> 
         if key in approved:
             errors.append(f"{key}: duplicate raw exception")
         approved[key] = exception["count"]
+        count = sources.get(exception["source"], {}).get(exception["site"], 0)
+        if count < exception["count"]:
+            errors.append(f"stale raw exception: {exception['source']}::{exception['site']} ({count} < {exception['count']})")
     for source, sites in sources.items():
         legacy = baseline["legacy"].get(source, {})
         for site, count in sites.items():
@@ -118,6 +121,14 @@ def raw_self_test(entries: list[dict], baseline: dict) -> None:
     # Copying an approved site into a second location must be reviewed again.
     approved["rationale"] = "Custom canvas fixture"
     assert check_raw(ROOT, entries, {"legacy": {}, "approved": [approved]}, {source: {site: 2}})
+    # Removed sources, removed sites and reduced counts must retire approvals.
+    for remaining in ({}, {source: {}}, {source: {site: 0}}):
+        errors = check_raw(ROOT, entries, {"legacy": {}, "approved": [approved]}, remaining)
+        assert any("stale raw exception" in error for error in errors), remaining
+    approved["count"] = 2
+    errors = check_raw(ROOT, entries, {"legacy": {}, "approved": [approved]}, synthetic)
+    assert any("stale raw exception" in error for error in errors), errors
+    assert not check_raw(ROOT, entries, {"legacy": {}, "approved": [approved]}, {source: {site: 2}})
 
 
 def self_test(entries: list[dict]) -> None:
