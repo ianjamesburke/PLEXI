@@ -499,22 +499,16 @@ impl PlexiApp {
         }
     }
 
-    /// Shared text-input overlay. Renders a centered modal with a text field,
-    /// optional "Browse..." button (for folder targets), and Enter/Escape
-    /// commit/cancel. Dispatches commit to `OverlayTarget`.
+    /// Shared text-input overlay: an `ActionModal` field dialog with the
+    /// commit action, "Cancel" and, for folder targets, "Browse…".
+    /// Dispatches commit to `OverlayTarget`.
     pub(crate) fn draw_text_input_overlay(&mut self, ctx: &egui::Context) {
+        use crate::app::input_owner::OverlaySurface;
         use crate::app::OverlayTarget;
-
-        if self.text_overlay.is_none() {
-            return;
-        }
-
-        // Consume Enter/Escape before the Area so they don't bleed through.
-        let (commit, cancel) = ctx.input_mut(|i| {
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            (enter, esc)
-        });
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogField, DialogShortcut};
+        use crate::ui::focus::SurfaceKey;
+        use egui::{Key, Modifiers};
 
         // Poll async folder-picker result.
         if let Some(rx) = &self.text_overlay_browse_rx {
@@ -530,67 +524,48 @@ impl PlexiApp {
             }
         }
 
-        // Re-borrow after potential mutation above.
-        let (overlay, target) = match self.text_overlay.as_mut() {
-            Some(pair) => pair,
-            None => return,
+        let Some((overlay, target)) = self.text_overlay.as_mut() else {
+            return;
         };
-        let label = overlay.label.clone();
-        let hint = overlay.hint.clone();
-        let show_browse = matches!(target, OverlayTarget::ContextRoot(_));
-        let mut browse_clicked = false;
-
-        // Kit shell. Escape/Enter stay caller-side (consumed above, before
-        // the Area, so they can't bleed into panes); the old scrim had no
-        // click-away either, so keep that off.
-        let colors = self.colors;
-        crate::ui::overlay::ModalShell::centered("text_input_overlay")
-            .title(&label)
+        let commit_label = match target {
+            OverlayTarget::ContextRoot(_) => "Set root",
+        };
+        let mut actions = vec![
+            DialogAction::new("commit", commit_label, ButtonKind::Primary)
+                .shortcut(DialogShortcut::new(&["Enter"], Modifiers::NONE, Key::Enter)),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+        ];
+        if matches!(target, OverlayTarget::ContextRoot(_)) {
+            actions.push(DialogAction::new(
+                "browse",
+                "Browse\u{2026}",
+                ButtonKind::Secondary,
+            ));
+        }
+        let response = ActionModal::new("text_input", &overlay.label, &actions)
             .width(MODAL_WIDTH)
-            .click_away(false)
-            .show(ctx, &colors, |ui| {
-                let te_id = egui::Id::new("text_input_overlay_field");
-                let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                crate::ui::text_field::TextField::singleline(te_id, hint.as_str())
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(
-                        crate::app::input_owner::OverlaySurface::Layer(
-                            crate::app::FocusKind::TextInput,
-                        ),
-                    ))
-                    .select_all_on_focus(true)
-                    .log_name("TextInputOverlay")
-                    .show(ui, &mut overlay.buffer, &self.colors);
+            .show_field(
+                ctx,
+                &self.colors,
+                DialogField::singleline(
+                    egui::Id::new("text_input_overlay_field"),
+                    &overlay.hint,
+                    SurfaceKey::Overlay(OverlaySurface::Layer(crate::app::FocusKind::TextInput)),
+                    &mut overlay.buffer,
+                ),
+            );
+        let commit = response.selected == Some("commit");
 
-                if show_browse {
-                    ui.add_space(style::SPACE_SM);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors)
-                                    .kind(crate::ui::button::ButtonKind::Secondary)
-                                    .min_width(80.0),
-                            )
-                            .clicked()
-                        {
-                            browse_clicked = true;
-                        }
-                    });
-                }
-                let hints = [
-                    crate::ui::hints::HintGroup::new(&["Enter"], "confirm"),
-                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
-                ];
-                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-            });
-
-        if cancel {
+        if response.selected == Some("cancel") || response.dismissed {
             log::info!("TextInputOverlay: cancelled");
             self.text_overlay = None;
             self.text_overlay_browse_rx = None;
             return;
         }
 
-        if browse_clicked && self.text_overlay_browse_rx.is_none() {
+        if response.selected == Some("browse") && self.text_overlay_browse_rx.is_none() {
             log::info!("TextInputOverlay: browse folder picker opened");
             let (tx, rx) = std::sync::mpsc::channel();
             self.text_overlay_browse_rx = Some(rx);
@@ -656,13 +631,11 @@ impl PlexiApp {
         }
     }
 
-    /// The one single-line rename modal: a top-hung, scrim-less popover over
-    /// the supplied buffer whose Enter/Escape are consumed caller-side (before
-    /// the Area) so they cannot bleed into the focused pane this frame. The
-    /// overlay owns its own commit/cancel keys — it pairs with `focus_kind`,
-    /// which also names the input surface. `id` prefixes the shell and text
-    /// field ids and doubles as the field's log name. Returns
-    /// `(commit, cancel)`; the caller owns what committing means.
+    /// The one single-line rename dialog: an `ActionModal` field dialog with
+    /// "Rename" (Enter) and "Cancel" (Esc). It pairs with `focus_kind`, which
+    /// names the field's input surface; `id` names the modal and prefixes the
+    /// field id. Returns `(commit, cancel)`; the caller owns what committing
+    /// means.
     fn draw_single_line_rename_overlay(
         ctx: &egui::Context,
         id: &str,
@@ -672,29 +645,34 @@ impl PlexiApp {
         buffer: &mut String,
         colors: &Colors,
     ) -> (bool, bool) {
-        let (commit, cancel) = ctx.input_mut(|i| {
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            (enter, esc)
-        });
-
-        crate::ui::overlay::ModalShell::centered(format!("{id}_overlay"))
-            .title(title)
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogField, DialogShortcut};
+        use egui::{Key, Modifiers};
+        let actions = [
+            DialogAction::new("rename", "Rename", ButtonKind::Primary)
+                .shortcut(DialogShortcut::new(&["Enter"], Modifiers::NONE, Key::Enter)),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+        ];
+        let response = ActionModal::new(id, title, &actions)
             .width(MODAL_WIDTH)
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .scrim(false)
-            .show(ctx, colors, |ui| {
-                let te_id = egui::Id::new(format!("{id}_input"));
-                crate::ui::text_field::TextField::singleline(te_id, placeholder)
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+            .show_field(
+                ctx,
+                colors,
+                DialogField::singleline(
+                    egui::Id::new(format!("{id}_input")),
+                    placeholder,
+                    crate::ui::focus::SurfaceKey::Overlay(
                         crate::app::input_owner::OverlaySurface::Layer(focus_kind),
-                    ))
-                    .select_all_on_focus(true)
-                    .log_name(id)
-                    .show(ui, buffer, colors);
-            });
-
-        (commit, cancel)
+                    ),
+                    buffer,
+                ),
+            );
+        (
+            response.selected == Some("rename"),
+            response.selected == Some("cancel") || response.dismissed,
+        )
     }
 
     pub(crate) fn draw_rename_pane_overlay(&mut self, ctx: &egui::Context) {
@@ -776,9 +754,12 @@ impl PlexiApp {
         }
     }
 
-    /// Modal for editing a context's description. Multiline text input with
-    /// Cmd+Enter to save, Esc to cancel.
+    /// Modal for editing a context's description: an `ActionModal` field
+    /// dialog with a multi-line field, "Save" (Cmd+Enter) and "Cancel" (Esc).
     pub(crate) fn draw_edit_description_overlay(&mut self, ctx: &egui::Context) {
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogField, DialogShortcut};
+        use egui::{Key, Modifiers};
         let ctx_idx = match self.editing_description {
             Some(idx) if idx < self.router.len() => idx,
             _ => {
@@ -788,44 +769,36 @@ impl PlexiApp {
             }
         };
 
-        let (commit, cancel) = ctx.input_mut(|i| {
-            let cmd_enter = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter);
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            (cmd_enter, esc)
-        });
-
-        let colors = self.colors;
+        let actions =
+            [
+                DialogAction::new("save", "Save", ButtonKind::Primary).shortcut(
+                    DialogShortcut::new(&["cmd", "Enter"], Modifiers::COMMAND, Key::Enter),
+                ),
+                DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                    .refuses()
+                    .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+            ];
         let ctx_name = self.router.get(ctx_idx).name.to_string();
         let title = format!("Description for \"{ctx_name}\"");
-        crate::ui::overlay::ModalShell::centered("edit_description_overlay")
-            .title(&title)
+        let response = ActionModal::new("context_description", &title, &actions)
             .width(MODAL_WIDTH)
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .scrim(false)
-            .show(ctx, &colors, |ui| {
-                let te_id = egui::Id::new("edit_description_input");
-                crate::ui::text_field::TextArea::multiline(
-                    te_id,
+            .show_field(
+                ctx,
+                &self.colors,
+                DialogField::multiline(
+                    egui::Id::new("edit_description_input"),
                     "What are you working on in this context?",
-                )
-                .font(egui::TextStyle::Body.resolve(ui.style()))
-                .desired_width(MODAL_WIDTH)
-                .rows(3)
-                .surface(crate::ui::focus::SurfaceKey::Overlay(
-                    crate::app::input_owner::OverlaySurface::Layer(
-                        crate::app::FocusKind::ContextDescription,
+                    crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::ContextDescription,
+                        ),
                     ),
-                ))
-                .select_all_on_focus(true)
-                .log_name("context_description")
-                .show(ui, &mut self.description_buffer, &self.colors);
-
-                let hints = [
-                    crate::ui::hints::HintGroup::new(&["\u{2318}", "Enter"], "save"),
-                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
-                ];
-                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-            });
+                    3,
+                    &mut self.description_buffer,
+                ),
+            );
+        let commit = response.selected == Some("save");
+        let cancel = response.selected == Some("cancel") || response.dismissed;
 
         if cancel {
             log::info!("context_description: edit cancelled ctx_idx={ctx_idx}");

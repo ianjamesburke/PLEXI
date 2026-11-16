@@ -1,7 +1,7 @@
 use crate::spatial::tiling::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
-use egui::{Align, Align2, CornerRadius, Layout, RichText, Stroke, Vec2};
+use egui::{Align, CornerRadius, Layout, RichText, Stroke};
 
 pub(crate) mod command_palette;
 pub(crate) mod confirmations;

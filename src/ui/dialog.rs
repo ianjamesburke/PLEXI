@@ -134,6 +134,70 @@ impl<'a> DialogAction<'a> {
     }
 }
 
+/// A text field body for [`ActionModal::show_field`] (stint 1559). The kit
+/// owns the field's focus surface, select-all on focus and its place above
+/// the button row.
+pub(crate) struct DialogField<'b> {
+    id: egui::Id,
+    placeholder: &'b str,
+    surface: crate::ui::focus::SurfaceKey,
+    /// `None` is a single-line field; `Some(rows)` a multi-line one.
+    rows: Option<usize>,
+    buffer: &'b mut String,
+}
+
+impl<'b> DialogField<'b> {
+    pub(crate) fn singleline(
+        id: egui::Id,
+        placeholder: &'b str,
+        surface: crate::ui::focus::SurfaceKey,
+        buffer: &'b mut String,
+    ) -> Self {
+        Self {
+            id,
+            placeholder,
+            surface,
+            rows: None,
+            buffer,
+        }
+    }
+
+    pub(crate) fn multiline(
+        id: egui::Id,
+        placeholder: &'b str,
+        surface: crate::ui::focus::SurfaceKey,
+        rows: usize,
+        buffer: &'b mut String,
+    ) -> Self {
+        Self {
+            rows: Some(rows),
+            ..Self::singleline(id, placeholder, surface, buffer)
+        }
+    }
+
+    fn show(self, ui: &mut egui::Ui, log_name: &str, colors: &Colors) {
+        match self.rows {
+            None => {
+                crate::ui::text_field::TextField::singleline(self.id, self.placeholder)
+                    .surface(self.surface)
+                    .select_all_on_focus(true)
+                    .log_name(log_name)
+                    .show(ui, self.buffer, colors);
+            }
+            Some(rows) => {
+                crate::ui::text_field::TextArea::multiline(self.id, self.placeholder)
+                    .font(egui::TextStyle::Body.resolve(ui.style()))
+                    .desired_width(ui.available_width())
+                    .rows(rows)
+                    .surface(self.surface)
+                    .select_all_on_focus(true)
+                    .log_name(log_name)
+                    .show(ui, self.buffer, colors);
+            }
+        }
+    }
+}
+
 pub(crate) struct DialogResponse<'a> {
     pub(crate) selected: Option<&'a str>,
     pub(crate) dismissed: bool,
@@ -224,6 +288,33 @@ impl<'a> ActionModal<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
+        self.show_inner(ctx, colors, None, add_body)
+    }
+
+    /// A text-entry dialog (stint 1559): `field` above the button row. The
+    /// dialog hangs below the top of the window with no scrim, so a stray
+    /// click never throws away typed text, and it traps Tab in the order
+    /// field, then the actions as given; the field takes focus on open.
+    pub(crate) fn show_field(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        field: DialogField<'_>,
+    ) -> DialogResponse<'a> {
+        self.show_inner(ctx, colors, Some(field), |_| {})
+    }
+
+    fn show_inner(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        field: Option<DialogField<'_>>,
+        add_body: impl FnOnce(&mut egui::Ui),
+    ) -> DialogResponse<'a> {
+        let field_id = field.as_ref().map(|field| field.id);
+        let trap_key = self
+            .focus_surface
+            .or(field.as_ref().map(|field| field.surface));
         let guarded_destructive =
             |action: &DialogAction<'_>| action.destructive && self.destructive_input.is_some();
         let press = |action: &DialogAction<'_>, shortcut: &DialogShortcut<'_>| {
@@ -244,7 +335,7 @@ impl<'a> ActionModal<'a> {
         // action; an untrapped modal keys exactly as before (stint 1493 critic).
         let focused_action = ctx
             .memory(|m| m.focused())
-            .filter(|_| self.focus_surface.is_some())
+            .filter(|_| trap_key.is_some())
             .and_then(|focused| {
                 previous_ids
                     .iter()
@@ -307,13 +398,24 @@ impl<'a> ActionModal<'a> {
             }
         }
 
-        let shell = ModalShell::centered(self.id)
+        let mut shell = ModalShell::centered(self.id)
             .title(self.title)
             .width(self.width);
+        if field.is_some() {
+            shell = shell
+                .anchor(
+                    egui::Align2::CENTER_TOP,
+                    egui::vec2(0.0, style::FIELD_MODAL_TOP),
+                )
+                .scrim(false);
+        }
 
         let mut action_ids: Vec<(String, egui::Id)> = Vec::new();
         let response = shell.show(ctx, colors, |ui| {
             add_body(ui);
+            if let Some(field) = field {
+                field.show(ui, self.id, colors);
+            }
             ui.add_space(style::SPACE_MD + style::SPACE_SM);
             let row = ButtonRow {
                 modal: self.id,
@@ -323,7 +425,7 @@ impl<'a> ActionModal<'a> {
                 // focus trap (stint 1493); elsewhere a focused button would
                 // take egui's Space/Enter click, which no guard sees (stints
                 // 1498, 1513).
-                focusable: self.focus_surface.is_some()
+                focusable: trap_key.is_some()
                     || (self.consent_input.is_none() && self.destructive_input.is_none()),
                 // A consent dialog draws its approving actions disabled until
                 // it arms (stint 1498).
@@ -333,22 +435,31 @@ impl<'a> ActionModal<'a> {
                 selected = Some(id);
             }
         });
-        if let Some(key) = self.focus_surface {
-            // Keyboard focus enters at the safe action (stint 1505): the Enter
-            // default, else the first refusal (Cancel), else the first action.
-            let entry = self.default_action.or_else(|| {
-                self.actions
-                    .iter()
-                    .find(|action| action.refuses)
-                    .map(|action| action.id)
-            });
+        if let Some(key) = trap_key {
             let mut ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
-            if let Some(at) =
-                entry.and_then(|entry| action_ids.iter().position(|(name, _)| name == entry))
-            {
-                ids.rotate_left(at);
+            if let Some(field_id) = field_id {
+                // A field dialog enters at its field, then the actions as given.
+                ids.insert(0, field_id);
+            } else {
+                // Keyboard focus enters at the safe action (stint 1505): the
+                // Enter default, else the first refusal (Cancel), else the
+                // first action.
+                let entry = self.default_action.or_else(|| {
+                    self.actions
+                        .iter()
+                        .find(|action| action.refuses)
+                        .map(|action| action.id)
+                });
+                if let Some(at) =
+                    entry.and_then(|entry| action_ids.iter().position(|(name, _)| name == entry))
+                {
+                    ids.rotate_left(at);
+                }
             }
             crate::ui::focus::register_focus_trap(ctx, key, &ids);
+        }
+        if let Some(id) = selected.filter(|_| field_id.is_some()) {
+            log::info!("ui: field modal {} chose {id}", self.id);
         }
         ctx.data_mut(|d| d.insert_temp(action_ids_slot(self.id), action_ids));
 

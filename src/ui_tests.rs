@@ -11953,6 +11953,211 @@ open(out + ".done", "w").close()
         }
     }
 
+    // ── Text-entry dialogs on the kit (stint 1559) ─────────────────────────────
+
+    /// The four text-entry dialogs, each opened with `buffer` in its field.
+    #[derive(Clone, Copy, Debug)]
+    enum TextDialog {
+        RenamePane,
+        RenameContext,
+        Description,
+        ContextRoot,
+    }
+
+    impl TextDialog {
+        const ALL: [Self; 4] = [
+            Self::RenamePane,
+            Self::RenameContext,
+            Self::Description,
+            Self::ContextRoot,
+        ];
+
+        fn commit_label(self) -> &'static str {
+            match self {
+                Self::RenamePane | Self::RenameContext => "Rename",
+                Self::Description => "Save",
+                Self::ContextRoot => "Set root",
+            }
+        }
+
+        fn commit_key(self) -> (egui::Modifiers, egui::Key) {
+            match self {
+                Self::Description => (egui::Modifiers::COMMAND, egui::Key::Enter),
+                _ => (egui::Modifiers::NONE, egui::Key::Enter),
+            }
+        }
+
+        fn open(self, h: &mut PlexiUiHarness, buffer: &str) {
+            h.with_app_mut(|app| match self {
+                Self::RenamePane => {
+                    app.open_rename_for_focused();
+                    app.rename_buffer = buffer.to_string();
+                }
+                Self::RenameContext => {
+                    app.open_context_rename(0);
+                    app.context_rename.as_mut().unwrap().buffer = buffer.to_string();
+                }
+                Self::Description => {
+                    app.editing_description = Some(0);
+                    app.description_buffer = buffer.to_string();
+                    app.push_focus_layer(FocusKind::ContextDescription);
+                }
+                Self::ContextRoot => {
+                    app.text_overlay = Some((
+                        crate::app::TextInputOverlay {
+                            label: "Set context root".to_string(),
+                            hint: "/path/to/project or ~/...".to_string(),
+                            buffer: buffer.to_string(),
+                        },
+                        crate::app::OverlayTarget::ContextRoot(0),
+                    ));
+                }
+            });
+            h.run_steps(2);
+        }
+
+        fn is_open(self, h: &mut PlexiUiHarness) -> bool {
+            h.with_app(|app| match self {
+                Self::RenamePane => app.renaming_pane.is_some(),
+                Self::RenameContext => app.context_rename.is_some(),
+                Self::Description => app.editing_description.is_some(),
+                Self::ContextRoot => app.text_overlay.is_some(),
+            })
+        }
+
+        /// The value the dialog writes on commit.
+        fn committed(self, h: &mut PlexiUiHarness, pane: crate::spatial::tiling::PaneId) -> String {
+            h.with_app(|app| match self {
+                Self::RenamePane => app.windows[app.active_window]
+                    .panes
+                    .get(&pane)
+                    .and_then(|p| p.as_view())
+                    .map(|v| v.name.clone())
+                    .unwrap_or_default(),
+                Self::RenameContext => app.router.get(0).name.to_string(),
+                Self::Description => app.router.get(0).description.clone().unwrap_or_default(),
+                Self::ContextRoot => app.router.get(0).root.display().to_string(),
+            })
+        }
+    }
+
+    /// Stint 1559: every text-entry dialog shows "Cancel" and its commit
+    /// button, and the buttons do what the keys do: Enter (Cmd+Enter for the
+    /// description) and the commit button commit; Esc and Cancel cancel.
+    #[test]
+    fn text_entry_dialogs_commit_and_cancel_by_key_and_button() {
+        for dialog in TextDialog::ALL {
+            let mut h = PlexiUiHarness::new();
+            h.step();
+            let pane = add_focused_pane(&mut h);
+            h.step();
+            let root = h.workspace.path().to_path_buf();
+            let value = |n: usize| match dialog {
+                TextDialog::ContextRoot => {
+                    let dir = root.join(format!("root{n}"));
+                    std::fs::create_dir_all(&dir).unwrap();
+                    dir.display().to_string()
+                }
+                _ => format!("value {n}"),
+            };
+            for (n, by_button) in [(1, false), (2, true)] {
+                let wanted = value(n);
+                dialog.open(&mut h, &wanted);
+                if by_button {
+                    h.harness().get_by_label(dialog.commit_label()).click();
+                } else {
+                    let (mods, key) = dialog.commit_key();
+                    h.harness().key_press_modifiers(mods, key);
+                }
+                h.run_steps(2);
+                assert!(
+                    !dialog.is_open(&mut h),
+                    "{dialog:?} commit by_button={by_button}"
+                );
+                assert_eq!(
+                    dialog.committed(&mut h, pane),
+                    wanted,
+                    "{dialog:?} by_button={by_button}"
+                );
+
+                dialog.open(&mut h, &value(n + 10));
+                if by_button {
+                    h.harness().get_by_label("Cancel").click();
+                } else {
+                    h.harness().key_press(egui::Key::Escape);
+                }
+                h.run_steps(2);
+                assert!(
+                    !dialog.is_open(&mut h),
+                    "{dialog:?} cancel by_button={by_button}"
+                );
+                assert_eq!(
+                    dialog.committed(&mut h, pane),
+                    wanted,
+                    "{dialog:?} cancel by_button={by_button} must not commit"
+                );
+            }
+        }
+    }
+
+    /// Stint 1559: Tab walks field, commit button, Cancel, and wraps to the
+    /// field; Enter on a Tab-focused Cancel cancels instead of committing.
+    #[test]
+    fn rename_pane_tab_walks_field_then_buttons_and_enter_on_cancel_cancels() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+        let pane = add_focused_pane(&mut h);
+        h.step();
+        let before = TextDialog::RenamePane.committed(&mut h, pane);
+        TextDialog::RenamePane.open(&mut h, "never committed");
+        let field = egui::Id::new("rename_pane_input");
+        let focused = |h: &mut PlexiUiHarness| h.with_app(|app| app.ctx.memory(|m| m.focused()));
+        assert_eq!(
+            focused(&mut h),
+            Some(field),
+            "the field takes focus on open"
+        );
+        let labels = ["Rename", "Cancel"];
+        tab(&mut h, false);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Rename"));
+        tab(&mut h, false);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+        tab(&mut h, false);
+        assert_eq!(focused(&mut h), Some(field), "Tab wraps back to the field");
+        tab(&mut h, true);
+        assert_eq!(focused_label(&mut h, &labels).as_deref(), Some("Cancel"));
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(!TextDialog::RenamePane.is_open(&mut h));
+        assert_eq!(TextDialog::RenamePane.committed(&mut h, pane), before);
+    }
+
+    /// Visual review (stint 1559): each text-entry dialog is an `ActionModal`
+    /// with a field body and a "Cancel Esc" / commit button row, at a roomy
+    /// and a narrow window.
+    #[test]
+    fn screenshot_text_entry_dialogs() {
+        for width in [900.0, 360.0] {
+            for dialog in TextDialog::ALL {
+                let mut h = PlexiUiHarness::new_sized(width, 420.0);
+                h.step();
+                add_focused_pane(&mut h);
+                h.step();
+                dialog.open(&mut h, "notes-scratch");
+                h.run_steps(2);
+                h.harness().get_by_label(dialog.commit_label());
+                h.harness().get_by_label("Cancel");
+                assert!(
+                    has_text_field_holding(&mut h, "notes-scratch"),
+                    "{dialog:?}"
+                );
+                assert_layout_surface(&h, "modal_action");
+                h.save_screenshot(&evidence_png!(format!("_{dialog:?}_{width}")))
+                    .expect("render failed");
+            }
+        }
+    }
+
     // ── Rename flow tests (require a real egui frame to process key events) ────
 
     /// Full rename flow: set up rename state → press Enter → verify commit.
