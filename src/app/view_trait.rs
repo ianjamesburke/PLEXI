@@ -47,6 +47,7 @@ pub enum ViewCommand {
     /// Execute an Assistant host tool against live host state without shelling
     /// out to the CLI. The host replies directly to the blocked model worker.
     AssistantHostTool {
+        cancel: crate::plexi_ai::CancelToken,
         name: String,
         input_json: String,
         origin_pane_id: u64,
