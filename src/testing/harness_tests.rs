@@ -22021,8 +22021,8 @@ fn agent_mesh_gate_palette_launch_routes() {
             secrets: Vec::new(),
             split: false,
         }];
-        let report = h.app.run_user_command_by_name("gate-test").unwrap();
-        assert_ne!(report.exit_code, 0, "{step}: {report:?}");
+        h.app.queue_user_command("gate-test", None);
+        h.hidden_frame();
         assert!(
             h.app
                 .pending_notifications

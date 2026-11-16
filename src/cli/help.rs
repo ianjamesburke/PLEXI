@@ -793,7 +793,7 @@ mod tests {
             "resolve_workspace_root_stopping_at",
             "resolve_commands_workspace_root",
             "effective_commands_workspace_root",
-            "run_user_command_by_name",
+            "queue_user_command",
             "workspace `commands.toml` > global `commands.toml` > global `scripts/`",
             "no host restart is needed",
         ] {

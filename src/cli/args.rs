@@ -373,7 +373,7 @@ pub enum Commands {
     /// outside a workspace. `[keys]` `"<chord>" = "run:<name>"` bindings in
     /// `~/.plexi-<channel>/config.toml` (or `<repo>/.plexi-<channel>/config.toml`; `~/.plexi/config.toml`
     /// on stable) use the adopted/host workspace root, falling back to the active context root
-    /// (`run_user_command_by_name`, validated by `plexi config check` against reserved shortcuts).
+    /// (`queue_user_command`, validated by `plexi config check` against reserved shortcuts).
     ///
     /// (4) Precedence: workspace `commands.toml` > global `commands.toml` > global `scripts/`,
     /// merged by command name. `plexi run` with no arguments lists both scopes (`[workspace]` and
