@@ -40,7 +40,7 @@ impl PlexiApp {
         self.surface_stray_bundles(receipt.as_ref());
         self.surface_workspace_load_failure();
         self.surface_retired_data_notices();
-        self.surface_set_aside_apps();
+        self.surface_set_aside_apps(&crate::config::config_dir());
     }
 
     /// An `apps/` folder this launch's profile initialization moved aside
@@ -48,8 +48,8 @@ impl PlexiApp {
     /// It concerns the user's own files, so it ignores the notifications
     /// switch and stays until acknowledged; it is a one-time event, not a
     /// standing condition, so it is not re-raised on later launches.
-    pub(crate) fn surface_set_aside_apps(&mut self) {
-        let notices = crate::app::plugin_migration::take_set_aside_notices();
+    pub(crate) fn surface_set_aside_apps(&mut self, profile: &std::path::Path) {
+        let notices = crate::app::plugin_migration::take_set_aside_notices(profile);
         log::info!("launch notice: apps folders set aside={}", notices.len());
         for body in notices {
             let queued = self.enqueue_notification(

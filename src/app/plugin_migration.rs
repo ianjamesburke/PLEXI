@@ -659,18 +659,22 @@ const LEGACY_CORE_STAMP: &str = ".core_build";
 /// How many dated names a set-aside tries before failing closed.
 const SET_ASIDE_ATTEMPTS: usize = 100;
 
-/// Set-aside notices for this process's launch notice, drained once by
-/// [`take_set_aside_notices`].
-static SET_ASIDE_NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Set-aside notices waiting for their profile's host, keyed by the profile
+/// root that was migrated. Drained per profile by [`take_set_aside_notices`].
+static SET_ASIDE_NOTICES: std::sync::Mutex<Vec<(PathBuf, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// Notices for `apps/` folders this process moved aside, for the host to show
-/// once at startup.
-pub(crate) fn take_set_aside_notices() -> Vec<String> {
-    std::mem::take(
-        &mut *SET_ASIDE_NOTICES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+/// Notices for `apps/` folders this process moved aside in `profile`, for its
+/// host to show once at startup. Notices for other profiles stay queued.
+pub(crate) fn take_set_aside_notices(profile: &Path) -> Vec<String> {
+    let mut queued = SET_ASIDE_NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (taken, kept) = std::mem::take(&mut *queued)
+        .into_iter()
+        .partition(|(root, _)| root == profile);
+    *queued = kept;
+    taken.into_iter().map(|(_, notice)| notice).collect()
 }
 
 fn is_real_dir(path: &Path) -> bool {
@@ -780,7 +784,7 @@ fn set_aside_reseeded_core(
     SET_ASIDE_NOTICES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(notice);
+        .push((root.to_path_buf(), notice));
     Ok(())
 }
 

@@ -932,7 +932,7 @@ fn set_aside_notice_is_delivered_when_the_live_queue_is_full() {
             ..Default::default()
         })
         .collect();
-    h.app.surface_set_aside_apps();
+    h.app.surface_set_aside_apps(root.path());
     assert!(
         h.app
             .pending_notifications
@@ -2571,7 +2571,7 @@ fn set_aside_apps_folder_is_reported_once_at_launch() {
         .expect("apps/ was moved aside");
 
     let mut h = HostHarness::new();
-    h.app.surface_set_aside_apps();
+    h.app.surface_set_aside_apps(root.path());
     let aside = aside.display().to_string();
     let notice = h
         .app
@@ -2584,7 +2584,7 @@ fn set_aside_apps_folder_is_reported_once_at_launch() {
         "{}",
         notice.body
     );
-    h.app.surface_set_aside_apps();
+    h.app.surface_set_aside_apps(root.path());
     assert_eq!(
         h.app
             .pending_notifications
