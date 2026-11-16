@@ -408,9 +408,57 @@ mod tests {
         out
     }
 
+    fn read_scope_request(stream: &std::os::unix::net::UnixStream) -> serde_json::Value {
+        use std::io::BufRead;
+        // BSD inherits O_NONBLOCK from the polling listener; requests may arrive later.
+        stream.set_nonblocking(false).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[test]
+    fn scope_server_waits_for_request_after_accept() {
+        use std::io::Write;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::sync::mpsc;
+
+        let dir = tempdir().unwrap();
+        let socket = dir.path().join("delayed.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = UnixStream::connect(&socket).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        // Also exercise BSD's inherited mode when this test runs on Linux.
+        #[cfg(not(target_os = "macos"))]
+        stream.set_nonblocking(true).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let request = read_scope_request(&stream);
+            done_tx.send(request).unwrap();
+        });
+        let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(2));
+        started_rx.recv_timeout(timeout).unwrap();
+        let early = done_rx.recv_timeout(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(50),
+        ));
+        let written = client.write_all(b"{\"type\":\"get_pane_info\"}\n");
+        server.join().unwrap();
+        written.unwrap();
+        assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(
+            done_rx.recv_timeout(timeout).unwrap()["type"],
+            "get_pane_info"
+        );
+    }
+
     /// Exercise the production host-query resolver using a bounded mock endpoint.
     fn with_context_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
-        use std::io::{BufRead, Write};
+        use std::io::Write;
         use std::os::unix::net::UnixListener;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
@@ -427,11 +475,7 @@ mod tests {
             while !stopped.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut line = String::new();
-                        std::io::BufReader::new(&stream)
-                            .read_line(&mut line)
-                            .unwrap();
-                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let request = read_scope_request(&stream);
                         assert_eq!(request["type"], "get_pane_info");
                         stream
                             .write_all(
@@ -504,7 +548,7 @@ mod tests {
 
     #[test]
     fn context_targets_plugin_state_after_set_root_ignores_stale_environment() {
-        use std::io::{BufRead, Write};
+        use std::io::Write;
         use std::os::unix::net::UnixListener;
         let _guard = env_guard();
         let mut h = crate::testing::HostHarness::new();
@@ -528,11 +572,7 @@ mod tests {
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut line = String::new();
-                        std::io::BufReader::new(&stream)
-                            .read_line(&mut line)
-                            .unwrap();
-                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let request = read_scope_request(&stream);
                         assert_eq!(request["type"], "get_pane_info");
                         assert_eq!(request["pane_id"], pane);
                         stream.write_all(&reply).unwrap();
