@@ -367,7 +367,7 @@ do_close_stints() {
 
 resolve_issue() {
     local PR="$1"
-    local BRANCH="$2"
+    # A branch name is not an explicit GitHub issue link.
     local PR_BODY="${3:-}"
     local ISSUE
 
@@ -387,46 +387,85 @@ resolve_issue() {
         return
     fi
 
-    case "$BRANCH" in
-        feature/[0-9]*-*|fix/[0-9]*-*)
-            printf '%s\n' "$BRANCH" | grep -oE '[0-9]+' | head -1
-            return
-            ;;
-    esac
-
     return 1
 }
 
 test_resolve_issue() {
+    local ISSUE_REFERENCE="" actual BRANCH KEYWORD BODY
     gh() {
-        if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-            if printf '%s\n' "$*" | grep -q 'closingIssuesReferences'; then
-                printf '\n'
-            else
-                return 1
-            fi
+        if [ "$1" = "pr" ] && [ "$2" = "view" ] && [[ "$*" == *closingIssuesReferences* ]]; then
+            printf '%s\n' "$ISSUE_REFERENCE"
+        else
+            echo "unexpected gh call: $*" >&2
+            return 1
         fi
     }
 
-    local actual
-    actual=$(resolve_issue 2171 "feature/stint-0004-file-explorer-multi-select-ops" "Closes #2138")
-    [ "$actual" = "2138" ] || {
-        echo "expected PR body closing issue 2138, got '$actual'" >&2
+    for BRANCH in feature/1347-x fix/1347-x feature/stint-1347-x; do
+        for BODY in "" "Stint: 1347"; do
+            actual=$(resolve_issue 3202 "$BRANCH" "$BODY" || true)
+            [ -z "$actual" ] || {
+                echo "expected no issue from branch $BRANCH, got '$actual'" >&2
+                return 1
+            }
+        done
+    done
+
+    for KEYWORD in Closes Fixes Resolves; do
+        actual=$(resolve_issue 3202 "feature/1347-x" "$KEYWORD #2138")
+        [ "$actual" = "2138" ] || {
+            echo "expected $KEYWORD to resolve issue 2138, got '$actual'" >&2
+            return 1
+        }
+    done
+
+    ISSUE_REFERENCE=2468
+    actual=$(resolve_issue 3202 "feature/1347-x" "")
+    [ "$actual" = "2468" ] || {
+        echo "expected closingIssuesReferences issue 2468, got '$actual'" >&2
         return 1
     }
 
-    actual=$(resolve_issue 2155 "feature/2155-short-name" "")
-    [ "$actual" = "2155" ] || {
-        echo "expected numeric branch issue 2155, got '$actual'" >&2
+    # Exercise the real dispatch and closeout with all external effects stubbed.
+    # Any gh issue call fails the flow, even the best-effort label edit.
+    actual=$(
+        gh() {
+            case "$1 $2" in
+                'pr view')
+                    if [[ "$*" == *closingIssuesReferences* ]]; then
+                        printf '\n'
+                    else
+                        printf '%s\n' '{"branch":"feature/1347-x","base":"alpha","state":"OPEN","body":"Stint: 1347"}'
+                    fi
+                    ;;
+                'pr merge') echo "mock merge $*" ;;
+                *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+            esac
+        }
+        git() {
+            case "$*" in
+                'fetch origin feature/1347-x'|'diff --name-only -z --no-renames fixture-base '*) ;;
+                'rev-parse FETCH_HEAD') printf '%040d\n' 1 ;;
+                'merge-base origin/alpha '*) echo fixture-base ;;
+                *) echo "unexpected git call: $*" >&2; exit 1 ;;
+            esac
+        }
+        do_sync() { :; }
+        assert_clean_lane() { :; }
+        assert_disjoint_from_alpha() { :; }
+        do_cleanup() { :; }
+        task_file_for_stint() { echo "$1-fixture.md"; }
+        stint() { echo "mock stint $*"; }
+        set -- 3202 --reviewed-head "$(printf '%040d' 1)"
+        eval "$(sed -n '/^# --- Dispatch ---/,$p' "$SCRIPT_DIR/merge-pr.sh")"
+    ) || return 1
+    [[ "$actual" == *"mock merge pr merge 3202 --squash --match-head-commit "* ]] &&
+        [[ "$actual" == *"mock stint done 1347"* ]] || {
+        echo "expected stint-only merge and closeout, got '$actual'" >&2
         return 1
     }
 
-    if resolve_issue 4 "feature/stint-0004-short-name" "" >/dev/null 2>&1; then
-        echo "expected unresolved stint branch without PR body to fail" >&2
-        return 1
-    fi
-
-    echo "resolve_issue tests passed"
+    echo "resolve_issue tests passed (branch rejection, explicit links, stint-only merge)"
 }
 
 test_resolve_stints() {
@@ -588,7 +627,7 @@ case "$CMD" in
             STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
             if [ -z "$ISSUE" ] && [ -z "$STINTS" ]; then
                 echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
-                echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch or a 'Stint: 0123, 0124' line in the PR body." >&2
+                echo "Link a GitHub issue through closingIssuesReferences or a closing keyword like 'Closes #1234'; for stints, use a stint-<id> branch or a 'Stint: 0123, 0124' line in the PR body." >&2
                 echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR --reviewed-head <SHA> no-issue" >&2
                 exit 1
             fi
