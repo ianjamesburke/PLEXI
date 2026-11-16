@@ -21313,8 +21313,9 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
 
 /// The harness exits but its interactive shell survives (`apply_initial_cmd`
 /// keeps the shell): the pane is no longer running the agent, so `agent open`
-/// starts a new chat instead of focusing the bare shell. A later report from a
-/// harness in that pane makes it count again.
+/// starts a new chat instead of focusing the bare shell. Late reports from the
+/// dead harness (pi fires its reporter asynchronously) leave it excluded; only
+/// a new harness session starting in the pane makes it count again.
 #[test]
 fn named_agent_skips_pane_whose_harness_exited() {
     let mut h = HostHarness::new();
@@ -21350,9 +21351,40 @@ fn named_agent_skips_pane_whose_harness_exited() {
     assert_ne!(pane_id, shell);
 
     h.app.close_pane_by_id(pane_id);
+    for (state, event) in [
+        ("working", "tool_result"),
+        ("idle", "agent_end"),
+        ("idle", "session_shutdown"),
+        ("idle", "SessionEnd"),
+    ] {
+        h.inject_ipc(
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": shell, "state": state, "agent": "pi",
+                "event": event,
+            }))
+            .unwrap(),
+        );
+        h.run_frames(2);
+        h.app.pane_navigate(caller);
+        let outcome = h
+            .app
+            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .expect("open");
+        assert_ne!(
+            outcome.pane_id(),
+            shell,
+            "a late {event} report from the dead harness must not revive its shell"
+        );
+        let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+            panic!("expected a new chat after late {event}, got {outcome:?}");
+        };
+        h.app.close_pane_by_id(pane_id);
+    }
+
     h.inject_ipc(
         serde_json::from_value(serde_json::json!({
-            "type": "set_agent_state", "pane_id": shell, "state": "working", "agent": "pi",
+            "type": "set_agent_state", "pane_id": shell, "state": "idle", "agent": "pi",
+            "event": "session_start",
         }))
         .unwrap(),
     );
@@ -21365,6 +21397,6 @@ fn named_agent_skips_pane_whose_harness_exited() {
     assert_eq!(
         outcome,
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell },
-        "a harness reporting again in the pane runs the agent"
+        "a new harness session in the pane runs the agent again"
     );
 }

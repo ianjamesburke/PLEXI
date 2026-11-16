@@ -4313,7 +4313,21 @@ impl PlexiApp {
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
-                            t.harness_exited = false;
+                            // Only a session starting is a new harness in the
+                            // pane. Turn, tool and shutdown reports can arrive
+                            // late from the harness that already exited (pi
+                            // reports asynchronously), so they never clear it.
+                            if t.harness_exited
+                                && matches!(
+                                    event.as_deref(),
+                                    Some("SessionStart" | "session_start")
+                                )
+                            {
+                                t.harness_exited = false;
+                                log::info!(
+                                    "pane_ipc: kind=set_agent_state pane_id={pane_id} harness session started after HarnessExit"
+                                );
+                            }
                             has_parent_pane = t.parent_pane_id.is_some();
                             if let Some(sid) = session_id.as_ref().filter(|s| !s.is_empty()) {
                                 if t.agent_session_id.as_ref() != Some(sid) {
