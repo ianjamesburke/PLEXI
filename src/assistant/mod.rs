@@ -240,6 +240,7 @@ enum ToolFlowEvent {
     /// `output_preview` feed the row's caret dropdown (stint 0455).
     Finished {
         cancel: CancelToken,
+        completed_before_cancel: bool,
         tool: String,
         error: Option<String>,
         detail: Option<String>,
@@ -387,6 +388,7 @@ impl ToolCallHooks for AssistantToolHooks {
     fn after_call(&self, name: &str, error: Option<&str>, output_json: Option<&str>) {
         let _ = self.flow_tx.send(ToolFlowEvent::Finished {
             cancel: self.cancel.clone(),
+            completed_before_cancel: !self.cancel.is_cancelled(),
             tool: name.to_string(),
             error: error.map(str::to_string),
             detail: tool_render_detail(name, output_json),
@@ -717,6 +719,8 @@ pub struct AssistantView {
     /// `assistant_mut` already exists for (stint 0688).
     pub(crate) pending_commands: Vec<ViewCommand>,
     settings_loader: SettingsLoader,
+    settings_watches: Vec<(PathBuf, crate::host::path_watch::PathWatch)>,
+    settings_watch_retry_at: Option<std::time::Instant>,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
     settings_errors: Vec<SettingsLoadError>,
@@ -803,6 +807,60 @@ struct PendingSubscribe {
 }
 
 impl AssistantView {
+    fn service_settings_watches(
+        &mut self,
+        now: std::time::Instant,
+        mut create_watch: impl FnMut(
+            &Path,
+            Option<std::ffi::OsString>,
+        ) -> Result<crate::host::path_watch::PathWatch, String>,
+    ) -> bool {
+        let changed = self
+            .settings_watches
+            .iter()
+            .fold(false, |changed, (_, watch)| watch.take_changed() || changed);
+        if !changed
+            && (self.settings_watches.len() == 3
+                || self
+                    .settings_watch_retry_at
+                    .is_some_and(|retry_at| now < retry_at))
+        {
+            return false;
+        }
+        let mut previous = std::mem::take(&mut self.settings_watches);
+        for path in self.settings_loader.watch_paths() {
+            // Watch the nearest existing ancestor when a settings directory
+            // does not exist yet. Its creation wakes us to re-arm closer to
+            // the file. Parent-directory watches survive atomic file saves.
+            let mut target = path;
+            while let Some(parent) = target.parent() {
+                if parent.is_dir() {
+                    if let Some(index) = previous.iter().position(|(armed, _)| armed == target) {
+                        self.settings_watches.push(previous.swap_remove(index));
+                        break;
+                    }
+                    match create_watch(
+                        parent,
+                        target.file_name().map(std::ffi::OsStr::to_os_string),
+                    ) {
+                        Ok(watch) => self.settings_watches.push((target.to_path_buf(), watch)),
+                        Err(error) => log::warn!("assistant: settings watch: {error}"),
+                    }
+                    break;
+                }
+                target = parent;
+            }
+        }
+        // A failed watch must not recreate watchers, warn, and reload on every
+        // logic pass. Retain successful watches and retry missing ones later.
+        self.settings_watch_retry_at =
+            (self.settings_watches.len() < 3).then_some(now + std::time::Duration::from_secs(1));
+        // Reload after arming too: a write between load and watch registration
+        // must not leave a running turn with stale permissions.
+        self.reload_settings();
+        true
+    }
+
     /// Open the Assistant for a workspace: resume the persisted active
     /// conversation of `context_id` (the host context this pane lives in),
     /// or create a fresh one. `profile_dir` is the channel config dir —
@@ -904,6 +962,8 @@ impl AssistantView {
             pending_skill: None,
             pending_commands: Vec::new(),
             settings_loader,
+            settings_watches: Vec::new(),
+            settings_watch_retry_at: None,
             session_overrides,
             settings: settings_report.settings,
             settings_errors: settings_report.errors,
@@ -941,8 +1001,8 @@ impl AssistantView {
             live_subs: Vec::new(),
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
-            turn_cancel: CancelToken::new(),
-            side_cancel: CancelToken::new(),
+            turn_cancel: CancelToken::finished(),
+            side_cancel: CancelToken::finished(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
             compact_pending: false,
@@ -2028,6 +2088,7 @@ impl AssistantView {
             self.gated_dispatcher()
         };
         let Some(agent) = self.active_agent().cloned() else {
+            cancel.mark_finished();
             log::error!("assistant: no active or default agent available for dispatch");
             let error = "Assistant agent registry has no default agent.".to_string();
             if isolated {
@@ -2203,6 +2264,7 @@ impl AssistantView {
         let spawn = std::thread::Builder::new()
             .name("assistant-turn".to_string())
             .spawn(move || {
+                let completion = request.cancel.clone();
                 let resp = broker.dispatch(request, &mut |delta| {
                     let owned = match delta {
                         TurnDelta::Text(chunk) => StreamDelta::Answer(chunk.to_string()),
@@ -2216,6 +2278,7 @@ impl AssistantView {
                     };
                     let _ = delta_tx.send(owned);
                 });
+                completion.mark_finished();
                 let _ = outcome_tx.send(TurnOutcome {
                     conversation_id: outcome_conversation,
                     turn_id: outcome_turn,
@@ -2224,6 +2287,11 @@ impl AssistantView {
                 });
             });
         if let Err(e) = spawn {
+            if isolated {
+                self.side_cancel.mark_finished();
+            } else {
+                self.turn_cancel.mark_finished();
+            }
             log::error!("assistant: failed to spawn turn thread: {e}");
             let error = format!("failed to spawn turn thread: {e}");
             if isolated {
@@ -2376,6 +2444,7 @@ impl AssistantView {
             ToolFlowEvent::Finished {
                 tool,
                 mut error,
+                completed_before_cancel,
                 detail,
                 input_summary,
                 output_preview,
@@ -2386,7 +2455,8 @@ impl AssistantView {
                 {
                     return;
                 }
-                if cancel.is_cancelled() {
+                let completed_then_cancelled = cancel.is_cancelled() && completed_before_cancel;
+                if cancel.is_cancelled() && !completed_before_cancel {
                     error = Some("cancelled: turn ended".to_string());
                 }
                 log::info!(
@@ -2406,6 +2476,7 @@ impl AssistantView {
                     error.as_deref().unwrap_or(""),
                 ));
                 let effects = self.model.tool_call_finished(model::FinishedToolCall {
+                    completed_before_turn_cancel: completed_then_cancelled,
                     tool,
                     error,
                     detail,
@@ -4951,6 +5022,17 @@ impl View for AssistantView {
     fn background_tick(&mut self) {
         self.pump_turn_io();
         self.run_pending_compaction();
+    }
+
+    fn service_external(&mut self, wake: &Arc<dyn crate::app::ui_mailbox::UiWake>) -> bool {
+        self.service_settings_watches(std::time::Instant::now(), |parent, name| {
+            crate::host::path_watch::PathWatch::new(
+                parent,
+                name,
+                Arc::clone(wake),
+                "assistant_settings",
+            )
+        })
     }
 
     fn needs_background_tick(&self) -> bool {

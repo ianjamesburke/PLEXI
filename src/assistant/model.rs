@@ -107,6 +107,7 @@ pub struct ActiveToolCall {
 /// event; the model never parses tool payloads itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinishedToolCall {
+    pub completed_before_turn_cancel: bool,
     pub tool: String,
     /// `None` = success; `Some(reason)` renders as a failed row.
     pub error: Option<String>,
@@ -1081,6 +1082,9 @@ impl AssistantModel {
             ),
             Some(e) => Turn::tool(format!("{} — {e}", call.tool), ToolStatus::Failed),
         };
+        if call.completed_before_turn_cancel {
+            turn.text.push_str(" — completed before cancel");
+        }
         turn.detail = call.detail;
         turn.input_summary = call.input_summary;
         turn.output_preview = call.output_preview;
@@ -1269,6 +1273,7 @@ mod tests {
         detail: Option<String>,
     ) -> Vec<AssistantEffect> {
         m.tool_call_finished(FinishedToolCall {
+            completed_before_turn_cancel: false,
             tool: tool.to_string(),
             error,
             detail,
@@ -2129,6 +2134,7 @@ mod tests {
         m.tool_call_started("host.files.grep", r#"{"pattern": "draft"}"#);
         assert_eq!(m.active_tools[0].input_summary, r#"{"pattern": "draft"}"#);
         m.tool_call_finished(FinishedToolCall {
+            completed_before_turn_cancel: false,
             tool: "host.files.grep".to_string(),
             error: None,
             detail: None,
