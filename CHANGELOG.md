@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.5.1] — 2026-11-16
+
+### Changes
+- Installing 0.5 over a running 0.4 host no longer fails on a re-seeded apps/ (#3219)
+- Remove ten manifest keys that parsed and did nothing (#3132)
+- Permissions actions target the entry the user saw (#3218)
 ## [0.5.0] — 2026-11-12
 
 ### Changes
