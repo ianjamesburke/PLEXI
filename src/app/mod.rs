@@ -49,9 +49,9 @@ pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
-pub(crate) mod startup_error;
 mod secret_get;
 pub mod secrets_view;
+pub(crate) mod startup_error;
 mod sync;
 mod team;
 pub mod text_editor_view;
@@ -480,9 +480,8 @@ pub struct PlexiApp {
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
-    /// `agent open` requests from the palette, run in `App::logic` because the
-    /// resolver probes processes (stint 1396).
-    pub(crate) pending_agent_opens: Vec<agent_open::PendingAgentOpen>,
+    /// Palette and key-bound user commands, serviced in logic.
+    pub(crate) pending_user_commands: Vec<crate::overlays::command_palette::PendingUserCommand>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -599,7 +598,8 @@ pub struct PlexiApp {
     pub(crate) ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake>,
     /// Receiver for the running update check's status events
     /// (`update_check::launch_update_check`). `None` when no check runs.
-    pub(crate) update_rx: Option<ui_mailbox::MailboxReceiver<crate::host::update_status::UpdateEvent>>,
+    pub(crate) update_rx:
+        Option<ui_mailbox::MailboxReceiver<crate::host::update_status::UpdateEvent>>,
     /// Starts update check threads; headless hosts never touch the network.
     pub(crate) update_check_launcher: update_check::UpdateCheckLauncher,
     /// Schedules the relaunch for an update restart; headless hosts record.
@@ -1911,7 +1911,7 @@ impl PlexiApp {
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
-                    pending_agent_opens: Vec::new(),
+                    pending_user_commands: Vec::new(),
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2204,7 +2204,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
-            pending_agent_opens: Vec::new(),
+            pending_user_commands: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3195,7 +3195,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
-            pending_agent_opens: Vec::new(),
+            pending_user_commands: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
@@ -4721,7 +4721,10 @@ impl PlexiApp {
                     self.palette_workspace_root = None;
                     self.palette_workspace_root = self.effective_commands_workspace_root();
                     self.palette_config_workspace_root = self.active_config_workspace_root();
-                self.palette_workspace_config_exists = self.palette_config_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
+                    self.palette_workspace_config_exists = self
+                        .palette_config_workspace_root
+                        .as_deref()
+                        .is_some_and(|root| crate::config::workspace_config_path(root).exists());
                     log::info!(
                         "palette: opened, focused workspace = {:?}",
                         self.palette_workspace_root
@@ -4853,7 +4856,10 @@ impl PlexiApp {
                 self.palette_workspace_root = None;
                 self.palette_workspace_root = self.effective_commands_workspace_root();
                 self.palette_config_workspace_root = self.active_config_workspace_root();
-                self.palette_workspace_config_exists = self.palette_config_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
+                self.palette_workspace_config_exists = self
+                    .palette_config_workspace_root
+                    .as_deref()
+                    .is_some_and(|root| crate::config::workspace_config_path(root).exists());
                 self.palette_query = "open config:".to_owned();
                 self.palette_selected = 0;
                 self.palette_selected_key = None;
@@ -4861,7 +4867,10 @@ impl PlexiApp {
                 self.palette_notes.clear();
                 self.palette_commands.clear();
                 self.show_command_palette = true;
-                log::info!("palette: opened config chooser workspace={:?}", self.palette_workspace_root);
+                log::info!(
+                    "palette: opened config chooser workspace={:?}",
+                    self.palette_workspace_root
+                );
             }
             Action::ReloadConfig => {
                 self.reload_config();
@@ -4938,7 +4947,7 @@ impl PlexiApp {
             }
             Action::RunUserCommand(ref name) => {
                 log::info!("keys: executing user command binding 'run:{name}'");
-                let _ = self.run_user_command_by_name(name);
+                self.queue_user_command(name, None);
             }
         }
     }

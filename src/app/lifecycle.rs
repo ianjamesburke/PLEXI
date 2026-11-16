@@ -101,7 +101,7 @@ impl PlexiApp {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
             self.handle_pane_ipc_request(cmd);
         }
-        self.drain_pending_agent_opens();
+        self.drain_pending_user_commands();
         self.drain_event_subscribe_channel();
     }
 
@@ -305,9 +305,19 @@ impl PlexiApp {
         &mut self,
         request: &crate::protocol::HostRequest,
     ) -> serde_json::Value {
-        if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentSpawn") {
-            return serde_json::json!({ "ok": false, "error": error });
+        match super::agent_open::admit_agent_mesh_route("AgentSpawn") {
+            Ok(admitted) => self.agent_spawn_reply_admitted(request, admitted),
+            Err(error) => serde_json::json!({ "ok": false, "error": error }),
         }
+    }
+
+    /// Continue a spawn owned by an already admitted request. Consuming the
+    /// proof avoids a second config read and trace during `AgentOpen`.
+    pub(crate) fn agent_spawn_reply_admitted(
+        &mut self,
+        request: &crate::protocol::HostRequest,
+        _admitted: super::agent_open::AdmittedAgentMeshRoute,
+    ) -> serde_json::Value {
         let crate::protocol::HostRequest::AgentSpawn {
             role,
             harness,
@@ -5685,7 +5695,6 @@ impl PlexiApp {
                 ) {
                     Ok(outcome) => outcome.to_json(),
                     Err(error) => {
-                        log::warn!("agent_open: name={name} failed: {error}");
                         serde_json::json!({ "ok": false, "error": error })
                     }
                 };

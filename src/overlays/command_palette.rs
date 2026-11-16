@@ -588,6 +588,18 @@ enum PaletteAction {
     },
 }
 
+/// Saved command execution is serviced by logic, preserving step order and
+/// failure handling while keeping admission I/O out of UI dispatch.
+pub(crate) struct PendingUserCommand {
+    name: String,
+    palette_scope: Option<crate::cli::UserCommandScope>,
+    palette_root: Option<std::path::PathBuf>,
+    context_root: std::path::PathBuf,
+    source_window: u64,
+    source_tile: Option<egui_tiles::TileId>,
+    caller: Option<u64>,
+}
+
 fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
     match entry {
         PaletteEntry::Command { command, .. } => Some(PaletteAction::RunCommand(command.clone())),
@@ -601,13 +613,11 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             window_id,
             pane_id,
             ..
-        } => {
-            Some(PaletteAction::Focus(PaletteFocusTarget {
-                context_id: *context_id,
-                window_id: *window_id,
-                pane_id: Some(*pane_id),
-            }))
-        }
+        } => Some(PaletteAction::Focus(PaletteFocusTarget {
+            context_id: *context_id,
+            window_id: *window_id,
+            pane_id: Some(*pane_id),
+        })),
         PaletteEntry::View { id, .. } => Some(PaletteAction::OpenView(id.clone())),
         PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
         PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
@@ -2182,26 +2192,86 @@ impl PlexiApp {
     /// when it is an idle shell (unless `split = true`), or open a new split
     /// pane when focused on a busy shell, agent pane, or view pane.
     fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
-        let cwd = self.palette_workspace_root.clone();
-        log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
-        if self.run_user_command_by_name(name).is_none() {
-            self.windows[self.active_window].clear_zoom();
-            let initial_cmd = format!("plexi run {}", shell_single_quote(name));
-            self.split_focused(false, Some(&initial_cmd), false, false, cwd);
-            self.mark_workspace_dirty();
+        self.queue_user_command(name, Some(scope));
+    }
+
+    pub(crate) fn queue_user_command(
+        &mut self,
+        name: &str,
+        palette_scope: Option<crate::cli::UserCommandScope>,
+    ) {
+        let win = &self.windows[self.active_window];
+        let source_tile = win.focused_pane.or(win.tree.root);
+        log::info!("user_command: queued name={name} scope={palette_scope:?}");
+        self.pending_user_commands.push(PendingUserCommand {
+            name: name.into(),
+            palette_scope,
+            palette_root: self.palette_workspace_root.clone(),
+            context_root: self.router.active().root.clone(),
+            source_window: win.window_id,
+            source_tile,
+            caller: self.focused_pane_id(),
+        });
+    }
+
+    pub(crate) fn drain_pending_user_commands(&mut self) {
+        for command in std::mem::take(&mut self.pending_user_commands) {
+            // Resolve paths and probe the captured caller's cwd only in logic.
+            let workspace_root = command
+                .palette_root
+                .clone()
+                .or_else(|| {
+                    self.windows
+                        .iter()
+                        .find(|win| win.window_id == command.source_window)
+                        .and_then(|win| win.get_focused_pane_cwd(command.source_tile?))
+                        .and_then(|cwd| crate::cli::resolve_commands_workspace_root(&cwd))
+                })
+                .or_else(|| crate::cli::resolve_commands_workspace_root(&command.context_root))
+                .or_else(crate::config::adopted_workspace_root)
+                .or_else(|| Some(command.context_root.clone()));
+            let report = self.run_user_command_at(&command.name, workspace_root, command.caller);
+            if report.is_none() && command.palette_scope.is_some() {
+                self.windows[self.active_window].clear_zoom();
+                let initial_cmd = format!("plexi run {}", shell_single_quote(&command.name));
+                self.split_focused(
+                    false,
+                    Some(&initial_cmd),
+                    false,
+                    false,
+                    command.palette_root,
+                );
+                self.mark_workspace_dirty();
+            }
         }
     }
 
-    /// Execute a named user command directly against the host. Used by `[keys]`
-    /// `"<chord>" = "run:<name>"` bindings and by palette user commands.
+    #[cfg(test)]
+    fn user_command_workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.effective_commands_workspace_root()
+            .or_else(crate::config::adopted_workspace_root)
+            .or_else(|| Some(self.router.active().root.clone()))
+    }
+
+    /// Execute a saved command from logic, with its invoking workspace and pane.
+    #[cfg(test)]
     pub(crate) fn run_user_command_by_name(
         &mut self,
         name: &str,
     ) -> Option<crate::cli::StepRunReport> {
-        let ws_root = self
-            .effective_commands_workspace_root()
-            .or_else(crate::config::adopted_workspace_root)
-            .or_else(|| Some(self.router.active().root.clone()));
+        self.run_user_command_at(
+            name,
+            self.user_command_workspace_root(),
+            self.focused_pane_id(),
+        )
+    }
+
+    fn run_user_command_at(
+        &mut self,
+        name: &str,
+        ws_root: Option<std::path::PathBuf>,
+        invoker_pane_id: Option<u64>,
+    ) -> Option<crate::cli::StepRunReport> {
         let cmd = crate::cli::resolve_user_commands(ws_root.as_deref())
             .into_iter()
             .find(|c| c.name == name)
@@ -2231,7 +2301,6 @@ impl PlexiApp {
             });
         }
         self.windows[self.active_window].clear_zoom();
-        let invoker_pane_id = self.focused_pane_id();
         let steps: Vec<String> = if !cmd.steps.is_empty() {
             cmd.steps.clone()
         } else if let Some(ref run_line) = cmd.run {
@@ -2463,20 +2532,26 @@ impl PlexiApp {
             }
         };
 
-        if let Some(Commands::Agent { cmd }) = &cli.command {
+        let admitted = if let Some(Commands::Agent { cmd }) = &cli.command {
             let route = match cmd {
                 crate::cli::args::AgentCmd::Start { .. } => Some("palette agent start"),
                 crate::cli::args::AgentCmd::Spawn { .. } => Some("palette agent spawn"),
-                crate::cli::args::AgentCmd::Open { .. } => Some("palette agent open"),
                 _ => None,
             };
             if let Some(route) = route {
-                if let Err(error) = crate::app::agent_open::admit_agent_mesh_route(route) {
-                    self.notify_command_refused(route, &error);
-                    return 1;
+                match crate::app::agent_open::admit_agent_mesh_route(route) {
+                    Ok(admitted) => Some(admitted),
+                    Err(error) => {
+                        self.notify_command_refused(route, &error);
+                        return 1;
+                    }
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         static HOST_STEP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let next_resp_path = || {
@@ -2793,7 +2868,14 @@ impl PlexiApp {
                 else {
                     return 1;
                 };
-                self.handle_pane_ipc_request(req);
+                let Some(admitted) = admitted else {
+                    return 1;
+                };
+                let reply = self.agent_spawn_reply_admitted(&req, admitted);
+                if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
+                    self.notify_command_refused("agent launch", error);
+                    return 1;
+                }
                 0
             }
             Some(Commands::Agent {
@@ -2804,15 +2886,15 @@ impl PlexiApp {
                     .map(std::path::PathBuf::from)
                     .or_else(|| ws_root.map(std::path::Path::to_path_buf))
                     .unwrap_or_else(|| self.router.active().root.clone());
-                // The resolver probes processes; it runs in `App::logic`.
-                log::info!("palette: agent open {name} queued");
-                self.pending_agent_opens
-                    .push(crate::app::agent_open::PendingAgentOpen {
-                        name,
-                        cwd: eff_cwd,
-                        caller: default_pane_id,
-                    });
-                0
+                // The entire saved command now runs in logic, so admission
+                // and resolution can finish before the next step executes.
+                match self.open_named_agent(&name, &eff_cwd, default_pane_id, None) {
+                    Ok(_) => 0,
+                    Err(error) => {
+                        self.notify_command_refused(&format!("agent open {name}"), &error);
+                        1
+                    }
+                }
             }
             Some(Commands::Agent {
                 cmd:
@@ -2854,7 +2936,14 @@ impl PlexiApp {
                 else {
                     return 1;
                 };
-                self.handle_pane_ipc_request(req);
+                let Some(admitted) = admitted else {
+                    return 1;
+                };
+                let reply = self.agent_spawn_reply_admitted(&req, admitted);
+                if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
+                    self.notify_command_refused("agent launch", error);
+                    return 1;
+                }
                 0
             }
             Some(Commands::View {
@@ -3018,6 +3107,81 @@ mod tests {
     use super::*;
     use crate::host::pane::{Pane, PortalPane};
     use crate::ui::list::ListRowPips;
+
+    #[test]
+    fn agent_mesh_gate_palette_admission_runs_in_logic() {
+        for route in ["open", "start", "spawn"] {
+            for from_key in [false, true] {
+                let mut h = crate::testing::HostHarness::new();
+                let _enabled = crate::release::set_test_experiments(&[
+                    crate::release::ReleaseFeature::AgentMesh,
+                ]);
+                h.app.notifications_enabled = true;
+                h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
+                    name: "gate-test".into(),
+                    scope: crate::cli::UserCommandScope::Workspace,
+                    description: None,
+                    run: None,
+                    steps: vec![
+                        format!(
+                            "agent {route} missing{}",
+                            if route == "spawn" { " --task test" } else { "" }
+                        ),
+                        "pane new --right".into(),
+                    ],
+                    on_load: Vec::new(),
+                    secrets: Vec::new(),
+                    split: false,
+                }];
+                let before = h.pane_count();
+                let logs = crate::testing::test_log::capture();
+                if from_key {
+                    let ctx = h.app.ctx.clone();
+                    h.app.dispatch_host_action(
+                        crate::host::keys::Action::RunUserCommand("gate-test".into()),
+                        &ctx,
+                    );
+                } else {
+                    h.app.run_palette_selection(PaletteAction::RunUserCommand {
+                        name: "gate-test".into(),
+                        scope: crate::cli::UserCommandScope::Workspace,
+                    });
+                }
+                assert!(
+                    !logs
+                        .lines()
+                        .iter()
+                        .any(|line| line.starts_with("release_gate:")),
+                    "UI must not read admission config: {:?}",
+                    logs.lines()
+                );
+                assert!(h.app.pending_notifications.is_empty());
+                // Admission observes the config at logic servicing, not selection.
+                let _disabled = crate::release::set_test_experiments(&[]);
+                h.hidden_frame();
+                assert!(h
+                    .app
+                    .pending_notifications
+                    .iter()
+                    .any(|n| n.body.contains("experiments enable agent_mesh")));
+                assert_eq!(h.pane_count(), before, "a denied step stops the command");
+                assert_eq!(
+                    logs.lines()
+                        .iter()
+                        .filter(|line| line.starts_with("release_gate:"))
+                        .count(),
+                    1
+                );
+                assert!(
+                    !logs
+                        .records()
+                        .iter()
+                        .any(|(level, line)| *level == log::Level::Warn
+                            && line.contains("agent_mesh"))
+                );
+            }
+        }
+    }
 
     #[test]
     fn plugin_metadata_chips_add_workspace_scope_without_secondary_text() {
@@ -5382,6 +5546,7 @@ steps = [
             name: "play".to_string(),
             scope: crate::cli::UserCommandScope::Workspace,
         });
+        h.hidden_frame();
         assert_eq!(
             h.pane_count(),
             before_palette + 2,
@@ -5406,6 +5571,7 @@ config_version = 1
             egui::Key::P,
             egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
         );
+        h.hidden_frame();
         assert_eq!(
             h.pane_count(),
             before_key + 2,
@@ -5595,6 +5761,7 @@ split = true
             name: "in_place".to_string(),
             scope: crate::cli::UserCommandScope::Workspace,
         });
+        h.hidden_frame();
         assert_eq!(
             h.pane_count(),
             count_before,

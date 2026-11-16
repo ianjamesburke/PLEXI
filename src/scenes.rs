@@ -3641,6 +3641,10 @@ impl HeadlessBackend {
         }
     }
 
+    // Deliberately exempt from agent_mesh admission: this headless-only fixture
+    // seeds worker topology to test conjoined-pane rendering and teardown, not
+    // a user launch route. The live runner rejects AgentChildren; production
+    // admission is covered by the agent_mesh_gate harness tests.
     fn agent_children(&mut self, phase: &str) -> Result<Option<StepDetail>, SceneError> {
         match phase {
             "seed" => {

@@ -21580,7 +21580,7 @@ fn start_researcher_running(
 }
 
 /// Run `agent open researcher` the way the palette does: a user command step
-/// through `run_user_command_by_name`, queued for `App::logic`. The open runs
+/// through `queue_user_command`, queued for `App::logic`. The open runs
 /// on the next frame.
 fn palette_queue_open_researcher(h: &mut HostHarness, fx: &AgentFocusFixture) {
     h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
@@ -21596,11 +21596,10 @@ fn palette_queue_open_researcher(h: &mut HostHarness, fx: &AgentFocusFixture) {
         secrets: Vec::new(),
         split: false,
     }];
-    let report = h
-        .app
-        .run_user_command_by_name("open-researcher")
-        .expect("palette command");
-    assert_eq!(report.exit_code, 0, "{report:?}");
+    h.app.queue_user_command(
+        "open-researcher",
+        Some(crate::cli::UserCommandScope::Workspace),
+    );
 }
 
 /// Force one 1 Hz activity tick (`tick_terminal_activity`) on the next frame.
@@ -21766,7 +21765,7 @@ fn named_agent_back_to_back_opens_start_one_pane() {
     palette_queue_open_researcher(&mut h, &fx);
     palette_queue_open_researcher(&mut h, &fx);
     assert_eq!(
-        h.app.pending_agent_opens.len(),
+        h.app.pending_user_commands.len(),
         2,
         "the palette queues opens"
     );
@@ -21774,7 +21773,7 @@ fn named_agent_back_to_back_opens_start_one_pane() {
     h.run_frames(1);
 
     assert!(
-        h.app.pending_agent_opens.is_empty(),
+        h.app.pending_user_commands.is_empty(),
         "App::logic drained them"
     );
     assert_eq!(
@@ -21897,57 +21896,90 @@ fn typed_resume_launch_ends_after_its_harness_or_the_expiry() {
 // Host admission must apply before resolution, focus, history reads or spawning.
 fn assert_agent_mesh_ipc_gate(route: &str) {
     for enabled in [false, true] {
-        let mut h = HostHarness::new();
-        let fx = AgentFocusFixture::new();
-        let _experiments = crate::release::set_test_experiments(if enabled {
-            &[crate::release::ReleaseFeature::AgentMesh]
-        } else {
-            &[]
-        });
-        let caller = h.add_focused_terminal();
-        let response = temp_response(fx.home.path(), route);
-        let request = match route {
-            "AgentOpen" => HostRequest::AgentOpen {
-                name: "researcher".into(),
-                cwd: fx.proj_dir.to_string_lossy().into_owned(),
-                caller_pane_id: Some(caller),
-                response_file: response.clone(),
-                peer_ancestry: None,
-            },
-            "AgentSpawn" => {
-                let mut request = fx.spawn(Some(caller));
-                if let HostRequest::AgentSpawn { response_file, .. } = &mut request {
-                    *response_file = response.clone();
-                }
-                request
-            }
-            "AgentReopen" => {
-                let record = researcher_history_record(&fx.proj_dir, "gate-session", "pi");
-                crate::workspace::append_agent_history(&record).unwrap();
-                HostRequest::AgentReopen {
-                    query: record.run_id,
-                    subcontext: None,
-                    response_file: response.clone(),
-                }
-            }
-            _ => panic!("unknown route"),
-        };
-        let before = pane_total(&h);
-        h.inject_ipc(request);
-        h.run_frames(2);
-        let reply = read_json_response(&response);
-        assert_eq!(reply["ok"], enabled, "{route} enabled={enabled}: {reply}");
-        if enabled {
-            assert!(reply["pane_id"].as_u64().is_some(), "{reply}");
-            assert_eq!(pane_total(&h), before + 1, "{route}");
-        } else {
-            let error = reply["error"].as_str().expect("gate error");
-            assert!(error.contains("agent_mesh"), "{error}");
-            assert!(error.contains("experiments enable agent_mesh"), "{error}");
-            assert_eq!(pane_total(&h), before, "{route} must have no side effects");
-            assert_eq!(h.app.active_focused_pane_id(), Some(caller));
-        }
+        assert_agent_mesh_ipc_gate_enabled(route, enabled);
     }
+}
+
+fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let _experiments = crate::release::set_test_experiments(if enabled {
+        &[crate::release::ReleaseFeature::AgentMesh]
+    } else {
+        &[]
+    });
+    let caller = h.add_focused_terminal();
+    let response = temp_response(fx.home.path(), route);
+    let request = match route {
+        "AgentOpen" => HostRequest::AgentOpen {
+            name: "researcher".into(),
+            cwd: fx.proj_dir.to_string_lossy().into_owned(),
+            caller_pane_id: Some(caller),
+            response_file: response.clone(),
+            peer_ancestry: None,
+        },
+        "AgentSpawn" => {
+            let mut request = fx.spawn(Some(caller));
+            if let HostRequest::AgentSpawn { response_file, .. } = &mut request {
+                *response_file = response.clone();
+            }
+            request
+        }
+        "AgentReopen" => {
+            let record = researcher_history_record(&fx.proj_dir, "gate-session", "pi");
+            crate::workspace::append_agent_history(&record).unwrap();
+            HostRequest::AgentReopen {
+                query: record.run_id,
+                subcontext: None,
+                response_file: response.clone(),
+            }
+        }
+        _ => panic!("unknown route"),
+    };
+    let before = pane_total(&h);
+    let logs = crate::testing::test_log::capture();
+    h.inject_ipc(request);
+    h.run_frames(2);
+    let reply = read_json_response(&response);
+    assert_eq!(reply["ok"], enabled, "{route} enabled={enabled}: {reply}");
+    if route == "AgentOpen" {
+        let gates: Vec<_> = logs
+            .records()
+            .into_iter()
+            .filter(|(_, line)| {
+                line.starts_with("release_gate:") && line.contains("experiment=agent_mesh")
+            })
+            .collect();
+        assert_eq!(gates.len(), 1, "one admission trace per request: {gates:?}");
+        assert_eq!(gates[0].0, log::Level::Info);
+        assert!(gates[0].1.contains("request=AgentOpen"), "{gates:?}");
+        assert!(gates[0]
+            .1
+            .contains(if enabled { "admitted" } else { "denied" }));
+        assert!(
+            !logs
+                .records()
+                .iter()
+                .any(|(level, line)| *level == log::Level::Warn && line.contains("agent_mesh")),
+            "gate denial must not add a warning: {:?}",
+            logs.records()
+        );
+    }
+    if enabled {
+        assert!(reply["pane_id"].as_u64().is_some(), "{reply}");
+        assert_eq!(pane_total(&h), before + 1, "{route}");
+    } else {
+        let error = reply["error"].as_str().expect("gate error");
+        assert!(error.contains("agent_mesh"), "{error}");
+        assert!(error.contains("experiments enable agent_mesh"), "{error}");
+        assert_eq!(pane_total(&h), before, "{route} must have no side effects");
+        assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+    }
+}
+
+#[test]
+fn agent_mesh_gate_agent_open_success_logs_once() {
+    assert_agent_mesh_ipc_gate_enabled("AgentOpen", true);
 }
 
 #[test]
@@ -21999,7 +22031,7 @@ fn agent_mesh_gate_palette_launch_routes() {
             "denial must reach the user"
         );
         h.run_frames(2);
-        assert!(h.app.pending_agent_opens.is_empty());
+        assert!(h.app.pending_user_commands.is_empty());
         assert_eq!(pane_total(&h), before, "{step}");
         assert_eq!(h.app.active_focused_pane_id(), Some(caller));
     }
@@ -22117,15 +22149,25 @@ fn agent_mesh_gate_queued_palette_open_shows_denial() {
     let mut h = HostHarness::new();
     let _experiments = crate::release::set_test_experiments(&[]);
     h.app.notifications_enabled = true;
-    h.app.pending_agent_opens.push(crate::app::agent_open::PendingAgentOpen {
-        name: "researcher".into(),
-        cwd: h.workspace_root(),
-        caller: None,
-    });
-    h.app.drain_pending_agent_opens();
-    assert!(h.app
+    h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
+        name: "open-researcher".into(),
+        scope: crate::cli::UserCommandScope::Workspace,
+        description: None,
+        run: None,
+        steps: vec!["agent open researcher".into()],
+        on_load: Vec::new(),
+        secrets: Vec::new(),
+        split: false,
+    }];
+    h.app.queue_user_command(
+        "open-researcher",
+        Some(crate::cli::UserCommandScope::Workspace),
+    );
+    h.hidden_frame();
+    assert!(h
+        .app
         .pending_notifications
         .iter()
         .any(|n| n.body.contains("experiments enable agent_mesh")));
-    assert!(h.app.pending_agent_opens.is_empty());
+    assert!(h.app.pending_user_commands.is_empty());
 }
