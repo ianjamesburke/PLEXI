@@ -1,11 +1,71 @@
 from __future__ import annotations
 
 import plexi_sdk as sdk
+import pytest
 from plexi_sdk import _v3_state
 from plexi_sdk.effects import PermissionDecision, ReadPermissionDecisions, SetState
 from plexi_sdk.events import KeyEvent, PermissionInventory, UiAction
 
 import main as permissions
+
+
+def _rendered_action(label: str) -> str:
+    from plexi_sdk._adapter import _encode_uitree
+
+    tree = _encode_uitree(permissions.view())
+    return next(node["data"]["on_click"] for node in tree["nodes"]
+                if node["data"].get("label") == label)
+
+
+@pytest.mark.parametrize("label,action,kind", [
+    ("Allow", "allow", "deny"),
+    ("Revoke", "revoke", "allow"),
+    ("Ask again", "reset", "deny"),
+])
+@pytest.mark.parametrize("change", ["removed", "empty", "reordered"])
+def test_rendered_decision_binds_entry_across_poll(label, action, kind, change) -> None:
+    clicked = {"id": "clicked:entry", "kind": kind, "tool": "clicked.tool"}
+    other = {"id": "other", "kind": kind, "tool": "other.tool"}
+    _set_state({**permissions.DEFAULT_STATE, "mode": "detail", "entries": [clicked, other]})
+    handler = _rendered_action(label)
+    entries = {"removed": [other], "empty": [], "reordered": [other, clicked]}[change]
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=entries))))
+    effects = permissions.update(UiAction(handler))
+    decisions = [effect for effect in effects if isinstance(effect, PermissionDecision)]
+    if change == "reordered":
+        assert len(decisions) == 1
+        assert (decisions[0].id, decisions[0].action) == (clicked["id"], action)
+    else:
+        assert decisions == []
+        data = _state_effect(effects)
+        assert data["notice"]
+        _set_state(data)
+        assert data["notice"] in _texts(permissions.view())
+
+
+def test_missing_ids_are_rejected_in_inventory_and_saved_state() -> None:
+    rows = [{"kind": "deny"}, {"kind": "pending"}, {"id": "", "kind": "allow"},
+            {"id": None}, {"id": " "}, {"id": 123}]
+    _set_state(dict(permissions.DEFAULT_STATE))
+    data = _state_effect(permissions.update(PermissionInventory(entries=rows)))
+    assert data["entries"] == []
+    _set_state({**permissions.DEFAULT_STATE, "entries": rows})
+    assert permissions._state()["entries"] == []
+
+
+@pytest.mark.parametrize("action", ["allow", "revoke", "reset"])
+def test_button_without_target_never_falls_back_to_selection(action) -> None:
+    _set_state(_sample_state())
+    effects = permissions.update(UiAction(f"permissions:{action}"))
+    assert not any(isinstance(effect, PermissionDecision) for effect in effects)
+    assert _state_effect(effects)["notice"]
+
+
+def test_keyboard_revoke_uses_current_selection() -> None:
+    _set_state(_sample_state())
+    effects = permissions.update(KeyEvent("x"))
+    decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
+    assert (decision.id, decision.action) == ("grant-allow", "revoke")
 
 
 def test_back_node_survives_inventory_rebuild_after_revoke() -> None:
@@ -30,7 +90,8 @@ def test_back_node_survives_inventory_rebuild_after_revoke() -> None:
     current = next(node for node in after["nodes"] if node["data"].get("label") == "Back")
     assert back["id"] == current["id"], (back, current)
     old_actions = {node["id"] for node in before["nodes"]
-                   if node["data"].get("on_click") in {"permissions:allow", "permissions:revoke"}}
+                   if node["data"].get("on_click", "").startswith(("permissions:allow:", "permissions:revoke:"))}
+    assert old_actions
     assert old_actions.isdisjoint(node["id"] for node in after["nodes"])
 
     # A later poll can add a denial before the timer grant. Back still denotes
@@ -120,19 +181,19 @@ def test_revoke_reset_and_allow_ask_the_host() -> None:
     assert data["selected"] == 1
 
     _set_state(data)
-    effects = permissions.update(UiAction("permissions:reset"))
+    effects = permissions.update(UiAction("permissions:reset:grant-deny"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "reset"
     assert decision.id == "grant-deny"
 
     _set_state(_sample_state())
-    effects = permissions.update(UiAction("permissions:revoke"))
+    effects = permissions.update(UiAction("permissions:revoke:grant-allow"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "revoke"
     assert decision.id == "grant-allow"
 
     _set_state(data)
-    effects = permissions.update(UiAction("permissions:allow"))
+    effects = permissions.update(UiAction("permissions:allow:grant-deny"))
     decision = next(effect for effect in effects if isinstance(effect, PermissionDecision))
     assert decision.action == "allow"
     assert decision.id == "grant-deny"

@@ -49,7 +49,7 @@ def update(event) -> list:
 
     if isinstance(event, PermissionInventory):
         data = _state()
-        entries = [_entry(row) for row in event.entries]
+        entries = [entry for row in event.entries if (entry := _entry(row)) is not None]
         selected = _clamp(data["selected"], len(entries))
         if event.notice:
             notice = event.notice
@@ -108,10 +108,19 @@ def update(event) -> list:
         data["selected"] = _clamp(data["selected"] + 1, len(data["entries"]))
         return _commit(data)
 
-    if action in {"revoke", "reset", "allow"} and data["entries"]:
-        entry = data["entries"][data["selected"]]
-        log.info(f"permissions: {action} {entry['id']}")
-        return [PermissionDecision(id=entry["id"], action=action)]
+    decision, _, entry_id = action.partition(":")
+    if decision in {"revoke", "reset", "allow"}:
+        # Keyboard shortcuts address the current selection. Button events must
+        # carry the identity captured when rendered, never a positional fallback.
+        if isinstance(event, KeyEvent) and data["entries"]:
+            entry_id = data["entries"][data["selected"]]["id"]
+        entry = next((row for row in data["entries"] if row["id"] == entry_id), None)
+        if entry is None:
+            log.info(f"permissions: refused {decision}; entry no longer available")
+            data["notice"] = "That permission entry is no longer available. Reload and choose an entry again."
+            return _commit(data)
+        log.info(f"permissions: {decision} {entry['id']}")
+        return [PermissionDecision(id=entry["id"], action=decision)]
 
     return []
 
@@ -127,7 +136,7 @@ def _state() -> dict:
     data = dict(DEFAULT_STATE)
     for key, value in DEFAULT_STATE.items():
         data[key] = state.get(key, value)
-    data["entries"] = [_entry(row) for row in data.get("entries") or []]
+    data["entries"] = [entry for row in data.get("entries") or [] if (entry := _entry(row)) is not None]
     data["selected"] = _clamp(int(data.get("selected") or 0), len(data["entries"]))
     data["mode"] = data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
     data["notice"] = str(data.get("notice") or "")
@@ -135,9 +144,13 @@ def _state() -> dict:
     return data
 
 
-def _entry(row: dict) -> dict:
+def _entry(row: dict) -> dict | None:
+    entry_id = row.get("id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        log.info("permissions: rejected entry without a valid id")
+        return None
     return {
-        "id": str(row.get("id") or ""),
+        "id": entry_id,
         "kind": str(row.get("kind") or ""),
         "duration": str(row.get("duration") or ""),
         "actor_id": str(row.get("actor_id") or ""),
@@ -199,12 +212,12 @@ def _detail_view(data: dict):
     resource = entry["resource_id"] or "any"
     buttons = []
     if kind in {"allow", "pending"}:
-        buttons.append(Button("Revoke", "permissions:revoke", style="danger"))
+        buttons.append(Button("Revoke", f"permissions:revoke:{entry['id']}", style="danger"))
     if kind == "deny":
-        buttons.append(Button("Ask again", "permissions:reset"))
-        buttons.append(Button("Allow", "permissions:allow"))
+        buttons.append(Button("Ask again", f"permissions:reset:{entry['id']}"))
+        buttons.append(Button("Allow", f"permissions:allow:{entry['id']}"))
     if kind == "pending":
-        buttons.append(Button("Allow", "permissions:allow"))
+        buttons.append(Button("Allow", f"permissions:allow:{entry['id']}"))
     # Inventory polling can replace the selected decision and change the action
     # count. Decision actions belong to that entry; Back belongs to this view.
     buttons = [Keyed(button, key=f"{entry['id']}:{button.on_click}") for button in buttons]
