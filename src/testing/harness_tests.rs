@@ -11902,6 +11902,31 @@ mod pane_send_submit_tests {
         });
     }
 
+    /// Start a silent consumer without login-shell startup, prompt hooks or
+    /// completion plugins. Waiting for an echoed `stty -echo; cat` command and
+    /// then a quiet interval does not prove stty ran: the PTY can echo queued
+    /// input while shell startup is still blocked. Late startup output after
+    /// Enter then legitimately satisfies the host's screen-change confirmation.
+    fn silent_terminal(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let script = dir.join("silent-consumer.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nset -e\nstty -echo\nprintf 'silent-consumer-ready\\n'\nexec cat > /dev/null\n",
+        )
+        .expect("write silent consumer");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make silent consumer executable");
+        let _shell = crate::host::shell::set_test_shell_override(script.to_string_lossy());
+        let pane = h.add_focused_terminal();
+        // This marker is emitted by the fixture only after stty succeeds; no
+        // typed command can echo it before the consumer is ready.
+        wait_for_output(h, pane, "silent-consumer-ready");
+        settle_terminal(h, pane);
+        pane
+    }
+
     /// The happy path end to end: the command runs, the host confirms it, and
     /// exactly one Enter reaches the PTY. The byte-level assertion is the point
     /// — a second Enter on a shell pane is a blank command, but on an agent TUI
@@ -11993,12 +12018,7 @@ mod pane_send_submit_tests {
     fn pane_send_submit_unconfirmed_reports_observed_input_line() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
-        let term = h.add_focused_terminal();
-        settle_terminal(&mut h, term);
-
-        type_only(&h, term, "stty -echo; cat > /dev/null\n", None);
-        wait_for_output(&mut h, term, "cat > /dev/null");
-        settle_terminal(&mut h, term);
+        let term = silent_terminal(&mut h, tmp.path());
         // The same read the host confirms against, so the assertion below is
         // about the host's own view rather than a parallel reimplementation.
         let before = h.app.pane_tail(term);
@@ -12341,15 +12361,10 @@ mod pane_send_submit_tests {
     fn pane_command_enter_old_shape_never_detects_a_swallowed_command() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
-        let term = h.add_focused_terminal();
-        settle_terminal(&mut h, term);
-
         // A shell state where nothing typed from here on ever reaches the
         // tail — the same setup `pane_send_submit_unconfirmed_reports_observed_input_line`
         // uses to prove the new shape reports this as unconfirmed.
-        type_only(&h, term, "stty -echo; cat > /dev/null\n", None);
-        wait_for_output(&mut h, term, "cat > /dev/null");
-        settle_terminal(&mut h, term);
+        let term = silent_terminal(&mut h, tmp.path());
 
         let response = temp_response(tmp.path(), "pane-command-old-shape");
         type_only(&h, term, "never-ran\n", Some(response.clone()));
