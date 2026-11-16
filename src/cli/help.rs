@@ -133,9 +133,9 @@ pub fn decode_matches(
     enabled: impl Fn(ReleaseFeature) -> bool,
 ) -> Result<(Cli, Option<ReleaseFeature>), clap::Error> {
     use clap::FromArgMatches;
-    // These commands round-trip to the host, whose cached experiment set is
-    // authoritative. Keep hiding them in help, but do not second-guess the
-    // running host using this CLI process's freshly loaded configuration.
+    // These commands round-trip to the host, which reads agent_mesh fresh at
+    // admission. Keep hiding them in help, but leave the decision to the host
+    // rather than this CLI process's configuration.
     let host_agent_route = matches.subcommand().is_some_and(|(name, args)| {
         name == "agent"
             && matches!(
@@ -793,7 +793,7 @@ mod tests {
             "resolve_workspace_root_stopping_at",
             "resolve_commands_workspace_root",
             "effective_commands_workspace_root",
-            "run_user_command_by_name",
+            "queue_user_command",
             "workspace `commands.toml` > global `commands.toml` > global `scripts/`",
             "no host restart is needed",
         ] {

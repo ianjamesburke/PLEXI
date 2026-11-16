@@ -15,13 +15,21 @@ use super::PlexiApp;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::AgentHistoryRecord;
 
-/// Host-owned admission for every entry to the agent mesh, including palette
-/// paths that do not arrive over IPC. Keep the experiment decision here so
-/// clients and the host use the same current global configuration.
-pub(crate) fn admit_agent_mesh_route(request: &str) -> Result<(), String> {
+/// Proof of admission for one request. Only the admission function can create
+/// it; downstream launch helpers consume it instead of checking config again.
+pub(crate) struct AdmittedAgentMeshRoute {
+    _private: (),
+}
+
+/// Host-owned admission, using the current global experiment configuration.
+pub(crate) fn admit_agent_mesh_route(request: &str) -> Result<AdmittedAgentMeshRoute, String> {
     let feature = crate::release::ReleaseFeature::AgentMesh;
     if crate::release::feature_enabled(feature) {
-        return Ok(());
+        log::info!(
+            "release_gate: admitted request={request} experiment={}",
+            feature.key()
+        );
+        return Ok(AdmittedAgentMeshRoute { _private: () });
     }
     log::info!(
         "release_gate: denied request={request} experiment={}",
@@ -71,35 +79,7 @@ impl AgentOpenOutcome {
     }
 }
 
-/// A palette `agent open`, queued for `App::logic` (the resolver probes
-/// processes, which must not run in `App::ui`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingAgentOpen {
-    pub(crate) name: String,
-    pub(crate) cwd: std::path::PathBuf,
-    pub(crate) caller: Option<u64>,
-}
-
 impl PlexiApp {
-    /// Run the palette's queued `agent open` requests, in order, so back to
-    /// back opens of one agent resolve one after the other.
-    pub(crate) fn drain_pending_agent_opens(&mut self) {
-        for open in std::mem::take(&mut self.pending_agent_opens) {
-            match self.open_named_agent(&open.name, &open.cwd, open.caller, None) {
-                Ok(outcome) => log::info!(
-                    "palette: agent open {} -> {} {}",
-                    open.name,
-                    outcome.as_str(),
-                    outcome.pane_id()
-                ),
-                Err(error) => {
-                    log::warn!("palette: agent open {} failed: {error}", open.name);
-                    self.notify_command_refused(&format!("agent open {}", open.name), &error);
-                }
-            }
-        }
-    }
-
     /// Open the named agent `name` for a request made from `cwd` by `caller`.
     /// `peer_ancestry` is the socket peer stamp: when it resolves to a live
     /// pane, that pane is the caller and the claimed `caller` is ignored, for
@@ -111,7 +91,19 @@ impl PlexiApp {
         caller: Option<u64>,
         peer_ancestry: Option<&[u32]>,
     ) -> Result<AgentOpenOutcome, String> {
-        admit_agent_mesh_route("AgentOpen")?;
+        let admitted = admit_agent_mesh_route("AgentOpen")?;
+        self.open_admitted_named_agent(name, cwd, caller, peer_ancestry, admitted)
+            .inspect_err(|error| log::warn!("agent_open: name={name} failed: {error}"))
+    }
+
+    fn open_admitted_named_agent(
+        &mut self,
+        name: &str,
+        cwd: &Path,
+        caller: Option<u64>,
+        peer_ancestry: Option<&[u32]>,
+        admitted: AdmittedAgentMeshRoute,
+    ) -> Result<AgentOpenOutcome, String> {
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
             // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
@@ -174,7 +166,7 @@ impl PlexiApp {
         {
             *stamped = peer_ancestry.map(<[u32]>::to_vec);
         }
-        let reply = self.agent_spawn_reply(&request);
+        let reply = self.agent_spawn_reply_admitted(&request, admitted);
         let pane_id = spawned_pane_id(&reply)?;
         log::info!("agent_open: name={name} outcome=started pane={pane_id}");
         Ok(AgentOpenOutcome::Started { pane_id })
