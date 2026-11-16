@@ -373,15 +373,28 @@ mod tests {
         let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
         let host = answering_host(&endpoint, 1, None);
 
+        // The probe gets half the grace, not the production 300 ms, so a
+        // loaded runner's slow stand-in still counts as live (stint 1574).
+        let probe = EXIT_GRACE / 2;
         let started = std::time::Instant::now();
-        let launch = claim(profile.path(), &endpoint, None);
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            None,
+            EXIT_GRACE,
+            &|endpoint| crate::cli::host::host_answers(endpoint, profile.path(), probe),
+            &|_, _| panic!("a launch without a path forwards nothing"),
+        );
         let elapsed = started.elapsed();
         let Ok(Launch::HandedOff(line)) = launch else {
             panic!("a live host must take the launch");
         };
+        // Any wait on the lock lasts at least the whole grace (the lock stays
+        // held), and the probe ends within half of it, so finishing inside the
+        // grace proves it was skipped without racing the clock (stint 1574).
         assert!(
-            elapsed < Duration::from_millis(100),
-            "a live host must be reported at once, took {elapsed:?}"
+            elapsed < EXIT_GRACE,
+            "a live host must be reported without waiting the {EXIT_GRACE:?} exit grace, took {elapsed:?}"
         );
         assert!(line.contains("already running on this profile"), "{line}");
         assert!(
