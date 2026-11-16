@@ -6,8 +6,7 @@ use crate::ui::style;
 use crate::ui::theme::{self, Colors};
 
 const APP_BAR_TITLE_SIZE: f32 = style::TEXT_TITLE;
-const APP_BAR_SINGLE_BAND_H: f32 = 34.0;
-const APP_BAR_DOUBLE_BAND_H: f32 = 48.0;
+const APP_BAR_BAND_H: f32 = APP_BAR_TITLE_SIZE + 2.0 * style::SPACE_XS;
 
 pub(crate) struct ViewChrome<'a> {
     colors: &'a Colors,
@@ -61,7 +60,9 @@ impl<'a> ViewChrome<'a> {
 
     pub(crate) fn paint_view_bar(&self, ui: &mut Ui, title: &str, subtitle: &str) -> egui::Rect {
         let has_subtitle = !subtitle.is_empty();
-        let band_h = view_bar_band_height(has_subtitle);
+        let band_h = APP_BAR_BAND_H;
+        static TRACE: std::sync::Once = std::sync::Once::new();
+        TRACE.call_once(|| log::info!("ui: compact surface-header band height={APP_BAR_BAND_H}"));
         let total_h = view_bar_height(subtitle);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), total_h),
@@ -74,7 +75,7 @@ impl<'a> ViewChrome<'a> {
         );
         let mut painter = ui.painter().clone();
         painter.set_opacity(1.0);
-        let capture = super::layout_report::Capture::begin(&painter, "surface_header");
+        let mut capture = super::layout_report::Capture::begin(&painter, "surface_header");
         painter.rect_filled(full_rect, 0.0, self.toolbar_fill());
 
         let text_x = full_rect.min.x + style::SPACE_MD;
@@ -83,37 +84,58 @@ impl<'a> ViewChrome<'a> {
             egui::pos2(text_x, full_rect.min.y),
             egui::vec2(max_w, band_h),
         );
-        let text_painter = painter.with_clip_rect(text_clip);
-
-        if has_subtitle {
-            let block_h = APP_BAR_TITLE_SIZE + style::SPACE_XS + style::TEXT_HINT;
-            let title_y = full_rect.min.y + (band_h - block_h).max(0.0) / 2.0;
-            self.paint_fitted_text(
-                ui,
-                &text_painter,
-                egui::pos2(text_x, title_y),
+        // A long title yields half the row to optional status; a short title
+        // leaves all remaining space to it. Both labels use measured elision.
+        let title_galley = super::text::elided_galley(
+            ui,
+            title,
+            theme::font_medium(APP_BAR_TITLE_SIZE),
+            if has_subtitle { max_w / 2.0 } else { max_w },
+            super::text::Side::Trailing,
+        );
+        let title_rect =
+            egui::Rect::from_min_size(text_clip.min, egui::vec2(title_galley.size().x, band_h));
+        let subtitle_left = (title_rect.right() + style::SPACE_SM).min(text_clip.right());
+        let subtitle_rect =
+            egui::Rect::from_min_max(egui::pos2(subtitle_left, text_clip.top()), text_clip.max);
+        for (id, text, font, color, bounds) in [
+            (
+                "title",
                 title,
                 theme::font_medium(APP_BAR_TITLE_SIZE),
                 self.colors.text_primary,
-            );
-            self.paint_fitted_text(
-                ui,
-                &text_painter,
-                egui::pos2(text_x, title_y + APP_BAR_TITLE_SIZE + style::SPACE_XS),
+                title_rect,
+            ),
+            (
+                "subtitle",
                 subtitle,
                 FontId::proportional(style::TEXT_HINT),
-                self.colors.text_secondary(self.colors.bg_toolbar),
-            );
-        } else {
-            let title_y = full_rect.min.y + (band_h - APP_BAR_TITLE_SIZE).max(0.0) / 2.0;
-            self.paint_fitted_text(
+                self.colors.text_secondary(self.toolbar_fill()),
+                subtitle_rect,
+            ),
+        ] {
+            if text.is_empty() {
+                continue;
+            }
+            let Ok(lane) = super::bounded::allocate(bounds, 0.0, 0.0, &[]) else {
+                log::info!("ui: insufficient surface-header text space");
+                continue;
+            };
+            let galley = super::text::elided_galley(
                 ui,
-                &text_painter,
-                egui::pos2(text_x, title_y),
-                title,
-                theme::font_medium(APP_BAR_TITLE_SIZE),
-                self.colors.text_primary,
+                text,
+                font,
+                lane.text.width(),
+                super::text::Side::Trailing,
             );
+            capture.text_slot(id, &galley, lane.text);
+            let pos = egui::pos2(
+                lane.text.left(),
+                lane.text.center().y - galley.size().y / 2.0,
+            );
+            let color = super::foreground::Surface::over(self.toolbar_fill(), self.toolbar_fill())
+                .foreground(color, super::foreground::Role::SmallText);
+            crate::ui::snap::galley_snapped(&painter.with_clip_rect(lane.text), pos, galley, color);
         }
 
         painter.rect_filled(
@@ -137,43 +159,10 @@ impl<'a> ViewChrome<'a> {
             .pane_footer_band(divider)
             .show(ui, self.colors);
     }
-
-    fn paint_fitted_text(
-        &self,
-        ui: &Ui,
-        painter: &egui::Painter,
-        pos: egui::Pos2,
-        text: &str,
-        font: FontId,
-        color: Color32,
-    ) {
-        let Ok(lane) = super::bounded::allocate(painter.clip_rect(), 0.0, 0.0, &[]) else {
-            log::info!("ui: insufficient surface-header text space");
-            return;
-        };
-        let galley = super::text::elided_galley(
-            ui,
-            text,
-            font,
-            lane.text.width(),
-            super::text::Side::Trailing,
-        );
-        let color = super::foreground::Surface::over(self.toolbar_fill(), self.toolbar_fill())
-            .foreground(color, super::foreground::Role::SmallText);
-        crate::ui::snap::galley_snapped(painter, pos, galley, color);
-    }
 }
 
-pub(crate) fn view_bar_height(subtitle: &str) -> f32 {
-    view_bar_band_height(!subtitle.is_empty()) + 1.0
-}
-
-fn view_bar_band_height(has_subtitle: bool) -> f32 {
-    if has_subtitle {
-        APP_BAR_DOUBLE_BAND_H
-    } else {
-        APP_BAR_SINGLE_BAND_H
-    }
+pub(crate) fn view_bar_height(_subtitle: &str) -> f32 {
+    APP_BAR_BAND_H + 1.0
 }
 
 #[cfg(test)]
@@ -197,6 +186,53 @@ pub(crate) fn footer_keys_height(ui: &egui::Ui, entries: &[FooterKeyEntry], divi
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    #[test]
+    fn surface_header_compact_height_is_independent_of_subtitle() {
+        let compact = style::TEXT_TITLE + 2.0 * style::SPACE_XS + 1.0;
+        assert_eq!(view_bar_height("Sync complete"), compact);
+        assert_eq!(view_bar_height(""), compact);
+    }
+
+    #[test]
+    fn surface_header_text_shares_a_bounded_single_row() {
+        for width in [180.0, 800.0] {
+            for subtitle in [
+                "",
+                "Synchronization complete — all workspace files are up to date",
+            ] {
+                let ctx = egui::Context::default();
+                theme::setup_fonts(&ctx);
+                let colors = Colors::from_config(&theme::preset_colors("plexi-dusk").unwrap());
+                let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+                let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    ui.set_clip_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 130.0),
+                    ));
+                    ViewChrome::new(&colors).paint_view_bar(ui, "Files", subtitle);
+                });
+                let reports = super::super::layout_report::snapshot(&ctx);
+                let report = reports
+                    .iter()
+                    .find(|r| r.surface == "surface_header")
+                    .unwrap();
+                assert!(report.violations().is_empty(), "{:?}", report.violations());
+                assert_eq!(report.texts.len(), if subtitle.is_empty() { 1 } else { 2 });
+                if !subtitle.is_empty() {
+                    let title = &report.texts[0];
+                    let status = &report.texts[1];
+                    assert!(title.paint.right() < status.paint.left());
+                    assert!((title.paint.center().y - status.paint.center().y).abs() <= 1.0);
+                    if width == 180.0 {
+                        assert!(status.text.ends_with('…'), "{}", status.text);
+                    } else {
+                        assert_eq!(status.text, subtitle);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn adoption_view_bar_elides_instead_of_clipping() {
         let ctx = egui::Context::default();
