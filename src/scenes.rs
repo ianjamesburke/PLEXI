@@ -529,6 +529,11 @@ pub enum Step {
     WaitViewFrame {
         wait_view_frame: WaitSpec,
     },
+    /// Wait for the native Notes index worker to publish its result (headless).
+    WaitNotesIndex {
+        /// Correctness timeout in seconds, scaled for machine load.
+        wait_notes_index: f32,
+    },
     /// Advance N harness frames.
     RunSteps {
         run_steps: usize,
@@ -2289,6 +2294,10 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "seed_pane_send_timeout is headless-only",
             )),
+            Step::WaitNotesIndex { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "wait_notes_index is headless-only; live hosts do not expose index readiness",
+            )),
             Step::SeedCliOperationApproval { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "seed_cli_operation_approval is headless-only",
@@ -2840,6 +2849,9 @@ fn step_label(step: &Step) -> String {
                 "wait_view_frame {} {}s",
                 wait_view_frame.target, wait_view_frame.timeout_s
             )
+        }
+        Step::WaitNotesIndex { wait_notes_index } => {
+            format!("wait_notes_index {wait_notes_index}s")
         }
         Step::RunSteps { run_steps } => format!("run_steps {run_steps}"),
         Step::Assert { .. } => "assert".to_string(),
@@ -3563,6 +3575,10 @@ impl HeadlessBackend {
                     .map_err(|message| SceneError::new("wait_view_frame_failed", message))?;
                 Ok(None)
             }
+            Step::WaitNotesIndex { wait_notes_index } => {
+                self.wait_notes_index(scene_timeout(*wait_notes_index))?;
+                Ok(None)
+            }
             Step::RunSteps { run_steps } => {
                 self.h.run_steps(*run_steps);
                 Ok(None)
@@ -3915,6 +3931,46 @@ impl HeadlessBackend {
                 format!("unknown chess_approval phase {other}"),
             )),
         }
+    }
+
+    fn wait_notes_index(&mut self, timeout: Duration) -> Result<(), SceneError> {
+        let started = Instant::now();
+        let mut history = Vec::new();
+        // Frames alone do not synchronize with the filesystem worker. Drain
+        // through normal App::logic, including any invalidated-generation rerun,
+        // then paint the published rows before the next semantic assertion.
+        let result = poll_until(
+            crate::testing::load_aware_timeout(timeout),
+            Duration::from_millis(1),
+            || {
+                self.h.step();
+                let (pending, generation, rows) = self.h.with_app(|app| {
+                    (
+                        app.notes_index_rx.is_some(),
+                        app.notes_index.generation(),
+                        app.notes_picker_entries.len(),
+                    )
+                });
+                history.push(PollSample {
+                    timestamp_ms: started.elapsed().as_millis(),
+                    observed: serde_json::json!({
+                        "notes_index_pending": pending,
+                        "generation": generation,
+                        "picker_rows": rows,
+                    }),
+                });
+                (!pending).then_some(())
+            },
+        );
+        result.map_err(|_| {
+            SceneError::new("notes_index_timeout", "Notes index worker did not settle")
+                .with_poll_history(history)
+        })?;
+        log::info!(
+            "scene: Notes index settled after {}ms",
+            started.elapsed().as_millis()
+        );
+        Ok(())
     }
 
     fn focus_target(&mut self, target: InputTarget) -> Result<Option<PaneId>, SceneError> {
@@ -4303,6 +4359,104 @@ mod tests {
         std::env::var("PLEXI_SCENE_OUT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir().join("plexi-scenes"))
+    }
+
+    /// Replay the real scene prefix with a cold picker and a deliberately
+    /// delayed index result, as on a contended release worker.
+    #[test]
+    fn notes_scenes_wait_for_background_index() {
+        for name in ["notes-trash-undo.toml", "ui-layout-matrix.toml"] {
+            let scene: Scene =
+                toml::from_str(&std::fs::read_to_string(scenes_dir().join(name)).unwrap()).unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let mut runner = HeadlessBackend {
+                h: PlexiUiHarness::new_sized(520.0, 800.0),
+                last_view_pane: None,
+                handles: PaneHandles::default(),
+                out_dir: out.path().to_path_buf(),
+                no_shots: true,
+                shot_suffix: None,
+                seeded_approval: None,
+            };
+            let mut worker = None;
+            for step in &scene.steps {
+                if matches!(step, Step::Key { key } if key.value == "cmd+o") {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let built = runner.h.with_app_mut(|app| {
+                        app.finish_notes_index_refresh_for_test();
+                        let anchor = app.router.active().root.clone();
+                        let entries = app.notes_index.cached_entries(&anchor).unwrap();
+                        assert!(!entries.is_empty());
+                        app.notes_index = Default::default();
+                        app.notes_index_rx = Some(rx);
+                        app.notes_index_inflight_anchor = Some(anchor.clone());
+                        app.notes_index_rerun = false;
+                        crate::notes::NotesIndexBuild {
+                            anchor,
+                            snapshot: crate::notes::NotesIndexSnapshot {
+                                scopes: vec![],
+                                entries,
+                            },
+                            generation: app.notes_index.generation(),
+                            walk_dirs: 0,
+                            budget_hit: false,
+                            elapsed: Duration::ZERO,
+                        }
+                    });
+                    worker = Some(std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(500));
+                        // The red control can drop the receiver before delivery.
+                        let _ = tx.send(built);
+                    }));
+                }
+                let result = runner.exec(step, &mut Vec::new());
+                if matches!(step, Step::AssertLabel { .. }) {
+                    worker.take().unwrap().join().unwrap();
+                    assert!(result.is_ok(), "{name}: {result:?}");
+                    break;
+                }
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn notes_index_wait_reports_pending_work_without_retrying_labels() {
+        let out = tempfile::tempdir().unwrap();
+        let mut runner = HeadlessBackend {
+            h: PlexiUiHarness::new_sized(520.0, 800.0),
+            last_view_pane: None,
+            handles: PaneHandles::default(),
+            out_dir: out.path().to_path_buf(),
+            no_shots: true,
+            shot_suffix: None,
+            seeded_approval: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        runner.h.with_app_mut(|app| app.notes_index_rx = Some(rx));
+        let error = runner.wait_notes_index(Duration::ZERO).unwrap_err();
+        assert_eq!(error.code, "notes_index_timeout");
+        assert_eq!(error.poll_history.len(), 1);
+        assert_eq!(error.poll_history[0].observed["notes_index_pending"], true);
+        drop(tx);
+        runner.wait_notes_index(Duration::ZERO).unwrap();
+        let error = runner
+            .exec(
+                &Step::AssertLabel {
+                    assert_label: AssertLabelSpec {
+                        target: "host".into(),
+                        label: "nonexistent note".into(),
+                        macos_label: None,
+                    },
+                },
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "label_not_found");
+        assert!(
+            error.poll_history.is_empty(),
+            "assert_label remains immediate"
+        );
     }
 
     /// Every `tests/scenes/*.toml` with `suite = true` (the default) runs as

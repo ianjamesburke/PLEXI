@@ -21,7 +21,7 @@ run_steps = 4
 key = { target = "host", value = "cmd+o" }
 
 [[steps]]
-run_steps = 5
+wait_notes_index = 5.0
 
 [[steps]]
 assert_label = { target = "host", label = "Release planning 👩🏽‍💻 é /unbroken/long/path/identifier-abcdef0123456789-abcdef0123456789-abcdef0123456789" }
@@ -45,7 +45,7 @@ shot = "layout-toast.png"
 key = { target = "host", value = "cmd+z" }
 
 [[steps]]
-run_steps = 2
+wait_notes_index = 5.0
 
 [[steps]]
 assert_label = { target = "host", label = "Release planning 👩🏽‍💻 é /unbroken/long/path/identifier-abcdef0123456789-abcdef0123456789-abcdef0123456789" }
