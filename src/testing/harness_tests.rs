@@ -21310,3 +21310,61 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
         "the socket peer, not the claimed caller {claimed}, is the parent"
     );
 }
+
+/// The harness exits but its interactive shell survives (`apply_initial_cmd`
+/// keeps the shell): the pane is no longer running the agent, so `agent open`
+/// starts a new chat instead of focusing the bare shell. A later report from a
+/// harness in that pane makes it count again.
+#[test]
+fn named_agent_skips_pane_whose_harness_exited() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let shell = start_researcher(&mut h, &fx, caller);
+    h.inject_ipc(
+        serde_json::from_value(serde_json::json!({
+            "type": "set_agent_state", "pane_id": shell, "state": "failed", "agent": "pi",
+            "event": "HarnessExit", "detail": "harness exited with code 1 without agent done",
+        }))
+        .unwrap(),
+    );
+    h.run_frames(2);
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&shell))
+        .and_then(Pane::as_terminal)
+        .expect("shell pane");
+    assert!(!t.exited, "the shell outlives the harness");
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("a pane whose harness exited is not running, got {outcome:?}");
+    };
+    assert_ne!(pane_id, shell);
+
+    h.app.close_pane_by_id(pane_id);
+    h.inject_ipc(
+        serde_json::from_value(serde_json::json!({
+            "type": "set_agent_state", "pane_id": shell, "state": "working", "agent": "pi",
+        }))
+        .unwrap(),
+    );
+    h.run_frames(2);
+    h.app.pane_navigate(caller);
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell },
+        "a harness reporting again in the pane runs the agent"
+    );
+}

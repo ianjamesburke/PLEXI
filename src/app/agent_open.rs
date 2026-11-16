@@ -135,8 +135,8 @@ impl PlexiApp {
     }
 
     /// Owner call 1: which pane counts as running `name`. Any context; a pane
-    /// restored into standby counts (focused, not woken), a pane whose process
-    /// exited does not. Ephemeral workers of the definition are task runs, not
+    /// restored into standby counts (focused, not woken); a pane whose process
+    /// exited, or whose harness exited and left its shell, does not. Ephemeral workers of the definition are task runs, not
     /// the named agent's chat, and never count. Several match: the most
     /// recently focused (the current focus first), else the newest pane.
     pub(crate) fn running_named_agent_pane(&self, name: &str) -> Option<PaneId> {
@@ -151,7 +151,7 @@ impl PlexiApp {
                         .as_ref()
                         .and_then(|s| s.config_name.as_deref())
                 })?;
-                (role == name && !t.ephemeral && !t.exited).then_some(*id)
+                (role == name && !t.ephemeral && !t.exited && !t.harness_exited).then_some(*id)
             })
             .collect();
         let recency = self.panes_by_focus_recency();

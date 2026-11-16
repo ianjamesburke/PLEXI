@@ -844,6 +844,10 @@ pub struct TerminalPane {
     pub tail_preview: Option<String>,
     /// Set when the agent explicitly completed via `plexi agent done` or clean ephemeral exit.
     pub agent_completed: bool,
+    /// Set when the supervised harness reported `HarnessExit`: the agent CLI is
+    /// gone and the pane holds the shell it left behind. Cleared by the pane's
+    /// next agent state report, which means a harness is running there again.
+    pub harness_exited: bool,
     /// When present, this background/sub-context agent pane was restored into lightweight
     /// `[Plexi Standby]` and has not yet launched its agent CLI process.
     pub standby_session: Option<crate::workspace::SavedAgentSession>,
@@ -1046,6 +1050,7 @@ impl TerminalPane {
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,
+            harness_exited: false,
             standby_session: None,
             standby_resume_command: None,
             standby_cwd: None,
