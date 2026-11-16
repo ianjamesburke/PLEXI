@@ -91,6 +91,76 @@ fn child_pids_via_pgrep(pid: u32) -> Vec<u32> {
     }
 }
 
+/// Whether an agent pane's processes are running its agent (stint 1396).
+/// Process ground truth only: no hook report or pane-authored value counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentProcessLiveness {
+    /// The pane's launch command (`$SHELL -c "<agent>; exec $SHELL -i -l"`,
+    /// `apply_initial_cmd`) has not yet handed over to the interactive shell:
+    /// the agent is starting or running under its supervisor.
+    Launching,
+    /// A known agent process runs below the pane's interactive shell, such as
+    /// a harness relaunched by hand.
+    Agent(&'static str),
+    /// The pane's process is gone.
+    Dead,
+    /// An interactive shell with no known agent process below it.
+    NoAgent,
+}
+
+/// Upper bounds on the descendant walk, so one pane never costs more than a
+/// few dozen `pgrep` runs.
+const AGENT_PROBE_MAX_DEPTH: usize = 6;
+const AGENT_PROBE_MAX_PROCESSES: usize = 64;
+
+/// Classify the processes of a terminal pane whose PTY child is `shell_pid`,
+/// spawned with `shell` (the path `make_backend_settings` used). Spawns
+/// `pgrep`: call from `App::logic`, never `App::ui`.
+pub(crate) fn agent_process_liveness(shell_pid: u32, shell: &str) -> AgentProcessLiveness {
+    if !pid_is_alive(shell_pid) {
+        return AgentProcessLiveness::Dead;
+    }
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+    // Before exec the forked child still carries the host's name; until the
+    // final `exec` it carries the launch command's `-c`.
+    let is_shell = crate::host::shell::get_pid_name(shell_pid).as_deref() == Some(shell_name);
+    let runs_command = crate::host::shell::get_pid_argv(shell_pid)
+        .is_some_and(|argv| argv.iter().any(|arg| arg == "-c"));
+    if !is_shell || runs_command {
+        return AgentProcessLiveness::Launching;
+    }
+    let mut frontier = vec![shell_pid];
+    let mut seen = 0usize;
+    for _ in 0..AGENT_PROBE_MAX_DEPTH {
+        let mut next = Vec::new();
+        for pid in frontier {
+            for child in child_pids_via_pgrep(pid) {
+                seen += 1;
+                if seen > AGENT_PROBE_MAX_PROCESSES {
+                    log::info!(
+                        "pane_liveness: agent probe of shell {shell_pid} stopped after {AGENT_PROBE_MAX_PROCESSES} processes"
+                    );
+                    return AgentProcessLiveness::NoAgent;
+                }
+                if let crate::host::shell::AgentProcessProbe::Known(agent) =
+                    crate::host::shell::get_pid_agent_probe(child)
+                {
+                    return AgentProcessLiveness::Agent(agent);
+                }
+                next.push(child);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    AgentProcessLiveness::NoAgent
+}
+
 /// Host-derived liveness observation. Never trusts any pane-authored value.
 fn observed_state(pane: &Pane) -> serde_json::Value {
     match pane {

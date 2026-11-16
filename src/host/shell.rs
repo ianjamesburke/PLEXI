@@ -928,7 +928,7 @@ fn known_agent_script(script: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+pub(crate) fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
     let mut argmax: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
     let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
@@ -984,7 +984,7 @@ fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+pub(crate) fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
     let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     Some(
         bytes
@@ -996,7 +996,7 @@ fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
+pub(crate) fn get_pid_argv(pid: u32) -> Option<Vec<String>> {
     let _ = pid;
     None
 }

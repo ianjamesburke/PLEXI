@@ -101,6 +101,7 @@ impl PlexiApp {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
             self.handle_pane_ipc_request(cmd);
         }
+        self.drain_pending_agent_opens();
         self.drain_event_subscribe_channel();
     }
 
@@ -4173,7 +4174,6 @@ impl PlexiApp {
                             if let Some(t) = pane.as_terminal_mut() {
                                 ephemeral = t.ephemeral;
                                 t.agent_completed = true;
-                                t.harness_exited = true;
                             }
                             if let Some(mut a) = existing_agent {
                                 a.state = crate::protocol::AgentState::Completed;
@@ -4202,14 +4202,6 @@ impl PlexiApp {
                     detail.is_some()
                 );
                 if event.as_deref() == Some("HarnessExit") {
-                    if let Some(t) = self
-                        .windows
-                        .iter_mut()
-                        .find_map(|w| w.panes.get_mut(pane_id))
-                        .and_then(|p| p.as_terminal_mut())
-                    {
-                        t.harness_exited = true;
-                    }
                     let (tail, parent_pane_id, child_agent) = self
                         .windows
                         .iter()
@@ -4313,21 +4305,6 @@ impl PlexiApp {
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
-                            // Only a session starting is a new harness in the
-                            // pane. Turn, tool and shutdown reports can arrive
-                            // late from the harness that already exited (pi
-                            // reports asynchronously), so they never clear it.
-                            if t.harness_exited
-                                && matches!(
-                                    event.as_deref(),
-                                    Some("SessionStart" | "session_start")
-                                )
-                            {
-                                t.harness_exited = false;
-                                log::info!(
-                                    "pane_ipc: kind=set_agent_state pane_id={pane_id} harness session started after HarnessExit"
-                                );
-                            }
                             has_parent_pane = t.parent_pane_id.is_some();
                             if let Some(sid) = session_id.as_ref().filter(|s| !s.is_empty()) {
                                 if t.agent_session_id.as_ref() != Some(sid) {

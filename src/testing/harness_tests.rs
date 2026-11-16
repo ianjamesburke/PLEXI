@@ -21311,92 +21311,174 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
     );
 }
 
-/// The harness exits but its interactive shell survives (`apply_initial_cmd`
-/// keeps the shell): the pane is no longer running the agent, so `agent open`
-/// starts a new chat instead of focusing the bare shell. Late reports from the
-/// dead harness (pi fires its reporter asynchronously) leave it excluded; only
-/// a new harness session starting in the pane makes it count again.
+/// Start one `researcher` pane beside `caller` whose supervised command is
+/// `command`; returns its pane id.
+fn start_researcher_running(
+    h: &mut HostHarness,
+    fx: &AgentFocusFixture,
+    caller: PaneId,
+    command: &str,
+) -> PaneId {
+    let mut req = fx.start(Some(caller));
+    if let HostRequest::AgentSpawn { command: c, .. } = &mut req {
+        *c = command.to_string();
+    }
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started")
+}
+
+/// Pump frames until the pane's process probe reports `want`.
+fn wait_for_agent_liveness(
+    h: &mut HostHarness,
+    pane: PaneId,
+    want: impl Fn(&crate::host::pane_liveness::AgentProcessLiveness) -> bool,
+    what: &str,
+) {
+    use std::time::{Duration, Instant};
+    let shell = crate::host::shell::detect_shell();
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
+    loop {
+        h.run_frames(1);
+        let pid = h
+            .app
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&pane))
+            .and_then(Pane::as_terminal)
+            .expect("terminal pane")
+            .backend
+            .child_pid();
+        let seen = crate::host::pane_liveness::agent_process_liveness(pid, &shell);
+        if want(&seen) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: probe still says {seen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn write_to_terminal(h: &mut HostHarness, pane: PaneId, text: &str) {
+    h.terminal_backend(pane)
+        .process_command(egui_term::BackendCommand::Write(text.as_bytes().to_vec()));
+}
+
+/// The harness exits and its supervisor hands the pane to an interactive
+/// shell: no agent runs there, so `agent open` starts a new chat. A user's own
+/// command in that shell is not an agent either. A known harness relaunched by
+/// hand in it is: `agent open` focuses the pane. Process ground truth only; no
+/// hook report is sent.
 #[test]
-fn named_agent_skips_pane_whose_harness_exited() {
+#[ignore = "requires-pty"]
+fn named_agent_running_follows_the_pane_processes() {
+    use crate::host::pane_liveness::AgentProcessLiveness;
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
-    let shell = start_researcher(&mut h, &fx, caller);
-    h.inject_ipc(
-        serde_json::from_value(serde_json::json!({
-            "type": "set_agent_state", "pane_id": shell, "state": "failed", "agent": "pi",
-            "event": "HarnessExit", "detail": "harness exited with code 1 without agent done",
-        }))
-        .unwrap(),
+    let shell = start_researcher_running(&mut h, &fx, caller, "true");
+    wait_for_agent_liveness(
+        &mut h,
+        shell,
+        |l| *l == AgentProcessLiveness::NoAgent,
+        "the harness exits and the launch hands over to the shell",
     );
-    h.run_frames(2);
-    let t = h
-        .app
-        .windows
-        .iter()
-        .find_map(|w| w.panes.get(&shell))
-        .and_then(Pane::as_terminal)
-        .expect("shell pane");
-    assert!(!t.exited, "the shell outlives the harness");
-    h.app.pane_navigate(caller);
-    h.run_frames(1);
-
-    let outcome = h
-        .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
-        .expect("open");
-    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
-        panic!("a pane whose harness exited is not running, got {outcome:?}");
-    };
-    assert_ne!(pane_id, shell);
-
-    h.app.close_pane_by_id(pane_id);
-    for (state, event) in [
-        ("working", "tool_result"),
-        ("idle", "agent_end"),
-        ("idle", "session_shutdown"),
-        ("idle", "SessionEnd"),
-    ] {
-        h.inject_ipc(
-            serde_json::from_value(serde_json::json!({
-                "type": "set_agent_state", "pane_id": shell, "state": state, "agent": "pi",
-                "event": event,
-            }))
-            .unwrap(),
-        );
-        h.run_frames(2);
+    let open = |h: &mut HostHarness| {
         h.app.pane_navigate(caller);
-        let outcome = h
-            .app
+        h.app
             .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
-            .expect("open");
-        assert_ne!(
-            outcome.pane_id(),
-            shell,
-            "a late {event} report from the dead harness must not revive its shell"
-        );
-        let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
-            panic!("expected a new chat after late {event}, got {outcome:?}");
-        };
-        h.app.close_pane_by_id(pane_id);
+            .expect("open")
+    };
+
+    let outcome = open(&mut h);
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("a shell whose harness exited is not running, got {outcome:?}");
+    };
+    h.app.close_pane_by_id(pane_id);
+
+    // A user's own command in the leftover shell.
+    write_to_terminal(&mut h, shell, "sleep 30\n");
+    wait_for_agent_liveness(
+        &mut h,
+        shell,
+        |l| *l == AgentProcessLiveness::NoAgent,
+        "a user command is not an agent",
+    );
+    let shell_pid = h.app.windows[0].panes[&shell]
+        .as_terminal()
+        .expect("terminal")
+        .backend
+        .child_pid();
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while std::process::Command::new("pgrep")
+        .args(["-P", &shell_pid.to_string()])
+        .output()
+        .map(|o| o.stdout.is_empty())
+        .unwrap_or(true)
+    {
+        assert!(std::time::Instant::now() < deadline, "sleep never started");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let outcome = open(&mut h);
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("a user's command is not the agent, got {outcome:?}");
+    };
+    h.app.close_pane_by_id(pane_id);
+    write_to_terminal(&mut h, shell, "\x03");
+
+    // A known harness relaunched by hand (a binary named `pi`).
+    let bin = fx.home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy("/bin/sleep", bin.join("pi")).unwrap();
+    write_to_terminal(
+        &mut h,
+        shell,
+        &format!("'{}' 30\n", bin.join("pi").display()),
+    );
+    wait_for_agent_liveness(
+        &mut h,
+        shell,
+        |l| *l == AgentProcessLiveness::Agent("pi"),
+        "a relaunched pi is an agent",
+    );
+    assert_eq!(
+        open(&mut h),
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell },
+        "a harness relaunched by hand runs the agent"
+    );
+    write_to_terminal(&mut h, shell, "\x03");
+}
+
+/// Two palette opens back to back: the first starts the agent, and the second
+/// sees that pane still launching and focuses it. One pane, not two.
+#[test]
+fn named_agent_back_to_back_opens_start_one_pane() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let before = pane_total(&h);
+    for _ in 0..2 {
+        h.app
+            .pending_agent_opens
+            .push(crate::app::agent_open::PendingAgentOpen {
+                name: "researcher".into(),
+                cwd: fx.proj_dir.clone(),
+                caller: Some(caller),
+            });
     }
 
-    h.inject_ipc(
-        serde_json::from_value(serde_json::json!({
-            "type": "set_agent_state", "pane_id": shell, "state": "idle", "agent": "pi",
-            "event": "session_start",
-        }))
-        .unwrap(),
-    );
-    h.run_frames(2);
-    h.app.pane_navigate(caller);
-    let outcome = h
-        .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
-        .expect("open");
+    h.app.drain_pending_agent_opens();
+
+    assert!(h.app.pending_agent_opens.is_empty());
     assert_eq!(
-        outcome,
-        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell },
-        "a new harness session in the pane runs the agent again"
+        pane_total(&h),
+        before + 1,
+        "the second open found the first"
     );
 }

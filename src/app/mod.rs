@@ -480,6 +480,9 @@ pub struct PlexiApp {
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
+    /// `agent open` requests from the palette, run in `App::logic` because the
+    /// resolver probes processes (stint 1396).
+    pub(crate) pending_agent_opens: Vec<agent_open::PendingAgentOpen>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -1908,6 +1911,7 @@ impl PlexiApp {
                     focus_stack: Vec::new(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
+                    pending_agent_opens: Vec::new(),
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2200,6 +2204,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
+            pending_agent_opens: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3190,6 +3195,7 @@ impl PlexiApp {
             focus_stack: Vec::new(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
+            pending_agent_opens: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),

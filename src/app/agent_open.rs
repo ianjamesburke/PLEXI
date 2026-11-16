@@ -56,7 +56,32 @@ impl AgentOpenOutcome {
     }
 }
 
+/// A palette `agent open`, queued for `App::logic` (the resolver probes
+/// processes, which must not run in `App::ui`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingAgentOpen {
+    pub(crate) name: String,
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) caller: Option<u64>,
+}
+
 impl PlexiApp {
+    /// Run the palette's queued `agent open` requests, in order, so back to
+    /// back opens of one agent resolve one after the other.
+    pub(crate) fn drain_pending_agent_opens(&mut self) {
+        for open in std::mem::take(&mut self.pending_agent_opens) {
+            match self.open_named_agent(&open.name, &open.cwd, open.caller, None) {
+                Ok(outcome) => log::info!(
+                    "palette: agent open {} -> {} {}",
+                    open.name,
+                    outcome.as_str(),
+                    outcome.pane_id()
+                ),
+                Err(error) => log::warn!("palette: agent open {} failed: {error}", open.name),
+            }
+        }
+    }
+
     /// Open the named agent `name` for a request made from `cwd` by `caller`.
     /// `peer_ancestry` is the socket peer stamp: when it resolves to a live
     /// pane, that pane is the caller and the claimed `caller` is ignored, for
@@ -134,12 +159,19 @@ impl PlexiApp {
         Ok(AgentOpenOutcome::Started { pane_id })
     }
 
-    /// Owner call 1: which pane counts as running `name`. Any context; a pane
-    /// restored into standby counts (focused, not woken); a pane whose process
-    /// exited, or whose harness exited and left its shell, does not. Ephemeral workers of the definition are task runs, not
-    /// the named agent's chat, and never count. Several match: the most
-    /// recently focused (the current focus first), else the newest pane.
+    /// Owner call 1: which pane counts as running `name`. Any context. Among
+    /// the panes holding the role (ephemeral workers are task runs, not the
+    /// named agent's chat, and never count), a pane runs the agent when it is
+    /// in Standby (focused, not woken) or its processes say so
+    /// ([`crate::host::pane_liveness::agent_process_liveness`]): its launch
+    /// command is still running, which also covers a pane an earlier open
+    /// started that has not yet reached its harness, or a known agent process
+    /// runs below its shell. Hook reports never decide it. Several match: the
+    /// most recently focused (the current focus first), else the newest pane.
+    /// Probes processes: call from `App::logic` only.
     pub(crate) fn running_named_agent_pane(&self, name: &str) -> Option<PaneId> {
+        use crate::host::pane_liveness::{agent_process_liveness, AgentProcessLiveness};
+        let shell = crate::host::shell::detect_shell();
         let candidates: Vec<PaneId> = self
             .windows
             .iter()
@@ -151,7 +183,26 @@ impl PlexiApp {
                         .as_ref()
                         .and_then(|s| s.config_name.as_deref())
                 })?;
-                (role == name && !t.ephemeral && !t.exited && !t.harness_exited).then_some(*id)
+                if role != name || t.ephemeral {
+                    return None;
+                }
+                if t.is_standby() {
+                    return Some(*id);
+                }
+                let excluded = |reason: &str| {
+                    log::info!("agent_open: name={name} pane={id} not running: {reason}");
+                    None
+                };
+                if t.exited {
+                    return excluded("its process exited");
+                }
+                match agent_process_liveness(t.backend.child_pid(), &shell) {
+                    AgentProcessLiveness::Launching | AgentProcessLiveness::Agent(_) => Some(*id),
+                    AgentProcessLiveness::Dead => excluded("its process is gone"),
+                    AgentProcessLiveness::NoAgent => {
+                        excluded("no agent process runs below its shell")
+                    }
+                }
             })
             .collect();
         let recency = self.panes_by_focus_recency();
