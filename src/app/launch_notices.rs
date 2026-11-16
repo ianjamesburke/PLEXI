@@ -40,6 +40,33 @@ impl PlexiApp {
         self.surface_stray_bundles(receipt.as_ref());
         self.surface_workspace_load_failure();
         self.surface_retired_data_notices();
+        self.surface_set_aside_apps();
+    }
+
+    /// An `apps/` folder this launch's profile initialization moved aside
+    /// (stint 1604) is reported once: where it went and that nothing was lost.
+    /// It concerns the user's own files, so it ignores the notifications
+    /// switch and stays until acknowledged; it is a one-time event, not a
+    /// standing condition, so it is not re-raised on later launches.
+    pub(crate) fn surface_set_aside_apps(&mut self) {
+        let notices = crate::app::plugin_migration::take_set_aside_notices();
+        log::info!("launch notice: apps folders set aside={}", notices.len());
+        for body in notices {
+            let queued = self.enqueue_notification(
+                crate::app::notifications::NotifySource::HostIntegrity,
+                crate::app::notifications::PendingNotification {
+                    notify_id: crate::app::notifications::new_notify_id("apps-set-aside"),
+                    title: "Old apps folder moved aside".to_string(),
+                    body,
+                    scope: crate::protocol::NotifyScope::Global,
+                    required: true,
+                    ..Default::default()
+                },
+            );
+            if !queued {
+                log::error!("launch notice: apps set-aside notice was not queued");
+            }
+        }
     }
 
     /// A saved workspace that could not be restored is reported once, with

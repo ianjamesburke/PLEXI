@@ -2468,3 +2468,56 @@ fn host_condition_notices_show_once_across_launches_and_clear_when_resolved() {
     );
     assert_eq!(std::fs::read(&workspace).unwrap(), layout);
 }
+
+/// Stint 1604: an `apps/` that profile initialization moved aside is shown to
+/// the user once at launch, naming where it went.
+#[test]
+fn set_aside_apps_folder_is_reported_once_at_launch() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("migration-plugin-v2")).unwrap();
+    std::fs::write(
+        root.path().join("migration-plugin-v2/complete"),
+        "schema=2\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("plugins/sudoku")).unwrap();
+    std::fs::create_dir_all(root.path().join("apps/sudoku")).unwrap();
+    std::fs::write(root.path().join("apps/.core_build"), "0.4.6-build").unwrap();
+    crate::app::plugin_migration::migrate(root.path()).unwrap();
+    let aside = std::fs::read_dir(root.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("apps.old-")
+        })
+        .expect("apps/ was moved aside");
+
+    let mut h = HostHarness::new();
+    h.app.surface_set_aside_apps();
+    let aside = aside.display().to_string();
+    let notice = h
+        .app
+        .pending_notifications
+        .iter()
+        .find(|n| n.title == "Old apps folder moved aside" && n.body.contains(&aside))
+        .expect("the set-aside is shown to the user");
+    assert!(
+        notice.body.contains("Nothing was deleted"),
+        "{}",
+        notice.body
+    );
+    h.app.surface_set_aside_apps();
+    assert_eq!(
+        h.app
+            .pending_notifications
+            .iter()
+            .filter(|n| n.body.contains(&aside))
+            .count(),
+        1,
+        "reported once"
+    );
+}
