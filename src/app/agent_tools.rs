@@ -105,6 +105,7 @@ impl PlexiApp {
         &mut self,
         request: AgentCallRequest<'_>,
     ) -> Result<(), String> {
+        super::agent_open::admit_agent_mesh_route("AgentCall")?;
         if request.task.trim().is_empty() {
             return Err("task must be non-empty".into());
         }
@@ -571,6 +572,8 @@ mod tests {
 
     #[test]
     fn agent_tool_handoff_closes_non_ephemeral_spawned_caller() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
         let mut h = HostHarness::new();
         h.add_test_pane();
         let root = h.workspace_root();
@@ -638,6 +641,8 @@ mod tests {
 
     #[test]
     fn agent_tool_handoff_schema_failure_does_not_spawn_a_successor() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
         let mut h = HostHarness::new();
         let parent = h.add_focused_terminal();
         let root = h.workspace_root();

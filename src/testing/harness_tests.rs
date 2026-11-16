@@ -21970,6 +21970,7 @@ fn agent_mesh_gate_palette_launch_routes() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let _experiments = crate::release::set_test_experiments(&[]);
+    h.app.notifications_enabled = true;
     let caller = h.add_focused_terminal();
     let before = pane_total(&h);
     for step in [
@@ -21977,6 +21978,7 @@ fn agent_mesh_gate_palette_launch_routes() {
         "agent spawn researcher --task test",
         "agent open researcher",
     ] {
+        h.app.pending_notifications.clear();
         h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
             name: "gate-test".into(),
             scope: crate::cli::UserCommandScope::Workspace,
@@ -21989,9 +21991,141 @@ fn agent_mesh_gate_palette_launch_routes() {
         }];
         let report = h.app.run_user_command_by_name("gate-test").unwrap();
         assert_ne!(report.exit_code, 0, "{step}: {report:?}");
+        assert!(
+            h.app
+                .pending_notifications
+                .iter()
+                .any(|n| n.body.contains("experiments enable agent_mesh")),
+            "denial must reach the user"
+        );
         h.run_frames(2);
         assert!(h.app.pending_agent_opens.is_empty());
         assert_eq!(pane_total(&h), before, "{step}");
         assert_eq!(h.app.active_focused_pane_id(), Some(caller));
     }
+}
+
+#[test]
+fn agent_mesh_gate_config_enable_without_restart_starts_agent() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    drop(crate::release::set_test_experiments(&[]));
+    let request = fx.spawn(None);
+    let response = agent_spawn_reply(&request);
+    h.app.handle_pane_ipc_request(request.clone());
+    assert_eq!(read_json_response(&response)["ok"], false);
+    std::fs::write(
+        fx.profile_dir.join("config.toml"),
+        "[experiments]\nagent_mesh = true\n",
+    )
+    .unwrap();
+    h.app.handle_pane_ipc_request(request.clone());
+    assert_eq!(read_json_response(&response)["ok"], true);
+    std::fs::write(
+        fx.profile_dir.join("config.toml"),
+        "[experiments]\nagent_mesh = false\n",
+    )
+    .unwrap();
+    h.app.handle_pane_ipc_request(request.clone());
+    assert_eq!(read_json_response(&response)["ok"], false);
+}
+
+#[test]
+fn agent_mesh_gate_agent_call_ipc() {
+    for enabled in [false, true] {
+        let mut h = HostHarness::new();
+        let fx = AgentFocusFixture::new();
+        let _experiments = crate::release::set_test_experiments(if enabled {
+            &[crate::release::ReleaseFeature::AgentMesh]
+        } else {
+            &[]
+        });
+        let response = temp_response(fx.home.path(), "call-gate");
+        h.inject_ipc(HostRequest::AgentCall {
+            role: "researcher".into(),
+            task: "Research".into(),
+            parent_pane_id: None,
+            call_credential: None,
+            peer_ancestry: vec![u32::MAX],
+            cwd: Some(fx.proj_dir.to_string_lossy().into_owned()),
+            worktree: None,
+            asynchronous: true,
+            handoff: false,
+            response_file: response.clone(),
+        });
+        h.hidden_frame();
+        let reply = read_json_response(&response);
+        assert_eq!(reply["ok"], enabled, "{reply}");
+        if !enabled {
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("experiments enable agent_mesh"),
+                "{reply}"
+            );
+            assert!(h.app.agent_tool_children.is_empty());
+        }
+    }
+}
+
+#[test]
+fn agent_mesh_gate_team_run_ipc() {
+    for enabled in [false, true] {
+        let mut h = HostHarness::new();
+        let _experiments = crate::release::set_test_experiments(if enabled {
+            &[crate::release::ReleaseFeature::AgentMesh]
+        } else {
+            &[]
+        });
+        let root = h.workspace_root();
+        let dir = root
+            .join(crate::config::workspace_channel_dir())
+            .join("teams");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut team = crate::agent::team::builtin();
+        for member in &mut team.members {
+            member.harness = "script".into();
+            member.command = Some("sleep 30".into());
+        }
+        std::fs::write(dir.join("gate-team.toml"), toml::to_string(&team).unwrap()).unwrap();
+        let response = temp_response(&root, "team-gate");
+        h.inject_ipc(HostRequest::AgentsApi {
+            op: "team_run".into(),
+            payload: serde_json::json!({"workspace":root,"name":"gate-team","question":"Choose","out":root.join("out")}),
+            response_file: response.clone(),
+        });
+        h.hidden_frame();
+        assert_eq!(!h.app.team_runs.is_empty(), enabled);
+        if !enabled {
+            let reply = read_json_response(&response);
+            assert_eq!(reply["ok"], false);
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("experiments enable agent_mesh"),
+                "{reply}"
+            );
+            assert!(!root.join("out").exists());
+        }
+    }
+}
+
+#[test]
+fn agent_mesh_gate_queued_palette_open_shows_denial() {
+    let mut h = HostHarness::new();
+    let _experiments = crate::release::set_test_experiments(&[]);
+    h.app.notifications_enabled = true;
+    h.app.pending_agent_opens.push(crate::app::agent_open::PendingAgentOpen {
+        name: "researcher".into(),
+        cwd: h.workspace_root(),
+        caller: None,
+    });
+    h.app.drain_pending_agent_opens();
+    assert!(h.app
+        .pending_notifications
+        .iter()
+        .any(|n| n.body.contains("experiments enable agent_mesh")));
+    assert!(h.app.pending_agent_opens.is_empty());
 }

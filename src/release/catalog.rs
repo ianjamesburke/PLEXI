@@ -104,11 +104,11 @@ impl ReleaseFeature {
         }
     }
 
-    /// True when the host reads this experiment at runtime, so a change only
-    /// takes effect after `plexi host restart`. Pure CLI gates re-read the
-    /// config on every invocation.
+    /// True when changing this experiment requires `plexi host restart`.
+    /// AgentMesh reads current global config at each admission; pure CLI gates
+    /// read it on each invocation.
     pub fn requires_restart(self) -> bool {
-        !matches!(self, Self::AiSetup | Self::Ledger)
+        !matches!(self, Self::AiSetup | Self::Ledger | Self::AgentMesh)
     }
 
     /// The clap paths this experiment owns. Empty for runtime-only surfaces
@@ -167,7 +167,7 @@ impl ReleaseFeature {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn agent_mesh_gate_requires_restart() {
-        assert!(super::ReleaseFeature::AgentMesh.requires_restart());
+    fn agent_mesh_gate_does_not_require_restart() {
+        assert!(!super::ReleaseFeature::AgentMesh.requires_restart());
     }
 }
