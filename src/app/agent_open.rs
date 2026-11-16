@@ -58,8 +58,9 @@ impl AgentOpenOutcome {
 
 impl PlexiApp {
     /// Open the named agent `name` for a request made from `cwd` by `caller`.
-    /// `peer_ancestry` is the socket peer stamp, used exactly as `agent start`
-    /// uses it for `spawned_by` provenance.
+    /// `peer_ancestry` is the socket peer stamp: when it resolves to a live
+    /// pane, that pane is the caller and the claimed `caller` is ignored, for
+    /// both launch branches (same rule as `agent start`).
     pub(crate) fn open_named_agent(
         &mut self,
         name: &str,
@@ -83,7 +84,8 @@ impl PlexiApp {
         // The definition decides the harness; unknown agents fail here, before
         // anything is launched (same resolution as `agent start`).
         let stops = crate::app::registry::workspace_walk_stops();
-        let parent = self.agent_open_parent(caller);
+        let (verified_caller, _) = self.resolve_unspoofable_spawner(caller, peer_ancestry);
+        let parent = self.agent_open_parent(verified_caller);
         let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
             name,
             &crate::config::config_dir(),
@@ -133,9 +135,10 @@ impl PlexiApp {
     }
 
     /// Owner call 1: which pane counts as running `name`. Any context; a pane
-    /// restored into standby counts (focused, not woken). Ephemeral workers of the definition are
-    /// task runs, not the named agent's chat, and never count. Several match:
-    /// the most recently focused, else the newest pane.
+    /// restored into standby counts (focused, not woken), a pane whose process
+    /// exited does not. Ephemeral workers of the definition are task runs, not
+    /// the named agent's chat, and never count. Several match: the most
+    /// recently focused (the current focus first), else the newest pane.
     pub(crate) fn running_named_agent_pane(&self, name: &str) -> Option<PaneId> {
         let candidates: Vec<PaneId> = self
             .windows
@@ -148,17 +151,33 @@ impl PlexiApp {
                         .as_ref()
                         .and_then(|s| s.config_name.as_deref())
                 })?;
-                (role == name && !t.ephemeral).then_some(*id)
+                (role == name && !t.ephemeral && !t.exited).then_some(*id)
             })
             .collect();
-        let focus_rank = |id: &PaneId| {
-            self.pane_focus_history
-                .iter()
-                .rposition(|(pane, _)| pane == id)
-        };
+        let recency = self.panes_by_focus_recency();
+        let focus_rank = |id: &PaneId| recency.iter().rposition(|pane| pane == id);
         candidates
             .into_iter()
             .max_by_key(|id| (focus_rank(id), *id))
+    }
+
+    /// Panes in the order they last held focus, oldest first, ending with the
+    /// pane focused now. Focus history stores `(window_id, tile_id)`; each entry
+    /// is resolved to the pane its tile still holds, and dropped if gone.
+    fn panes_by_focus_recency(&self) -> Vec<PaneId> {
+        let mut panes: Vec<PaneId> = self
+            .pane_focus_history
+            .iter()
+            .filter_map(|(window_id, tile_id)| {
+                let win = self.windows.iter().find(|w| w.window_id == *window_id)?;
+                match win.tree.tiles.get(*tile_id)? {
+                    egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                    egui_tiles::Tile::Container(_) => None,
+                }
+            })
+            .collect();
+        panes.extend(self.focused_pane_id());
+        panes
     }
 
     /// Owner call 2: which closed run is `name`'s last chat. The newest

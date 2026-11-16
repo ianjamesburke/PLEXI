@@ -2010,7 +2010,11 @@ impl PlexiApp {
             .insert(new_id, Pane::Terminal(Box::new(pane)));
         pending_credential.mark_live();
 
-        let split_target = self.windows[target_win_idx].focused_pane;
+        // Beside the parent pane when it is in the target window, else beside
+        // the window's focus (same rule as the subcontext portal above).
+        let split_target = parent_pane_id
+            .and_then(|pid| self.windows[target_win_idx].tree.tiles.find_pane(&pid))
+            .or(self.windows[target_win_idx].focused_pane);
         let share =
             crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
         let new_tile = super::layout::insert_split_tile(

@@ -21132,3 +21132,181 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
     assert_eq!(t.last_resumed_command, None, "nothing was resumed");
     assert_eq!(pane_total(&h), before, "focus opens nothing");
 }
+
+/// Start one live `researcher` pane beside `caller`; returns its pane id.
+fn start_researcher(h: &mut HostHarness, fx: &AgentFocusFixture, caller: PaneId) -> PaneId {
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(2);
+    read_json_response(&reply)["pane_id"]
+        .as_u64()
+        .expect("started")
+}
+
+/// The linear container holding `pane` in window 0, and the index of its
+/// slot among that container's children. A pane's own Tabs wrapper is part of
+/// the slot, as in `insert_split_tile`.
+fn tile_slot(h: &HostHarness, pane: PaneId) -> (egui_tiles::TileId, usize) {
+    let tree = &h.app.windows[0].tree;
+    let mut tile = tree.tiles.find_pane(&pane).expect("pane has a tile");
+    let mut parent = tree.tiles.parent_of(tile).expect("tile has a parent");
+    while let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))) =
+        tree.tiles.get(parent)
+    {
+        tile = parent;
+        parent = tree.tiles.parent_of(tile).expect("tabs have a parent");
+    }
+    match tree.tiles.get(parent) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) => (
+            parent,
+            linear
+                .children
+                .iter()
+                .position(|c| *c == tile)
+                .expect("child of its parent"),
+        ),
+        other => panic!("expected a linear parent, got {other:?}"),
+    }
+}
+
+/// Several panes run the agent: the one focused most recently wins, read
+/// through the focus history's `(window, tile)` entries, not the newest pane.
+#[test]
+fn named_agent_focuses_most_recently_focused_of_several() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let older = start_researcher(&mut h, &fx, caller);
+    let newer = start_researcher(&mut h, &fx, caller);
+    assert!(newer > older, "the tie-break alone would pick {newer}");
+    h.app.pane_navigate(older);
+    h.run_frames(1);
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+
+    assert_eq!(
+        outcome,
+        crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: older }
+    );
+}
+
+/// A pane whose agent process exited is not running: `agent open` starts a
+/// new chat instead of focusing the dead pane.
+#[test]
+fn named_agent_skips_exited_pane() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let dead = start_researcher(&mut h, &fx, caller);
+    h.app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&dead))
+        .and_then(Pane::as_terminal_mut)
+        .expect("researcher pane")
+        .exited = true;
+    h.app.pane_navigate(caller);
+    h.run_frames(1);
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+
+    let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
+        panic!("an exited pane is not running, got {outcome:?}");
+    };
+    assert_ne!(pane_id, dead);
+}
+
+/// Ruling 3 (ledger row 104): a resumed chat opens beside the calling pane,
+/// even when another pane of that window holds focus.
+#[test]
+fn named_agent_resumes_beside_unfocused_caller() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let focused = h.add_focused_terminal();
+    assert_eq!(h.app.active_focused_pane_id(), Some(focused));
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-beside");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(&fx.proj_dir, "sess-beside", "pi"));
+
+    let outcome = h
+        .app
+        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed { pane_id, .. } = outcome else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    let (caller_parent, caller_idx) = tile_slot(&h, caller);
+    assert_eq!(
+        tile_slot(&h, pane_id),
+        (caller_parent, caller_idx + 1),
+        "the resumed pane sits right after the caller, not after the focused pane"
+    );
+}
+
+/// The claimed caller is not trusted when the socket peer resolves to a live
+/// pane: the resumed chat's parent (placement, provenance, posture) is the
+/// verified pane.
+#[test]
+fn named_agent_resume_uses_verified_caller_not_claimed() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let verified = h.add_focused_terminal();
+    let claimed = h.add_focused_terminal();
+    let verified_pid = h.app.windows[0].panes[&verified]
+        .as_terminal()
+        .expect("terminal")
+        .backend
+        .child_pid();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-verified");
+    h.app
+        .fleet_history
+        .borrow_mut()
+        .push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-verified",
+            "pi",
+        ));
+
+    let outcome = h
+        .app
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(claimed),
+            Some(&[verified_pid]),
+        )
+        .expect("open");
+    h.run_frames(2);
+
+    let crate::app::agent_open::AgentOpenOutcome::Resumed { pane_id, .. } = outcome else {
+        panic!("expected a resumed chat, got {outcome:?}");
+    };
+    let t = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(Pane::as_terminal)
+        .expect("resumed terminal");
+    assert_eq!(
+        t.parent_pane_id,
+        Some(verified),
+        "the socket peer, not the claimed caller {claimed}, is the parent"
+    );
+}
