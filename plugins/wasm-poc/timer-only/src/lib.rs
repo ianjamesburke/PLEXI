@@ -1,6 +1,4 @@
-//! Timer-only restore fixture. Regenerate from the repository root with:
-//! `cargo +stable build --manifest-path tests/wasm-fixtures/timer-only/Cargo.toml --locked --release --target wasm32-wasip2 --target-dir target`
-//! Copy `target/wasm32-wasip2/release/timer_only.wasm` to `tests/wasm-fixtures/timer-only.wasm`.
+//! Timer-only restore fixture. Regenerate with `just wasm-fixtures`.
 
 use plexi_wasm_sdk::{Effect, InitContext, InputEvent, UiTree, View};
 

@@ -475,21 +475,33 @@ pub(crate) fn restore_view_pane_in_profile(
             }
             let registry =
                 PluginRegistry::load_with_global(&workspace_root, &profile_dir.join("plugins"));
-            if let Some(installed) = registry.get(manifest_id).filter(|installed| {
-                installed.manifest.manifest_type == ManifestType::Wasm
-                    && crate::platform::path::canonical_or_self(&installed.bin_path)
-                        == crate::platform::path::canonical_or_self(wasm_path)
-            }) {
-                // Mint non-sensitive manifest capabilities before the WASM
-                // sets collect stored rows, just as an installed launch does.
-                // Import-derived grants below still require sensitive review.
-                gate_plugin_permissions_in_profile(
-                    profile_dir,
-                    manifest_id,
-                    &workspace_root,
-                    &installed.manifest.capabilities.capabilities,
-                    installed.manifest.capabilities.allowed_hosts.clone(),
-                );
+            match registry.get(manifest_id) {
+                Some(installed)
+                    if installed.manifest.manifest_type == ManifestType::Wasm
+                        && crate::platform::path::canonical_or_self(&installed.bin_path)
+                            == crate::platform::path::canonical_or_self(wasm_path) =>
+                {
+                    // Mint non-sensitive manifest capabilities before the WASM
+                    // sets collect stored rows, just as an installed launch does.
+                    // Import-derived grants below still require sensitive review.
+                    wasm_manifest_permissions(
+                        profile_dir,
+                        manifest_id,
+                        &workspace_root,
+                        &installed.manifest.capabilities.capabilities,
+                        installed.manifest.capabilities.allowed_hosts.clone(),
+                    )?;
+                }
+                installed => {
+                    let reason = if installed.is_some() {
+                        "installed manifest is not WASM or its entry does not match saved wasm_path"
+                    } else {
+                        "no installed manifest found"
+                    };
+                    log::info!(
+                        "plugin::{manifest_id}: restore minted no manifest capabilities: {reason}"
+                    );
+                }
             }
             let permission_store =
                 crate::app::permissions::PermissionStore::load_or_default(profile_dir)
@@ -1140,19 +1152,13 @@ impl PlexiApp {
         let config_dir = crate::config::config_dir();
         let permission_store =
             PermissionStore::load_or_default(&config_dir).map_err(|error| error.to_string())?;
-        let declared_caps = crate::app::permissions::parse_capability_strings(
+        let mut permissions = wasm_manifest_permissions(
+            &config_dir,
+            &plugin_id,
+            &workspace_root,
             &installed.manifest.capabilities.capabilities,
-        )
-        .map_err(|e| format!("manifest lists {e}"))?;
-        let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
-            .map_err(|error| error.to_string())?
-            .materialize_plugin_permissions(
-                &crate::broker::principal::PluginInstance::new(plugin_id.as_str(), None),
-                &workspace_root,
-                &declared_caps,
-                installed.manifest.capabilities.allowed_hosts.clone(),
-            );
-        apply_media_release_gate(&plugin_id, &mut permissions);
+            installed.manifest.capabilities.allowed_hosts.clone(),
+        )?;
         permissions
             .capabilities
             .retain(|cap| !permissions.blocked.contains(cap));
@@ -3638,6 +3644,28 @@ fn new_scratch_note_path() -> PathBuf {
     crate::notes::global_notes_dir().join(filename)
 }
 
+/// Validate the whole manifest before minting any grants, for launch and restore.
+fn wasm_manifest_permissions(
+    profile_dir: &std::path::Path,
+    plugin_id: &str,
+    workspace_root: &std::path::Path,
+    capability_strings: &[String],
+    allowed_hosts: Vec<String>,
+) -> Result<crate::app::permissions::PluginPermissions, String> {
+    let declared = crate::app::permissions::parse_capability_strings(capability_strings)
+        .map_err(|error| format!("manifest lists {error}"))?;
+    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+        .map_err(|error| error.to_string())?
+        .materialize_plugin_permissions(
+            &crate::broker::principal::PluginInstance::new(plugin_id, None),
+            workspace_root,
+            &declared,
+            allowed_hosts,
+        );
+    apply_media_release_gate(plugin_id, &mut permissions);
+    Ok(permissions)
+}
+
 fn gate_plugin_permissions(
     plugin_id: &str,
     workspace_root: &std::path::Path,
@@ -4007,7 +4035,7 @@ mod tests {
         installed_wasm_timer_case(true);
     }
 
-    fn restore_wasm_timer_case(fixture: &str, requires_review: bool) {
+    fn restore_wasm_timer_case(fixture: &str, requires_review: bool, manifest_case: &str) {
         let _experiments =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let h = HostHarness::new();
@@ -4040,13 +4068,24 @@ default = true
 "#,
             wasm_path.display()
         );
-        std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
+        let manifest = match manifest_case {
+            "unknown" => manifest.replace("[\"timer\"]", "[\"timer\", \"unknown-timer-cap\"]"),
+            "mismatch" => {
+                std::fs::copy(&wasm_path, plugin_dir.join("different.wasm")).expect("other entry");
+                manifest.replace(&wasm_path.display().to_string(), "different.wasm")
+            }
+            _ => manifest,
+        };
+        if manifest_case != "missing" {
+            std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
+        }
         let workspace_root = h.workspace_root();
         assert!(
             PluginRegistry::load_with_global(&workspace_root, &h.profile_dir().join("plugins"))
                 .get("com.plexi.timer-only")
-                .is_some(),
-            "restore fixture must have a valid installed manifest"
+                .is_some()
+                != matches!(manifest_case, "missing" | "unknown"),
+            "restore fixture registry presence"
         );
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
             .expect("permission monitor");
@@ -4056,6 +4095,7 @@ default = true
         );
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
         let pane_id = 1596;
+        let logs = crate::testing::test_log::capture();
         let restored = restore_view_pane_in_profile(
             "com.plexi.timer-only",
             &crate::workspace::SavedViewLaunch::Wasm {
@@ -4072,6 +4112,15 @@ default = true
             &colors,
             h.profile_dir(),
         );
+        if matches!(manifest_case, "missing" | "mismatch" | "unknown") {
+            let reason = if manifest_case == "mismatch" {
+                "installed manifest is not WASM or its entry does not match saved wasm_path"
+            } else {
+                "no installed manifest found"
+            };
+            assert!(logs.records().contains(&(log::Level::Info,
+                format!("plugin::com.plexi.timer-only: restore minted no manifest capabilities: {reason}"))));
+        }
         if requires_review {
             assert_eq!(
                 restored.err().as_deref(),
@@ -4092,20 +4141,59 @@ default = true
             live.ui(ui, &colors, None, pane_id);
         });
         assert!(
-            live.timer_deadline_for_test().is_some(),
-            "restored timer must arm"
+            live.timer_deadline_for_test().is_some() == (manifest_case == "matching"),
+            "only a matching manifest may arm the restored timer"
         );
         assert!(!live.has_pending_capability_prompt());
     }
 
     #[test]
     fn restore_wasm_manifest_timer_arms_in_fresh_workspace() {
-        restore_wasm_timer_case("timer-only", false);
+        restore_wasm_timer_case("timer-only", false, "matching");
     }
 
     #[test]
     fn restore_wasm_manifest_timer_does_not_bypass_sensitive_review() {
-        restore_wasm_timer_case("sysmon", true);
+        restore_wasm_timer_case("sysmon", true, "matching");
+    }
+
+    #[test]
+    fn wasm_manifest_permissions_rejects_unknown_before_minting() {
+        let h = HostHarness::new();
+        let error = wasm_manifest_permissions(
+            h.profile_dir(),
+            "com.plexi.timer-only",
+            &h.workspace_root(),
+            &["timer".to_string(), "unknown-timer-cap".to_string()],
+            Vec::new(),
+        )
+        .err()
+        .expect("unknown capability must refuse launch and restore");
+        assert!(error.starts_with("manifest lists "), "{error}");
+        assert!(error.contains("unknown-timer-cap"), "{error}");
+        assert!(
+            crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
+                .expect("monitor")
+                .store()
+                .records()
+                .is_empty(),
+            "invalid manifest must mint nothing"
+        );
+    }
+
+    #[test]
+    fn restore_wasm_invalid_manifest_logs_and_denies_timer() {
+        restore_wasm_timer_case("timer-only", false, "unknown");
+    }
+
+    #[test]
+    fn restore_wasm_missing_manifest_logs_and_denies_timer() {
+        restore_wasm_timer_case("timer-only", false, "missing");
+    }
+
+    #[test]
+    fn restore_wasm_mismatched_manifest_logs_and_denies_timer() {
+        restore_wasm_timer_case("timer-only", false, "mismatch");
     }
 
     #[test]
