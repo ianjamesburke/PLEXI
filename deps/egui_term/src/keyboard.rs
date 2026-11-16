@@ -79,7 +79,16 @@ impl KeyboardEncoder {
                             Owner::Scroll
                         })
                     } else {
-                        self.owners.remove(&identity).unwrap_or(Owner::Program)
+                        match self.owners.remove(&identity) {
+                            Some(owner) => owner,
+                            // This terminal never saw the press (it went to
+                            // another pane, or was already released on focus
+                            // loss): the program must not see a release.
+                            None if !mode.is_empty() => {
+                                break 'key Some(Vec::new())
+                            },
+                            None => Owner::Program,
+                        }
                     };
                     if owner == Owner::Scroll {
                         let still_scrolls =
@@ -171,6 +180,40 @@ impl KeyboardEncoder {
             result.push(PreparedEvent { event, encoding });
         }
         result
+    }
+
+    /// Ends every hold this terminal owns, for when it stops receiving the
+    /// keyboard (window focus loss, focus moving to another pane): the
+    /// physical releases will never arrive here. Returns the release reports
+    /// the program asked for under `mode`; a later physical release of these
+    /// keys is a stray and never reaches the program.
+    pub fn release_held(&mut self, mode: TermMode) -> Vec<u8> {
+        let mode = mode & TermMode::KITTY_KEYBOARD_PROTOCOL;
+        let mut bytes = Vec::new();
+        for (identity, owner) in self.owners.drain() {
+            let code = self.held.remove(&identity);
+            if owner == Owner::Scroll {
+                continue;
+            }
+            if let Some(release) = code
+                .or_else(|| key_code(identity, Modifiers::NONE))
+                .and_then(|code| {
+                    encode_key(
+                        code,
+                        Some(identity),
+                        Modifiers::NONE,
+                        false,
+                        false,
+                        None,
+                        mode,
+                    )
+                })
+            {
+                bytes.extend(release);
+            }
+        }
+        self.held.clear();
+        bytes
     }
 }
 
@@ -474,16 +517,25 @@ mod tests {
             (Key::Enter, "\x1b[13;1:3u"),
         ] {
             assert_eq!(
-                encoded(vec![key(k, Modifiers::NONE, false, false)], mode),
-                [Some(expected.into())]
+                encoded(
+                    vec![
+                        key(k, Modifiers::NONE, true, false),
+                        key(k, Modifiers::NONE, false, false)
+                    ],
+                    mode
+                )[1],
+                Some(expected.into())
             );
         }
         assert_eq!(
             encoded(
-                vec![key(Key::F3, Modifiers::NONE, false, false)],
+                vec![
+                    key(Key::F3, Modifiers::NONE, true, false),
+                    key(Key::F3, Modifiers::NONE, false, false)
+                ],
                 TermMode::REPORT_EVENT_TYPES
-            ),
-            [Some("\x1b[13;1:3~".into())]
+            )[1],
+            Some("\x1b[13;1:3~".into())
         );
         assert_eq!(
             encoded(
@@ -765,6 +817,50 @@ mod tests {
             out,
             [Some("\x1b[5;1:1~".into()), Some("\x1b[5;2~".into()), None]
         );
+    }
+
+    #[test]
+    fn release_held_ends_program_holds_once_and_swallows_late_releases() {
+        let layout = BindingsLayout::new();
+        let mut encoder = KeyboardEncoder::default();
+        let ev = |k, mods, pressed| key(k, mods, pressed, false);
+        // A program-owned hold and a scroll-owned hold.
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (ev(Key::PageDown, Modifiers::NONE, true), EVENT_TYPES),
+                (ev(Key::PageUp, Modifiers::SHIFT, true), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(out, [Some("\x1b[6;1:1~".into()), None]);
+        assert_eq!(encoder.release_held(EVENT_TYPES), b"\x1b[6;1:3~");
+        assert!(encoder.release_held(EVENT_TYPES).is_empty());
+        // The physical releases arrive later: neither reaches the program.
+        let out = frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![
+                (ev(Key::PageDown, Modifiers::NONE, false), EVENT_TYPES),
+                (ev(Key::PageUp, Modifiers::SHIFT, false), EVENT_TYPES),
+            ],
+        );
+        assert_eq!(out, [Some(String::new()), Some(String::new())]);
+        // Without release reporting, ending a hold writes nothing.
+        frames(
+            &mut encoder,
+            &layout,
+            TermMode::empty(),
+            vec![(
+                ev(Key::PageDown, Modifiers::NONE, true),
+                TermMode::DISAMBIGUATE_ESC_CODES,
+            )],
+        );
+        assert!(encoder
+            .release_held(TermMode::DISAMBIGUATE_ESC_CODES)
+            .is_empty());
     }
 
     #[test]

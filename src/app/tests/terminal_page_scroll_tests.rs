@@ -10,21 +10,23 @@ use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
 
 /// Prints 200 lines, optionally after pushing kitty keyboard flags (as
-/// Claude Code and pi do) and optionally on the alternate screen, then idles
-/// so the grid stays put.
+/// Claude Code and pi do; `kitty-types` also requests release events) and
+/// optionally on the alternate screen, then idles so the grid stays put.
 const FIXTURE: &str = r#"
 import sys, time
 if sys.argv[1] == "kitty-alt":
     sys.stdout.write("\x1b[?1049h")
 if sys.argv[1] in ("kitty", "kitty-alt"):
     sys.stdout.write("\x1b[>1u")
+if sys.argv[1] == "kitty-types":
+    sys.stdout.write("\x1b[>3u")
 for i in range(200):
     print(f"line{i}")
 print("FILL_DONE", flush=True)
 time.sleep(120)
 "#;
 
-fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
+pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
     let id = h.add_focused_terminal();
     let terminal = crate::host::pane::TerminalPane::new(
         id,
@@ -61,7 +63,7 @@ fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
 
 /// egui marks a press of a key it still holds as a repeat, so a test that
 /// presses the same key twice must release it in between, as a user does.
-fn release_key(h: &mut HostHarness, key: egui::Key, modifiers: egui::Modifiers) {
+pub(super) fn release_key(h: &mut HostHarness, key: egui::Key, modifiers: egui::Modifiers) {
     h.frame(egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,

@@ -1206,7 +1206,7 @@ impl TerminalBackend {
         (self.size.num_cols, self.size.num_lines)
     }
 
-    fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
+    pub(crate) fn write<I: Into<Cow<'static, [u8]>>>(&self, input: I) {
         let bytes: Cow<'static, [u8]> = input.into();
         if let Ok(mut tap) = self.input_tap.lock() {
             if let Some(buf) = tap.as_mut() {

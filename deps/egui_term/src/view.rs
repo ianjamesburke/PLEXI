@@ -310,6 +310,26 @@ impl<'a> TerminalView<'a> {
         let has_focus = layout.has_focus();
         let has_pointer = layout.contains_pointer();
 
+        let keyboard_mode =
+            if state.search_mode.is_none() && state.copy_mode.is_none() {
+                self.backend.keyboard_mode()
+            } else {
+                TermMode::empty()
+            };
+        // A terminal that no longer receives the keyboard never gets the
+        // physical releases of keys it holds: release them here, once. A plain
+        // write, so the viewport does not jump to the bottom.
+        if !has_focus || !layout.ctx.input(|i| i.focused) {
+            let releases = state.keyboard.release_held(keyboard_mode);
+            if !releases.is_empty() {
+                log::info!(
+                    "kitty keyboard: lost the keyboard mid-hold; sent {} bytes of key releases",
+                    releases.len()
+                );
+                self.backend.write(releases);
+            }
+        }
+
         // Process mouse wheel for any pane the cursor is over, regardless of focus.
         // All other input (keyboard, pointer clicks/moves) still requires focus.
         if !has_focus && !has_pointer {
@@ -330,12 +350,6 @@ impl<'a> TerminalView<'a> {
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
         events.extend(layout.ctx.input(|i| i.events.clone()));
-        let keyboard_mode =
-            if state.search_mode.is_none() && state.copy_mode.is_none() {
-                self.backend.keyboard_mode()
-            } else {
-                TermMode::empty()
-            };
         let terminal_mode = self.backend.last_content().terminal_mode;
         let bindings_layout = &self.bindings_layout;
         let prepared =
