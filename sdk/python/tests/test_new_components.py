@@ -227,6 +227,18 @@ def test_textedit_accepts_node_id_keyword() -> None:
 # ── ActionBar ─────────────────────────────────────────────────────────────
 
 
+def test_action_bar_preserves_keyed_button_identity():
+    from plexi_sdk._adapter import _encode_uitree
+    from plexi_sdk.ui import Keyed, Text
+
+    tree = _encode_uitree(ActionBar([Keyed(Button("Back", "back"), key="back")]))
+    button = next(node for node in tree["nodes"] if node["data"].get("label") == "Back")
+    assert button["key"] == "0/@back"
+    assert button["data"]["on_click"] == "back"
+    with pytest.raises(TypeError, match="must be a Button"):
+        ActionBar([Keyed(Text("not a button"), key="text")])
+
+
 def test_action_bar_to_node_composes_row_of_buttons() -> None:
     bar = ActionBar(
         [

@@ -924,11 +924,12 @@ Interactive button dispatching ``UiAction(on_click)`` when activated.
 ### `Actions`
 
 ```python
-Actions(buttons: Sequence[Button] | None = None, actions: Sequence[Button] | None = None, gap: float = SPACE_SM, align: str = 'center')
+Actions(buttons: Sequence[Button | Keyed] | None = None, actions: Sequence[Button | Keyed] | None = None, gap: float = SPACE_SM, align: str = 'center')
 ```
 
 Horizontal row of ``Button`` components (`ActionBar` alias).
 
+Wrap buttons in ``Keyed`` to preserve their identity when actions change.
 ``align`` places the buttons at the top, middle (the default) or bottom of
 the row. Buttons that do not fit the pane width wrap onto further lines as
 whole buttons; a label never breaks inside a word.

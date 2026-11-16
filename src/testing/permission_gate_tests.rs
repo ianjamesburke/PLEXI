@@ -2079,11 +2079,16 @@ fn permissions_button(h: &HostHarness, pane_id: u64, label: &str) -> Option<Stri
 fn node_click_permissions_button(h: &mut HostHarness, pane_id: u64, label: &str) {
     pump_until(h, |h| permissions_button(h, pane_id, label).is_some());
     let node = permissions_button(h, pane_id, label).expect("button node");
+    click_permissions_node(h, pane_id, label, &node);
+}
+
+#[track_caller]
+fn click_permissions_node(h: &mut HostHarness, pane_id: u64, label: &str, node: &str) {
     let response = h.workspace_root().join(format!("node-{label}.json"));
     let _ = std::fs::remove_file(&response);
     h.inject_node_click(
         pane_id,
-        &node,
+        node,
         "left",
         Some(response.to_string_lossy().into_owned()),
     );
@@ -2194,8 +2199,24 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     );
 
     // (b) What a synthetic click can still do: narrow. Revoke denies the ask.
+    let back_before_revoke = permissions_button(&h, pane, "Back").expect("Back before refresh");
     node_click_permissions_button(&mut h, pane, "Revoke");
     pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
+    // Force the inventory rebuild to land after resolving Back and before its
+    // click. The selected pending row disappears, leaving the timer grant and
+    // fewer action buttons. Back must retain its identity across that change.
+    pump_until(&mut h, |h| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane)
+            .and_then(crate::host::pane::Pane::as_view)
+            .is_some_and(|view| {
+                view.semantic_state()
+                    .nodes
+                    .iter()
+                    .any(|node| node.label.as_deref() == Some("timer  allow"))
+            })
+    });
     assert_eq!(
         entry_kinds(&mon),
         launch_grants,
@@ -2224,7 +2245,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         .unwrap()
         .created_at = now - 1;
     // Refresh the list before opening the denial; the timer grant remains.
-    node_click_permissions_button(&mut h, pane, "Back");
+    click_permissions_node(&mut h, pane, "Back", &back_before_revoke);
     node_click_permissions_button(&mut h, pane, "Reload");
     pump_until(&mut h, |h| {
         h.app.windows[h.app.active_window]

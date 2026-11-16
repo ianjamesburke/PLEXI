@@ -8,6 +8,40 @@ from plexi_sdk.events import KeyEvent, PermissionInventory, UiAction
 import main as permissions
 
 
+def test_back_node_survives_inventory_rebuild_after_revoke() -> None:
+    from plexi_sdk._adapter import _encode_uitree
+    from plexi_sdk._v3_runtime import PluginRuntime
+    from plexi_sdk.events import TimerFired
+
+    runtime = PluginRuntime.__new__(PluginRuntime)
+    runtime._last_tree = None
+    runtime._next_tree_node_id = 0
+    pending = {"id": "ask", "kind": "pending", "tool": "probe.pending"}
+    timer = {"id": "timer", "kind": "allow", "tool": "timer"}
+    _set_state({**permissions.DEFAULT_STATE, "mode": "detail", "entries": [pending, timer]})
+    before = runtime._stabilize_tree_ids(_encode_uitree(permissions.view()))
+    runtime._last_tree = before
+    back = next(node for node in before["nodes"] if node["data"].get("label") == "Back")
+
+    # Force the poll's response between resolving Back and dispatching its id.
+    assert isinstance(permissions.update(TimerFired(id=permissions.POLL_TIMER))[0], ReadPermissionDecisions)
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=[timer]))))
+    after = runtime._stabilize_tree_ids(_encode_uitree(permissions.view()))
+    current = next(node for node in after["nodes"] if node["data"].get("label") == "Back")
+    assert back["id"] == current["id"], (back, current)
+    old_actions = {node["id"] for node in before["nodes"]
+                   if node["data"].get("on_click") in {"permissions:allow", "permissions:revoke"}}
+    assert old_actions.isdisjoint(node["id"] for node in after["nodes"])
+
+    # A later poll can add a denial before the timer grant. Back still denotes
+    # navigation, while none of the prior decision's actions may be retargeted.
+    runtime._last_tree = after
+    denial = {"id": "denial", "kind": "deny", "tool": "probe.denied"}
+    _set_state(_state_effect(permissions.update(PermissionInventory(entries=[denial, timer]))))
+    rebuilt = runtime._stabilize_tree_ids(_encode_uitree(permissions.view()))
+    assert next(node for node in rebuilt["nodes"] if node["id"] == back["id"])["data"]["on_click"] == "permissions:back"
+
+
 def _set_state(values: dict) -> None:
     raw = {key: b"" for key in values}
     _v3_state._state = sdk.StateSnapshot(values, raw)

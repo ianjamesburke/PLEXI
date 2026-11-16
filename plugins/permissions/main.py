@@ -19,7 +19,7 @@ from plexi_sdk.effects import (
     SetTitle,
 )
 from plexi_sdk.events import KeyEvent, PermissionInventory, TimerFired, UiAction
-from plexi_sdk.ui import Actions, SurfaceHeader, Button, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import Actions, SurfaceHeader, Button, Column, FooterKeys, Keyed, SelectList, Spacer, Text
 
 POLL_TIMER = 1
 
@@ -205,7 +205,10 @@ def _detail_view(data: dict):
         buttons.append(Button("Allow", "permissions:allow"))
     if kind == "pending":
         buttons.append(Button("Allow", "permissions:allow"))
-    buttons.append(Button("Back", "permissions:back"))
+    # Inventory polling can replace the selected decision and change the action
+    # count. Decision actions belong to that entry; Back belongs to this view.
+    buttons = [Keyed(button, key=f"{entry['id']}:{button.on_click}") for button in buttons]
+    buttons.append(Keyed(Button("Back", "permissions:back"), key="back"))
     return Column(
         [
             SurfaceHeader("Permissions", f"{entry['tool']}  {kind}"),

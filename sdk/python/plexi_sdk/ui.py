@@ -689,6 +689,7 @@ class Button(Component):
 class Actions(Component):
     """Horizontal row of ``Button`` components (`ActionBar` alias).
 
+    Wrap buttons in ``Keyed`` to preserve their identity when actions change.
     ``align`` places the buttons at the top, middle (the default) or bottom of
     the row. Buttons that do not fit the pane width wrap onto further lines as
     whole buttons; a label never breaks inside a word.
@@ -696,15 +697,16 @@ class Actions(Component):
 
     def __init__(
         self,
-        buttons: Sequence[Button] | None = None,
+        buttons: Sequence[Button | Keyed] | None = None,
         *,
-        actions: Sequence[Button] | None = None,
+        actions: Sequence[Button | Keyed] | None = None,
         gap: float = SPACE_SM,
         align: str = "center",
     ) -> None:
         items = list(actions if actions is not None else (buttons if buttons is not None else []))
         for i, item in enumerate(items):
-            if not isinstance(item, Button):
+            child = item.child if isinstance(item, Keyed) else item
+            if not isinstance(child, Button):
                 raise TypeError(
                     f"ActionBar actions[{i}] must be a Button, got {type(item).__name__}"
                 )
